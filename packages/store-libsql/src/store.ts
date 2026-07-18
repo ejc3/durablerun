@@ -1,8 +1,10 @@
 import {
+  type Buggify,
   type Checkpoint,
   type ClaimedRun,
   type IdSource,
   type LeaseState,
+  neverBuggify,
   normalizeRetryStrategy,
   type RetryStrategy,
   type SchedulerStore,
@@ -38,6 +40,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   constructor(
     private readonly db: SqlExecutor,
     private readonly ids: IdSource,
+    private readonly buggify: Buggify = neverBuggify,
   ) {}
 
   async spawn(
@@ -118,6 +121,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
     const { leaseSeconds, limit } = opts
+    // Buggify: a short claim is always legal (limit is a maximum) — ticks
+    // must drain via the successor-tick chain, never assume a full batch.
+    const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
     const [, , , picked] = await this.db.batch('claim', [
       // 1. The claim CAS: due runs of live tasks → running, stamped with the
       //    fresh token and an incremented per-claim generation. The candidate
@@ -154,7 +160,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 ORDER BY c.available_at_ms, c.run_id
                 LIMIT ?
               )`,
-        args: [claimToken, leaseSeconds, leaseSeconds, queue, limit, queue, limit, limit],
+        args: [
+          claimToken,
+          leaseSeconds,
+          leaseSeconds,
+          queue,
+          effectiveLimit,
+          queue,
+          effectiveLimit,
+          effectiveLimit,
+        ],
       },
       // 2. Task bookkeeping, keyed on the post-state + token. attempts is the
       //    USER-attempt watermark: run.attempt is the fence ordinal (counts
@@ -208,6 +223,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<ClaimedRun | null> {
+    // Buggify: a lost activation is always legal — the launch channel may
+    // drop any delivery; the sweep classifies and relaunches without cost.
+    if (this.buggify('activate:lost')) return null
     const [cas, , data] = await this.db.batch('activate', [
       // Per-claim latch: only this claim's first delivery passes; re-extends
       // the lease so channel-delayed launches don't start life nearly expired.
@@ -267,6 +285,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     extendSeconds: number,
   ): Promise<LeaseState> {
+    // Buggify: lease-lost can arrive at ANY heartbeat — workers must abort
+    // cleanly on the AB002 signal no matter when it fires.
+    if (this.buggify('heartbeat:lease-lost')) return { held: false, remainingMs: 0 }
     const [extended, remaining] = await this.db.batch('heartbeat', [
       {
         sql: `UPDATE runs SET
