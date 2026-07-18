@@ -701,6 +701,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         `UPDATE runs SET
            state = CASE WHEN ${wakeExpr} <= ${NOW_MS} THEN 'pending' ELSE 'sleeping' END,
            available_at_ms = ${wakeExpr},
+           wake_event = NULL, event_payload = NULL,
            claimed_by = ${STAMP}, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
          WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
         [wakeArg, wakeArg, runId, queue, claimToken],
@@ -727,6 +728,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         'complete',
         `UPDATE runs SET
            state = 'completed', completed_at_ms = ${NOW_MS}, result = ?,
+           wake_event = NULL, event_payload = NULL,
            claimed_by = ${STAMP}, claim_expires_at_ms = NULL
          WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
         [resultJson, runId, queue, claimToken],
@@ -773,6 +775,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     )
     if (retry && successorId) {
       batch
+        // Guarded like the sweep's successor site: only a LIVE task with
+        // user budget remaining gets a retry run (attempts is pre-increment,
+        // so `attempts + 1 < max_attempts` == decideRetry's cap arithmetic).
         .followOn(
           'successor',
           `INSERT INTO runs
@@ -782,12 +787,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                   CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
                   ${NOW_MS} + ? * 1000,
                   r.wake_event, r.event_payload, r.run_db, ${NOW_MS}
-           FROM runs r
-           WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}`,
+           FROM runs r JOIN tasks t ON t.task_id = r.task_id
+           WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
+             AND t.state IN ${LIVE} AND t.attempts + 1 < t.max_attempts`,
           [successorId, retry.delaySeconds, retry.delaySeconds, runId],
         )
         .followOn(
-          'task',
+          'task-retrying',
           `UPDATE tasks SET
              attempts = attempts + 1,
              state = (SELECT state FROM runs WHERE run_id = ?),
@@ -796,11 +802,21 @@ export class LibsqlSchedulerStore implements SchedulerStore {
              AND EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
           [successorId, successorId, runId, successorId],
         )
+        // Cap refused (or task no longer live): terminal, same as no-retry.
+        .followOn(
+          'task-terminal',
+          `UPDATE tasks SET attempts = attempts + 1, state = 'failed', failure_reason = ?
+           WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
+             AND state IN ${LIVE}
+             AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
+          [failureJson, runId, successorId],
+        )
     } else {
       batch.followOn(
         'task',
         `UPDATE tasks SET attempts = attempts + 1, state = 'failed', failure_reason = ?
-         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
+         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
+           AND state IN ${LIVE}`,
         [failureJson, runId],
       )
     }
@@ -859,22 +875,24 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       {
         sql: `UPDATE runs SET
                 claim_expires_at_ms = ${NOW_MS} + ? * 1000, heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
-        args: [extendLeaseSeconds, runId, queue, claimToken],
+              WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
+                AND state = 'running'`,
+        args: [extendLeaseSeconds, runId, queue, taskId, claimToken],
       },
       {
         sql: `INSERT INTO checkpoints
                 (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
               SELECT ?, ?, ?, ?, r.run_id, r.attempt, ${NOW_MS}
               FROM runs r
-              WHERE r.run_id = ? AND r.claimed_by = ? AND r.state = 'running'
+              WHERE r.run_id = ? AND r.task_id = ? AND r.queue = ? AND r.claimed_by = ?
+                AND r.state = 'running'
               ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
                 state = excluded.state,
                 owner_run_id = excluded.owner_run_id,
                 owner_attempt = excluded.owner_attempt,
                 updated_at_ms = excluded.updated_at_ms
               WHERE excluded.owner_attempt >= checkpoints.owner_attempt`,
-        args: [taskId, checkpointName, queue, stateJson, runId, claimToken],
+        args: [taskId, checkpointName, queue, stateJson, runId, taskId, queue, claimToken],
       },
     ])
     if ((extended?.rowsAffected ?? 0) !== 1) throw new LeaseLostError(`setCheckpoint ${runId}`)
