@@ -12,6 +12,114 @@ const Q = 'q'
  * named in the test title.
  */
 
+describe('PR1.6 review regressions', () => {
+  it('fail() refuses a successor past max_attempts: the task fails terminally at the cap', async () => {
+    const f = await makeLibsqlFixture('cap-enforce')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 2 })
+    // Attempt 1 fails with retry — allowed (attempt 2 fits the cap).
+    let [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 1')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    // Attempt 2 fails "with retry" — but the cap must refuse the successor.
+    ;[run] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 2')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    const [runs] = await f.raw.batch('t', [
+      { sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(Number(runs?.rows[0]?.n)).toBe(2) // no third run
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]).toMatchObject({ state: 'failed', attempts: 2 })
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('setCheckpoint rejects a task_id that does not belong to the fencing run', async () => {
+    const f = await makeLibsqlFixture('ckpt-scope')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await f.store.spawn(Q, 'a', '{}')
+    const other = await f.store.spawn(Q, 'b', '{}', { startDelaySeconds: 900 })
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // Foreign task id under a valid lease: must throw and write NOTHING.
+    await expect(
+      f.store.setCheckpoint(Q, other.taskId, run.runId, run.claimToken, 's', '{"x":1}', 60),
+    ).rejects.toThrow()
+    const [rows] = await f.raw.batch('t', [
+      { sql: `SELECT COUNT(*) AS n FROM checkpoints WHERE task_id = ?`, args: [other.taskId] },
+    ])
+    expect(Number(rows?.rows[0]?.n)).toBe(0)
+    f.close()
+  })
+
+  it('a consumed event wake is cleared by reschedule — timer wakes do not replay it', async () => {
+    const f = await makeLibsqlFixture('wake-consume')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await f.store.spawn(Q, 'job', '{}')
+    let [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 1')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // Park a wake (as PR3.1's emit will), fail with retry so it carries.
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    // The successor's claim presents the carried wake — correct (§3.8.2)...
+    ;[run] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 2')
+    expect(run.wake).toBeDefined()
+    const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    if (!activated) throw new Error('activate')
+    // ...the worker processes it and sleeps. The wake is now CONSUMED.
+    await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 10 })
+    await f.admin.setFakeNowEpochMs(1_020_000)
+    const [timerWake] = await f.store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 })
+    expect(timerWake?.runId).toBe(run.runId)
+    // A pure timer wake must NOT re-present the consumed event.
+    expect(timerWake?.wake).toBeUndefined()
+    f.close()
+  })
+
+  it('fail() with retry under a terminal task creates no successor (sweep-site parity)', async () => {
+    const f = await makeLibsqlFixture('terminal-successor')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // Simulate a deferred/cross-plane teardown: the task is terminal while
+    // the run row is still 'running' under a live token.
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'failed', failure_reason = '{"name":"External"}'
+              WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    await f.store
+      .fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+      .catch(() => {})
+    const [rows] = await f.raw.batch('t', [
+      {
+        sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND state IN ('pending','sleeping')`,
+        args: [spawned.taskId],
+      },
+    ])
+    // No live successor may exist under a terminal task.
+    expect(Number(rows?.rows[0]?.n)).toBe(0)
+    f.close()
+  })
+})
+
 describe('PR1.5 review regressions', () => {
   it('losing sweeper can never terminally fail a task whose successor lives (stamp fencing)', async () => {
     const corruptSeeds: number[] = []
