@@ -32,6 +32,24 @@ Activation is a per-claim generation CAS (`activated_gen < claim_gen`), never
 a one-shot flag. Sweeps classify lost-launch (reopen, no attempt) vs died
 mid-run (`infra_retries`, not `max_attempts`).
 
+## Standing rule: pluggability is law
+
+The engine must work identically over SQLite/libsql, MySQL, and Postgres —
+for the scheduler plane now and the run-bookkeeping plane (RunStateStore)
+when it lands. Enforcement is structural, not aspirational:
+
+- Engine logic never contains dialect-specific SQL or behavior; everything
+  dialect-specific lives in a store-* package behind the port interfaces.
+- A dialect is DONE when its StoreFixtureFactory passes the identical
+  conformance suite (`@durablerun/conformance`) — no dialect-specific test
+  forks, ever.
+- The authoritative contract is language-neutral — the shared schema, each
+  labeled batch's SQL semantics, the wire formats, the TLA+ spec, and the
+  conformance scenarios — so a future port in another language (e.g.
+  Rust/Tokio) implementing the same batches is a drop-in peer, proving
+  itself against the same scenarios through its own runner. Never let the
+  contract live only in TypeScript types.
+
 ## Standing rule: prevention analysis on every correctness finding
 
 When a bug or design issue affecting correctness is found (by review, sim,

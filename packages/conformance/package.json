@@ -14,6 +14,7 @@
     "@durablerun/harness": "workspace:*"
   },
   "devDependencies": {
-    "@durablerun/store-libsql": "workspace:*"
+    "@durablerun/store-libsql": "workspace:*",
+    "vitest": "^3.2.4"
   }
 }
