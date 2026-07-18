@@ -628,6 +628,11 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         if (!run) throw new Error('expected claim')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_020_000)
+        // ...and a SLEEPING run is a wake source too (codex: this leg of the
+        // UNION had no test constructing it): c sleeps until 1_010_000,
+        // clearing its lease/deadline sources, and the sleep wins.
+        await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 10 })
+        expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_010_000)
       })
     })
 

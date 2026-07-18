@@ -6,21 +6,44 @@ import { engineInvariantViolations } from './invariants.js'
 const Q = 'q'
 
 /**
+ * Per-walk success counters. The shard runner AGGREGATES these across its
+ * seeds and asserts every core transition fired somewhere in the shard —
+ * per-walk floors would be flaky (one unlucky seed is deterministic
+ * forever), aggregate floors are statistically bulletproof and still catch
+ * "this op stopped working entirely" (the class the plain progress floor
+ * cannot see: complete could throw LeaseLostError on every call and a
+ * spawn-only progress count would stay green).
+ */
+export interface FuzzStats {
+  spawnsCreated: number
+  claims: number
+  activates: number
+  completes: number
+  fails: number
+  reschedules: number
+  checkpoints: number
+  sweepTransitions: number
+  cancels: number
+  nextWakes: number
+}
+
+/**
  * Seeded operation fuzz (BUILD.md PR1.6): a deterministic random walk over
  * the full transition surface — spawn, claim, activate, complete, fail,
- * reschedule, checkpoint, expireLeaseNow, sweep, time advance — with the
- * engine invariants asserted throughout. Any failing seed replays exactly.
- * (Interleaving fuzz via SimWorld schedules is layered on separately; this
- * walk hammers state-machine coverage, not concurrency.)
+ * reschedule, checkpoint, heartbeat, cancel, expireLeaseNow, sweep,
+ * nextWakeAt, time advance — with the engine invariants asserted throughout
+ * and fractional/invalid numeric corpora at the port boundary. Any failing
+ * seed replays exactly. (Interleaving fuzz via SimWorld schedules is layered
+ * on separately; this walk hammers state-machine coverage, not concurrency.)
  */
 export async function runFuzzScenario(
   makeFixture: StoreFixtureFactory,
   seed: number | string,
   steps: number,
-): Promise<void> {
+): Promise<FuzzStats> {
   const f = await makeFixture(`fuzz-${seed}`)
   try {
-    await runWalk(f, seed, steps)
+    return await runWalk(f, seed, steps)
   } finally {
     f.close()
   }
@@ -30,7 +53,7 @@ async function runWalk(
   f: Awaited<ReturnType<StoreFixtureFactory>>,
   seed: number | string,
   steps: number,
-): Promise<void> {
+): Promise<FuzzStats> {
   const rng = new Rng(`fuzz-${seed}`)
   let now = 1_000_000
   await f.admin.setFakeNowEpochMs(now)
@@ -38,28 +61,61 @@ async function runWalk(
   const knownTasks: string[] = []
   let claimCounter = 0
   let idemCounter = 0
-  let progress = 0
+  const stats: FuzzStats = {
+    spawnsCreated: 0,
+    claims: 0,
+    activates: 0,
+    completes: 0,
+    fails: 0,
+    reschedules: 0,
+    checkpoints: 0,
+    sweepTransitions: 0,
+    cancels: 0,
+    nextWakes: 0,
+  }
 
-  const expectLeaseLoss = async (op: () => Promise<unknown>): Promise<void> => {
+  /** Fractional seconds are legal (rounded to ms) — exercise them freely. */
+  const frac = (): number => (rng.next() < 0.3 ? 0.5005 : 0)
+
+  const expectLeaseLoss = async (op: () => Promise<unknown>): Promise<boolean> => {
     try {
       await op()
+      return true
     } catch (error) {
       // Abandoned/swept runs legitimately lose their lease mid-walk.
       if (!(error instanceof LeaseLostError)) throw error
+      return false
     }
   }
 
   for (let step = 0; step < steps; step++) {
     const roll = rng.next()
-    if (roll < 0.2) {
+    if (roll < 0.03) {
+      // Invalid-numeric corpus: the port MUST refuse these (§3.4 rule 7) —
+      // a silent acceptance is a walk failure, not a skipped op.
+      const bad = rng.next()
+      try {
+        if (bad < 0.34) {
+          await f.store.spawn(Q, 'bad', '{}', { startDelaySeconds: Number.POSITIVE_INFINITY })
+        } else if (bad < 0.67) {
+          await f.store.claim(Q, `w${claimCounter++}`, { leaseSeconds: Number.NaN, limit: 1 })
+        } else {
+          await f.store.spawn(Q, 'bad', '{}', { maxAttempts: 0 })
+        }
+        throw new Error(`fuzz seed ${seed} step ${step}: invalid numeric input was ACCEPTED`)
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error
+      }
+    } else if (roll < 0.2) {
       const opts =
         rng.next() < 0.3
           ? {
               maxAttempts: 1 + rng.int(3),
+              ...(rng.next() < 0.3 ? { startDelaySeconds: frac() } : {}),
               cancellation:
                 rng.next() < 0.5
-                  ? { maxDelaySeconds: 30 + rng.int(120) }
-                  : { maxDurationSeconds: 30 + rng.int(120) },
+                  ? { maxDelaySeconds: 30 + rng.int(120) + frac() }
+                  : { maxDurationSeconds: 30 + rng.int(120) + frac() },
             }
           : {}
       const spawned = await f.store.spawn(
@@ -69,16 +125,20 @@ async function runWalk(
         rng.next() < 0.2 ? { ...opts, idempotencyKey: `k${idemCounter++ % 4}` } : opts,
       )
       knownTasks.push(spawned.taskId)
-      progress++
+      if (spawned.created) stats.spawnsCreated++
     } else if (roll < 0.4) {
       const claimed = await f.store.claim(Q, `w${claimCounter++}`, {
-        leaseSeconds: 30 + rng.int(60),
+        leaseSeconds: 30 + rng.int(60) + frac(),
         limit: 1 + rng.int(3),
       })
+      stats.claims += claimed.length
       for (const run of claimed) {
         if (rng.next() < 0.8) {
           const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-          if (activated) held.push(activated)
+          if (activated) {
+            held.push(activated)
+            stats.activates++
+          }
         }
       }
     } else if (roll < 0.65 && held.length > 0) {
@@ -86,56 +146,81 @@ async function runWalk(
       if (!run) continue
       const kind = rng.next()
       if (kind < 0.35) {
-        await expectLeaseLoss(() =>
-          f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}').then(() => progress++),
-        )
+        if (await expectLeaseLoss(() => f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}')))
+          stats.completes++
       } else if (kind < 0.55) {
-        await expectLeaseLoss(() =>
-          f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFail"}', {
-            delaySeconds: rng.int(30),
-          }),
+        if (
+          await expectLeaseLoss(() =>
+            f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFail"}', {
+              delaySeconds: rng.int(30) + frac(),
+            }),
+          )
         )
+          stats.fails++
       } else if (kind < 0.65) {
-        await expectLeaseLoss(() =>
-          f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFatal"}', null),
+        if (
+          await expectLeaseLoss(() =>
+            f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFatal"}', null),
+          )
         )
+          stats.fails++
       } else if (kind < 0.85) {
-        await expectLeaseLoss(() =>
-          f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: rng.int(60) }),
+        if (
+          await expectLeaseLoss(() =>
+            f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: rng.int(60) + frac() }),
+          )
         )
+          stats.reschedules++
       } else if (kind < 0.95) {
-        await expectLeaseLoss(() =>
-          f.store.setCheckpoint(
-            Q,
-            run.taskId,
-            run.runId,
-            run.claimToken,
-            `cp-${rng.int(3)}`,
-            '{"v":1}',
-            30 + rng.int(60),
-          ),
+        if (
+          await expectLeaseLoss(() =>
+            f.store.setCheckpoint(
+              Q,
+              run.taskId,
+              run.runId,
+              run.claimToken,
+              `cp-${rng.int(3)}`,
+              '{"v":1}',
+              30 + rng.int(60) + frac(),
+            ),
+          )
         )
+          stats.checkpoints++
         held.push(run) // checkpointing does not release the run
       }
       // else: abandon silently — the sweep must recover it.
     } else if (roll < 0.72) {
-      progress += (await f.store.sweep(Q, 1 + rng.int(5))).length
-    } else if (roll < 0.76 && held.length > 0) {
+      stats.sweepTransitions += (await f.store.sweep(Q, 1 + rng.int(5))).length
+    } else if (roll < 0.75 && held.length > 0) {
       const run = held[rng.int(held.length)]
-      if (run) await f.store.heartbeat(Q, run.runId, run.claimToken, 30 + rng.int(60))
-    } else if (roll < 0.79 && held.length > 0) {
+      if (run) await f.store.heartbeat(Q, run.runId, run.claimToken, 30 + rng.int(60) + frac())
+    } else if (roll < 0.78 && held.length > 0) {
       const run = held[rng.int(held.length)]
       if (run) await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
-    } else if (roll < 0.82 && knownTasks.length > 0) {
+    } else if (roll < 0.81 && knownTasks.length > 0) {
       const taskId = knownTasks[rng.int(knownTasks.length)]
-      if (taskId && (await f.store.cancelTask(Q, taskId))) progress++
-    } else if (roll < 0.85 && held.length > 0) {
+      if (taskId && (await f.store.cancelTask(Q, taskId))) stats.cancels++
+    } else if (roll < 0.84 && held.length > 0) {
       const run = held.splice(rng.int(held.length), 1)[0]
       if (run) {
-        await expectLeaseLoss(() =>
-          f.store.reschedule(Q, run.runId, run.claimToken, { atEpochMs: now + rng.int(90) * 1000 }),
+        if (
+          await expectLeaseLoss(() =>
+            f.store.reschedule(Q, run.runId, run.claimToken, {
+              atEpochMs: now + rng.int(90) * 1000,
+            }),
+          )
         )
+          stats.reschedules++
       }
+    } else if (roll < 0.88) {
+      // The read path fuzzes too: nextWakeAt must always be a safe integer
+      // (an Inf lease or REAL epoch surfaces HERE even before the invariant
+      // sweep sees the row).
+      const wake = await f.store.nextWakeAtEpochMs(Q)
+      if (wake !== null && !Number.isSafeInteger(wake)) {
+        throw new Error(`fuzz seed ${seed} step ${step}: nextWakeAt returned ${wake}`)
+      }
+      stats.nextWakes++
     } else {
       now += (1 + rng.int(120)) * 1000
       await f.admin.setFakeNowEpochMs(now)
@@ -154,8 +239,17 @@ async function runWalk(
   }
   // Progress floor: safety-only fuzz cannot see total loss of progress (a
   // fence regression making every transition a fenced no-op stays
-  // invariant-clean). Long walks must accomplish SOMETHING.
+  // invariant-clean). Long walks must accomplish SOMETHING; the shard runner
+  // additionally asserts per-op aggregate floors across its seeds.
+  const progress =
+    stats.spawnsCreated +
+    stats.completes +
+    stats.fails +
+    stats.reschedules +
+    stats.sweepTransitions +
+    stats.cancels
   if (steps >= 50 && progress === 0) {
     throw new Error(`fuzz seed ${seed}: zero progress across ${steps} steps`)
   }
+  return stats
 }

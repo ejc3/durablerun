@@ -61,9 +61,18 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
 - Mirror discipline: every run transition mirrors `tasks.state`; successor-
   creating paths (`fail`, sweep) carry `wake_event`/`event_payload`/`run_db`
   and share guard shapes — check the two successor-insert sites for drift.
-- Consumable state gets consumed: wakes clear on `reschedule`/`complete`,
-  carry on failure successors. Timed-out waits are deleted at claim so emits
+- Consumable state gets consumed: wakes clear on `reschedule`/`complete`
+  ('consume'), carry on failure successors, and survive §3.8.2 deferral
+  (`reschedule` 'preserve'). Timed-out waits are deleted at claim so emits
   cannot resurrect them.
+- Terminal tasks are inert (§3.4 rule 6): task mutations guard
+  `state IN LIVE`; run-REVIVING CASes require the owning task live;
+  terminalizing CASes still quiesce. Even corrupt state must not be
+  AMPLIFIED. [regressions: complete/reschedule under a terminal task]
+- Successor inserts are STAMPED (`claimed_by = stamp`) and follow-ons key on
+  the stamped row, never bare run-id existence — a suppressed insert plus an
+  id collision otherwise books a FOREIGN run. Both successor sites (fail,
+  sweep claim-timeout) share the shape. [regression: fail-collide]
 - Accounting: `tasks.attempts` moves ONLY in user-failure transitions;
   infra (`$ClaimTimeout`) successors move `infra_retries`; `run.attempt` is
   the fence ordinal (counts both). User ordinal = `attempt - infraRetries`.
@@ -88,6 +97,12 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
 - `LIMIT -1` means UNLIMITED on SQLite — clamp every limit (`clampLimit`).
 - `INSERT OR IGNORE` swallows ALL conflicts including PK collisions — under a
   stamp fence use plain `INSERT` so real violations fail loudly.
+- JS numbers bind as REAL; INTEGER columns are affinity, not enforcement
+  (§3.4 rule 7): Infinity becomes an unexpirable `Inf` lease, unsafe
+  integers throw RangeError on READ-back, fractional `? * 1000` products
+  store REAL epochs. Every client number crosses the port through
+  core/validate.ts and SQL NEVER multiplies a client number — ms are
+  computed in TS. Detection twin: the `temporal-storage-class` invariant.
 - `rowsAffected` lies for DML…RETURNING on the local libsql client — the
   executor normalizes (rows.length for row-returning statements); fence
   checks rely on that contract. [store-libsql/test/executor.test.ts pins it]
@@ -117,7 +132,11 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   detected, never hung.
 - Assert INVARIANTS at quiescence (`engineInvariantViolations`), not only
   scenario expectations — detection must not depend on predicting the
-  failure while authoring the test.
+  failure while authoring the test. Orphan checks use LEFT JOINs (an inner
+  join hides a MISSING row from the checker).
+- Fuzz floors: per-walk floors on individual ops are deterministic flakes
+  (one unlucky seed fails forever) — use AGGREGATE per-op floors across the
+  shard plus a per-walk total-progress floor.
 - Put sims at BOUNDARY values ({0, cap−1, cap}) and include the actor the
   race needs (the sweeper race needed a claimer; the sim without one was
   blind).
