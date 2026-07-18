@@ -70,7 +70,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   fenced batches (§3.4 rule 1); retry-run insert; checkpoint upsert with lease
   fence + repeat counters (`name`, `name#2`); nextWakeAt. Sims: zombie
   complete is a no-op; chaining is attempt-neutral. Nightly seeded-fuzz run
-  wired into `pnpm verify:fuzz`.
+  wired into `pnpm verify:fuzz`. Two FDB adoptions land here: a determinism
+  lint (Date.now/Math.random/timers banned in core/driver/sdk — discipline
+  becomes structure) and buggify flags (sim-only spurious lease-lost, short
+  claims, failed heartbeats — engine code must survive its own error paths).
 
 ## Phase 2 — drive (both modes) → first dogfood
 
