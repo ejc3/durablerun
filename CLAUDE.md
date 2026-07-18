@@ -13,6 +13,9 @@ lightweight tick drivers that launch workers on demand.
 
 ## Commands
 
+- `/pr-gate` — the consolidated review gate (.claude/skills/pr-gate). ALL
+  review checks, simplify gotchas, dialect traps, and process rules live
+  there, each linked to its source lesson. Walk it before every PR push.
 - `pnpm verify` — lint + format-check + typecheck + test. Run before every
   commit; this is the CI gate until a remote exists.
 - `pnpm test` — vitest across the workspace.
