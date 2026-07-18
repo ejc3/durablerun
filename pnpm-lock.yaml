@@ -20,6 +20,16 @@ importers:
 
   packages/core: {}
 
+  packages/harness:
+    dependencies:
+      '@absurd-lite/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@absurd-lite/store-libsql':
+        specifier: workspace:*
+        version: link:../store-libsql
+
   packages/store-libsql:
     dependencies:
       '@absurd-lite/core':
