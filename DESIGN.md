@@ -823,6 +823,36 @@ Any combination of implementations across the five ports is correct, because
 the only load-bearing component is the lease in port 1 — that is the
 pluggability guarantee.
 
+### 3.10 Sagas: per-step rollbacks (modeled on Cloudflare's June-2026 API)
+
+Compensation is declared per step, co-located with the forward action —
+`ctx.step(name, fn, { rollback, rollbackConfig })` — and engine-triggered,
+never user-triggered (no Temporal-style explicit `compensate()` call):
+
+- **Trigger**: rollback runs only when the task is about to fail terminally
+  (retries exhausted or FatalTaskError). An error the user code catches and
+  survives never triggers rollback.
+- **Eligibility & order**: every started-or-completed step that registered a
+  rollback is eligible (the handler receives `{ output, error, ctx }` with
+  `output === undefined` when the forward step never persisted — handlers
+  guard on it); handlers run in **reverse step-start order**.
+- **Mechanics on this engine**: the checkpoint records a `rollback_registered`
+  flag and a step-start ordering index. On terminal failure the run enters a
+  `rolling_back` phase (a checkpoint, so it survives crashes); the task
+  function re-runs, memoized steps skip and re-register their closures, and
+  the SDK executes handlers as ordinary durable steps named
+  `rollback:<step>#<count>` with their own `rollbackConfig` retry budgets on
+  the normal claim/lease machinery. Crash mid-rollback resumes exactly where
+  it died — this is strictly simpler than Cloudflare's replay-plus-RPC-stub
+  reconstruction because re-execution is already our model.
+- **Failure semantics** (matching Cloudflare exactly): a rollback step that
+  exhausts its retries or throws FatalTaskError marks the rollback outcome
+  `failed` and halts the remaining handlers; the task still terminates in
+  `failed` either way. There is **no distinct "compensated" terminal state**
+  — the rollback outcome `{ outcome: 'complete' | 'failed', error }` is a
+  separate field on the task result. Rollback handlers must be idempotent
+  and use distinct idempotency keys (`<id>:rollback-<step>`).
+
 ## 4. What "ticks" mean here — direct answers to the original questions
 
 - **How do ticks drive workflows?** A tick is one pass of the driver: sweep

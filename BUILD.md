@@ -100,6 +100,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   defer-unknown-task deploy rule.
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, same-queue refusal; `/api/runs/:id` result route.
+- **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
+  June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
+  engine-triggered on terminal failure only, reverse step-START order,
+  rollback handlers as ordinary durable steps (`rollback:<step>#<count>`)
+  with their own retry budgets, halt-on-rollback-failure, no distinct
+  terminal state (rollback outcome is a separate result field). Conformance:
+  crash mid-rollback resumes; reverse order exactly once each; caught errors
+  never trigger rollback; `output === undefined` for started-not-persisted
+  steps; rollback-failure halts the chain and surfaces in the result.
 
 ## Phase 4 — dialect matrix
 

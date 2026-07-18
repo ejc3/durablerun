@@ -1,5 +1,6 @@
 export * from './buggify.js'
 export * from './errors.js'
+export * from './fenced-batch.js'
 export * from './ids.js'
 export * from './ports.js'
 export * from './primitives.js'
