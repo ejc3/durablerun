@@ -76,6 +76,33 @@
 \* Two-task variant: Tasks = {t1, t2}, MaxRuns = 6 (safety-only recommended:
 \* SPECIFICATION Spec, drop EventuallyTerminal).
 \* ===========================================================================
+
+\* ---------------------------------------------------------------------------
+\* BATCH-LABEL LEDGER -- machine-checked by scripts/spec-ledger.sh: every
+\* labeled batch in store-libsql/src must appear below, either mapped to a
+\* modeled action or excluded with a reason. This catches "implemented but
+\* silently unmodeled" drift.
+\*
+\* Modeled (label -> action):
+\*   'spawn' -> Spawn        'claim' -> Claim         'activate' -> Activate
+\*   'heartbeat' -> Heartbeat  'complete' -> CompleteRun  'fail' -> FailRun
+\*   'reschedule' -> SleepSuspend / VoluntaryChain
+\*   'sweep:lost-launch' -> SweepLostLaunch
+\*   'sweep:claim-timeout' -> SweepClaimTimeout
+\* Excluded (reason):
+\*   'sweep:scan' -- read-only discovery, no state transition
+\*   'sweep:cancel', 'cancel-task' -- cancellation is NOT YET MODELED (honest
+\*     gap; direct running->cancelled transitions are outside the
+\*     advisory-signal soundness argument; TODO model CancelSweep)
+\*   'expire-lease-now' -- advisory-only write; omission argued sound in the
+\*     header (accelerates TimeAdvance-reachable states only)
+\*   'set-checkpoint', 'get-checkpoints', 'task-result', 'next-wake' --
+\*     data-plane content and read-only queries; checkpoint CONTENT is
+\*     unmodeled by design (header), its lease fence rides Heartbeat
+\*   'migrate:bootstrap', 'migrate:version', 'admin:set-fake-now',
+\*   'admin:clear-fake-now', 'admin:now' -- infrastructure, not protocol
+\* ---------------------------------------------------------------------------
+
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS

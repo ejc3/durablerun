@@ -13,8 +13,10 @@
     "format": "biome format --write .",
     "format-check": "biome format .",
     "lint:determinism": "bash scripts/determinism-lint.sh",
-    "verify": "pnpm lint && pnpm lint:determinism && pnpm format-check && pnpm typecheck && pnpm test",
-    "verify:tla": "bash scripts/tla.sh"
+    "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:ledger && pnpm format-check && pnpm typecheck && pnpm test",
+    "lint:ledger": "bash scripts/spec-ledger.sh",
+    "verify:tla": "bash scripts/tla.sh",
+    "verify:fuzz": "FUZZ_SEEDS=250 FUZZ_STEPS=80 vitest run packages/conformance/test/fuzz.test.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
