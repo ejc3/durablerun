@@ -50,6 +50,18 @@ when it lands. Enforcement is structural, not aspirational:
   itself against the same scenarios through its own runner. Never let the
   contract live only in TypeScript types.
 
+## Standing rule: red test before fix
+
+Every bug fix lands as TWO commits: first a red-test commit — a regression
+test that demonstrably FAILS against the buggy code (run it and see red
+before committing) — then the fix commit that turns it green. The seams
+exist to make every bug class red-testable: pinned SimWorld seeds for
+interleavings, fake-now for time, raw fixture SQL for state construction,
+seeded IdSource for predictable ids (including deliberate collisions),
+buggify for legal-rare paths, FencedBatch for structural fencing. If a bug
+cannot be expressed as a red test, that is a missing seam — build the seam
+first.
+
 ## Standing rule: prevention analysis on every correctness finding
 
 When a bug or design issue affecting correctness is found (by review, sim,
