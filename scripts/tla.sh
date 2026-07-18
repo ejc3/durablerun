@@ -6,7 +6,7 @@
 set -euo pipefail
 
 TLA_VERSION="v1.8.0"
-TLA_SHA256="936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+TLA_SHA256="cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3"
 CACHE_DIR="${TLA_CACHE_DIR:-$HOME/.cache/tla}"
 JAR="$CACHE_DIR/tla2tools.jar"
 
