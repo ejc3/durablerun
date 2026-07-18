@@ -58,6 +58,7 @@ export const MIGRATIONS: Migration[] = [
         claim_gen INTEGER NOT NULL DEFAULT 0,
         activated_gen INTEGER NOT NULL DEFAULT 0,
         relaunch_count INTEGER NOT NULL DEFAULT 0,
+        lease_seconds INTEGER,
         claim_expires_at_ms INTEGER,
         available_at_ms INTEGER,
         wake_event TEXT,
