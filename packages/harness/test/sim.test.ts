@@ -1,4 +1,4 @@
-import { LibsqlExecutor } from '@absurd-lite/store-libsql'
+import { LibsqlExecutor } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { SimWorld, type TraceEntry } from '../src/index.js'
 

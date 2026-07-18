@@ -1,6 +1,6 @@
 ------------------------------ MODULE Scheduler ------------------------------
 \* ===========================================================================
-\* absurd-lite scheduler protocol -- DESIGN.md S3.1 (tick: sweep
+\* durablerun scheduler protocol -- DESIGN.md S3.1 (tick: sweep
 \* classification, claim with claim_gen), S3.2 (per-claim activation CAS,
 \* heartbeats, voluntary attempt-neutral chaining), S3.4 (contract rules:
 \* fenced batches keyed on post-state), S3.9 (advisory-signal rule).

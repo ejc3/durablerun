@@ -1,4 +1,4 @@
-import type { SqlExecutor, StoreAdmin } from '@absurd-lite/core'
+import type { SqlExecutor, StoreAdmin } from '@durablerun/core'
 import { MIGRATIONS, type Migration } from './schema.js'
 import { NOW_MS } from './time.js'
 

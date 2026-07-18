@@ -1,4 +1,4 @@
-import type { IdSource } from '@absurd-lite/core'
+import type { IdSource } from '@durablerun/core'
 import type { Rng } from './rng.js'
 
 /**

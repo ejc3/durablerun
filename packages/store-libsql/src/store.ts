@@ -12,7 +12,7 @@ import {
   type SqlRow,
   type SweptRun,
   type TaskResult,
-} from '@absurd-lite/core'
+} from '@durablerun/core'
 import { NOW_MS } from './time.js'
 
 const DEFAULT_RETRY: RetryStrategy = {

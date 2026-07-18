@@ -1,4 +1,4 @@
-# absurd-lite
+# durablerun
 
 A port of Absurd (earendil-works/absurd, Postgres durable execution) to a
 pluggable SQL backend (SQLite/libsql first; MySQL, Postgres later), driven by

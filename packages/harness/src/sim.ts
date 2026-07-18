@@ -1,4 +1,4 @@
-import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@absurd-lite/core'
+import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
 import { Rng } from './rng.js'
 
 /**

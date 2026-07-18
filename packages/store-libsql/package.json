@@ -1,5 +1,5 @@
 {
-  "name": "@absurd-lite/store-libsql",
+  "name": "@durablerun/store-libsql",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@absurd-lite/core": "workspace:*",
+    "@durablerun/core": "workspace:*",
     "@libsql/client": "^0.15.0"
   }
 }

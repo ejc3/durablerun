@@ -1,6 +1,6 @@
-import type { ClaimedRun } from '@absurd-lite/core'
-import { Rng, seededIdSource, SimWorld } from '@absurd-lite/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@absurd-lite/store-libsql'
+import type { ClaimedRun } from '@durablerun/core'
+import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
+import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 const Q = 'q'

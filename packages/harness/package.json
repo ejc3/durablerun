@@ -1,5 +1,5 @@
 {
-  "name": "@absurd-lite/harness",
+  "name": "@durablerun/harness",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@absurd-lite/core": "workspace:*"
+    "@durablerun/core": "workspace:*"
   },
   "devDependencies": {
-    "@absurd-lite/store-libsql": "workspace:*"
+    "@durablerun/store-libsql": "workspace:*"
   }
 }

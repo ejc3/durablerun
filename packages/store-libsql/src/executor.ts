@@ -1,5 +1,5 @@
 import { type Client, createClient } from '@libsql/client'
-import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@absurd-lite/core'
+import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
 
 /**
  * SqlExecutor over @libsql/client. `batch(…, 'write')` is atomic — implicit
