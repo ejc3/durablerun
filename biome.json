@@ -12,7 +12,10 @@
     "rules": {
       "recommended": true,
       "suspicious": { "noExplicitAny": "error" },
-      "style": { "noNonNullAssertion": "error" }
+      "style": {
+        "noNonNullAssertion": "error",
+        "noUnusedTemplateLiteral": "off"
+      }
     }
   },
   "javascript": {

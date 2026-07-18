@@ -1,0 +1,16 @@
+{
+  "name": "@absurd-lite/store-libsql",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@absurd-lite/core": "workspace:*",
+    "@libsql/client": "^0.15.0"
+  }
+}
