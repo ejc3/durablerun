@@ -1,0 +1,940 @@
+# Durable Workflows on Turso with Serverless Tick-Driven Execution
+
+Design document, researched and written 2026-07-18. All version numbers, limits, and
+prices are as verified on that date; primary sources are cited inline.
+
+## 0. Goal
+
+Run durable workflows — with the semantics of Absurd, Armin Ronacher's
+Postgres-backed durable-execution engine (§1.2): tasks, checkpointed steps,
+sleeps, events, retries — with:
+
+- **Storage on a pluggable SQL backend** — Turso/libSQL first, MySQL and Postgres
+  behind the same interface.
+- **Workers on a serverless platform whose primitive is "launch this function now"**
+  (Lambda-shaped), optionally "launch it at time T". Workers are heavyweight and
+  numerous — they must be launched on demand, run one unit of work, and exit.
+  True scale-to-zero for all worker compute when there is no work.
+- **N lightweight, stateless drivers ("ticks")** that decide when to launch
+  workers. Something has to own the clock; the drivers are allowed to be
+  long-lived precisely because they are tiny (a poll loop over two indexed
+  queries), while everything heavyweight scales to zero.
+- Deployable to Vercel today; portable to any launch-primitive platform later.
+
+The reference architecture is Cloudflare Workflows: every workflow instance is a
+SQLite-backed Durable Object whose alarm is "set with the timestamp of the next
+expected state transition" — hibernate at zero cost, wake exactly when needed. We
+rebuild that shape from commodity parts: Turso holds the state, driver ticks are
+the "alarm handler", and a one-shot scheduler primitive (QStash — Upstash's
+service that HTTP-POSTs your endpoint at a chosen time — Vercel Queues delayed
+messages, or a platform timer) replaces the proprietary alarm infrastructure
+where no resident driver runs.
+
+## 1. What the research established (read this before arguing with the design)
+
+### 1.1 The Vercel Workflow SDK ("WDK") and its Worlds
+
+- The DevKit was renamed **Workflow SDK**; docs at workflow-sdk.dev (useworkflow.dev
+  307-redirects). npm `workflow` latest is **4.6.0**; the 5.x betas (5.0.0-beta.35)
+  restructure the World contract and **hard-reject** any World that does not declare
+  `specVersion: 5` (check introduced in 5.0.0-beta.27, PR #2659).
+- A **World** = `Queue + Storage + Streamer` (`@workflow/world`). Execution is always
+  "a queue message causes an HTTP POST to the app's own
+  `/.well-known/workflow/v1/{flow,step}` routes"; the workflow function replays from
+  an append-only event log and returns `{ timeoutSeconds }` when suspended (sleep),
+  which the Queue turns into a delayed re-delivery.
+- **On Vercel (managed path)**: zero-config. The Vercel World uses Vercel Queues
+  (`queue/v2beta` triggers — handlers are air-gapped, only the queue can invoke
+  them), managed encrypted persistence, and delayed messages for sleep (23h max per
+  hop, chained). **No ticks anywhere — the queue push IS the invocation.** Crash
+  recovery = at-least-once redelivery, 48 deliveries max. GA since 2026-04-16;
+  priced per workflow event ($0.02/1K) + data written/retained.
+- **Every DB-backed World is a resident poller.** world-postgres embeds
+  graphile-worker (500ms poll + LISTEN/NOTIFY) inside the app process, started by
+  `world.start()` from `instrumentation.ts`; docs and maintainer say flatly it
+  "does not work on serverless environments".
+- **The community Turso World exists**: `@workflow-worlds/turso` 0.2.2
+  (mizzle-dev/workflow-worlds, listed in Vercel's worlds-manifest.json). Storage is
+  a clean event-sourced schema on libSQL (8 tables, Drizzle migrations, CBOR
+  payloads). But its queue is a 100ms `setTimeout` poller that claims one message
+  per tick and POSTs it to the app — "without start(), messages are stored but not
+  processed". It is pinned to the **spec-2 era**: works on `workflow@4.2.0–4.6.0`
+  (tolerant negotiation), **broken on every 5.x beta**, and the upstream repo has
+  been quiet since 2026-06 with the v5 port explicitly identified as a significant
+  unstarted migration.
+- The one **serverless-native community World** is `@fantasticfour/world-upstash`:
+  no `start()`, no poller — `queue()` publishes to QStash, QStash POSTs to the app,
+  sleep is re-published with `delay`, retries budgeted to 47 to match the runtime's
+  48-delivery expectation, signatures verified in `createQueueHandler`. This is the
+  proven template for "push queue instead of poller".
+- Endpoint security: only the Vercel World air-gaps the workflow routes. For any
+  self-hosted World the `/.well-known/workflow/v1/*` routes are ordinary public
+  routes that **appear to have no built-in authentication** (inferred, not
+  corpus-verified: the follow-up commissioned on exactly this returned no data;
+  the local/postgres worlds POST plain `x-vqs-*` headers over loopback, and
+  world-upstash adds its own QStash signature verification — evidence auth is
+  the world's job). Assume hostile regardless: any world we ship verifies a
+  signature/secret in `createQueueHandler`.
+
+### 1.2 Absurd (the engine we are porting)
+
+Repo `earendil-works/absurd` (Armin Ronacher / mitsuhiko; Apache-2.0; announced
+2025-11-03; 5-month production retrospective 2026-04-04 — "the design held up").
+The entire engine is one ~3,083-line `sql/absurd.sql` of plpgsql; SDKs (TS/Python/Go)
+are thin clients calling ~15 stored functions.
+
+Per-queue tables: `t_<q>` tasks, `r_<q>` runs, `c_<q>` checkpoints, `e_<q>` events,
+`w_<q>` wait registrations. The load-bearing ideas, all of which we keep:
+
+- **Everything future is a run row.** Retries, sleeps, event timeouts, deferred
+  tasks — all are runs with `state IN ('pending','sleeping')` and an `available_at`
+  timestamp. One poll index `(state, available_at)` drives everything.
+- **Claim = lease.** `claim_task(queue, worker_id, timeout, qty)` claims due runs
+  (`FOR UPDATE SKIP LOCKED` in Postgres) and sets `claimed_by` +
+  `claim_expires_at`. Checkpoint writes and heartbeats extend the lease.
+- **The next claimer is the reaper.** The same `claim_task` call first sweeps
+  expired leases (fails those runs with `$ClaimTimeout`, which schedules a retry
+  run) and enforces cancellation policies. No separate reaper process. Docs warn:
+  "brief overlapping execution is possible — design your steps to tolerate it."
+- **Checkpoints, not deterministic replay.** `ctx.step(name, fn)` memoizes results
+  in `c_<q>` keyed `(task_id, checkpoint_name)` with an automatic repeat counter
+  (`iteration`, `iteration#2`, …) so agent-style unbounded loops work. Retries are
+  task-level; code outside steps re-runs. ~2k LOC of SDK vs Temporal's ~170k.
+- **Sleep** = persist wake time as a checkpoint, then `schedule_run(run,wake_at)`
+  (state='sleeping', available_at=wake_at) and throw an internal SuspendTask. Wake
+  is purely "a poller notices available_at <= now".
+- **Events** are first-write-wins immutable rows in a queue-global namespace
+  (`emit_event` flips all sleeping waiters to pending and writes each waiter's
+  checkpoint atomically); `await_event` checkpoints-or-registers-a-wait.
+- **Retry math is data**: `retry_strategy` jsonb (fixed/exponential/none, base,
+  factor, cap), computed at fail time; a new run row (attempt+1) is inserted with
+  `available_at = now + delay`.
+- Absurd uses **no** LISTEN/NOTIFY, no triggers, no advisory locks — strictly
+  pull-based. This is why it ports. The main Postgres-isms (the corpus lists 15
+  categories): plpgsql itself, SKIP LOCKED + FOR SHARE/KEY SHARE row locks,
+  jsonb, data-modifying CTEs, dynamic per-queue DDL (`EXECUTE format()`),
+  conditional upserts (`ON CONFLICT … DO UPDATE … WHERE`), `'infinity'`
+  timestamps, the `absurd.fake_now` session-GUC time override, custom SQLSTATEs
+  (AB001/AB002), partitioning, and UUIDv7 helpers — each has a §3.4 mapping.
+- Stock deployment is a long-lived worker polling every 250ms — the part we replace.
+
+### 1.3 SQLite/Turso port surface (verified against real implementations)
+
+- **The claim pattern without SKIP LOCKED** — used by goqite, litequeue, and River's
+  experimental SQLite driver — is a single atomic statement:
+  `UPDATE ... SET state='running', ... WHERE id IN (SELECT id ... WHERE due ORDER BY
+  ... LIMIT n) RETURNING *`. SQLite's single-writer serialization makes it
+  race-free; there is never a concurrent writer to skip. libSQL supports RETURNING.
+- **Turso Cloud transport rules**: interactive transactions lock the whole DB for
+  writes and are killed after a **5-second window**; idle connections close at 10s.
+  `client.batch(stmts, 'write')` IS atomic (implicit BEGIN IMMEDIATE). Therefore
+  every engine transition must be a **single statement or one atomic batch** —
+  which conveniently forces the plpgsql→client rewrite into the correct shape.
+- **Turso has no DB cold start** on the AWS diskless platform ("a database is a
+  file, not a process"; idle DB = files in object storage, costs storage only).
+  First query after long idle pays lazy S3 segment fetch — expect tens of ms,
+  unpublished. Caveat: Free-plan docs still mention 10-day archival requiring
+  explicit unarchive (likely stale Fly-era text; avoid by paying $4.99/mo or verify
+  empirically).
+- **Commit latency ceilings by plan** (documented): Free ≤100ms, Developer ≤50ms,
+  Scaler ≤25ms, Pro ≤10ms added per commit (S3-Express-backed WAL; batched).
+  Single-writer + ceiling ⇒ order 10–100 claims/sec/DB worst case.
+- **The binding constraint is monthly rows-written quotas**, not latency: Free 10M,
+  Developer 25M (+$1/M), Scaler 100M. A naive 1s-interval tick doing one 1-row
+  UPDATE is ~2.6M rows-written/month — 26% of the Free quota for one idle queue.
+  Rows *read* are a different story: 500M/mo included, $1/billion after.
+  Conclusion: **an idle tick must be read-only; writes only when work exists.
+  Read-polling is cheap; write-polling is not.**
+- **Turso cannot launch compute on write.** `/beta/listen` (SSE change stream) is
+  not available on AWS Free/Developer/Scaler, is at-most-once with no
+  cursor/replay (in-memory broadcast, drops on lag), payload is only per-table op
+  counts, and it needs a resident SSE consumer. The new engine's `turso_cdc` table
+  (stable v0.5.0) is poll-only and not in GA Cloud. Triggers can't call HTTP.
+  **Ping-on-enqueue + swept outbox is the only reliable enqueue-time launch path**
+  — which Turso's own blog also recommends.
+- **DB-per-tenant sharding is idiomatic and free**: unlimited DBs on paid plans,
+  created via Platform API in ~100ms. Each DB is an independent single-writer
+  domain — the scale-out mechanism for queue throughput.
+- New-engine MVCC (`BEGIN CONCURRENT`) exists as a tech preview and next-gen cloud
+  is in private beta (2026-04); design for graceful upgrade but do not depend on it.
+
+### 1.4 MySQL as the second backend
+
+- MySQL 8.0.1+ has `FOR UPDATE SKIP LOCKED` (blessed for queue tables by the
+  manual) but **no RETURNING**. Claim shapes: (a) 2-statement transaction
+  (SELECT...SKIP LOCKED then UPDATE), or (b) **transactionless token claim** —
+  `UPDATE jobs SET claimed_by=:me, ... WHERE due ORDER BY ... LIMIT n` then
+  `SELECT ... WHERE claimed_by=:me` — autocommit-friendly, ideal over HTTP drivers.
+- Use **READ COMMITTED** on queue tables (default REPEATABLE READ takes gap locks
+  on scanned ranges → deadlocks on hot queues).
+- PlanetScale-style serverless MySQL: 20s transaction cap, concurrent-transaction
+  pool ceiling → prefer the token claim.
+- No partial indexes (use composite `(state, priority, available_at)` or a separate
+  ready-rows table à la Solid Queue); `DATETIME(6)` explicitly (default precision
+  is whole seconds and it *rounds*, which can round `run_at` up); upsert is
+  `ON DUPLICATE KEY UPDATE` (no conflict target) vs `ON CONFLICT` elsewhere.
+- MySQL also cannot wake external compute (no NOTIFY, triggers are SQL-only, EVENT
+  scheduler runs SQL only) — **the driver/tick architecture is required for every
+  backend, so it is the portable core of the design, not a Turso workaround.**
+
+### 1.5 How production systems solve scale-to-zero wake-up
+
+| System | Who decides to run code | Timer primitive | Idle cost |
+|---|---|---|---|
+| Vercel Workflows | Vercel Queues pushes → function invoked | delayed message ≤23h, chained | zero |
+| Inngest | central engine POSTs each step to app endpoint | queue item vested in future | zero (for user) |
+| Cloudflare Workflows | Durable Object alarm wakes the engine object | `setAlarm(next transition)`, ms-precise, ≤1min worst case, at-least-once | zero |
+| Trigger.dev | central engine + CRIU checkpoint/restore of containers | DB waitpoints + engine timers | zero (for user) |
+| QStash (as a part) | QStash POSTs to your URL at T | `Upstash-Not-Before` (1s granularity, up to 1yr) | $1/100K messages |
+| Absurd stock | resident worker polls 250ms | `available_at` row scan | one process, always |
+
+The convergent pattern (and ours): **(1) ping-on-enqueue** for new work,
+**(2) a one-shot "launch at T" alarm re-armed to the next known transition** for
+timers/leases, **(3) a slow recurring cron sweep as the safety net** for lost
+pings, dead alarms, and non-cooperating writers. All three launch the same
+idempotent dispatcher; claims are atomic so duplicate launches are benign no-ops.
+
+## 2. Decision
+
+Two deliverables, in this order:
+
+**Deliverable A — deploy the WDK's managed path to Vercel now (baseline).** A small
+Next.js app using `workflow@4.6.0` `"use workflow"` / `"use step"` deployed to
+Vercel with the zero-config Vercel World. This gives immediate durable workflows in
+production, the observability dashboard, and a behavioral reference. Turso can be
+the *application* data store. Do **not** attempt `@workflow-worlds/turso` on Vercel
+(resident poller; unsupported there) and do not use `workflow@beta` 5.x with it
+(hard spec rejection).
+
+**Deliverable B — "absurd-lite": port Absurd's engine to a pluggable-SQL,
+serverless-driven engine.** This is the real project. Keep Absurd's data model and
+semantics nearly verbatim (they are proven and deliberately minimal); move the
+plpgsql into a TypeScript core issuing per-dialect atomic SQL; replace the resident
+worker poll loop with the driver/tick architecture below. Optionally (Phase 7) wrap
+it as a spec-v5 WDK World so `"use workflow"` apps can run on it.
+
+## 3. Architecture (Deliverable B)
+
+```
+                                   ┌────────────────────────────────────────┐
+   producers (app code, API)       │            Turso (per shard)           │
+   ────────────────────────────    │  tasks / runs / checkpoints / events   │
+   spawn(task) ──INSERT──────────▶ │  waits            (Absurd schema, SQL) │
+        │                          └────────────▲────────────┬──────────────┘
+        │ ping (fire-and-forget                 │            │ claim batch:
+        │  HTTP, after commit)                  │            │ single UPDATE…RETURNING
+        ▼                                       │            ▼
+   ┌──────────────┐   launch N workers   ┌─────────────────────────┐
+   │ DRIVER /tick │ ───────────────────▶ │  WORKER (one run each)  │
+   │  stateless,  │   (fire-and-forget   │  ctx.step → checkpoint  │
+   │  <1s, idem-  │    HTTP / platform   │  heartbeat → extend     │
+   │  potent)     │    "launch thing")   │  lease; sleep → suspend │
+   └──▲───▲───▲───┘                      └───────────┬─────────────┘
+      │   │   │                                      │ done/suspended:
+      │   │   └── re-arm: one-shot alarm at          │ ALWAYS ping driver
+      │   │       min(next available_at,             │ (every suspension
+      │   │       next claim_expires_at)             ▼  creates future work)
+      │   │       (QStash Not-Before / VQ delayed msg / platform timer)
+      │   └────── cron sweep (1/min Pro) — best-effort safety net
+      └────────── pings from producers, workers, event emitters
+```
+
+### 3.1 The driver ("tick")
+
+`tick()` is the unit of driving: small, stateless, idempotent, sub-second. Any
+number of drivers may run concurrently — the claim statement is the mutual
+exclusion. There are **two drive modes over the same `tick()` code**, chosen per
+deployment:
+
+- **Resident driver (preferred)** — a tiny long-lived process:
+  `while (true) { tick(); await sleep(adaptive) }`. Poll interval ~100–500ms when
+  recently busy, backing off toward a few seconds when idle. This is affordable
+  because an idle tick is *reads only* — `min(available_at)` over an indexed empty
+  set scans ~0 rows; on Turso, rows read are effectively free (500M/mo included on
+  Free, $1/billion after) while rows written stay proportional to actual work, not
+  to time. A 250ms idle poll costs ~2% of the Free read quota and zero writes.
+  Run 1 driver for simplicity, N identical ones (with poll jitter) for HA and
+  claim throughput; no leader election — the DB arbitrates. The driver is the one
+  component that does not scale to zero, and it is the cheapest thing in the
+  system: single-digit MB of memory, near-zero CPU, no state beyond its loop.
+  It cannot run on Vercel (no resident processes) — host it on a container
+  platform, a VM, or the target "launch this thing" platform itself as a pinned
+  service.
+- **Serverless tick (fallback / Vercel-only deployments)** — no resident process
+  at all: the same `tick()` runs per-invocation, fired by ping-on-enqueue +
+  one-shot alarms re-armed to the next transition + a cron sweep (the rest of
+  this section). Higher wake-path complexity, same engine code. Also the backstop
+  if resident drivers are down: a 1/min cron tick makes driver outages degrade to
+  added latency instead of stalls.
+
+Either way, every trigger — poll timer, ping, alarm, cron — means the same thing:
+*"there may be runnable work; look."*
+
+```
+tick():
+  0. cancel: enforce cancellation policies (max_delay / max_duration):
+     advisory SELECT of violating tasks, then one fenced batch per task
+  1. sweep expired leases (bounded: K_s per tick): advisory SELECT of runs
+     with claim_expires_at <= now (reads only), then PER RUN one atomic
+     batch. Two cases, told apart by activation state (§3.2):
+       lost launch (activated_gen < claim_gen): the worker never started —
+         re-open the SAME run for claiming: no new row, no attempt consumed,
+         relaunch_count+1 with backoff on available_at; past its cap the run
+         fails terminally (a mis-configured launcher must surface as failed
+         runs, not an infinite launch loop).
+       died mid-run (activated): $ClaimTimeout — insert the successor run
+         (fresh UUIDv7, infra_retries+1 — NOT max_attempts — available_at
+         computed in SQL, carrying forward the run-DB pointer, wake_event,
+         and event_payload), fail the old run, update the task.
+     Batch fencing (§3.4 rule 1): the FIRST statement is the guarded CAS
+     transition; later statements key on the post-transition state plus the
+     batch's own stamp — never on the pre-condition the CAS just consumed.
+  2. claim: ONE fenced batch stamped with a fresh per-tick claim_token:
+     UPDATE runs SET state='running', claimed_by=:token,
+       claim_gen = claim_gen + 1, claim_expires_at=…
+       WHERE run_id IN (SELECT … due, ORDER BY available_at LIMIT K)
+       RETURNING run_id, task_id, attempt, claim_gen;
+     follow-on statements (task updates, expired-wait deletes, task-data join)
+     keyed strictly on claimed_by = :token.
+  3. launch: fire-and-forget one worker invocation per claimed run, payload
+     {runId, attempt, claim_token, claim_gen} (HMAC-signed). The worker acks
+     immediately and executes inside its OWN invocation — the tick never
+     waits on run duration and returns in <1s. (Sync launchers — §3.9 — are
+     for bounded-slot resident drivers only, never serverless ticks.)
+  4. next-wake: t = min( available_at over pending/sleeping,
+                         claim_expires_at over running,
+                         cancellation deadlines )
+     resident mode: sleep until min(t, poll ceiling) — the loop IS the alarm
+     serverless mode: arm a one-shot alarm at t (QStash Not-Before / Vercel
+     Queues delayed message ≤7d). Dedup key = shard:t, matched only against
+     alarms that have NOT yet fired (entries expire as t passes) — a sooner
+     wake is never dropped for an outstanding later one, and a duplicate
+     alarm is an idempotent no-op tick (~$0.00001).
+     If sweep or claim backlog remains (> K_s / > K), fire an immediate
+     successor tick — the tick chain is the drain loop; cron resurrects a
+     dead chain.
+  5. return counts (for observability)
+```
+
+Notes:
+- **The fencing rule is the master rule.** A libSQL `batch()` is atomic but
+  *unconditional* — every statement executes even when an earlier guard matched
+  zero rows, and there is no early return. Therefore every dependent statement in
+  every engine batch re-embeds its full fencing predicate (§3.4). Sweeping dead
+  leases, enforcing cancellation, and claiming due runs in one tick is Absurd's
+  `claim_task` contract, ported — but split into read-then-fenced-batches because
+  the retry-run insert needs data (retry_strategy, attempt) read from the expired
+  rows first.
+- Timer latency: resident mode sleeps until `min(next transition, poll ceiling)`,
+  so wakes are as precise as the loop (ms). Serverless mode's re-arm makes it ≈
+  alarm precision (seconds via QStash, ms via DO alarms on Cloudflare) instead of
+  cron granularity. The cron sweep (once per minute on Vercel Pro; slower is fine)
+  bounds the worst case — a lost ping, a dropped alarm, a dead driver, rows
+  INSERTed by writers that don't ping — but note it is **best-effort recurring,
+  not at-least-once**: Vercel never retries a failed or missed cron invocation,
+  so budget a few cron periods of worst-case latency, not one. (QStash is the leg
+  with real at-least-once semantics: retries + DLQ.)
+- Duplicate/concurrent ticks: harmless. Claims are fenced by fresh per-tick
+  claim tokens; re-arms dedupe per (shard, time); sweep batches re-check their
+  fences per statement. Herds are bounded by the K/K_s batch caps plus poll
+  jitter — deliberately NOT by a tick-singleton lease, which would break the
+  invariant that every trigger causes a look.
+- With zero work: a resident driver's idle tick is two indexed reads returning
+  nothing (~0 rows scanned) and zero writes; in serverless mode no pings arrive,
+  no alarm is armed, and the cron tick exits the same way. Either way the idle
+  cost is a rounding error on Turso's read quota and no worker compute exists.
+
+### 3.2 The worker function
+
+One invocation executes one claimed run to its next suspension point:
+
+- **Activation CAS first — and the latch is per-claim, not per-run.** The same
+  launch can be delivered twice (at-least-once channel), and the same run row
+  is legitimately re-claimed many times (every sleep wake, every lost-launch
+  relaunch, every chain hop), so a one-shot flag can never work. Each claim
+  increments the run row's `claim_gen` (§3.1 step 2) and the launch payload
+  carries it; activation is
+  `UPDATE runs SET activated_gen = :claim_gen, claim_expires_at = <re-extended>
+  WHERE run_id=:r AND claimed_by=:token AND claim_gen=:claim_gen AND
+  activated_gen < :claim_gen`. Zero rows = a duplicate delivery already
+  activated this claim, the claim was superseded, or the lease was swept: exit
+  immediately. Activation re-extends the lease, so a launch that sat in the
+  channel for most of the lease doesn't start life nearly expired; and
+  `activated_gen < claim_gen` at sweep time is exactly what identifies a lost
+  launch (§3.1 step 1).
+- Loads visible checkpoints (`c_` rows for the task, committed, owner attempt ≤
+  current) into memory — Absurd's TaskContext preload, one SELECT.
+- Runs the registered task handler with `ctx`: `step(name, fn)` (memoize→execute→
+  `set_checkpoint` upsert which also extends the lease), `sleepFor/sleepUntil`
+  (persist wake-at checkpoint, `schedule_run`, throw Suspend), `awaitEvent`
+  (checkpoint-or-register-wait, throw Suspend), `emitEvent`, `spawn` (child tasks).
+- Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
+  this rides along with checkpoint writes (same DB); under `dedicated` placement
+  it is a separate call on its own cadence — extend when remaining lease < ~50%,
+  throttled, so shard-DB write rate stays transitions + throttled heartbeats. A
+  zero-row `heartbeat` is the AB002 equivalent (lease gone): abort the handler
+  immediately.
+- On completion/failure: `complete_run` / `fail_run` — fenced batches
+  (`claimed_by=:token AND state='running'` on every statement, so a zombie whose
+  lease was swept cannot complete a run someone else now owns). Retry *policy*
+  lives client-side (same jsonb strategy) but all absolute timestamps are
+  computed in SQL (`unixepoch('subsec')` arithmetic) with clients passing only
+  relative durations — instance clock skew must never move engine time (Absurd's
+  `current_time()` discipline, ported; a nullable fake-now in the shard-meta row
+  recreates its test affordance).
+- **After every suspension or terminal transition that leaves future work —
+  sleep, await-with-timeout, retry scheduled, voluntary exit — the worker
+  unconditionally pings the driver** (or arms an alarm for its wake time). Not
+  just "if backlog remains": a 10s `sleepFor` creates a wake the currently-armed
+  alarm knows nothing about, and without the ping it would wait for cron.
+- Function-timeout safety: before `maxDuration` (800s Pro; 300s default) the
+  worker checkpoints and exits via **voluntary, attempt-neutral chaining**:
+  `schedule_run(run, now)` (same run, same attempt — Absurd's own suspend shape)
+  + ping; the next tick relaunches and the checkpoint cache resumes it. Lease
+  expiry is NOT the sanctioned continuation path — it routes through the sweep
+  and costs an infra retry plus latency. Runaway chains (the risk AWS documents
+  for recursive Lambda patterns) are bounded by the task's
+  `cancellation.max_duration` wall-clock policy, with the lease as the
+  concurrency guard.
+- Rolling deploys, ported from Absurd: a worker that claims a task name its
+  build doesn't know **defers** it (`scheduleRun(now + 15s + jitter)`, nothing
+  consumed) — deploy workers before enabling producers, and old runs survive
+  new code. In-flight runs resuming under changed code rely on checkpoint
+  stability: step names/order must stay compatible, or the task name is
+  versioned (`report@v2`) so old runs finish on old handlers.
+- Child tasks: `spawn` from a step, then await the child *as an event* — the
+  child's terminal transition emits `task-done:<taskId>` and the parent's
+  `awaitEvent` suspends like any other wait (no polling worker slot). Absurd's
+  deadlock rule is kept: awaiting a same-queue child from inside a worker is
+  refused.
+- Cancellation discovery: state transitions raise the ported `AB001/AB002`
+  equivalents (SELECT state guard inside each engine call), aborting quietly.
+
+Sizing: claim batch K per tick and per-worker concurrency are tunables; Vercel
+Fluid compute multiplexes concurrent invocations in one instance and bills Active
+CPU only while running, so I/O-bound workers are cheap. Nothing idles: a worker
+either progresses a run or exits.
+
+### 3.3 Enqueue and event paths (the "when to launch" contract)
+
+Every code path that makes work runnable **commits first, then pings**:
+
+- `spawn(task)` → INSERT (idempotency_key upsert) → `waitUntil(ping)`.
+- `emitEvent(name, payload)` → one atomic scheduler-plane batch: first-write-wins
+  event row; sleeping waiters flip to pending/`available_at=now`. Under `inline`
+  placement the waiters' checkpoints are written in the same batch (Absurd
+  verbatim — durable-at-emit); under `dedicated` placement the payload is parked
+  on the run row and wait rows flip to `delivered` for materialize-on-resume
+  (§3.8.3) → ping.
+- Hook/webhook arrivals (HTTP routes) → same.
+- Worker suspending or finishing with any future work created (its own sleep, a
+  scheduled retry, remaining backlog) → ping, unconditionally (§3.2).
+
+A ping is a fire-and-forget POST — to the resident driver's `/wake` endpoint
+(which just cuts its current sleep short), or to `/api/tick` in serverless mode.
+Its loss is tolerable because the poll ceiling / cron sweep exists; with a
+resident driver at a sub-second poll ceiling, pings are optional entirely. Writers
+outside our code (arbitrary clients inserting rows directly into Turso) are
+covered by the poll/sweep alone — by design, since Turso offers no reliable
+on-write notification (§1.3).
+
+### 3.4 The backend abstraction (SQLite/Turso, MySQL, Postgres)
+
+The core engine is dialect-independent TypeScript emitting per-dialect SQL through
+a small interface — the shape River uses (per-dialect SQL files, logic client-side):
+
+The normative interface surface is §3.9's five ports (SchedulerStore, Launcher,
+EndingFeed, RunStateStore, WakeSignals) — this section defines the SQL contract
+rules and the dialect mapping every SchedulerStore/RunStateStore implementation
+must obey. (An earlier draft carried a second interface listing here; it drifted
+and is deliberately deleted — one normative surface.)
+
+Contract rules every dialect must obey (these came out of adversarial review and
+are load-bearing):
+
+1. **Fenced batches, keyed on the post-state.** Batches are atomic but
+   unconditional (no control flow, no early return) — and statements see the
+   effects of earlier statements in the same batch, so a later statement must
+   NOT re-check the pre-condition the first statement just consumed. The
+   pattern: the FIRST statement is the guarded CAS transition
+   (`… WHERE run_id=:r AND state='running' AND claimed_by=:token`), and every
+   later statement keys on the post-transition state plus the batch's own
+   stamp (`… WHERE run_id=:r AND state='failed' AND claimed_by=:token`). A
+   stale actor's whole batch then matches zero rows on statement one and zero
+   rows on every follow-on. Where a partial effect would still be corrupt, add
+   an abort-sentinel statement that deliberately errors (CHECK violation) when
+   the guard fails, rolling the batch back.
+2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
+   read-branch-write shape across client round trips loses the wakeup if emit
+   interleaves (emit flips waiters exactly once). Realization is per dialect:
+   on SQLite/Turso, ONE batch with the branch folded into WHERE guards
+   (sentinel insert; register wait `… WHERE (SELECT payload FROM events WHERE
+   name=:e) IS NULL`; sleep the run under the same guard; checkpoint `… WHERE
+   payload IS NOT NULL`; final SELECT tells the SDK which branch won) — the
+   single writer serializes it. On Postgres/MySQL a batch is NOT serialized
+   against emit: use a short transaction taking Absurd's original row locks
+   (event row first, then run row — FOR SHARE/FOR UPDATE, same documented lock
+   order). The timeout branch is part of the contract: a wait with a timeout
+   sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
+   payload is the TimeoutError path, and that claim batch deletes the wait row
+   so a later emit cannot resurrect a timed-out wait.
+3. **Engine time is database time.** All absolute timestamps are computed in SQL
+   (`unixepoch('subsec')` / `NOW(6)` / `clock_timestamp()`); clients pass only
+   relative durations. User-supplied absolutes (`sleepUntil`) are the only
+   exception.
+4. **Claim is a fenced batch, not a lone statement.** The claim must also update
+   tasks, delete expired waits, and return run⋈task data; follow-on statements
+   key strictly on the fresh `claimed_by = :claim_token` (unique per tick), never
+   on a re-computed candidate set.
+5. **Checkpoint writes are lease-fenced in both placements.** Inline: the upsert
+   joins the run-row guard (`claimed_by=:token AND state='running'`) — same DB,
+   free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease
+   lost = abort, the AB002 equivalent), then the token-fenced run-DB write
+   (§3.8). Attempt/owner guards remain as tiebreakers, never as the fence.
+
+
+Dialect implementations:
+
+| Concern | Turso/libSQL | MySQL 8 | Postgres |
+|---|---|---|---|
+| claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; token claim: `UPDATE…ORDER BY…LIMIT k` + `SELECT WHERE claimed_by=:token` (no RETURNING) | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
+| atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | short tx (READ COMMITTED) for every multi-statement transition — autocommit only for genuinely single-statement ops (20s PlanetScale cap is ample for 2–3-stmt claims) | normal tx |
+| timestamps | INTEGER epoch-ms | `DATETIME(6)` (default rounds to seconds!) | timestamptz |
+| hot index | partial index OK | composite `(state, available_at)` only | partial index |
+| upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
+| ids | UUIDv7 client-generated (time-ordered; Absurd orders by run_id) | same | same |
+| scale-out | DB-per-tenant/queue via Platform API (free, ~100ms create + ~2.5s data-plane readiness gate — see §5) | vitess sharding | partitioning (Absurd has it) |
+
+Schema: Absurd's five tables essentially verbatim (`tasks`, `runs`, `checkpoints`,
+`events`, `waits`), minus per-queue dynamic DDL (use a `queue` column + the hot
+index instead; per-queue table-sets were a Postgres-partitioning affordance),
+minus `'infinity'` timestamps (use NULL/sentinel max), JSON as TEXT for the lowest
+common denominator.
+
+State placement is two-plane (§3.8): the shard DB is the *scheduler plane* and
+owns everything the engine queries **across** runs (tasks, runs/leases, waits,
+events); a run's *progress* — checkpoints, run event log, streams — can live in
+its own per-run SQLite (Cloudflare's Engine-DO shape) or inline in the shard DB,
+per task type. Anything large (artifacts, transcripts, stream archives) goes to
+object storage by reference regardless of placement. Conformance: one shared test suite (Absurd semantics: claim,
+lease expiry, checkpoint replay, repeat counters, sleep, events first-write-wins,
+event timeouts, cancellation, idempotent spawn — plus the review-derived
+adversarial cases: duplicate launch delivery vs the activation CAS, zombie
+complete after lease sweep, awaitEvent/emitEvent interleaving) run against all
+dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets.
+
+### 3.5 Vercel deployment shape (initial target)
+
+- **App**: Next.js App Router (or Hono — pattern per `~/ts-api`), Fluid compute on.
+  Routes: `POST /api/tasks` (spawn), `POST /api/events` (emit), `POST /api/tick`
+  (driver), `POST /api/worker` (executor), `GET /api/runs/:id` (status/result).
+- **Driver hosting**: Vercel itself cannot host the resident driver, so either
+  (a) run the tiny driver elsewhere (Fly/Railway/container/VM — or later the
+  target platform) with it POSTing worker launches to `/api/worker` on the Vercel
+  deployment, keeping all heavyweight compute on Vercel; or (b) go fully
+  serverless with the tick machinery below. Both use the same engine code.
+- **Auth**: `/api/tick` accepts Vercel cron (`Authorization: Bearer CRON_SECRET`,
+  timing-safe) and QStash signatures (`upstash-signature`, Receiver verification);
+  `/api/worker` accepts only internal HMAC-signed launches. These routes execute
+  registered code — treat as admin surfaces (lesson from §1.1: self-hosted worlds
+  get no auth for free).
+- **Cron sweep**: `vercel.json` (or `vercel.ts`) crons → `/api/tick` every minute
+  — note Vercel cron issues **GET**, so `/api/tick` accepts GET (cron,
+  `CRON_SECRET`) and POST (pings, QStash-signed) alike
+  (Pro; per-minute precision, best-effort — never retried, may double-fire; both
+  fine for an idempotent tick, but budget a few periods worst-case). Hobby's
+  daily ±59min cron is not viable for the safety net; this design assumes Pro, or
+  an external free cron for the sweep.
+- **Alarms**: QStash `Upstash-Not-Before` for re-arms (1s granularity, retries,
+  DLQ; $1/100K — a wake costs ~$0.00001). Vercel Queues delayed messages are the
+  platform-native alternative (the raw primitive allows ≤7-day delays, TTL-capped;
+  the managed Vercel World chains its own sleeps at 23h hops under the default
+  24h TTL — different layers, both real); still `queue/v2beta` public beta, swap
+  in when GA. Sleeps beyond the alarm max chain naturally: the tick at T re-arms
+  for the next horizon (same daisy-chain Vercel's own docs prescribe).
+- **Turso wiring** (per `~/remote-claw`, battle-tested): marketplace per-db creds
+  (`TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`) for the single-DB start; the fleet
+  model (`TURSO_API_TOKEN`/`TURSO_ORG`/`TURSO_GROUP` + **`TURSO_GROUP_AUTH_TOKEN`**
+  — deliberately not the integration-owned name) when sharding per-tenant.
+  Idempotent DDL via `client.batch(DDL,'write')` memoized per client; the
+  create→serve 404 race needs the `SELECT 1` readiness probe with backoff
+  (~2.2–2.5s typical) before first use.
+- **Observability**: scheduler tables are directly queryable; under `dedicated`
+  placement the inspector follows the run row's run-DB pointer to join
+  checkpoint/step history, so "why is run X stuck" is answerable across both
+  planes from one `/api/inspect` (habitat-style read-only views later; WDK
+  dashboards apply to Deliverable A only). Payloads note: params, checkpoints,
+  and event payloads are stored plaintext in these DBs — treat them as
+  secret-bearing, encrypt sensitive fields app-side if needed, and retention
+  (`cleanup`) covers scheduler rows and run DBs alike.
+
+### 3.6 Portability to a bare "launch this thing" platform
+
+(E.g. an fcvm-based one — fcvm being our Firecracker-microVM launch platform; the
+section applies to any system exposing a bare `launch(fn, payload)` primitive.)
+
+The design intentionally reduces platform requirements to three verbs:
+
+1. `launch(fn, payload)` — start a worker/driver now (HTTP POST suffices).
+2. `launchAt(t, fn, payload)` — one-shot scheduled launch. If absent, emulate with
+   (3) + coarser latency, or run one tiny alarm service (or a Cloudflare DO alarm
+   as rented precision).
+3. `cron(expr, fn)` — the sweep. Any external cron works.
+
+Everything else is SQL against Turso. With a resident driver, only verb (1) is
+strictly required — the driver owns the clock, and (2)/(3) exist as backstops or
+for fully-serverless drive. Drivers and workers are stateless by construction, so
+"N lightweight stateless drivers" is just running more of them — concurrency is
+arbitrated in the database by the claim statement, exactly like N Absurd workers
+against one Postgres, except our drivers dispatch heavyweight workers instead of
+executing tasks themselves.
+
+### 3.7 Sharding model (multi-DB)
+
+Sharding is the scale-out answer to Turso's single-writer domain (§1.3), so the
+drive model must be shard-aware from day one even if v1 runs one shard. (Shards
+here are the *scheduler plane*; run-state placement layers on top — §3.8. A hot
+queue can additionally split into hash-slices, each slice its own shard, since a
+claim only ever needs its own slice — subject to the event-locality and
+fairness constraints in §3.8's scalability paragraph.)
+
+- **Registry**: a control-plane table (in a dedicated `engine-meta` DB, or any
+  durable store) mapping `shard_id → {db name, tenant/queue set, status,
+  version}`. `status` has semantics: `active` | `draining` (finish in-flight,
+  claim nothing new) | `paused` (ticks skip entirely) — every tick reads its
+  shard's status first, which is also the pause/quiesce mechanism for
+  maintenance. DBs are named deterministically (`wf-<scope>-<shard>` per the
+  remote-claw convention) and created idempotently via the Platform API with
+  the readiness gate (§3.5). Registry writes are control-plane-privileged
+  (drivers and operators only — tenant code never touches it); routing caches
+  invalidate by TTL + the bumped `version`.
+- **Drive**: assignment is leased **per driver, not per shard** — each resident
+  driver maintains one heartbeat row carrying its assigned shard set (jittered
+  expiry; on a driver death, survivors adopt at most M orphaned shards per
+  tick — §3.8). One driver comfortably polls many shards since idle polls are
+  read-only. In serverless mode the cron tick reads the registry and fans out
+  one sub-tick per active shard (`waitUntil`-parallel), and alarm/ping dedup
+  keys are `shard:t` — idle cost scales with active shards, not total shards.
+- **Routing**: `spawn`/`emitEvent` resolve shard by tenant/queue through the
+  registry (cached; events are shard-local — cross-shard signaling goes through
+  `spawn` on the target shard).
+
+### 3.8 Two-plane state: sharded scheduler plane, per-run SQLite data plane
+
+The Cloudflare shape (§1.5, one SQLite per Engine DO) maps onto Turso as a
+two-plane design. The rule for what goes where: **anything the engine queries
+across runs is scheduler-plane; anything a run does between transitions is
+data-plane.**
+
+**Scheduler plane** — the shard DB (§3.7), holding small rows only: `tasks`,
+`runs` (state, `available_at`, `claimed_by`, `claim_expires_at`, attempt,
+`event_payload`, run-DB pointer), `waits`, `events`. All §3.1/§3.2 semantics —
+fenced claims, leases, activation CAS, sweeps, `nextWakeAt` — live here
+unchanged. This is the analogue of Cloudflare's alarm/routing substrate: it
+answers "who may execute" and "who wakes when" with one indexed query.
+
+**Data plane** — the run's progress: checkpoints, run event log, stream chunks.
+Placement is pluggable per task type behind a `RunStateStore` interface:
+
+- `inline` (default): tables in the shard DB — right for high-volume short
+  tasks, where per-run DB lifecycle would dominate the work itself.
+- `dedicated`: one SQLite DB per run (Turso Cloud DB, or a local file on an
+  fcvm-style host) — right for long-lived runs, agents, and fat histories.
+  This is the Engine-DO shape — but single-writer-per-run-DB must be
+  **enforced, not assumed**: each run DB carries a claim-fence meta row; at
+  activation (right after the scheduler CAS) the worker CASes
+  `{claim_token, fence_key}` into it, and every subsequent run-DB write batch
+  re-embeds `WHERE meta.claim_token = :mine`. The fence key is the pair
+  `(attempt, claim_gen)` — `claim_gen` increments on every claim of a run row
+  (§3.1 step 2) and successor runs carry a higher `attempt` (or, for
+  lost-launch reopens, a higher `claim_gen` on the same row), so the pair is
+  monotonic across a task's whole history; the CAS guard is `new > stored`
+  lexicographically. The new holder's takeover thereby fences a partitioned
+  zombie out of the data plane, shrinking the zombie window back to Absurd's
+  documented brief overlap. Attempt/owner guards alone are insufficient here
+  because chaining is attempt-neutral — a same-attempt straggler could
+  otherwise clobber its successor. Checkpoint writes in dedicated mode are
+  therefore: `heartbeat` CAS on the scheduler (zero rows = lease lost =
+  abort), then the fenced run-DB write. One asymmetry to name: remote-Turso
+  run DBs share the platform's durability; a **local-file** run DB (fcvm-style
+  worker with embedded replica) only counts as "committed" for §3.8.2's
+  ordering once its sync-back to Turso is acknowledged — the scheduler
+  transition waits for the flush.
+
+Why `dedicated` is worth having: (a) **the shared write bottleneck moves to
+where it's harmless** — the shard DB scales with *transitions/sec*, not
+*steps/sec*, since checkpoint traffic spreads across run DBs; (b) retention is
+`DELETE DATABASE` instead of five-table row GC; (c) the run's entire state is
+one portable SQLite file — on the target platform it can travel with the worker
+(embedded replica: local reads/writes, background sync to Turso for durability),
+a data-shaped equivalent of Trigger.dev's CRIU container checkpoints; (d) it is
+Turso's own database-per-agent pattern, which the next-gen cloud (unlimited DBs
+via REST) is explicitly built for.
+
+Costs and the consistency discipline (there are **no cross-DB transactions**):
+
+1. **Authority split.** The scheduler row is authoritative for *execution
+   rights* (claim/lease/activation); the run DB is authoritative for
+   *progress* (checkpoints, wake times as data). The scheduler shard is
+   **primary state, not a rebuildable cache**: tasks (params, retry policy,
+   idempotency keys, results) and events exist nowhere else, and inline-mode
+   runs have no other home — so shards get durability treatment (Turso
+   PITR/backups). Only leases, schedules, and waits are re-derivable by replay
+   from run-DB checkpoints. Restore runbook: after restoring a shard to T₁,
+   mark every non-terminal run's lease expired and let sweeps reconcile
+   against run DBs; runs that completed after T₁ re-run (safe under activation
+   fencing + checkpoint replay) — an accepted anomaly window, minimized by
+   frequent PITR points.
+2. **Write ordering.** Progress commits to the run DB first, then the scheduler
+   transition (sleep/complete/fail). A crash between the two leaves the
+   scheduler stale-but-safe: the lease expires, the sweep re-claims, and the
+   next worker reads the run DB's checkpoints (including persisted wake times)
+   and re-issues the scheduler transition idempotently. Accounting is decided
+   by activation state, needing no other evidence: lost launches
+   (`activated_gen < claim_gen`) reopen the same run — no attempt, no new row,
+   their own capped relaunch counter; activated-but-dead runs cost an
+   `infra_retries` increment (own generous cap), never `max_attempts` — which
+   counts only user-code failures. Successor runs carry forward the run-DB
+   pointer, `wake_event`, and `event_payload` on **every** path that creates
+   one (the sweep and the worker-side fail-with-retry alike).
+3. **Events never fan out into other runs' DBs.** `emitEvent` is scheduler-plane
+   only: first-write-wins event row + flip waiting runs to pending with the
+   payload parked on the run row (`event_payload`, as in Absurd's `r_` table).
+   The woken worker materializes its own checkpoint into its own run DB on
+   resume. Delivery is therefore durable-at-materialization, not
+   durable-at-emit as in Absurd — so the undelivered window is first-class:
+   the flip marks the wait row `delivered` instead of deleting it; the resuming
+   worker deletes it in the same act as materializing (run DB first, then the
+   fenced wait-delete — a crash between re-materializes idempotently); the
+   sweep copies `wake_event`/`event_payload` onto retry runs; and event cleanup
+   never GCs an event row with outstanding `delivered` waits. Ordering per
+   branch: on the already-emitted branch the payload checkpoint goes to the
+   run DB first, then the fenced scheduler ack; on the not-yet-emitted branch
+   there is nothing to checkpoint — the scheduler wait batch is the only
+   write, and materialization happens on resume. A crash between re-runs
+   `awaitEvent` idempotently. Two SDK invariants, explicit: waits are strictly
+   serial (one outstanding `awaitEvent` per run — combinators over events are
+   unsupported, enforced by the suspend-on-await SDK shape), and events are
+   **one-shot** — repeated deliveries embed an occurrence id in the name
+   (Absurd's own documented pattern, `shipment.packed:${orderId}`); iterable
+   hooks are explicitly out of scope for v1.
+4. **Spawn latency & pool protocol.** Run-DB creation (~100ms + the ~2.5s
+   readiness race) comes off the hot path via a warm pool of pre-created DBs,
+   with crash-safe assignment: (1) pool-claim CAS stamped with a spawn token;
+   (2) write the claim/manifest row *into* the pooled run DB; (3) pool-entry
+   CAS `assigned → committed` (fenced by the spawn token — failing here means
+   the janitor condemned the entry: abort and retry with a fresh DB); (4)
+   scheduler task INSERT. Janitor rule: only entries still `assigned` past TTL
+   are condemned and destroyed — never returned to the pool (DB creation is
+   cheap, double-assignment is not); `committed` entries past a much longer
+   TTL with no scheduler row are also destroyed, and as a belt-and-braces
+   fence the worker's first activation cross-checks the run-DB manifest's
+   task/spawn-token against its launch payload, failing closed on mismatch. Stated honestly: dedicated placement needs
+   a paid plan (Free caps 100 DBs org-wide); Platform-API create/delete rate
+   limits are unpublished (empirical probe in Phase 5); and when the pool is
+   empty, spawn degrades to `inline` placement rather than blocking on DB
+   creation.
+
+**Scalability — two independent axes, stated honestly.** The goal is not "no
+central point" (impossible: two workers must agree on who executes a run, so
+*some* serialization per run is irreducible) but "no *global* central point" —
+and on that axis everything fans out. **Axis 1, throughput:** transitions/sec
+per shard is bounded by the commit ceiling (§1.3) and scales ~linearly with
+shard count — shards per tenant/queue, or per hash-slice of a hot queue, with
+two stated costs: slicing weakens queue-wide oldest-first fairness to
+per-slice ordering, and sliced queues **forgo emit/await events entirely**
+(events are queue-global by contract; an "event-home slice" would reintroduce
+the exact cross-DB lost-wakeup race rule 2 forbids, so it is not an option).
+**Axis 2, volume:** Turso meters rows-written **per organization, not per
+DB** — sharding multiplies throughput but not the write budget. On paid plans
+volume is a linear cost (overage ≈ $0.75–1 per million rows, i.e. a few
+dollars per million task lifecycles); on Free it is a hard fleet-wide stop
+(`BLOCKED` — in which state ticks fail closed and everything stalls until the
+quota resets, so usage-API alerting is part of the ops surface, §6 Phase 5).
+One honest caveat on the transitions-not-steps claim: throttled heartbeats
+are a *time-proportional* scheduler write (∝ concurrent leased runs ÷
+cadence) — negligible for short tasks, but a real metered term for many
+concurrent long-running runs. Drivers scale as N stateless loops leased **per driver, not per
+shard** — one heartbeat row per driver carrying its assigned shard set keeps
+the registry genuinely read-mostly — with jittered lease expiries and an
+adoption cap (at most M orphaned shards claimed per tick) so a dead driver's
+portfolio drains over a few ticks instead of stampeding; orphans degrade to
+cron-sweep latency until adopted. The registry (tenant/queue → shard) stays
+cacheable and itself shardable. This is Cloudflare's scaling story without
+the branding — per-object serialization over a sharded substrate, no global
+queue — plus a metered bill Cloudflare hides.
+
+### 3.9 The pluggable ports and the advisory-signal rule
+
+The system decomposes into five ports. One invariant makes the decomposition
+safe: **the scheduler lease is the only source of truth for execution rights;
+every other signal is advisory** — it may be lost (lease timer recovers),
+duplicated (fences no-op), late, or wrong under split-brain (fences reject
+stale tokens) — and advisory signals get exactly one write:
+`expireLeaseNow(runId, claimToken)`, i.e. they may only *accelerate* what the
+lease timer would do anyway, never directly complete or fail a run.
+
+1. **SchedulerStore** (dialect port: Postgres | MySQL | SQLite/Turso) —
+   scheduling only, every method one fenced idempotent tx/statement, DB-side
+   time: `spawn`, `claim(claimToken,k,lease)` (increments `claim_gen`),
+   `activate` (per-claim generation CAS, §3.2; re-extends the lease),
+   `heartbeat` (returns lease state so zombies learn they're dead),
+   `reschedule`, `complete`, `fail` (retry policy in core, applied fenced),
+   `sweep` (expired leases + cancellation, classified by activation state),
+   `expireLeaseNow`, `emitEvent`/`registerWait` (worker-initiated
+   registration is claim-fenced like every worker write), `nextWakeAt`.
+2. **Launcher** (execution transport, agnostic on "how"):
+   `launch({runId, attempt, claimToken, claimGen, shard, deadlineHint}) →`
+   `accepted` (fire-and-forget ack — may still be lost) |
+   `ended` (sync HTTP: outcome observed inline — a reliable Ending; legal only
+   for drivers holding bounded launch slots, i.e. resident pools — serverless
+   ticks always fire-and-forget, §3.1 step 3) |
+   `launch-failed` (transport-level rejection → fenced immediate relaunch —
+   still counted by the relaunch counter, since "never ran" is the launcher's
+   claim, not a guarantee).
+3. **EndingFeed** (runner-termination log; honest contract: at-most-once,
+   duplicated, delayed, split-brain-capable): events
+   `{runId, claimToken?, kind: completed|failed|crashed|timeout|unknown}`.
+   Consumers are stateless — any tick handler reconciles: *verify the run
+   already transitioned (controlled ending → no-op), else `expireLeaseNow`.*
+   A tokenless ending may only accelerate after a read-verify: read the run's
+   current token, confirm no heartbeat has landed since the ending's
+   timestamp, then `expireLeaseNow` with the token just read — still nothing
+   more than accelerated lease expiry.
+4. **RunStateStore** (data plane, §3.8): `load`, attempt-guarded
+   `saveCheckpoint`, streams; placements inline | per-run DB | local file+sync.
+5. **WakeSignals** (optional accelerators): `ping(shard)`, `alarmAt(shard,t)`,
+   external cron.
+
+Failure taxonomy → port mapping: lost fire-and-forget launch = claimed but
+never activated → sweep sees `activated_gen < claim_gen` at lease expiry → relaunch
+without burning an attempt (this is why activation is separate from claim).
+Sync launch = a Launcher whose EndingFeed is inline and reliable — identical
+reconcile path, better p50. Catastrophic ending = `expireLeaseNow` → reclaim
+now instead of at lease expiry. Split-brain "death" of a live zombie = the same
+brief-overlap window lease expiry already tolerates; the zombie's scheduler
+writes die on the stale token, its checkpoints on attempt guards, and its next
+`heartbeat` tells it to exit. Feed totally lost = reclaim latency degrades to
+the lease timeout; correctness unchanged.
+
+Any combination of implementations across the five ports is correct, because
+the only load-bearing component is the lease in port 1 — that is the
+pluggability guarantee.
+
+## 4. What "ticks" mean here — direct answers to the original questions
+
+- **How do ticks drive workflows?** A tick is one pass of the driver: sweep
+  expired leases → claim due runs → launch workers → compute the next wake → done.
+  In resident mode the driver loops `tick(); sleep(min(next transition, poll
+  ceiling))` — the loop is the alarm, like Absurd's 250ms worker poll but
+  dispatch-only. In serverless mode the same `tick()` runs per invocation, fired
+  by pings/alarms/cron — Cloudflare's alarm-shape (DO alarm set to the next state
+  transition) rebuilt from commodity schedulers over Turso. Vercel's managed
+  World is the degenerate case: no ticks, the queue push is the invocation.
+- **How do workers get kicked off when needed?** The driver launches exactly as
+  many workers as it claimed runs — fire-and-forget "launch this thing" calls.
+  What wakes the driver: its own poll timer (resident), ping-on-enqueue (ms
+  latency), one-shot alarm at the next known `available_at`/lease expiry, or the
+  cron sweep (best-effort recurring backstop). Workers never poll and never
+  idle.
+- **How do we avoid idle CPU/memory?** All heavyweight compute is launch-on-demand
+  and exits at suspension points; long tasks chain invocations via checkpoints +
+  leases. The only resident thing (optional, by choice) is the driver — a few MB
+  doing two indexed reads per poll, launching nothing when there's nothing due.
+  Sleeping workflows are rows, not processes (Turso idle DBs are files in object
+  storage).
+- **Scale-to-zero with pending timers?** The driver sleeps until the next
+  transition (resident) or the alarm re-arm carries the wake (serverless); the
+  cron sweep recovers progress even if both die. Timer precision = poll/alarm
+  precision in the normal case, degrading to a few best-effort cron periods only
+  when a ping *and* its alarm are both lost.
+
+## 5. Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Turso rows-written quota burn / exhaustion | idle ticks are read-only (reads are ~free); writes only on actual transitions + throttled heartbeats; batch claims; usage-API alerting with documented `BLOCKED` degraded mode (ticks fail closed, recover on quota reset); Developer plan headroom is 25M writes/mo |
+| Turso single-writer throughput (~10–100 claims/s/DB) | claim batches (K per statement); shard DB-per-tenant/queue via Platform API; MVCC engine later |
+| Free-plan 10-day archival ambiguity | use Developer plan ($4.99) or empirical probe; unarchive API exists |
+| Duplicate execution (duplicate launch delivery; lease expiry with live worker) | per-claim activation CAS on `(claimed_by, claim_gen, activated_gen < claim_gen)` kills duplicate deliveries; Absurd's contract covers lease-overlap (steps tolerate brief overlap); run-DB writes token-fenced (§3.8); completes/fails fenced by claim token |
+| Crash-looping launches (never activated — e.g. bad HMAC config) | sweep classifies by activation state: capped relaunch counter with backoff → terminal failure, so misconfig surfaces as failed runs, not infinite launch spend |
+| Lost ping AND lost alarm | cron sweep recovers it — best-effort (Vercel never retries a missed cron), so worst case is a few cron periods, and QStash's retries+DLQ make the alarm leg the reliable one |
+| Thundering herd on big backlog | K/K_s-bounded claims and sweeps; successor-tick chain drains K per hop instead of launching thousands at once; poll jitter across drivers |
+| 5s interactive-tx limit bites a future multi-statement need | rule: every engine transition is one statement or one `batch()`; enforced in the §3.4 contract rules + conformance tests |
+| Vercel cron best-effort/duplicate | idempotent tick; overlap-safe claims; QStash alarms as the primary wake, cron as backup |
+| MySQL claim differences (no RETURNING, gap locks) | token-claim dialect + READ COMMITTED; conformance suite runs identically |
+| Cross-plane staleness (run DB committed, scheduler transition lost) | §3.8 discipline: progress-first ordering; lease expiry + run-DB read reconciles idempotently with infra-retry accounting (no attempt burn); scheduler shards are primary state under PITR/backup; conformance covers kill-between-planes and zombie-fence cases |
+| Run-DB creation on the spawn hot path (~100ms + ~2.5s readiness race) | warm pool with crash-safe claim protocol (§3.8.4); degrade to `inline` when pool empty; paid plan required for dedicated; Platform-API rate limits unpublished → Phase 5 probe |
+| WDK ecosystem drift (if Phase 7 wrapper) | target `@workflow/world@5.0.0-beta.27+` (the release that introduced the strict `specVersion` gate) with `specVersion` declared; the 4.x-pinned community Turso world shows the cost of not doing this |
+
+## 6. Phased plan (stack of PRs)
+
+- **Phase 0 — scaffold + baseline deploy (Deliverable A).** Repo, `workflow@4.6.0`
+  demo workflow on managed Vercel World, Turso provisioned (marketplace creds),
+  CI. Proves the deploy pipeline and gives the reference behavior.
+- **Phase 1 — scheduler plane on Turso (inline placement).** Schema +
+  idempotent migrations with a `schema_version`; the `SchedulerStore` port,
+  Turso dialect: spawn / claim (with `claim_gen`) / activate / heartbeat /
+  reschedule / complete / fail / sweep-with-activation-classification /
+  expireLeaseNow / nextWakeAt; retry policy in core, timestamps in SQL.
+  Conformance suite v1 (claim, lease expiry, lost-launch reopen,
+  checkpoint replay, chaining) on `file:` SQLite + Turso integration
+  (readiness gate, remote-claw patterns).
+- **Phase 2 — drive, both modes.** The shared `tick()`; the **resident driver
+  first** (loop + adaptive sleep, `/wake` endpoint, per-driver registry
+  heartbeat) since it is the preferred mode; then the serverless tick
+  (`/api/tick` GET+POST, ping-on-enqueue, QStash alarms with per-(shard,t)
+  dedup, Vercel cron sweep); the fire-and-forget HTTP `Launcher` with HMAC;
+  auth throughout (CRON_SECRET + QStash signature + internal HMAC). Chaos
+  tests: kill-worker → sweep recovers; drop-launch → relaunch without attempt
+  burn; duplicate delivery → activation CAS.
+- **Phase 3 — full Absurd semantics.** Events (emit/await, first-write-wins,
+  timeout branch), cancellation policies, idempotent spawn, child tasks
+  (completion-event await + same-queue refusal), step repeat counters,
+  defer-unknown-task deploy rule; Absurd's docs-level API (`ctx.step`,
+  `sleepFor`, `awaitEvent`, `spawn`) as the TS SDK.
+- **Phase 4 — dialects + conformance matrix.** MySQL 8 in a CI container
+  (token-claim dialect, READ COMMITTED, concurrent-claim/gap-lock cases;
+  optional PlanetScale smoke job for the 20s-cap/HTTP-driver constraints) AND
+  Postgres (Absurd's own SQL — the cheapest dialect, closing the promise §0
+  makes); conformance suite runs ×3 including the adversarial cases (zombie
+  fencing, kill-between-planes, awaitEvent/emitEvent interleavings).
+- **Phase 5 — operations + sharding.** Shard registry with status semantics
+  (active/draining/paused) + per-driver shard assignment + cron fan-out tick
+  (§3.7); shard create/route APIs; cleanup/retention (Absurd queue policies,
+  event-GC barrier); metrics + usage-API quota alerting with the `BLOCKED`
+  degraded-mode runbook; fleet migration sweep (`schema_version`-gated);
+  empirical probes promised above (Free-plan archival, Platform-API rate
+  limits); CLI-first inspection (UI deferred).
+- **Phase 6 — two-plane data plane (`dedicated` placement).** `RunStateStore`
+  port with per-run DBs: warm pool + crash-safe assignment protocol, run-DB
+  claim-fence meta row, delivered-wait materialization, successor-carried
+  run-DB pointers, PITR restore runbook; `EndingFeed` port with the
+  reconcile rule. Until this phase, `dedicated` placement and §3.8's protocol
+  details are **specified-but-deferred** — v1 ships inline-only.
+- **Phase 7 (optional) — WDK World wrapper.** Expose the engine as a spec-v5
+  World (`Queue` = ping/alarm push via our driver, `Storage` = event-log mapping,
+  `Streamer` = chunk table + polling reads) so `"use workflow"` apps run on it —
+  the serverless Turso World that doesn't exist today (§1.1).
+
+## 7. Key sources
+
+- Absurd: github.com/earendil-works/absurd (sql/absurd.sql); lucumr.pocoo.org
+  2025-11-03 announcement + 2026-04-04 production retrospective.
+- Workflow SDK: workflow-sdk.dev docs; github.com/vercel/workflow (packages/world
+  interfaces, world-vercel/world-postgres/world-local sources, worlds-manifest.json,
+  PR #2659 spec gate, issue #689 "postgres world isn't meant to work on vercel").
+- Community worlds: github.com/mizzle-dev/workflow-worlds (@workflow-worlds/turso
+  0.2.2); vinnymac/worlds (@fantasticfour/world-upstash — the push-queue template).
+- Vercel: vercel.com/docs/workflows, /docs/queues (delayed messages, `queue/v2beta`
+  beta), /docs/cron-jobs (per-minute Pro, best-effort), Fluid/Active-CPU pricing.
+- Turso: docs.turso.tech (5s interactive tx, batch atomicity, durability/commit
+  ceilings, /beta/listen contract + availability, usage quotas, platform API);
+  turso.tech blog (AWS diskless, outbox+cron pattern, new-engine CDC/MVCC).
+- SQLite queue prior art: riverqueue riversqlite driver, goqite, litequeue,
+  Solid Queue; DBOS system tables + SQLite system-DB support; Cloudflare Workflows
+  architecture (SQLite DO per instance + alarms).
+- MySQL: dev.mysql.com refman (SKIP LOCKED, isolation, fractional seconds, upsert);
+  Solid Queue / Laravel claim implementations; PlanetScale limits.
+- Local: ~/remote-claw (Turso fleet credential scheme, 404-readiness gate,
+  idempotent DDL, cron+CRON_SECRET patterns); ~/ts-api (single-DB Turso wiring).
