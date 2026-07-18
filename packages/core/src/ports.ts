@@ -62,12 +62,18 @@ export interface SchedulerStore {
    * form exists solely for ctx.sleepUntil — §3.4 rule 3's one sanctioned
    * user-supplied absolute; the store writes it verbatim, never converting
    * via an instance clock.
+   *
+   * `wakeDisposition` (default 'consume'): a worker that PROCESSED a carried
+   * event wake sleeps with 'consume' — later timer wakes must not replay the
+   * event. A driver that could NOT dispatch (unknown task, §3.8.2 deferral)
+   * defers with 'preserve' so the wake survives for a capable claimer.
    */
   reschedule(
     queue: string,
     runId: string,
     claimToken: string,
     wake: { inSeconds: number } | { atEpochMs: number },
+    wakeDisposition?: 'consume' | 'preserve',
   ): Promise<void>
 
   complete(queue: string, runId: string, claimToken: string, resultJson: string): Promise<void>
