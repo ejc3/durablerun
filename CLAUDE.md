@@ -50,6 +50,24 @@ when it lands. Enforcement is structural, not aspirational:
   itself against the same scenarios through its own runner. Never let the
   contract live only in TypeScript types.
 
+## Standing rule: confine heavy local runs
+
+Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
+through `scripts/confine.sh` (cgroup scope: MemoryMax 16G default, swap off,
+CPUQuota 3200%). A runaway gets OOM-killed inside its scope instead of
+taking the box down; memory was the killer the one time it happened.
+`verify:fuzz`, `verify:fuzz:deep`, and `verify:tla` are pre-wired.
+
+## Standing rule: spec first for new protocols
+
+Every new protocol area (a set of transitions with cross-actor invariants —
+events, cancellation, sagas, the data plane) is modeled in specs/*.tla and
+TLC-verified BEFORE its SQL is written. The implementation then maps its
+labeled batches onto the verified actions (the ledger enforces the mapping).
+A TLC counterexample at spec time is the cheapest bug we will ever find; the
+sweep was implemented before it was modeled and the review cycle paid for
+that ordering. Small protocol-free features (reads, plumbing) are exempt.
+
 ## Standing rule: red test before fix
 
 Every bug fix lands as TWO commits: first a red-test commit — a regression

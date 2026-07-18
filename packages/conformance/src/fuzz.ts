@@ -19,6 +19,18 @@ export async function runFuzzScenario(
   steps: number,
 ): Promise<void> {
   const f = await makeFixture(`fuzz-${seed}`)
+  try {
+    await runWalk(f, seed, steps)
+  } finally {
+    f.close()
+  }
+}
+
+async function runWalk(
+  f: Awaited<ReturnType<StoreFixtureFactory>>,
+  seed: number | string,
+  steps: number,
+): Promise<void> {
   const rng = new Rng(`fuzz-${seed}`)
   let now = 1_000_000
   await f.admin.setFakeNowEpochMs(now)
@@ -115,5 +127,4 @@ export async function runFuzzScenario(
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
   }
-  f.close()
 }

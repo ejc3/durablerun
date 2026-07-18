@@ -93,9 +93,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 ## Phase 3 — full Absurd semantics
 
-- **PR3.1 events**: emit/await (inline durable-at-emit batches), timeout
-  branch, wait rows. Conformance: emit-before-await, await-before-emit,
-  timeout-vs-emit race, one-shot first-write-wins.
+- **PR3.1 events** (SPEC-FIRST: implements the TLC-verified EmitEvent /
+  AwaitEventRegister / TimeoutWake actions from the extended Scheduler.tla —
+  the spec lands before this PR opens): emit/await (inline durable-at-emit
+  batches), timeout branch, wait rows. Conformance: emit-before-await,
+  await-before-emit, timeout-vs-emit race, one-shot first-write-wins, plus
+  executable twins of the spec's no-lost-wakeup and no-resurrection
+  invariants.
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule.
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event

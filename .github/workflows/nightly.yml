@@ -18,7 +18,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
-      - run: pnpm verify:fuzz
+      - run: FUZZ_SEEDS=20000 FUZZ_STEPS=150 pnpm exec vitest run packages/conformance/test
   tla:
     runs-on: ubuntu-latest
     steps:
