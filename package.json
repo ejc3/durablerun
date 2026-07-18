@@ -12,7 +12,8 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format-check": "biome format .",
-    "verify": "pnpm lint && pnpm format-check && pnpm typecheck && pnpm test",
+    "lint:determinism": "bash scripts/determinism-lint.sh",
+    "verify": "pnpm lint && pnpm lint:determinism && pnpm format-check && pnpm typecheck && pnpm test",
     "verify:tla": "bash scripts/tla.sh"
   },
   "devDependencies": {
