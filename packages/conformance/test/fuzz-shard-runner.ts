@@ -2,8 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { runFuzzScenario } from '../src/fuzz.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
-const SEEDS = Number(process.env.FUZZ_SEEDS ?? 64)
-const STEPS = Number(process.env.FUZZ_STEPS ?? 60)
+function knob(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined) return fallback
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name}='${raw}' is not a positive integer — refusing a vacuous fuzz run`)
+  }
+  return value
+}
+const SEEDS = knob('FUZZ_SEEDS', 64)
+const STEPS = knob('FUZZ_STEPS', 60)
 
 /**
  * Fuzz seeds are sharded across test FILES because vitest parallelizes

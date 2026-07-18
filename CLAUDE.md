@@ -90,3 +90,13 @@ and instituted it (a new §3.4-style rule, a sim checker, a conformance case,
 a lint). Point fixes without a prevention are not accepted. Precedents:
 the one-shot activation flag → "no one-shot flags for re-entrant lifecycles,
 latch on generations"; batch fence self-defeat → "fence on the post-state".
+
+Tests live at the CLASS altitude, not just the instance: every fixed bug
+gets, besides its red test, an extension of the layer that should have
+caught the class — an invariant-library checker (run by every sim, scenario,
+and fuzz walk), a fuzz-surface op, or a sim actor set. Two structural rules
+fall out: (1) every TLA action GUARD has an executable twin (an invariant or
+a conformance case) — max_attempts was guarded in the model and enforced
+nowhere, and the fuzz ran green while violating it; (2) safety checking
+needs a progress floor — a fuzz walk that accomplishes nothing must fail,
+or total fence-loss regressions pass invariant-clean.

@@ -46,6 +46,22 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
             GROUP BY task_id HAVING COUNT(*) > 1`,
     },
     {
+      // The TLA FailRunWithRetry guard's executable twin: user attempts can
+      // never exceed the cap (this exact absence let fail() retry past
+      // max_attempts while the fuzz ran green).
+      name: 'attempts-exceeds-cap',
+      sql: `SELECT task_id AS v FROM tasks WHERE attempts > max_attempts`,
+    },
+    {
+      // Checkpoint referential integrity: a checkpoint's owner run must
+      // belong to the checkpoint's task and queue (fence-scope class: args
+      // bound into a fence narrower than the argument surface).
+      name: 'checkpoint-cross-task',
+      sql: `SELECT c.task_id || '/' || c.checkpoint_name AS v
+            FROM checkpoints c JOIN runs r ON r.run_id = c.owner_run_id
+            WHERE r.task_id <> c.task_id OR r.queue <> c.queue`,
+    },
+    {
       // Waits must reference live runs (orphans pin event GC).
       name: 'wait-referencing-dead-run',
       sql: `SELECT w.run_id || '/' || w.step_name AS v

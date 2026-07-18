@@ -35,7 +35,10 @@ async function runWalk(
   let now = 1_000_000
   await f.admin.setFakeNowEpochMs(now)
   const held: ClaimedRun[] = []
+  const knownTasks: string[] = []
   let claimCounter = 0
+  let idemCounter = 0
+  let progress = 0
 
   const expectLeaseLoss = async (op: () => Promise<unknown>): Promise<void> => {
     try {
@@ -59,7 +62,14 @@ async function runWalk(
                   : { maxDurationSeconds: 30 + rng.int(120) },
             }
           : {}
-      await f.store.spawn(Q, `t${step}`, '{}', opts)
+      const spawned = await f.store.spawn(
+        Q,
+        `t${step}`,
+        '{}',
+        rng.next() < 0.2 ? { ...opts, idempotencyKey: `k${idemCounter++ % 4}` } : opts,
+      )
+      knownTasks.push(spawned.taskId)
+      progress++
     } else if (roll < 0.4) {
       const claimed = await f.store.claim(Q, `w${claimCounter++}`, {
         leaseSeconds: 30 + rng.int(60),
@@ -76,7 +86,9 @@ async function runWalk(
       if (!run) continue
       const kind = rng.next()
       if (kind < 0.35) {
-        await expectLeaseLoss(() => f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}'))
+        await expectLeaseLoss(() =>
+          f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}').then(() => progress++),
+        )
       } else if (kind < 0.55) {
         await expectLeaseLoss(() =>
           f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFail"}', {
@@ -106,11 +118,24 @@ async function runWalk(
         held.push(run) // checkpointing does not release the run
       }
       // else: abandon silently — the sweep must recover it.
-    } else if (roll < 0.75) {
-      await f.store.sweep(Q, 1 + rng.int(5))
-    } else if (roll < 0.8 && held.length > 0) {
+    } else if (roll < 0.72) {
+      progress += (await f.store.sweep(Q, 1 + rng.int(5))).length
+    } else if (roll < 0.76 && held.length > 0) {
+      const run = held[rng.int(held.length)]
+      if (run) await f.store.heartbeat(Q, run.runId, run.claimToken, 30 + rng.int(60))
+    } else if (roll < 0.79 && held.length > 0) {
       const run = held[rng.int(held.length)]
       if (run) await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
+    } else if (roll < 0.82 && knownTasks.length > 0) {
+      const taskId = knownTasks[rng.int(knownTasks.length)]
+      if (taskId && (await f.store.cancelTask(Q, taskId))) progress++
+    } else if (roll < 0.85 && held.length > 0) {
+      const run = held.splice(rng.int(held.length), 1)[0]
+      if (run) {
+        await expectLeaseLoss(() =>
+          f.store.reschedule(Q, run.runId, run.claimToken, { atEpochMs: now + rng.int(90) * 1000 }),
+        )
+      }
     } else {
       now += (1 + rng.int(120)) * 1000
       await f.admin.setFakeNowEpochMs(now)
@@ -126,5 +151,11 @@ async function runWalk(
   const violations = await engineInvariantViolations(f.raw)
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
+  }
+  // Progress floor: safety-only fuzz cannot see total loss of progress (a
+  // fence regression making every transition a fenced no-op stays
+  // invariant-clean). Long walks must accomplish SOMETHING.
+  if (steps >= 50 && progress === 0) {
+    throw new Error(`fuzz seed ${seed}: zero progress across ${steps} steps`)
   }
 }

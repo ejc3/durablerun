@@ -14,7 +14,7 @@
     "format-check": "biome format .",
     "lint:determinism": "bash scripts/determinism-lint.sh",
     "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:ledger && pnpm format-check && pnpm typecheck && pnpm test",
-    "lint:ledger": "bash scripts/spec-ledger.sh",
+    "lint:ledger": "python3 scripts/spec-ledger.py",
     "verify:tla": "bash scripts/confine.sh bash scripts/tla.sh",
     "verify:fuzz": "FUZZ_SEEDS=2000 FUZZ_STEPS=100 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test",
     "verify:fuzz:deep": "FUZZ_SEEDS=100000 FUZZ_STEPS=150 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test"
