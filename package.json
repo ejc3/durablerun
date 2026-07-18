@@ -1,0 +1,22 @@
+{
+  "name": "absurd-lite",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.29.1",
+  "scripts": {
+    "typecheck": "pnpm -r --parallel exec tsc --noEmit",
+    "test": "vitest run",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format-check": "biome format .",
+    "verify": "pnpm lint && pnpm format-check && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
