@@ -28,8 +28,11 @@ export interface SpawnOptions {
   maxAttempts?: number
   cancellation?: CancellationPolicy
   headers?: Record<string, string>
-  /** Absolute enqueue time override; engine time (DB clock) otherwise. */
-  enqueueAtEpochMs?: number
+  /**
+   * Deferred start, relative — engine time computes the absolute (§3.4
+   * rule 3: clients pass durations; instance clocks never enter the engine).
+   */
+  startDelaySeconds?: number
 }
 
 export interface SpawnResult {
@@ -48,17 +51,33 @@ export interface ClaimedRun {
   runId: string
   taskId: string
   taskName: string
+  /**
+   * Fence-monotonic run ordinal for this task — counts EVERY successor run
+   * (user retries and infra `$ClaimTimeout` successors alike), because the
+   * data-plane fence key is (attempt, claim_gen). The user-failure ordinal
+   * for retry policy is `attempt - infraRetries`.
+   */
   attempt: number
+  /** Task-lifetime count of infra (`$ClaimTimeout`) successors. */
+  infraRetries: number
   claimGen: number
   claimToken: string
+  /** Lease deadline as stamped by the claim — the worker's chaining budget. */
+  claimExpiresAtEpochMs: number
   paramsJson: string
   retryStrategy: RetryStrategy
   maxAttempts: number
   headers: Record<string, string>
-  /** Present when this claim is an event/timeout wake. NULL payload = timeout. */
-  wakeEvent?: string
-  eventPayloadJson?: string | null
+  /** Present when this claim is an event or event-timeout wake. */
+  wake?: EventWake
 }
+
+/**
+ * Discriminated so impossible states are unrepresentable: a wake either
+ * delivered a payload or timed out — never both, never neither (the SDK
+ * surfaces the timeout branch as EventTimeoutError).
+ */
+export type EventWake = { event: string; payloadJson: string } | { event: string; timedOut: true }
 
 export interface Checkpoint {
   checkpointName: string

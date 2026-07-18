@@ -29,3 +29,14 @@ export class LeaseLostError extends Error {
 export class FatalTaskError extends Error {
   override readonly name = 'FatalTaskError'
 }
+
+/**
+ * An awaitEvent timeout fired: the claim delivered `wakeEvent` with a NULL
+ * payload (§3.4 rule 2's TimeoutError path). Raised into user code by the SDK.
+ */
+export class EventTimeoutError extends Error {
+  override readonly name = 'EventTimeoutError'
+  constructor(readonly eventName: string) {
+    super(`timed out waiting for event '${eventName}'`)
+  }
+}

@@ -1,4 +1,4 @@
-import type { SqlExecutor, SqlResult, SqlStatement } from '@absurd-lite/core'
+import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@absurd-lite/core'
 import { Rng } from './rng.js'
 
 /**
@@ -8,12 +8,22 @@ import { Rng } from './rng.js'
  * SqlExecutor this world hands them. The world serializes those calls —
  * a seeded scheduler picks which pending batch executes next against the
  * real database — so every interleaving of N concurrent actors is (a)
- * reachable and (b) exactly replayable from the seed. Crash injection kills
- * an actor before or after a chosen labeled batch, modeling process death at
- * any transition boundary; a crashed actor's later calls reject immediately.
+ * reachable and (b) exactly replayable from the seed.
+ *
+ * Fault injection:
+ * - Crashes kill an actor before or after a chosen labeled batch, modeling
+ *   PROCESS death: the actor's other in-flight calls are purged unexecuted
+ *   and all its future calls reject — a dead process has no further effects.
+ * - Duplicates execute a labeled batch twice (sequentially) and resolve with
+ *   the second result — the retry-after-lost-response shape of an
+ *   at-least-once channel, the exact fault class the engine's fenced-batch
+ *   idempotence rules exist for.
  *
  * Determinism contract: actor code between port calls must be synchronous
  * and deterministic (no timers, no Date.now/Math.random, no other I/O).
+ * Violations are detected and thrown, never silently hung: if the scheduler
+ * reaches quiescence while an actor is neither finished nor blocked on a
+ * port call, that actor awaited something the world does not control.
  */
 
 export class SimCrash extends Error {
@@ -21,7 +31,7 @@ export class SimCrash extends Error {
   constructor(
     readonly actor: string,
     readonly label: string,
-    readonly when: 'before' | 'after',
+    readonly when: 'before' | 'after' | 'orphan',
   ) {
     super(`simulated crash: ${actor} ${when} '${label}'`)
   }
@@ -36,11 +46,17 @@ export interface CrashSpec {
   when: 'before' | 'after'
 }
 
+export interface DuplicateSpec {
+  actor?: string
+  label: string | RegExp
+  occurrence?: number
+}
+
 export interface TraceEntry {
   seq: number
   actor: string
   label: string
-  outcome: 'ok' | 'crash-before' | 'crash-after' | 'error'
+  outcome: 'ok' | 'dup' | 'crash-before' | 'crash-after' | 'crash-orphan' | 'error'
 }
 
 export type ActorResult =
@@ -52,6 +68,7 @@ interface PendingCall {
   actor: ActorState
   label: string
   statements: readonly SqlStatement[]
+  mode: SqlBatchMode
   resolve: (r: SqlResult[]) => void
   reject: (e: unknown) => void
 }
@@ -59,43 +76,81 @@ interface PendingCall {
 interface ActorState {
   name: string
   crashed: boolean
+  /** Set on a determinism-contract violation; future calls reject loudly. */
+  condemned: boolean
+  settled: boolean
   finished: Promise<ActorResult>
 }
 
-interface ArmedCrash extends CrashSpec {
+interface ArmedSpec<S extends CrashSpec | DuplicateSpec> {
+  spec: S
   remaining: number
   consumed: boolean
+}
+
+export interface SimWorldOptions {
+  /**
+   * Throw at quiescence if any injected spec never fired (default true) — a
+   * typo'd label must not let a scenario pass vacuously green.
+   */
+  strictSpecs?: boolean
 }
 
 export class SimWorld {
   private readonly rng: Rng
   private readonly pending: PendingCall[] = []
   private readonly actors: ActorState[] = []
-  private readonly crashes: ArmedCrash[] = []
+  private readonly crashes: ArmedSpec<CrashSpec>[] = []
+  private readonly duplicates: ArmedSpec<DuplicateSpec>[] = []
+  private readonly strictSpecs: boolean
+  private active = false
   readonly trace: TraceEntry[] = []
 
   constructor(
     private readonly real: SqlExecutor,
     seed: number | string,
+    options: SimWorldOptions = {},
   ) {
     this.rng = new Rng(seed)
+    this.strictSpecs = options.strictSpecs ?? true
   }
 
   injectCrash(spec: CrashSpec): void {
-    this.crashes.push({ ...spec, remaining: spec.occurrence ?? 1, consumed: false })
+    this.crashes.push({
+      spec: { ...spec, label: neutralize(spec.label) },
+      remaining: spec.occurrence ?? 1,
+      consumed: false,
+    })
+  }
+
+  injectDuplicate(spec: DuplicateSpec): void {
+    this.duplicates.push({
+      spec: { ...spec, label: neutralize(spec.label) },
+      remaining: spec.occurrence ?? 1,
+      consumed: false,
+    })
   }
 
   actor(name: string, fn: (db: SqlExecutor) => Promise<void>): void {
     const state: ActorState = {
       name,
       crashed: false,
+      condemned: false,
+      settled: false,
       finished: Promise.resolve({ status: 'done' }),
     }
     const db: SqlExecutor = {
-      batch: (label, statements) => {
-        if (state.crashed) return Promise.reject(new SimCrash(name, label, 'before'))
+      batch: (label, statements, mode = 'write') => {
+        if (state.crashed) return handledRejection(new SimCrash(name, label, 'before'))
+        if (state.condemned) {
+          return handledRejection(
+            new Error(
+              `batch '${label}' from condemned actor '${name}' — it previously violated the determinism contract`,
+            ),
+          )
+        }
         return new Promise<SqlResult[]>((resolve, reject) => {
-          this.pending.push({ actor: state, label, statements, resolve, reject })
+          this.pending.push({ actor: state, label, statements, mode, resolve, reject })
         })
       },
     }
@@ -106,80 +161,187 @@ export class SimWorld {
           ? { status: 'crashed', crash: error }
           : { status: 'failed', error },
     )
+    state.finished.then(() => {
+      state.settled = true
+    })
     this.actors.push(state)
   }
 
   /**
    * Run until quiescent: no pending batch and no actor able to produce one.
-   * Throws if any actor FAILED (non-crash error) — crashes are expected
-   * outcomes, failures are bugs (in the engine or the scenario).
+   * Throws on: actor FAILURE (non-crash error), determinism-contract
+   * violations, ambiguous injections, and (strict mode) specs that never
+   * fired. Crashes are expected outcomes, never throws.
    */
   async run(): Promise<Map<string, ActorResult>> {
-    for (;;) {
-      await settle()
-      if (this.pending.length === 0) break
-      const idx = this.rng.int(this.pending.length)
-      const call = this.pending.splice(idx, 1)[0]
-      if (!call) continue
-      await this.executeCall(call)
-    }
-    const results = new Map<string, ActorResult>()
-    for (const actor of this.actors) {
-      const result = await actor.finished
-      results.set(actor.name, result)
-      if (result.status === 'failed') {
-        throw new Error(`actor '${actor.name}' failed: ${String(result.error)}`, {
-          cause: result.error,
-        })
+    if (this.active) throw new Error('SimWorld.run() is already active')
+    this.active = true
+    try {
+      for (;;) {
+        await settle()
+        if (this.pending.length === 0) break
+        const idx = this.rng.int(this.pending.length)
+        const call = this.pending.splice(idx, 1)[0]
+        if (!call) continue
+        await this.executeCall(call)
       }
+
+      // Determinism-contract check: an actor that is neither settled nor
+      // blocked on a pending call awaited something outside the world.
+      await settle()
+      const stuck = this.actors.filter(
+        (a) => !a.settled && !this.pending.some((c) => c.actor === a),
+      )
+      if (stuck.length > 0) {
+        for (const a of stuck) a.condemned = true
+        throw new Error(
+          `determinism contract violation: actor(s) ${stuck
+            .map((a) => `'${a.name}'`)
+            .join(
+              ', ',
+            )} reached quiescence neither finished nor blocked on a port call (they awaited a timer or other non-port promise)`,
+        )
+      }
+
+      const results = new Map<string, ActorResult>()
+      for (const actor of this.actors) {
+        const result = await actor.finished
+        results.set(actor.name, result)
+        if (result.status === 'failed') {
+          throw new Error(`actor '${actor.name}' failed: ${String(result.error)}`, {
+            cause: result.error,
+          })
+        }
+      }
+
+      if (this.strictSpecs) {
+        const unfired = [
+          ...this.crashes.filter((c) => !c.consumed).map((c) => `crash ${describe(c.spec)}`),
+          ...this.duplicates.filter((d) => !d.consumed).map((d) => `duplicate ${describe(d.spec)}`),
+        ]
+        if (unfired.length > 0) {
+          throw new Error(
+            `injected spec(s) never fired (typo'd label or unreachable transition?): ${unfired.join('; ')}`,
+          )
+        }
+      }
+      return results
+    } finally {
+      this.active = false
     }
-    return results
   }
 
   private async executeCall(call: PendingCall): Promise<void> {
-    const crash = this.matchCrash(call)
-    if (crash?.when === 'before') {
-      call.actor.crashed = true
-      this.record(call, 'crash-before')
-      call.reject(new SimCrash(call.actor.name, call.label, 'before'))
+    if (call.actor.crashed) {
+      this.record(call, 'crash-orphan')
+      call.reject(new SimCrash(call.actor.name, call.label, 'orphan'))
       return
     }
+    const crash = this.matchSpec(this.crashes, call)
+    if (crash?.when === 'before') {
+      this.crashActor(call, 'crash-before')
+      return
+    }
+    const duplicate = crash ? undefined : this.matchSpec(this.duplicates, call)
     let results: SqlResult[]
     try {
-      results = await this.real.batch(call.label, call.statements)
+      if (duplicate) {
+        await this.real.batch(call.label, call.statements, call.mode)
+        this.record(call, 'dup')
+      }
+      results = await this.real.batch(call.label, call.statements, call.mode)
     } catch (error) {
       this.record(call, 'error')
       call.reject(error)
       return
     }
     if (crash?.when === 'after') {
-      call.actor.crashed = true
-      this.record(call, 'crash-after')
-      call.reject(new SimCrash(call.actor.name, call.label, 'after'))
+      this.crashActor(call, 'crash-after')
       return
     }
     this.record(call, 'ok')
     call.resolve(results)
   }
 
-  private matchCrash(call: PendingCall): ArmedCrash | undefined {
-    for (const crash of this.crashes) {
-      if (crash.consumed) continue
-      if (crash.actor !== undefined && crash.actor !== call.actor.name) continue
-      const matches =
-        typeof crash.label === 'string' ? crash.label === call.label : crash.label.test(call.label)
-      if (!matches) continue
-      crash.remaining -= 1
-      if (crash.remaining > 0) continue
-      crash.consumed = true
-      return crash
+  /** Process death: reject this call AND purge the actor's other pending calls. */
+  private crashActor(call: PendingCall, outcome: 'crash-before' | 'crash-after'): void {
+    call.actor.crashed = true
+    this.record(call, outcome)
+    call.reject(
+      new SimCrash(call.actor.name, call.label, outcome === 'crash-before' ? 'before' : 'after'),
+    )
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const orphan = this.pending[i]
+      if (!orphan || orphan.actor !== call.actor) continue
+      this.pending.splice(i, 1)
+      this.record(orphan, 'crash-orphan')
+      orphan.reject(new SimCrash(orphan.actor.name, orphan.label, 'orphan'))
     }
-    return undefined
+  }
+
+  /**
+   * Uniform occurrence accounting: EVERY armed matching spec counts this
+   * call as an occurrence; specs reaching zero fire. Two specs firing on the
+   * same call is an authoring error and throws.
+   */
+  private matchSpec<S extends CrashSpec | DuplicateSpec>(
+    specs: ArmedSpec<S>[],
+    call: PendingCall,
+  ): S | undefined {
+    const winners: ArmedSpec<S>[] = []
+    for (const armed of specs) {
+      if (armed.consumed) continue
+      if (armed.spec.actor !== undefined && armed.spec.actor !== call.actor.name) continue
+      const matches =
+        typeof armed.spec.label === 'string'
+          ? armed.spec.label === call.label
+          : armed.spec.label.test(call.label)
+      if (!matches) continue
+      armed.remaining -= 1
+      if (armed.remaining <= 0) winners.push(armed)
+    }
+    if (winners.length > 1) {
+      throw new Error(
+        `ambiguous injection: ${winners.length} specs fire on the same call ('${call.actor.name}' / '${call.label}'): ${winners
+          .map((w) => describe(w.spec))
+          .join('; ')}`,
+      )
+    }
+    const winner = winners[0]
+    if (!winner) return undefined
+    winner.consumed = true
+    return winner.spec
   }
 
   private record(call: PendingCall, outcome: TraceEntry['outcome']): void {
     this.trace.push({ seq: this.trace.length, actor: call.actor.name, label: call.label, outcome })
   }
+}
+
+/** Strip stateful regex flags — a g/y regex alternates matches across calls. */
+function neutralize(label: string | RegExp): string | RegExp {
+  if (typeof label === 'string') return label
+  return new RegExp(label.source, label.flags.replace(/[gy]/g, ''))
+}
+
+function describe(spec: CrashSpec | DuplicateSpec): string {
+  const parts = [
+    spec.actor !== undefined ? `actor=${spec.actor}` : null,
+    `label=${String(spec.label)}`,
+    spec.occurrence !== undefined ? `occurrence=${spec.occurrence}` : null,
+    'when' in spec ? `when=${(spec as CrashSpec).when}` : null,
+  ]
+  return `{${parts.filter(Boolean).join(', ')}}`
+}
+
+/**
+ * A rejection nobody may be awaiting (fire-and-forget chains) must not trip
+ * the process unhandled-rejection handler; a real awaiter still observes it.
+ */
+function handledRejection(error: Error): Promise<never> {
+  const p = Promise.reject(error)
+  p.catch(() => {})
+  return p
 }
 
 /** Drain microtasks so every runnable actor reaches its next port call. */

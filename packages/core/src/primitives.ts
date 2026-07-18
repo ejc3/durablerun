@@ -19,6 +19,12 @@ export interface SqlRow {
 
 export interface SqlResult {
   rows: SqlRow[]
+  /**
+   * Normalized contract (backends diverge natively): for row-returning
+   * statements (SELECT, DML…RETURNING) this is rows.length; for plain DML it
+   * is the affected-row count. Fence checks on RETURNING statements must
+   * therefore read rows.length — which this normalization makes equivalent.
+   */
   rowsAffected: number
 }
 
@@ -29,9 +35,20 @@ export interface SqlResult {
  *
  * `label` names the engine transition (e.g. `claim`, `sweep:claim-timeout`,
  * `checkpoint`) — the address space for crash injection and tracing.
+ *
+ * `mode` defaults to 'write' (atomic write transaction). Advisory reads —
+ * idle polls, nextWakeAt, sweep candidate SELECTs — pass 'read' so they never
+ * take the single-writer lock (§3.1's read-cheap idle-cost claim) and can be
+ * served by replicas.
  */
+export type SqlBatchMode = 'read' | 'write'
+
 export interface SqlExecutor {
-  batch(label: string, statements: readonly SqlStatement[]): Promise<SqlResult[]>
+  batch(
+    label: string,
+    statements: readonly SqlStatement[],
+    mode?: SqlBatchMode,
+  ): Promise<SqlResult[]>
 }
 
 /** All identifiers are injected so simulations are replayable by seed. */
