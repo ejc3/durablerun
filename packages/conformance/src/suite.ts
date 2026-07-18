@@ -206,19 +206,22 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         // Same row reopened: no successor, no attempt burn, backoff applied.
+        // claimed_by carries the sweep's fence stamp (never the old worker's
+        // token) — nothing reads claimed_by off non-running runs and the
+        // next claim overwrites it.
         expect(row?.rows[0]).toMatchObject({
           state: 'pending',
           attempt: 1,
           relaunch_count: 1,
-          claimed_by: null,
         })
+        expect(row?.rows[0]?.claimed_by).not.toBe('tick-1')
         const [task] = await f.raw.batch('t', [
           {
             sql: `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
             args: [run.taskId],
           },
         ])
-        expect(task?.rows[0]).toMatchObject({ attempts: 1, infra_retries: 0 })
+        expect(task?.rows[0]).toMatchObject({ attempts: 0, infra_retries: 0 })
         // The stale generation is dead: re-claim gets gen 2, old gen fails.
         await f.admin.setFakeNowEpochMs(1_200_000)
         const again = await claimOne('tick-2')
@@ -293,8 +296,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         // Infra accounting: the successor never touches the user budget.
-        expect(task?.rows[0]).toMatchObject({ attempts: 1, infra_retries: 1 })
-        // Claiming the successor keeps the user watermark at 1 (2 - 1 infra).
+        expect(task?.rows[0]).toMatchObject({ attempts: 0, infra_retries: 1 })
+        // Claiming the successor never touches attempts (user failures only).
         await f.admin.setFakeNowEpochMs(1_200_000)
         const successor = await claimOne('tick-2')
         expect(successor.attempt).toBe(2)
@@ -302,7 +305,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const [after] = await f.raw.batch('t', [
           { sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [run.taskId] },
         ])
-        expect(after?.rows[0]?.attempts).toBe(1)
+        expect(after?.rows[0]?.attempts).toBe(0)
       })
 
       it('fails the task terminally at the infra-retry cap, no successor', async () => {

@@ -2,6 +2,7 @@ import {
   type Buggify,
   type Checkpoint,
   type ClaimedRun,
+  FencedBatch,
   type IdSource,
   type LeaseState,
   neverBuggify,
@@ -12,6 +13,7 @@ import {
   type SpawnResult,
   type SqlExecutor,
   type SqlRow,
+  STAMP,
   type SweptRun,
   type TaskResult,
 } from '@durablerun/core'
@@ -25,17 +27,27 @@ const DEFAULT_RETRY: RetryStrategy = {
 }
 const DEFAULT_MAX_ATTEMPTS = 5
 
-export interface StoreOptions {
-  buggify?: Buggify
-  /** Lost-launch reopens before the run (and task) fail terminally. */
-  relaunchCap?: number
-  /** `$ClaimTimeout` successors per task before terminal failure (generous). */
-  infraRetryCap?: number
-}
-const DEFAULT_RELAUNCH_CAP = 5
-const DEFAULT_INFRA_RETRY_CAP = 20
-/** Seconds before a claim-timeout successor becomes claimable. */
-const INFRA_BACKOFF_SECONDS = 5
+/**
+ * Contract constants (DESIGN.md §3.1/§3.8.2 pins them; the conformance suite
+ * asserts them; dialects must match them — they are spec, not tuning knobs).
+ */
+export const RELAUNCH_CAP = 5
+export const INFRA_RETRY_CAP = 20
+export const INFRA_BACKOFF_SECONDS = 5
+export const RELAUNCH_BACKOFF_BASE_SECONDS = 5
+export const RELAUNCH_BACKOFF_MAX_SECONDS = 60
+
+/**
+ * Terminal failure reasons. Since the FencedBatch stamps carry batch
+ * ownership, these are pure data (never fence keys) — but they are still
+ * wire-visible contract values shared with the conformance suite.
+ */
+export const REASON_CLAIM_TIMEOUT = '{"name":"$ClaimTimeout"}'
+export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
+export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
+
+/** Non-terminal states — one definition, everywhere (drift was reviewed). */
+const LIVE = `('pending','running','sleeping')`
 
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
 const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms,
@@ -43,25 +55,59 @@ const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.clai
        t.task_name, t.params, t.retry_strategy, t.max_attempts, t.headers, t.infra_retries`
 
 /**
+ * Sweep discovery scans, exported so the query-plan suite pins the EXACT
+ * production SQL (the reviewed prevention: pins on stand-ins can't catch
+ * drift in the queries they protect).
+ */
+export const SWEEP_SCAN_CANCELS_SQL = `SELECT t.task_id,
+       (SELECT r.run_id FROM runs r
+          WHERE r.task_id = t.task_id AND r.state IN ${LIVE}
+          ORDER BY r.attempt DESC LIMIT 1) AS run_id
+FROM tasks t
+WHERE t.queue = ? AND t.cancel_at_ms IS NOT NULL AND t.cancel_at_ms <= ${NOW_MS}
+  AND t.state IN ${LIVE}
+LIMIT ?`
+
+export const SWEEP_SCAN_EXPIRED_SQL = `SELECT r.run_id, r.task_id, r.attempt, r.claim_gen, r.activated_gen, r.relaunch_count
+FROM runs r
+WHERE r.queue = ? AND r.state = 'running'
+  AND r.claim_expires_at_ms IS NOT NULL AND r.claim_expires_at_ms <= ${NOW_MS}
+ORDER BY r.claim_expires_at_ms, r.run_id
+LIMIT ?`
+
+/** Bounded-concurrency map preserving order (sweep pipelining — the fencing
+ * discipline requires per-item atomicity, never sequential issuance). */
+const SWEEP_PIPELINE_WIDTH = 8
+async function mapLimit<T, R>(
+  items: T[],
+  width: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(width, items.length) }, async () => {
+    for (;;) {
+      const index = next++
+      if (index >= items.length) return
+      results[index] = await fn(items[index] as T)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+/**
  * SchedulerStore on SQLite/libsql (DESIGN.md §3.4). Every method is ONE
- * atomic labeled batch; fences follow rule 1 (first statement is the guarded
- * CAS, follow-ons key on the post-state + claim token); all timestamps come
- * from NOW_MS (rule 3). Methods marked "PR1.5/1.6" land in the next diffs.
+ * atomic labeled batch; single-item transitions go through FencedBatch so
+ * follow-ons structurally key on the batch's own stamp (§3.4 rule 1); all
+ * timestamps come from NOW_MS (rule 3). "PR1.6" methods land next.
  */
 export class LibsqlSchedulerStore implements SchedulerStore {
-  private readonly buggify: Buggify
-  private readonly relaunchCap: number
-  private readonly infraRetryCap: number
-
   constructor(
     private readonly db: SqlExecutor,
     private readonly ids: IdSource,
-    opts: StoreOptions = {},
-  ) {
-    this.buggify = opts.buggify ?? neverBuggify
-    this.relaunchCap = opts.relaunchCap ?? DEFAULT_RELAUNCH_CAP
-    this.infraRetryCap = opts.infraRetryCap ?? DEFAULT_INFRA_RETRY_CAP
-  }
+    private readonly buggify: Buggify = neverBuggify,
+  ) {}
 
   async spawn(
     queue: string,
@@ -140,7 +186,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    const { leaseSeconds, limit } = opts
+    const { leaseSeconds } = opts
+    const limit = clampLimit(opts.limit)
+    if (limit === 0) return []
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
     // must drain via the successor-tick chain, never assume a full batch.
     const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
@@ -176,7 +224,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 ) c
                 JOIN runs cr ON cr.run_id = c.run_id
                 JOIN tasks t ON t.task_id = cr.task_id
-                WHERE t.state IN ('pending','sleeping','running')
+                WHERE t.state IN ${LIVE}
                 ORDER BY c.available_at_ms, c.run_id
                 LIMIT ?
               )`,
@@ -191,18 +239,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           effectiveLimit,
         ],
       },
-      // 2. Task bookkeeping, keyed on the post-state + token. attempts is the
-      //    USER-attempt watermark: run.attempt is the fence ordinal (counts
-      //    infra successors too), so the user ordinal subtracts infra_retries
-      //    — the TLA+ AttemptAccounting invariant; a plain MAX(attempt) here
-      //    would burn max_attempts budget on infrastructure failures.
+      // 2. Task bookkeeping, keyed on the post-state + token. NOTE: attempts
+      //    is deliberately NOT touched — per the TLC-checked accounting model
+      //    it moves only on user-failure transitions (PR1.6 fail()), never at
+      //    claim (codex finding: the earlier watermark contradicted the spec).
       {
         sql: `UPDATE tasks SET
                 state = 'running',
-                attempts = MAX(attempts, (
-                  SELECT r.attempt FROM runs r
-                  WHERE r.task_id = tasks.task_id AND r.claimed_by = ? AND r.state = 'running'
-                ) - infra_retries),
                 last_attempt_run = (
                   SELECT r.run_id FROM runs r
                   WHERE r.task_id = tasks.task_id AND r.claimed_by = ? AND r.state = 'running'
@@ -211,7 +254,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 SELECT task_id FROM runs
                 WHERE queue = ? AND claimed_by = ? AND state = 'running'
               )`,
-        args: [claimToken, claimToken, queue, claimToken],
+        args: [claimToken, queue, claimToken],
       },
       // 3. A timed-out waiter's claim consumes its wait row, so a later emit
       //    cannot resurrect a timed-out wait (§3.4 rule 2, timeout branch).
@@ -248,7 +291,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     if (this.buggify('activate:lost')) return null
     const [cas, , data] = await this.db.batch('activate', [
       // Per-claim latch: only this claim's first delivery passes; re-extends
-      // the lease so channel-delayed launches don't start life nearly expired.
+      // the lease so channel-delayed launches don't start life nearly
+      // expired. A launch whose task is already past its cancellation
+      // deadline must not start (codex): the sweep will cancel it.
       {
         sql: `UPDATE runs SET
                 activated_gen = ?,
@@ -256,22 +301,26 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 claim_expires_at_ms = ${NOW_MS} + lease_seconds * 1000,
                 heartbeat_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-                AND claim_gen = ? AND activated_gen < ?`,
+                AND claim_gen = ? AND activated_gen < ?
+                AND NOT EXISTS (
+                  SELECT 1 FROM tasks t
+                  WHERE t.task_id = runs.task_id
+                    AND t.cancel_at_ms IS NOT NULL AND t.cancel_at_ms <= ${NOW_MS}
+                )`,
         args: [claimGen, runId, queue, claimToken, claimGen, claimGen],
       },
-      // First-ever start stamps the task and tightens cancel_at_ms with the
-      // max_duration deadline — keyed on the post-state.
+      // First-ever start stamps the task and REPLACES the deadline: max_delay
+      // is disarmed by starting (its whole meaning is "cancel if never
+      // started"); max_duration runs from first start. The earlier MIN() kept
+      // the stale spawn deadline and cancelled healthy running tasks.
       {
         sql: `UPDATE tasks SET
                 first_started_at_ms = COALESCE(first_started_at_ms, ${NOW_MS}),
                 cancel_at_ms = CASE
                   WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
-                    MIN(
-                      COALESCE(cancel_at_ms, 9e15),
-                      COALESCE(first_started_at_ms, ${NOW_MS})
-                        + json_extract(cancellation, '$.maxDurationSeconds') * 1000
-                    )
-                  ELSE cancel_at_ms
+                    COALESCE(first_started_at_ms, ${NOW_MS})
+                      + json_extract(cancellation, '$.maxDurationSeconds') * 1000
+                  ELSE NULL
                 END
               WHERE task_id = (
                 SELECT task_id FROM runs
@@ -329,203 +378,238 @@ export class LibsqlSchedulerStore implements SchedulerStore {
 
   /**
    * §3.1 steps 0–1. Discovery is a read-only scan; every transition is a
-   * per-item atomic batch whose FIRST statement is the ownership CAS —
-   * concurrent sweepers race on it and the loser's whole batch matches
-   * nothing (the unique (task_id, attempt) index is the structural backstop
-   * against duplicate successors). Classification is decided by activation
-   * state: `activated_gen < claim_gen` = the launch was lost.
+   * FencedBatch — the CAS stamps the row it kills (claimed_by carries the
+   * sweep stamp; nothing reads claimed_by off non-running runs) and every
+   * follow-on keys on the stamp, so a racing sweeper's whole batch matches
+   * nothing structurally. One `limit` bounds TOTAL transitions across both
+   * scans; per-item batches run through a bounded pipeline, never
+   * sequentially (the reviewed RTT pileup).
    */
   async sweep(queue: string, limit: number): Promise<SweptRun[]> {
-    const effectiveLimit = limit > 1 && this.buggify('sweep:short-batch') ? 1 : limit
+    const budget = clampLimit(limit)
+    if (budget === 0) return []
+    const effectiveBudget = budget > 1 && this.buggify('sweep:short-batch') ? 1 : budget
     const [cancels, expired] = await this.db.batch(
       'sweep:scan',
       [
-        {
-          sql: `SELECT t.task_id,
-                       (SELECT r.run_id FROM runs r
-                          WHERE r.task_id = t.task_id
-                            AND r.state IN ('pending','running','sleeping')
-                          ORDER BY r.run_id DESC LIMIT 1) AS run_id
-                FROM tasks t
-                WHERE t.queue = ? AND t.cancel_at_ms IS NOT NULL AND t.cancel_at_ms <= ${NOW_MS}
-                  AND t.state IN ('pending','running','sleeping')
-                LIMIT ?`,
-          args: [queue, effectiveLimit],
-        },
-        {
-          sql: `SELECT r.run_id, r.claim_gen, r.activated_gen
-                FROM runs r
-                WHERE r.queue = ? AND r.state = 'running'
-                  AND r.claim_expires_at_ms IS NOT NULL AND r.claim_expires_at_ms <= ${NOW_MS}
-                ORDER BY r.claim_expires_at_ms, r.run_id
-                LIMIT ?`,
-          args: [queue, effectiveLimit],
-        },
+        { sql: SWEEP_SCAN_CANCELS_SQL, args: [queue, effectiveBudget] },
+        { sql: SWEEP_SCAN_EXPIRED_SQL, args: [queue, effectiveBudget] },
       ],
       'read',
     )
 
-    const swept: SweptRun[] = []
+    type Item =
+      | { kind: 'cancel'; taskId: string; runId: string | null }
+      | {
+          kind: 'expired'
+          runId: string
+          taskId: string
+          attempt: number
+          claimGen: number
+          activatedGen: number
+          relaunchCount: number
+        }
+    const items: Item[] = []
     for (const row of cancels?.rows ?? []) {
-      const outcome = await this.cancelBatch(queue, String(row.task_id), true)
-      if (outcome) {
-        swept.push({
-          kind: 'cancelled',
-          taskId: String(row.task_id),
-          runId: row.run_id === null ? '' : String(row.run_id),
-        })
-      }
+      items.push({
+        kind: 'cancel',
+        taskId: String(row.task_id),
+        runId: row.run_id === null ? null : String(row.run_id),
+      })
+      if (items.length >= effectiveBudget) break
     }
     for (const row of expired?.rows ?? []) {
-      const runId = String(row.run_id)
-      const claimGen = Number(row.claim_gen)
-      const outcome =
-        Number(row.activated_gen) < claimGen
-          ? await this.sweepLostLaunch(queue, runId, claimGen)
-          : await this.sweepClaimTimeout(queue, runId, claimGen)
-      if (outcome) swept.push(outcome)
+      if (items.length >= effectiveBudget) break
+      items.push({
+        kind: 'expired',
+        runId: String(row.run_id),
+        taskId: String(row.task_id),
+        attempt: Number(row.attempt),
+        claimGen: Number(row.claim_gen),
+        activatedGen: Number(row.activated_gen),
+        relaunchCount: Number(row.relaunch_count),
+      })
     }
-    return swept
+
+    const outcomes = await mapLimit(
+      items,
+      SWEEP_PIPELINE_WIDTH,
+      (item): Promise<SweptRun | null> => {
+        if (item.kind === 'cancel') {
+          return this.cancelTransition('sweep:cancel', queue, item.taskId, true).then((won) =>
+            won ? { kind: 'cancelled', taskId: item.taskId, runId: item.runId } : null,
+          )
+        }
+        return item.activatedGen < item.claimGen
+          ? this.sweepLostLaunch(queue, item)
+          : this.sweepClaimTimeout(queue, item)
+      },
+    )
+    return outcomes.filter((o): o is SweptRun => o !== null)
   }
 
   private async sweepLostLaunch(
     queue: string,
-    runId: string,
-    claimGen: number,
+    item: { runId: string; taskId: string; claimGen: number; relaunchCount: number },
   ): Promise<SweptRun | null> {
     const fence = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
                    AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW_MS}`
-    const [reopened, capped, , state] = await this.db.batch('sweep:lost-launch', [
+    const { won } = await new FencedBatch('sweep:lost-launch', this.ids.token())
       // The launch never activated: reopen the SAME run — no new row, no
-      // attempt consumed — with linear backoff on the relaunch counter.
-      {
-        sql: `UPDATE runs SET
-                state = 'pending', claimed_by = NULL, claim_expires_at_ms = NULL,
-                heartbeat_at_ms = NULL, relaunch_count = relaunch_count + 1,
-                available_at_ms = ${NOW_MS} + MIN((relaunch_count + 1) * 5, 60) * 1000
-              WHERE ${fence} AND relaunch_count < ?`,
-        args: [runId, queue, claimGen, this.relaunchCap],
-      },
-      // Past the cap: a broken launcher must surface as failed work, never
-      // an infinite launch loop (TLA-pinned: the task fails with the run).
-      {
-        sql: `UPDATE runs SET
-                state = 'failed', failed_at_ms = ${NOW_MS}, claimed_by = NULL,
-                claim_expires_at_ms = NULL,
-                failure_reason = '{"name":"$RelaunchCapExhausted"}'
-              WHERE ${fence} AND relaunch_count >= ?`,
-        args: [runId, queue, claimGen, this.relaunchCap],
-      },
-      {
-        sql: `UPDATE tasks SET state = 'failed',
-                failure_reason = '{"name":"$RelaunchCapExhausted"}'
-              WHERE task_id = (
-                SELECT task_id FROM runs
-                WHERE run_id = ? AND state = 'failed'
-                  AND failure_reason = '{"name":"$RelaunchCapExhausted"}'
-              )`,
-        args: [runId],
-      },
-      {
-        sql: `SELECT task_id, relaunch_count FROM runs WHERE run_id = ?`,
-        args: [runId],
-      },
-    ])
-    const info = state?.rows[0]
-    if (!info) return null
-    if ((reopened?.rowsAffected ?? 0) === 1) {
+      // attempt consumed — with linear backoff on the relaunch counter. The
+      // stamp parks in claimed_by (nothing reads claimed_by off non-running
+      // runs; the next claim overwrites it).
+      .cas(
+        'reopen',
+        `UPDATE runs SET
+           state = 'pending', claimed_by = ${STAMP}, claim_expires_at_ms = NULL,
+           heartbeat_at_ms = NULL, relaunch_count = relaunch_count + 1,
+           available_at_ms = ${NOW_MS}
+             + MIN((relaunch_count + 1) * ${RELAUNCH_BACKOFF_BASE_SECONDS}, ${RELAUNCH_BACKOFF_MAX_SECONDS}) * 1000
+         WHERE ${fence} AND relaunch_count < ${RELAUNCH_CAP}`,
+        [item.runId, queue, item.claimGen],
+      )
+      // Past the cap: a broken launcher must surface as failed work — the
+      // task fails with the run (TLA-pinned), never an infinite launch loop.
+      .cas(
+        'cap',
+        `UPDATE runs SET
+           state = 'failed', failed_at_ms = ${NOW_MS}, claimed_by = ${STAMP},
+           claim_expires_at_ms = NULL, failure_reason = '${REASON_RELAUNCH_CAP}'
+         WHERE ${fence} AND relaunch_count >= ${RELAUNCH_CAP}`,
+        [item.runId, queue, item.claimGen],
+      )
+      // The task mirrors the run (the reviewed phantom-'running' divergence
+      // from the TLA SweepLostLaunch action).
+      .followOn(
+        'task-pending',
+        `UPDATE tasks SET state = 'pending'
+         WHERE task_id = ? AND EXISTS (
+           SELECT 1 FROM runs WHERE run_id = ? AND state = 'pending' AND claimed_by = ${STAMP}
+         )`,
+        [item.taskId, item.runId],
+      )
+      .followOn(
+        'task-fail',
+        `UPDATE tasks SET state = 'failed', failure_reason = '${REASON_RELAUNCH_CAP}'
+         WHERE task_id = ? AND EXISTS (
+           SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
+         )`,
+        [item.taskId, item.runId],
+      )
+      .followOn(
+        'waits-gone',
+        `DELETE FROM waits WHERE run_id = ? AND EXISTS (
+           SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
+         )`,
+        [item.runId, item.runId],
+      )
+      .run(this.db)
+    if (won === 'reopen') {
       return {
         kind: 'lost-launch',
-        runId,
-        taskId: String(info.task_id),
-        relaunchCount: Number(info.relaunch_count),
+        runId: item.runId,
+        taskId: item.taskId,
+        relaunchCount: item.relaunchCount + 1,
       }
     }
-    if ((capped?.rowsAffected ?? 0) === 1) {
-      return { kind: 'relaunch-cap-exhausted', runId, taskId: String(info.task_id) }
+    if (won === 'cap') {
+      return { kind: 'relaunch-cap-exhausted', runId: item.runId, taskId: item.taskId }
     }
     return null // lost the race to another sweeper
   }
 
   private async sweepClaimTimeout(
     queue: string,
-    runId: string,
-    claimGen: number,
+    item: { runId: string; taskId: string; attempt: number; claimGen: number },
   ): Promise<SweptRun | null> {
     const successorId = this.ids.uuidv7()
-    const [failed, , , booked, taskSel] = await this.db.batch('sweep:claim-timeout', [
-      // Ownership CAS: the activated worker died (or was partitioned).
-      {
-        sql: `UPDATE runs SET
-                state = 'failed', failed_at_ms = ${NOW_MS},
-                failure_reason = '{"name":"$ClaimTimeout"}'
-              WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
-                AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW_MS}`,
-        args: [runId, queue, claimGen],
-      },
+    const { won, results } = await new FencedBatch('sweep:claim-timeout', this.ids.token())
+      // Ownership CAS: the activated worker died (or was partitioned). The
+      // stamp overwrites the dead worker's token, so its zombie writes are
+      // doubly fenced from here on.
+      .cas(
+        'fail',
+        `UPDATE runs SET
+           state = 'failed', failed_at_ms = ${NOW_MS}, claimed_by = ${STAMP},
+           failure_reason = '${REASON_CLAIM_TIMEOUT}'
+         WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
+           AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW_MS}`,
+        [item.runId, queue, item.claimGen],
+      )
       // Successor under the infra cap, carrying the run-DB pointer and any
-      // parked event wake (§3.8.2). OR IGNORE + the unique (task_id, attempt)
-      // index make a racing sweeper's duplicate insert a silent no-op.
-      {
-        sql: `INSERT OR IGNORE INTO runs
-                (run_id, queue, task_id, attempt, state, available_at_ms,
-                 wake_event, event_payload, run_db, created_at_ms)
-              SELECT ?, r.queue, r.task_id, r.attempt + 1, 'pending',
-                     ${NOW_MS} + ${INFRA_BACKOFF_SECONDS} * 1000,
-                     r.wake_event, r.event_payload, r.run_db, ${NOW_MS}
-              FROM runs r JOIN tasks t ON t.task_id = r.task_id
-              WHERE r.run_id = ? AND r.state = 'failed'
-                AND r.failure_reason = '{"name":"$ClaimTimeout"}'
-                AND t.state <> 'failed' AND t.infra_retries < ?`,
-        args: [successorId, runId, this.infraRetryCap],
-      },
-      // At the cap (checked pre-increment) with no live successor: terminal.
-      {
-        sql: `UPDATE tasks SET state = 'failed',
-                failure_reason = '{"name":"$InfraRetriesExhausted"}'
-              WHERE task_id = (
-                SELECT task_id FROM runs WHERE run_id = ? AND state = 'failed'
-                  AND failure_reason = '{"name":"$ClaimTimeout"}'
-              )
-                AND state IN ('pending','running','sleeping')
-                AND infra_retries >= ?
-                AND NOT EXISTS (
-                  SELECT 1 FROM runs rr
-                  WHERE rr.task_id = tasks.task_id AND rr.state = 'pending'
-                    AND rr.attempt = (SELECT attempt FROM runs WHERE run_id = ?) + 1
-                )`,
-        args: [runId, this.infraRetryCap, runId],
-      },
-      // Bookkeeping keyed on OUR successor existing (a racing sweeper whose
-      // insert was ignored must not double-increment infra_retries).
-      {
-        sql: `UPDATE tasks SET
-                infra_retries = infra_retries + 1, state = 'pending',
-                last_attempt_run = ?
-              WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ?)
-                AND state <> 'failed'
-                AND EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
-        args: [successorId, runId, successorId],
-      },
-      {
-        sql: `SELECT task_id FROM runs WHERE run_id = ?`,
-        args: [runId],
-      },
-    ])
-    if ((failed?.rowsAffected ?? 0) !== 1) return null // lost the race
-    const taskId = String(taskSel?.rows[0]?.task_id)
-    if ((booked?.rowsAffected ?? 0) === 1) {
-      return { kind: 'claim-timeout', runId, taskId, successorRunId: successorId }
-    }
-    return { kind: 'infra-cap-exhausted', runId, taskId }
+      // parked event wake (§3.8.2). Plain INSERT (not OR IGNORE — reviewed:
+      // OR IGNORE also swallows PK collisions and books foreign rows): the
+      // stamp guarantees only the winner reaches this statement, so a
+      // constraint violation is a real invariant breach and must fail loudly.
+      .followOn(
+        'successor',
+        `INSERT INTO runs
+           (run_id, queue, task_id, attempt, state, available_at_ms,
+            wake_event, event_payload, run_db, created_at_ms)
+         SELECT ?, r.queue, r.task_id, ?, 'pending',
+                ${NOW_MS} + ${INFRA_BACKOFF_SECONDS} * 1000,
+                r.wake_event, r.event_payload, r.run_db, ${NOW_MS}
+         FROM runs r JOIN tasks t ON t.task_id = r.task_id
+         WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
+           AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}`,
+        [successorId, item.attempt + 1, item.runId],
+      )
+      // At the cap (pre-increment): terminal. Stamp-fenced, so the reviewed
+      // losing-sweeper interleaving matches zero rows structurally.
+      .followOn(
+        'task-terminal',
+        `UPDATE tasks SET state = 'failed', failure_reason = '${REASON_INFRA_CAP}'
+         WHERE task_id = ? AND state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
+           AND EXISTS (
+             SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
+           )`,
+        [item.taskId, item.runId],
+      )
+      // Bookkeeping keyed on the stamp AND our successor existing.
+      .followOn(
+        'bookkeeping',
+        `UPDATE tasks SET
+           infra_retries = infra_retries + 1, state = 'pending', last_attempt_run = ?
+         WHERE task_id = ? AND state IN ${LIVE}
+           AND EXISTS (
+             SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
+           )
+           AND EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
+        [successorId, item.taskId, item.runId, successorId],
+      )
+      // The dead run's waits die with it (the reviewed orphan-waits leak).
+      .followOn(
+        'waits-gone',
+        `DELETE FROM waits WHERE run_id = ? AND EXISTS (
+           SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
+         )`,
+        [item.runId, item.runId],
+      )
+      .run(this.db)
+    if (won !== 'fail') return null // lost the race
+    return (results.successor?.rowsAffected ?? 0) === 1
+      ? {
+          kind: 'claim-timeout',
+          runId: item.runId,
+          taskId: item.taskId,
+          successorRunId: successorId,
+        }
+      : { kind: 'infra-cap-exhausted', runId: item.runId, taskId: item.taskId }
   }
 
-  /** The single advisory write (§3.9): accelerate lease expiry, nothing more. */
+  /**
+   * The single advisory write (§3.9): accelerate lease expiry, nothing more.
+   * True only when it shortened a live lease. NOTE: a still-alive worker's
+   * subsequent heartbeat may legitimately re-extend — the lease remains the
+   * sole authority and advisory signals never revoke it.
+   */
   async expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean> {
     const [expired] = await this.db.batch('expire-lease-now', [
       {
         sql: `UPDATE runs SET claim_expires_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
+              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+                AND claim_expires_at_ms > ${NOW_MS}`,
         args: [runId, queue, claimToken],
       },
     ])
@@ -533,11 +617,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
-    return this.cancelBatch(queue, taskId, false)
+    return this.cancelTransition('cancel-task', queue, taskId, false)
   }
 
-  /** Shared by explicit cancelTask and the sweep's deadline enforcement. */
-  private async cancelBatch(
+  /**
+   * Shared cancel transition. Two labels — 'cancel-task' (explicit API) and
+   * 'sweep:cancel' (deadline enforcement) — because a label is the crash
+   * injection/tracing address and one label must not cover two SQL shapes.
+   * The stamp lives in failure_reason (tasks have no free stamp column).
+   */
+  private async cancelTransition(
+    label: 'cancel-task' | 'sweep:cancel',
     queue: string,
     taskId: string,
     deadlineOnly: boolean,
@@ -545,28 +635,34 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const deadlineGuard = deadlineOnly
       ? `AND cancel_at_ms IS NOT NULL AND cancel_at_ms <= ${NOW_MS}`
       : ''
-    const [cancelled] = await this.db.batch('cancel-task', [
-      {
-        sql: `UPDATE tasks SET state = 'cancelled', cancelled_at_ms = ${NOW_MS},
-                cancel_at_ms = NULL
-              WHERE task_id = ? AND queue = ?
-                AND state IN ('pending','running','sleeping') ${deadlineGuard}`,
-        args: [taskId, queue],
-      },
-      {
-        sql: `UPDATE runs SET state = 'cancelled', claimed_by = NULL,
-                claim_expires_at_ms = NULL
-              WHERE task_id = ? AND state IN ('pending','running','sleeping')
-                AND (SELECT state FROM tasks WHERE task_id = ?) = 'cancelled'`,
-        args: [taskId, taskId],
-      },
-      {
-        sql: `DELETE FROM waits WHERE task_id = ?
-                AND (SELECT state FROM tasks WHERE task_id = ?) = 'cancelled'`,
-        args: [taskId, taskId],
-      },
-    ])
-    return (cancelled?.rowsAffected ?? 0) === 1
+    const { won } = await new FencedBatch(label, this.ids.token())
+      .cas(
+        'cancel',
+        `UPDATE tasks SET
+           state = 'cancelled', cancelled_at_ms = ${NOW_MS}, cancel_at_ms = NULL,
+           failure_reason = json_object('name', '$Cancelled', 'stamp', ${STAMP})
+         WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}`,
+        [taskId, queue],
+      )
+      .followOn(
+        'runs',
+        `UPDATE runs SET state = 'cancelled', claimed_by = NULL, claim_expires_at_ms = NULL
+         WHERE task_id = ? AND state IN ${LIVE} AND EXISTS (
+           SELECT 1 FROM tasks
+           WHERE task_id = ? AND json_extract(failure_reason, '$.stamp') = ${STAMP}
+         )`,
+        [taskId, taskId],
+      )
+      .followOn(
+        'waits',
+        `DELETE FROM waits WHERE task_id = ? AND EXISTS (
+           SELECT 1 FROM tasks
+           WHERE task_id = ? AND json_extract(failure_reason, '$.stamp') = ${STAMP}
+         )`,
+        [taskId, taskId],
+      )
+      .run(this.db)
+    return won === 'cancel'
   }
 
   // ── PR1.6 ──────────────────────────────────────────────────────────────
@@ -579,8 +675,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   fail(): Promise<void> {
     return notYet('fail')
   }
-
-  // ── PR1.6 ──────────────────────────────────────────────────────────────
   getCheckpoints(): Promise<Checkpoint[]> {
     return notYet('getCheckpoints')
   }
@@ -601,10 +695,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 }
 
+/** SQLite parses LIMIT -1 as unlimited (reviewed): clamp and floor. */
+function clampLimit(limit: number): number {
+  if (!Number.isFinite(limit)) throw new RangeError(`limit ${limit}`)
+  return Math.max(0, Math.floor(limit))
+}
+
 function notYet(method: string): Promise<never> {
-  return Promise.reject(
-    new Error(`LibsqlSchedulerStore.${method}: not implemented until PR1.5/1.6`),
-  )
+  return Promise.reject(new Error(`LibsqlSchedulerStore.${method}: not implemented until PR1.6`))
 }
 
 function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {

@@ -92,7 +92,7 @@ export type SweptRun =
   | { kind: 'claim-timeout'; runId: string; taskId: string; successorRunId: string }
   | { kind: 'relaunch-cap-exhausted'; runId: string; taskId: string }
   | { kind: 'infra-cap-exhausted'; runId: string; taskId: string }
-  | { kind: 'cancelled'; runId: string; taskId: string }
+  | { kind: 'cancelled'; runId: string | null; taskId: string }
 
 export interface LeaseState {
   held: boolean

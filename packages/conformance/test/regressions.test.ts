@@ -92,7 +92,7 @@ describe('PR1.5 review regressions', () => {
     f.close()
   })
 
-  it('sweep-terminal transitions delete the dead run\'s waits (no orphan waits)', async () => {
+  it("sweep-terminal transitions delete the dead run's waits (no orphan waits)", async () => {
     const f = await makeLibsqlFixture('waits')
     await f.admin.setFakeNowEpochMs(1_000_000)
     const spawned = await f.store.spawn(Q, 'job', '{}')
@@ -202,7 +202,10 @@ describe('PR1.5 review regressions', () => {
     // a foreign row.
     await expect(f.store.sweep(Q, 10)).rejects.toThrow()
     const [task] = await f.raw.batch('t', [
-      { sql: `SELECT infra_retries, last_attempt_run FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+      {
+        sql: `SELECT infra_retries, last_attempt_run FROM tasks WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
     ])
     expect(Number(task?.rows[0]?.infra_retries)).toBe(0)
     expect(task?.rows[0]?.last_attempt_run).not.toBe(predictedSuccessor)

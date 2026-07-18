@@ -224,10 +224,10 @@ Spawn(t) ==
 \* Claim <-> batch('claim'), K = 1 (S3.1 step 2): a due run of a live task
 \* -> running, claim_gen+1, fresh lease, launch message enqueued (tick step
 \* 3, fused -- see header).  The message carries the new gen; its token is
-\* the (run, gen) pair.  Task bookkeeping: state -> running.  NOTE the model
-\* does NOT mirror store.ts's `attempts = MAX(attempts, run.attempt)` here
-\* -- see AttemptAccounting; that impl line conflicts with the split
-\* accounting this spec checks (review finding).
+\* the (run, gen) pair.  Task bookkeeping: state -> running.  Attempts are
+\* deliberately untouched here -- see AttemptAccounting.  (A prior impl
+\* mutated attempts at claim; that review finding is RESOLVED: store.ts now
+\* conforms to this action, and a red/green regression pins it.)
 Claim(r) ==
   /\ runState[r] \in {"pending", "sleeping"}
   /\ availableAt[r] <= now

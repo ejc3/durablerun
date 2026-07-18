@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { LibsqlExecutor, LibsqlStoreAdmin } from '../src/index.js'
+import {
+  LibsqlExecutor,
+  LibsqlStoreAdmin,
+  SWEEP_SCAN_CANCELS_SQL,
+  SWEEP_SCAN_EXPIRED_SQL,
+} from '../src/index.js'
 
 /**
  * Query-plan pinning (prevention suite, per the standing rule): the
@@ -41,6 +46,19 @@ describe('claim candidate legs', () => {
   it('the sleeping leg walks runs_poll in index order — no backlog sort', async () => {
     const p = await plan(leg('sleeping'), ['q', 0, 10])
     expect(p).toContain('runs_poll')
+    expect(p).not.toContain('TEMP B-TREE')
+  })
+})
+
+describe('production sweep scans (exact shipped SQL)', () => {
+  it('the cancel scan seeks tasks_cancel', async () => {
+    const p = await plan(SWEEP_SCAN_CANCELS_SQL, ['q', 10])
+    expect(p).toContain('tasks_cancel')
+  })
+
+  it('the expired-lease scan seeks runs_lease with no backlog sort', async () => {
+    const p = await plan(SWEEP_SCAN_EXPIRED_SQL, ['q', 10])
+    expect(p).toContain('runs_lease')
     expect(p).not.toContain('TEMP B-TREE')
   })
 })
