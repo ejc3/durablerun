@@ -1,4 +1,4 @@
-import { LibsqlExecutor } from '@absurd-lite/store-libsql'
+import { LibsqlExecutor } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { SimWorld, type TraceEntry } from '../src/index.js'
 
@@ -126,5 +126,119 @@ describe('failure propagation', () => {
     })
     await expect(world.run()).rejects.toThrow(/actor 'a' failed/)
     db.close()
+  })
+})
+
+describe('process-death semantics', () => {
+  it("a crash purges the actor's other in-flight calls — a dead process has no effects", async () => {
+    const { world, db } = await counterWorld(1)
+    world.actor('a', async (adb) => {
+      // Concurrent heartbeat+step shape: both batches in flight at once.
+      await Promise.all([
+        adb.batch('step', [{ sql: `UPDATE counter SET value = value + 1 WHERE id = 1`, args: [] }]),
+        adb.batch('heartbeat', [
+          { sql: `UPDATE counter SET value = value + 100 WHERE id = 1`, args: [] },
+        ]),
+      ])
+    })
+    world.injectCrash({ actor: 'a', label: 'step', when: 'before' })
+    const results = await world.run()
+    expect(results.get('a')).toMatchObject({ status: 'crashed' })
+    // Effects BEFORE death are real; the invariant is no effects AFTER it:
+    // nothing of actor 'a' executes past the crash, and a heartbeat still
+    // pending at crash time is purged as an orphan, never executed.
+    const crashSeq = world.trace.findIndex((t) => t.outcome === 'crash-before')
+    expect(crashSeq).toBeGreaterThanOrEqual(0)
+    for (const entry of world.trace.slice(crashSeq + 1)) {
+      expect(entry.outcome).not.toBe('ok')
+    }
+    const heartbeatRanBeforeCrash = world.trace.some(
+      (t, i) => i < crashSeq && t.label === 'heartbeat' && t.outcome === 'ok',
+    )
+    expect(await counterValue(db)).toBe(heartbeatRanBeforeCrash ? 100 : 0)
+    if (!heartbeatRanBeforeCrash) {
+      expect(world.trace.some((t) => t.outcome === 'crash-orphan')).toBe(true)
+    }
+    db.close()
+  })
+})
+
+describe('duplicate injection (at-least-once channel)', () => {
+  it('executes the batch twice — the retry-after-lost-response shape', async () => {
+    const { world, db } = await counterWorld(1)
+    world.actor('a', async (adb) => {
+      await adb.batch('bump', [
+        { sql: `UPDATE counter SET value = value + 1 WHERE id = 1`, args: [] },
+      ])
+    })
+    world.injectDuplicate({ label: 'bump' })
+    const results = await world.run()
+    expect(results.get('a')).toMatchObject({ status: 'done' })
+    // A non-idempotent batch is visibly wrong under duplication — the exact
+    // fault the engine's fenced batches must absorb invisibly.
+    expect(await counterValue(db)).toBe(2)
+    expect(world.trace.filter((t) => t.label === 'bump').map((t) => t.outcome)).toEqual([
+      'dup',
+      'ok',
+    ])
+    db.close()
+  })
+})
+
+describe('injection-spec hygiene', () => {
+  it('neutralizes stateful regex flags — /g must not alternate matches', async () => {
+    const { world, db } = await counterWorld(1)
+    world.actor('a', async (adb) => {
+      for (let i = 0; i < 3; i++) {
+        await adb.batch('bump', [
+          { sql: `UPDATE counter SET value = value + 1 WHERE id = 1`, args: [] },
+        ])
+      }
+    })
+    world.injectCrash({ actor: 'a', label: /bump/g, occurrence: 2, when: 'before' })
+    await world.run()
+    // Crash lands before the SECOND bump, same as the string-label spec.
+    expect(await counterValue(db)).toBe(1)
+    db.close()
+  })
+
+  it('throws on ambiguous specs firing on the same call', async () => {
+    const { world, db } = await counterWorld(1)
+    racyIncrement(world, 'a')
+    world.injectCrash({ label: 'write', when: 'before' })
+    world.injectCrash({ actor: 'a', label: /wr.te/, when: 'after' })
+    await expect(world.run()).rejects.toThrow(/ambiguous injection/)
+    db.close()
+  })
+
+  it('throws when an injected spec never fires (vacuous-green prevention)', async () => {
+    const { world, db } = await counterWorld(1)
+    racyIncrement(world, 'a')
+    world.injectCrash({ label: 'wr1te-typo', when: 'before' })
+    await expect(world.run()).rejects.toThrow(/never fired/)
+    db.close()
+  })
+})
+
+describe('determinism-contract enforcement', () => {
+  it('rejects re-entrant run()', async () => {
+    const { world, db } = await counterWorld(1)
+    racyIncrement(world, 'a')
+    const first = world.run()
+    await expect(world.run()).rejects.toThrow(/already active/)
+    await first
+    db.close()
+  })
+
+  it('detects an actor awaiting a non-port promise instead of hanging', async () => {
+    const { world, db } = await counterWorld(1)
+    world.actor('a', async (adb) => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await adb.batch('late', [{ sql: `UPDATE counter SET value = 1 WHERE id = 1`, args: [] }])
+    })
+    await expect(world.run()).rejects.toThrow(/determinism contract violation/)
+    db.close()
+    // Let the actor's timer fire and its condemned batch reject (handled).
+    await new Promise((resolve) => setTimeout(resolve, 30))
   })
 })

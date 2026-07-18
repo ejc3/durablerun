@@ -206,7 +206,7 @@ the *application* data store. Do **not** attempt `@workflow-worlds/turso` on Ver
 (resident poller; unsupported there) and do not use `workflow@beta` 5.x with it
 (hard spec rejection).
 
-**Deliverable B — "absurd-lite": port Absurd's engine to a pluggable-SQL,
+**Deliverable B — "durablerun": port Absurd's engine to a pluggable-SQL,
 serverless-driven engine.** This is the real project. Keep Absurd's data model and
 semantics nearly verbatim (they are proven and deliberately minimal); move the
 plpgsql into a TypeScript core issuing per-dialect atomic SQL; replace the resident
@@ -280,8 +280,10 @@ tick():
        lost launch (activated_gen < claim_gen): the worker never started —
          re-open the SAME run for claiming: no new row, no attempt consumed,
          relaunch_count+1 with backoff on available_at; past its cap the run
-         fails terminally (a mis-configured launcher must surface as failed
-         runs, not an infinite launch loop).
+         AND its task fail terminally — a broken launcher must surface as
+         failed tasks, never spawn successors through itself (TLA-pinned).
+         Reopening leaves claim_gen untouched: stale in-flight launches die
+         on the state guard now and the gen guard after the next claim.
        died mid-run (activated): $ClaimTimeout — insert the successor run
          (fresh UUIDv7, infra_retries+1 — NOT max_attempts — available_at
          computed in SQL, carrying forward the run-DB pointer, wake_event,

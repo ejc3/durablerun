@@ -1,5 +1,5 @@
 {
-  "name": "absurd-lite",
+  "name": "durablerun",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,7 +12,8 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format-check": "biome format .",
-    "verify": "pnpm lint && pnpm format-check && pnpm typecheck && pnpm test"
+    "verify": "pnpm lint && pnpm format-check && pnpm typecheck && pnpm test",
+    "verify:tla": "bash scripts/tla.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

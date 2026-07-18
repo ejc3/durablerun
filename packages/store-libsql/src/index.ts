@@ -1,4 +1,5 @@
 export { LibsqlStoreAdmin } from './admin.js'
 export { LibsqlExecutor } from './executor.js'
+export { LibsqlSchedulerStore } from './store.js'
 export { CURRENT_SCHEMA_VERSION, MIGRATIONS } from './schema.js'
 export { NOW_MS } from './time.js'

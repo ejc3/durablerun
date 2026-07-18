@@ -24,13 +24,43 @@ export function retryDelaySeconds(
   strategy: Exclude<RetryStrategy, { kind: 'none' }>,
   failedAttempt: number,
 ): number {
+  let delay: number
   switch (strategy.kind) {
     case 'fixed':
-      return strategy.baseSeconds
+      delay = strategy.baseSeconds
+      break
     case 'exponential':
-      return Math.min(
+      delay = Math.min(
         strategy.baseSeconds * strategy.factor ** (failedAttempt - 1),
         strategy.maxSeconds,
       )
+      break
   }
+  // Malformed strategies round-trip through a TEXT column; NaN here would
+  // store a garbage available_at and silently lose the run forever — worse
+  // than a crash. Fail loudly instead (spawn also validates, see
+  // normalizeRetryStrategy).
+  if (!Number.isFinite(delay)) {
+    throw new RangeError(`retry delay is not finite for strategy ${JSON.stringify(strategy)}`)
+  }
+  return Math.max(0, delay)
+}
+
+/**
+ * Validates a strategy at the write boundary (spawn) so malformed data never
+ * reaches the retry_strategy column. Returns the value unchanged on success.
+ */
+export function normalizeRetryStrategy(strategy: RetryStrategy): RetryStrategy {
+  if (strategy.kind === 'none') return strategy
+  const finitePositive = (n: unknown): boolean =>
+    typeof n === 'number' && Number.isFinite(n) && n >= 0
+  if (!finitePositive(strategy.baseSeconds)) {
+    throw new RangeError(`retry strategy baseSeconds invalid: ${JSON.stringify(strategy)}`)
+  }
+  if (strategy.kind === 'exponential') {
+    if (!finitePositive(strategy.factor) || !finitePositive(strategy.maxSeconds)) {
+      throw new RangeError(`retry strategy factor/maxSeconds invalid: ${JSON.stringify(strategy)}`)
+    }
+  }
+  return strategy
 }

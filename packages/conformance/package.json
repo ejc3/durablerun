@@ -1,5 +1,5 @@
 {
-  "name": "@durablerun/harness",
+  "name": "@durablerun/conformance",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@durablerun/core": "workspace:*"
+    "@durablerun/core": "workspace:*",
+    "@durablerun/harness": "workspace:*"
   },
   "devDependencies": {
     "@durablerun/store-libsql": "workspace:*"

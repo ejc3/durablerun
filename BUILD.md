@@ -139,6 +139,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 ## Phase 7 (optional) — WDK spec-v5 World wrapper.
 
+- **PR1.7 TLA+ spec of the scheduler protocol** (`specs/Scheduler.tla`): model
+  runs as state machines (state, claim_gen, activated_gen, lease deadline,
+  attempt/infra counters) with actions Spawn, Claim, DeliverLaunch (an
+  at-least-once channel that can duplicate and drop), Activate, Heartbeat,
+  Complete, FailWithRetry, SleepSuspend, VoluntaryChain, SweepLostLaunch,
+  SweepClaimTimeout, WorkerCrash, TimeAdvance. TLC-checked invariants: no two
+  activations of the same (run, gen); terminal states never regress;
+  `max_attempts` consumed only by user-code failures; every claim eventually
+  resolves (leases can't wedge) under weak fairness. The proof stack: TLA+
+  proves the DESIGN.md protocol; the sim harness proves the implementation
+  refines it (labeled batch ≙ TLA action); conformance pins the SQL to the
+  atomic-action assumption. Model checking runs in `pnpm verify:tla` when a
+  TLC toolchain is present.
+
 ## Standing verification discipline
 
 Every phase ends with driving the real flow on a preview deployment (not just

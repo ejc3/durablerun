@@ -1,4 +1,4 @@
-# absurd-lite
+# durablerun
 
 A port of Absurd (earendil-works/absurd, Postgres durable execution) to a
 pluggable SQL backend (SQLite/libsql first; MySQL, Postgres later), driven by
@@ -31,3 +31,14 @@ lightweight tick drivers that launch workers on demand.
 Activation is a per-claim generation CAS (`activated_gen < claim_gen`), never
 a one-shot flag. Sweeps classify lost-launch (reopen, no attempt) vs died
 mid-run (`infra_retries`, not `max_attempts`).
+
+## Standing rule: prevention analysis on every correctness finding
+
+When a bug or design issue affecting correctness is found (by review, sim,
+or production), the fix is not complete until we have answered from first
+principles: **what invariant, primitive shape, contract rule, or automated
+checker would have made this bug inexpressible or automatically caught?** —
+and instituted it (a new §3.4-style rule, a sim checker, a conformance case,
+a lint). Point fixes without a prevention are not accepted. Precedents:
+the one-shot activation flag → "no one-shot flags for re-entrant lifecycles,
+latch on generations"; batch fence self-defeat → "fence on the post-state".

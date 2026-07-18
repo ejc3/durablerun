@@ -25,16 +25,29 @@ export interface SchedulerStore {
     opts?: SpawnOptions,
   ): Promise<SpawnResult>
 
-  /** §3.1 step 2 — increments claim_gen; follow-on statements fence on claimToken. */
+  /**
+   * §3.1 step 2 — increments claim_gen; follow-on statements fence on
+   * claimToken. Options object because two adjacent numbers in spec-reversed
+   * order compiled silently with swapped values (codex finding).
+   */
   claim(
     queue: string,
     claimToken: string,
-    leaseSeconds: number,
-    limit: number,
+    opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]>
 
-  /** §3.2 — per-claim generation CAS; re-extends the lease. False = exit now. */
-  activate(queue: string, runId: string, claimToken: string, claimGen: number): Promise<boolean>
+  /**
+   * §3.2 — per-claim generation CAS; re-extends the lease. Returns the full
+   * run⋈task payload (the launch carries only ids, and the worker must not
+   * call claim() to learn its own run). Null = duplicate delivery, superseded
+   * claim, or swept lease: exit immediately.
+   */
+  activate(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+  ): Promise<ClaimedRun | null>
 
   /** Zero-rows result surfaces as `held: false` — the AB002 signal. */
   heartbeat(
@@ -44,8 +57,18 @@ export interface SchedulerStore {
     extendSeconds: number,
   ): Promise<LeaseState>
 
-  /** Sleep / defer / attempt-neutral chain (wakeInSeconds = 0). */
-  reschedule(queue: string, runId: string, claimToken: string, wakeInSeconds: number): Promise<void>
+  /**
+   * Sleep / defer / attempt-neutral chain ({ inSeconds: 0 }). The absolute
+   * form exists solely for ctx.sleepUntil — §3.4 rule 3's one sanctioned
+   * user-supplied absolute; the store writes it verbatim, never converting
+   * via an instance clock.
+   */
+  reschedule(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    wake: { inSeconds: number } | { atEpochMs: number },
+  ): Promise<void>
 
   complete(queue: string, runId: string, claimToken: string, resultJson: string): Promise<void>
 
@@ -107,11 +130,17 @@ export interface StoreAdmin {
 }
 
 export interface LaunchInvocation {
+  /** Stands in for the shard id until multi-shard lands (§3.7). */
   queue: string
   runId: string
   attempt: number
   claimToken: string
   claimGen: number
+  /**
+   * The lease deadline stamped at claim — lets the worker plan voluntary
+   * chaining without an extra round trip (activation re-extends it).
+   */
+  deadlineHintEpochMs: number
 }
 
 export type LaunchOutcome =
@@ -127,6 +156,11 @@ export interface Launcher {
 export interface Ending {
   runId: string
   claimToken?: string
+  /**
+   * Required when claimToken is absent: §3.9's tokenless reconciliation is
+   * only safe after verifying no heartbeat landed since this instant.
+   */
+  endedAtEpochMs?: number
   kind: 'completed' | 'failed' | 'crashed' | 'timeout' | 'unknown'
 }
 

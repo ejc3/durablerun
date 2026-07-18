@@ -3,8 +3,14 @@
  * a shared-`queue`-column design, JSON as TEXT, INTEGER epoch-milliseconds.
  * `runs.run_db` is reserved for Phase 6 dedicated placement.
  *
- * Migrations are versioned; each version applies as one atomic batch that
- * also bumps `meta.schema_version`, so a crashed migration re-runs cleanly.
+ * Migrations are versioned DDL lists. The runner (admin.ts) wraps each in one
+ * atomic batch with a STRUCTURAL fence — an `applied:vN` sentinel INSERT
+ * whose primary-key violation rolls the whole batch back on a concurrent or
+ * stale re-apply — plus the version bump. Authors write plain DDL; the fence
+ * cannot be forgotten (prevention, per the standing rule, for the
+ * read-then-apply migration race).
+ *
+ * The `meta` table is created by the runner itself before any migration.
  */
 
 export interface Migration {
@@ -16,11 +22,6 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     statements: [
-      `CREATE TABLE IF NOT EXISTS meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      ) WITHOUT ROWID`,
-
       `CREATE TABLE IF NOT EXISTS tasks (
         task_id TEXT PRIMARY KEY,
         queue TEXT NOT NULL,
@@ -40,12 +41,18 @@ export const MIGRATIONS: Migration[] = [
         failure_reason TEXT,
         enqueue_at_ms INTEGER NOT NULL,
         first_started_at_ms INTEGER,
+        cancel_at_ms INTEGER,
         cancelled_at_ms INTEGER,
         created_at_ms INTEGER NOT NULL
       ) WITHOUT ROWID`,
 
       `CREATE UNIQUE INDEX IF NOT EXISTS tasks_idem
         ON tasks (queue, idempotency_key) WHERE idempotency_key IS NOT NULL`,
+
+      `CREATE INDEX IF NOT EXISTS tasks_cancel
+        ON tasks (queue, cancel_at_ms)
+        WHERE cancel_at_ms IS NOT NULL
+          AND state IN ('pending','running','sleeping')`,
 
       `CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,
@@ -58,7 +65,9 @@ export const MIGRATIONS: Migration[] = [
         claim_gen INTEGER NOT NULL DEFAULT 0,
         activated_gen INTEGER NOT NULL DEFAULT 0,
         relaunch_count INTEGER NOT NULL DEFAULT 0,
+        lease_seconds INTEGER,
         claim_expires_at_ms INTEGER,
+        heartbeat_at_ms INTEGER,
         available_at_ms INTEGER,
         wake_event TEXT,
         event_payload TEXT,
@@ -75,10 +84,11 @@ export const MIGRATIONS: Migration[] = [
         ON runs (queue, state, available_at_ms)`,
 
       `CREATE INDEX IF NOT EXISTS runs_lease
-        ON runs (claim_expires_at_ms)
+        ON runs (queue, claim_expires_at_ms)
         WHERE state = 'running' AND claim_expires_at_ms IS NOT NULL`,
 
-      `CREATE INDEX IF NOT EXISTS runs_task ON runs (task_id)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS runs_task_attempt
+        ON runs (task_id, attempt)`,
 
       `CREATE TABLE IF NOT EXISTS checkpoints (
         task_id TEXT NOT NULL,
@@ -114,9 +124,6 @@ export const MIGRATIONS: Migration[] = [
       ) WITHOUT ROWID`,
 
       `CREATE INDEX IF NOT EXISTS waits_event ON waits (queue, event_name)`,
-
-      `INSERT INTO meta (key, value) VALUES ('schema_version', '1')
-        ON CONFLICT (key) DO UPDATE SET value = '1'`,
     ],
   },
 ]
