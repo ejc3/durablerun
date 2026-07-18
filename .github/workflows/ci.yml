@@ -1,0 +1,24 @@
+# Principle: everything runnable locally is runnable here, identically —
+# `pnpm verify` is the same gate in both places. As phases land, this file
+# grows the same way the local story does: seeded sim-fuzz jobs, MySQL and
+# Postgres service containers (Phase 4), and TLC model checking of
+# specs/*.tla (PR1.7) — all deterministic, all reproducible from a checkout.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
