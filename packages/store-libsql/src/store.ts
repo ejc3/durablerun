@@ -2,8 +2,11 @@ import {
   type Buggify,
   type Checkpoint,
   type ClaimedRun,
+  durationToMs,
   FencedBatch,
   LeaseLostError,
+  requireEpochMs,
+  requirePositiveInt,
   type IdSource,
   type LeaseState,
   neverBuggify,
@@ -133,9 +136,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
     const retry = JSON.stringify(normalizeRetryStrategy(opts.retryStrategy ?? DEFAULT_RETRY))
-    const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
-    const delayMs = Math.round((opts.startDelaySeconds ?? 0) * 1000)
-    const maxDelay = opts.cancellation?.maxDelaySeconds
+    const maxAttempts = requirePositiveInt('maxAttempts', opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)
+    const delayMs = durationToMs('startDelaySeconds', opts.startDelaySeconds ?? 0)
+    const maxDelayMs =
+      opts.cancellation?.maxDelaySeconds !== undefined
+        ? durationToMs('cancellation.maxDelaySeconds', opts.cancellation.maxDelaySeconds)
+        : null
+    // maxDurationSeconds is stored in the cancellation JSON and applied at
+    // activate — validate it HERE so garbage never reaches the column.
+    if (opts.cancellation?.maxDurationSeconds !== undefined) {
+      durationToMs('cancellation.maxDurationSeconds', opts.cancellation.maxDurationSeconds)
+    }
 
     const [, , chosen] = await this.db.batch('spawn', [
       // 1. Idempotent task insert: loses silently when the key already
@@ -147,7 +158,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
                 cancel_at_ms, created_at_ms)
               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW_MS} + ?,
-                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? + ? * 1000 ELSE NULL END,
+                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? + ? ELSE NULL END,
                 ${NOW_MS}
               WHERE 1
               ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
@@ -163,9 +174,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           opts.cancellation ? JSON.stringify(opts.cancellation) : null,
           opts.idempotencyKey ?? null,
           delayMs,
-          maxDelay ?? null,
+          maxDelayMs,
           delayMs,
-          maxDelay ?? null,
+          maxDelayMs,
         ],
       },
       // 2. Initial run — only when OUR task insert won (post-state key, rule 1).
@@ -201,8 +212,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
-    const { leaseSeconds } = opts
-    const limit = clampLimit(opts.limit)
+    const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
+    const limit = clampLimit(requirePositiveInt('limit', opts.limit))
     if (limit === 0) return []
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
     // must drain via the successor-tick chain, never assume a full batch.
@@ -218,8 +229,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 state = 'running',
                 claimed_by = ?,
                 claim_gen = claim_gen + 1,
-                lease_seconds = ?,
-                claim_expires_at_ms = ${NOW_MS} + ? * 1000,
+                lease_ms = ?,
+                claim_expires_at_ms = ${NOW_MS} + ?,
                 heartbeat_at_ms = ${NOW_MS}
               WHERE run_id IN (
                 SELECT c.run_id FROM (
@@ -245,8 +256,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
               )`,
         args: [
           claimToken,
-          leaseSeconds,
-          leaseSeconds,
+          leaseMs,
+          leaseMs,
           queue,
           effectiveLimit,
           queue,
@@ -313,7 +324,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         sql: `UPDATE runs SET
                 activated_gen = ?,
                 started_at_ms = COALESCE(started_at_ms, ${NOW_MS}),
-                claim_expires_at_ms = ${NOW_MS} + lease_seconds * 1000,
+                claim_expires_at_ms = ${NOW_MS} + lease_ms,
                 heartbeat_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
                 AND claim_gen = ? AND activated_gen < ?
@@ -333,8 +344,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 first_started_at_ms = COALESCE(first_started_at_ms, ${NOW_MS}),
                 cancel_at_ms = CASE
                   WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
-                    COALESCE(first_started_at_ms, ${NOW_MS})
-                      + json_extract(cancellation, '$.maxDurationSeconds') * 1000
+                    CAST(COALESCE(first_started_at_ms, ${NOW_MS})
+                      + json_extract(cancellation, '$.maxDurationSeconds') * 1000 AS INTEGER)
                   ELSE NULL
                 END
               WHERE task_id = (
@@ -372,13 +383,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // Buggify: lease-lost can arrive at ANY heartbeat — workers must abort
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return { held: false, remainingMs: 0 }
+    const extendMs = durationToMs('extendSeconds', extendSeconds, { positive: true })
     const [extended, remaining] = await this.db.batch('heartbeat', [
       {
         sql: `UPDATE runs SET
-                claim_expires_at_ms = ${NOW_MS} + ? * 1000,
+                claim_expires_at_ms = ${NOW_MS} + ?,
                 heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
-        args: [extendSeconds, runId, queue, claimToken],
+              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+                AND EXISTS (SELECT 1 FROM tasks t
+                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+        args: [extendMs, runId, queue, claimToken],
       },
       {
         sql: `SELECT claim_expires_at_ms - ${NOW_MS} AS remaining_ms
@@ -481,7 +495,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            heartbeat_at_ms = NULL, relaunch_count = relaunch_count + 1,
            available_at_ms = ${NOW_MS}
              + MIN((relaunch_count + 1) * ${RELAUNCH_BACKOFF_BASE_SECONDS}, ${RELAUNCH_BACKOFF_MAX_SECONDS}) * 1000
-         WHERE ${fence} AND relaunch_count < ${RELAUNCH_CAP}`,
+         WHERE ${fence} AND relaunch_count < ${RELAUNCH_CAP}
+           AND EXISTS (SELECT 1 FROM tasks t
+                       WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
         [item.runId, queue, item.claimGen],
       )
       // Past the cap: a broken launcher must surface as failed work — the
@@ -499,7 +515,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       .followOn(
         'task-pending',
         `UPDATE tasks SET state = 'pending'
-         WHERE task_id = ? AND EXISTS (
+         WHERE task_id = ? AND state IN ${LIVE} AND EXISTS (
            SELECT 1 FROM runs WHERE run_id = ? AND state = 'pending' AND claimed_by = ${STAMP}
          )`,
         [item.taskId, item.runId],
@@ -507,7 +523,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       .followOn(
         'task-fail',
         `UPDATE tasks SET state = 'failed', failure_reason = '${REASON_RELAUNCH_CAP}'
-         WHERE task_id = ? AND EXISTS (
+         WHERE task_id = ? AND state IN ${LIVE} AND EXISTS (
            SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
          )`,
         [item.taskId, item.runId],
@@ -561,10 +577,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         'successor',
         `INSERT INTO runs
            (run_id, queue, task_id, attempt, state, available_at_ms,
-            wake_event, event_payload, run_db, created_at_ms)
+            wake_event, event_payload, run_db, created_at_ms, claimed_by)
          SELECT ?, r.queue, r.task_id, ?, 'pending',
                 ${NOW_MS} + ${INFRA_BACKOFF_SECONDS} * 1000,
-                r.wake_event, r.event_payload, r.run_db, ${NOW_MS}
+                r.wake_event, r.event_payload, r.run_db, ${NOW_MS}, ${STAMP}
          FROM runs r JOIN tasks t ON t.task_id = r.task_id
          WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
            AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}`,
@@ -590,7 +606,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            AND EXISTS (
              SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
            )
-           AND EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
+           AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
         [successorId, item.taskId, item.runId, successorId],
       )
       // The dead run's waits die with it (the reviewed orphan-waits leak).
@@ -692,25 +708,36 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     runId: string,
     claimToken: string,
     wake: { inSeconds: number } | { atEpochMs: number },
+    wakeDisposition: 'consume' | 'preserve' = 'consume',
   ): Promise<void> {
-    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ? * 1000` : `?`
-    const wakeArg = 'inSeconds' in wake ? wake.inSeconds : wake.atEpochMs
+    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`
+    const wakeArg =
+      'inSeconds' in wake
+        ? durationToMs('wake.inSeconds', wake.inSeconds)
+        : requireEpochMs('wake.atEpochMs', wake.atEpochMs)
+    // ONE SQL shape for both dispositions (a label is a crash-injection
+    // address; the CASE keeps 'reschedule' one shape). 'preserve' is the
+    // §3.8.2 deferral path: an undispatchable claim consumes nothing.
     const { won } = await new FencedBatch('reschedule', this.ids.token())
       .cas(
         'suspend',
         `UPDATE runs SET
            state = CASE WHEN ${wakeExpr} <= ${NOW_MS} THEN 'pending' ELSE 'sleeping' END,
            available_at_ms = ${wakeExpr},
-           wake_event = NULL, event_payload = NULL,
+           wake_event = CASE WHEN ? = 'preserve' THEN wake_event ELSE NULL END,
+           event_payload = CASE WHEN ? = 'preserve' THEN event_payload ELSE NULL END,
            claimed_by = ${STAMP}, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
-         WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
-        [wakeArg, wakeArg, runId, queue, claimToken],
+         WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+           AND EXISTS (SELECT 1 FROM tasks t
+                       WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+        [wakeArg, wakeArg, wakeDisposition, wakeDisposition, runId, queue, claimToken],
       )
-      // The task mirrors the run's suspension state.
+      // The task mirrors the run's suspension state (LIVE-guarded: rule 6).
       .followOn(
         'task-mirror',
         `UPDATE tasks SET state = (SELECT state FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
+         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
+           AND state IN ${LIVE}`,
         [runId, runId],
       )
       .run(this.db)
@@ -736,7 +763,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       .followOn(
         'task',
         `UPDATE tasks SET state = 'completed', completed_payload = ?, cancel_at_ms = NULL
-         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
+         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
+           AND state IN ${LIVE}`,
         [resultJson, runId],
       )
       .followOn(
@@ -765,6 +793,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     retry: { delaySeconds: number } | null,
   ): Promise<void> {
     const successorId = retry ? this.ids.uuidv7() : null
+    const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
     const batch = new FencedBatch('fail', this.ids.token()).cas(
       'fail',
       `UPDATE runs SET
@@ -782,24 +811,25 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           'successor',
           `INSERT INTO runs
              (run_id, queue, task_id, attempt, state, available_at_ms,
-              wake_event, event_payload, run_db, created_at_ms)
+              wake_event, event_payload, run_db, created_at_ms, claimed_by)
            SELECT ?, r.queue, r.task_id, r.attempt + 1,
                   CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
-                  ${NOW_MS} + ? * 1000,
-                  r.wake_event, r.event_payload, r.run_db, ${NOW_MS}
+                  ${NOW_MS} + ?,
+                  r.wake_event, r.event_payload, r.run_db, ${NOW_MS}, ${STAMP}
            FROM runs r JOIN tasks t ON t.task_id = r.task_id
            WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
              AND t.state IN ${LIVE} AND t.attempts + 1 < t.max_attempts`,
-          [successorId, retry.delaySeconds, retry.delaySeconds, runId],
+          [successorId, retryDelayMs, retryDelayMs, runId],
         )
         .followOn(
           'task-retrying',
           `UPDATE tasks SET
              attempts = attempts + 1,
-             state = (SELECT state FROM runs WHERE run_id = ?),
+             state = (SELECT state FROM runs WHERE run_id = ? AND claimed_by = ${STAMP}),
              last_attempt_run = ?
            WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-             AND EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
+             AND state IN ${LIVE}
+             AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
           [successorId, successorId, runId, successorId],
         )
         // Cap refused (or task no longer live): terminal, same as no-retry.
@@ -808,7 +838,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           `UPDATE tasks SET attempts = attempts + 1, state = 'failed', failure_reason = ?
            WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
              AND state IN ${LIVE}
-             AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
+             AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
           [failureJson, runId, successorId],
         )
     } else {
@@ -871,13 +901,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     stateJson: string,
     extendLeaseSeconds: number,
   ): Promise<void> {
+    const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     const [extended] = await this.db.batch('set-checkpoint', [
       {
         sql: `UPDATE runs SET
-                claim_expires_at_ms = ${NOW_MS} + ? * 1000, heartbeat_at_ms = ${NOW_MS}
+                claim_expires_at_ms = ${NOW_MS} + ?, heartbeat_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
-                AND state = 'running'`,
-        args: [extendLeaseSeconds, runId, queue, taskId, claimToken],
+                AND state = 'running'
+                AND EXISTS (SELECT 1 FROM tasks t
+                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+        args: [extendMs, runId, queue, taskId, claimToken],
       },
       {
         sql: `INSERT INTO checkpoints
@@ -886,6 +919,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
               FROM runs r
               WHERE r.run_id = ? AND r.task_id = ? AND r.queue = ? AND r.claimed_by = ?
                 AND r.state = 'running'
+                AND EXISTS (SELECT 1 FROM tasks t2
+                            WHERE t2.task_id = r.task_id AND t2.state IN ${LIVE})
               ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
                 state = excluded.state,
                 owner_run_id = excluded.owner_run_id,

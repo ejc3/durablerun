@@ -493,6 +493,46 @@ are load-bearing):
    free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease
    lost = abort, the AB002 equivalent), then the token-fenced run-DB write
    (§3.8). Attempt/owner guards remain as tiebreakers, never as the fence.
+   The fence binds the FULL argument surface — run id, task id, queue, AND
+   token; a mismatched task id is a fence loss, never a write. LWW semantics:
+   `ON CONFLICT DO UPDATE … WHERE excluded.owner_attempt >= owner_attempt` —
+   a lower-attempt writer under a still-valid lease is silently dropped (its
+   lease still extends); replay determinism, not error, is the goal.
+6. **Terminal tasks are inert (TerminalStability, executable form).** No
+   transition may mutate a terminal task's state, and none may create or
+   revive a live run under a terminal task — even from externally corrupted
+   state, transitions must not AMPLIFY divergence. Concretely: every
+   task-mutating statement carries a `state IN ('pending','running','sleeping')`
+   guard; run-REVIVING CASes (reschedule's suspend, the sweep's lost-launch
+   reopen, heartbeat's extension, checkpoint's lease extension, successor
+   inserts) additionally require the owning task live; run-TERMINALIZING
+   CASes (complete/fail/sweep failure) stay valid under a terminal task —
+   they only quiesce. A refused suspension surfaces as AB002.
+7. **Client numbers are validated at the port; SQL never multiplies them.**
+   Every relative duration crosses the boundary through `durationToMs`
+   (finite, ≥ 0, rounded to integer milliseconds, ≤ 100 years; leases and
+   extensions require ≥ 1ms), absolute instants through `requireEpochMs`
+   (safe integer, ≤ year 9999), counts through `requirePositiveInt` — all
+   throwing RangeError BEFORE any SQL executes. Rationale: drivers bind JS
+   numbers as REAL and INTEGER columns are affinity, not enforcement — an
+   unchecked Infinity is an unexpirable lease, an unsafe integer poisons
+   later reads with a driver RangeError, and a fractional product silently
+   breaks the integer epoch-ms contract. Durations stored in JSON
+   (`cancellation.maxDurationSeconds`) are validated at spawn and their SQL
+   products CAST to INTEGER at use.
+
+**Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
+`setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
+`heartbeat` reports `held: false`. A worker retrying `complete` after a lost
+response treats `LeaseLostError` as possible-prior-success: verify via
+`getTaskResult` and exit (verify-then-exit), never re-execute.
+
+**Event-wake disposition:** a carried wake (`wake_event`/`event_payload`) is
+CONSUMED by the transition that ends the attempt that processed it
+(`complete`, and `reschedule` with the default `'consume'`); it is CARRIED to
+failure successors (`fail` retry, sweep claim-timeout — §3.8.2, the attempt
+never processed it); it is PRESERVED by §3.8.2 deferral (`reschedule` with
+`'preserve'` — a driver that cannot dispatch the task consumes nothing).
 
 
 Dialect implementations:

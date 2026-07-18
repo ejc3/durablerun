@@ -68,7 +68,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   burn on lost launch; crash-mid-sweep idempotent; cap → terminal failure.
 - **PR1.6 transitions + checkpoints**: complete/fail/reschedule as post-state
   fenced batches (§3.4 rule 1); retry-run insert; checkpoint upsert with lease
-  fence + repeat counters (`name`, `name#2`); nextWakeAt. Sims: zombie
+  fence; nextWakeAt. (Repeat counters — `name`, `name#2` — are SDK-side
+  naming, deliberately deferred to PR2.3: the store stores whatever
+  checkpoint name the SDK derives.) Sims: zombie
   complete is a no-op; chaining is attempt-neutral. Nightly seeded-fuzz run
   wired into `pnpm verify:fuzz`. Two FDB adoptions land here: a determinism
   lint (Date.now/Math.random/timers banned in core/driver/sdk — discipline
