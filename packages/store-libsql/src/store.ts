@@ -25,6 +25,18 @@ const DEFAULT_RETRY: RetryStrategy = {
 }
 const DEFAULT_MAX_ATTEMPTS = 5
 
+export interface StoreOptions {
+  buggify?: Buggify
+  /** Lost-launch reopens before the run (and task) fail terminally. */
+  relaunchCap?: number
+  /** `$ClaimTimeout` successors per task before terminal failure (generous). */
+  infraRetryCap?: number
+}
+const DEFAULT_RELAUNCH_CAP = 5
+const DEFAULT_INFRA_RETRY_CAP = 20
+/** Seconds before a claim-timeout successor becomes claimable. */
+const INFRA_BACKOFF_SECONDS = 5
+
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
 const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms,
        r.wake_event, r.event_payload,
@@ -37,11 +49,19 @@ const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.clai
  * from NOW_MS (rule 3). Methods marked "PR1.5/1.6" land in the next diffs.
  */
 export class LibsqlSchedulerStore implements SchedulerStore {
+  private readonly buggify: Buggify
+  private readonly relaunchCap: number
+  private readonly infraRetryCap: number
+
   constructor(
     private readonly db: SqlExecutor,
     private readonly ids: IdSource,
-    private readonly buggify: Buggify = neverBuggify,
-  ) {}
+    opts: StoreOptions = {},
+  ) {
+    this.buggify = opts.buggify ?? neverBuggify
+    this.relaunchCap = opts.relaunchCap ?? DEFAULT_RELAUNCH_CAP
+    this.infraRetryCap = opts.infraRetryCap ?? DEFAULT_INFRA_RETRY_CAP
+  }
 
   async spawn(
     queue: string,
@@ -307,7 +327,249 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     return { held: true, remainingMs: Number(remaining?.rows[0]?.remaining_ms ?? 0) }
   }
 
-  // ── PR1.5 ──────────────────────────────────────────────────────────────
+  /**
+   * §3.1 steps 0–1. Discovery is a read-only scan; every transition is a
+   * per-item atomic batch whose FIRST statement is the ownership CAS —
+   * concurrent sweepers race on it and the loser's whole batch matches
+   * nothing (the unique (task_id, attempt) index is the structural backstop
+   * against duplicate successors). Classification is decided by activation
+   * state: `activated_gen < claim_gen` = the launch was lost.
+   */
+  async sweep(queue: string, limit: number): Promise<SweptRun[]> {
+    const effectiveLimit = limit > 1 && this.buggify('sweep:short-batch') ? 1 : limit
+    const [cancels, expired] = await this.db.batch(
+      'sweep:scan',
+      [
+        {
+          sql: `SELECT t.task_id,
+                       (SELECT r.run_id FROM runs r
+                          WHERE r.task_id = t.task_id
+                            AND r.state IN ('pending','running','sleeping')
+                          ORDER BY r.run_id DESC LIMIT 1) AS run_id
+                FROM tasks t
+                WHERE t.queue = ? AND t.cancel_at_ms IS NOT NULL AND t.cancel_at_ms <= ${NOW_MS}
+                  AND t.state IN ('pending','running','sleeping')
+                LIMIT ?`,
+          args: [queue, effectiveLimit],
+        },
+        {
+          sql: `SELECT r.run_id, r.claim_gen, r.activated_gen
+                FROM runs r
+                WHERE r.queue = ? AND r.state = 'running'
+                  AND r.claim_expires_at_ms IS NOT NULL AND r.claim_expires_at_ms <= ${NOW_MS}
+                ORDER BY r.claim_expires_at_ms, r.run_id
+                LIMIT ?`,
+          args: [queue, effectiveLimit],
+        },
+      ],
+      'read',
+    )
+
+    const swept: SweptRun[] = []
+    for (const row of cancels?.rows ?? []) {
+      const outcome = await this.cancelBatch(queue, String(row.task_id), true)
+      if (outcome) {
+        swept.push({
+          kind: 'cancelled',
+          taskId: String(row.task_id),
+          runId: row.run_id === null ? '' : String(row.run_id),
+        })
+      }
+    }
+    for (const row of expired?.rows ?? []) {
+      const runId = String(row.run_id)
+      const claimGen = Number(row.claim_gen)
+      const outcome =
+        Number(row.activated_gen) < claimGen
+          ? await this.sweepLostLaunch(queue, runId, claimGen)
+          : await this.sweepClaimTimeout(queue, runId, claimGen)
+      if (outcome) swept.push(outcome)
+    }
+    return swept
+  }
+
+  private async sweepLostLaunch(
+    queue: string,
+    runId: string,
+    claimGen: number,
+  ): Promise<SweptRun | null> {
+    const fence = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
+                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW_MS}`
+    const [reopened, capped, , state] = await this.db.batch('sweep:lost-launch', [
+      // The launch never activated: reopen the SAME run — no new row, no
+      // attempt consumed — with linear backoff on the relaunch counter.
+      {
+        sql: `UPDATE runs SET
+                state = 'pending', claimed_by = NULL, claim_expires_at_ms = NULL,
+                heartbeat_at_ms = NULL, relaunch_count = relaunch_count + 1,
+                available_at_ms = ${NOW_MS} + MIN((relaunch_count + 1) * 5, 60) * 1000
+              WHERE ${fence} AND relaunch_count < ?`,
+        args: [runId, queue, claimGen, this.relaunchCap],
+      },
+      // Past the cap: a broken launcher must surface as failed work, never
+      // an infinite launch loop (TLA-pinned: the task fails with the run).
+      {
+        sql: `UPDATE runs SET
+                state = 'failed', failed_at_ms = ${NOW_MS}, claimed_by = NULL,
+                claim_expires_at_ms = NULL,
+                failure_reason = '{"name":"$RelaunchCapExhausted"}'
+              WHERE ${fence} AND relaunch_count >= ?`,
+        args: [runId, queue, claimGen, this.relaunchCap],
+      },
+      {
+        sql: `UPDATE tasks SET state = 'failed',
+                failure_reason = '{"name":"$RelaunchCapExhausted"}'
+              WHERE task_id = (
+                SELECT task_id FROM runs
+                WHERE run_id = ? AND state = 'failed'
+                  AND failure_reason = '{"name":"$RelaunchCapExhausted"}'
+              )`,
+        args: [runId],
+      },
+      {
+        sql: `SELECT task_id, relaunch_count FROM runs WHERE run_id = ?`,
+        args: [runId],
+      },
+    ])
+    const info = state?.rows[0]
+    if (!info) return null
+    if ((reopened?.rowsAffected ?? 0) === 1) {
+      return {
+        kind: 'lost-launch',
+        runId,
+        taskId: String(info.task_id),
+        relaunchCount: Number(info.relaunch_count),
+      }
+    }
+    if ((capped?.rowsAffected ?? 0) === 1) {
+      return { kind: 'relaunch-cap-exhausted', runId, taskId: String(info.task_id) }
+    }
+    return null // lost the race to another sweeper
+  }
+
+  private async sweepClaimTimeout(
+    queue: string,
+    runId: string,
+    claimGen: number,
+  ): Promise<SweptRun | null> {
+    const successorId = this.ids.uuidv7()
+    const [failed, , , booked, taskSel] = await this.db.batch('sweep:claim-timeout', [
+      // Ownership CAS: the activated worker died (or was partitioned).
+      {
+        sql: `UPDATE runs SET
+                state = 'failed', failed_at_ms = ${NOW_MS},
+                failure_reason = '{"name":"$ClaimTimeout"}'
+              WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
+                AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW_MS}`,
+        args: [runId, queue, claimGen],
+      },
+      // Successor under the infra cap, carrying the run-DB pointer and any
+      // parked event wake (§3.8.2). OR IGNORE + the unique (task_id, attempt)
+      // index make a racing sweeper's duplicate insert a silent no-op.
+      {
+        sql: `INSERT OR IGNORE INTO runs
+                (run_id, queue, task_id, attempt, state, available_at_ms,
+                 wake_event, event_payload, run_db, created_at_ms)
+              SELECT ?, r.queue, r.task_id, r.attempt + 1, 'pending',
+                     ${NOW_MS} + ${INFRA_BACKOFF_SECONDS} * 1000,
+                     r.wake_event, r.event_payload, r.run_db, ${NOW_MS}
+              FROM runs r JOIN tasks t ON t.task_id = r.task_id
+              WHERE r.run_id = ? AND r.state = 'failed'
+                AND r.failure_reason = '{"name":"$ClaimTimeout"}'
+                AND t.state <> 'failed' AND t.infra_retries < ?`,
+        args: [successorId, runId, this.infraRetryCap],
+      },
+      // At the cap (checked pre-increment) with no live successor: terminal.
+      {
+        sql: `UPDATE tasks SET state = 'failed',
+                failure_reason = '{"name":"$InfraRetriesExhausted"}'
+              WHERE task_id = (
+                SELECT task_id FROM runs WHERE run_id = ? AND state = 'failed'
+                  AND failure_reason = '{"name":"$ClaimTimeout"}'
+              )
+                AND state IN ('pending','running','sleeping')
+                AND infra_retries >= ?
+                AND NOT EXISTS (
+                  SELECT 1 FROM runs rr
+                  WHERE rr.task_id = tasks.task_id AND rr.state = 'pending'
+                    AND rr.attempt = (SELECT attempt FROM runs WHERE run_id = ?) + 1
+                )`,
+        args: [runId, this.infraRetryCap, runId],
+      },
+      // Bookkeeping keyed on OUR successor existing (a racing sweeper whose
+      // insert was ignored must not double-increment infra_retries).
+      {
+        sql: `UPDATE tasks SET
+                infra_retries = infra_retries + 1, state = 'pending',
+                last_attempt_run = ?
+              WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ?)
+                AND state <> 'failed'
+                AND EXISTS (SELECT 1 FROM runs WHERE run_id = ?)`,
+        args: [successorId, runId, successorId],
+      },
+      {
+        sql: `SELECT task_id FROM runs WHERE run_id = ?`,
+        args: [runId],
+      },
+    ])
+    if ((failed?.rowsAffected ?? 0) !== 1) return null // lost the race
+    const taskId = String(taskSel?.rows[0]?.task_id)
+    if ((booked?.rowsAffected ?? 0) === 1) {
+      return { kind: 'claim-timeout', runId, taskId, successorRunId: successorId }
+    }
+    return { kind: 'infra-cap-exhausted', runId, taskId }
+  }
+
+  /** The single advisory write (§3.9): accelerate lease expiry, nothing more. */
+  async expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean> {
+    const [expired] = await this.db.batch('expire-lease-now', [
+      {
+        sql: `UPDATE runs SET claim_expires_at_ms = ${NOW_MS}
+              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
+        args: [runId, queue, claimToken],
+      },
+    ])
+    return (expired?.rowsAffected ?? 0) === 1
+  }
+
+  async cancelTask(queue: string, taskId: string): Promise<boolean> {
+    return this.cancelBatch(queue, taskId, false)
+  }
+
+  /** Shared by explicit cancelTask and the sweep's deadline enforcement. */
+  private async cancelBatch(
+    queue: string,
+    taskId: string,
+    deadlineOnly: boolean,
+  ): Promise<boolean> {
+    const deadlineGuard = deadlineOnly
+      ? `AND cancel_at_ms IS NOT NULL AND cancel_at_ms <= ${NOW_MS}`
+      : ''
+    const [cancelled] = await this.db.batch('cancel-task', [
+      {
+        sql: `UPDATE tasks SET state = 'cancelled', cancelled_at_ms = ${NOW_MS},
+                cancel_at_ms = NULL
+              WHERE task_id = ? AND queue = ?
+                AND state IN ('pending','running','sleeping') ${deadlineGuard}`,
+        args: [taskId, queue],
+      },
+      {
+        sql: `UPDATE runs SET state = 'cancelled', claimed_by = NULL,
+                claim_expires_at_ms = NULL
+              WHERE task_id = ? AND state IN ('pending','running','sleeping')
+                AND (SELECT state FROM tasks WHERE task_id = ?) = 'cancelled'`,
+        args: [taskId, taskId],
+      },
+      {
+        sql: `DELETE FROM waits WHERE task_id = ?
+                AND (SELECT state FROM tasks WHERE task_id = ?) = 'cancelled'`,
+        args: [taskId, taskId],
+      },
+    ])
+    return (cancelled?.rowsAffected ?? 0) === 1
+  }
+
+  // ── PR1.6 ──────────────────────────────────────────────────────────────
   reschedule(): Promise<void> {
     return notYet('reschedule')
   }
@@ -316,15 +578,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
   fail(): Promise<void> {
     return notYet('fail')
-  }
-  sweep(): Promise<SweptRun[]> {
-    return notYet('sweep')
-  }
-  expireLeaseNow(): Promise<boolean> {
-    return notYet('expireLeaseNow')
-  }
-  cancelTask(): Promise<boolean> {
-    return notYet('cancelTask')
   }
 
   // ── PR1.6 ──────────────────────────────────────────────────────────────

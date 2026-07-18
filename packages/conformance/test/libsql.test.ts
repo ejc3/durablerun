@@ -12,7 +12,8 @@ async function makeLibsqlFixture(seed: number | string): Promise<StoreFixture> {
     store: new LibsqlSchedulerStore(raw, ids),
     admin,
     raw,
-    storeOver: (db: SqlExecutor, buggify?: Buggify) => new LibsqlSchedulerStore(db, ids, buggify),
+    storeOver: (db: SqlExecutor, buggify?: Buggify) =>
+      new LibsqlSchedulerStore(db, ids, buggify ? { buggify } : {}),
     close: () => raw.close(),
   }
 }
