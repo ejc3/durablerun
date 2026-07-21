@@ -10,8 +10,14 @@
 #      modeled feature is reachable. A probe that PASSES means the feature is
 #      unreachable in the model: vacuous verification, and this script fails.
 #      (Class rule: checkers must be checked.)
-#   2. The full spec (Scheduler.cfg): safety invariants + liveness under weak
-#      fairness. Must find no error.
+#   2. Liveness (SchedulerLiveness.cfg): all temporal properties under weak
+#      fairness at a reduced horizon (the liveness graph at full constants is
+#      ~57M states and OOMs any reasonable heap).
+#   3. Exhaustive safety (Scheduler.cfg) at the full constants.
+#
+# TLA_SCOPE=ci replaces phases 2+3 with SchedulerCI.cfg (safety + liveness
+# at the CI-sized scope, ~500k states) — the PR gate on 4-core runners.
+# Local pre-push (verify:tla) and nightly run the full scope.
 set -euo pipefail
 
 TLA_VERSION="v1.8.0"
@@ -30,7 +36,7 @@ if [[ ! -f "$JAR" ]] || ! echo "$TLA_SHA256  $JAR" | sha256sum -c --quiet - 2>/d
 fi
 
 cd "$(dirname "$0")/../specs"
-TLC=(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -workers auto -deadlock)
+TLC=(java -XX:+UseParallelGC -Xmx"${TLA_HEAP:-8g}" -cp "$JAR" tlc2.TLC -workers auto -deadlock)
 
 echo "== phase 1: vacuity probes (each MUST find its witness trace)"
 probe_fail=0
@@ -50,5 +56,13 @@ for cfg in Probe*.cfg; do
 done
 [[ "$probe_fail" -eq 0 ]] || exit 1
 
-echo "== phase 2: full spec (safety + liveness)"
-"${TLC[@]}" -metadir "$STATES/full" -config Scheduler.cfg Scheduler.tla
+if [[ "${TLA_SCOPE:-full}" == "ci" ]]; then
+  echo "== phase 2 (ci scope): safety + liveness at the CI-sized constants"
+  "${TLC[@]}" -metadir "$STATES/ci" -config SchedulerCI.cfg Scheduler.tla
+else
+  echo "== phase 2: liveness at the reduced horizon"
+  "${TLC[@]}" -metadir "$STATES/liveness" -config SchedulerLiveness.cfg Scheduler.tla
+
+  echo "== phase 3: exhaustive safety at the full constants"
+  "${TLC[@]}" -metadir "$STATES/full" -config Scheduler.cfg Scheduler.tla
+fi
