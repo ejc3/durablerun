@@ -11,7 +11,7 @@ const Q = 'q'
  * label fails the build until it is classified, and classification into
  * WRITE or READ automatically enrolls it in the full fault matrix below.
  *
- * Why (PR2.1 lesson): fault coverage used to be curated by suspicion, and
+ * Why: fault coverage used to be curated by suspicion, and
  * the one case nobody suspected — a duplicated claim — violated the claim
  * bound for four review cycles. A machine enumerating label x fault cannot
  * skip the case nobody suspected.

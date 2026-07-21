@@ -30,13 +30,13 @@ async function nonIntegerTemporalRows(raw: SqlExecutor): Promise<string[]> {
 }
 
 /**
- * Red/green regression suite for the PR1.5 review findings (repo rule: every
+ * Red/green regression case law (repo rule: every
  * bug lands as a red-test commit first, then the fix commit). Each test
  * FAILED against the pre-fix sweep implementation; the finding it pins is
  * named in the test title.
  */
 
-describe('PR1.6 codex review regressions', () => {
+describe('transition-layer review regressions (second round)', () => {
   it('non-finite and unsafe numeric inputs are refused at the port boundary', async () => {
     const f = await makeLibsqlFixture('numeric-gate')
     await f.admin.setFakeNowEpochMs(1_000_000)
@@ -202,7 +202,7 @@ describe('PR1.6 codex review regressions', () => {
     const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('claim')
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    // A carried wake arrives with the claim (as PR3.1's emit will park it).
+    // A carried wake arrives with the claim (as the event emit will park it).
     await f.raw.batch('t', [
       {
         sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
@@ -219,7 +219,7 @@ describe('PR1.6 codex review regressions', () => {
   })
 })
 
-describe('PR1.6 review regressions', () => {
+describe('transition-layer review regressions (first round)', () => {
   it('fail() refuses a successor past max_attempts: the task fails terminally at the cap', async () => {
     const f = await makeLibsqlFixture('cap-enforce')
     await f.admin.setFakeNowEpochMs(1_000_000)
@@ -272,7 +272,7 @@ describe('PR1.6 review regressions', () => {
     let [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('claim 1')
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    // Park a wake (as PR3.1's emit will), fail with retry so it carries.
+    // Park a wake (as the event emit will), fail with retry so it carries.
     await f.raw.batch('t', [
       {
         sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
@@ -327,7 +327,7 @@ describe('PR1.6 review regressions', () => {
   })
 })
 
-describe('PR1.5 review regressions', () => {
+describe('sweep and cancellation review regressions', () => {
   it('losing sweeper can never terminally fail a task whose successor lives (stamp fencing)', async () => {
     const corruptSeeds: number[] = []
     for (let seed = 0; seed < 150; seed++) {

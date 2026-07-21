@@ -40,7 +40,7 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
    NEVER scope every reviewer to the diff: at least one reviewer gets the
    WHOLE system with the diff as entry point. A scoped review inherits the
    author's assumptions — "the store is already verified" excluded exactly
-   where two of four tick-round bugs lived (claim idempotency, cancels
+   where two of the four driver-review bugs lived (claim idempotency, cancels
    ordering).
 5. **Merge on green only** — CI (verify + tla jobs) must pass on the PR head.
 
@@ -53,7 +53,7 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
   losing-sweeper race shipped. [DESIGN §3.4 rule 1; core/fenced-batch.ts]
 - Batch statements SEE earlier statements' effects: follow-ons key on the
   POST-transition state + this batch's stamp, never the consumed
-  pre-condition. [CLAUDE.md rule 1; PR1.5 review]
+  pre-condition. [CLAUDE.md rule 1]
 - A fence must bind the FULL argument surface: `setCheckpoint` once trusted a
   caller `task_id` outside its fence and wrote foreign checkpoints.
   [regression: "setCheckpoint rejects a task_id..."]
@@ -237,6 +237,9 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   scenarios), never TypeScript types alone.
 - **Merge on green; PRs are the record** — descriptive commits covering the
   actual diff, `git log main..HEAD` read in full before writing the PR body.
+- **No internal waypoint numbers in source comments**: "the PR2.1 lesson"
+  is meaningless outside these sessions — comments describe the failure
+  itself. BUILD.md (the numbered plan) is the one exception.
 - **Plain language in commits and PR bodies**: ordinary sentences describing
   what changed and what behavior changed — no repo-private shorthand
   ("stamps", "altitude", "K_s") without an in-line gloss. Spec section

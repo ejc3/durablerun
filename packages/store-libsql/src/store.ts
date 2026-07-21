@@ -117,7 +117,7 @@ async function mapLimit<T, R>(
  * SchedulerStore on SQLite/libsql (DESIGN.md §3.4). Every method is ONE
  * atomic labeled batch; single-item transitions go through FencedBatch so
  * follow-ons structurally key on the batch's own stamp (§3.4 rule 1); all
- * timestamps come from NOW_MS (rule 3). "PR1.6" methods land next.
+ * timestamps come from NOW_MS (rule 3).
  */
 export class LibsqlSchedulerStore implements SchedulerStore {
   constructor(
@@ -272,7 +272,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       },
       // 2. Task bookkeeping, keyed on the post-state + token. NOTE: attempts
       //    is deliberately NOT touched — per the TLC-checked accounting model
-      //    it moves only on user-failure transitions (PR1.6 fail()), never at
+      //    it moves only on user-failure transitions (fail()), never at
       //    claim (codex finding: the earlier watermark contradicted the spec).
       {
         sql: `UPDATE tasks SET
@@ -965,7 +965,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     return value === null || value === undefined ? null : Number(value)
   }
 
-  // ── PR3.1 ──────────────────────────────────────────────────────────────
+  // ── events (spec-verified; implementation pending) ─────────────────────
   emitEvent(): Promise<void> {
     return notYet('emitEvent')
   }
@@ -981,7 +981,7 @@ function clampLimit(limit: number): number {
 }
 
 function notYet(method: string): Promise<never> {
-  return Promise.reject(new Error(`LibsqlSchedulerStore.${method}: not implemented until PR1.6`))
+  return Promise.reject(new Error(`LibsqlSchedulerStore.${method}: not implemented yet`))
 }
 
 function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {

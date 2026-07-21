@@ -5,7 +5,7 @@ import { NOW_MS } from './time.js'
  * "live", "cancellation due", or "eligible to proceed" mean. Every door
  * (claim, activate, sweep, cancel) composes these; none re-derives them.
  *
- * Why this file exists (PR2.1 lesson): the claim once re-derived task
+ * Why this file exists: the claim once re-derived task
  * eligibility without the cancellation-deadline predicate, so a task past
  * its deadline could be claimed and launched whenever the sweep budget ran
  * out before cancelling it. A predicate defined once cannot drift; a lint

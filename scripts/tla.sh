@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Model-check specs/Scheduler.tla with TLC — same run locally and in CI.
-# The proof stack (BUILD.md PR1.7): TLA+ proves the DESIGN.md protocol; the
+# The proof stack: TLA+ proves the DESIGN.md protocol; the
 # sim harness proves the implementation refines it (labeled batch ≙ TLA
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #

@@ -131,7 +131,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           await f.store.activate(Q, first.runId, first.claimToken, first.claimGen),
         ).not.toBeNull()
 
-        // Emulate a sleep wake (reschedule lands in PR1.5): back to claimable.
+        // Emulate a sleep wake by hand: back to claimable.
         await f.raw.batch('t', [
           {
             sql: `UPDATE runs SET state = 'sleeping', claimed_by = NULL,

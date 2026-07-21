@@ -28,7 +28,7 @@ export interface FuzzStats {
 }
 
 /**
- * Seeded operation fuzz (BUILD.md PR1.6): a deterministic random walk over
+ * Seeded operation fuzz: a deterministic random walk over
  * the full transition surface — spawn, claim, activate, complete, fail,
  * reschedule, checkpoint, heartbeat, cancel, expireLeaseNow, sweep,
  * nextWakeAt, time advance — with the engine invariants asserted throughout

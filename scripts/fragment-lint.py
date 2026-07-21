@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Eligibility fragments live in ONE file per dialect store (fragments.ts);
 no other store source may write an eligibility comparison or a raw state
-list. This is the structural form of the PR2.1 lesson: the claim re-derived
+list. This is structural prevention: the claim once re-derived
 task eligibility without the cancellation-deadline predicate, and no reader
 noticed for many commits. A predicate that can only be spelled in one place
 cannot drift. (schema.ts is definitional DDL and exempt.)"""

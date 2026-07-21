@@ -2,7 +2,7 @@ import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durabl
 import { Rng } from './rng.js'
 
 /**
- * Deterministic simulation world (BUILD.md PR1.3).
+ * Deterministic simulation world.
  *
  * Actors are async functions whose ONLY awaits are `batch()` calls on the
  * SqlExecutor this world hands them. The world serializes those calls —
