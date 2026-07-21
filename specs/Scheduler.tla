@@ -1,52 +1,85 @@
 ------------------------------ MODULE Scheduler ------------------------------
 \* ===========================================================================
-\* durablerun scheduler protocol -- DESIGN.md S3.1 (tick: sweep
-\* classification, claim with claim_gen), S3.2 (per-claim activation CAS,
-\* heartbeats, voluntary attempt-neutral chaining), S3.4 (contract rules:
-\* fenced batches keyed on post-state), S3.9 (advisory-signal rule).
+\* durablerun scheduler protocol -- DESIGN.md S3.1 (tick: cancel enforcement,
+\* sweep classification, claim with claim_gen), S3.2 (per-claim activation
+\* CAS, heartbeats, voluntary attempt-neutral chaining), S3.4 (contract
+\* rules: fenced batches keyed on post-state; rule 2 event atomicity), S3.8.3
+\* (event protocol: first-write-wins emit, parked wake fields, wait
+\* lifecycle), S3.9 (advisory-signal rule).
 \*
 \* GRANULARITY: one TLA+ action per labeled implementation batch
 \* (packages/store-libsql/src/store.ts) -- a libSQL batch() is atomic, so
 \* "SQL atomicity" is assumed exactly as action atomicity here:
 \*
-\*   Spawn                <-> db.batch('spawn')
+\*   Spawn                <-> db.batch('spawn')  (incl. arming cancel_at_ms
+\*                            from cancellation.max_delay)
 \*   Claim                <-> db.batch('claim') + tick step 3 launch enqueue
 \*                            (fused: "claimed but launch never sent" is
 \*                            indistinguishable from a dropped message, which
 \*                            Drop covers; K = 1 -- a K-run batch claim is
 \*                            MORE atomic than the K interleaved single
 \*                            claims modeled, so the model checks a superset
-\*                            of schedules)
-\*   Activate             <-> db.batch('activate')  (the per-claim CAS)
+\*                            of schedules).  The claim batch's timed-out-
+\*                            wait DELETE (its statement 3) is folded in: a
+\*                            claim CONSUMES a due wait so a later emit
+\*                            cannot resurrect it (S3.4 rule 2, timeout
+\*                            branch) -- there is no separate TimeoutWake.
+\*   Activate             <-> db.batch('activate')  (the per-claim CAS, incl.
+\*                            the cancel-deadline refusal guard and the
+\*                            first-start deadline rewrite: max_delay is
+\*                            disarmed by starting; max_duration is anchored
+\*                            at FIRST start, recomputed idempotently on
+\*                            every re-activation)
 \*   Heartbeat            <-> db.batch('heartbeat')
-\*   CompleteRun          <-> complete()            [PR1.5, spec'd in DESIGN]
+\*   CompleteRun          <-> complete()  (clears the cancel deadline)
 \*   FailRunWithRetry /
-\*     FailRunTerminal    <-> fail()                [PR1.5] (two branches of
-\*                            one batch; Terminal is the max-attempts branch)
+\*     FailRunTerminal    <-> fail()  (two branches of one batch; Terminal is
+\*                            the max-attempts branch; the retry successor
+\*                            carries wake_event/event_payload forward)
 \*   SleepSuspend /
-\*     VoluntaryChain     <-> reschedule()          [PR1.5]
+\*     VoluntaryChain     <-> reschedule()
 \*   SweepLostLaunch / SweepRelaunchExhausted /
 \*     SweepClaimTimeout / SweepInfraExhausted
-\*                        <-> sweep()'s per-run fenced batches [PR1.5];
-\*                            classifications match core/types.ts SweptRun
+\*                        <-> sweep()'s per-run fenced batches;
+\*                            classifications match core/types.ts SweptRun;
+\*                            the claim-timeout successor carries
+\*                            wake_event/event_payload forward (S3.8.2)
+\*   CancelSweep          <-> cancelTransition('sweep:cancel'): deadline-due
+\*                            task + its live runs -> cancelled, waits gone
+\*   CancelExplicit       <-> cancelTransition('cancel-task'): same shape,
+\*                            NO deadline guard (the explicit API)
+\*   EmitEvent            <-> PR3.1 'emit-event' (SPEC-FIRST, modeled ahead
+\*                            of implementation): first-write-wins event row;
+\*                            every registered waiter flips sleeping ->
+\*                            pending-now with the payload parked on the run
+\*                            row and its wait row deleted -- one atomic
+\*                            batch (S3.4 rule 2), durable-at-emit (S3.8.3
+\*                            inline placement)
+\*   AwaitEventHit /
+\*     AwaitEventMiss     <-> PR3.1 'await-event' (SPEC-FIRST): one atomic
+\*                            fenced batch; already-emitted -> immediate
+\*                            payload, worker continues (Hit); else register
+\*                            the wait and sleep with available_at = timeout
+\*                            or infinity (Miss)
 \*   Drop / WorkerCrash / TimeAdvance : environment, not batches.
 \*
 \* WORKERS ARE IMPLICIT: an "execution context" record is created per
 \* delivered activation (the set `contexts`); after activation a context may
-\* Heartbeat any number of times, then take exactly one of
-\* Complete/Fail/Sleep/Chain -- or crash/hang.  "2 workers" of the sizing
-\* brief = up to 2 concurrent contexts, which the run pool already bounds.
-\* Concurrent tick drivers need no explicit count either: any interleaving of
-\* Claim/Sweep actions IS N concurrent ticks (claims arbitrate in the DB).
+\* Heartbeat / AwaitEventHit any number of times, then take exactly one of
+\* Complete/Fail/Sleep/Chain/AwaitMiss -- or crash/hang.  "2 workers" of the
+\* sizing brief = up to 2 concurrent contexts, which the run pool already
+\* bounds.  Concurrent tick drivers need no explicit count either: any
+\* interleaving of Claim/Sweep/Cancel actions IS N concurrent ticks (claims
+\* arbitrate in the DB).  EmitEvent is an environment/API action: any HTTP
+\* route or other worker may emit at any moment.
 \*
 \* THE LAUNCH CHANNEL IS AT-LEAST-ONCE: `channel` is a set that delivery
 \* does NOT remove from (so redelivery is always possible), plus an explicit
 \* Drop action for loss.  Dedup happens ONLY at the activation CAS.
 \*
 \* DELIBERATELY NOT MODELED (honest list):
-\*  - Checkpoint content, the data plane (RunStateStore), events/waits,
-\*    cancellation policies, child tasks, defer-unknown-task, multi-queue,
-\*    multi-shard.
+\*  - Checkpoint content, the data plane (RunStateStore), child tasks,
+\*    defer-unknown-task, multi-queue, multi-shard, sagas.
 \*  - SQL atomicity: assumed as action atomicity (see mapping above).
 \*  - Token randomness: a claim of run r is uniquely named by (r, claim_gen),
 \*    so claim_token is modeled AS the pair -- "claimed_by = :token" becomes
@@ -57,24 +90,93 @@
 \*    removes no reachable states -- only timing, which fairness abstracts.
 \*  - Heartbeat throttling, clock skew (engine time is the single `now` --
 \*    S3.4 rule 3 "engine time is database time" makes this faithful).
-\*  - The brief lease-overlap window Absurd tolerates IS modeled: sweeping a
-\*    run does NOT remove its live (zombie) context; the zombie may still
-\*    attempt Heartbeat/Complete/Fail/Sleep/Chain and every attempt must be
-\*    guard-disabled (the impl's zero-row fenced batch).  LeaseAuthority is
-\*    exactly that check.
+\*  - Re-emit of an already-emitted event: the implementation's no-op branch
+\*    (first-write-wins insert loses; no waiter can exist for a fired event,
+\*    see WaitIntegrity) is a stutter step, which [][Next]_vars always
+\*    allows; the checked content is EventImmutable + WaitIntegrity.
+\*  - Event GC / iterable events: events are one-shot by contract (S3.8.3);
+\*    occurrence ids live in the event NAME, outside the model.
+\*  - The dedicated-placement wait state 'delivered' (materialize-on-resume,
+\*    S3.8.3): this spec models the INLINE placement -- durable-at-emit,
+\*    waits deleted at emit.  Dedicated placement adds run-DB ordering on
+\*    top of the same scheduler-plane transitions and gets its own spec
+\*    extension when RunStateStore lands.
+\*  - The brief lease-overlap window Absurd tolerates IS modeled: sweeping
+\*    or CANCELLING a run does NOT remove its live (zombie) context; the
+\*    zombie may still attempt Heartbeat/Complete/Fail/Sleep/Chain/Await and
+\*    every attempt must be guard-disabled (the impl's zero-row fenced
+\*    batch).  LeaseAuthority is exactly that check -- including that a
+\*    cancelled run's old token writes are disabled.
 \*
 \* BOUNDED-TIME ARTIFACTS: every future timestamp is capped at MaxTime.  At
-\* the horizon, backoffs collapse to "due now" and fresh leases are born
-\* expired -- an over-approximation (more adversarial interleavings, never
-\* fewer), and what makes the liveness property checkable in bounded time.
-\* Off the horizon (now < MaxTime) all delays are strictly future.
+\* the horizon, backoffs collapse to "due now", fresh leases are born
+\* expired, and armed cancel deadlines are due -- an over-approximation
+\* (more adversarial interleavings, never fewer), and what makes the
+\* liveness properties checkable in bounded time.  Off the horizon
+\* (now < MaxTime) all delays are strictly future.  Inf == MaxTime + 1 is
+\* the one value past the horizon: "no deadline" / "wait forever" -- never
+\* due, because now never exceeds MaxTime.
 \*
-\* SUGGESTED CONSTANTS (exhaustive TLC in seconds-to-minutes):
+\* MODELING CHOICES for the two new protocol areas (each is a deliberate
+\* deviation-or-restriction, stated so the impl PR can't silently diverge):
+\*  - Cancellation policy is chosen nondeterministically at Spawn
+\*    ("none"/"delay"/"dur"/"both" -- the four subsets of
+\*    {max_delay, max_duration}); both durations share one constant
+\*    CancelLen (the semantics differ in ANCHOR -- spawn time vs first
+\*    start -- not in length, and one constant keeps the state space flat).
+\*  - first_started_at_ms is a genuine one-shot latch in the impl (COALESCE)
+\*    and is modeled as one: the no-one-shot-flags rule is about RE-ENTRANT
+\*    lifecycles; a task starts for the first time exactly once.
+\*  - Claim has NO cancel-deadline guard (faithful: the impl claim joins
+\*    tasks on state IN LIVE only), so a deadline-due task's runs can churn
+\*    claim -> activation-refused -> lease-expiry -> lost-launch-reopen
+\*    until CancelSweep lands; TLC verifies this churn terminates (fair
+\*    CancelAny + RelaunchCap).  A run of a deadline-due task swept past its
+\*    relaunch cap fails as $RelaunchCapExhausted, not $Cancelled -- both
+\*    terminal; accepted (the impl's sweep processes cancels first to make
+\*    this rare, but the race is legal).
+\*  - AwaitEventMiss consumes a hop from the MaxHops budget, like Sleep and
+\*    Chain (same artificial liveness bound; production bounds it with
+\*    cancellation.max_duration).
+\*  - AwaitEventMiss with NO timeout is model-restricted to tasks whose
+\*    cancel deadline is armed (cancelAt # Inf at await time, i.e.
+\*    max_duration policy) -- otherwise "wait forever on an event nobody
+\*    emits" is a REAL infinite behavior and EventuallyTerminal would fail
+\*    on it by design.  Production allows untimed awaits on policy-free
+\*    tasks; this is a liveness-checkability restriction exactly like
+\*    MaxHops, not a protocol rule.
+\*  - AwaitEventHit changes no scheduler state (the payload read and the
+\*    checkpoint write are data-plane; checkpoint content is unmodeled).  It
+\*    is still an explicit fenced action so LeaseAuthority pins that a
+\*    zombie's awaitEvent must be guard-disabled.  It does not extend the
+\*    lease: a lease-extending await-hit is Heartbeat composed with
+\*    AwaitEventHit, both already modeled.
+\*  - EmitEvent flips the waiter's TASK to "pending" (mirror discipline);
+\*    it can never touch a cancelled task because cancel deletes the task's
+\*    waits in the same atomic action (checked by WaitIntegrity +
+\*    TerminalStability).
+\*  - Payloads = 1..2: two distinct values so PayloadMatchesEvent (the
+\*    parked copy equals the event row) is non-vacuous.  NoPayload = 0 is
+\*    SQL NULL: a claimed run with wake_event set and payload NULL is the
+\*    TimeoutError wake (decodeClaimedRun's timedOut branch).
+\*  - wake_event/event_payload persist on the run row after delivery until
+\*    the next await overwrites them or a successor carries them (faithful:
+\*    no impl transition clears them).  PR3.1 NOTE: the SDK must treat them
+\*    as "latest wake reason", memoizing consumption via checkpoints -- a
+\*    resumed run that suspends again via plain sleepFor will re-see stale
+\*    wake fields at its next claim.
+\*  - Cancel canonicalizes availableAt/leaseDeadline/waitAt of the runs it
+\*    kills to 0 (impl: claim_expires_at = NULL, wait rows deleted).
+\*    Nothing reads these fields off non-live runs; zeroing merges
+\*    otherwise-identical states.
+\*
+\* SUGGESTED CONSTANTS (exhaustive TLC in single-digit minutes):
 \*   Tasks = {t1}   MaxRuns = 3   MaxTime = 4   MaxAttempts = 2
 \*   InfraRetryCap = 1   RelaunchCap = 1   MaxHops = 1
-\*   LeaseLen = 2   SleepDur = 1   Backoff = 1
-\* Two-task variant: Tasks = {t1, t2}, MaxRuns = 6 (safety-only recommended:
-\* SPECIFICATION Spec, drop EventuallyTerminal).
+\*   LeaseLen = 2   SleepDur = 1   Backoff = 1   CancelLen = 2
+\*   Events = {e1}
+\* Two-task or two-event variants multiply the space; prefer safety-only
+\* (SPECIFICATION Spec, drop the liveness PROPERTYs) beyond one task/event.
 \* ===========================================================================
 
 \* ---------------------------------------------------------------------------
@@ -89,11 +191,16 @@
 \*   'reschedule' -> SleepSuspend / VoluntaryChain
 \*   'sweep:lost-launch' -> SweepLostLaunch
 \*   'sweep:claim-timeout' -> SweepClaimTimeout
+\*   'sweep:cancel' -> CancelSweep   'cancel-task' -> CancelExplicit
+\*   (the claim batch's timed-out-wait DELETE is part of Claim; activate's
+\*   cancel-refusal guard and first-start deadline rewrite are part of
+\*   Activate -- one label, one action, even when the batch has follow-ons)
+\* Modeled ahead of implementation (PR3.1 must use these labels and match
+\* these actions -- spec-first per the standing rule):
+\*   'emit-event' -> EmitEvent
+\*   'await-event' -> AwaitEventHit / AwaitEventMiss
 \* Excluded (reason):
 \*   'sweep:scan' -- read-only discovery, no state transition
-\*   'sweep:cancel', 'cancel-task' -- cancellation is NOT YET MODELED (honest
-\*     gap; direct running->cancelled transitions are outside the
-\*     advisory-signal soundness argument; TODO model CancelSweep)
 \*   'expire-lease-now' -- advisory-only write; omission argued sound in the
 \*     header (accelerates TimeAdvance-reachable states only)
 \*   'set-checkpoint', 'get-checkpoints', 'task-result', 'next-wake' --
@@ -113,13 +220,16 @@ CONSTANTS
   InfraRetryCap,  \* cap on claim-timeout successors per task ("own generous
                   \* cap" in DESIGN S3.8.2 -- size unspecified there)
   RelaunchCap,    \* cap on lost-launch reopens per run row (S3.1 step 1)
-  MaxHops,        \* Sleep+Chain budget per task.  ARTIFICIAL: real workflows
-                  \* may suspend unboundedly (bounded in production by the
-                  \* cancellation.max_duration policy, S3.2, not modeled);
-                  \* bounded here so liveness is checkable.
+  MaxHops,        \* Sleep+Chain+AwaitMiss budget per task.  ARTIFICIAL: real
+                  \* workflows may suspend unboundedly (bounded in production
+                  \* by the cancellation.max_duration policy, S3.2); bounded
+                  \* here so liveness is checkable.
   LeaseLen,       \* lease length (claim & heartbeat extension)
-  SleepDur,       \* sleepFor duration
-  Backoff         \* retry/reopen backoff delay
+  SleepDur,       \* sleepFor duration AND the await-event timeout duration
+  Backoff,        \* retry/reopen backoff delay
+  CancelLen,      \* cancellation.max_delay AND max_duration length (they
+                  \* differ in anchor, not length -- header note)
+  Events          \* event names (model values); single queue, queue-global
 
 ASSUME
   /\ MaxAttempts \in Nat \ {0}
@@ -130,7 +240,9 @@ ASSUME
   /\ LeaseLen \in Nat \ {0}
   /\ SleepDur \in Nat \ {0}
   /\ Backoff \in Nat \ {0}
+  /\ CancelLen \in Nat \ {0}
   /\ MaxRuns \in Nat \ {0}
+  /\ IsFiniteSet(Events) /\ Events # {}
   \* Pool sizing so successor creation is never blocked (else liveness would
   \* fail on an artifact): per task, rows = 1 initial + at most
   \* (MaxAttempts-1) user-retry successors + InfraRetryCap infra successors.
@@ -138,27 +250,44 @@ ASSUME
 
 RunIds        == 1..MaxRuns
 NoRun         == 0
-\* Claims of one run row: 1 initial + at most MaxHops sleep/chain re-claims
-\* + at most RelaunchCap lost-launch re-claims.  TypeOK verifies this bound.
+\* Claims of one run row: 1 initial + at most MaxHops sleep/chain/await
+\* re-claims + at most RelaunchCap lost-launch re-claims.  TypeOK verifies.
 GenBound      == 1 + MaxHops + RelaunchCap
 \* run.attempt ordinal: starts at 1, +1 per successor (user or infra).
 OrdinalBound  == MaxAttempts + InfraRetryCap
 CtxIdBound    == MaxRuns * GenBound
 
-RunStates      == {"unused", "pending", "running", "sleeping", "completed", "failed"}
-TerminalStates == {"completed", "failed"}
+\* One value past the horizon: "never" (no deadline / wait forever).  now
+\* never exceeds MaxTime, so Inf is never due.
+Inf           == MaxTime + 1
+
+LiveStates     == {"pending", "running", "sleeping"}
+TerminalStates == {"completed", "failed", "cancelled"}
+RunStates      == {"unused"} \cup LiveStates \cup TerminalStates
 LaunchMsgs     == [run : RunIds, gen : 1..GenBound]
+
+\* Cancellation policy = which of {max_delay, max_duration} the spawn set.
+Policies  == {"none", "delay", "dur", "both"}
+
+\* Event payloads: 0 is SQL NULL (unset / timeout wake); 1..2 are two
+\* distinguishable payloads so first-write-wins is observable.
+NoPayload == 0
+Payloads  == 1..2
+NoEvent   == "none"
 
 ActionNames ==
   {"Init", "Spawn", "Claim", "Drop", "Activate", "Heartbeat", "Complete",
    "FailRunWithRetry", "FailRunTerminal", "Sleep", "Chain",
    "SweepLostLaunch", "SweepRelaunchExhausted", "SweepClaimTimeout",
-   "SweepInfraExhausted", "Crash", "TimeAdvance"}
+   "SweepInfraExhausted", "CancelSweep", "CancelExplicit",
+   "Emit", "AwaitHit", "AwaitMiss", "Crash", "TimeAdvance"}
 
 WorkerWrites == {"Heartbeat", "Complete", "FailRunWithRetry",
-                 "FailRunTerminal", "Sleep", "Chain"}
+                 "FailRunTerminal", "Sleep", "Chain",
+                 "AwaitHit", "AwaitMiss"}
 SweepActions == {"SweepLostLaunch", "SweepRelaunchExhausted",
                  "SweepClaimTimeout", "SweepInfraExhausted"}
+CancelActions == {"CancelSweep", "CancelExplicit"}
 
 VARIABLES
   now,            \* bounded engine clock (S3.4 rule 3: DB time, one clock)
@@ -166,7 +295,10 @@ VARIABLES
   taskState,      \* "unused" = not yet spawned (allocation marker only)
   attempts,       \* USER-failure count; the budget max_attempts meters
   infraRetries,   \* claim-timeout count (split accounting, S3.8.2)
-  hops,           \* ghost: Sleep+Chain budget consumed (see MaxHops)
+  hops,           \* ghost: Sleep+Chain+AwaitMiss budget consumed (MaxHops)
+  policy,         \* ghost: the cancellation policy chosen at spawn
+  cancelAt,       \* tasks.cancel_at_ms: armed deadline, or Inf (SQL NULL)
+  firstStarted,   \* tasks.first_started_at_ms: one-shot latch, Inf = NULL
   \* -- per run row (runs table); pool-allocated by nextRun ---------------
   runState,
   runTask,
@@ -176,8 +308,16 @@ VARIABLES
   activatedGen,   \* set by the activation CAS; invariant: <= claimGen
   relaunchCount,  \* lost-launch reopens of this row (per-row, never reset)
   leaseDeadline,  \* claim_expires_at; meaningful only while running
-  availableAt,    \* due time while pending/sleeping
+  availableAt,    \* due time while pending/sleeping; Inf = untimed wait
+  wakeEvent,      \* runs.wake_event: last event this run waited on (parked)
+  runPayload,     \* runs.event_payload: parked payload, NoPayload = NULL
   nextRun,        \* pool allocation pointer
+  \* -- waits table (serial: at most one outstanding wait per run, S3.8.3;
+  \*    enforced structurally -- the wait is a per-run field) -------------
+  waitEv,         \* event name this run's wait row registers, or NoEvent
+  waitAt,         \* wait timeout (= the run's availableAt), Inf = untimed
+  \* -- events table ------------------------------------------------------
+  eventState,     \* first-write-wins payload per event; NoPayload = unset
   \* -- environment -------------------------------------------------------
   channel,        \* at-least-once launch channel: {[run, gen]}
   contexts,       \* live execution contexts: {[id, run, gen]}
@@ -186,9 +326,10 @@ VARIABLES
   lastAction,
   lastCtx         \* [run, gen] of the acting context, for LeaseAuthority
 
-vars == <<now, taskState, attempts, infraRetries, hops,
-          runState, runTask, runAttempt, claimGen, activatedGen,
-          relaunchCount, leaseDeadline, availableAt, nextRun,
+vars == <<now, taskState, attempts, infraRetries, hops, policy, cancelAt,
+          firstStarted, runState, runTask, runAttempt, claimGen,
+          activatedGen, relaunchCount, leaseDeadline, availableAt,
+          wakeEvent, runPayload, nextRun, waitEv, waitAt, eventState,
           channel, contexts, nextCtx, lastAction, lastCtx>>
 
 NoCtx == [run |-> NoRun, gen |-> 0]
@@ -201,6 +342,8 @@ Clip(x) == IF x > MaxTime THEN MaxTime ELSE x
 \* claimGen[r] = c.gen under the token = (run, gen) modeling.  activatedGen
 \* = c.gen is implied for any existing context (contexts are only created by
 \* the CAS and later claims raise claimGen); it is stated for clarity.
+\* Cancellation needs no extra conjunct: a cancelled run is not "running",
+\* so every zombie write on it is already guard-disabled.
 Fenced(c) ==
   /\ runState[c.run] = "running"
   /\ claimGen[c.run] = c.gen
@@ -216,6 +359,9 @@ Init ==
   /\ attempts      = [t \in Tasks |-> 0]
   /\ infraRetries  = [t \in Tasks |-> 0]
   /\ hops          = [t \in Tasks |-> 0]
+  /\ policy        = [t \in Tasks |-> "none"]
+  /\ cancelAt      = [t \in Tasks |-> Inf]
+  /\ firstStarted  = [t \in Tasks |-> Inf]
   /\ runState      = [r \in RunIds |-> "unused"]
   /\ runTask       = [r \in RunIds |-> CHOOSE t \in Tasks : TRUE]
   /\ runAttempt    = [r \in RunIds |-> 0]
@@ -224,6 +370,11 @@ Init ==
   /\ relaunchCount = [r \in RunIds |-> 0]
   /\ leaseDeadline = [r \in RunIds |-> 0]
   /\ availableAt   = [r \in RunIds |-> 0]
+  /\ wakeEvent     = [r \in RunIds |-> NoEvent]
+  /\ runPayload    = [r \in RunIds |-> NoPayload]
+  /\ waitEv        = [r \in RunIds |-> NoEvent]
+  /\ waitAt        = [r \in RunIds |-> 0]
+  /\ eventState    = [e \in Events |-> NoPayload]
   /\ nextRun = 1
   /\ channel = {}
   /\ contexts = {}
@@ -233,8 +384,11 @@ Init ==
 
 -----------------------------------------------------------------------------
 \* Spawn <-> batch('spawn'): task row + initial run (attempt 1), due now.
+\* The cancellation policy is the spawner's nondeterministic choice; a
+\* max_delay policy arms cancel_at_ms at spawn (materialized in SQL so the
+\* cancel scan and nextWakeAt stay indexed reads).
 \* (Idempotency-key dedup and enqueue_at overrides are not modeled.)
-Spawn(t) ==
+Spawn(t, pol) ==
   /\ taskState[t] = "unused"
   /\ nextRun <= MaxRuns
   /\ LET r == nextRun IN
@@ -244,17 +398,31 @@ Spawn(t) ==
        /\ runAttempt'  = [runAttempt EXCEPT ![r] = 1]
        /\ availableAt' = [availableAt EXCEPT ![r] = now]
        /\ nextRun' = nextRun + 1
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, claimGen, activatedGen,
-                 relaunchCount, leaseDeadline, channel, contexts, nextCtx>>
+  /\ policy'   = [policy EXCEPT ![t] = pol]
+  /\ cancelAt' = [cancelAt EXCEPT ![t] =
+                    IF pol \in {"delay", "both"} THEN Clip(now + CancelLen)
+                    ELSE Inf]
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, firstStarted, claimGen,
+                 activatedGen, relaunchCount, leaseDeadline, wakeEvent,
+                 runPayload, waitEv, waitAt, eventState, channel, contexts,
+                 nextCtx>>
   /\ lastAction' = "Spawn" /\ lastCtx' = NoCtx
 
 \* Claim <-> batch('claim'), K = 1 (S3.1 step 2): a due run of a live task
 \* -> running, claim_gen+1, fresh lease, launch message enqueued (tick step
 \* 3, fused -- see header).  The message carries the new gen; its token is
 \* the (run, gen) pair.  Task bookkeeping: state -> running.  Attempts are
-\* deliberately untouched here -- see AttemptAccounting.  (A prior impl
-\* mutated attempts at claim; that review finding is RESOLVED: store.ts now
-\* conforms to this action, and a red/green regression pins it.)
+\* deliberately untouched here -- see AttemptAccounting.  There is NO
+\* cancel-deadline guard (faithful: the impl claim joins tasks on state
+\* only) -- a deadline-due task's run may be claimed; the ACTIVATION
+\* refuses (header churn note).
+\* The claim batch's statement 3 rides along: claiming a run whose wait
+\* timed out CONSUMES the wait row, so a later emit cannot resurrect it
+\* (S3.4 rule 2 timeout branch).  The run keeps wake_event with a NULL
+\* payload -- exactly decodeClaimedRun's TimeoutError wake.  A sleeping
+\* waiter with an unexpired timeout is unclaimable (availableAt = waitAt >
+\* now), an untimed waiter never claimable (availableAt = Inf): only
+\* emit's flip to pending-now frees them.
 Claim(r) ==
   /\ runState[r] \in {"pending", "sleeping"}
   /\ availableAt[r] <= now
@@ -264,9 +432,13 @@ Claim(r) ==
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![r] = Clip(now + LeaseLen)]
   /\ taskState'     = [taskState EXCEPT ![runTask[r]] = "running"]
   /\ channel' = channel \cup {[run |-> r, gen |-> claimGen[r] + 1]}
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, runTask, runAttempt,
-                 activatedGen, relaunchCount, availableAt, nextRun,
-                 contexts, nextCtx>>
+  /\ LET timedOut == waitEv[r] # NoEvent /\ waitAt[r] <= now IN
+       /\ waitEv' = [waitEv EXCEPT ![r] = IF timedOut THEN NoEvent ELSE @]
+       /\ waitAt' = [waitAt EXCEPT ![r] = IF timedOut THEN 0 ELSE @]
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, activatedGen,
+                 relaunchCount, availableAt, wakeEvent, runPayload,
+                 eventState, nextRun, contexts, nextCtx>>
   /\ lastAction' = "Claim" /\ lastCtx' = NoCtx
 
 \* Environment: the at-least-once channel may lose a message.  (Also covers
@@ -274,9 +446,11 @@ Claim(r) ==
 Drop(m) ==
   /\ m \in channel
   /\ channel' = channel \ {m}
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, runState,
-                 runTask, runAttempt, claimGen, activatedGen, relaunchCount,
-                 leaseDeadline, availableAt, nextRun, contexts, nextCtx>>
+  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+                 cancelAt, firstStarted, runState, runTask, runAttempt,
+                 claimGen, activatedGen, relaunchCount, leaseDeadline,
+                 availableAt, wakeEvent, runPayload, waitEv, waitAt,
+                 eventState, nextRun, contexts, nextCtx>>
   /\ lastAction' = "Drop" /\ lastCtx' = NoCtx
 
 \* DeliverLaunch -> Activate <-> batch('activate') (S3.2): the per-claim CAS
@@ -285,18 +459,38 @@ Drop(m) ==
 \* does NOT consume the message: a duplicate delivery finds activatedGen =
 \* gen and is a no-op (guard false).  A successful CAS births an execution
 \* context -- the only way one is created.
+\* Cancellation (both statements of the impl batch):
+\*   - REFUSAL GUARD: a launch whose task is already past its cancel
+\*     deadline must not start (store.ts NOT EXISTS cancel_at <= now); the
+\*     sweep will cancel it.  The refused run idles running-unactivated
+\*     until lease expiry classifies it lost-launch.
+\*   - FIRST-START REWRITE: starting disarms max_delay (its whole meaning
+\*     is "cancel if never started"); max_duration is anchored at FIRST
+\*     start.  Recomputed idempotently on every re-activation from the
+\*     first_started latch -- NEVER re-anchored at the current activation
+\*     (re-anchoring would stretch the wall-clock budget per re-claim; the
+\*     reviewed inverse bug kept the stale spawn deadline via MIN and
+\*     cancelled healthy running tasks).
 Activate(m) ==
   /\ m \in channel
   /\ runState[m.run] = "running"
   /\ claimGen[m.run] = m.gen
   /\ activatedGen[m.run] < m.gen
+  /\ cancelAt[runTask[m.run]] > now
+  /\ LET t  == runTask[m.run]
+         fs == IF firstStarted[t] = Inf THEN now ELSE firstStarted[t] IN
+       /\ firstStarted' = [firstStarted EXCEPT ![t] = fs]
+       /\ cancelAt' = [cancelAt EXCEPT ![t] =
+                         IF policy[t] \in {"dur", "both"}
+                           THEN Clip(fs + CancelLen) ELSE Inf]
   /\ activatedGen'  = [activatedGen EXCEPT ![m.run] = m.gen]
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![m.run] = Clip(now + LeaseLen)]
   /\ contexts' = contexts \cup {[id |-> nextCtx, run |-> m.run, gen |-> m.gen]}
   /\ nextCtx' = nextCtx + 1
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, runState,
-                 runTask, runAttempt, claimGen, relaunchCount, availableAt,
-                 nextRun, channel>>
+  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+                 runState, runTask, runAttempt, claimGen, relaunchCount,
+                 availableAt, wakeEvent, runPayload, waitEv, waitAt,
+                 eventState, nextRun, channel>>
   /\ lastAction' = "Activate" /\ lastCtx' = CtxKey(m)
 
 \* Heartbeat <-> batch('heartbeat'): extend the lease while claimed_by
@@ -307,27 +501,36 @@ Heartbeat(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![c.run] = Clip(now + LeaseLen)]
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, runState,
-                 runTask, runAttempt, claimGen, activatedGen, relaunchCount,
-                 availableAt, nextRun, channel, contexts, nextCtx>>
+  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+                 cancelAt, firstStarted, runState, runTask, runAttempt,
+                 claimGen, activatedGen, relaunchCount, availableAt,
+                 wakeEvent, runPayload, waitEv, waitAt, eventState, nextRun,
+                 channel, contexts, nextCtx>>
   /\ lastAction' = "Heartbeat" /\ lastCtx' = CtxKey(c)
 
 \* CompleteRun <-> complete(): fenced terminal transition; context exits.
+\* The task's cancel deadline is cleared (impl: cancel_at_ms = NULL).
+\* fail() deliberately does NOT clear it: max_duration keeps metering the
+\* task across user retries, anchored at first start.
 CompleteRun(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ runState'  = [runState EXCEPT ![c.run] = "completed"]
   /\ taskState' = [taskState EXCEPT ![runTask[c.run]] = "completed"]
+  /\ cancelAt'  = [cancelAt EXCEPT ![runTask[c.run]] = Inf]
   /\ contexts' = contexts \ {c}
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, runTask, runAttempt,
-                 claimGen, activatedGen, relaunchCount, leaseDeadline,
-                 availableAt, nextRun, channel, nextCtx>>
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
+                 runTask, runAttempt, claimGen, activatedGen, relaunchCount,
+                 leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
+                 waitAt, eventState, nextRun, channel, nextCtx>>
   /\ lastAction' = "Complete" /\ lastCtx' = CtxKey(c)
 
 \* FailRunWithRetry <-> fail(), retry branch: USER-code failure with budget
 \* left -> old run failed, successor row (ordinal+1) due after backoff,
 \* attempts+1.  This is the ONLY family of actions allowed to move
-\* task.attempts (AttemptAccounting).
+\* task.attempts (AttemptAccounting).  The successor CARRIES the parked
+\* wake_event/event_payload (S3.8.2: every successor-creating path carries
+\* them); it starts with no wait row.
 FailRunWithRetry(c) ==
   /\ c \in contexts
   /\ Fenced(c)
@@ -339,12 +542,15 @@ FailRunWithRetry(c) ==
        /\ runTask'     = [runTask EXCEPT ![r2] = t]
        /\ runAttempt'  = [runAttempt EXCEPT ![r2] = runAttempt[c.run] + 1]
        /\ availableAt' = [availableAt EXCEPT ![r2] = Clip(now + Backoff)]
+       /\ wakeEvent'   = [wakeEvent EXCEPT ![r2] = wakeEvent[c.run]]
+       /\ runPayload'  = [runPayload EXCEPT ![r2] = runPayload[c.run]]
        /\ attempts'    = [attempts EXCEPT ![t] = @ + 1]
        /\ taskState'   = [taskState EXCEPT ![t] = "pending"]
        /\ nextRun' = nextRun + 1
   /\ contexts' = contexts \ {c}
-  /\ UNCHANGED <<now, infraRetries, hops, claimGen, activatedGen,
-                 relaunchCount, leaseDeadline, channel, nextCtx>>
+  /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
+                 claimGen, activatedGen, relaunchCount, leaseDeadline,
+                 waitEv, waitAt, eventState, channel, nextCtx>>
   /\ lastAction' = "FailRunWithRetry" /\ lastCtx' = CtxKey(c)
 
 \* FailRunTerminal <-> fail(), max-attempts branch: budget exhausted -> run
@@ -358,13 +564,15 @@ FailRunTerminal(c) ==
        /\ taskState' = [taskState EXCEPT ![t] = "failed"]
        /\ attempts'  = [attempts EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
-  /\ UNCHANGED <<now, infraRetries, hops, runTask, runAttempt, claimGen,
-                 activatedGen, relaunchCount, leaseDeadline, availableAt,
-                 nextRun, channel, nextCtx>>
+  /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
+                 runTask, runAttempt, claimGen, activatedGen, relaunchCount,
+                 leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
+                 waitAt, eventState, nextRun, channel, nextCtx>>
   /\ lastAction' = "FailRunTerminal" /\ lastCtx' = CtxKey(c)
 
 \* SleepSuspend <-> reschedule() with a future wake (S3.2 sleepFor): SAME
-\* run row re-scheduled, no accounting consumed; context exits.
+\* run row re-scheduled, no accounting consumed; context exits.  Parked
+\* wake fields are deliberately NOT cleared (header note).
 SleepSuspend(c) ==
   /\ c \in contexts
   /\ Fenced(c)
@@ -375,9 +583,10 @@ SleepSuspend(c) ==
        /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
-  /\ UNCHANGED <<now, attempts, infraRetries, runTask, runAttempt, claimGen,
-                 activatedGen, relaunchCount, leaseDeadline, nextRun,
-                 channel, nextCtx>>
+  /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, wakeEvent, runPayload,
+                 waitEv, waitAt, eventState, nextRun, channel, nextCtx>>
   /\ lastAction' = "Sleep" /\ lastCtx' = CtxKey(c)
 
 \* VoluntaryChain <-> reschedule(now) (S3.2 voluntary attempt-neutral
@@ -393,10 +602,140 @@ VoluntaryChain(c) ==
        /\ taskState'   = [taskState EXCEPT ![t] = "pending"]
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
-  /\ UNCHANGED <<now, attempts, infraRetries, runTask, runAttempt, claimGen,
-                 activatedGen, relaunchCount, leaseDeadline, nextRun,
-                 channel, nextCtx>>
+  /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, wakeEvent, runPayload,
+                 waitEv, waitAt, eventState, nextRun, channel, nextCtx>>
   /\ lastAction' = "Chain" /\ lastCtx' = CtxKey(c)
+
+-----------------------------------------------------------------------------
+\* PR3.1 'await-event' (SPEC-FIRST), hit branch: the event already fired --
+\* the worker reads the payload immediately and KEEPS RUNNING (no suspend,
+\* no wait row, no wake-field write; the payload checkpoint is data-plane).
+\* Modeled as an explicit fenced action so LeaseAuthority pins that a
+\* zombie's awaitEvent batch must be guard-disabled (zero rows).
+AwaitEventHit(c, e) ==
+  /\ c \in contexts
+  /\ Fenced(c)
+  /\ eventState[e] # NoPayload
+  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+                 cancelAt, firstStarted, runState, runTask, runAttempt,
+                 claimGen, activatedGen, relaunchCount, leaseDeadline,
+                 availableAt, wakeEvent, runPayload, waitEv, waitAt,
+                 eventState, nextRun, channel, contexts, nextCtx>>
+  /\ lastAction' = "AwaitHit" /\ lastCtx' = CtxKey(c)
+
+\* PR3.1 'await-event' (SPEC-FIRST), miss branch: not yet emitted -- one
+\* atomic fenced batch registers the wait AND parks the run (S3.4 rule 2:
+\* register `WHERE (SELECT payload...) IS NULL` folds the branch into the
+\* guard; no client round trip between check and sleep).  The run sleeps
+\* with available_at = the timeout (or Inf for untimed waits -- claimable
+\* only via emit's flip); wake_event is parked with a NULL payload; any
+\* stale wake fields from a previous wake are overwritten.  Consumes a hop
+\* (header note).  The serial-wait constraint (S3.8.3: ONE outstanding wait
+\* per run) is structural: the wait is a per-run field, and a running run
+\* has no wait (WaitIntegrity), so registration never finds one to violate.
+AwaitRegister(c, e, tAt) ==
+  LET t == runTask[c.run] IN
+    /\ hops[t] < MaxHops
+    /\ eventState[e] = NoPayload
+    /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
+    /\ availableAt' = [availableAt EXCEPT ![c.run] = tAt]
+    /\ waitEv'      = [waitEv EXCEPT ![c.run] = e]
+    /\ waitAt'      = [waitAt EXCEPT ![c.run] = tAt]
+    /\ wakeEvent'   = [wakeEvent EXCEPT ![c.run] = e]
+    /\ runPayload'  = [runPayload EXCEPT ![c.run] = NoPayload]
+    /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
+    /\ hops'        = [hops EXCEPT ![t] = @ + 1]
+    /\ contexts' = contexts \ {c}
+    /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
+                   firstStarted, runTask, runAttempt, claimGen,
+                   activatedGen, relaunchCount, leaseDeadline, eventState,
+                   nextRun, channel, nextCtx>>
+    /\ lastAction' = "AwaitMiss" /\ lastCtx' = CtxKey(c)
+
+AwaitEventMiss(c, e) ==
+  /\ c \in contexts
+  /\ Fenced(c)
+  /\ \/ AwaitRegister(c, e, Clip(now + SleepDur))    \* with timeout
+     \/ /\ cancelAt[runTask[c.run]] # Inf  \* MODEL RESTRICTION: untimed
+                                           \* waits only under an armed
+                                           \* cancel deadline (header note)
+        /\ AwaitRegister(c, e, Inf)                  \* wait forever
+
+\* PR3.1 'emit-event' (SPEC-FIRST): ONE atomic batch, first-write-wins
+\* (S3.8.3).  Guard: only the FIRST emit of a name transitions -- a re-emit
+\* is the impl's no-op branch (= stutter here; see header).  Every
+\* registered waiter of the event flips sleeping -> pending due now with
+\* the payload parked on its run row, its wait row deleted, and its task
+\* flipped pending (durable-at-emit, inline placement).  Keying the flip on
+\* the WAIT ROWS -- never on runs.wake_event -- is what makes timed-out and
+\* cancelled waits non-resurrectable: their wait rows are already gone.
+EmitEvent(e, p) ==
+  /\ eventState[e] = NoPayload
+  /\ eventState' = [eventState EXCEPT ![e] = p]
+  /\ LET W == {r \in RunIds : waitEv[r] = e} IN
+       /\ runState'    = [r \in RunIds |->
+                            IF r \in W THEN "pending" ELSE runState[r]]
+       /\ availableAt' = [r \in RunIds |->
+                            IF r \in W THEN now ELSE availableAt[r]]
+       /\ runPayload'  = [r \in RunIds |->
+                            IF r \in W THEN p ELSE runPayload[r]]
+       /\ waitEv'      = [r \in RunIds |->
+                            IF r \in W THEN NoEvent ELSE waitEv[r]]
+       /\ waitAt'      = [r \in RunIds |-> IF r \in W THEN 0 ELSE waitAt[r]]
+       /\ taskState'   = [t \in Tasks |->
+                            IF \E r \in W : runTask[r] = t THEN "pending"
+                            ELSE taskState[t]]
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, wakeEvent, nextRun, channel,
+                 contexts, nextCtx>>
+  /\ lastAction' = "Emit" /\ lastCtx' = NoCtx
+
+-----------------------------------------------------------------------------
+\* Shared cancel transition <-> cancelTransition(): the task CAS (state IN
+\* LIVE -> cancelled) plus its follow-ons keyed on the batch stamp: all
+\* LIVE runs -> cancelled with leases cleared, all the task's wait rows
+\* deleted.  Live CONTEXTS are deliberately NOT removed -- a cancelled
+\* run's worker is a zombie whose every subsequent write is guard-disabled
+\* (Fenced fails on state; the impl also nulls claimed_by).  This is the
+\* direct running -> cancelled transition that sits OUTSIDE the
+\* advisory-signal soundness argument -- hence modeled, not excluded.
+\* cancel_at_ms is cleared (the deadline is consumed).
+CancelCore(t) ==
+  LET dead == {r \in RunIds : runTask[r] = t /\ runState[r] \in LiveStates} IN
+    /\ taskState' = [taskState EXCEPT ![t] = "cancelled"]
+    /\ cancelAt'  = [cancelAt EXCEPT ![t] = Inf]
+    /\ runState'    = [r \in RunIds |->
+                         IF r \in dead THEN "cancelled" ELSE runState[r]]
+    /\ leaseDeadline' = [r \in RunIds |->
+                           IF r \in dead THEN 0 ELSE leaseDeadline[r]]
+    /\ availableAt' = [r \in RunIds |->
+                         IF r \in dead THEN 0 ELSE availableAt[r]]
+    /\ waitEv' = [r \in RunIds |-> IF r \in dead THEN NoEvent ELSE waitEv[r]]
+    /\ waitAt' = [r \in RunIds |-> IF r \in dead THEN 0 ELSE waitAt[r]]
+    /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
+                   runTask, runAttempt, claimGen, activatedGen,
+                   relaunchCount, wakeEvent, runPayload, eventState,
+                   nextRun, channel, contexts, nextCtx>>
+
+\* CancelSweep <-> cancelTransition('sweep:cancel') via S3.1 step 0: fires
+\* only on a DUE deadline (max_delay never started in time, or max_duration
+\* exceeded since first start).
+CancelSweep(t) ==
+  /\ taskState[t] \in LiveStates
+  /\ cancelAt[t] <= now
+  /\ CancelCore(t)
+  /\ lastAction' = "CancelSweep" /\ lastCtx' = NoCtx
+
+\* CancelExplicit <-> cancelTransition('cancel-task'): the explicit API --
+\* same transition, NO deadline guard; may fire on any live task at any
+\* time (user action, hence unfair).
+CancelExplicit(t) ==
+  /\ taskState[t] \in LiveStates
+  /\ CancelCore(t)
+  /\ lastAction' = "CancelExplicit" /\ lastCtx' = NoCtx
 
 -----------------------------------------------------------------------------
 LeaseExpired(r) == runState[r] = "running" /\ leaseDeadline[r] <= now
@@ -414,9 +753,10 @@ SweepLostLaunch(r) ==
   /\ availableAt'   = [availableAt EXCEPT ![r] = Clip(now + Backoff)]
   /\ relaunchCount' = [relaunchCount EXCEPT ![r] = @ + 1]
   /\ taskState'     = [taskState EXCEPT ![runTask[r]] = "pending"]
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, runTask, runAttempt,
-                 claimGen, activatedGen, leaseDeadline, nextRun, channel,
-                 contexts, nextCtx>>
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 leaseDeadline, wakeEvent, runPayload, waitEv, waitAt,
+                 eventState, nextRun, channel, contexts, nextCtx>>
   /\ lastAction' = "SweepLostLaunch" /\ lastCtx' = NoCtx
 
 \* Relaunch cap exhausted (types.ts 'relaunch-cap-exhausted'): "past its cap
@@ -429,15 +769,18 @@ SweepRelaunchExhausted(r) ==
   /\ relaunchCount[r] = RelaunchCap
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, runTask, runAttempt,
-                 claimGen, activatedGen, relaunchCount, leaseDeadline,
-                 availableAt, nextRun, channel, contexts, nextCtx>>
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, availableAt, wakeEvent,
+                 runPayload, waitEv, waitAt, eventState, nextRun, channel,
+                 contexts, nextCtx>>
   /\ lastAction' = "SweepRelaunchExhausted" /\ lastCtx' = NoCtx
 
 \* SweepClaimTimeout <-> sweep(), died-mid-run branch: lease expired and
 \* activated -- $ClaimTimeout.  Old run failed; successor row with
 \* runAttempt+1 (the S3.8 monotonic fence pair) and infraRetries+1 -- NOT
-\* task.attempts (split accounting, S3.8.2).  The zombie context, if the
+\* task.attempts (split accounting, S3.8.2).  The successor CARRIES the
+\* parked wake_event/event_payload (S3.8.2).  The zombie context, if the
 \* worker is actually alive, is deliberately NOT removed: from here on every
 \* write it attempts is fence-rejected (LeaseAuthority) -- this is the
 \* lease-overlap window, modeled.
@@ -452,11 +795,14 @@ SweepClaimTimeout(r) ==
        /\ runTask'      = [runTask EXCEPT ![r2] = t]
        /\ runAttempt'   = [runAttempt EXCEPT ![r2] = runAttempt[r] + 1]
        /\ availableAt'  = [availableAt EXCEPT ![r2] = Clip(now + Backoff)]
+       /\ wakeEvent'    = [wakeEvent EXCEPT ![r2] = wakeEvent[r]]
+       /\ runPayload'   = [runPayload EXCEPT ![r2] = runPayload[r]]
        /\ infraRetries' = [infraRetries EXCEPT ![t] = @ + 1]
        /\ taskState'    = [taskState EXCEPT ![t] = "pending"]
        /\ nextRun' = nextRun + 1
-  /\ UNCHANGED <<now, attempts, hops, claimGen, activatedGen, relaunchCount,
-                 leaseDeadline, channel, contexts, nextCtx>>
+  /\ UNCHANGED <<now, attempts, hops, policy, cancelAt, firstStarted,
+                 claimGen, activatedGen, relaunchCount, leaseDeadline,
+                 waitEv, waitAt, eventState, channel, contexts, nextCtx>>
   /\ lastAction' = "SweepClaimTimeout" /\ lastCtx' = NoCtx
 
 \* Infra-retry cap exhausted.  CHOICE (DESIGN says only "own generous cap"):
@@ -467,9 +813,11 @@ SweepInfraExhausted(r) ==
   /\ infraRetries[runTask[r]] = InfraRetryCap
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, runTask, runAttempt,
-                 claimGen, activatedGen, relaunchCount, leaseDeadline,
-                 availableAt, nextRun, channel, contexts, nextCtx>>
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, availableAt, wakeEvent,
+                 runPayload, waitEv, waitAt, eventState, nextRun, channel,
+                 contexts, nextCtx>>
   /\ lastAction' = "SweepInfraExhausted" /\ lastCtx' = NoCtx
 
 \* Environment: a worker silently stops -- no DB write, its context (and all
@@ -477,49 +825,62 @@ SweepInfraExhausted(r) ==
 WorkerCrash(c) ==
   /\ c \in contexts
   /\ contexts' = contexts \ {c}
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, runState,
-                 runTask, runAttempt, claimGen, activatedGen, relaunchCount,
-                 leaseDeadline, availableAt, nextRun, channel, nextCtx>>
+  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+                 cancelAt, firstStarted, runState, runTask, runAttempt,
+                 claimGen, activatedGen, relaunchCount, leaseDeadline,
+                 availableAt, wakeEvent, runPayload, waitEv, waitAt,
+                 eventState, nextRun, channel, nextCtx>>
   /\ lastAction' = "Crash" /\ lastCtx' = NoCtx
 
 TimeAdvance ==
   /\ now < MaxTime
   /\ now' = now + 1
-  /\ UNCHANGED <<taskState, attempts, infraRetries, hops, runState, runTask,
-                 runAttempt, claimGen, activatedGen, relaunchCount,
-                 leaseDeadline, availableAt, nextRun, channel, contexts,
-                 nextCtx>>
+  /\ UNCHANGED <<taskState, attempts, infraRetries, hops, policy, cancelAt,
+                 firstStarted, runState, runTask, runAttempt, claimGen,
+                 activatedGen, relaunchCount, leaseDeadline, availableAt,
+                 wakeEvent, runPayload, waitEv, waitAt, eventState, nextRun,
+                 channel, contexts, nextCtx>>
   /\ lastAction' = "TimeAdvance" /\ lastCtx' = NoCtx
 
 -----------------------------------------------------------------------------
 Next ==
-  \/ \E t \in Tasks : Spawn(t)
+  \/ \E t \in Tasks, pol \in Policies : Spawn(t, pol)
+  \/ \E t \in Tasks : CancelSweep(t) \/ CancelExplicit(t)
   \/ \E r \in RunIds : Claim(r) \/ SweepLostLaunch(r)
                        \/ SweepRelaunchExhausted(r) \/ SweepClaimTimeout(r)
                        \/ SweepInfraExhausted(r)
   \/ \E m \in LaunchMsgs : Drop(m) \/ Activate(m)
+  \/ \E e \in Events, p \in Payloads : EmitEvent(e, p)
   \/ \E c \in contexts : Heartbeat(c) \/ CompleteRun(c)
                          \/ FailRunWithRetry(c) \/ FailRunTerminal(c)
                          \/ SleepSuspend(c) \/ VoluntaryChain(c)
                          \/ WorkerCrash(c)
+                         \/ \E e \in Events : AwaitEventHit(c, e)
+                                              \/ AwaitEventMiss(c, e)
   \/ TimeAdvance
 
 Spec == Init /\ [][Next]_vars
 
 \* Fairness for the liveness check only: the machinery (clock, some tick's
-\* claim, some delivery, some sweep) eventually acts when continuously able.
-\* Worker actions and the adversary (Drop, Crash) are deliberately UNFAIR:
-\* liveness must hold even when every launch is dropped, every worker hangs
-\* or crashes -- the caps and the lease timer are what guarantee progress.
+\* claim, some delivery, some sweep, deadline-cancel enforcement)
+\* eventually acts when continuously able.  Worker actions and the
+\* adversary (Drop, Crash) are deliberately UNFAIR, and so are EmitEvent
+\* and CancelExplicit (user/API actions -- liveness must hold when nobody
+\* ever emits or cancels): the caps, the lease timer, and deadline
+\* enforcement are what guarantee progress.  CancelAny is its own fairness
+\* term (the impl's sweep runs the cancel scan every tick, before expired
+\* leases).
 ClaimAny   == \E r \in RunIds : Claim(r)
 DeliverAny == \E m \in LaunchMsgs : Activate(m)
 SweepAny   == \E r \in RunIds : SweepLostLaunch(r) \/ SweepRelaunchExhausted(r)
                                 \/ SweepClaimTimeout(r) \/ SweepInfraExhausted(r)
+CancelAny  == \E t \in Tasks : CancelSweep(t)
 
 Fairness == /\ WF_vars(TimeAdvance)
             /\ WF_vars(ClaimAny)
             /\ WF_vars(DeliverAny)
             /\ WF_vars(SweepAny)
+            /\ WF_vars(CancelAny)
 
 SpecFair == Spec /\ Fairness
 
@@ -531,6 +892,9 @@ TypeOK ==
   /\ attempts \in [Tasks -> 0..MaxAttempts]
   /\ infraRetries \in [Tasks -> 0..InfraRetryCap]
   /\ hops \in [Tasks -> 0..MaxHops]
+  /\ policy \in [Tasks -> Policies]
+  /\ cancelAt \in [Tasks -> 0..Inf]
+  /\ firstStarted \in [Tasks -> 0..Inf]
   /\ runState \in [RunIds -> RunStates]
   /\ runTask \in [RunIds -> Tasks]
   /\ runAttempt \in [RunIds -> 0..OrdinalBound]
@@ -539,7 +903,12 @@ TypeOK ==
   /\ \A r \in RunIds : activatedGen[r] <= claimGen[r]
   /\ relaunchCount \in [RunIds -> 0..RelaunchCap]
   /\ leaseDeadline \in [RunIds -> 0..MaxTime]
-  /\ availableAt \in [RunIds -> 0..MaxTime]
+  /\ availableAt \in [RunIds -> 0..Inf]
+  /\ wakeEvent \in [RunIds -> Events \cup {NoEvent}]
+  /\ runPayload \in [RunIds -> {NoPayload} \cup Payloads]
+  /\ waitEv \in [RunIds -> Events \cup {NoEvent}]
+  /\ waitAt \in [RunIds -> 0..Inf]
+  /\ eventState \in [Events -> {NoPayload} \cup Payloads]
   /\ nextRun \in 1..(MaxRuns + 1)
   /\ channel \subseteq LaunchMsgs
   /\ \A c \in contexts :
@@ -573,7 +942,7 @@ NoDualFencedWriter ==
 SingleActiveRunPerTask ==
   \A t \in Tasks :
     Cardinality({r \in RunIds : runTask[r] = t
-                   /\ runState[r] \in {"pending", "running", "sleeping"}})
+                   /\ runState[r] \in LiveStates})
       <= 1
 
 TerminalTaskQuiescent ==
@@ -583,9 +952,43 @@ TerminalTaskQuiescent ==
         (runTask[r] = t /\ runState[r] # "unused")
           => runState[r] \in TerminalStates
 
+\* INVARIANT (events) -- the wait-row well-formedness bundle.  The heart is
+\* eventState[waitEv[r]] = NoPayload: A REGISTERED WAITER'S EVENT IS
+\* UNFIRED.  Because awaitEvent registers only under the not-yet-emitted
+\* guard and emitEvent flips every registered waiter (deleting its wait) in
+\* the same atomic action, the state "waiting on an already-fired event" is
+\* unreachable -- this is the no-lost-wakeup SAFETY core, and it is
+\* precisely what the read-branch-write race (which S3.4 rule 2 forbids)
+\* would violate.  The rest: waits belong to LIVE sleeping runs of live
+\* tasks only (cancel/terminal paths delete them), the parked wake_event
+\* mirrors the wait, the payload slot is NULL while waiting, and the run's
+\* due time IS the wait timeout.
+WaitIntegrity ==
+  \A r \in RunIds :
+    waitEv[r] # NoEvent =>
+      /\ runState[r] = "sleeping"
+      /\ taskState[runTask[r]] \notin TerminalStates
+      /\ wakeEvent[r] = waitEv[r]
+      /\ runPayload[r] = NoPayload
+      /\ eventState[waitEv[r]] = NoPayload
+      /\ availableAt[r] = waitAt[r]
+
+\* INVARIANT (events): a parked payload is always EXACTLY the first-written
+\* payload of the event the run was woken by -- emit copies it in the same
+\* atomic action, successors carry it verbatim, and event rows are
+\* immutable (EventImmutable).  A second emit overwriting a parked copy, or
+\* a waiter woken with the wrong event's payload, would break this.
+PayloadMatchesEvent ==
+  \A r \in RunIds :
+    runPayload[r] # NoPayload =>
+      /\ wakeEvent[r] \in Events
+      /\ eventState[wakeEvent[r]] = runPayload[r]
+
 -----------------------------------------------------------------------------
 \* PROPERTY (invariant 3, as an action property): terminal runs and tasks
-\* never change state again.
+\* never change state again -- "cancelled" included: cancellation is
+\* terminal, and neither a straggler emit nor a zombie write nor a sweep
+\* may resurrect a cancelled task or run.
 TerminalStability ==
   [][ /\ \A r \in RunIds :
            runState[r] \in TerminalStates => runState'[r] = runState[r]
@@ -594,24 +997,31 @@ TerminalStability ==
     ]_vars
 
 \* PROPERTY (invariant 4): task.attempts moves only on user failures
-\* (fail()'s two branches), NEVER on sweeps; infraRetries moves only on
-\* SweepClaimTimeout.  Both are monotone.
+\* (fail()'s two branches), NEVER on sweeps or cancels; infraRetries moves
+\* only on SweepClaimTimeout.  Both are monotone.  Cancellation is
+\* accounting-neutral: it consumes no attempt, no infra retry, no hop.
 AttemptAccounting ==
   [][ /\ \A t \in Tasks : attempts'[t] >= attempts[t]
       /\ \A t \in Tasks : infraRetries'[t] >= infraRetries[t]
       /\ (attempts' # attempts)
            => lastAction' \in {"FailRunWithRetry", "FailRunTerminal"}
       /\ (infraRetries' # infraRetries) => lastAction' = "SweepClaimTimeout"
-      /\ lastAction' \in SweepActions => attempts' = attempts
+      /\ lastAction' \in SweepActions \cup CancelActions
+           => attempts' = attempts /\ hops' = hops
     ]_vars
 
 \* PROPERTY (invariant 5): every worker write that actually happened was
 \* taken by the context whose token (= gen, under the token modeling)
 \* matches claimed_by, on a run still 'running' and activated for that very
-\* claim -- evaluated in the PRE-state (unprimed).  A swept or superseded
-\* context's writes are disabled (impl: zero-row fenced batches), so they
-\* can never be the action taken.  This is the fencing that makes the
-\* tolerated lease-overlap window safe.
+\* claim -- evaluated in the PRE-state (unprimed).  A swept, superseded, or
+\* CANCELLED context's writes are disabled (impl: zero-row fenced batches;
+\* cancel additionally nulls claimed_by), so they can never be the action
+\* taken.  This is the fencing that makes the tolerated lease-overlap
+\* window safe -- now including the direct running -> cancelled transition:
+\* after CancelSweep/CancelExplicit kill a running run under a live worker,
+\* that zombie's Heartbeat/Complete/Fail/Sleep/Chain/Await all die on the
+\* state guard.  awaitEvent (both branches) is a worker write and obeys the
+\* same fence.
 LeaseAuthority ==
   [][ lastAction' \in WorkerWrites =>
         /\ lastCtx'.run \in RunIds
@@ -620,12 +1030,80 @@ LeaseAuthority ==
         /\ activatedGen[lastCtx'.run] = lastCtx'.gen
     ]_vars
 
+\* PROPERTY (events): first-write-wins immutability -- once an event's
+\* payload is written it NEVER changes (a re-emit is a no-op; there is no
+\* delete/GC in scope).
+EventImmutable ==
+  [][ \A e \in Events :
+        eventState[e] # NoPayload => eventState'[e] = eventState[e]
+    ]_vars
+
+\* PROPERTY (events): an emit's run-state effects are confined to its
+\* registered waiters -- every run an Emit step touches was a sleeping run
+\* holding a wait row (on which the flip keys), and it wakes to pending.
+\* In particular a run whose wait TIMED OUT (wait consumed at claim) or was
+\* CANCELLED (wait deleted) is untouchable by a later emit: no resurrection
+\* after timeout, S3.4 rule 2.
+EmitAuthority ==
+  [][ lastAction' = "Emit" =>
+        \A r \in RunIds :
+          (runState'[r] # runState[r]) =>
+            /\ waitEv[r] # NoEvent
+            /\ runState[r] = "sleeping"
+            /\ runState'[r] = "pending"
+    ]_vars
+
+\* PROPERTY (events): the parked payload slot (runs.event_payload) changes
+\* only through the three sanctioned channels -- (a) an emit delivering to
+\* a run that was REGISTERED (pre-state wait row!), writing exactly the
+\* event's payload; (b) a new await registration clearing the slot for the
+\* run of the acting fenced context; (c) successor creation copying onto a
+\* fresh (pre-state unused) row.  Together with WaitIntegrity this is the
+\* no-resurrection theorem in action form: after a timeout consumed the
+\* wait, no emit can ever set this run's payload.
+PayloadAuthority ==
+  [][ \A r \in RunIds :
+        (runPayload'[r] # runPayload[r]) =>
+          \/ /\ lastAction' = "Emit"
+             /\ waitEv[r] # NoEvent
+             /\ runPayload'[r] = eventState'[waitEv[r]]
+          \/ /\ lastAction' = "AwaitMiss"
+             /\ lastCtx'.run = r
+             /\ runPayload'[r] = NoPayload
+          \/ /\ lastAction' \in {"SweepClaimTimeout", "FailRunWithRetry"}
+             /\ runState[r] = "unused"
+    ]_vars
+
 \* PROPERTY (invariant 6, liveness; check with SPECIFICATION SpecFair):
 \* every spawned task eventually reaches a terminal state.  Cap exhaustion
-\* (relaunch or infra) IS terminal failure in this model, so "completed,
-\* failed, or the relaunch cap" collapses to TerminalStates.
+\* (relaunch or infra) IS terminal failure in this model, and cancellation
+\* IS terminal, so "completed, failed, cancelled, or a cap" collapses to
+\* TerminalStates.  Holds even when every launch drops, every worker
+\* crashes, nobody ever emits, and deadlines race claims (the churn note in
+\* the header).
 EventuallyTerminal ==
   \A t \in Tasks :
     (taskState[t] # "unused") ~> (taskState[t] \in TerminalStates)
+
+\* PROPERTY (events, liveness): every registered wait eventually resolves
+\* -- by emit (flip), by timeout (consumed at the waking claim), or by
+\* cancellation cleanup.  Untimed waits are covered because the model
+\* admits them only under an armed cancel deadline (header note) and
+\* CancelAny is fair.
+EveryWaitResolves ==
+  \A r \in RunIds : (waitEv[r] # NoEvent) ~> (waitEv[r] = NoEvent)
+
+\* PROPERTY (events, liveness): NO LOST WAKEUP, delivery half.  A waiter
+\* woken by an emit (payload parked, run pending) is eventually handed to a
+\* worker -- claimed AND activated, at which point the claim payload
+\* carries wake_event + event_payload (decodeClaimedRun) -- or the task
+\* legitimately dies first (cancellation deadline, infra/relaunch caps:
+\* policy trumps delivery).  PayloadAuthority guarantees the payload still
+\* parked at that hand-off is the event's first-written payload.
+WakeupDelivered ==
+  \A r \in RunIds :
+    (runState[r] = "pending" /\ runPayload[r] # NoPayload)
+      ~> (\/ (runState[r] = "running" /\ activatedGen[r] = claimGen[r])
+          \/ runState[r] \in TerminalStates)
 
 ===============================================================================
