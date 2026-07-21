@@ -267,7 +267,7 @@ describe('DriverLoop review regressions', () => {
     const done = loop.run()
     await until(() => f.clock.sleeps.length === 1, 'parked')
     void loop.stop() // deliberately NOT awaited — the revival window
-    expect(() => loop.run()).toThrow()
+    await expect(loop.run()).rejects.toThrow()
     await done
     f.close()
   })

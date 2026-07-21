@@ -68,9 +68,11 @@ export class DriverLoop {
   private readonly idleCeilingMs: number
   private readonly idleAfterTicks: number
   private readonly registryIntervalMs: number
+  private readonly registryTtlSeconds: number
   private readonly driverId: string
 
   private running = false
+  private everRan = false
   private stopped: Promise<void> | null = null
   private resolveStopped: (() => void) | null = null
   private sleepInterrupt: AbortController | null = null
@@ -99,15 +101,35 @@ export class DriverLoop {
       sweepLimit: opts.sweepLimit,
       leaseSeconds: opts.leaseSeconds,
     }
+    // Ceilings feed the timer API directly: past 2^31-1 ms a timer fires
+    // IMMEDIATELY, turning the idle park into a hot loop.
+    const MAX_TIMER_MS = 2_147_483_647
     this.busyCeilingMs = requirePositiveInt('busyCeilingMs', opts.busyCeilingMs ?? 250)
     this.idleCeilingMs = requirePositiveInt('idleCeilingMs', opts.idleCeilingMs ?? 5000)
+    if (this.busyCeilingMs > MAX_TIMER_MS || this.idleCeilingMs > MAX_TIMER_MS) {
+      throw new RangeError(`poll ceilings must be <= ${MAX_TIMER_MS}ms (timer API limit)`)
+    }
+    if (this.idleCeilingMs < this.busyCeilingMs) {
+      throw new RangeError('idleCeilingMs must be >= busyCeilingMs (idle must not poll faster)')
+    }
     this.idleAfterTicks = requirePositiveInt('idleAfterTicks', opts.idleAfterTicks ?? 10)
     this.registryIntervalMs = durationToMs(
       'registryIntervalSeconds',
       opts.registryIntervalSeconds ?? 15,
       { positive: true },
     )
+    // Validate the DERIVED ttl here too: a value that passes above but
+    // fails at beat time would throw into the observability catch forever.
+    this.registryTtlSeconds =
+      durationToMs(
+        'registryIntervalSeconds (doubled for ttl)',
+        (opts.registryIntervalSeconds ?? 15) * 2,
+        { positive: true },
+      ) / 1000
     this.driverId = opts.driverId ?? deps.ids.token()
+    if (typeof this.driverId !== 'string' || this.driverId.length === 0) {
+      throw new RangeError('driverId must be a non-empty string')
+    }
     // A hanging transport call must never stall the loop: race it against
     // the clock and hand a timeout to the reconciler as a failed launch.
     this.launcher =
@@ -124,7 +146,13 @@ export class DriverLoop {
 
   /** Runs until stop(). Never rejects; tick errors are counted and backed off. */
   async run(): Promise<void> {
-    if (this.running) throw new Error('DriverLoop.run() called twice')
+    if (this.everRan) {
+      // One-shot by design: a restart on the same instance can revive a
+      // half-stopped loop into two interleaved bodies. New loop, new
+      // instance.
+      throw new Error('DriverLoop.run() is one-shot — construct a new loop to restart')
+    }
+    this.everRan = true
     this.running = true
     this.stopped = new Promise((resolve) => {
       this.resolveStopped = resolve
@@ -195,14 +223,13 @@ export class DriverLoop {
   private async beatRegistry(): Promise<void> {
     const now = this.clock.nowEpochMs()
     if (this.lastBeatAtMs !== null && now - this.lastBeatAtMs < this.registryIntervalMs) return
-    this.lastBeatAtMs = now
     try {
       // ttl = 2x cadence: one missed beat does not read as death.
-      await this.store.driverHeartbeat(
-        this.tickOpts.queue,
-        this.driverId,
-        (this.registryIntervalMs * 2) / 1000,
-      )
+      await this.store.driverHeartbeat(this.tickOpts.queue, this.driverId, this.registryTtlSeconds)
+      // Marked AFTER success: a failed beat retries next pass, not next
+      // cadence (with ttl = 2x cadence, failure + an idle park could
+      // otherwise read as death).
+      this.lastBeatAtMs = now
     } catch {
       // observability only — never let it hurt the loop
     }
@@ -215,11 +242,16 @@ function withLaunchTimeout(launcher: Launcher, clock: Clock, timeoutMs: number):
     async launch(invocation) {
       const settled = new AbortController()
       const timedOut = Symbol('timeout')
+      const launch = launcher.launch(invocation).finally(() => settled.abort())
       const outcome = await Promise.race([
-        launcher.launch(invocation).finally(() => settled.abort()),
+        launch,
         clock.sleep(timeoutMs, settled.signal).then(() => timedOut as unknown),
       ])
       if (outcome === timedOut) {
+        // The interrupted sleep can win a MICROTASK race against the very
+        // launch that interrupted it (.finally adds resolution hops). The
+        // abort flag is the truth: if the launch settled, honor it.
+        if (settled.signal.aborted) return launch
         // The transport call stays pending in the background — its promise
         // is abandoned, never awaited again. The run recovers through the
         // normal lost-launch path.

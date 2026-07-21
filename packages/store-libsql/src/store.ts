@@ -660,13 +660,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
     await this.db.batch('driver-heartbeat', [
       {
-        sql: `INSERT INTO drivers (driver_id, queue, last_beat_ms, expires_at_ms)
+        sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
               VALUES (?, ?, ${NOW_MS}, ${NOW_MS} + ?)
-              ON CONFLICT (driver_id) DO UPDATE SET
-                queue = excluded.queue,
+              ON CONFLICT (queue, driver_id) DO UPDATE SET
                 last_beat_ms = excluded.last_beat_ms,
                 expires_at_ms = excluded.expires_at_ms`,
-        args: [driverId, queue, ttlMs],
+        args: [queue, driverId, ttlMs],
+      },
+      // Self-cleaning: every beat also buries the expired (a fresh id per
+      // process restart must not grow the table forever — bounds are
+      // invariants too).
+      {
+        sql: `DELETE FROM drivers WHERE expires_at_ms < ${NOW_MS}`,
+        args: [],
       },
     ])
   }
