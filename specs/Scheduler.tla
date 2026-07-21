@@ -251,6 +251,8 @@
 \*     replay re-reads under a live fence; miss replay is zero-row -- the
 \*     run it parked is no longer 'running')
 \* Excluded (reason  [dup-class]):
+\*   'driver-heartbeat' [receipt] -- observability liveness upsert; nothing
+\*     in the protocol reads it, and a replay re-applies the same row
 \*   'sweep:scan' [read] -- read-only discovery, no state transition
 \*   'expire-lease-now' [cas-fenced] -- advisory-only token-fenced write
 \*     (replay re-applies the same absolute value); omission argued sound

@@ -125,6 +125,12 @@ export interface SchedulerStore {
   /** min(available_at, claim_expires_at, cancellation deadlines) — for re-arm. */
   nextWakeAtEpochMs(queue: string): Promise<number | null>
 
+  /**
+   * Observability only: upsert this driver's liveness row (nothing in the
+   * protocol reads it). Best-effort — callers tolerate failure.
+   */
+  driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void>
+
   cancelTask(queue: string, taskId: string): Promise<boolean>
 }
 

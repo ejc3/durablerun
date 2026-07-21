@@ -17,6 +17,7 @@ const Q = 'q'
  * skip the case nobody suspected.
  */
 export const MATRIX_WRITE_LABELS = [
+  'driver-heartbeat',
   'spawn',
   'claim',
   'activate',
@@ -92,6 +93,7 @@ export async function runFaultMatrixCase(
           return null
         }
       }
+      await go(() => store.driverHeartbeat(Q, 'matrix-driver', 30))
       // Spawn a small population: an idempotent pair and a one-attempt task.
       await go(() => store.spawn(Q, 'a', '{}', { idempotencyKey: 'k1' }))
       await go(() => store.spawn(Q, 'a', '{}', { idempotencyKey: 'k1' }))

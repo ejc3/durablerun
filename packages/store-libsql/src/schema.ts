@@ -110,6 +110,13 @@ export const MIGRATIONS: Migration[] = [
         PRIMARY KEY (queue, event_name)
       ) WITHOUT ROWID`,
 
+      `CREATE TABLE IF NOT EXISTS drivers (
+        driver_id TEXT PRIMARY KEY,
+        queue TEXT NOT NULL,
+        last_beat_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID`,
+
       `CREATE TABLE IF NOT EXISTS waits (
         run_id TEXT NOT NULL,
         step_name TEXT NOT NULL,
