@@ -1,6 +1,6 @@
 import type { LaunchInvocation, LaunchOutcome, Launcher } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
-import { Rng, seededIdSource } from '@durablerun/harness'
+import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { tick, type TickOptions } from '../src/index.js'
@@ -331,6 +331,99 @@ describe('tick() review regressions', () => {
     const launcher = new FakeLauncher(() => ({ kind: 'launch-failed', error: new Error('no') }))
     const result = await tick({ store: flaky, launcher, ids: f.ids }, OPTS)
     expect(result.launchFailed).toBe(2)
+    expect(result.nextWakeAtEpochMs).not.toBeNull()
+    f.close()
+  })
+})
+
+/**
+ * Codex review regressions (red/green rule): each test failed against the
+ * tick()/store as of the green commit for the first review round.
+ */
+describe('tick() codex review regressions', () => {
+  it('a duplicated claim batch (lost response, retried) never claims past the limit', async () => {
+    const f = await fx('tick-dup-claim')
+    for (let i = 0; i < 6; i++) await f.store.spawn(Q, `job${i}`, '{}')
+    const world = new SimWorld(f.raw, 'dup-claim-seed')
+    // The transport loses the claim response and retries the SAME batch —
+    // the legal retry-after-lost-response fault every transition must absorb.
+    world.injectDuplicate({ label: 'claim' })
+    const launcher = new FakeLauncher()
+    let result: Awaited<ReturnType<typeof tick>> | undefined
+    world.actor('driver', async (simDb) => {
+      const store = new LibsqlSchedulerStore(simDb, f.ids)
+      result = await tick({ store, launcher, ids: f.ids }, OPTS)
+    })
+    await world.run()
+    // The retry must be an idempotent receipt for the ORIGINAL selection,
+    // never a second helping: at most K runs claimed and launched.
+    expect(result?.claimed).toBeLessThanOrEqual(3)
+    expect(launcher.invocations.length).toBeLessThanOrEqual(3)
+    const [running] = await f.raw.batch('t', [
+      { sql: `SELECT COUNT(*) AS n FROM runs WHERE state = 'running'`, args: [] },
+    ])
+    expect(Number(running?.rows[0]?.n)).toBe(3)
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('a task past its cancellation deadline is never claimed, even beyond the sweep budget', async () => {
+    const f = await fx('tick-cancel-overflow')
+    // Six tasks past max_delay with sweepLimit 5: the sixth cannot be
+    // swept THIS pass — but claiming it would launch a worker for a task
+    // the same pass should have cancelled.
+    for (let i = 0; i < 6; i++) {
+      await f.store.spawn(Q, `job${i}`, '{}', { cancellation: { maxDelaySeconds: 10 } })
+    }
+    await f.admin.setFakeNowEpochMs(1_011_000)
+    const launcher = new FakeLauncher()
+    const result = await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
+    expect(result.swept).toHaveLength(5)
+    expect(result.claimed).toBe(0)
+    expect(launcher.invocations).toEqual([])
+    expect(result.backlog).toBe(true) // the sixth cancel is next pass's work
+    const drain = await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
+    expect(drain.swept).toMatchObject([{ kind: 'cancelled' }])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('an ending whose runId does not match the launched run is ignored', async () => {
+    const f = await fx('tick-foreign-ending')
+    await f.store.spawn(Q, 'job', '{}')
+    // A confused resident pool reports an ending for a DIFFERENT run.
+    const confused = new FakeLauncher(async (inv) => {
+      const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
+      if (!run) throw new Error('activation lost')
+      return {
+        kind: 'ended',
+        ending: { runId: 'some-other-run', kind: 'crashed' },
+      }
+    })
+    await tick({ store: f.store, launcher: confused, ids: f.ids }, OPTS)
+    // A signal about a different run says nothing about THIS run's lease:
+    // no advisory expiry, so nothing is sweepable at unchanged time.
+    const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
+    expect(second.swept).toEqual([])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('a malformed launcher outcome is a failed launch, not a tick crash', async () => {
+    const f = await fx('tick-malformed')
+    await f.store.spawn(Q, 'a', '{}')
+    await f.store.spawn(Q, 'b', '{}')
+    let calls = 0
+    // A JS launcher (no type checking) returns garbage for one run.
+    const launcher = new FakeLauncher(() => {
+      calls++
+      if (calls === 1) return undefined as never
+      return { kind: 'accepted' }
+    })
+    const result = await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
+    expect(result.claimed).toBe(2)
+    expect(result.launched).toBe(1)
+    expect(result.launchFailed).toBe(1)
     expect(result.nextWakeAtEpochMs).not.toBeNull()
     f.close()
   })

@@ -87,6 +87,22 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
 acks, ending feeds, `expireLeaseNow` may only ACCELERATE lease expiry.
 A live worker's heartbeat legitimately revives an advisorily-expired lease.
 [DESIGN §3.9; conformance "revival" scenario]
+- Reconcile by FENCE, never by kind: an advisory report's content may never
+  choose the code path — take the same guarded write unconditionally and
+  let its fence no-op when the report was right. Skipping a write "because
+  the report says it's unnecessary" IS trusting the report (the tick
+  believed a lying 'completed' and cost a full lease of latency).
+- Every advisory input gets LYING-signal tests — one false-positive, one
+  false-negative. Honest-signal tests are author-predicted scenarios and
+  catch nothing (no invariant trips on a latency bug).
+- Best-effort writes are try/caught: a lost hint may never cost the
+  caller's result. Advisory-ness must be visible in code SHAPE, not just
+  in your head.
+- Rules travel to NEW boundaries: every new public entry point (tick was
+  the first above the store) re-validates its numeric knobs at entry —
+  the layer below validating does not exempt it, and a value legal below
+  (sweep limit 0 is a pinned store behavior) can be degenerate above
+  (backlog spins forever).
 
 ## Part 3 — SQL & dialect traps (each bit us once)
 
