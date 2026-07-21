@@ -1,0 +1,20 @@
+{
+  "name": "@durablerun/driver",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@durablerun/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@durablerun/conformance": "workspace:*",
+    "@durablerun/harness": "workspace:*",
+    "@durablerun/store-libsql": "workspace:*"
+  }
+}

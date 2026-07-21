@@ -195,6 +195,11 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   scenarios), never TypeScript types alone.
 - **Merge on green; PRs are the record** — descriptive commits covering the
   actual diff, `git log main..HEAD` read in full before writing the PR body.
+- **Plain language in commits and PR bodies**: ordinary sentences describing
+  what changed and what behavior changed — no repo-private shorthand
+  ("stamps", "altitude", "K_s") without an in-line gloss. Spec section
+  numbers are pointers in parentheses, never the explanation itself. A
+  reader outside these sessions must understand the log cold.
 
 ## Reference map
 
