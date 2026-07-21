@@ -3,6 +3,7 @@
 labeled batch in the store must be accounted for INSIDE the spec's ledger
 block, as a quoted 'label'. Multiline-tolerant harvest; dynamic labels are
 declared here and asserted present in the source so they cannot rot."""
+import json
 import re
 import sys
 from pathlib import Path
@@ -22,6 +23,10 @@ for label in DYNAMIC:
         sys.exit(f"spec-ledger: declared dynamic label '{label}' not found in source")
 labels |= DYNAMIC
 
+if "--labels" in sys.argv:
+    print(json.dumps(sorted(labels)))
+    sys.exit(0)
+
 # The check is scoped to the ledger block and requires the quoted form —
 # a bare word elsewhere in the spec (prose, identifiers) counts for nothing.
 match = re.search(r"BATCH-LABEL LEDGER.*?-{20,}\n\n", spec, re.S)
@@ -37,4 +42,25 @@ if missing:
             f"(map it to an action or exclude it with a reason)"
         )
     sys.exit(1)
-print(f"spec-ledger: all {len(labels)} batch labels accounted for (block-scoped)")
+
+# Every label's ledger line must carry exactly one duplicate-semantics tag —
+# the spec-side twin of the fault matrix's 'duplicate' column. A label whose
+# replay semantics nobody classified is a label whose replay semantics
+# nobody thought about.
+TAGS = ("[cas-fenced]", "[receipt]", "[read]", "[setup]")
+untagged = []
+for label in sorted(labels):
+    line = next((ln for ln in block.splitlines() if f"'{label}'" in ln), "")
+    if sum(1 for t in TAGS if t in line) != 1:
+        untagged.append(label)
+if untagged:
+    for label in untagged:
+        print(
+            f"spec-ledger: label '{label}' has no (or ambiguous) duplicate-semantics "
+            f"tag — exactly one of {', '.join(TAGS)} required on its ledger line"
+        )
+    sys.exit(1)
+print(
+    f"spec-ledger: all {len(labels)} batch labels accounted for and "
+    f"duplicate-classified (block-scoped)"
+)

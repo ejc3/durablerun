@@ -1,6 +1,6 @@
 import {
   type IdSource,
-  type LaunchOutcome,
+  LaunchOutcome,
   type Launcher,
   requirePositiveInt,
   type SchedulerStore,
@@ -93,9 +93,9 @@ export async function tick(
   let ended = 0
   await Promise.all(
     claimed.map(async (run) => {
-      let outcome: LaunchOutcome
+      let raw: unknown
       try {
-        outcome = await launcher.launch({
+        raw = await launcher.launch({
           queue: opts.queue,
           runId: run.runId,
           attempt: run.attempt,
@@ -105,44 +105,14 @@ export async function tick(
         })
       } catch (error) {
         // A throwing transport is indistinguishable from a lost launch.
-        outcome = { kind: 'launch-failed', error }
+        raw = LaunchOutcome.launchFailed(error)
       }
-      // A JS transport can return garbage the types promised away — treat
-      // anything unrecognizable as a failed launch, never a tick crash.
-      if (
-        outcome === null ||
-        typeof outcome !== 'object' ||
-        !['accepted', 'ended', 'launch-failed'].includes(outcome.kind)
-      ) {
-        outcome = { kind: 'launch-failed', error: new Error('malformed launch outcome') }
-      }
-      if (outcome.kind === 'accepted') {
-        launched++
-        return
-      }
-      // An ending that names a DIFFERENT run says nothing about THIS run's
-      // lease — ignore it (still counted) rather than expire on a signal
-      // that does not identify this launch.
-      if (outcome.kind === 'ended' && outcome.ending.runId !== run.runId) {
-        ended++
-        return
-      }
-      if (outcome.kind === 'launch-failed') launchFailed++
-      else ended++
-      // EVERY non-accepted outcome takes the same door: advisorily expire
-      // the lease and let the sweep decide. The fence inside expireLeaseNow
-      // IS the verification — it no-ops when the worker truly transitioned
-      // (or the claim was superseded) and accelerates otherwise, so even a
-      // LYING 'completed' ending costs nothing but this one guarded write.
-      // Never branch on the ending's own claim about what happened: reports
-      // are advisory; the lease is the only truth (§3.9). And the write
-      // itself is best-effort — a transient store error here must not
-      // destroy the tick's result (the lease timer still recovers the run).
-      try {
-        await store.expireLeaseNow(opts.queue, run.runId, run.claimToken)
-      } catch {
-        // advisory: acceleration lost, correctness unaffected
-      }
+      // ALL outcome semantics live in the reconciler (core/launch.ts):
+      // parsing, identity checks, and the single advisory-expiry door.
+      const kind = await LaunchOutcome.reconcile(store, opts.queue, run, raw)
+      if (kind === 'accepted') launched++
+      else if (kind === 'ended') ended++
+      else launchFailed++
     }),
   )
 

@@ -9,3 +9,4 @@ dist/
 *.db-shm
 .vercel/
 specs/states*/
+specs/*_TTrace_*

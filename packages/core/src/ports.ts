@@ -1,3 +1,4 @@
+import type { LaunchOutcome } from './launch.js'
 import type {
   Checkpoint,
   ClaimedRun,
@@ -149,12 +150,12 @@ export interface LaunchInvocation {
   deadlineHintEpochMs: number
 }
 
-export type LaunchOutcome =
-  | { kind: 'accepted' }
-  | { kind: 'ended'; ending: Ending }
-  | { kind: 'launch-failed'; error: unknown }
-
-/** Execution transport (§3.9 port 2). Fire-and-forget may silently lose launches. */
+/**
+ * Execution transport (§3.9 port 2). Fire-and-forget may silently lose
+ * launches. Outcomes are constructed via LaunchOutcome's static factories
+ * (core/launch.ts) and consumed ONLY via LaunchOutcome.reconcile — callers
+ * have no other affordance, by design.
+ */
 export interface Launcher {
   launch(invocation: LaunchInvocation): Promise<LaunchOutcome>
 }
