@@ -1,4 +1,4 @@
-import type { LaunchInvocation, LaunchOutcome, Launcher } from '@durablerun/core'
+import type { Buggify, LaunchInvocation, LaunchOutcome, Launcher } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
 import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
@@ -105,6 +105,9 @@ describe('tick()', () => {
     }))
     const first = await tick({ store: f.store, launcher: failing, ids: f.ids }, OPTS)
     expect(first).toMatchObject({ claimed: 1, launched: 0, launchFailed: 1 })
+    // The advisory expiry SURFACES in next-wake: the caller is told to look
+    // again immediately (wake <= now), not after the full lease.
+    expect(first.nextWakeAtEpochMs).toBe(1_000_000)
 
     // Same engine time — no lease wait: the sweep already sees it expired.
     const launcher = new FakeLauncher()
@@ -425,6 +428,108 @@ describe('tick() codex review regressions', () => {
     expect(result.launched).toBe(1)
     expect(result.launchFailed).toBe(1)
     expect(result.nextWakeAtEpochMs).not.toBeNull()
+    f.close()
+  })
+})
+
+/**
+ * Coverage from the review's test lens: interleavings, forced-rare paths,
+ * and budget mixes that the first suite did not construct.
+ */
+describe('tick() coverage: sims, buggify, budget mixes', () => {
+  it('interleaved concurrent ticks launch every run exactly once', async () => {
+    for (let seed = 0; seed < 8; seed++) {
+      const f = await fx(`tick-sim-${seed}`)
+      for (let i = 0; i < 4; i++) await f.store.spawn(Q, `job${i}`, '{}')
+      const world = new SimWorld(f.raw, `tick-interleave-${seed}`)
+      const launchers = [new FakeLauncher(), new FakeLauncher()]
+      const results: number[] = []
+      for (const [i, launcher] of launchers.entries()) {
+        world.actor(`driver${i}`, async (simDb) => {
+          const store = new LibsqlSchedulerStore(simDb, f.ids)
+          const r = await tick({ store, launcher, ids: f.ids }, OPTS)
+          results.push(r.claimed)
+        })
+      }
+      await world.run()
+      const launchedRuns = launchers.flatMap((l) => l.invocations.map((i) => i.runId))
+      // Exactly once: 4 runs, 4 launches, no run launched twice.
+      expect(launchedRuns.length).toBe(4)
+      expect(new Set(launchedRuns).size).toBe(4)
+      expect(results.reduce((a, b) => a + b, 0)).toBe(4)
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+      f.close()
+    }
+  })
+
+  it('legal short batches drain through the dual signal: backlog OR wake<=now', async () => {
+    const f = await fx('tick-short-batch')
+    for (let i = 0; i < 3; i++) await f.store.spawn(Q, `job${i}`, '{}')
+    // Force the store's legal-rare short claim on every pass.
+    const shortClaims: Buggify = (site) => site === 'claim:short-batch'
+    const store = new LibsqlSchedulerStore(f.raw, f.ids, shortClaims)
+    const launcher = new FakeLauncher()
+    let passes = 0
+    for (;;) {
+      passes++
+      const r = await tick({ store, launcher, ids: f.ids }, OPTS)
+      // The contract the caller relies on: work left behind is ALWAYS
+      // visible — either backlog, or a next wake that is already due.
+      if (launcher.invocations.length < 3) {
+        expect(
+          r.backlog || (r.nextWakeAtEpochMs !== null && r.nextWakeAtEpochMs <= 1_000_000),
+        ).toBe(true)
+      }
+      if (!r.backlog && (r.nextWakeAtEpochMs === null || r.nextWakeAtEpochMs > 1_000_000)) break
+      if (passes > 10) throw new Error('drain did not converge')
+    }
+    expect(launcher.invocations).toHaveLength(3)
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('one sweep budget spans a cancel + expiry mix, in deadline order', async () => {
+    const f = await fx('tick-mix-budget')
+    // Three claimed runs whose lease will expire...
+    for (let i = 0; i < 3; i++) await f.store.spawn(Q, `dead${i}`, '{}')
+    const victims = await f.store.claim(Q, f.ids.token(), { leaseSeconds: 20, limit: 10 })
+    expect(victims).toHaveLength(3)
+    // ...and three tasks that will blow their start deadline unclaimed.
+    for (let i = 0; i < 3; i++) {
+      await f.store.spawn(Q, `cancel${i}`, '{}', { cancellation: { maxDelaySeconds: 10 } })
+    }
+    await f.admin.setFakeNowEpochMs(1_031_000) // past deadlines AND leases
+    const launcher = new FakeLauncher()
+    const first = await tick({ store: f.store, launcher, ids: f.ids }, { ...OPTS, sweepLimit: 4 })
+    expect(first.swept).toHaveLength(4)
+    expect(first.swept.filter((s) => s.kind === 'cancelled')).toHaveLength(3)
+    expect(first.backlog).toBe(true)
+    const second = await tick({ store: f.store, launcher, ids: f.ids }, { ...OPTS, sweepLimit: 4 })
+    expect(second.swept.length).toBeGreaterThanOrEqual(2)
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('an ended:crashed BEFORE activation classifies as lost-launch, not died-mid-run', async () => {
+    const f = await fx('tick-crash-preactivate')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    // The worker process died before it ever reached activation.
+    const launcher = new FakeLauncher((inv) => ({
+      kind: 'ended',
+      ending: { runId: inv.runId, claimToken: inv.claimToken, kind: 'crashed' },
+    }))
+    await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
+    const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
+    // Never activated -> reopen the same run, burn no retry of either kind.
+    expect(second.swept).toMatchObject([{ kind: 'lost-launch', relaunchCount: 1 }])
+    const [task] = await f.raw.batch('t', [
+      {
+        sql: `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    expect(task?.rows[0]).toMatchObject({ attempts: 0, infra_retries: 0 })
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
 })
