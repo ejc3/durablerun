@@ -232,3 +232,120 @@ describe('DriverLoop', () => {
     f.close()
   })
 })
+
+/**
+ * Review regressions (red/green rule): each test failed against the loop
+ * as first committed; the finding it pins is named in the title.
+ */
+describe('DriverLoop review regressions', () => {
+  it('honest launches are COUNTED as launches — the watchdog never beats a settled launch', async () => {
+    const f = await fx('loop-honest-counters')
+    await f.store.spawn(Q, 'a', '{}')
+    await f.store.spawn(Q, 'b', '{}')
+    const launcher = new FakeLauncher()
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, OPTS)
+    const done = loop.run()
+    await until(() => launcher.invocations.length === 2, 'both launches')
+    await until(() => f.clock.sleeps.length === 1, 'parked')
+    // The whole point: the loop's own view of the honest path. A watchdog
+    // that wins a microtask race against a SETTLED launch shows up here as
+    // launched 0 / launchFailed 2 — and then every task in a real fleet
+    // dies at the relaunch cap.
+    expect(loop.stats.launched).toBe(2)
+    expect(loop.stats.launchFailed).toBe(0)
+    await loop.stop()
+    await done
+    f.close()
+  })
+
+  it('run() is one-shot: restarting a stopped loop throws instead of resurrecting it', async () => {
+    const f = await fx('loop-oneshot')
+    const loop = new DriverLoop(
+      { store: f.store, launcher: new FakeLauncher(), ids: f.ids, clock: f.clock },
+      OPTS,
+    )
+    const done = loop.run()
+    await until(() => f.clock.sleeps.length === 1, 'parked')
+    void loop.stop() // deliberately NOT awaited — the revival window
+    expect(() => loop.run()).toThrow()
+    await done
+    f.close()
+  })
+
+  it('degenerate knobs are refused at construction', async () => {
+    const f = await fx('loop-knobs')
+    const deps = { store: f.store, launcher: new FakeLauncher(), ids: f.ids, clock: f.clock }
+    // Past the timer-API ceiling: the park would fire immediately — a hot
+    // loop exactly where the loop exists to prevent one.
+    expect(() => new DriverLoop(deps, { ...OPTS, idleCeilingMs: 1e12 })).toThrow(RangeError)
+    // Inverted ceilings poll FASTER when idle.
+    expect(
+      () => new DriverLoop(deps, { ...OPTS, busyCeilingMs: 5000, idleCeilingMs: 250 }),
+    ).toThrow(RangeError)
+    // An empty driver id becomes a '' primary-key row.
+    expect(() => new DriverLoop(deps, { ...OPTS, driverId: '' })).toThrow(RangeError)
+    // A registry interval whose doubled TTL fails downstream validation
+    // must fail HERE, not silently on every beat.
+    expect(() => new DriverLoop(deps, { ...OPTS, registryIntervalSeconds: 2_000_000_000 })).toThrow(
+      RangeError,
+    )
+    f.close()
+  })
+
+  it('a bounded-slot sync launcher can run without a watchdog', async () => {
+    const f = await fx('loop-sync-no-watchdog')
+    await f.store.spawn(Q, 'job', '{}')
+    // Inline execution longer than the default watchdog: with the watchdog
+    // disabled (null), the ending must be honored, never abandoned.
+    const launcher = new FakeLauncher(async (inv) => {
+      const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
+      if (!run) throw new Error('activation lost')
+      await f.clock.sleep(30_000)
+      await f.store.complete(Q, inv.runId, inv.claimToken, '{"ok":1}')
+      return LaunchOutcome.ended({
+        runId: inv.runId,
+        claimToken: inv.claimToken,
+        kind: 'completed',
+      })
+    })
+    const loop = new DriverLoop(
+      { store: f.store, launcher, ids: f.ids, clock: f.clock },
+      { ...OPTS, launchTimeoutSeconds: null },
+    )
+    const done = loop.run()
+    await until(() => launcher.invocations.length === 1, 'inline run started')
+    await f.advance(30_000)
+    await until(() => loop.stats.ended === 1, 'inline ending honored')
+    expect(loop.stats.launchFailed).toBe(0)
+    await loop.stop()
+    await done
+    f.close()
+  })
+
+  it('expired registry rows are cleaned up by later beats', async () => {
+    const f = await fx('loop-registry-gc')
+    await f.store.driverHeartbeat(Q, 'dead-driver', 10)
+    await f.advance(11_000)
+    await f.store.driverHeartbeat(Q, 'live-driver', 10)
+    const [rows] = await f.raw.batch('t', [
+      { sql: `SELECT driver_id FROM drivers ORDER BY driver_id`, args: [] },
+    ])
+    // The dead driver's row expired before the live beat: gone. Unbounded
+    // default growth (a fresh id per process restart) is a bounds bug.
+    expect(rows?.rows.map((r) => r.driver_id)).toEqual(['live-driver'])
+    f.close()
+  })
+
+  it('a database created before the drivers table exists still gets it (migrations are append-only)', async () => {
+    const { MIGRATIONS } = await import('@durablerun/store-libsql')
+    // The table must arrive in its OWN migration: editing an already-applied
+    // migration means existing databases silently never get the change (the
+    // runner skips applied versions) and the heartbeat's best-effort catch
+    // hides the failure forever.
+    const v1 = MIGRATIONS.find((m) => m.version === 1)
+    expect(v1?.statements.join('\n')).not.toContain('drivers')
+    expect(
+      MIGRATIONS.some((m) => m.version > 1 && m.statements.join('\n').includes('drivers')),
+    ).toBe(true)
+  })
+})

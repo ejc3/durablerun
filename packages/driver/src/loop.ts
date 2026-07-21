@@ -36,8 +36,12 @@ export interface DriverLoopOptions extends TickOptions {
   idleCeilingMs?: number
   /** Consecutive empty ticks before the idle ceiling applies (default 10). */
   idleAfterTicks?: number
-  /** Abandon a hanging launcher call after this long (default 10s). */
-  launchTimeoutSeconds?: number
+  /**
+   * Abandon a hanging launcher call after this long (default 10s). Pass
+   * null for bounded-slot SYNC launchers that legitimately run the worker
+   * inline (§3.9) — their calls are supposed to take as long as the run.
+   */
+  launchTimeoutSeconds?: number | null
   /** Registry liveness row cadence (default 15s; ttl = 2x cadence). */
   registryIntervalSeconds?: number
   /** Registry identity (default: a fresh token). */
@@ -106,11 +110,16 @@ export class DriverLoop {
     this.driverId = opts.driverId ?? deps.ids.token()
     // A hanging transport call must never stall the loop: race it against
     // the clock and hand a timeout to the reconciler as a failed launch.
-    this.launcher = withLaunchTimeout(
-      deps.launcher,
-      deps.clock,
-      durationToMs('launchTimeoutSeconds', opts.launchTimeoutSeconds ?? 10, { positive: true }),
-    )
+    this.launcher =
+      opts.launchTimeoutSeconds === null
+        ? deps.launcher
+        : withLaunchTimeout(
+            deps.launcher,
+            deps.clock,
+            durationToMs('launchTimeoutSeconds', opts.launchTimeoutSeconds ?? 10, {
+              positive: true,
+            }),
+          )
   }
 
   /** Runs until stop(). Never rejects; tick errors are counted and backed off. */
