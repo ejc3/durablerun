@@ -78,6 +78,7 @@ export class DriverLoop {
   private sleepInterrupt: AbortController | null = null
   private wakeRequested = false
   private idleTicks = 0
+  private chainedTicks = 0
   private lastBeatAtMs: number | null = null
   readonly stats: DriverLoopStats = {
     ticks: 0,
@@ -180,6 +181,17 @@ export class DriverLoop {
 
         const empty = result !== null && result.claimed === 0 && result.swept.length === 0
         this.idleTicks = empty ? this.idleTicks + 1 : 0
+        // Every sleepless pass counts toward a mandatory yield: with an
+        // instant store a long drain chain is pure microtasks, and timers —
+        // including whatever calls stop() — would never get a turn. This is
+        // also the seam that makes runaway-loop bugs red-testable at all: a
+        // starved event loop cannot even run a failing test's timeout.
+        this.chainedTicks++
+        if (this.chainedTicks >= 32) {
+          this.chainedTicks = 0
+          await this.clock.yieldTurn()
+          if (!this.running) break
+        }
         if (result?.backlog) continue // drain chain: no sleep
 
         const ceiling =
@@ -196,6 +208,7 @@ export class DriverLoop {
           this.wakeRequested = false
           continue
         }
+        this.chainedTicks = 0
         this.sleepInterrupt = new AbortController()
         await this.clock.sleep(sleepMs, this.sleepInterrupt.signal)
         this.sleepInterrupt = null

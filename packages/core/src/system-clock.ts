@@ -6,6 +6,9 @@ export function systemClock(): Clock {
     nowEpochMs(): number {
       return Date.now()
     },
+    yieldTurn(): Promise<void> {
+      return new Promise((resolve) => setImmediate(resolve))
+    },
     sleep(ms: number, interrupt?: AbortSignal): Promise<void> {
       return new Promise((resolve) => {
         if (interrupt?.aborted) {

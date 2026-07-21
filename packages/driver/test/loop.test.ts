@@ -17,9 +17,12 @@ class FakeClock implements Clock {
   nowEpochMs(): number {
     return this.now
   }
+  yieldTurn(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve))
+  }
   sleep(ms: number, interrupt?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
-      if (interrupt?.aborted) {
+      if (interrupt?.aborted || ms <= 0) {
         resolve()
         return
       }
@@ -399,5 +402,132 @@ describe('DriverLoop coverage: lifecycle edges', () => {
     await done
     expect(loop.stats.launched).toBe(1)
     f.close()
+  })
+})
+
+/**
+ * Second review round (codex): new findings, each red before its fix.
+ */
+describe('DriverLoop codex review regressions', () => {
+  it('inherited tick knobs are validated at construction, not per-tick into a swallowed catch', async () => {
+    const f = await fx('loop-tick-knobs')
+    const deps = { store: f.store, launcher: new FakeLauncher(), ids: f.ids, clock: f.clock }
+    // claimLimit 0 used to pass construction; every tick then threw into
+    // the outage catch — a live process that heartbeats and drives nothing.
+    expect(() => new DriverLoop(deps, { ...OPTS, claimLimit: 0 })).toThrow(RangeError)
+    expect(() => new DriverLoop(deps, { ...OPTS, sweepLimit: 0 })).toThrow(RangeError)
+    expect(() => new DriverLoop(deps, { ...OPTS, leaseSeconds: 0 })).toThrow(RangeError)
+    f.close()
+  })
+
+  it('a host clock ahead of database time polls at the ceiling, never a zero-sleep hot loop', async () => {
+    const f = await fx('loop-skew')
+    // Host clock five minutes AHEAD of database time.
+    f.clock.now = 1_300_000
+    // Work due one minute into the DATABASE's future: not claimable yet,
+    // but 'overdue' by the skewed host clock.
+    await f.store.spawn(Q, 'later', '{}', { startDelaySeconds: 60 })
+    const launcher = new FakeLauncher()
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, OPTS)
+    const done = loop.run()
+    try {
+      // The loop must PARK (ceiling-bounded poll) — before the fix it spun
+      // tick-after-tick with zero sleep until database time caught up.
+      await until(() => f.clock.sleeps.length === 1, 'parked despite skew')
+      expect(loop.stats.ticks).toBeLessThan(20)
+    } finally {
+      await loop.stop()
+      await done
+      f.close()
+    }
+  })
+
+  it('a hanging registry heartbeat blocks neither driving nor shutdown', async () => {
+    const f = await fx('loop-hanging-beat')
+    await f.store.spawn(Q, 'job', '{}')
+    const gate = { release: () => {} }
+    const hanging = new Proxy(f.store, {
+      get(target, prop, receiver) {
+        if (prop === 'driverHeartbeat') {
+          return () =>
+            new Promise<void>((resolve) => {
+              gate.release = resolve // hangs until the test releases it
+            })
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    const launcher = new FakeLauncher()
+    const loop = new DriverLoop({ store: hanging, launcher, ids: f.ids, clock: f.clock }, OPTS)
+    const done = loop.run()
+    try {
+      // Driving must proceed past the stuck observability write...
+      await until(() => launcher.invocations.length === 1, 'launch despite hanging beat')
+      // ...and shutdown must not wait for it either.
+      await loop.stop()
+      await done
+    } finally {
+      gate.release() // unwedge a pre-fix loop so the runner can exit
+      await loop.stop().catch(() => {})
+      f.close()
+    }
+  })
+
+  it('an idle park never sleeps through the registry heartbeat deadline', async () => {
+    const f = await fx('loop-beat-deadline')
+    const loop = new DriverLoop(
+      { store: f.store, launcher: new FakeLauncher(), ids: f.ids, clock: f.clock },
+      { ...OPTS, registryIntervalSeconds: 1, idleAfterTicks: 1, idleCeilingMs: 5000 },
+    )
+    const done = loop.run()
+    await until(() => f.clock.sleeps.length === 1, 'parked')
+    // ttl = 2s; a 5s park would let every driver read as dead while idle.
+    expect(f.clock.sleeps[0]?.ms).toBeLessThanOrEqual(1_000)
+    await loop.stop()
+    await done
+    f.close()
+  })
+
+  it('a long backlog chain yields to the event loop instead of starving it', async () => {
+    const clock = new FakeClock()
+    let claimSeq = 0
+    const CHAIN = 10_000
+    // A compliant but INSTANT store: every promise already resolved. The
+    // backlog chain then runs as pure microtasks — without a periodic
+    // yield, timers (including the one calling stop()) fire only after the
+    // WHOLE chain ends.
+    const instant = {
+      sweep: () => Promise.resolve([]),
+      claim: (_q: string, token: string, opts: { limit: number }) =>
+        Promise.resolve(
+          claimSeq >= CHAIN
+            ? []
+            : Array.from({ length: opts.limit }, () => ({
+                runId: `r${claimSeq++}`,
+                taskId: 't',
+                attempt: 1,
+                claimGen: 1,
+                claimToken: token,
+                claimExpiresAtEpochMs: clock.now + 60_000,
+              })),
+        ),
+      expireLeaseNow: () => Promise.resolve(false),
+      nextWakeAtEpochMs: () => Promise.resolve(null),
+      driverHeartbeat: () => Promise.resolve(),
+    } as unknown as import('@durablerun/core').SchedulerStore
+    const ids = seededIdSource(new Rng('starve'))
+    const loop = new DriverLoop({ store: instant, launcher: new FakeLauncher(), ids, clock }, OPTS)
+    const done = loop.run()
+    // A macrotask arriving early in the chain: with periodic yields it
+    // interleaves near where it was scheduled; starved, it runs only after
+    // the entire chain (ticksAtStop == the whole chain).
+    const ticksAtStop = await new Promise<number>((resolve) => {
+      setTimeout(() => {
+        const at = loop.stats.ticks
+        void loop.stop().then(() => resolve(at))
+      }, 5)
+    })
+    await done
+    expect(ticksAtStop).toBeLessThan(1_000) // pre-fix: the whole ~3.3k chain
   })
 })

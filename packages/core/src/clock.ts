@@ -17,4 +17,11 @@ export interface Clock {
    * shutdown). Never rejects.
    */
   sleep(ms: number, interrupt?: AbortSignal): Promise<void>
+  /**
+   * Surrender one REAL event-loop turn (a macrotask boundary). Distinct
+   * from sleep(0): a simulated clock resolves zero sleeps instantly, but a
+   * yield must genuinely let timers and I/O run — it is what keeps a
+   * microtask-only work chain from starving the process.
+   */
+  yieldTurn(): Promise<void>
 }
