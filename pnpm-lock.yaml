@@ -36,6 +36,22 @@ importers:
 
   packages/core: {}
 
+  packages/driver:
+    dependencies:
+      '@durablerun/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@durablerun/conformance':
+        specifier: workspace:*
+        version: link:../conformance
+      '@durablerun/harness':
+        specifier: workspace:*
+        version: link:../harness
+      '@durablerun/store-libsql':
+        specifier: workspace:*
+        version: link:../store-libsql
+
   packages/harness:
     dependencies:
       '@durablerun/core':

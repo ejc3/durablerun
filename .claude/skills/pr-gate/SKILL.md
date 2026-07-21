@@ -37,6 +37,11 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
 4. **Reviews ran**: codex (background, confined via `scripts/confine.sh`) +
    the review angles + a coverage auditor when the diff adds transitions.
    Findings triaged; every accepted bug got its red/green pair.
+   NEVER scope every reviewer to the diff: at least one reviewer gets the
+   WHOLE system with the diff as entry point. A scoped review inherits the
+   author's assumptions — "the store is already verified" excluded exactly
+   where two of four tick-round bugs lived (claim idempotency, cancels
+   ordering).
 5. **Merge on green only** — CI (verify + tla jobs) must pass on the PR head.
 
 ## Part 2 — Correctness checks (what reviews hunt, learned here)
@@ -87,6 +92,37 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
 acks, ending feeds, `expireLeaseNow` may only ACCELERATE lease expiry.
 A live worker's heartbeat legitimately revives an advisorily-expired lease.
 [DESIGN §3.9; conformance "revival" scenario]
+- Bounds are invariants too: fences and state checkers cannot see a
+  QUANTITY violation (a duplicated claim doubled K with every row
+  consistent). Bounded operations get their bound asserted under the
+  fault battery, and duplicate/crash injection is a label x fault MATRIX,
+  never a curated list of suspicious sites.
+- When a guard lands at one chokepoint, enumerate every OTHER door to the
+  same bad state and decide placement explicitly (the activation guard
+  against due-to-cancel launches left the claim door open for a year of
+  commits). Where the TLA model is deliberately looser than intent, the
+  intent needs an executable home (conformance case) — TLC cannot flag
+  what the model permits.
+- Port docs carry CONSUMER obligations, not just implementer guarantees —
+  Ending carries runId/token so callers verify them; a consumer that uses
+  a report positionally is trusting it. Runtime-validate every object
+  (not just number) crossing a port from untyped territory.
+- Reconcile by FENCE, never by kind: an advisory report's content may never
+  choose the code path — take the same guarded write unconditionally and
+  let its fence no-op when the report was right. Skipping a write "because
+  the report says it's unnecessary" IS trusting the report (the tick
+  believed a lying 'completed' and cost a full lease of latency).
+- Every advisory input gets LYING-signal tests — one false-positive, one
+  false-negative. Honest-signal tests are author-predicted scenarios and
+  catch nothing (no invariant trips on a latency bug).
+- Best-effort writes are try/caught: a lost hint may never cost the
+  caller's result. Advisory-ness must be visible in code SHAPE, not just
+  in your head.
+- Rules travel to NEW boundaries: every new public entry point (tick was
+  the first above the store) re-validates its numeric knobs at entry —
+  the layer below validating does not exempt it, and a value legal below
+  (sweep limit 0 is a pinned store behavior) can be degenerate above
+  (backlog spins forever).
 
 ## Part 3 — SQL & dialect traps (each bit us once)
 
@@ -195,6 +231,11 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   scenarios), never TypeScript types alone.
 - **Merge on green; PRs are the record** — descriptive commits covering the
   actual diff, `git log main..HEAD` read in full before writing the PR body.
+- **Plain language in commits and PR bodies**: ordinary sentences describing
+  what changed and what behavior changed — no repo-private shorthand
+  ("stamps", "altitude", "K_s") without an in-line gloss. Spec section
+  numbers are pointers in parentheses, never the explanation itself. A
+  reader outside these sessions must understand the log cold.
 
 ## Reference map
 

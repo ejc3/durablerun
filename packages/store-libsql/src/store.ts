@@ -70,6 +70,7 @@ export const SWEEP_SCAN_CANCELS_SQL = `SELECT t.task_id,
 FROM tasks t
 WHERE t.queue = ? AND t.cancel_at_ms IS NOT NULL AND t.cancel_at_ms <= ${NOW_MS}
   AND t.state IN ${LIVE}
+ORDER BY t.cancel_at_ms, t.task_id
 LIMIT ?`
 
 export const NEXT_WAKE_SQL = `SELECT MIN(v) AS wake_ms FROM (
@@ -251,8 +252,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 JOIN runs cr ON cr.run_id = c.run_id
                 JOIN tasks t ON t.task_id = cr.task_id
                 WHERE t.state IN ${LIVE}
+                  AND (t.cancel_at_ms IS NULL OR t.cancel_at_ms > ${NOW_MS})
                 ORDER BY c.available_at_ms, c.run_id
                 LIMIT ?
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM runs held
+                WHERE held.queue = ? AND held.state = 'running' AND held.claimed_by = ?
               )`,
         args: [
           claimToken,
@@ -263,6 +269,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           queue,
           effectiveLimit,
           effectiveLimit,
+          queue,
+          claimToken,
         ],
       },
       // 2. Task bookkeeping, keyed on the post-state + token. NOTE: attempts

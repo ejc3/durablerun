@@ -84,13 +84,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR2.2 resident driver**: loop + adaptive sleep-until-next-wake + `/wake` +
   graceful shutdown (asyncio-style lifecycle discipline, TS edition);
   single-shard registry heartbeat row. Runs locally against `turso dev`.
+  Carries a deliberate deferral from the PR2.1 review: a launch watchdog —
+  a hanging launcher call currently stalls its tick, and the timeout seam
+  (an injected clock, since engine code bans ambient timers) belongs to
+  the loop, not to tick().
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:
   enqueue → done; kill-worker chaos → sweep recovers.
 - **PR2.4 local chaos e2e**: multi-driver + multi-worker processes against one
   SQLite file; scripted kill/drop/duplicate scenarios from the sim harness run
-  against real processes. *Phase gate: a dogfood job (e.g. a local repo-backup
+  against real processes. Includes the systematic fault MATRIX from the
+  PR2.1 lesson: every batch label x every legal fault (crash, duplicate),
+  with per-operation bounds asserted — curated fault lists missed the
+  duplicated-claim bound violation for four review cycles. *Phase gate: a dogfood job (e.g. a local repo-backup
   task) running continuously on the engine.*
 
 ## Phase 3 — full Absurd semantics
