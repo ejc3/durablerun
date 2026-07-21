@@ -84,6 +84,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR2.2 resident driver**: loop + adaptive sleep-until-next-wake + `/wake` +
   graceful shutdown (asyncio-style lifecycle discipline, TS edition);
   single-shard registry heartbeat row. Runs locally against `turso dev`.
+  Carries a deliberate deferral from the PR2.1 review: a launch watchdog —
+  a hanging launcher call currently stalls its tick, and the timeout seam
+  (an injected clock, since engine code bans ambient timers) belongs to
+  the loop, not to tick().
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:

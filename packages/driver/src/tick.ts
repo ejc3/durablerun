@@ -1,4 +1,11 @@
-import type { IdSource, LaunchOutcome, Launcher, SchedulerStore, SweptRun } from '@durablerun/core'
+import {
+  type IdSource,
+  type LaunchOutcome,
+  type Launcher,
+  requirePositiveInt,
+  type SchedulerStore,
+  type SweptRun,
+} from '@durablerun/core'
 
 /**
  * One bounded look at the queue (DESIGN.md §3.1). Stateless, idempotent,
@@ -42,22 +49,24 @@ export interface TickResult {
   /**
    * A budget was filled (swept ≥ K_s or claimed ≥ K): more work may be due
    * NOW. The caller fires an immediate successor tick — the tick chain is
-   * the drain loop; cron resurrects a dead chain.
+   * the drain loop; cron resurrects a dead chain. This is a HINT, not the
+   * whole truth: a legally short batch (buggify, contention) can leave due
+   * work behind with backlog false — which `nextWakeAtEpochMs` <= now then
+   * surfaces. Callers treat both signals as "look again immediately".
    */
   backlog: boolean
 }
-
-/**
- * Endings that mean "the worker is not coming back to transition this run".
- * completed/failed mean the worker already transitioned it — nothing to do.
- */
-const DEAD_ENDINGS = new Set(['crashed', 'timeout', 'unknown'])
 
 export async function tick(
   deps: { store: SchedulerStore; launcher: Launcher; ids: IdSource },
   opts: TickOptions,
 ): Promise<TickResult> {
   const { store, launcher, ids } = deps
+  // Degenerate budgets are refused up front: a sweep budget of 0 would make
+  // backlog vacuously true forever (an idle hot loop for a compliant
+  // caller), and the store would reject the claim limit only mid-tick.
+  requirePositiveInt('sweepLimit', opts.sweepLimit)
+  requirePositiveInt('claimLimit', opts.claimLimit)
 
   // 1. Sweep first: cancellations enforce before claiming (a due-to-cancel
   //    task must never be claimed by the tick that should have cancelled
@@ -102,22 +111,21 @@ export async function tick(
         launched++
         return
       }
-      if (outcome.kind === 'launch-failed') {
-        launchFailed++
-        // The run would sit leased-but-dead until lease expiry; expiring
-        // now lets the next sweep reopen it (lost-launch, with backoff).
+      if (outcome.kind === 'launch-failed') launchFailed++
+      else ended++
+      // EVERY non-accepted outcome takes the same door: advisorily expire
+      // the lease and let the sweep decide. The fence inside expireLeaseNow
+      // IS the verification — it no-ops when the worker truly transitioned
+      // (or the claim was superseded) and accelerates otherwise, so even a
+      // LYING 'completed' ending costs nothing but this one guarded write.
+      // Never branch on the ending's own claim about what happened: reports
+      // are advisory; the lease is the only truth (§3.9). And the write
+      // itself is best-effort — a transient store error here must not
+      // destroy the tick's result (the lease timer still recovers the run).
+      try {
         await store.expireLeaseNow(opts.queue, run.runId, run.claimToken)
-        return
-      }
-      // Sync launcher returned the ending inline (bounded-slot resident
-      // mode). completed/failed: the worker already transitioned — the
-      // fenced expireLeaseNow below would no-op anyway, skip the write.
-      // crashed/timeout/unknown: accelerate; the sweep classifies by
-      // ACTIVATION STATE (lost-launch vs $ClaimTimeout), never by this
-      // ending's claim — misclassification is structurally impossible.
-      ended++
-      if (DEAD_ENDINGS.has(outcome.ending.kind)) {
-        await store.expireLeaseNow(opts.queue, run.runId, run.claimToken)
+      } catch {
+        // advisory: acceleration lost, correctness unaffected
       }
     }),
   )
