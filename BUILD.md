@@ -94,7 +94,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   enqueue → done; kill-worker chaos → sweep recovers.
 - **PR2.4 local chaos e2e**: multi-driver + multi-worker processes against one
   SQLite file; scripted kill/drop/duplicate scenarios from the sim harness run
-  against real processes. *Phase gate: a dogfood job (e.g. a local repo-backup
+  against real processes. Includes the systematic fault MATRIX from the
+  PR2.1 lesson: every batch label x every legal fault (crash, duplicate),
+  with per-operation bounds asserted — curated fault lists missed the
+  duplicated-claim bound violation for four review cycles. *Phase gate: a dogfood job (e.g. a local repo-backup
   task) running continuously on the engine.*
 
 ## Phase 3 — full Absurd semantics

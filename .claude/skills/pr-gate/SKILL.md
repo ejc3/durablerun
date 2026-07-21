@@ -37,6 +37,11 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
 4. **Reviews ran**: codex (background, confined via `scripts/confine.sh`) +
    the review angles + a coverage auditor when the diff adds transitions.
    Findings triaged; every accepted bug got its red/green pair.
+   NEVER scope every reviewer to the diff: at least one reviewer gets the
+   WHOLE system with the diff as entry point. A scoped review inherits the
+   author's assumptions — "the store is already verified" excluded exactly
+   where two of four tick-round bugs lived (claim idempotency, cancels
+   ordering).
 5. **Merge on green only** — CI (verify + tla jobs) must pass on the PR head.
 
 ## Part 2 — Correctness checks (what reviews hunt, learned here)
@@ -87,6 +92,21 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
 acks, ending feeds, `expireLeaseNow` may only ACCELERATE lease expiry.
 A live worker's heartbeat legitimately revives an advisorily-expired lease.
 [DESIGN §3.9; conformance "revival" scenario]
+- Bounds are invariants too: fences and state checkers cannot see a
+  QUANTITY violation (a duplicated claim doubled K with every row
+  consistent). Bounded operations get their bound asserted under the
+  fault battery, and duplicate/crash injection is a label x fault MATRIX,
+  never a curated list of suspicious sites.
+- When a guard lands at one chokepoint, enumerate every OTHER door to the
+  same bad state and decide placement explicitly (the activation guard
+  against due-to-cancel launches left the claim door open for a year of
+  commits). Where the TLA model is deliberately looser than intent, the
+  intent needs an executable home (conformance case) — TLC cannot flag
+  what the model permits.
+- Port docs carry CONSUMER obligations, not just implementer guarantees —
+  Ending carries runId/token so callers verify them; a consumer that uses
+  a report positionally is trusting it. Runtime-validate every object
+  (not just number) crossing a port from untyped territory.
 - Reconcile by FENCE, never by kind: an advisory report's content may never
   choose the code path — take the same guarded write unconditionally and
   let its fence no-op when the report was right. Skipping a write "because
