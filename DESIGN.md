@@ -540,6 +540,34 @@ failure successors (`fail` retry, sweep claim-timeout — §3.8.2, the attempt
 never processed it); it is PRESERVED by §3.8.2 deferral (`reschedule` with
 `'preserve'` — a driver that cannot dispatch the task consumes nothing).
 
+**Structural enforcement (the mechanisms behind the rules).** The contract
+rules above started as review checklist items; each now has a mechanism
+that makes its bug class unwritable or machine-caught, so compliance does
+not depend on careful reading:
+
+- *Eligibility fragments* (`store-*/src/fragments.ts`): what "live",
+  "cancellation due", and "eligible to proceed" mean is spelled once per
+  dialect; every door composes the fragments, and a lint in the verify
+  gate fails any store source containing an eligibility comparison or raw
+  state list elsewhere. A door cannot carry a stale copy of a predicate it
+  cannot spell.
+- *Opaque launch outcomes* (`core/launch.ts`): a launcher's report has no
+  readable fields; the only affordance is `LaunchOutcome.reconcile`, which
+  owns parsing, identity checking, and the single advisory-expiry door.
+  Trusting a report's content is a compile error, not a review catch.
+- *The generated fault matrix* (`conformance/src/fault-matrix.ts`): every
+  batch label, harvested from source by the same script that checks the
+  spec ledger, is classified write/read/exempt — a new label fails the
+  build until classified, and classification enrolls it against
+  crash-before, crash-after, and duplicated-request faults automatically,
+  with invariants, the claim QUANTITY bound, and a post-fault progress
+  probe asserted. Fault coverage is enumerated, never curated.
+- *Duplicate-delivery in the model*: the spec models a retried request per
+  labeled action, and the ledger tags each label's duplicate semantics
+  ([cas-fenced] / [receipt] / [read] / [setup]), machine-checked — so a
+  transition whose replay is NOT a no-op is a TLC counterexample at design
+  time, not a production incident.
+
 
 Dialect implementations:
 

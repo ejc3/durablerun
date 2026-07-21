@@ -94,9 +94,15 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
 [DESIGN §3.9; conformance "revival" scenario]
 - Bounds are invariants too: fences and state checkers cannot see a
   QUANTITY violation (a duplicated claim doubled K with every row
-  consistent). Bounded operations get their bound asserted under the
-  fault battery, and duplicate/crash injection is a label x fault MATRIX,
-  never a curated list of suspicious sites.
+  consistent). MECHANIZED: conformance/src/fault-matrix.ts enumerates
+  label x fault from the source harvest (label-inventory test = the
+  completeness gate); new labels enroll automatically. Never hand-curate
+  fault coverage again.
+- Eligibility predicates: MECHANIZED via store fragments.ts + the
+  fragment lint (verify gate). New doors compose fragments; raw
+  comparisons/state lists outside fragments.ts fail the build.
+- Launch-outcome consumption: MECHANIZED via the opaque LaunchOutcome +
+  reconcile (core/launch.ts). There is no second way to consume a report.
 - When a guard lands at one chokepoint, enumerate every OTHER door to the
   same bad state and decide placement explicitly (the activation guard
   against due-to-cancel launches left the claim door open for a year of
