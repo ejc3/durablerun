@@ -24,6 +24,11 @@
 \*                            claim CONSUMES a due wait so a later emit
 \*                            cannot resurrect it (S3.4 rule 2, timeout
 \*                            branch) -- there is no separate TimeoutWake.
+\*   DuplicateClaim       <-> db.batch('claim') REDELIVERED (S3.4 rule 4,
+\*                            replay half): the same claim request -- same
+\*                            wire token, same parameters -- delivered
+\*                            again.  Guarded by the impl's receipt
+\*                            predicate; see the action comment.
 \*   Activate             <-> db.batch('activate')  (the per-claim CAS, incl.
 \*                            the cancel-deadline refusal guard and the
 \*                            first-start deadline rewrite: max_delay is
@@ -76,6 +81,22 @@
 \* THE LAUNCH CHANNEL IS AT-LEAST-ONCE: `channel` is a set that delivery
 \* does NOT remove from (so redelivery is always possible), plus an explicit
 \* Drop action for loss.  Dedup happens ONLY at the activation CAS.
+\*
+\* THE CLAIM REQUEST IS AT-LEAST-ONCE TOO (S3.4 rule 4, replay half): a
+\* tick's claim request (one wire token) may be redelivered.  `tokRuns` is
+\* the claimed_by projection for the LATEST minted token -- the set of rows
+\* it currently claims.  Every exit from running overwrites claimed_by
+\* (reschedule/complete/fail/sweep stamp it, cancel nulls it), so a token
+\* is only ever carried by still-running rows and tokRuns is pruned on
+\* every such exit.  DuplicateClaim is the redelivery, guarded by the
+\* impl's receipt predicate ("no running rows already carry this token"):
+\* while a carrier runs, the retry is the idempotent receipt of S3.4 rule 4
+\* -- it returns the original selection and claims NOTHING, a pure no-op
+\* modeled as a stutter (the guard is false), exactly like re-emit and
+\* dup-activate.  ClaimReplayBound is the guard's executable twin: the
+\* token never owns more than K = 1 running rows however often the request
+\* is redelivered.  Duplicate semantics of every OTHER batch are per-label
+\* guard analyses -- see the [dup-class] tags in the BATCH-LABEL LEDGER.
 \*
 \* DELIBERATELY NOT MODELED (honest list):
 \*  - Checkpoint content, the data plane (RunStateStore), child tasks,

@@ -94,6 +94,18 @@ a lint). Point fixes without a prevention are not accepted. Precedents:
 the one-shot activation flag → "no one-shot flags for re-entrant lifecycles,
 latch on generations"; batch fence self-defeat → "fence on the post-state".
 
+The prevention ladder — every fix lands as high as the class can be
+expressed, and "humans inspect more carefully" is not a rung:
+1. Unwritable: types, structure, single definitions (opaque outcomes,
+   eligibility fragments, FencedBatch).
+2. Machine-caught at build: lints, generated test enumeration, TLC.
+3. Machine-caught at runtime/test: invariants, fault matrix, fuzz floors.
+A lesson of the form "review/prompt differently next time" is a red flag,
+never a prevention: it means a mechanism gap was found and the net got
+patched instead of the hole. Reviews exist to FIND mechanism gaps; every
+confirmed finding must produce a mechanism, and the review process itself
+is a detection net of last resort.
+
 Tests live at the CLASS altitude, not just the instance: every fixed bug
 gets, besides its red test, an extension of the layer that should have
 caught the class — an invariant-library checker (run by every sim, scenario,
