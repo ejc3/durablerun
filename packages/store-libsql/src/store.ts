@@ -21,6 +21,7 @@ import {
   type SweptRun,
   type TaskResult,
 } from '@durablerun/core'
+import { cancelDue, eligibleTask, LIVE } from './fragments.js'
 import { NOW_MS } from './time.js'
 
 const DEFAULT_RETRY: RetryStrategy = {
@@ -50,9 +51,6 @@ export const REASON_CLAIM_TIMEOUT = '{"name":"$ClaimTimeout"}'
 export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
 export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 
-/** Non-terminal states — one definition, everywhere (drift was reviewed). */
-const LIVE = `('pending','running','sleeping')`
-
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
 const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms,
        r.wake_event, r.event_payload,
@@ -68,7 +66,7 @@ export const SWEEP_SCAN_CANCELS_SQL = `SELECT t.task_id,
           WHERE r.task_id = t.task_id AND r.state IN ${LIVE}
           ORDER BY r.attempt DESC LIMIT 1) AS run_id
 FROM tasks t
-WHERE t.queue = ? AND t.cancel_at_ms IS NOT NULL AND t.cancel_at_ms <= ${NOW_MS}
+WHERE t.queue = ? AND ${cancelDue('t.cancel_at_ms')}
   AND t.state IN ${LIVE}
 ORDER BY t.cancel_at_ms, t.task_id
 LIMIT ?`
@@ -251,8 +249,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 ) c
                 JOIN runs cr ON cr.run_id = c.run_id
                 JOIN tasks t ON t.task_id = cr.task_id
-                WHERE t.state IN ${LIVE}
-                  AND (t.cancel_at_ms IS NULL OR t.cancel_at_ms > ${NOW_MS})
+                WHERE ${eligibleTask('t')}
                 ORDER BY c.available_at_ms, c.run_id
                 LIMIT ?
               )
@@ -336,10 +333,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 heartbeat_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
                 AND claim_gen = ? AND activated_gen < ?
-                AND NOT EXISTS (
+                AND EXISTS (
                   SELECT 1 FROM tasks t
-                  WHERE t.task_id = runs.task_id
-                    AND t.cancel_at_ms IS NOT NULL AND t.cancel_at_ms <= ${NOW_MS}
+                  WHERE t.task_id = runs.task_id AND ${eligibleTask('t')}
                 )`,
         args: [claimGen, runId, queue, claimToken, claimGen, claimGen],
       },
@@ -671,9 +667,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
-    const deadlineGuard = deadlineOnly
-      ? `AND cancel_at_ms IS NOT NULL AND cancel_at_ms <= ${NOW_MS}`
-      : ''
+    const deadlineGuard = deadlineOnly ? `AND ${cancelDue('cancel_at_ms')}` : ''
     const { won } = await new FencedBatch(label, this.ids.token())
       .cas(
         'cancel',
