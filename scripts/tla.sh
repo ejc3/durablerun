@@ -4,20 +4,18 @@
 # sim harness proves the implementation refines it (labeled batch ≙ TLA
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #
-# Two phases:
-#   1. Vacuity probes (specs/Probe*.cfg over Probes.tla): each probe invariant
-#      is EXPECTED TO FAIL — its counterexample is a witness trace proving the
-#      modeled feature is reachable. A probe that PASSES means the feature is
-#      unreachable in the model: vacuous verification, and this script fails.
-#      (Class rule: checkers must be checked.)
-#   2. Liveness (SchedulerLiveness.cfg): all temporal properties under weak
-#      fairness at a reduced horizon (the liveness graph at full constants is
-#      ~57M states and OOMs any reasonable heap).
-#   3. Exhaustive safety (Scheduler.cfg) at the full constants.
+# Layout is maximum-concurrency: phase 1 runs all five vacuity probes at
+# once; phase 2 runs the exhaustive-safety scope AND the three liveness
+# property groups as four concurrent TLC processes with explicit worker and
+# heap budgets. Liveness is split into groups because the temporal check's
+# final pass is sequential per process — three smaller product graphs
+# checked on three cores beat one big graph on one core — and it uses
+# `-lncheck final` (skip the periodic mid-run passes; a green gate
+# re-checks everything at the end anyway; on a failure, rerun a single
+# group without it to localize).
 #
-# TLA_SCOPE=ci replaces phases 2+3 with SchedulerCI.cfg (safety + liveness
-# at the CI-sized scope, ~500k states) — the PR gate on 4-core runners.
-# Local pre-push (verify:tla) and nightly run the full scope.
+# TLA_SCOPE=ci replaces phase 2 with SchedulerCI.cfg (safety + liveness at
+# the CI-sized scope, ~500k states) — the PR gate on small runners.
 set -euo pipefail
 
 TLA_VERSION="v1.8.0"
@@ -36,30 +34,63 @@ if [[ ! -f "$JAR" ]] || ! echo "$TLA_SHA256  $JAR" | sha256sum -c --quiet - 2>/d
 fi
 
 cd "$(dirname "$0")/../specs"
+
 # Heap sizes to the environment instead of an artificial fixed number: a
 # tight heap makes TLC spill its fingerprint set to disk, which costs more
 # wall clock than any core count can win back. 70% of the enclosing cgroup
-# limit (or of available RAM when unconfined), floor 2g.
-if [[ -z "${TLA_HEAP:-}" ]]; then
+# limit (or of available RAM when unconfined), floor 2g, divided among the
+# concurrent processes below.
+if [[ -z "${TLA_HEAP_MB:-}" ]]; then
   cg="/sys/fs/cgroup$(awk -F: '$1=="0" {print $3}' /proc/self/cgroup)/memory.max"
   if [[ -r "$cg" && "$(cat "$cg")" != "max" ]]; then
     limit_bytes="$(cat "$cg")"
   else
     limit_bytes="$(($(awk '/MemAvailable/ {print $2}' /proc/meminfo) * 1024))"
   fi
-  heap_mb=$((limit_bytes * 7 / 10 / 1024 / 1024))
-  [[ "$heap_mb" -lt 2048 ]] && heap_mb=2048
-  TLA_HEAP="${heap_mb}m"
+  TLA_HEAP_MB=$((limit_bytes * 7 / 10 / 1024 / 1024))
+  [[ "$TLA_HEAP_MB" -lt 2048 ]] && TLA_HEAP_MB=2048
 fi
-echo "tla.sh: TLC heap $TLA_HEAP"
-TLC=(java -XX:+UseParallelGC -Xmx"$TLA_HEAP" -cp "$JAR" tlc2.TLC -workers auto -deadlock)
+CORES="$(nproc)"
 
-echo "== phase 1: vacuity probes (each MUST find its witness trace)"
-probe_fail=0
+# Newest JVM available (falls back to PATH java): newer collectors and JIT
+# are free wall clock for a state-space grinder.
+JAVA_BIN="${TLA_JAVA:-}"
+if [[ -z "$JAVA_BIN" ]]; then
+  for candidate in /usr/lib/jvm/java-25-openjdk-*/bin/java /usr/lib/jvm/java-2*-openjdk-*/bin/java; do
+    [[ -x "$candidate" ]] && JAVA_BIN="$candidate" && break
+  done
+  [[ -n "$JAVA_BIN" ]] || JAVA_BIN="$(command -v java)"
+fi
+echo "tla.sh: heap budget ${TLA_HEAP_MB}m, $CORES cores, $("$JAVA_BIN" -version 2>&1 | head -1)"
+
+tlc() { # tlc <mem_mb> <workers> <extra...>
+  # TLC's documented high-throughput layout: the fingerprint set lives in
+  # OFF-HEAP direct memory (no GC pressure, no heap spill), the heap keeps
+  # the state queue and liveness graph. Budget: half direct, half heap.
+  local mem="$1" workers="$2"
+  shift 2
+  "$JAVA_BIN" -XX:+UseParallelGC -Xmx"$((mem / 2))m" \
+    -XX:MaxDirectMemorySize="$((mem / 2))m" \
+    -Dtlc2.tool.fp.FPSet.impl=tlc2.tool.fp.OffHeapDiskFPSet \
+    -cp "$JAR" tlc2.TLC -workers "$workers" -deadlock "$@"
+}
+
+echo "== phase 1: vacuity probes, concurrent (each MUST find its witness trace)"
+probe_pids=()
+probe_names=()
+probe_heap=$((TLA_HEAP_MB / 8)); [[ "$probe_heap" -lt 512 ]] && probe_heap=512
 for cfg in Probe*.cfg; do
   probe="${cfg%.cfg}"
+  tlc "$probe_heap" 4 -metadir "$STATES/$probe" -config "$cfg" Probes.tla \
+    >"$STATES/$probe.log" 2>&1 &
+  probe_pids+=($!)
+  probe_names+=("$probe")
+done
+probe_fail=0
+for i in "${!probe_pids[@]}"; do
+  probe="${probe_names[$i]}"
   log="$STATES/$probe.log"
-  if "${TLC[@]}" -metadir "$STATES/$probe" -config "$cfg" Probes.tla >"$log" 2>&1; then
+  if wait "${probe_pids[$i]}"; then
     echo "VACUOUS: $probe found no witness — the feature it probes is unreachable"
     probe_fail=1
   elif grep -q "Invariant $probe is violated" "$log"; then
@@ -71,14 +102,47 @@ for cfg in Probe*.cfg; do
   fi
 done
 [[ "$probe_fail" -eq 0 ]] || exit 1
+# Probes fail BY DESIGN; TLC drops counterexample trace files next to the
+# spec when they do — throwaway artifacts, removed here.
+rm -f ./*_TTrace_*.tla ./*_TTrace_*.bin
 
 if [[ "${TLA_SCOPE:-full}" == "ci" ]]; then
   echo "== phase 2 (ci scope): safety + liveness at the CI-sized constants"
-  "${TLC[@]}" -metadir "$STATES/ci" -config SchedulerCI.cfg Scheduler.tla
+  tlc "$TLA_HEAP_MB" "$CORES" -metadir "$STATES/ci" -config SchedulerCI.cfg Scheduler.tla
 else
-  echo "== phase 2: liveness at the reduced horizon"
-  "${TLC[@]}" -metadir "$STATES/liveness" -config SchedulerLiveness.cfg Scheduler.tla
+  echo "== phase 2: exhaustive safety + 3 liveness groups, all concurrent"
+  safety_heap=$((TLA_HEAP_MB / 2))
+  group_heap=$((TLA_HEAP_MB / 6))
+  safety_workers=$((CORES * 2 / 3)); [[ "$safety_workers" -lt 2 ]] && safety_workers=2
+  group_workers=$((CORES / 6)); [[ "$group_workers" -lt 2 ]] && group_workers=2
 
-  echo "== phase 3: exhaustive safety at the full constants"
-  "${TLC[@]}" -metadir "$STATES/full" -config Scheduler.cfg Scheduler.tla
+  tlc "$safety_heap" "$safety_workers" -metadir "$STATES/full" \
+    -config Scheduler.cfg Scheduler.tla >"$STATES/safety.log" 2>&1 &
+  safety_pid=$!
+  group_pids=()
+  for g in 1 2 3; do
+    tlc "$group_heap" "$group_workers" -lncheck final -metadir "$STATES/liveness$g" \
+      -config "SchedulerLiveness$g.cfg" Scheduler.tla >"$STATES/liveness$g.log" 2>&1 &
+    group_pids+=($!)
+  done
+
+  fail=0
+  for g in 1 2 3; do
+    if wait "${group_pids[$((g - 1))]}"; then
+      echo "liveness group $g: $(grep -m1 'Model checking completed' "$STATES/liveness$g.log" || echo done)"
+    else
+      echo "LIVENESS GROUP $g FAILED:"
+      tail -40 "$STATES/liveness$g.log"
+      fail=1
+    fi
+  done
+  if wait "$safety_pid"; then
+    echo "safety: $(grep -m1 'Model checking completed' "$STATES/safety.log" || echo done)"
+    grep -E "states generated|distinct states" "$STATES/safety.log" | tail -1
+  else
+    echo "SAFETY FAILED:"
+    tail -40 "$STATES/safety.log"
+    fail=1
+  fi
+  exit "$fail"
 fi

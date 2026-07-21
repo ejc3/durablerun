@@ -42,4 +42,25 @@ if missing:
             f"(map it to an action or exclude it with a reason)"
         )
     sys.exit(1)
-print(f"spec-ledger: all {len(labels)} batch labels accounted for (block-scoped)")
+
+# Every label's ledger line must carry exactly one duplicate-semantics tag —
+# the spec-side twin of the fault matrix's 'duplicate' column. A label whose
+# replay semantics nobody classified is a label whose replay semantics
+# nobody thought about.
+TAGS = ("[cas-fenced]", "[receipt]", "[read]", "[setup]")
+untagged = []
+for label in sorted(labels):
+    line = next((ln for ln in block.splitlines() if f"'{label}'" in ln), "")
+    if sum(1 for t in TAGS if t in line) != 1:
+        untagged.append(label)
+if untagged:
+    for label in untagged:
+        print(
+            f"spec-ledger: label '{label}' has no (or ambiguous) duplicate-semantics "
+            f"tag — exactly one of {', '.join(TAGS)} required on its ledger line"
+        )
+    sys.exit(1)
+print(
+    f"spec-ledger: all {len(labels)} batch labels accounted for and "
+    f"duplicate-classified (block-scoped)"
+)

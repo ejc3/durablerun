@@ -53,7 +53,7 @@
 \*                            task + its live runs -> cancelled, waits gone
 \*   CancelExplicit       <-> cancelTransition('cancel-task'): same shape,
 \*                            NO deadline guard (the explicit API)
-\*   EmitEvent            <-> PR3.1 'emit-event' (SPEC-FIRST, modeled ahead
+\*   EmitEvent            <-> 'emit-event' (SPEC-FIRST, modeled ahead
 \*                            of implementation): first-write-wins event row;
 \*                            every registered waiter flips sleeping ->
 \*                            pending-now with the payload parked on the run
@@ -61,7 +61,7 @@
 \*                            batch (S3.4 rule 2), durable-at-emit (S3.8.3
 \*                            inline placement)
 \*   AwaitEventHit /
-\*     AwaitEventMiss     <-> PR3.1 'await-event' (SPEC-FIRST): one atomic
+\*     AwaitEventMiss     <-> 'await-event' (SPEC-FIRST): one atomic
 \*                            fenced batch; already-emitted -> immediate
 \*                            payload, worker continues (Hit); else register
 \*                            the wait and sleep with available_at = timeout
@@ -105,6 +105,9 @@
 \*  - Token randomness: a claim of run r is uniquely named by (r, claim_gen),
 \*    so claim_token is modeled AS the pair -- "claimed_by = :token" becomes
 \*    "claimGen[r] = c.gen".  Cross-run UUID collisions are not modeled.
+\*    Cross-run token IDENTITY -- one wire token claiming several rows over
+\*    replays -- IS modeled, but for the latest token only (tokRuns; the
+\*    restriction is argued sound at DuplicateClaim).
 \*  - Pings, alarms, cron, EndingFeed, expireLeaseNow: by S3.9's
 \*    advisory-signal rule these may only ACCELERATE what lease expiry does
 \*    anyway; TimeAdvance already reaches lease expiry, so omitting them
@@ -182,7 +185,7 @@
 \*    TimeoutError wake (decodeClaimedRun's timedOut branch).
 \*  - wake_event/event_payload persist on the run row after delivery until
 \*    the next await overwrites them or a successor carries them (faithful:
-\*    no impl transition clears them).  PR3.1 NOTE: the SDK must treat them
+\*    no impl transition clears them).  IMPLEMENTATION NOTE: the SDK must treat them
 \*    as "latest wake reason", memoizing consumption via checkpoints -- a
 \*    resumed run that suspends again via plain sleepFor will re-see stale
 \*    wake fields at its next claim.
@@ -201,34 +204,68 @@
 \* ===========================================================================
 
 \* ---------------------------------------------------------------------------
-\* BATCH-LABEL LEDGER -- machine-checked by scripts/spec-ledger.sh: every
+\* BATCH-LABEL LEDGER -- machine-checked by scripts/spec-ledger.py: every
 \* labeled batch in store-libsql/src must appear below, either mapped to a
 \* modeled action or excluded with a reason. This catches "implemented but
 \* silently unmodeled" drift.
 \*
-\* Modeled (label -> action):
-\*   'spawn' -> Spawn        'claim' -> Claim         'activate' -> Activate
-\*   'heartbeat' -> Heartbeat  'complete' -> CompleteRun  'fail' -> FailRun
-\*   'reschedule' -> SleepSuspend / VoluntaryChain
-\*   'sweep:lost-launch' -> SweepLostLaunch
-\*   'sweep:claim-timeout' -> SweepClaimTimeout
-\*   'sweep:cancel' -> CancelSweep   'cancel-task' -> CancelExplicit
+\* Every label also carries its DUPLICATE-SEMANTICS class (the spec-side
+\* twin of the fault matrix's 'duplicate' column): what happens when the
+\* SAME request -- same token/generation/parameters -- is delivered twice.
+\*   [cas-fenced] the batch's own guards make the replay a zero-row no-op
+\*   [receipt]    the replay returns the original result, claims nothing new
+\*   [read]       side-effect free
+\*   [setup]      fixture plumbing outside the protocol
+\*
+\* Modeled (label -> action  [dup-class]):
+\*   'spawn' -> Spawn  [receipt]  (idempotency-key dedup: the replay
+\*     resolves to the original winner row; the model's unused-task guard)
+\*   'claim' -> Claim / DuplicateClaim  [receipt]  (S3.4 rule 4: the
+\*     same-token retry is an idempotent receipt while any of its rows
+\*     still runs; DuplicateClaim models the redelivery, ClaimReplayBound
+\*     pins the bound)
+\*   'activate' -> Activate  [cas-fenced]  (per-claim CAS: a duplicate
+\*     delivery finds activatedGen = gen, guard false -- NoDualActivation)
+\*   'heartbeat' -> Heartbeat  [cas-fenced]  (token-fenced absolute-value
+\*     write: a replay under a live fence re-extends from now, which is a
+\*     legal fresh heartbeat; after fence loss it is zero-row)
+\*   'complete' -> CompleteRun  [cas-fenced]  (replay finds state #
+\*     'running': zero-row)
+\*   'fail' -> FailRun  [cas-fenced]  (replay zero-row; the successor
+\*     insert keys on the CAS stamp, so no double successor)
+\*   'reschedule' -> SleepSuspend / VoluntaryChain  [cas-fenced]
+\*   'sweep:lost-launch' -> SweepLostLaunch  [cas-fenced]  (replay finds
+\*     the row already reopened: state # 'running')
+\*   'sweep:claim-timeout' -> SweepClaimTimeout  [cas-fenced]  (replay
+\*     zero-row on the dead run; no double infra successor)
+\*   'sweep:cancel' -> CancelSweep  [cas-fenced]  (task CAS on LIVE states)
+\*   'cancel-task' -> CancelExplicit  [cas-fenced]  (same CAS, no deadline)
 \*   (the claim batch's timed-out-wait DELETE is part of Claim; activate's
 \*   cancel-refusal guard and first-start deadline rewrite are part of
 \*   Activate -- one label, one action, even when the batch has follow-ons)
-\* Modeled ahead of implementation (PR3.1 must use these labels and match
+\* Modeled ahead of implementation (the event implementation must use these labels and match
 \* these actions -- spec-first per the standing rule):
-\*   'emit-event' -> EmitEvent
-\*   'await-event' -> AwaitEventHit / AwaitEventMiss
-\* Excluded (reason):
-\*   'sweep:scan' -- read-only discovery, no state transition
-\*   'expire-lease-now' -- advisory-only write; omission argued sound in the
-\*     header (accelerates TimeAdvance-reachable states only)
-\*   'set-checkpoint', 'get-checkpoints', 'task-result', 'next-wake' --
-\*     data-plane content and read-only queries; checkpoint CONTENT is
-\*     unmodeled by design (header), its lease fence rides Heartbeat
-\*   'migrate:bootstrap', 'migrate:version', 'admin:set-fake-now',
-\*   'admin:clear-fake-now', 'admin:now' -- infrastructure, not protocol
+\*   'emit-event' -> EmitEvent  [cas-fenced]  (first-write-wins insert:
+\*     the replay's insert loses; EventImmutable)
+\*   'await-event' -> AwaitEventHit / AwaitEventMiss  [cas-fenced]  (hit
+\*     replay re-reads under a live fence; miss replay is zero-row -- the
+\*     run it parked is no longer 'running')
+\* Excluded (reason  [dup-class]):
+\*   'sweep:scan' [read] -- read-only discovery, no state transition
+\*   'expire-lease-now' [cas-fenced] -- advisory-only token-fenced write
+\*     (replay re-applies the same absolute value); omission argued sound
+\*     in the header (accelerates TimeAdvance-reachable states only)
+\*   'set-checkpoint' [cas-fenced] -- lease-fenced LWW upsert; a replay
+\*     re-applies the identical row (data-plane content unmodeled by
+\*     design -- header; its lease fence rides Heartbeat)
+\*   'get-checkpoints' [read] -- read-only query
+\*   'task-result' [read] -- read-only query
+\*   'next-wake' [read] -- read-only query
+\*   'migrate:bootstrap' [setup] -- infrastructure, not protocol
+\*   'migrate:version' [setup] -- infrastructure, not protocol
+\*   'admin:set-fake-now' [setup] -- infrastructure, not protocol
+\*   'admin:clear-fake-now' [setup] -- infrastructure, not protocol
+\*   'admin:now' [setup] -- infrastructure, not protocol
 \* ---------------------------------------------------------------------------
 
 EXTENDS Naturals, FiniteSets
@@ -297,7 +334,8 @@ Payloads  == 1..2
 NoEvent   == "none"
 
 ActionNames ==
-  {"Init", "Spawn", "Claim", "Drop", "Activate", "Heartbeat", "Complete",
+  {"Init", "Spawn", "Claim", "DuplicateClaim", "Drop", "Activate",
+   "Heartbeat", "Complete",
    "FailRunWithRetry", "FailRunTerminal", "Sleep", "Chain",
    "SweepLostLaunch", "SweepRelaunchExhausted", "SweepClaimTimeout",
    "SweepInfraExhausted", "CancelSweep", "CancelExplicit",
@@ -339,6 +377,10 @@ VARIABLES
   waitAt,         \* wait timeout (= the run's availableAt), Inf = untimed
   \* -- events table ------------------------------------------------------
   eventState,     \* first-write-wins payload per event; NoPayload = unset
+  \* -- claimed_by projection (S3.4 rule 4, replay half) ------------------
+  tokRuns,        \* rows currently claimed by the LATEST wire token; every
+                  \* exit from running overwrites claimed_by, so members
+                  \* are always running rows (ClaimReplayBound)
   \* -- environment -------------------------------------------------------
   channel,        \* at-least-once launch channel: {[run, gen]}
   contexts,       \* live execution contexts: {[id, run, gen]}
@@ -351,7 +393,7 @@ vars == <<now, taskState, attempts, infraRetries, hops, policy, cancelAt,
           firstStarted, runState, runTask, runAttempt, claimGen,
           activatedGen, relaunchCount, leaseDeadline, availableAt,
           wakeEvent, runPayload, nextRun, waitEv, waitAt, eventState,
-          channel, contexts, nextCtx, lastAction, lastCtx>>
+          tokRuns, channel, contexts, nextCtx, lastAction, lastCtx>>
 
 NoCtx == [run |-> NoRun, gen |-> 0]
 
@@ -396,6 +438,7 @@ Init ==
   /\ waitEv        = [r \in RunIds |-> NoEvent]
   /\ waitAt        = [r \in RunIds |-> 0]
   /\ eventState    = [e \in Events |-> NoPayload]
+  /\ tokRuns = {}
   /\ nextRun = 1
   /\ channel = {}
   /\ contexts = {}
@@ -425,18 +468,23 @@ Spawn(t, pol) ==
                     ELSE Inf]
   /\ UNCHANGED <<now, attempts, infraRetries, hops, firstStarted, claimGen,
                  activatedGen, relaunchCount, leaseDeadline, wakeEvent,
-                 runPayload, waitEv, waitAt, eventState, channel, contexts,
-                 nextCtx>>
+                 runPayload, waitEv, waitAt, eventState, tokRuns, channel,
+                 contexts, nextCtx>>
   /\ lastAction' = "Spawn" /\ lastCtx' = NoCtx
 
-\* Claim <-> batch('claim'), K = 1 (S3.1 step 2): a due run of a live task
-\* -> running, claim_gen+1, fresh lease, launch message enqueued (tick step
-\* 3, fused -- see header).  The message carries the new gen; its token is
-\* the (run, gen) pair.  Task bookkeeping: state -> running.  Attempts are
-\* deliberately untouched here -- see AttemptAccounting.  There is NO
-\* cancel-deadline guard (faithful: the impl claim joins tasks on state
-\* only) -- a deadline-due task's run may be claimed; the ACTIVATION
-\* refuses (header churn note).
+\* ClaimCore -- the claim batch's shared body (everything except the token
+\* bookkeeping), used by Claim (a fresh request) and DuplicateClaim (the
+\* redelivery of the latest one), K = 1 (S3.1 step 2): a due run of a live
+\* task -> running, claim_gen+1, fresh lease, launch message enqueued (tick
+\* step 3, fused -- see header).  The message carries the new gen; its
+\* token is the (run, gen) pair.  Task bookkeeping: state -> running.
+\* Attempts are deliberately untouched here -- see AttemptAccounting.
+\* The model has NO cancel-deadline guard on claim; the implementation is
+\* STRICTER (its claim also excludes tasks whose cancellation deadline is
+\* due -- the eligibility fragment).  A more permissive model is safe for
+\* every proof here: implementation behaviors are a subset of modeled
+\* behaviors, and the extra modeled churn (claim then activation-refusal)
+\* only widens the checked space.  Kept permissive for state-space economy.
 \* The claim batch's statement 3 rides along: claiming a run whose wait
 \* timed out CONSUMES the wait row, so a later emit cannot resurrect it
 \* (S3.4 rule 2 timeout branch).  The run keeps wake_event with a NULL
@@ -444,7 +492,7 @@ Spawn(t, pol) ==
 \* waiter with an unexpired timeout is unclaimable (availableAt = waitAt >
 \* now), an untimed waiter never claimable (availableAt = Inf): only
 \* emit's flip to pending-now frees them.
-Claim(r) ==
+ClaimCore(r) ==
   /\ runState[r] \in {"pending", "sleeping"}
   /\ availableAt[r] <= now
   /\ taskState[runTask[r]] \notin TerminalStates
@@ -460,7 +508,49 @@ Claim(r) ==
                  firstStarted, runTask, runAttempt, activatedGen,
                  relaunchCount, availableAt, wakeEvent, runPayload,
                  eventState, nextRun, contexts, nextCtx>>
+
+\* Claim <-> batch('claim'): a fresh request MINTS a new wire token, so the
+\* claimed_by projection resets to exactly {r} (older tokens stop being
+\* tracked -- the latest-only restriction, argued sound at DuplicateClaim).
+Claim(r) ==
+  /\ ClaimCore(r)
+  /\ tokRuns' = {r}
   /\ lastAction' = "Claim" /\ lastCtx' = NoCtx
+
+\* DuplicateClaim <-> batch('claim') REDELIVERED (S3.4 rule 4, replay
+\* half): the SAME claim request -- same wire token, same parameters --
+\* delivered a second (or n-th) time; the fault the fault matrix injects as
+\* 'duplicate' at label 'claim'.  The second guard IS the impl's receipt
+\* predicate (store.ts claim statement 1: `AND NOT EXISTS (SELECT 1 FROM
+\* runs held WHERE ... held.state = 'running' AND held.claimed_by =
+\* :token)`): while ANY row claimed by this token still runs, the retry is
+\* an idempotent receipt -- it returns the original selection and claims
+\* NOTHING.  That branch changes no state, so it is a stutter here (guard
+\* false), exactly like dup-activate and re-emit.  Only when no running
+\* row carries the token (its rows completed/failed/were swept/cancelled
+\* -- every one of those exits overwrites claimed_by) does the retry
+\* proceed, and then it is behaviorally a fresh claim under a recycled
+\* token.  tokRuns' extends by UNION, deliberately not reset: if the
+\* receipt guard is ever weakened (the observed bug -- a duplicated claim
+\* claiming a SECOND batch of runs under the same token), the extra
+\* carrier lands in tokRuns and ClaimReplayBound trips.  (That tripwire is
+\* red-validated: at a two-task scope, deleting the receipt guard yields a
+\* ClaimReplayBound counterexample; at the shipped one-task scopes the bug
+\* class needs a second concurrently claimable run, which
+\* SingleActiveRunPerTask precludes.)
+\* MODEL RESTRICTION (argued sound): only the LATEST request is retryable.
+\* An older token's retry hits the same token-parameterized predicate: if
+\* its carrier still runs it is a receipt (changes nothing -- omitting it
+\* loses no transitions), and otherwise it proceeds as a fresh claim under
+\* a token no other state references -- indistinguishable from Claim to
+\* every checked property.
+DuplicateClaim(r) ==
+  /\ \E rr \in RunIds : claimGen[rr] > 0  \* a claim request exists to retry
+  /\ tokRuns = {}                         \* the impl receipt guard: no
+                                          \* running row carries the token
+  /\ ClaimCore(r)
+  /\ tokRuns' = tokRuns \cup {r}
+  /\ lastAction' = "DuplicateClaim" /\ lastCtx' = NoCtx
 
 \* Environment: the at-least-once channel may lose a message.  (Also covers
 \* "worker launched but crashed before the activation CAS".)
@@ -471,7 +561,7 @@ Drop(m) ==
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
-                 eventState, nextRun, contexts, nextCtx>>
+                 eventState, tokRuns, nextRun, contexts, nextCtx>>
   /\ lastAction' = "Drop" /\ lastCtx' = NoCtx
 
 \* DeliverLaunch -> Activate <-> batch('activate') (S3.2): the per-claim CAS
@@ -511,7 +601,7 @@ Activate(m) ==
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  runState, runTask, runAttempt, claimGen, relaunchCount,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
-                 eventState, nextRun, channel>>
+                 eventState, tokRuns, nextRun, channel>>
   /\ lastAction' = "Activate" /\ lastCtx' = CtxKey(m)
 
 \* Heartbeat <-> batch('heartbeat'): extend the lease while claimed_by
@@ -525,8 +615,8 @@ Heartbeat(c) ==
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, availableAt,
-                 wakeEvent, runPayload, waitEv, waitAt, eventState, nextRun,
-                 channel, contexts, nextCtx>>
+                 wakeEvent, runPayload, waitEv, waitAt, eventState, tokRuns,
+                 nextRun, channel, contexts, nextCtx>>
   /\ lastAction' = "Heartbeat" /\ lastCtx' = CtxKey(c)
 
 \* CompleteRun <-> complete(): fenced terminal transition; context exits.
@@ -540,6 +630,7 @@ CompleteRun(c) ==
   /\ taskState' = [taskState EXCEPT ![runTask[c.run]] = "completed"]
   /\ cancelAt'  = [cancelAt EXCEPT ![runTask[c.run]] = Inf]
   /\ contexts' = contexts \ {c}
+  /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
@@ -569,6 +660,7 @@ FailRunWithRetry(c) ==
        /\ taskState'   = [taskState EXCEPT ![t] = "pending"]
        /\ nextRun' = nextRun + 1
   /\ contexts' = contexts \ {c}
+  /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  waitEv, waitAt, eventState, channel, nextCtx>>
@@ -585,6 +677,7 @@ FailRunTerminal(c) ==
        /\ taskState' = [taskState EXCEPT ![t] = "failed"]
        /\ attempts'  = [attempts EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
+  /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
@@ -604,6 +697,7 @@ SleepSuspend(c) ==
        /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
+  /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
@@ -623,6 +717,7 @@ VoluntaryChain(c) ==
        /\ taskState'   = [taskState EXCEPT ![t] = "pending"]
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
+  /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
@@ -630,7 +725,7 @@ VoluntaryChain(c) ==
   /\ lastAction' = "Chain" /\ lastCtx' = CtxKey(c)
 
 -----------------------------------------------------------------------------
-\* PR3.1 'await-event' (SPEC-FIRST), hit branch: the event already fired --
+\* 'await-event' (SPEC-FIRST), hit branch: the event already fired --
 \* the worker reads the payload immediately and KEEPS RUNNING (no suspend,
 \* no wait row, no wake-field write; the payload checkpoint is data-plane).
 \* Modeled as an explicit fenced action so LeaseAuthority pins that a
@@ -643,10 +738,10 @@ AwaitEventHit(c, e) ==
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
-                 eventState, nextRun, channel, contexts, nextCtx>>
+                 eventState, tokRuns, nextRun, channel, contexts, nextCtx>>
   /\ lastAction' = "AwaitHit" /\ lastCtx' = CtxKey(c)
 
-\* PR3.1 'await-event' (SPEC-FIRST), miss branch: not yet emitted -- one
+\* 'await-event' (SPEC-FIRST), miss branch: not yet emitted -- one
 \* atomic fenced batch registers the wait AND parks the run (S3.4 rule 2:
 \* register `WHERE (SELECT payload...) IS NULL` folds the branch into the
 \* guard; no client round trip between check and sleep).  The run sleeps
@@ -669,6 +764,7 @@ AwaitRegister(c, e, tAt) ==
     /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
     /\ hops'        = [hops EXCEPT ![t] = @ + 1]
     /\ contexts' = contexts \ {c}
+    /\ tokRuns' = tokRuns \ {c.run}   \* suspension carries no live token
     /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                    firstStarted, runTask, runAttempt, claimGen,
                    activatedGen, relaunchCount, leaseDeadline, eventState,
@@ -684,7 +780,7 @@ AwaitEventMiss(c, e) ==
                                            \* cancel deadline (header note)
         /\ AwaitRegister(c, e, Inf)                  \* wait forever
 
-\* PR3.1 'emit-event' (SPEC-FIRST): ONE atomic batch, first-write-wins
+\* 'emit-event' (SPEC-FIRST): ONE atomic batch, first-write-wins
 \* (S3.8.3).  Guard: only the FIRST emit of a name transitions -- a re-emit
 \* is the impl's no-op branch (= stutter here; see header).  Every
 \* registered waiter of the event flips sleeping -> pending due now with
@@ -710,8 +806,8 @@ EmitEvent(e, p) ==
                             ELSE taskState[t]]
   /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
-                 relaunchCount, leaseDeadline, wakeEvent, nextRun, channel,
-                 contexts, nextCtx>>
+                 relaunchCount, leaseDeadline, wakeEvent, tokRuns, nextRun,
+                 channel, contexts, nextCtx>>
   /\ lastAction' = "Emit" /\ lastCtx' = NoCtx
 
 -----------------------------------------------------------------------------
@@ -736,6 +832,7 @@ CancelCore(t) ==
                          IF r \in dead THEN 0 ELSE availableAt[r]]
     /\ waitEv' = [r \in RunIds |-> IF r \in dead THEN NoEvent ELSE waitEv[r]]
     /\ waitAt' = [r \in RunIds |-> IF r \in dead THEN 0 ELSE waitAt[r]]
+    /\ tokRuns' = tokRuns \ dead      \* impl nulls claimed_by on cancel
     /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
                    runTask, runAttempt, claimGen, activatedGen,
                    relaunchCount, wakeEvent, runPayload, eventState,
@@ -774,6 +871,7 @@ SweepLostLaunch(r) ==
   /\ availableAt'   = [availableAt EXCEPT ![r] = Clip(now + Backoff)]
   /\ relaunchCount' = [relaunchCount EXCEPT ![r] = @ + 1]
   /\ taskState'     = [taskState EXCEPT ![runTask[r]] = "pending"]
+  /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on reopen
   /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  leaseDeadline, wakeEvent, runPayload, waitEv, waitAt,
@@ -790,6 +888,7 @@ SweepRelaunchExhausted(r) ==
   /\ relaunchCount[r] = RelaunchCap
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
+  /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, availableAt, wakeEvent,
@@ -821,6 +920,7 @@ SweepClaimTimeout(r) ==
        /\ infraRetries' = [infraRetries EXCEPT ![t] = @ + 1]
        /\ taskState'    = [taskState EXCEPT ![t] = "pending"]
        /\ nextRun' = nextRun + 1
+  /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, attempts, hops, policy, cancelAt, firstStarted,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  waitEv, waitAt, eventState, channel, contexts, nextCtx>>
@@ -834,6 +934,7 @@ SweepInfraExhausted(r) ==
   /\ infraRetries[runTask[r]] = InfraRetryCap
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
+  /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
   /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, availableAt, wakeEvent,
@@ -850,7 +951,7 @@ WorkerCrash(c) ==
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
-                 eventState, nextRun, channel, nextCtx>>
+                 eventState, tokRuns, nextRun, channel, nextCtx>>
   /\ lastAction' = "Crash" /\ lastCtx' = NoCtx
 
 TimeAdvance ==
@@ -859,15 +960,15 @@ TimeAdvance ==
   /\ UNCHANGED <<taskState, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runState, runTask, runAttempt, claimGen,
                  activatedGen, relaunchCount, leaseDeadline, availableAt,
-                 wakeEvent, runPayload, waitEv, waitAt, eventState, nextRun,
-                 channel, contexts, nextCtx>>
+                 wakeEvent, runPayload, waitEv, waitAt, eventState, tokRuns,
+                 nextRun, channel, contexts, nextCtx>>
   /\ lastAction' = "TimeAdvance" /\ lastCtx' = NoCtx
 
 -----------------------------------------------------------------------------
 Next ==
   \/ \E t \in Tasks, pol \in Policies : Spawn(t, pol)
   \/ \E t \in Tasks : CancelSweep(t) \/ CancelExplicit(t)
-  \/ \E r \in RunIds : Claim(r) \/ SweepLostLaunch(r)
+  \/ \E r \in RunIds : Claim(r) \/ DuplicateClaim(r) \/ SweepLostLaunch(r)
                        \/ SweepRelaunchExhausted(r) \/ SweepClaimTimeout(r)
                        \/ SweepInfraExhausted(r)
   \/ \E m \in LaunchMsgs : Drop(m) \/ Activate(m)
@@ -885,11 +986,13 @@ Spec == Init /\ [][Next]_vars
 \* Fairness for the liveness check only: the machinery (clock, some tick's
 \* claim, some delivery, some sweep, deadline-cancel enforcement)
 \* eventually acts when continuously able.  Worker actions and the
-\* adversary (Drop, Crash) are deliberately UNFAIR, and so are EmitEvent
-\* and CancelExplicit (user/API actions -- liveness must hold when nobody
-\* ever emits or cancels): the caps, the lease timer, and deadline
-\* enforcement are what guarantee progress.  CancelAny is its own fairness
-\* term (the impl's sweep runs the cancel scan every tick, before expired
+\* adversary (Drop, Crash, DuplicateClaim -- a redelivery nobody is owed)
+\* are deliberately UNFAIR, and so are EmitEvent and CancelExplicit
+\* (user/API actions -- liveness must hold when nobody ever emits or
+\* cancels): the caps, the lease timer, and deadline enforcement are what
+\* guarantee progress.  ClaimAny is fair on Claim alone: progress never
+\* depends on a duplicate arriving.  CancelAny is its own fairness term
+\* (the impl's sweep runs the cancel scan every tick, before expired
 \* leases).
 ClaimAny   == \E r \in RunIds : Claim(r)
 DeliverAny == \E m \in LaunchMsgs : Activate(m)
@@ -930,6 +1033,7 @@ TypeOK ==
   /\ waitEv \in [RunIds -> Events \cup {NoEvent}]
   /\ waitAt \in [RunIds -> 0..Inf]
   /\ eventState \in [Events -> {NoPayload} \cup Payloads]
+  /\ tokRuns \subseteq RunIds
   /\ nextRun \in 1..(MaxRuns + 1)
   /\ channel \subseteq LaunchMsgs
   /\ \A c \in contexts :
@@ -972,6 +1076,21 @@ TerminalTaskQuiescent ==
       \A r \in RunIds :
         (runTask[r] = t /\ runState[r] # "unused")
           => runState[r] \in TerminalStates
+
+\* INVARIANT (S3.4 rule 4, replay half) -- THE CLAIM BOUND UNDER REPLAYS.
+\* K = 1: however many times the latest claim request is redelivered
+\* (DuplicateClaim), its wire token never owns more than one running row;
+\* and a token is only ever carried by running rows (every exit from
+\* running overwrites claimed_by, so tokRuns is pruned on the exit).  This
+\* is the executable twin of the impl's receipt guard: the observed bug -- a
+\* duplicated claim claiming a SECOND batch of runs under the same token
+\* -- is exactly a second member appearing here while the first still
+\* runs.  (At a one-task scope SingleActiveRunPerTask subsumes the
+\* cardinality half; the guard-regression tripwire is red-validated at a
+\* two-task scope -- see DuplicateClaim.)
+ClaimReplayBound ==
+  /\ Cardinality(tokRuns) <= 1
+  /\ \A r \in tokRuns : runState[r] = "running"
 
 \* INVARIANT (events) -- the wait-row well-formedness bundle.  The heart is
 \* eventState[waitEv[r]] = NoPayload: A REGISTERED WAITER'S EVENT IS
