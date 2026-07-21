@@ -121,6 +121,16 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
 - Every advisory input gets LYING-signal tests — one false-positive, one
   false-negative. Honest-signal tests are author-predicted scenarios and
   catch nothing (no invariant trips on a latency bug).
+- The honest path asserts its COUNTERS, not just call counts: the loop's
+  watchdog misclassified every successful launch and stayed green because
+  tests counted invocations, never `stats.launched`. Every consumer of an
+  advisory signal pins launched/failed/ended numbers on the happy path.
+- Racing a promise against its own settlement signal: `.finally` adds
+  microtask hops, so the interrupted sleep can WIN against the launch that
+  interrupted it. Check the settled flag to decide, never race order.
+- Migrations are APPEND-ONLY, machine-enforced: schema.test.ts freezes
+  every migration's content hash — editing shipped history fails the
+  build; schema changes append a new version (and its hash).
 - Best-effort writes are try/caught: a lost hint may never cost the
   caller's result. Advisory-ness must be visible in code SHAPE, not just
   in your head.

@@ -349,3 +349,55 @@ describe('DriverLoop review regressions', () => {
     ).toBe(true)
   })
 })
+
+describe('DriverLoop coverage: lifecycle edges', () => {
+  it('wake() during an in-flight tick still causes an immediate next look', async () => {
+    const f = await fx('loop-wake-during-tick')
+    await f.store.spawn(Q, 'first', '{}')
+    const gate = { open: null as (() => void) | null }
+    const launcher = new FakeLauncher(async () => {
+      // Hold the tick open mid-launch; wake() arrives NOW, not during a park.
+      await new Promise<void>((r) => {
+        gate.open = r
+      })
+      return LaunchOutcome.accepted()
+    })
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, OPTS)
+    const done = loop.run()
+    await until(() => gate.open !== null, 'tick held open')
+    await f.store.spawn(Q, 'second', '{}')
+    loop.wake() // no sleep to interrupt — must still mean "look again"
+    gate.open?.()
+    await until(() => launcher.invocations.length === 2, 'second claimed without a park')
+    gate.open?.() // release the second held launch so stop() can finish
+    await loop.stop()
+    await done
+    f.close()
+  })
+
+  it('stop() during an in-flight tick waits for the tick to finish', async () => {
+    const f = await fx('loop-stop-during-tick')
+    await f.store.spawn(Q, 'job', '{}')
+    const gate = { open: null as (() => void) | null }
+    const launcher = new FakeLauncher(async () => {
+      await new Promise<void>((r) => {
+        gate.open = r
+      })
+      return LaunchOutcome.accepted()
+    })
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, OPTS)
+    const done = loop.run()
+    await until(() => gate.open !== null, 'tick held open')
+    let stopped = false
+    const stopping = loop.stop().then(() => {
+      stopped = true
+    })
+    await new Promise((r) => setTimeout(r, 25))
+    expect(stopped).toBe(false) // the in-flight tick is honored
+    gate.open?.()
+    await stopping
+    await done
+    expect(loop.stats.launched).toBe(1)
+    f.close()
+  })
+})
