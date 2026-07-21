@@ -36,7 +36,23 @@ if [[ ! -f "$JAR" ]] || ! echo "$TLA_SHA256  $JAR" | sha256sum -c --quiet - 2>/d
 fi
 
 cd "$(dirname "$0")/../specs"
-TLC=(java -XX:+UseParallelGC -Xmx"${TLA_HEAP:-8g}" -cp "$JAR" tlc2.TLC -workers auto -deadlock)
+# Heap sizes to the environment instead of an artificial fixed number: a
+# tight heap makes TLC spill its fingerprint set to disk, which costs more
+# wall clock than any core count can win back. 70% of the enclosing cgroup
+# limit (or of available RAM when unconfined), floor 2g.
+if [[ -z "${TLA_HEAP:-}" ]]; then
+  cg="/sys/fs/cgroup$(awk -F: '$1=="0" {print $3}' /proc/self/cgroup)/memory.max"
+  if [[ -r "$cg" && "$(cat "$cg")" != "max" ]]; then
+    limit_bytes="$(cat "$cg")"
+  else
+    limit_bytes="$(($(awk '/MemAvailable/ {print $2}' /proc/meminfo) * 1024))"
+  fi
+  heap_mb=$((limit_bytes * 7 / 10 / 1024 / 1024))
+  [[ "$heap_mb" -lt 2048 ]] && heap_mb=2048
+  TLA_HEAP="${heap_mb}m"
+fi
+echo "tla.sh: TLC heap $TLA_HEAP"
+TLC=(java -XX:+UseParallelGC -Xmx"$TLA_HEAP" -cp "$JAR" tlc2.TLC -workers auto -deadlock)
 
 echo "== phase 1: vacuity probes (each MUST find its witness trace)"
 probe_fail=0
