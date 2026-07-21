@@ -269,3 +269,69 @@ describe('tick()', () => {
     f.close()
   })
 })
+
+/**
+ * Review regressions (red/green rule): each test failed against the tick()
+ * as first committed; the finding it pins is named in the title.
+ */
+describe('tick() review regressions', () => {
+  it('a lying ended:completed is reconciled by the lease fence, never trusted', async () => {
+    const f = await fx('tick-lying-ending')
+    await f.store.spawn(Q, 'job', '{}')
+    // A resident pool that maps worker exit-code 0 to 'completed' — but the
+    // worker died BEFORE its complete write landed. The report is wrong.
+    const lying = new FakeLauncher(async (inv) => {
+      const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
+      if (!run) throw new Error('activation lost')
+      return {
+        kind: 'ended',
+        ending: { runId: inv.runId, claimToken: inv.claimToken, kind: 'completed' },
+      }
+    })
+    await tick({ store: f.store, launcher: lying, ids: f.ids }, OPTS)
+    // Reconciliation is the fence: expire advisorily, let the sweep decide.
+    // At UNCHANGED engine time the next tick must already recover the run —
+    // never wait out the full lease on the report's say-so.
+    const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
+    expect(second.swept).toMatchObject([{ kind: 'claim-timeout' }])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('degenerate budgets are refused up front, not spun on', async () => {
+    const f = await fx('tick-degenerate')
+    const launcher = new FakeLauncher()
+    // sweepLimit 0 used to return backlog:true on an IDLE queue — a
+    // contract-compliant caller then chains successor ticks forever.
+    await expect(
+      tick({ store: f.store, launcher, ids: f.ids }, { ...OPTS, sweepLimit: 0 }),
+    ).rejects.toThrow(RangeError)
+    await expect(
+      tick({ store: f.store, launcher, ids: f.ids }, { ...OPTS, claimLimit: 0 }),
+    ).rejects.toThrow(RangeError)
+    expect(launcher.invocations).toEqual([])
+    f.close()
+  })
+
+  it("a failing advisory expiry does not destroy the tick's result", async () => {
+    const f = await fx('tick-advisory-fail')
+    await f.store.spawn(Q, 'a', '{}')
+    await f.store.spawn(Q, 'b', '{}')
+    // The advisory write hits a transient store error. Advisory means
+    // best-effort: the lease timer still recovers the run — losing the
+    // tick's counts, nextWake, and backlog over it is an escalation.
+    const flaky = new Proxy(f.store, {
+      get(target, prop, receiver) {
+        if (prop === 'expireLeaseNow') {
+          return () => Promise.reject(new Error('transient store error'))
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    const launcher = new FakeLauncher(() => ({ kind: 'launch-failed', error: new Error('no') }))
+    const result = await tick({ store: flaky, launcher, ids: f.ids }, OPTS)
+    expect(result.launchFailed).toBe(2)
+    expect(result.nextWakeAtEpochMs).not.toBeNull()
+    f.close()
+  })
+})
