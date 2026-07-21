@@ -487,7 +487,13 @@ are load-bearing):
 4. **Claim is a fenced batch, not a lone statement.** The claim must also update
    tasks, delete expired waits, and return run⋈task data; follow-on statements
    key strictly on the fresh `claimed_by = :claim_token` (unique per tick), never
-   on a re-computed candidate set.
+   on a re-computed candidate set. Two additional predicates are contract:
+   a same-token RETRY is an idempotent receipt — it claims nothing new and
+   returns the original selection (guarded by "no running rows already carry
+   this token"), so a lost response cannot multiply the claim bound; and the
+   candidate set excludes tasks whose cancellation deadline is already due —
+   a sweep budget too small to cancel everything this pass must not leak
+   due-to-cancel tasks into launches.
 5. **Checkpoint writes are lease-fenced in both placements.** Inline: the upsert
    joins the run-row guard (`claimed_by=:token AND state='running'`) — same DB,
    free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease

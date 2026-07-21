@@ -107,8 +107,24 @@ export async function tick(
         // A throwing transport is indistinguishable from a lost launch.
         outcome = { kind: 'launch-failed', error }
       }
+      // A JS transport can return garbage the types promised away — treat
+      // anything unrecognizable as a failed launch, never a tick crash.
+      if (
+        outcome === null ||
+        typeof outcome !== 'object' ||
+        !['accepted', 'ended', 'launch-failed'].includes(outcome.kind)
+      ) {
+        outcome = { kind: 'launch-failed', error: new Error('malformed launch outcome') }
+      }
       if (outcome.kind === 'accepted') {
         launched++
+        return
+      }
+      // An ending that names a DIFFERENT run says nothing about THIS run's
+      // lease — ignore it (still counted) rather than expire on a signal
+      // that does not identify this launch.
+      if (outcome.kind === 'ended' && outcome.ending.runId !== run.runId) {
+        ended++
         return
       }
       if (outcome.kind === 'launch-failed') launchFailed++
