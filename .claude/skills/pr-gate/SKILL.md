@@ -21,9 +21,9 @@ regression that created it.
 ## Part 1 — The mechanical gate (all must pass, in order)
 
 ```
-pnpm verify        # lint + determinism lint + spec ledger + format + types + 129+ tests
-pnpm verify:tla    # full TLC proof (confined; ~30s)
-pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
+pnpm verify        # lints + spec ledger + format + types + 200+ tests (~2 min)
+pnpm verify:tla    # full TLC proof: probes + safety + 5 liveness groups (~12 min)
+pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
 ```
 
 1. **`pnpm verify` green** — includes the determinism lint (no ambient

@@ -110,24 +110,35 @@ if [[ "${TLA_SCOPE:-full}" == "ci" ]]; then
   echo "== phase 2 (ci scope): safety + liveness at the CI-sized constants"
   tlc "$TLA_HEAP_MB" "$CORES" -metadir "$STATES/ci" -config SchedulerCI.cfg Scheduler.tla
 else
-  echo "== phase 2: exhaustive safety + 3 liveness groups, all concurrent"
-  safety_heap=$((TLA_HEAP_MB / 2))
-  group_heap=$((TLA_HEAP_MB / 6))
-  safety_workers=$((CORES * 2 / 3)); [[ "$safety_workers" -lt 2 ]] && safety_workers=2
-  group_workers=$((CORES / 6)); [[ "$group_workers" -lt 2 ]] && group_workers=2
+  echo "== phase 2: exhaustive safety + 5 liveness groups, all concurrent"
+  # Budget shares are shaped by measurement, not symmetry. The temporal
+  # check's final pass is sequential per process and HEAP-bound (a starved
+  # slice ran it 3-4x slower), so each of the three heavy fairness
+  # properties (groups 3-5) gets its OWN process, a fat heap slice, and
+  # therefore its own core for the final pass — the wall clock is the
+  # slowest single property, not their sum. Groups 1-2 (cheap trios) and
+  # safety finish in about a minute regardless.
+  safety_heap=$((TLA_HEAP_MB / 4))
+  heavy_heap=$((TLA_HEAP_MB / 5))
+  small_heap=$((TLA_HEAP_MB / 16))
+  safety_workers=$((CORES / 3)); [[ "$safety_workers" -lt 2 ]] && safety_workers=2
+  heavy_workers=$((CORES / 6)); [[ "$heavy_workers" -lt 2 ]] && heavy_workers=2
+  small_workers=$((CORES / 12)); [[ "$small_workers" -lt 2 ]] && small_workers=2
 
   tlc "$safety_heap" "$safety_workers" -metadir "$STATES/full" \
     -config Scheduler.cfg Scheduler.tla >"$STATES/safety.log" 2>&1 &
   safety_pid=$!
   group_pids=()
-  for g in 1 2 3; do
-    tlc "$group_heap" "$group_workers" -lncheck final -metadir "$STATES/liveness$g" \
+  for g in 1 2 3 4 5; do
+    if [[ "$g" -ge 3 ]]; then heap="$heavy_heap"; workers="$heavy_workers"
+    else heap="$small_heap"; workers="$small_workers"; fi
+    tlc "$heap" "$workers" -lncheck final -metadir "$STATES/liveness$g" \
       -config "SchedulerLiveness$g.cfg" Scheduler.tla >"$STATES/liveness$g.log" 2>&1 &
     group_pids+=($!)
   done
 
   fail=0
-  for g in 1 2 3; do
+  for g in 1 2 3 4 5; do
     if wait "${group_pids[$((g - 1))]}"; then
       echo "liveness group $g: $(grep -m1 'Model checking completed' "$STATES/liveness$g.log" || echo done)"
     else
