@@ -3,6 +3,7 @@
 labeled batch in the store must be accounted for INSIDE the spec's ledger
 block, as a quoted 'label'. Multiline-tolerant harvest; dynamic labels are
 declared here and asserted present in the source so they cannot rot."""
+import json
 import re
 import sys
 from pathlib import Path
@@ -21,6 +22,10 @@ for label in DYNAMIC:
     if f"'{label}'" not in src:
         sys.exit(f"spec-ledger: declared dynamic label '{label}' not found in source")
 labels |= DYNAMIC
+
+if "--labels" in sys.argv:
+    print(json.dumps(sorted(labels)))
+    sys.exit(0)
 
 # The check is scoped to the ledger block and requires the quoted form —
 # a bare word elsewhere in the spec (prose, identifiers) counts for nothing.
