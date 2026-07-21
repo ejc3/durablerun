@@ -1,4 +1,4 @@
-import type { Buggify, LaunchInvocation, LaunchOutcome, Launcher } from '@durablerun/core'
+import { type Buggify, type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
 import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
@@ -24,9 +24,7 @@ class FakeLauncher implements Launcher {
   constructor(
     private readonly script: (
       inv: LaunchInvocation,
-    ) => Promise<LaunchOutcome> | LaunchOutcome = () => ({
-      kind: 'accepted',
-    }),
+    ) => Promise<LaunchOutcome> | LaunchOutcome = () => LaunchOutcome.accepted(),
   ) {}
   async launch(inv: LaunchInvocation): Promise<LaunchOutcome> {
     this.invocations.push(inv)
@@ -99,10 +97,7 @@ describe('tick()', () => {
   it('launch-failed expires the lease advisorily: the NEXT tick reopens it without waiting out the lease', async () => {
     const f = await fx('tick-launch-failed')
     await f.store.spawn(Q, 'job', '{}')
-    const failing = new FakeLauncher(() => ({
-      kind: 'launch-failed',
-      error: new Error('conn refused'),
-    }))
+    const failing = new FakeLauncher(() => LaunchOutcome.launchFailed(new Error('conn refused')))
     const first = await tick({ store: f.store, launcher: failing, ids: f.ids }, OPTS)
     expect(first).toMatchObject({ claimed: 1, launched: 0, launchFailed: 1 })
     // The advisory expiry SURFACES in next-wake: the caller is told to look
@@ -134,7 +129,7 @@ describe('tick()', () => {
     const launcher = new FakeLauncher(() => {
       calls++
       if (calls === 2) throw new Error('transport exploded')
-      return { kind: 'accepted' }
+      return LaunchOutcome.accepted()
     })
     const result = await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
     expect(result.claimed).toBe(2)
@@ -152,10 +147,11 @@ describe('tick()', () => {
       const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
       if (!run) throw new Error('activation lost')
       await f.store.complete(Q, inv.runId, inv.claimToken, '{"ok":1}')
-      return {
-        kind: 'ended',
-        ending: { runId: inv.runId, claimToken: inv.claimToken, kind: 'completed' },
-      }
+      return LaunchOutcome.ended({
+        runId: inv.runId,
+        claimToken: inv.claimToken,
+        kind: 'completed',
+      })
     })
     const first = await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
     expect(first).toMatchObject({ claimed: 1, ended: 1, launched: 0 })
@@ -173,10 +169,7 @@ describe('tick()', () => {
       const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
       if (!run) throw new Error('activation lost')
       // Worker dies mid-run; resident launcher observed the process death.
-      return {
-        kind: 'ended',
-        ending: { runId: inv.runId, claimToken: inv.claimToken, kind: 'crashed' },
-      }
+      return LaunchOutcome.ended({ runId: inv.runId, claimToken: inv.claimToken, kind: 'crashed' })
     })
     const first = await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
     expect(first).toMatchObject({ claimed: 1, ended: 1 })
@@ -286,10 +279,11 @@ describe('tick() review regressions', () => {
     const lying = new FakeLauncher(async (inv) => {
       const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
       if (!run) throw new Error('activation lost')
-      return {
-        kind: 'ended',
-        ending: { runId: inv.runId, claimToken: inv.claimToken, kind: 'completed' },
-      }
+      return LaunchOutcome.ended({
+        runId: inv.runId,
+        claimToken: inv.claimToken,
+        kind: 'completed',
+      })
     })
     await tick({ store: f.store, launcher: lying, ids: f.ids }, OPTS)
     // Reconciliation is the fence: expire advisorily, let the sweep decide.
@@ -331,7 +325,7 @@ describe('tick() review regressions', () => {
         return Reflect.get(target, prop, receiver)
       },
     })
-    const launcher = new FakeLauncher(() => ({ kind: 'launch-failed', error: new Error('no') }))
+    const launcher = new FakeLauncher(() => LaunchOutcome.launchFailed(new Error('no')))
     const result = await tick({ store: flaky, launcher, ids: f.ids }, OPTS)
     expect(result.launchFailed).toBe(2)
     expect(result.nextWakeAtEpochMs).not.toBeNull()
@@ -398,10 +392,7 @@ describe('tick() codex review regressions', () => {
     const confused = new FakeLauncher(async (inv) => {
       const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
       if (!run) throw new Error('activation lost')
-      return {
-        kind: 'ended',
-        ending: { runId: 'some-other-run', kind: 'crashed' },
-      }
+      return LaunchOutcome.ended({ runId: 'some-other-run', kind: 'crashed' })
     })
     await tick({ store: f.store, launcher: confused, ids: f.ids }, OPTS)
     // A signal about a different run says nothing about THIS run's lease:
@@ -421,7 +412,7 @@ describe('tick() codex review regressions', () => {
     const launcher = new FakeLauncher(() => {
       calls++
       if (calls === 1) return undefined as never
-      return { kind: 'accepted' }
+      return LaunchOutcome.accepted()
     })
     const result = await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
     expect(result.claimed).toBe(2)
@@ -514,10 +505,9 @@ describe('tick() coverage: sims, buggify, budget mixes', () => {
     const f = await fx('tick-crash-preactivate')
     const spawned = await f.store.spawn(Q, 'job', '{}')
     // The worker process died before it ever reached activation.
-    const launcher = new FakeLauncher((inv) => ({
-      kind: 'ended',
-      ending: { runId: inv.runId, claimToken: inv.claimToken, kind: 'crashed' },
-    }))
+    const launcher = new FakeLauncher((inv) =>
+      LaunchOutcome.ended({ runId: inv.runId, claimToken: inv.claimToken, kind: 'crashed' }),
+    )
     await tick({ store: f.store, launcher, ids: f.ids }, OPTS)
     const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
     // Never activated -> reopen the same run, burn no retry of either kind.
