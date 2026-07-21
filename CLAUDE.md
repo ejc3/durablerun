@@ -13,6 +13,9 @@ lightweight tick drivers that launch workers on demand.
 
 ## Commands
 
+- `/pr-gate` — the consolidated review gate (.claude/skills/pr-gate). ALL
+  review checks, simplify gotchas, dialect traps, and process rules live
+  there, each linked to its source lesson. Walk it before every PR push.
 - `pnpm verify` — lint + format-check + typecheck + test. Run before every
   commit; this is the CI gate until a remote exists.
 - `pnpm test` — vitest across the workspace.
@@ -50,6 +53,24 @@ when it lands. Enforcement is structural, not aspirational:
   itself against the same scenarios through its own runner. Never let the
   contract live only in TypeScript types.
 
+## Standing rule: confine heavy local runs
+
+Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
+through `scripts/confine.sh` (cgroup scope: MemoryMax 16G default, swap off,
+CPUQuota 3200%). A runaway gets OOM-killed inside its scope instead of
+taking the box down; memory was the killer the one time it happened.
+`verify:fuzz`, `verify:fuzz:deep`, and `verify:tla` are pre-wired.
+
+## Standing rule: spec first for new protocols
+
+Every new protocol area (a set of transitions with cross-actor invariants —
+events, cancellation, sagas, the data plane) is modeled in specs/*.tla and
+TLC-verified BEFORE its SQL is written. The implementation then maps its
+labeled batches onto the verified actions (the ledger enforces the mapping).
+A TLC counterexample at spec time is the cheapest bug we will ever find; the
+sweep was implemented before it was modeled and the review cycle paid for
+that ordering. Small protocol-free features (reads, plumbing) are exempt.
+
 ## Standing rule: red test before fix
 
 Every bug fix lands as TWO commits: first a red-test commit — a regression
@@ -72,3 +93,13 @@ and instituted it (a new §3.4-style rule, a sim checker, a conformance case,
 a lint). Point fixes without a prevention are not accepted. Precedents:
 the one-shot activation flag → "no one-shot flags for re-entrant lifecycles,
 latch on generations"; batch fence self-defeat → "fence on the post-state".
+
+Tests live at the CLASS altitude, not just the instance: every fixed bug
+gets, besides its red test, an extension of the layer that should have
+caught the class — an invariant-library checker (run by every sim, scenario,
+and fuzz walk), a fuzz-surface op, or a sim actor set. Two structural rules
+fall out: (1) every TLA action GUARD has an executable twin (an invariant or
+a conformance case) — max_attempts was guarded in the model and enforced
+nowhere, and the fuzz ran green while violating it; (2) safety checking
+needs a progress floor — a fuzz walk that accomplishes nothing must fail,
+or total fence-loss regressions pass invariant-clean.

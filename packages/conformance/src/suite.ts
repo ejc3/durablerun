@@ -1,9 +1,22 @@
-import type { ClaimedRun } from '@durablerun/core'
+import { type ClaimedRun, LeaseLostError } from '@durablerun/core'
 import { Rng, seededBuggify, SimWorld } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { engineInvariantViolations } from './invariants.js'
 
 const Q = 'q'
+
+async function snapshot(f: StoreFixture, taskId: string): Promise<unknown> {
+  const [tasks, runs] = await f.raw.batch(
+    'snap',
+    [
+      { sql: `SELECT * FROM tasks WHERE task_id = ?`, args: [taskId] },
+      { sql: `SELECT * FROM runs WHERE task_id = ? ORDER BY attempt`, args: [taskId] },
+    ],
+    'read',
+  )
+  return { tasks: tasks?.rows, runs: runs?.rows }
+}
 
 /**
  * The dialect-agnostic scheduler conformance suite. Every store dialect —
@@ -395,6 +408,422 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.expireLeaseNow(Q, run.runId, run.claimToken)).toBe(true)
         const swept = await f.store.sweep(Q, 10)
         expect(swept.map((s) => s.kind)).toEqual(['claim-timeout'])
+      })
+    })
+
+    describe('transitions: complete / fail / reschedule', () => {
+      async function activatedRun(token = 'w1') {
+        await f.store.spawn(Q, 'job', '{"p":1}')
+        const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        if (!activated) throw new Error('expected activation')
+        return activated
+      }
+
+      it('complete finishes run and task and exposes the result', async () => {
+        const run = await activatedRun()
+        await f.store.complete(Q, run.runId, run.claimToken, '{"out":42}')
+        const result = await f.store.getTaskResult(Q, run.taskId)
+        expect(result).toMatchObject({ state: 'completed', completedPayloadJson: '{"out":42}' })
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('a zombie complete after the sweep throws LeaseLostError and changes nothing', async () => {
+        const run = await activatedRun()
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        const swept = await f.store.sweep(Q, 10)
+        expect(swept[0]?.kind).toBe('claim-timeout')
+        const before = await snapshot(f, run.taskId)
+        await expect(f.store.complete(Q, run.runId, run.claimToken, '{}')).rejects.toThrow(
+          LeaseLostError,
+        )
+        expect(await snapshot(f, run.taskId)).toEqual(before)
+      })
+
+      it('fail with retry inserts the successor and is the ONLY mover of attempts', async () => {
+        const run = await activatedRun()
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ])
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 30 })
+        const [rows] = await f.raw.batch('t', [
+          {
+            sql: `SELECT state, attempt, available_at_ms, wake_event FROM runs
+                  WHERE task_id = ? ORDER BY attempt`,
+            args: [run.taskId],
+          },
+        ])
+        expect(rows?.rows[0]).toMatchObject({ state: 'failed', attempt: 1 })
+        expect(rows?.rows[1]).toMatchObject({
+          state: 'sleeping',
+          attempt: 2,
+          available_at_ms: 1_030_000,
+          wake_event: 'e1',
+        })
+        const [task] = await f.raw.batch('t', [
+          { sql: `SELECT attempts, state FROM tasks WHERE task_id = ?`, args: [run.taskId] },
+        ])
+        expect(task?.rows[0]).toMatchObject({ attempts: 1, state: 'sleeping' })
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('fail without retry is terminal and exposes the failure', async () => {
+        const run = await activatedRun()
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Fatal"}', null)
+        const result = await f.store.getTaskResult(Q, run.taskId)
+        expect(result).toMatchObject({ state: 'failed', failureReasonJson: '{"name":"Fatal"}' })
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('reschedule sleeps attempt-neutral, mirrors the task, and re-claims on a fresh gen', async () => {
+        const run = await activatedRun()
+        await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 50 })
+        const [row] = await f.raw.batch('t', [
+          {
+            sql: `SELECT r.state AS run_state, r.attempt, r.available_at_ms, t.state AS task_state
+                  FROM runs r JOIN tasks t ON t.task_id = r.task_id WHERE r.run_id = ?`,
+            args: [run.runId],
+          },
+        ])
+        expect(row?.rows[0]).toMatchObject({
+          run_state: 'sleeping',
+          attempt: 1,
+          available_at_ms: 1_050_000,
+          task_state: 'sleeping',
+        })
+        await f.admin.setFakeNowEpochMs(1_051_000)
+        const [again] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+        expect(again?.runId).toBe(run.runId)
+        expect(again?.claimGen).toBe(2)
+        expect(again?.attempt).toBe(1)
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('reschedule with atEpochMs writes the user absolute verbatim (sleepUntil)', async () => {
+        const run = await activatedRun()
+        await f.store.reschedule(Q, run.runId, run.claimToken, { atEpochMs: 1_777_000 })
+        const [row] = await f.raw.batch('t', [
+          { sql: `SELECT available_at_ms FROM runs WHERE run_id = ?`, args: [run.runId] },
+        ])
+        expect(Number(row?.rows[0]?.available_at_ms)).toBe(1_777_000)
+      })
+
+      it('a chain ({inSeconds: 0}) is immediately claimable as pending', async () => {
+        const run = await activatedRun()
+        await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 0 })
+        const [again] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+        expect(again?.runId).toBe(run.runId)
+      })
+
+      it('stale-token transitions throw LeaseLostError', async () => {
+        const run = await activatedRun()
+        await expect(f.store.reschedule(Q, run.runId, 'stale', { inSeconds: 1 })).rejects.toThrow(
+          LeaseLostError,
+        )
+        await expect(f.store.complete(Q, run.runId, 'stale', '{}')).rejects.toThrow(LeaseLostError)
+        await expect(f.store.fail(Q, run.runId, 'stale', '{}', null)).rejects.toThrow(
+          LeaseLostError,
+        )
+      })
+    })
+
+    describe('checkpoints', () => {
+      it('roundtrips, extends the lease, and sorts by name', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.admin.setFakeNowEpochMs(1_010_000)
+        await f.store.setCheckpoint(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          'b-step',
+          '{"b":1}',
+          90,
+        )
+        await f.store.setCheckpoint(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          'a-step',
+          '{"a":1}',
+          90,
+        )
+        const checkpoints = await f.store.getCheckpoints(Q, run.taskId, run.attempt)
+        expect(checkpoints.map((c) => c.checkpointName)).toEqual(['a-step', 'b-step'])
+        expect(checkpoints[0]).toMatchObject({ ownerRunId: run.runId, ownerAttempt: 1 })
+        const [lease] = await f.raw.batch('t', [
+          { sql: `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`, args: [run.runId] },
+        ])
+        expect(Number(lease?.rows[0]?.claim_expires_at_ms)).toBe(1_010_000 + 90_000)
+      })
+
+      it('an older attempt never overwrites a newer attempt (LWW tiebreak)', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{"v":1}', 60)
+        // Simulate a newer attempt having already committed this name.
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE checkpoints SET owner_attempt = 5, state = '{"v":5}'
+                  WHERE task_id = ? AND checkpoint_name = 's'`,
+            args: [run.taskId],
+          },
+        ])
+        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{"v":1}', 60)
+        const checkpoints = await f.store.getCheckpoints(Q, run.taskId, 5)
+        expect(checkpoints[0]?.stateJson).toBe('{"v":5}')
+      })
+
+      it('a stale token writes nothing and throws LeaseLostError', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await expect(
+          f.store.setCheckpoint(Q, run.taskId, run.runId, 'stale', 's', '{}', 60),
+        ).rejects.toThrow(LeaseLostError)
+        expect(await f.store.getCheckpoints(Q, run.taskId, 9)).toEqual([])
+      })
+
+      it('visibility filters by owner attempt', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE checkpoints SET owner_attempt = 3 WHERE task_id = ?`,
+            args: [run.taskId],
+          },
+        ])
+        expect(await f.store.getCheckpoints(Q, run.taskId, 2)).toEqual([])
+        expect(await f.store.getCheckpoints(Q, run.taskId, 3)).toHaveLength(1)
+      })
+    })
+
+    describe('nextWakeAtEpochMs', () => {
+      it('is null on an empty queue and the true min across all wake sources', async () => {
+        expect(await f.store.nextWakeAtEpochMs(Q)).toBeNull()
+        // A pending run due at 1_500_000...
+        await f.store.spawn(Q, 'a', '{}', { startDelaySeconds: 500 })
+        expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_500_000)
+        // ...a running lease expiring at 1_060_000 beats it...
+        await f.store.spawn(Q, 'c', '{}', { cancellation: { maxDurationSeconds: 20 } })
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        expect(run?.taskName).toBe('c')
+        expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_060_000)
+        // ...and activation arms c's max_duration deadline at 1_020_000,
+        // which beats them all (the cancel-deadline wake source).
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_020_000)
+        // ...and a SLEEPING run is a wake source too (codex: this leg of the
+        // UNION had no test constructing it): c sleeps until 1_010_000,
+        // clearing its lease/deadline sources, and the sleep wins.
+        await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 10 })
+        expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_010_000)
+      })
+    })
+
+    describe('deferred coverage: races and accounting depth', () => {
+      it('sweep vs live heartbeat: exactly one of them wins, never both', async () => {
+        for (let seed = 0; seed < 10; seed++) {
+          const fx = await makeFixture(`hb-race-${seed}`)
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          await fx.store.spawn(Q, 'job', '{}')
+          const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+          if (!run) throw new Error('expected claim')
+          await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          await fx.admin.setFakeNowEpochMs(1_060_000) // exactly at expiry
+          const world = new SimWorld(fx.raw, seed)
+          let held: boolean | null = null
+          world.actor('worker', async (simDb) => {
+            const lease = await fx.storeOver(simDb).heartbeat(Q, run.runId, run.claimToken, 60)
+            held = lease.held
+          })
+          let swept: number | null = null
+          world.actor('sweeper', async (simDb) => {
+            swept = (await fx.storeOver(simDb).sweep(Q, 10)).length
+          })
+          await world.run()
+          // XOR: a revived lease means nothing was swept; a swept run means
+          // the zombie heartbeat reported lease-lost.
+          expect([held, swept], `seed ${seed}`).not.toEqual([true, 1])
+          expect([held, swept], `seed ${seed}`).not.toEqual([false, 0])
+          expect(await engineInvariantViolations(fx.raw)).toEqual([])
+          fx.close()
+        }
+      })
+
+      it('a duplicated activation delivery leaves an ownerless activated run that the sweep reclaims', async () => {
+        const fx = await makeFixture('dup-activate')
+        await fx.admin.setFakeNowEpochMs(1_000_000)
+        await fx.store.spawn(Q, 'job', '{}')
+        const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        const world = new SimWorld(fx.raw, 1)
+        world.injectDuplicate({ label: 'activate' })
+        let outcome: unknown = 'unset'
+        world.actor('worker', async (simDb) => {
+          outcome = await fx.storeOver(simDb).activate(Q, run.runId, run.claimToken, run.claimGen)
+        })
+        await world.run()
+        // The retry-after-lost-response duplicate consumed the CAS: the
+        // caller sees null and must exit — yet the run IS activated.
+        expect(outcome).toBeNull()
+        const [row] = await fx.raw.batch('t', [
+          { sql: `SELECT activated_gen FROM runs WHERE run_id = ?`, args: [run.runId] },
+        ])
+        expect(Number(row?.rows[0]?.activated_gen)).toBe(run.claimGen)
+        // Recovery is the sweep's claim-timeout path — an infra retry, never
+        // a lost-launch reopen and never a user attempt.
+        await fx.admin.setFakeNowEpochMs(1_100_000)
+        const swept = await fx.store.sweep(Q, 10)
+        expect(swept[0]?.kind).toBe('claim-timeout')
+        expect(await engineInvariantViolations(fx.raw)).toEqual([])
+        fx.close()
+      })
+
+      it('a sweeper crashing mid-sweep leaves a resweepable, invariant-clean state', async () => {
+        for (let seed = 0; seed < 10; seed++) {
+          const fx = await makeFixture(`crash-sweep-${seed}`)
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          for (let i = 0; i < 2; i++) {
+            await fx.store.spawn(Q, `job-${i}`, '{}')
+          }
+          const claimed = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 2 })
+          for (const run of claimed) {
+            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          }
+          await fx.admin.setFakeNowEpochMs(1_100_000)
+          const world = new SimWorld(fx.raw, seed, { strictSpecs: false })
+          world.injectCrash({ actor: 'sweeper-a', label: 'sweep:claim-timeout', when: 'after' })
+          for (const name of ['sweeper-a', 'sweeper-b']) {
+            world.actor(name, async (simDb) => {
+              await fx
+                .storeOver(simDb)
+                .sweep(Q, 10)
+                .catch(() => {})
+            })
+          }
+          await world.run()
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          // A fresh sweep finishes whatever the crash stranded.
+          await fx.store.sweep(Q, 10)
+          const [successors] = await fx.raw.batch('t', [
+            {
+              sql: `SELECT COUNT(*) AS n FROM runs WHERE attempt = 2 AND state = 'pending'`,
+              args: [],
+            },
+          ])
+          expect(Number(successors?.rows[0]?.n), `seed ${seed}`).toBe(2)
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          fx.close()
+        }
+      })
+
+      it('accounting depth: two infra cycles then a user failure', async () => {
+        const fx = await makeFixture('accounting')
+        await fx.admin.setFakeNowEpochMs(1_000_000)
+        const spawned = await fx.store.spawn(Q, 'job', '{}')
+        let now = 1_000_000
+        for (let cycle = 0; cycle < 2; cycle++) {
+          const [run] = await fx.store.claim(Q, `w${cycle}`, { leaseSeconds: 60, limit: 1 })
+          if (!run) throw new Error('expected claim')
+          await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          now += 100_000
+          await fx.admin.setFakeNowEpochMs(now)
+          const swept = await fx.store.sweep(Q, 10)
+          expect(swept[0]?.kind).toBe('claim-timeout')
+          now += 10_000
+          await fx.admin.setFakeNowEpochMs(now)
+        }
+        const [run] = await fx.store.claim(Q, 'w-final', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        expect(run.attempt).toBe(3)
+        expect(run.infraRetries).toBe(2)
+        await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await fx.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 1 })
+        const [task] = await fx.raw.batch('t', [
+          {
+            sql: `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
+            args: [spawned.taskId],
+          },
+        ])
+        // attempts counts USER failures only; infra successors never touched it.
+        expect(task?.rows[0]).toMatchObject({ attempts: 1, infra_retries: 2 })
+        fx.close()
+      })
+
+      it('expireLeaseNow is advisory: a live heartbeat revives the lease', async () => {
+        const fx = await makeFixture('revive')
+        await fx.admin.setFakeNowEpochMs(1_000_000)
+        await fx.store.spawn(Q, 'job', '{}')
+        const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 600, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        expect(await fx.store.expireLeaseNow(Q, run.runId, run.claimToken)).toBe(true)
+        // The still-alive worker heartbeats before any sweep: revival is the
+        // intended §3.9 semantics (the lease is the sole authority).
+        expect((await fx.store.heartbeat(Q, run.runId, run.claimToken, 600)).held).toBe(true)
+        expect(await fx.store.sweep(Q, 10)).toEqual([])
+        fx.close()
+      })
+
+      it('relaunch backoff arithmetic is pinned: 5s then 10s', async () => {
+        const fx = await makeFixture('backoff')
+        await fx.admin.setFakeNowEpochMs(1_000_000)
+        await fx.store.spawn(Q, 'job', '{}')
+        await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        await fx.admin.setFakeNowEpochMs(1_100_000)
+        expect((await fx.store.sweep(Q, 10))[0]?.kind).toBe('lost-launch')
+        const [first] = await fx.raw.batch('t', [
+          { sql: `SELECT available_at_ms FROM runs`, args: [] },
+        ])
+        expect(Number(first?.rows[0]?.available_at_ms)).toBe(1_100_000 + 5_000)
+        await fx.admin.setFakeNowEpochMs(1_200_000)
+        await fx.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+        await fx.admin.setFakeNowEpochMs(1_300_000)
+        expect((await fx.store.sweep(Q, 10))[0]?.kind).toBe('lost-launch')
+        const [second] = await fx.raw.batch('t', [
+          { sql: `SELECT available_at_ms FROM runs`, args: [] },
+        ])
+        expect(Number(second?.rows[0]?.available_at_ms)).toBe(1_300_000 + 10_000)
+        fx.close()
+      })
+
+      it('a stale nonzero activated_gen still classifies a lost launch correctly', async () => {
+        const fx = await makeFixture('stale-gen')
+        await fx.admin.setFakeNowEpochMs(1_000_000)
+        const spawned = await fx.store.spawn(Q, 'job', '{}')
+        const [gen1] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!gen1) throw new Error('expected claim')
+        await fx.store.activate(Q, gen1.runId, gen1.claimToken, gen1.claimGen)
+        await fx.store.reschedule(Q, gen1.runId, gen1.claimToken, { inSeconds: 0 })
+        // Second generation claimed but its launch is lost.
+        const [gen2] = await fx.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+        expect(gen2?.claimGen).toBe(2)
+        await fx.admin.setFakeNowEpochMs(1_100_000)
+        const swept = await fx.store.sweep(Q, 10)
+        // activated_gen = 1 < claim_gen = 2: a LOST LAUNCH — reopen, no
+        // successor, no infra retry (an '= 0' classifier would misfire here).
+        expect(swept[0]?.kind).toBe('lost-launch')
+        const [task] = await fx.raw.batch('t', [
+          { sql: `SELECT infra_retries FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+        ])
+        expect(Number(task?.rows[0]?.infra_retries)).toBe(0)
+        fx.close()
       })
     })
 

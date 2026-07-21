@@ -1,3 +1,4 @@
+import { LeaseLostError, type SqlExecutor } from '@durablerun/core'
 import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
@@ -5,12 +6,326 @@ import { makeLibsqlFixture } from './fixture-libsql.js'
 
 const Q = 'q'
 
+/** All epoch-ms columns must hold INTEGER (or NULL) storage class. */
+async function nonIntegerTemporalRows(raw: SqlExecutor): Promise<string[]> {
+  const [result] = await raw.batch(
+    't',
+    [
+      {
+        sql: `SELECT 'runs/' || run_id AS v FROM runs
+              WHERE typeof(available_at_ms) NOT IN ('integer','null')
+                 OR typeof(claim_expires_at_ms) NOT IN ('integer','null')
+                 OR typeof(heartbeat_at_ms) NOT IN ('integer','null')
+                 OR typeof(created_at_ms) NOT IN ('integer','null')
+              UNION ALL
+              SELECT 'tasks/' || task_id FROM tasks
+              WHERE typeof(enqueue_at_ms) NOT IN ('integer','null')
+                 OR typeof(cancel_at_ms) NOT IN ('integer','null')`,
+        args: [],
+      },
+    ],
+    'read',
+  )
+  return (result?.rows ?? []).map((r) => String(r.v))
+}
+
 /**
  * Red/green regression suite for the PR1.5 review findings (repo rule: every
  * bug lands as a red-test commit first, then the fix commit). Each test
  * FAILED against the pre-fix sweep implementation; the finding it pins is
  * named in the test title.
  */
+
+describe('PR1.6 codex review regressions', () => {
+  it('non-finite and unsafe numeric inputs are refused at the port boundary', async () => {
+    const f = await makeLibsqlFixture('numeric-gate')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await expect(
+      f.store.spawn(Q, 'j', '{}', { startDelaySeconds: Number.POSITIVE_INFINITY }),
+    ).rejects.toThrow(RangeError)
+    await expect(f.store.spawn(Q, 'j', '{}', { maxAttempts: 0 })).rejects.toThrow(RangeError)
+    await expect(f.store.spawn(Q, 'j', '{}', { maxAttempts: 2.5 })).rejects.toThrow(RangeError)
+    await expect(
+      f.store.spawn(Q, 'j', '{}', { cancellation: { maxDelaySeconds: Number.NaN } }),
+    ).rejects.toThrow(RangeError)
+    // Nothing above may have written anything.
+    const [none] = await f.raw.batch('t', [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }])
+    expect(Number(none?.rows[0]?.n)).toBe(0)
+
+    await f.store.spawn(Q, 'job', '{}')
+    // Number.MAX_VALUE * 1000 stores SQLite Inf: an unexpirable lease.
+    await expect(
+      f.store.claim(Q, 'w-bad', { leaseSeconds: Number.MAX_VALUE, limit: 1 }),
+    ).rejects.toThrow(RangeError)
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await expect(
+      f.store.heartbeat(Q, run.runId, run.claimToken, Number.POSITIVE_INFINITY),
+    ).rejects.toThrow(RangeError)
+    await expect(
+      f.store.reschedule(Q, run.runId, run.claimToken, { atEpochMs: 2 ** 53 }),
+    ).rejects.toThrow(RangeError)
+    await expect(
+      f.store.fail(Q, run.runId, run.claimToken, '{"name":"B"}', { delaySeconds: -5 }),
+    ).rejects.toThrow(RangeError)
+    // The rejected calls fenced nothing: the lease is intact and usable.
+    await f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}')
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('temporal columns keep INTEGER storage class under fractional-second inputs', async () => {
+    const f = await makeLibsqlFixture('storage-class')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    // Sub-millisecond fractions everywhere a duration crosses the port:
+    // JS numbers bind as REAL, and INTEGER columns are affinity, not law.
+    await f.store.spawn(Q, 'job', '{}', {
+      startDelaySeconds: 0.0004,
+      cancellation: { maxDelaySeconds: 120.5005 },
+    })
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60.6004, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 90.7009)
+    await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1.0007 })
+    expect(await nonIntegerTemporalRows(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('fail() at the cap under a successor-id collision books nothing foreign', async () => {
+    const f = await makeLibsqlFixture('fail-collide')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+    // Seeded ids replay: spawn consumed two uuidv7s; fail() mints the
+    // successor id as the third BEFORE drawing its batch stamp.
+    const mirror = seededIdSource(new Rng('fail-collide'))
+    mirror.uuidv7()
+    mirror.uuidv7()
+    const predictedSuccessor = mirror.uuidv7()
+    // A FOREIGN pending run under a live foreign task at exactly that id.
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy,
+                max_attempts, enqueue_at_ms, created_at_ms, state)
+              VALUES ('foreign-task', ?, 'x', '{}', '{"kind":"none"}', 1, 1000000, 1000000, 'pending')`,
+        args: [Q],
+      },
+      {
+        sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+              VALUES (?, ?, 'foreign-task', 1, 'pending', 1000000, 1000000)`,
+        args: [predictedSuccessor, Q],
+      },
+    ])
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    expect(run.taskId).toBe(spawned.taskId)
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // At the cap the successor INSERT is suppressed (0 rows, no PK error) —
+    // the follow-ons must NOT mistake the pre-existing foreign row for it.
+    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    const [task] = await f.raw.batch('t', [
+      {
+        sql: `SELECT state, attempts, last_attempt_run FROM tasks WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    expect(task?.rows[0]).toMatchObject({ state: 'failed', attempts: 1 })
+    expect(task?.rows[0]?.last_attempt_run).not.toBe(predictedSuccessor)
+    const [foreign] = await f.raw.batch('t', [
+      { sql: `SELECT state, task_id FROM runs WHERE run_id = ?`, args: [predictedSuccessor] },
+    ])
+    expect(foreign?.rows[0]).toMatchObject({ state: 'pending', task_id: 'foreign-task' })
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('complete() under a (corrupt) terminal task leaves the task state alone', async () => {
+    const f = await makeLibsqlFixture('terminal-complete')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'cancelled', cancelled_at_ms = 1000000,
+                failure_reason = '{"name":"$Cancelled"}'
+              WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    // The run may finish (its fence is valid) but TerminalStability owns the
+    // task: cancelled must never become completed.
+    await f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}').catch(() => {})
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('cancelled')
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('reschedule() under a (corrupt) terminal task refuses instead of reviving it', async () => {
+    const f = await makeLibsqlFixture('terminal-reschedule')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'cancelled', cancelled_at_ms = 1000000,
+                failure_reason = '{"name":"$Cancelled"}'
+              WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    // Suspending would mint a LIVE sleeping run under a terminal task —
+    // the transition must refuse wholesale (AB002), not half-apply.
+    await expect(
+      f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 10 }),
+    ).rejects.toThrow(LeaseLostError)
+    const [taskRow, runRow] = await f.raw.batch('t', [
+      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+      { sql: `SELECT state, claimed_by FROM runs WHERE run_id = ?`, args: [run.runId] },
+    ])
+    expect(taskRow?.rows[0]?.state).toBe('cancelled')
+    expect(runRow?.rows[0]).toMatchObject({ state: 'running', claimed_by: run.claimToken })
+    f.close()
+  })
+
+  it("reschedule with 'preserve' keeps a carried event wake for the next claimer", async () => {
+    const f = await makeLibsqlFixture('wake-preserve')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // A carried wake arrives with the claim (as PR3.1's emit will park it).
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+    // §3.8.2 deferral: a driver that cannot dispatch this task defers WITHOUT
+    // consuming anything — the wake must survive for a capable claimer.
+    await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 0 }, 'preserve')
+    const [again] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    expect(again?.runId).toBe(run.runId)
+    expect(again?.wake).toMatchObject({ payloadJson: '{"x":1}' })
+    f.close()
+  })
+})
+
+describe('PR1.6 review regressions', () => {
+  it('fail() refuses a successor past max_attempts: the task fails terminally at the cap', async () => {
+    const f = await makeLibsqlFixture('cap-enforce')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 2 })
+    // Attempt 1 fails with retry — allowed (attempt 2 fits the cap).
+    let [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 1')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    // Attempt 2 fails "with retry" — but the cap must refuse the successor.
+    ;[run] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 2')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    const [runs] = await f.raw.batch('t', [
+      { sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(Number(runs?.rows[0]?.n)).toBe(2) // no third run
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]).toMatchObject({ state: 'failed', attempts: 2 })
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('setCheckpoint rejects a task_id that does not belong to the fencing run', async () => {
+    const f = await makeLibsqlFixture('ckpt-scope')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await f.store.spawn(Q, 'a', '{}')
+    const other = await f.store.spawn(Q, 'b', '{}', { startDelaySeconds: 900 })
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // Foreign task id under a valid lease: must throw and write NOTHING.
+    await expect(
+      f.store.setCheckpoint(Q, other.taskId, run.runId, run.claimToken, 's', '{"x":1}', 60),
+    ).rejects.toThrow()
+    const [rows] = await f.raw.batch('t', [
+      { sql: `SELECT COUNT(*) AS n FROM checkpoints WHERE task_id = ?`, args: [other.taskId] },
+    ])
+    expect(Number(rows?.rows[0]?.n)).toBe(0)
+    f.close()
+  })
+
+  it('a consumed event wake is cleared by reschedule — timer wakes do not replay it', async () => {
+    const f = await makeLibsqlFixture('wake-consume')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await f.store.spawn(Q, 'job', '{}')
+    let [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 1')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // Park a wake (as PR3.1's emit will), fail with retry so it carries.
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    // The successor's claim presents the carried wake — correct (§3.8.2)...
+    ;[run] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim 2')
+    expect(run.wake).toBeDefined()
+    const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    if (!activated) throw new Error('activate')
+    // ...the worker processes it and sleeps. The wake is now CONSUMED.
+    await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 10 })
+    await f.admin.setFakeNowEpochMs(1_020_000)
+    const [timerWake] = await f.store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 })
+    expect(timerWake?.runId).toBe(run.runId)
+    // A pure timer wake must NOT re-present the consumed event.
+    expect(timerWake?.wake).toBeUndefined()
+    f.close()
+  })
+
+  it('fail() with retry under a terminal task creates no successor (sweep-site parity)', async () => {
+    const f = await makeLibsqlFixture('terminal-successor')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // Simulate a deferred/cross-plane teardown: the task is terminal while
+    // the run row is still 'running' under a live token.
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'failed', failure_reason = '{"name":"External"}'
+              WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    await f.store
+      .fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+      .catch(() => {})
+    const [rows] = await f.raw.batch('t', [
+      {
+        sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND state IN ('pending','sleeping')`,
+        args: [spawned.taskId],
+      },
+    ])
+    // No live successor may exist under a terminal task.
+    expect(Number(rows?.rows[0]?.n)).toBe(0)
+    f.close()
+  })
+})
 
 describe('PR1.5 review regressions', () => {
   it('losing sweeper can never terminally fail a task whose successor lives (stamp fencing)', async () => {

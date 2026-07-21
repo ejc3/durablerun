@@ -31,5 +31,5 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - name: Model-check the scheduler protocol
-        run: bash scripts/tla.sh
+      - name: Model-check the scheduler protocol (CI scope)
+        run: TLA_SCOPE=ci bash scripts/tla.sh

@@ -1,0 +1,212 @@
+---
+name: pr-gate
+description: The consolidated review gate for durablerun — run before every PR push. All review checks, simplify gotchas, dialect traps, and process rules in one place, each linked to where the lesson lives. Invoke on a branch to walk the gate against its diff.
+---
+
+# The durablerun PR gate
+
+This skill is the single consolidated reference for reviewing and shipping
+changes to this repo. Every entry exists because a review, a simulation, TLC,
+or a crashed box taught it. When invoked: run **Part 1** mechanically against
+the current branch, then review the diff against **Parts 2–5**, then confirm
+**Part 6**. A PR pushes only when every gate passes or a deviation is
+explicitly written into the PR description.
+
+Case law lives in `packages/conformance/test/regressions.test.ts` — every
+past bug as a red/green pair. When in doubt about a rule's meaning, read the
+regression that created it.
+
+---
+
+## Part 1 — The mechanical gate (all must pass, in order)
+
+```
+pnpm verify        # lint + determinism lint + spec ledger + format + types + 129+ tests
+pnpm verify:tla    # full TLC proof (confined; ~30s)
+pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~10s wall)
+```
+
+1. **`pnpm verify` green** — includes the determinism lint (no ambient
+   time/randomness/timers in engine packages; entropy enters only via
+   `IdSource`, `NOW_MS`, or a port) and the spec ledger (every batch label
+   mapped to a TLA action or excluded with a reason, block-scoped).
+2. **TLC green** — if the diff touches any protocol transition and the spec
+   was not updated, stop: that violates spec-first (below).
+3. **Fuzz green** — includes the progress floor; a vacuous or stalled walk
+   fails by design.
+4. **Reviews ran**: codex (background, confined via `scripts/confine.sh`) +
+   the review angles + a coverage auditor when the diff adds transitions.
+   Findings triaged; every accepted bug got its red/green pair.
+5. **Merge on green only** — CI (verify + tla jobs) must pass on the PR head.
+
+## Part 2 — Correctness checks (what reviews hunt, learned here)
+
+**Fencing (the #1 bug source in this repo's history):**
+- Every multi-statement transition goes through `FencedBatch` (core), or —
+  for worker-token ops like `setCheckpoint` — documents that the claim token
+  IS the stamp. Hand-rolled batches with positional destructuring are how the
+  losing-sweeper race shipped. [DESIGN §3.4 rule 1; core/fenced-batch.ts]
+- Batch statements SEE earlier statements' effects: follow-ons key on the
+  POST-transition state + this batch's stamp, never the consumed
+  pre-condition. [CLAUDE.md rule 1; PR1.5 review]
+- A fence must bind the FULL argument surface: `setCheckpoint` once trusted a
+  caller `task_id` outside its fence and wrote foreign checkpoints.
+  [regression: "setCheckpoint rejects a task_id..."]
+- No one-shot flags for re-entrant lifecycles — latch on generations
+  (`activated_gen < claim_gen`). The `started_at IS NULL` latch broke on the
+  first sleep wake. [DESIGN §3.2]
+- Guards that exist in the TLA model MUST have an executable twin: an
+  invariant in `conformance/src/invariants.ts` or a conformance case.
+  `max_attempts` was modeled-but-unenforced while fuzz ran green.
+- Mirror discipline: every run transition mirrors `tasks.state`; successor-
+  creating paths (`fail`, sweep) carry `wake_event`/`event_payload`/`run_db`
+  and share guard shapes — check the two successor-insert sites for drift.
+- Consumable state gets consumed: wakes clear on `reschedule`/`complete`
+  ('consume'), carry on failure successors, and survive §3.8.2 deferral
+  (`reschedule` 'preserve'). Timed-out waits are deleted at claim so emits
+  cannot resurrect them.
+- Terminal tasks are inert (§3.4 rule 6): task mutations guard
+  `state IN LIVE`; run-REVIVING CASes require the owning task live;
+  terminalizing CASes still quiesce. Even corrupt state must not be
+  AMPLIFIED. [regressions: complete/reschedule under a terminal task]
+- Successor inserts are STAMPED (`claimed_by = stamp`) and follow-ons key on
+  the stamped row, never bare run-id existence — a suppressed insert plus an
+  id collision otherwise books a FOREIGN run. Both successor sites (fail,
+  sweep claim-timeout) share the shape. [regression: fail-collide]
+- Accounting: `tasks.attempts` moves ONLY in user-failure transitions;
+  infra (`$ClaimTimeout`) successors move `infra_retries`; `run.attempt` is
+  the fence ordinal (counts both). User ordinal = `attempt - infraRetries`.
+
+**Time and identity:**
+- Engine time is database time (`NOW_MS`); clients pass relative durations;
+  `sleepUntil` is the one sanctioned user absolute. [CLAUDE.md rule 3]
+- All ids/tokens from `IdSource` — seeded ids are also how tests predict
+  collisions (see the successor-collision regression).
+
+**Advisory-signal rule:** the scheduler lease is the only truth; launcher
+acks, ending feeds, `expireLeaseNow` may only ACCELERATE lease expiry.
+A live worker's heartbeat legitimately revives an advisorily-expired lease.
+[DESIGN §3.9; conformance "revival" scenario]
+
+## Part 3 — SQL & dialect traps (each bit us once)
+
+- `ON CONFLICT` targeting a partial unique index must repeat the index's
+  `WHERE` clause (SQLite).
+- Compound SELECT members can't carry `ORDER BY`/`LIMIT` — wrap each leg as a
+  derived table (the claim query).
+- `LIMIT -1` means UNLIMITED on SQLite — clamp every limit (`clampLimit`).
+- `INSERT OR IGNORE` swallows ALL conflicts including PK collisions — under a
+  stamp fence use plain `INSERT` so real violations fail loudly.
+- JS numbers bind as REAL; INTEGER columns are affinity, not enforcement
+  (§3.4 rule 7): Infinity becomes an unexpirable `Inf` lease, unsafe
+  integers throw RangeError on READ-back, fractional `? * 1000` products
+  store REAL epochs. Every client number crosses the port through
+  core/validate.ts and SQL NEVER multiplies a client number — ms are
+  computed in TS. Detection twin: the `temporal-storage-class` invariant.
+- `rowsAffected` lies for DML…RETURNING on the local libsql client — the
+  executor normalizes (rows.length for row-returning statements); fence
+  checks rely on that contract. [store-libsql/test/executor.test.ts pins it]
+- Blobs arrive as ArrayBuffer; the executor normalizes to Uint8Array.
+- No numeric underscore literals (`1_000_000`) inside SQL strings.
+- Partial-index usability requires the query's WHERE to textually imply the
+  index's WHERE — an added state in an IN-list can silently drop the index.
+  Hot queries are pinned by EXPLAIN QUERY PLAN tests against the EXACT
+  exported production SQL, never stand-ins. [query-plans.test.ts]
+- `ORDER BY run_id DESC` in correlated subqueries can force temp b-trees;
+  prefer an indexed column (`attempt DESC` over `runs_task_attempt`).
+- Interactive transactions are banned (Turso 5s window): one `batch()` or
+  nothing. Reads pass `'read'` mode — never take the writer lock idly.
+- Dialect drift watchlist for Phase 4: `MIN` scalar → `LEAST` (MySQL), no
+  RETURNING (MySQL), `EvalPlanQual` double-claims on bare
+  `UPDATE…WHERE id IN (subselect)` (Postgres — SKIP LOCKED CTE only),
+  `DATETIME(6)` explicitly (MySQL rounds whole seconds by default).
+
+## Part 4 — Harness & test-construction gotchas
+
+- SimWorld crash = PROCESS death: pending calls purge as `crash-orphan`;
+  effects before death are real, after are forbidden — assert trace order,
+  not just final values.
+- Injected rejections are pre-handled; stateful regex flags (g/y) are
+  neutralized; unfired injection specs THROW (vacuous-green prevention);
+  ambiguous specs THROW. Actors may only await port calls — violations are
+  detected, never hung.
+- Assert INVARIANTS at quiescence (`engineInvariantViolations`), not only
+  scenario expectations — detection must not depend on predicting the
+  failure while authoring the test. Orphan checks use LEFT JOINs (an inner
+  join hides a MISSING row from the checker).
+- Fuzz floors: per-walk floors on individual ops are deterministic flakes
+  (one unlucky seed fails forever) — use AGGREGATE per-op floors across the
+  shard plus a per-walk total-progress floor.
+- Put sims at BOUNDARY values ({0, cap−1, cap}) and include the actor the
+  race needs (the sweeper race needed a claimer; the sim without one was
+  blind).
+- Test-arithmetic traps: cancel deadlines include `startDelaySeconds`
+  (deadline = enqueue + delay + maxDelay); a max_delay deadline can never
+  beat its own run's available time; overlapping backlogs make budget tests
+  vacuously pass — keep populations disjoint.
+- Checkers must be checked: the first spec-ledger grep matched prose and
+  accounted labels vacuously. Validate knobs (`FUZZ_SEEDS=''` must fail, not
+  fuzz nothing).
+- Anything that can grow runs confined (`scripts/confine.sh`) — memory is
+  the killer; in-process pooling can't use cores against sync-native libsql
+  (shard across vitest files instead).
+
+## Part 5 — Simplify & altitude gotchas
+
+- Load-bearing literals are contract constants: failure reasons, LIVE-state
+  lists, cap/backoff values — one definition, exported, asserted by the
+  suite, pinned in DESIGN.md. Reasons are DATA, never fence keys (stamps
+  fence).
+- Repeated SQL shapes get builders/constants before the third copy:
+  successor-insert columns, waits-gone deletes, fence fragments,
+  `CLAIMED_RUN_COLUMNS`.
+- Two adjacent same-type params invite silent swaps — options objects
+  (`{leaseSeconds, limit}`).
+- Impossible states get unrepresentable types (`EventWake` union: payload
+  XOR timedOut; nullable `runId` on the cancelled arm instead of `''`).
+- One batch label = one SQL shape (labels are crash-injection addresses);
+  don't splice SQL from booleans under a single label.
+- Config nobody can set is not config — either it's contract (pin it in
+  DESIGN.md as constants) or it's YAGNI (delete it). StoreOptions caps died
+  this death.
+- Hoist duplicated test helpers to suite scope (`claimOne`, `activatedRun`);
+  a "changes nothing" claim needs a `snapshot()` comparison, not just a
+  `rejects.toThrow`.
+
+## Part 6 — Process rules (non-negotiable, from CLAUDE.md)
+
+- **Spec-first**: new protocol areas (cross-actor transitions) are modeled in
+  `specs/*.tla` and TLC-verified BEFORE their SQL exists; the ledger maps
+  labels→actions.
+- **Red test before fix**: every bug = red commit (run it, SEE it fail) then
+  green commit. If a bug can't be red-tested, a seam is missing — build the
+  seam first.
+- **Prevention + class altitude**: every fix ships the class-level tripwire —
+  invariant checker, fuzz op, sim actor, or lint — not just the instance
+  test.
+- **DESIGN.md updates in the same diff** for any observable behavior change
+  (thrown error types, LWW semantics, mirror rules — all were missed once).
+- **BUILD.md scope reconciliation**: promised-but-deferred items get an
+  explicit deferral note, never silence (repeat counters were silently
+  dropped once).
+- **Pluggability is law**: no dialect SQL in engine logic; a dialect is done
+  when its factory passes the identical conformance suite; the contract is
+  language-neutral (schema + batch semantics + wire formats + spec +
+  scenarios), never TypeScript types alone.
+- **Merge on green; PRs are the record** — descriptive commits covering the
+  actual diff, `git log main..HEAD` read in full before writing the PR body.
+
+## Reference map
+
+| What | Where |
+|---|---|
+| Contract rules 1–5, ports, planes | `DESIGN.md` §3.4, §3.9, §3.8 |
+| Standing rules (all) | `CLAUDE.md` |
+| Verified protocol + label ledger | `specs/Scheduler.tla` |
+| Case law (every past bug, red/green) | `packages/conformance/test/regressions.test.ts` |
+| Class tripwires | `packages/conformance/src/invariants.ts` |
+| Structural fencing | `packages/core/src/fenced-batch.ts` |
+| Backend contracts pinned | `packages/store-libsql/test/executor.test.ts`, `query-plans.test.ts` |
+| Fault injection semantics | `packages/harness/src/sim.ts` |
+| Confinement | `scripts/confine.sh` |
+| Phase plan + deferrals | `BUILD.md` |

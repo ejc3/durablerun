@@ -1,0 +1,30 @@
+# Nightly deep verification: the long fuzz walk plus the full TLC proof —
+# the volume leg of the proof stack (specs and sims are the per-PR legs).
+name: nightly
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      - run: FUZZ_SEEDS=20000 FUZZ_STEPS=150 pnpm exec vitest run packages/conformance/test
+  tla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: bash scripts/tla.sh

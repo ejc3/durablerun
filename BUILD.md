@@ -68,7 +68,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   burn on lost launch; crash-mid-sweep idempotent; cap → terminal failure.
 - **PR1.6 transitions + checkpoints**: complete/fail/reschedule as post-state
   fenced batches (§3.4 rule 1); retry-run insert; checkpoint upsert with lease
-  fence + repeat counters (`name`, `name#2`); nextWakeAt. Sims: zombie
+  fence; nextWakeAt. (Repeat counters — `name`, `name#2` — are SDK-side
+  naming, deliberately deferred to PR2.3: the store stores whatever
+  checkpoint name the SDK derives.) Sims: zombie
   complete is a no-op; chaining is attempt-neutral. Nightly seeded-fuzz run
   wired into `pnpm verify:fuzz`. Two FDB adoptions land here: a determinism
   lint (Date.now/Math.random/timers banned in core/driver/sdk — discipline
@@ -93,9 +95,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 ## Phase 3 — full Absurd semantics
 
-- **PR3.1 events**: emit/await (inline durable-at-emit batches), timeout
-  branch, wait rows. Conformance: emit-before-await, await-before-emit,
-  timeout-vs-emit race, one-shot first-write-wins.
+- **PR3.1 events** (SPEC-FIRST: implements the TLC-verified EmitEvent /
+  AwaitEventRegister / TimeoutWake actions from the extended Scheduler.tla —
+  the spec lands before this PR opens): emit/await (inline durable-at-emit
+  batches), timeout branch, wait rows. Conformance: emit-before-await,
+  await-before-emit, timeout-vs-emit race, one-shot first-write-wins, plus
+  executable twins of the spec's no-lost-wakeup and no-resurrection
+  invariants.
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule.
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
