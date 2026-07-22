@@ -80,6 +80,7 @@ export class DriverLoop {
   private idleTicks = 0
   private chainedTicks = 0
   private lastBeatAtMs: number | null = null
+  private beatInFlight: Promise<void> | null = null
   readonly stats: DriverLoopStats = {
     ticks: 0,
     tickErrors: 0,
@@ -96,6 +97,12 @@ export class DriverLoop {
     this.store = deps.store
     this.ids = deps.ids
     this.clock = deps.clock
+    // The tick validates these too — but per-tick, where a bad value
+    // throws into the outage catch forever. A misconfigured loop must
+    // fail at construction, not impersonate a healthy process.
+    requirePositiveInt('claimLimit', opts.claimLimit)
+    requirePositiveInt('sweepLimit', opts.sweepLimit)
+    durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
     this.tickOpts = {
       queue: opts.queue,
       claimLimit: opts.claimLimit,
@@ -176,7 +183,7 @@ export class DriverLoop {
           // to the idle ceiling and try again — ticking is always safe.
           this.stats.tickErrors++
         }
-        await this.beatRegistry()
+        this.beatRegistry() // deliberately not awaited: see its comment
         if (!this.running) break
 
         const empty = result !== null && result.claimed === 0 && result.swept.length === 0
@@ -201,9 +208,18 @@ export class DriverLoop {
         let sleepMs = ceiling
         if (result?.nextWakeAtEpochMs != null) {
           const untilWake = result.nextWakeAtEpochMs - this.clock.nowEpochMs()
-          if (untilWake <= 0) continue // due now: look again immediately
-          sleepMs = Math.min(untilWake, ceiling)
+          if (untilWake <= 0) {
+            // "Due" by the LOCAL clock. If the tick found work, keep
+            // draining. If it found NOTHING, the local clock is ahead of
+            // database time (the only way a due wake yields an empty look)
+            // — poll at the ceiling instead of spinning until the database
+            // catches up.
+            if (!empty) continue
+          } else {
+            sleepMs = Math.min(untilWake, ceiling)
+          }
         }
+        sleepMs = Math.min(sleepMs, this.msUntilBeatDue())
         if (this.wakeRequested) {
           this.wakeRequested = false
           continue
@@ -233,19 +249,41 @@ export class DriverLoop {
     await (this.stopped ?? Promise.resolve())
   }
 
-  private async beatRegistry(): Promise<void> {
+  /**
+   * Fire-and-forget BY DESIGN: best-effort means the loop never waits on
+   * it — a beat that hangs (dead store connection) must block neither
+   * driving nor shutdown, and a try/catch alone cannot make a PENDING
+   * promise harmless. At most one beat is in flight; cadence is marked
+   * only on success so failures retry next pass, not next interval.
+   */
+  private beatRegistry(): void {
     const now = this.clock.nowEpochMs()
-    if (this.lastBeatAtMs !== null && now - this.lastBeatAtMs < this.registryIntervalMs) return
-    try {
-      // ttl = 2x cadence: one missed beat does not read as death.
-      await this.store.driverHeartbeat(this.tickOpts.queue, this.driverId, this.registryTtlSeconds)
-      // Marked AFTER success: a failed beat retries next pass, not next
-      // cadence (with ttl = 2x cadence, failure + an idle park could
-      // otherwise read as death).
-      this.lastBeatAtMs = now
-    } catch {
-      // observability only — never let it hurt the loop
+    if (this.lastBeatAtMs !== null && now < this.lastBeatAtMs) {
+      this.lastBeatAtMs = now // wall clock jumped backward: re-anchor
     }
+    if (this.beatInFlight !== null) return
+    if (this.lastBeatAtMs !== null && now - this.lastBeatAtMs < this.registryIntervalMs) return
+    this.beatInFlight = this.store
+      .driverHeartbeat(this.tickOpts.queue, this.driverId, this.registryTtlSeconds)
+      .then(() => {
+        this.lastBeatAtMs = now
+      })
+      .catch(() => {
+        // observability only — never let it hurt the loop
+      })
+      .finally(() => {
+        this.beatInFlight = null
+      })
+  }
+
+  /** Park no longer than the next registry beat needs (ttl = 2x cadence:
+   * sleeping past the deadline makes every idle driver read as dead).
+   * Before the first CONFIRMED beat the bound is one full interval — the
+   * fire-and-forget beat may still be in flight when the park is sized. */
+  private msUntilBeatDue(): number {
+    if (this.lastBeatAtMs === null) return this.registryIntervalMs
+    const due = this.lastBeatAtMs + this.registryIntervalMs - this.clock.nowEpochMs()
+    return Math.max(1, due)
   }
 }
 
