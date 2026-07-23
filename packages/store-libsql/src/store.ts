@@ -52,7 +52,7 @@ export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
 export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
-const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms,
+const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
        r.wake_event, r.event_payload,
        t.task_name, t.params, t.retry_strategy, t.max_attempts, t.headers, t.infra_retries`
 
@@ -1020,6 +1020,7 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
     claimGen: Number(row.claim_gen),
     claimToken,
     claimExpiresAtEpochMs: Number(row.claim_expires_at_ms),
+    leaseSeconds: Number(row.lease_ms) / 1000,
     paramsJson: String(row.params),
     retryStrategy: JSON.parse(String(row.retry_strategy)) as RetryStrategy,
     maxAttempts: Number(row.max_attempts),

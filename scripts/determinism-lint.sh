@@ -14,8 +14,9 @@ ENGINE_SRC_DIRS=(
   packages/store-libsql/src
   packages/conformance/src
   packages/driver/src
-  # sdk/ joins this list when it exists; store-postgres and store-mysql
-  # join on arrival — dialect stores are engine code too.
+  packages/sdk/src
+  # store-postgres and store-mysql join on arrival — dialect stores are
+  # engine code too.
 )
 ALLOWLIST=(
   packages/core/src/ids.ts          # systemIdSource IS the id/entropy boundary

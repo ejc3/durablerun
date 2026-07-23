@@ -7,7 +7,12 @@
 
 export class SuspendSignal extends Error {
   override readonly name = 'SuspendSignal'
-  constructor(readonly reason: 'sleep' | 'await-event' | 'chain') {
+  constructor(
+    readonly reason: 'sleep' | 'await-event' | 'chain',
+    /** Where the runtime should park the run (relative, or the sanctioned
+     * user absolute). Omitted for 'chain' (wake immediately). */
+    readonly wake?: { inSeconds: number } | { atEpochMs: number },
+  ) {
     super(`run suspended: ${reason}`)
   }
 }
