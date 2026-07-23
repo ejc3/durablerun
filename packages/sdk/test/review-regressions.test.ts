@@ -1,4 +1,4 @@
-import type { SchedulerStore } from '@durablerun/core'
+import { type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
@@ -119,7 +119,7 @@ describe('SDK review regressions', () => {
         if (prop === 'complete' && failComplete) {
           return () => {
             failComplete = false
-            return Promise.reject(new Error('ECONNRESET (transient)'))
+            return Promise.reject(new StoreUnavailableError('ECONNRESET (transient)'))
           }
         }
         return typeof real === 'function' ? (real as CallableFunction).bind(target) : real
@@ -155,7 +155,7 @@ describe('SDK review regressions', () => {
         if (prop === 'setCheckpoint' && failCheckpoint) {
           return () => {
             failCheckpoint = false
-            return Promise.reject(new Error('SQLITE_BUSY (transient)'))
+            return Promise.reject(new StoreUnavailableError('SQLITE_BUSY (transient)'))
           }
         }
         return typeof real === 'function' ? (real as CallableFunction).bind(target) : real

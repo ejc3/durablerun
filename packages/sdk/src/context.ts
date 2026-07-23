@@ -1,6 +1,7 @@
 import {
   type Checkpoint,
   type ClaimedRun,
+  FatalTaskError,
   requireEpochMs,
   type SchedulerStore,
   SuspendSignal,
@@ -66,14 +67,25 @@ export class ReplayContext implements TaskContext {
   }
 
   async step<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+    // Reserved characters would break replay-key injectivity: a literal
+    // 'poll#2' collides with the DERIVED key of the second 'poll' call and
+    // silently replays the wrong checkpoint; '$' prefixes the engine's own
+    // markers. A config bug this fundamental is a permanent failure.
+    if (name.includes('#') || name.startsWith('$')) {
+      throw new FatalTaskError(
+        `step name '${name}' uses reserved characters ('#' anywhere, '$' prefix)`,
+      )
+    }
     const key = this.storageName(name)
     if (this.seen.has(key)) {
       return this.seen.get(key) as T
     }
     // Execute, then commit. A throwing step checkpoints NOTHING — the next
     // attempt re-executes it (retries are the failure story, not replay).
-    const result = await fn()
-    const stateJson = JSON.stringify(result ?? null)
+    // `undefined` is pinned to null so the executing pass and every replay
+    // return the same value.
+    const result = ((await fn()) ?? null) as T
+    const stateJson = JSON.stringify(result)
     await this.store.setCheckpoint(
       this.queue,
       this.run.taskId,
@@ -98,10 +110,12 @@ export class ReplayContext implements TaskContext {
 
   /**
    * A durable suspension point is a checkpoint whose EXISTENCE means "the
-   * wake already happened": the suspending pass writes it and throws; the
-   * store's reschedule parks the run until the wake; and a later claim can
-   * only happen once the run is due again — so on replay, existence alone
-   * proves the sleep is over. No clock is consulted anywhere.
+   * wake already happened" — which is only true if the marker and the park
+   * are ONE transition. The suspending pass therefore writes nothing here:
+   * it throws the signal CARRYING the marker, and the worker runtime lands
+   * both atomically via store.suspendRun. A later claim can only happen
+   * once the run is due again, so on replay, existence alone proves the
+   * sleep is over. No clock is consulted anywhere.
    */
   private async suspendPoint(
     kind: string,
@@ -109,15 +123,6 @@ export class ReplayContext implements TaskContext {
   ): Promise<void> {
     const key = this.storageName(kind)
     if (this.seen.has(key)) return // the wake already happened: continue
-    await this.store.setCheckpoint(
-      this.queue,
-      this.run.taskId,
-      this.run.runId,
-      this.run.claimToken,
-      key,
-      JSON.stringify(wake),
-      this.run.leaseSeconds,
-    )
-    throw new SuspendSignal('sleep', wake)
+    throw new SuspendSignal('sleep', wake, { key, stateJson: JSON.stringify(wake) })
   }
 }

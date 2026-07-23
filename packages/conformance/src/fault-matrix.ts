@@ -23,6 +23,7 @@ export const MATRIX_WRITE_LABELS = [
   'activate',
   'heartbeat',
   'reschedule',
+  'suspend',
   'complete',
   'fail',
   'cancel-task',
@@ -113,7 +114,15 @@ export async function runFaultMatrixCase(
           store.setCheckpoint(Q, first.taskId, first.runId, first.claimToken, 's1', '{"v":1}', 60),
         )
         await go(() => store.getCheckpoints(Q, first.taskId, first.attempt))
-        await go(() => store.reschedule(Q, first.runId, first.claimToken, { inSeconds: 1 }))
+        await go(() =>
+          store.suspendRun(
+            Q,
+            first.runId,
+            first.claimToken,
+            { inSeconds: 1 },
+            { key: '$sleep', stateJson: '{"inSeconds":1}' },
+          ),
+        )
       }
       if (second) {
         await go(() => store.fail(Q, second.runId, second.claimToken, '{"name":"X"}', null))
@@ -124,6 +133,13 @@ export async function runFaultMatrixCase(
       if (fin) {
         await go(() => store.activate(Q, fin.runId, fin.claimToken, fin.claimGen))
         await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
+      }
+
+      // A deferral-style park (reschedule keeps its own matrix cell).
+      await go(() => store.spawn(Q, 'h', '{}'))
+      const [parked] = (await go(() => store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 }))) ?? []
+      if (parked) {
+        await go(() => store.reschedule(Q, parked.runId, parked.claimToken, { inSeconds: 2 }))
       }
 
       // A task to cancel, a claimed-and-activated run to expire (died

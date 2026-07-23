@@ -234,6 +234,11 @@
 \*   'fail' -> FailRun  [cas-fenced]  (replay zero-row; the successor
 \*     insert keys on the CAS stamp, so no double successor)
 \*   'reschedule' -> SleepSuspend / VoluntaryChain  [cas-fenced]
+\*   'suspend' -> SleepSuspend  [cas-fenced]  (reschedule's transition plus
+\*     the suspension MARKER in the same batch — the marker's meaning, "the
+\*     wake already happened", is only sound if it commits with the park;
+\*     checkpoint content itself stays unmodeled (header), the atomicity
+\*     obligation lives in the conformance crash case)
 \*   'sweep:lost-launch' -> SweepLostLaunch  [cas-fenced]  (replay finds
 \*     the row already reopened: state # 'running')
 \*   'sweep:claim-timeout' -> SweepClaimTimeout  [cas-fenced]  (replay

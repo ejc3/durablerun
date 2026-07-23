@@ -376,8 +376,18 @@ One invocation executes one claimed run to its next suspension point:
   current) into memory — Absurd's TaskContext preload, one SELECT.
 - Runs the registered task handler with `ctx`: `step(name, fn)` (memoize→execute→
   `set_checkpoint` upsert which also extends the lease), `sleepFor/sleepUntil`
-  (persist wake-at checkpoint, `schedule_run`, throw Suspend), `awaitEvent`
+  (throw Suspend CARRYING the sleep marker; the runtime lands marker + park in
+  ONE fenced batch — `suspendRun` — because a marker whose park failed would
+  read as "the wake already happened" to the next attempt), `awaitEvent`
   (checkpoint-or-register-wait, throw Suspend), `emitEvent`, `spawn` (child tasks).
+  Step names may not contain `#` (reserved for the SDK's repeat counters —
+  `poll`, `poll#2` — which are user-visible in the checkpoints table) or start
+  with `$` (reserved for engine markers); both are refused as permanent
+  failures. Step results are JSON; `undefined` pins to `null` on every pass.
+  Error taxonomy on a pass: infrastructure failures (typed
+  `StoreUnavailableError`, thrown at the executor boundary) abort the pass
+  with NO transition — recovery is the lease story and the user's retry
+  budget is never touched; only errors from user code spend user attempts.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,

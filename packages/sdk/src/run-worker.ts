@@ -3,8 +3,8 @@ import {
   decideRetry,
   FatalTaskError,
   LeaseLostError,
-  RunCancelledError,
   type SchedulerStore,
+  StoreUnavailableError,
   SuspendSignal,
 } from '@durablerun/core'
 import { ReplayContext, type TaskContext } from './context.js'
@@ -21,7 +21,8 @@ export type WorkerOutcome =
   | { kind: 'failed' } // user failure, terminal
   | { kind: 'superseded' } // duplicate delivery / stale claim: did nothing
   | { kind: 'lease-lost' } // lost the lease mid-run: aborted quietly
-  | { kind: 'cancelled' } // the run was cancelled out from under us
+  | { kind: 'aborted' } // store unreachable mid-pass: no transition, the
+  //                       lease story recovers, user budget untouched
   | { kind: 'deferred' } // unknown task name: parked untouched for a
 //                        worker build that knows it (rolling deploys)
 
@@ -110,20 +111,42 @@ export async function runClaimedRun(
       params = run.paramsJson // legacy/opaque payloads pass through as text
     }
     const result = await handler(ctx, params)
-    await store.complete(queue, runId, claimToken, JSON.stringify(result ?? null))
+    // The completion write sits OUTSIDE the user-failure classification: a
+    // transient store error here is infrastructure, and billing it as a
+    // user failure would terminally fail a task whose handler succeeded.
+    try {
+      await store.complete(queue, runId, claimToken, JSON.stringify(result ?? null))
+    } catch (inner) {
+      if (inner instanceof LeaseLostError) return { kind: 'lease-lost' }
+      if (inner instanceof StoreUnavailableError) return { kind: 'aborted' }
+      throw inner
+    }
     return { kind: 'completed' }
   } catch (error) {
     if (error instanceof SuspendSignal) {
       try {
-        await store.reschedule(queue, runId, claimToken, error.wake ?? { inSeconds: 0 })
+        // The park and its marker are ONE transition (or neither happens):
+        // a marker without a park would lie on the next pass.
+        if (error.checkpoint) {
+          await store.suspendRun(queue, runId, claimToken, error.wake ?? { inSeconds: 0 }, {
+            key: error.checkpoint.key,
+            stateJson: error.checkpoint.stateJson,
+          })
+        } else {
+          await store.reschedule(queue, runId, claimToken, error.wake ?? { inSeconds: 0 })
+        }
         return { kind: 'suspended' }
       } catch (inner) {
         if (inner instanceof LeaseLostError) return { kind: 'lease-lost' }
+        if (inner instanceof StoreUnavailableError) return { kind: 'aborted' }
         throw inner
       }
     }
     if (error instanceof LeaseLostError) return { kind: 'lease-lost' }
-    if (error instanceof RunCancelledError) return { kind: 'cancelled' }
+    // Infrastructure failure by TYPE (a store outage inside a step arrives
+    // here through user code): abort with no transition — the lease story
+    // recovers, and the user's retry budget is never touched.
+    if (error instanceof StoreUnavailableError) return { kind: 'aborted' }
 
     // A user failure: core decides retry over the USER ordinal.
     const userAttempt = run.attempt - run.infraRetries
