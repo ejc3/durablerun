@@ -114,7 +114,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   executable twins of the spec's no-lost-wakeup and no-resurrection
   invariants.
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
-  defer-unknown-task deploy rule.
+  defer-unknown-task deploy rule. Carries two deferrals: cancellation
+  DISCOVERY inside a running pass (today a cancelled task surfaces to its
+  worker as a lost lease; the distinct AB001 signal and a 'cancelled'
+  worker outcome need the store to distinguish "fence lost because task
+  terminal"), and a wake-coalescing floor on the driver's /wake before it
+  is exposed beyond localhost.
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, same-queue refusal; `/api/runs/:id` result route.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped

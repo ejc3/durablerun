@@ -36,9 +36,21 @@ function verifyBody(secret: string, body: string, signature: string | undefined)
   return expected.length === got.length && timingSafeEqual(expected, got)
 }
 
+/** Launch invocations are ~200 bytes; anything near this cap is garbage. */
+const MAX_BODY_BYTES = 64 * 1024
+
+class BodyTooLargeError extends Error {}
+
 async function readBody(req: NodeJS.ReadableStream): Promise<string> {
   const chunks: Buffer[] = []
-  for await (const chunk of req) chunks.push(Buffer.from(chunk as Buffer))
+  let total = 0
+  for await (const chunk of req) {
+    const buf = Buffer.from(chunk as Buffer)
+    total += buf.length
+    // Reject BEFORE buffering more — the cap must bind pre-authentication.
+    if (total > MAX_BODY_BYTES) throw new BodyTooLargeError()
+    chunks.push(buf)
+  }
   return Buffer.concat(chunks).toString('utf8')
 }
 
@@ -95,7 +107,24 @@ export function createWorkerServer(deps: {
         res.writeHead(404).end()
         return
       }
-      const body = await readBody(req)
+      let body: string
+      try {
+        body = await readBody(req)
+      } catch (error) {
+        // A dying client (stream error) or an oversized body must never
+        // become an unhandled rejection — that terminates the PROCESS and
+        // every in-flight pass with it.
+        try {
+          res.writeHead(error instanceof BodyTooLargeError ? 413 : 400).end()
+        } catch {
+          // the socket may already be gone; nothing to answer
+        }
+        // The client may still be mid-upload: tear the whole SOCKET down
+        // (not just the request stream — a half-open socket wedges both
+        // the client and the server's own close()).
+        req.socket?.destroy() // null when the client is already fully gone
+        return
+      }
       if (!verifyBody(deps.secret, body, req.headers[SIGNATURE_HEADER] as string | undefined)) {
         res.writeHead(401).end()
         return
@@ -157,17 +186,24 @@ export function createWorkerServer(deps: {
       })
     },
     async close(): Promise<void> {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+      // Rejected mid-uploads can leave stragglers; close() must not wait
+      // on a dead client's half-open socket.
+      server.closeIdleConnections()
+      server.closeAllConnections()
+      await closed
       await Promise.allSettled([...inFlight])
     },
   }
 }
 
 /**
- * The driver process's HTTP face: POST /wake interrupts the loop's park
- * (unauthenticated by design — a wake is advisory and idempotent; the
- * worst a flood can do is bounded polling, which the loop's ceilings and
- * tick budgets already bound).
+ * The driver process's HTTP face: POST /wake interrupts the loop's park.
+ * Unauthenticated by design — a wake is advisory and idempotent. The real
+ * bound on a flood: wake requests COALESCE into one flag, so the tick rate
+ * is bounded by tick latency (a sustained flood degrades to continuous
+ * ticking, not amplification). Acceptable bound to 127.0.0.1; add a
+ * coalescing floor before this endpoint is ever exposed beyond localhost.
  */
 export function createWakeServer(loop: DriverLoop): WorkerServer {
   const server = createServer((req, res) => {

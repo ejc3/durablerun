@@ -21,7 +21,16 @@ async function workerFx(seed: string) {
     secret: SECRET,
   })
   const port = await worker.listen()
-  return { raw, store, worker, port, close: async () => (await worker.close(), raw.close()) }
+  return {
+    raw,
+    store,
+    worker,
+    port,
+    close: async () => {
+      await worker.close()
+      raw.close()
+    },
+  }
 }
 
 /**
@@ -38,7 +47,11 @@ describe('worker server hardening', () => {
       const socket = connect(f.port, '127.0.0.1', () => {
         socket.write(
           'POST /launch HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{"partial":',
-          () => setTimeout(() => (socket.destroy(), resolve()), 30),
+          () =>
+            setTimeout(() => {
+              socket.destroy()
+              resolve()
+            }, 30),
         )
       })
     })
@@ -69,15 +82,33 @@ describe('worker server hardening', () => {
 
   it('an oversized body is rejected without being buffered whole', async () => {
     const f = await workerFx('http-big')
-    const huge = 'x'.repeat(256 * 1024) // 4x the cap
-    const res = await fetch(`http://127.0.0.1:${f.port}/launch`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: huge,
-    }).catch(() => null)
-    // Either a 413 or a connection reset once the cap trips mid-stream —
-    // never an accepted or buffered-then-401 request.
-    if (res !== null) expect(res.status).toBe(413)
+    // Stream 4x the cap over a raw socket; the server must answer 413 (or
+    // reset the connection) once the cap trips MID-stream — never buffer
+    // to completion and then 401.
+    const outcome = await new Promise<string>((resolve) => {
+      const socket = connect(f.port, '127.0.0.1', () => {
+        socket.write(
+          'POST /launch HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 262144\r\n\r\n',
+        )
+        const chunk = 'x'.repeat(16 * 1024)
+        for (let i = 0; i < 16; i++) socket.write(chunk)
+      })
+      let data = ''
+      socket.on('data', (d) => {
+        data += String(d)
+        if (data.includes('\r\n')) {
+          socket.destroy()
+          resolve(data.split('\r\n')[0] ?? '')
+        }
+      })
+      socket.on('error', () => resolve('connection-reset'))
+      socket.on('close', () => resolve(data.split('\r\n')[0] ?? 'closed-early'))
+      setTimeout(() => {
+        socket.destroy()
+        resolve('no-answer')
+      }, 3000)
+    })
+    expect(outcome === 'connection-reset' || outcome.includes('413')).toBe(true)
     await f.close()
   })
 })
