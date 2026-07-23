@@ -10,7 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@durablerun/core": "workspace:*"
+    "@durablerun/core": "workspace:*",
+    "@durablerun/sdk": "workspace:*"
   },
   "devDependencies": {
     "@durablerun/conformance": "workspace:*",
