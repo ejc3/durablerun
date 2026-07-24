@@ -77,6 +77,42 @@ Built in this PR (see the commits above): the wake_step binding, the
 enterDurableOp gate, the UserName round-trip rejection, and three new/upgraded
 WaitIntegrity invariant conjuncts.
 
+## Second round: re-reviewing the fixed head
+
+Per the freshness principle this round established, the fixed head was
+re-reviewed by codex before attesting. It confirmed all six fixes sound and
+found three more, sharing one root cause: `awaitEvent`'s wait INSERT and its
+park each read database time (`NOW`) independently, so under real time (not
+the tests' fake-now) the two disagree by ~1ms of clock drift.
+
+- **A** (real): the eligibility decision — the cancellation deadline inside
+  `eligibleTask` is database time — was evaluated in both the INSERT and the
+  park, so a deadline landing between the two reads registered a wait the
+  park then refused (the orphan-on-a-running-run again, now via drift not
+  guard asymmetry).
+- **B** (real): `timeout_at_ms` (wait) and `available_at_ms` (run) were both
+  `NOW + timeout` computed separately, so they could differ by 1ms —
+  scheduling the timeout after its own registered deadline.
+- **C** (benign, unreachable): the pre-v3 wake decode fell back to the bare
+  event name for a NULL `wake_step`, which the SDK's `$await:`-prefixed keys
+  never match. No such row can exist (events were introduced with
+  `wake_step`), but the fallback was misleading.
+
+Fix: reorder the `awaitEvent` batch so the park runs FIRST and the wait
+derives entirely from its post-state — the wait fires iff the park set this
+run sleeping under this `wake_step`, and its `timeout_at_ms` **is** the run's
+`available_at_ms` (read from the just-parked row, not recomputed). One `NOW`,
+one eligibility decision; A and B become structurally impossible. Added the
+`wait-timeout-availability-mismatch` invariant (the WaitIntegrity conjunct
+that catches the class), and tightened the decode to require `wake_step`
+alongside `wake_event` (C). Landed `ed28b2b` (red) → `534f1f6` (green); full
+verify (320 tests) and a 2000-seed fuzz green.
+
+The deeper lesson, now explicit: a multi-statement batch must not compute the
+same quantity — or an eligibility decision — from `NOW` in two places;
+derive the second from the first statement's committed post-state. This is
+the §3.4-rule-1 "fence on the post-state" pattern applied to time itself.
+
 Deferred (recorded in BUILD.md):
 
 - Enforce attestation-artifact freshness in review-attest.sh: refuse a codex
