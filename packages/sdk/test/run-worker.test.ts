@@ -206,6 +206,27 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a durable op inside a step fails the task permanently, never suspending mid-step', async () => {
+    // Codex PR#11 finding 4: awaitEvent/sleep inside a step body runs while
+    // inStep is true, advancing the repeat counters a replaying pass (which
+    // skips the memoized step) never sees — the wrong wake is later
+    // consumed. A durable op nested in a step is a program bug: fail fast
+    // and permanently, don't park a half-executed step.
+    const f = await fx('sdk-durable-in-step')
+    const reg = registry({
+      job: (ctx) => ctx.step('outer', () => ctx.awaitEvent('go', { timeoutSeconds: 30 })),
+    })
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+    expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'failed' })
+    const result = await f.store.getTaskResult(Q, spawned.taskId)
+    expect(result?.state).toBe('failed')
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(Number(task?.rows[0]?.attempts)).toBe(1) // permanent, not a retry loop
+    f.close()
+  })
+
   it('an unknown task name is deferred untouched, and runs on a build that knows it', async () => {
     const f = await fx('sdk-defer')
     const spawned = await f.store.spawn(Q, 'new-task', '{}')
