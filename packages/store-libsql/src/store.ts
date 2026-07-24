@@ -1070,7 +1070,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 state = 'pending', available_at_ms = ${NOW_MS},
                 wake_event = ?,
                 event_payload = (SELECT payload FROM events WHERE queue = ? AND event_name = ?)
-              WHERE state = 'sleeping' AND run_id IN (
+              WHERE state = 'sleeping'
+                AND EXISTS (SELECT 1 FROM tasks t
+                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
+                AND run_id IN (
                 SELECT run_id FROM waits
                 WHERE queue = ? AND event_name = ? AND status = 'waiting'
               )`,
@@ -1085,8 +1088,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         args: [queue, eventName],
       },
       {
-        sql: `UPDATE waits SET status = 'delivered'
-              WHERE queue = ? AND event_name = ? AND status = 'waiting'`,
+        // DELETE, not a status flip: the wake fields on the run carry the
+        // delivery, and retained rows would leak forever (the verified
+        // inline shape — cancel deletes waits the same way).
+        sql: `DELETE FROM waits WHERE queue = ? AND event_name = ? AND status = 'waiting'`,
         args: [queue, eventName],
       },
     ])
@@ -1123,8 +1128,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END, ${NOW_MS}
               WHERE ${emittedGuard}
                 AND EXISTS (SELECT 1 FROM runs r
-                            WHERE r.run_id = ? AND r.queue = ? AND r.claimed_by = ?
-                              AND r.state = 'running')
+                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
+                              AND r.claimed_by = ? AND r.state = 'running')
               ON CONFLICT (run_id, step_name) DO NOTHING`,
         args: [
           runId,
@@ -1138,6 +1143,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           eventName,
           runId,
           queue,
+          taskId,
           claimToken,
         ],
       },
@@ -1147,9 +1153,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 available_at_ms = CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END,
                 wake_event = ?, event_payload = NULL,
                 claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
-              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+              WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
+                AND state = 'running'
+                AND EXISTS (SELECT 1 FROM tasks t
+                            WHERE t.task_id = runs.task_id AND ${eligibleTask('t')})
                 AND ${emittedGuard}`,
-        args: [timeoutMs, timeoutMs, eventName, runId, queue, claimToken, queue, eventName],
+        args: [timeoutMs, timeoutMs, eventName, runId, queue, taskId, claimToken, queue, eventName],
       },
       {
         sql: `UPDATE tasks SET state = 'sleeping'
@@ -1159,8 +1168,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         args: [taskId, runId, queue, eventName],
       },
       {
-        sql: `SELECT payload FROM events WHERE queue = ? AND event_name = ?`,
-        args: [queue, eventName],
+        // The HIT read is fenced too (the model's AwaitEventHit is a
+        // fenced action): a zombie must fall through to the park
+        // discriminator and get the lease error, never a success signal.
+        sql: `SELECT payload FROM events
+              WHERE queue = ? AND event_name = ?
+                AND EXISTS (SELECT 1 FROM runs r
+                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
+                              AND r.claimed_by = ? AND r.state = 'running')`,
+        args: [queue, eventName, runId, queue, taskId, claimToken],
       },
     ])
     const row = event?.rows[0]

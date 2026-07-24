@@ -1,4 +1,4 @@
-import { LeaseLostError } from '@durablerun/core'
+import { EventTimeoutError, LeaseLostError } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
@@ -57,7 +57,11 @@ describe('event regressions', () => {
               const p = await ctx.awaitEvent('go', { timeoutSeconds: 30 })
               trace.push(`got:${p}`)
               return trace
-            } catch {
+            } catch (e) {
+              // The realistic retry pattern: catch the TIMEOUT, let the
+              // engine's suspend signal pass through (a bare catch that
+              // swallows it de-syncs the pass from its own parked run).
+              if (!(e instanceof EventTimeoutError)) throw e
               trace.push('timeout')
             }
           }
@@ -73,7 +77,14 @@ describe('event regressions', () => {
     await f.store.emitEvent(Q, 'go', '{"late":1}')
     expect(await pass(f, reg, 'w3')).toEqual({ kind: 'completed' })
     const result = await f.store.getTaskResult(Q, spawned.taskId)
-    expect(JSON.parse(result?.completedPayloadJson ?? '[]')).toEqual(['timeout', 'got:{"late":1}'])
+    // Two 'timeout' entries: the wake pass pushed one, and the final pass
+    // REPLAYED the memoized timeout (non-step code re-executes by design;
+    // only the awaits themselves are memoized) before receiving the emit.
+    expect(JSON.parse(result?.completedPayloadJson ?? '[]')).toEqual([
+      'timeout',
+      'timeout',
+      'got:{"late":1}',
+    ])
     f.close()
   })
 

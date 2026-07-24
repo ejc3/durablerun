@@ -58,6 +58,7 @@ export class ReplayContext implements TaskContext {
   private readonly seen = new Map<string, unknown>()
   private readonly nameUses = new Map<string, number>()
   private inStep = false
+  private wakeAvailable = true
 
   constructor(
     private readonly store: SchedulerStore,
@@ -175,16 +176,36 @@ export class ReplayContext implements TaskContext {
   }
 
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
+    if (name.includes('#') || name.startsWith('$')) {
+      throw new FatalTaskError(
+        `event name '${name}' uses reserved characters ('#' anywhere, '$' prefix)`,
+      )
+    }
+    if (opts?.timeoutSeconds !== undefined) {
+      try {
+        durationToMs('awaitEvent timeoutSeconds', opts.timeoutSeconds, { positive: true })
+      } catch (error) {
+        throw new FatalTaskError(String(error))
+      }
+    }
     const key = this.storageName(`$await:${name}`)
     if (this.seen.has(key)) {
+      // The memo IS this wake's consumption record: retire the carried
+      // wake so a later same-name await cannot re-consume it.
+      if (this.run.wake?.event === name) this.wakeAvailable = false
       const memo = this.seen.get(key) as { timedOut?: boolean; payloadJson?: string }
       if (memo.timedOut) throw new EventTimeoutError(name)
       return memo.payloadJson as string
     }
     // A wake delivered with this claim resolves the await: memoize it so
     // stale wake fields on later claims are never re-consumed.
-    const wake = this.run.wake
+    // The run row's wake fields persist after delivery, so the local copy
+    // resolves AT MOST ONE await: without consuming it, a later same-name
+    // await re-sees the stale wake (a free second timeout, or a lost late
+    // emit — the worst confirmed bug of the events review).
+    const wake = this.wakeAvailable ? this.run.wake : undefined
     if (wake?.event === name) {
+      this.wakeAvailable = false
       const memo = 'payloadJson' in wake ? { payloadJson: wake.payloadJson } : { timedOut: true }
       await this.commitMarker(key, JSON.stringify(memo))
       if (memo.timedOut) throw new EventTimeoutError(name)
