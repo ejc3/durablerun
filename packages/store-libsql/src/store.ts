@@ -1130,6 +1130,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
     const emittedGuard = `NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)`
+    // A fresh per-invocation stamp the park writes into claimed_by, so the
+    // task-mirror below fires ONLY when THIS batch's park succeeded — not on
+    // a run that merely happens to be sleeping (rule 1: a losing batch writes
+    // nothing). The same shape reschedule/suspendRun use for their marker.
+    const parkStamp = this.ids.token()
     const [, park, , event] = await this.db.batch('await-event', [
       {
         // Wait registration FIRST, fenced on the LIVE claim token
@@ -1178,7 +1183,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 available_at_ms = (SELECT timeout_at_ms FROM waits
                                    WHERE run_id = ? AND step_name = ?),
                 wake_event = ?, event_payload = NULL, wake_step = ?,
-                claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
+                claimed_by = ?, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
               WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
                 AND state = 'running'
                 AND EXISTS (SELECT 1 FROM waits
@@ -1188,6 +1193,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           stepName,
           eventName,
           stepName,
+          parkStamp,
           runId,
           queue,
           taskId,
@@ -1197,16 +1203,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ],
       },
       {
-        // The mirror is fenced to the run THIS call parked: the sleeping run
-        // must belong to the caller task (run_id AND task_id), or a
-        // mismatched call could flip the caller task to sleeping on the back
-        // of some unrelated run that happens to be sleeping.
+        // The mirror fires ONLY when THIS batch's park stamped the run
+        // (claimed_by = parkStamp): a losing invocation whose park matched
+        // zero rows never writes here, even against a run already sleeping.
         sql: `UPDATE tasks SET state = 'sleeping'
               WHERE task_id = ? AND state IN ${LIVE}
                 AND EXISTS (SELECT 1 FROM runs
-                            WHERE run_id = ? AND task_id = ? AND state = 'sleeping')
-                AND ${emittedGuard}`,
-        args: [taskId, runId, taskId, queue, eventName],
+                            WHERE run_id = ? AND claimed_by = ? AND state = 'sleeping')`,
+        args: [taskId, runId, parkStamp],
       },
       {
         // The HIT read is fenced too (the model's AwaitEventHit is a
