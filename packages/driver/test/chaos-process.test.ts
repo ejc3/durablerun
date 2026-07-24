@@ -156,4 +156,43 @@ describe('multi-process chaos (real kills, one database file)', () => {
     expect(Number(task?.rows[0]?.attempts)).toBe(0)
     raw.close()
   }, 120_000)
+
+  it('the dogfood gate: a recurring job lives on the engine across sleeps', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-dogfood-'))
+    const db = join(dir, 'dogfood.db')
+    const raw = LibsqlExecutor.open(`file:${db}`)
+    const admin = new LibsqlStoreAdmin(raw)
+    await admin.migrate()
+    const store = new LibsqlSchedulerStore(raw, systemIdSource())
+    const workerPort = 42123
+    await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
+    await host('packages/driver/bin/driver-host.ts', [
+      db,
+      Q,
+      `http://127.0.0.1:${workerPort}`,
+      SECRET,
+    ])
+
+    // Three cycles of work-sleep-work: the continuous-operation shape.
+    const spawned = await store.spawn(
+      Q,
+      'dogfood-backup',
+      JSON.stringify({ cycles: 3, intervalSeconds: 2 }),
+    )
+    await until(
+      async () => {
+        return (await store.getTaskResult(Q, spawned.taskId))?.state === 'completed'
+      },
+      'three recurring cycles',
+      60_000,
+    )
+    const [cps] = await raw.batch('t', [
+      {
+        sql: `SELECT COUNT(*) AS n FROM checkpoints WHERE checkpoint_name LIKE 'backup%'`,
+        args: [],
+      },
+    ])
+    expect(Number(cps?.rows[0]?.n)).toBe(3)
+    raw.close()
+  }, 120_000)
 })

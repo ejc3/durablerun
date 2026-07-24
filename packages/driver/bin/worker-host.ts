@@ -34,6 +34,17 @@ const registry: TaskRegistry = new Map([
     },
   ],
   [
+    'dogfood-backup',
+    async (ctx, params) => {
+      const p = params as { cycles: number; intervalSeconds: number }
+      for (let i = 0; i < p.cycles; i++) {
+        await ctx.step('backup', () => ({ cycle: i, note: 'repo backed up' }))
+        await ctx.sleepFor(p.intervalSeconds)
+      }
+      return { cycles: p.cycles }
+    },
+  ],
+  [
     'napper',
     async (ctx, params) => {
       await ctx.step('before', () => 'a')
