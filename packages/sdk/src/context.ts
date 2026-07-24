@@ -2,6 +2,7 @@ import {
   type Checkpoint,
   type ClaimedRun,
   durationToMs,
+  EventTimeoutError,
   FatalTaskError,
   LeaseLostError,
   requireEpochMs,
@@ -36,6 +37,15 @@ export interface TaskContext {
   sleepFor(seconds: number): Promise<void>
   /** Durable absolute-time sleep (the one sanctioned user absolute). */
   sleepUntil(epochMs: number): Promise<void>
+  /**
+   * Suspend until the named event is emitted (or the timeout passes —
+   * then EventTimeoutError). Resolves to the emitted payload JSON; the
+   * consumption is memoized like any step, so replays and later sleeps
+   * never re-see a stale wake.
+   */
+  awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string>
+  /** First write wins: a second emit of the same name changes nothing. */
+  emitEvent(name: string, payloadJson: string): Promise<void>
   /** This attempt's user-visible ordinal (infrastructure retries excluded). */
   readonly attempt: number
   readonly taskName: string
@@ -160,6 +170,58 @@ export class ReplayContext implements TaskContext {
    * once the run is due again, so on replay, existence alone proves the
    * sleep is over. No clock is consulted anywhere.
    */
+  async emitEvent(name: string, payloadJson: string): Promise<void> {
+    await this.store.emitEvent(this.queue, name, payloadJson)
+  }
+
+  async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
+    const key = this.storageName(`$await:${name}`)
+    if (this.seen.has(key)) {
+      const memo = this.seen.get(key) as { timedOut?: boolean; payloadJson?: string }
+      if (memo.timedOut) throw new EventTimeoutError(name)
+      return memo.payloadJson as string
+    }
+    // A wake delivered with this claim resolves the await: memoize it so
+    // stale wake fields on later claims are never re-consumed.
+    const wake = this.run.wake
+    if (wake && wake.event === name) {
+      const memo = 'payloadJson' in wake ? { payloadJson: wake.payloadJson } : { timedOut: true }
+      await this.commitMarker(key, JSON.stringify(memo))
+      if (memo.timedOut) throw new EventTimeoutError(name)
+      return memo.payloadJson as string
+    }
+    const outcome = await this.store.awaitEvent(
+      this.queue,
+      this.run.taskId,
+      this.run.runId,
+      this.run.claimToken,
+      key,
+      name,
+      opts?.timeoutSeconds ?? null,
+    )
+    if (outcome.emitted) {
+      await this.commitMarker(key, JSON.stringify({ payloadJson: outcome.payloadJson }))
+      return outcome.payloadJson
+    }
+    // The store batch ALREADY parked the run: signal without a wake so the
+    // runtime performs no second suspension.
+    throw new SuspendSignal('await-event')
+  }
+
+  /** Lease-fenced marker write shared by the await memoization. */
+  private async commitMarker(key: string, stateJson: string): Promise<void> {
+    await this.store.setCheckpoint(
+      this.queue,
+      this.run.taskId,
+      this.run.runId,
+      this.run.claimToken,
+      key,
+      stateJson,
+      this.run.leaseSeconds,
+    )
+    this.seen.set(key, JSON.parse(stateJson))
+  }
+
   private async suspendPoint(
     kind: string,
     wake: { inSeconds: number } | { atEpochMs: number },

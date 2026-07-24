@@ -141,6 +141,9 @@ export async function runClaimedRun(
     return { kind: 'completed' }
   } catch (error) {
     if (error instanceof SuspendSignal) {
+      // awaitEvent parks the run INSIDE its own atomic batch — a second
+      // park here would overwrite the registered wait.
+      if (error.reason === 'await-event') return { kind: 'suspended' }
       try {
         // The park and its marker are ONE transition (or neither happens):
         // a marker without a park would lie on the next pass.

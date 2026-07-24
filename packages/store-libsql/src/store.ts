@@ -1047,12 +1047,130 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     return value === null || value === undefined ? null : Number(value)
   }
 
-  // ── events (spec-verified; implementation pending) ─────────────────────
-  emitEvent(): Promise<void> {
-    return notYet('emitEvent')
+  // ── events (implements the TLC-verified EmitEvent / AwaitEvent actions) ─
+
+  /**
+   * First write wins (EventImmutable): a second emit changes nothing and
+   * every waiter receives the STORED payload (PayloadMatchesEvent). The
+   * same batch delivers to all registered waiters: their runs wake with
+   * the event and its payload, their tasks mirror to pending, and the
+   * wait rows flip to delivered — one atomic action, so an interleaved
+   * await either sees the event row or gets woken, never neither.
+   */
+  async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
+    await this.db.batch('emit-event', [
+      {
+        sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+              VALUES (?, ?, ?, ${NOW_MS})
+              ON CONFLICT (queue, event_name) DO NOTHING`,
+        args: [queue, eventName, payloadJson],
+      },
+      {
+        sql: `UPDATE runs SET
+                state = 'pending', available_at_ms = ${NOW_MS},
+                wake_event = ?,
+                event_payload = (SELECT payload FROM events WHERE queue = ? AND event_name = ?)
+              WHERE state = 'sleeping' AND run_id IN (
+                SELECT run_id FROM waits
+                WHERE queue = ? AND event_name = ? AND status = 'waiting'
+              )`,
+        args: [eventName, queue, eventName, queue, eventName],
+      },
+      {
+        sql: `UPDATE tasks SET state = 'pending'
+              WHERE state IN ${LIVE} AND task_id IN (
+                SELECT task_id FROM waits
+                WHERE queue = ? AND event_name = ? AND status = 'waiting'
+              )`,
+        args: [queue, eventName],
+      },
+      {
+        sql: `UPDATE waits SET status = 'delivered'
+              WHERE queue = ? AND event_name = ? AND status = 'waiting'`,
+        args: [queue, eventName],
+      },
+    ])
   }
-  awaitEvent(): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    return notYet('awaitEvent')
+
+  /**
+   * Checkpoint-or-register in ONE batch (§3.4 rule 2): if the event is
+   * already emitted, nothing suspends and the stored payload returns; if
+   * not, the wait registers and the run parks — the single writer
+   * serializes this against emit, so the wakeup cannot be lost between
+   * the check and the park. A timed wait also sets available_at: the
+   * claim path already delivers the timeout wake (event set, payload
+   * NULL) and deletes the expired wait row.
+   */
+  async awaitEvent(
+    queue: string,
+    taskId: string,
+    runId: string,
+    claimToken: string,
+    stepName: string,
+    eventName: string,
+    timeoutSeconds: number | null,
+  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
+    const timeoutMs =
+      timeoutSeconds === null
+        ? null
+        : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
+    const emittedGuard = `NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)`
+    const [, park, , event] = await this.db.batch('await-event', [
+      {
+        sql: `INSERT INTO waits
+                (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
+              SELECT ?, ?, ?, ?, ?, 'waiting',
+                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END, ${NOW_MS}
+              WHERE ${emittedGuard}
+                AND EXISTS (SELECT 1 FROM runs r
+                            WHERE r.run_id = ? AND r.queue = ? AND r.claimed_by = ?
+                              AND r.state = 'running')
+              ON CONFLICT (run_id, step_name) DO NOTHING`,
+        args: [
+          runId,
+          stepName,
+          queue,
+          taskId,
+          eventName,
+          timeoutMs,
+          timeoutMs,
+          queue,
+          eventName,
+          runId,
+          queue,
+          claimToken,
+        ],
+      },
+      {
+        sql: `UPDATE runs SET
+                state = 'sleeping',
+                available_at_ms = CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END,
+                wake_event = ?, event_payload = NULL,
+                claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
+              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+                AND ${emittedGuard}`,
+        args: [timeoutMs, timeoutMs, eventName, runId, queue, claimToken, queue, eventName],
+      },
+      {
+        sql: `UPDATE tasks SET state = 'sleeping'
+              WHERE task_id = ? AND state IN ${LIVE}
+                AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND state = 'sleeping')
+                AND ${emittedGuard}`,
+        args: [taskId, runId, queue, eventName],
+      },
+      {
+        sql: `SELECT payload FROM events WHERE queue = ? AND event_name = ?`,
+        args: [queue, eventName],
+      },
+    ])
+    const row = event?.rows[0]
+    if (row !== undefined) {
+      return { emitted: true, payloadJson: String(row.payload) }
+    }
+    if ((park?.rowsAffected ?? 0) !== 1) {
+      throw new LeaseLostError(`awaitEvent ${runId}`)
+    }
+    return { emitted: false }
   }
 }
 

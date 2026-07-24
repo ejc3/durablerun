@@ -612,6 +612,117 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('events (the TLC-verified emit/await protocol)', () => {
+      async function claimActivate(token: string) {
+        const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        return run
+      }
+
+      it('await-before-emit parks; the emit wakes it with the stored payload', async () => {
+        await f.store.spawn(Q, 'waiter', '{}')
+        const run = await claimActivate('w1')
+        const first = await f.store.awaitEvent(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          's',
+          'go',
+          null,
+        )
+        expect(first).toEqual({ emitted: false })
+        // Parked, unclaimed, untimed: no wake source.
+        expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toHaveLength(0)
+        await f.store.emitEvent(Q, 'go', '{"n":1}')
+        const [woken] = await f.store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 })
+        expect(woken?.runId).toBe(run.runId)
+        expect(woken?.wake).toEqual({ event: 'go', payloadJson: '{"n":1}' })
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('emit-before-await returns the payload inline with nothing suspended', async () => {
+        await f.store.emitEvent(Q, 'ready', '{"x":2}')
+        await f.store.spawn(Q, 'late', '{}')
+        const run = await claimActivate('w1')
+        const outcome = await f.store.awaitEvent(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          's',
+          'ready',
+          null,
+        )
+        expect(outcome).toEqual({ emitted: true, payloadJson: '{"x":2}' })
+        const [row] = await f.raw.batch('t', [
+          { sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] },
+        ])
+        expect(row?.rows[0]?.state).toBe('running') // still ours, not parked
+      })
+
+      it('first write wins: a second emit changes nothing for late awaiters', async () => {
+        await f.store.emitEvent(Q, 'once', '{"v":"first"}')
+        await f.store.emitEvent(Q, 'once', '{"v":"second"}')
+        await f.store.spawn(Q, 'late', '{}')
+        const run = await claimActivate('w1')
+        const outcome = await f.store.awaitEvent(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          's',
+          'once',
+          null,
+        )
+        expect(outcome).toEqual({ emitted: true, payloadJson: '{"v":"first"}' })
+      })
+
+      it('a timed wait that expires claims as the timeout wake and cannot be resurrected', async () => {
+        await f.store.spawn(Q, 'timed', '{}')
+        const run = await claimActivate('w1')
+        expect(
+          await f.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'never', 30),
+        ).toEqual({ emitted: false })
+        await f.admin.setFakeNowEpochMs(1_031_000)
+        const [woken] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+        expect(woken?.wake).toEqual({ event: 'never', timedOut: true })
+        // The expired wait row is gone: a late emit wakes NOTHING.
+        await f.store.emitEvent(Q, 'never', '{"late":true}')
+        const [rows] = await f.raw.batch('t', [
+          { sql: `SELECT COUNT(*) AS n FROM waits WHERE status = 'waiting'`, args: [] },
+        ])
+        expect(Number(rows?.rows[0]?.n)).toBe(0)
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('no resurrection: cancelling a waiting task removes its wait; emit wakes nothing', async () => {
+        const spawned = await f.store.spawn(Q, 'doomed', '{}')
+        const run = await claimActivate('w1')
+        await f.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'later', null)
+        expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
+        await f.store.emitEvent(Q, 'later', '{}')
+        expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toHaveLength(0)
+        const [task] = await f.raw.batch('t', [
+          { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+        ])
+        expect(task?.rows[0]?.state).toBe('cancelled')
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('a zombie awaitEvent is fence-refused (lease authority)', async () => {
+        await f.store.spawn(Q, 'z', '{}')
+        const run = await claimActivate('w1')
+        await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
+        await f.store.sweep(Q, 10) // claim-timeout successor takes over
+        await expect(
+          f.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'e', null),
+        ).rejects.toThrow()
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+    })
+
     describe('driver registry', () => {
       it('a heartbeat is visible, refreshes, and buries expired rows', async () => {
         await f.admin.setFakeNowEpochMs(1_000_000)

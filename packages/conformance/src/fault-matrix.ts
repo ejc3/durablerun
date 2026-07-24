@@ -24,6 +24,8 @@ export const MATRIX_WRITE_LABELS = [
   'heartbeat',
   'reschedule',
   'suspend',
+  'emit-event',
+  'await-event',
   'complete',
   'fail',
   'cancel-task',
@@ -125,7 +127,16 @@ export async function runFaultMatrixCase(
         )
       }
       if (second) {
-        await go(() => store.fail(Q, second.runId, second.claimToken, '{"name":"X"}', null))
+        await go(() =>
+          store.awaitEvent(Q, second.taskId, second.runId, second.claimToken, 'w-ev', 'go', 60),
+        )
+        await go(() => store.emitEvent(Q, 'go', '{"n":1}'))
+        const [woken] =
+          (await go(() => store.claim(Q, 'w-ev2', { leaseSeconds: 60, limit: 1 }))) ?? []
+        if (woken && woken.runId === second.runId) {
+          await go(() => store.activate(Q, woken.runId, woken.claimToken, woken.claimGen))
+          await go(() => store.fail(Q, woken.runId, woken.claimToken, '{"name":"X"}', null))
+        }
       }
       // A full clean lifecycle: claim, activate, complete.
       await go(() => store.spawn(Q, 'd', '{}'))
