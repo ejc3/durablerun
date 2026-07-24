@@ -75,7 +75,14 @@ export class ReplayContext implements TaskContext {
   private readonly seen = new Map<string, unknown>()
   private readonly nameUses = new Map<string, number>()
   private inStep = false
-  private wakeAvailable = true
+  /**
+   * The claim's carried wake, held as the ONLY mutable reference to it —
+   * takeWake consumes it, and nothing else reads this.run.wake. Consume-once
+   * is then structural, not a discipline: a taken wake is unreadable, so a
+   * second await of the same event name cannot re-see it (the stale-wake
+   * re-consumption that was the worst confirmed bug of the events review).
+   */
+  private pendingWake: ClaimedRun['wake']
 
   constructor(
     private readonly store: SchedulerStore,
@@ -86,9 +93,18 @@ export class ReplayContext implements TaskContext {
   ) {
     this.attempt = run.attempt - run.infraRetries
     this.taskName = run.taskName
+    this.pendingWake = run.wake
     for (const cp of checkpoints) {
       this.seen.set(cp.checkpointName, JSON.parse(cp.stateJson))
     }
+  }
+
+  /** Consume the carried wake IFF it is for `name`; unreadable afterward. */
+  private takeWake(name: string): ClaimedRun['wake'] {
+    if (this.pendingWake?.event !== name) return undefined
+    const wake = this.pendingWake
+    this.pendingWake = undefined
+    return wake
   }
 
   /**
@@ -164,15 +180,6 @@ export class ReplayContext implements TaskContext {
     await this.suspendPoint(EngineKey.sleepUntil, { atEpochMs: epochMs })
   }
 
-  /**
-   * A durable suspension point is a checkpoint whose EXISTENCE means "the
-   * wake already happened" — which is only true if the marker and the park
-   * are ONE transition. The suspending pass therefore writes nothing here:
-   * it throws the signal CARRYING the marker, and the worker runtime lands
-   * both atomically via store.suspendRun. A later claim can only happen
-   * once the run is due again, so on replay, existence alone proves the
-   * sleep is over. No clock is consulted anywhere.
-   */
   async emitEvent(name: string, payloadJson: string): Promise<void> {
     // Validated for symmetry with awaitEvent: a reserved-charset event
     // name could never be awaited, so emitting one is a permanent bug,
@@ -188,22 +195,19 @@ export class ReplayContext implements TaskContext {
     }
     const key = this.storageName(EngineKey.awaitEvent(parsed))
     if (this.seen.has(key)) {
-      // The memo IS this wake's consumption record: retire the carried
-      // wake so a later same-name await cannot re-consume it.
-      if (this.run.wake?.event === name) this.wakeAvailable = false
+      // A memo already covers this await — retire the carried wake too, so a
+      // later same-name await cannot consume it (the memo IS its receipt).
+      this.takeWake(name)
       const memo = this.seen.get(key) as { timedOut?: boolean; payloadJson?: string }
       if (memo.timedOut) throw new EventTimeoutError(name)
       return memo.payloadJson as string
     }
-    // A wake delivered with this claim resolves the await: memoize it so
-    // stale wake fields on later claims are never re-consumed.
-    // The run row's wake fields persist after delivery, so the local copy
-    // resolves AT MOST ONE await: without consuming it, a later same-name
-    // await re-sees the stale wake (a free second timeout, or a lost late
-    // emit — the worst confirmed bug of the events review).
-    const wake = this.wakeAvailable ? this.run.wake : undefined
-    if (wake?.event === name) {
-      this.wakeAvailable = false
+    // A wake delivered with this claim resolves the await, consumed once:
+    // the run row's wake fields persist after delivery, so re-reading them
+    // would give a later same-name await a free second timeout or lose a
+    // late emit (the worst confirmed bug of the events review).
+    const wake = this.takeWake(name)
+    if (wake) {
       const memo = 'payloadJson' in wake ? { payloadJson: wake.payloadJson } : { timedOut: true }
       await this.commitMarker(key, JSON.stringify(memo))
       if (memo.timedOut) throw new EventTimeoutError(name)
@@ -241,6 +245,15 @@ export class ReplayContext implements TaskContext {
     this.seen.set(key, JSON.parse(stateJson))
   }
 
+  /**
+   * A durable suspension point is a checkpoint whose EXISTENCE means "the
+   * wake already happened" — which is only true if the marker and the park
+   * are ONE transition. The suspending pass therefore writes nothing here:
+   * it throws the signal CARRYING the marker, and the worker runtime lands
+   * both atomically via store.suspendRun. A later claim can only happen
+   * once the run is due again, so on replay, existence alone proves the
+   * sleep is over. No clock is consulted anywhere.
+   */
   private async suspendPoint(
     kind: EngineKey,
     wake: { inSeconds: number } | { atEpochMs: number },

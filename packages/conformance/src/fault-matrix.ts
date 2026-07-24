@@ -5,6 +5,15 @@ import { engineInvariantViolations } from './invariants.js'
 const Q = 'q'
 
 /**
+ * The per-tick claim bound the matrix asserts as a QUANTITY invariant (the
+ * one state checkers cannot see). One definition: the workload claims at
+ * this limit and the post-run check forbids any tick holding more — a
+ * hardcoded copy in the assertion is exactly how a raised limit would
+ * silently turn the bound wrong.
+ */
+const CLAIM_LIMIT = 2
+
+/**
  * The label inventory, classified. The store-libsql label-inventory test
  * asserts (via the same harvester the spec ledger uses) that every batch
  * label in the store source appears in exactly one of these lists — a new
@@ -84,7 +93,6 @@ export async function runFaultMatrixCase(
       })
     }
 
-    const CLAIM_LIMIT = 2
     world.actor('driver', async (simDb) => {
       const store = f.storeOver(simDb)
       // Every call is fault-tolerant: a crash rejection means "this call's
@@ -159,7 +167,8 @@ export async function runFaultMatrixCase(
       if (t5) await go(() => store.cancelTask(Q, t5.taskId))
       await go(() => store.spawn(Q, 'f', '{}'))
       await go(() => store.spawn(Q, 'g', '{}'))
-      const pair = (await go(() => store.claim(Q, 'w2', { leaseSeconds: 30, limit: 2 }))) ?? []
+      const pair =
+        (await go(() => store.claim(Q, 'w2', { leaseSeconds: 30, limit: CLAIM_LIMIT }))) ?? []
       const [dies] = pair
       if (dies) {
         await go(() => store.activate(Q, dies.runId, dies.claimToken, dies.claimGen))
@@ -191,8 +200,8 @@ export async function runFaultMatrixCase(
     const [over] = await f.raw.batch('t', [
       {
         sql: `SELECT claimed_by AS v, COUNT(*) AS n FROM runs
-              WHERE state = 'running' GROUP BY claimed_by HAVING COUNT(*) > 2`,
-        args: [],
+              WHERE state = 'running' GROUP BY claimed_by HAVING COUNT(*) > ?`,
+        args: [CLAIM_LIMIT],
       },
     ])
     if ((over?.rows.length ?? 0) > 0) {

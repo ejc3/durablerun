@@ -191,6 +191,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('reports lease lost for a stale token — the AB002 signal', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'tick-1', { leaseSeconds: 60, limit: 1 })
+        // A bare `if (!run) return` would make this test pass VACUOUSLY if
+        // claim ever stopped returning the run — assert the precondition.
+        expect(run).toBeDefined()
         if (!run) return
         expect(await f.store.heartbeat(Q, run.runId, 'stale-token', 60)).toEqual({
           held: false,
@@ -1126,6 +1129,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           }
           expect(successorTasks, `seed ${seed}`).toBe(2)
           expect(reopenedTasks, `seed ${seed}`).toBe(1)
+          // Invariants at quiescence, not only the scenario's own counts.
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
           fx.close()
         }
       })
@@ -1155,6 +1160,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           const all = [...claimedBy.values()].flat()
           expect(all.length, `seed ${seed}: total claims`).toBe(4)
           expect(new Set(all).size, `seed ${seed}: distinct runs`).toBe(4)
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
           fx.close()
         }
       })
@@ -1191,6 +1197,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             },
           ])
           expect(Number(running?.rows[0]?.n), `seed ${seed}: no ownerless running run`).toBe(0)
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
           fx.close()
         }
       })
