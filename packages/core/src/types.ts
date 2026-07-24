@@ -77,9 +77,14 @@ export interface ClaimedRun {
 /**
  * Discriminated so impossible states are unrepresentable: a wake either
  * delivered a payload or timed out — never both, never neither (the SDK
- * surfaces the timeout branch as EventTimeoutError).
+ * surfaces the timeout branch as EventTimeoutError). `step` is the replay
+ * key of the exact await that registered the wait, so the SDK matches a
+ * delivered wake to the right await instance (not by the non-unique event
+ * name).
  */
-export type EventWake = { event: string; payloadJson: string } | { event: string; timedOut: true }
+export type EventWake =
+  | { event: string; step: string; payloadJson: string }
+  | { event: string; step: string; timedOut: true }
 
 export interface Checkpoint {
   checkpointName: string

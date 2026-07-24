@@ -53,7 +53,7 @@ export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
 const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
-       r.wake_event, r.event_payload,
+       r.wake_event, r.event_payload, r.wake_step,
        t.task_name, t.params, t.retry_strategy, t.max_attempts, t.headers, t.infra_retries`
 
 /**
@@ -581,10 +581,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         'successor',
         `INSERT INTO runs
            (run_id, queue, task_id, attempt, state, available_at_ms,
-            wake_event, event_payload, run_db, created_at_ms, claimed_by)
+            wake_event, event_payload, wake_step, run_db, created_at_ms, claimed_by)
          SELECT ?, r.queue, r.task_id, ?, 'pending',
                 ${NOW_MS} + ${INFRA_BACKOFF_SECONDS} * 1000,
-                r.wake_event, r.event_payload, r.run_db, ${NOW_MS}, ${STAMP}
+                r.wake_event, r.event_payload, r.wake_step, r.run_db, ${NOW_MS}, ${STAMP}
          FROM runs r JOIN tasks t ON t.task_id = r.task_id
          WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
            AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}`,
@@ -754,11 +754,21 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            available_at_ms = ${wakeExpr},
            wake_event = CASE WHEN ? = 'preserve' THEN wake_event ELSE NULL END,
            event_payload = CASE WHEN ? = 'preserve' THEN event_payload ELSE NULL END,
+           wake_step = CASE WHEN ? = 'preserve' THEN wake_step ELSE NULL END,
            claimed_by = ${STAMP}, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
          WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
            AND EXISTS (SELECT 1 FROM tasks t
                        WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
-        [wakeArg, wakeArg, wakeDisposition, wakeDisposition, runId, queue, claimToken],
+        [
+          wakeArg,
+          wakeArg,
+          wakeDisposition,
+          wakeDisposition,
+          wakeDisposition,
+          runId,
+          queue,
+          claimToken,
+        ],
       )
       // The task mirrors the run's suspension state (LIVE-guarded: rule 6).
       .followOn(
@@ -796,7 +806,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         `UPDATE runs SET
            state = CASE WHEN ${wakeExpr} <= ${NOW_MS} THEN 'pending' ELSE 'sleeping' END,
            available_at_ms = ${wakeExpr},
-           wake_event = NULL, event_payload = NULL,
+           wake_event = NULL, event_payload = NULL, wake_step = NULL,
            claimed_by = ${STAMP}, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
          WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
            AND EXISTS (SELECT 1 FROM tasks t
@@ -839,7 +849,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         'complete',
         `UPDATE runs SET
            state = 'completed', completed_at_ms = ${NOW_MS}, result = ?,
-           wake_event = NULL, event_payload = NULL,
+           wake_event = NULL, event_payload = NULL, wake_step = NULL,
            claimed_by = ${STAMP}, claim_expires_at_ms = NULL
          WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
         [resultJson, runId, queue, claimToken],
@@ -895,11 +905,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           'successor',
           `INSERT INTO runs
              (run_id, queue, task_id, attempt, state, available_at_ms,
-              wake_event, event_payload, run_db, created_at_ms, claimed_by)
+              wake_event, event_payload, wake_step, run_db, created_at_ms, claimed_by)
            SELECT ?, r.queue, r.task_id, r.attempt + 1,
                   CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
                   ${NOW_MS} + ?,
-                  r.wake_event, r.event_payload, r.run_db, ${NOW_MS}, ${STAMP}
+                  r.wake_event, r.event_payload, r.wake_step, r.run_db, ${NOW_MS}, ${STAMP}
            FROM runs r JOIN tasks t ON t.task_id = r.task_id
            WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
              AND t.state IN ${LIVE} AND t.attempts + 1 < t.max_attempts`,
@@ -1159,14 +1169,25 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         sql: `UPDATE runs SET
                 state = 'sleeping',
                 available_at_ms = CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END,
-                wake_event = ?, event_payload = NULL,
+                wake_event = ?, event_payload = NULL, wake_step = ?,
                 claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
               WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
                 AND state = 'running'
                 AND EXISTS (SELECT 1 FROM tasks t
                             WHERE t.task_id = runs.task_id AND ${eligibleTask('t')})
                 AND ${emittedGuard}`,
-        args: [timeoutMs, timeoutMs, eventName, runId, queue, taskId, claimToken, queue, eventName],
+        args: [
+          timeoutMs,
+          timeoutMs,
+          eventName,
+          stepName,
+          runId,
+          queue,
+          taskId,
+          claimToken,
+          queue,
+          eventName,
+        ],
       },
       {
         // The mirror is fenced to the run THIS call parked: the sleeping run
@@ -1231,10 +1252,14 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
       row.headers === null ? {} : (JSON.parse(String(row.headers)) as Record<string, string>),
   }
   if (row.wake_event !== null) {
+    const event = String(row.wake_event)
+    // A wake registered before wake_step existed (or a non-await wake) has
+    // no step; fall back to the event name so old rows still decode.
+    const step = row.wake_step === null ? event : String(row.wake_step)
     claimed.wake =
       row.event_payload === null
-        ? { event: String(row.wake_event), timedOut: true }
-        : { event: String(row.wake_event), payloadJson: String(row.event_payload) }
+        ? { event, step, timedOut: true }
+        : { event, step, payloadJson: String(row.event_payload) }
   }
   return claimed
 }

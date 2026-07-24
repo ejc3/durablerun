@@ -670,7 +670,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.emitEvent(Q, 'go', '{"n":1}')
         const [woken] = await f.store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 })
         expect(woken?.runId).toBe(run.runId)
-        expect(woken?.wake).toEqual({ event: 'go', payloadJson: '{"n":1}' })
+        expect(woken?.wake).toEqual({ event: 'go', step: 's', payloadJson: '{"n":1}' })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
@@ -721,7 +721,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toEqual({ emitted: false })
         await f.admin.setFakeNowEpochMs(1_031_000)
         const [woken] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
-        expect(woken?.wake).toEqual({ event: 'never', timedOut: true })
+        expect(woken?.wake).toEqual({ event: 'never', step: 's', timedOut: true })
         // The expired wait row is gone: a late emit wakes NOTHING.
         await f.store.emitEvent(Q, 'never', '{"late":true}')
         const [rows] = await f.raw.batch('t', [
@@ -771,7 +771,11 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           if (inline === null) {
             const [woken] = await fx.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
             expect(woken?.runId, `seed ${seed}`).toBe(run.runId)
-            expect(woken?.wake, `seed ${seed}`).toEqual({ event: 'race', payloadJson: '{"r":1}' })
+            expect(woken?.wake, `seed ${seed}`).toEqual({
+              event: 'race',
+              step: 's',
+              payloadJson: '{"r":1}',
+            })
           } else {
             expect(inline, `seed ${seed}`).toBe('{"r":1}')
           }

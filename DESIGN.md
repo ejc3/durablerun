@@ -453,7 +453,14 @@ Every code path that makes work runnable **commits first, then pings**:
   placement the waiters' checkpoints are written in the same batch (Absurd
   verbatim — durable-at-emit); under `dedicated` placement the payload is parked
   on the run row and wait rows flip to `delivered` for materialize-on-resume
-  (§3.8.3) → ping.
+  (§3.8.3) → ping. The parked run carries `wake_step` — the replay key of the
+  await that registered the wait — alongside `wake_event`/`event_payload`, so a
+  delivered wake binds to the exact await that requested it. The SDK matches a
+  carried wake by `wake_step` (unique per await), never by the event name
+  (shared across a task's awaits of the same event), so one await can never
+  consume another's wake. `wake_step` travels with the wake through every
+  transition (suspend/reschedule consume or preserve it as a unit; failure and
+  claim-timeout successors carry it forward).
 - Hook/webhook arrivals (HTTP routes) → same.
 - Worker suspending or finishing with any future work created (its own sleep, a
   scheduled retry, remaining backlog) → ping, unconditionally (§3.2).

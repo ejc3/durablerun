@@ -141,6 +141,14 @@ export const MIGRATIONS: Migration[] = [
       ) WITHOUT ROWID`,
     ],
   },
+  {
+    // wake_step binds a delivered event/timeout wake to the exact await
+    // that registered it (its step key), so a run awaiting one event name
+    // at two call sites cannot have one await's wake consumed by another.
+    // Travels with wake_event/event_payload through every transition.
+    version: 3,
+    statements: [`ALTER TABLE runs ADD COLUMN wake_step TEXT`],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

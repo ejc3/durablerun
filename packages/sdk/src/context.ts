@@ -99,9 +99,14 @@ export class ReplayContext implements TaskContext {
     }
   }
 
-  /** Consume the carried wake IFF it is for `name`; unreadable afterward. */
-  private takeWake(name: string): ClaimedRun['wake'] {
-    if (this.pendingWake?.event !== name) return undefined
+  /**
+   * Consume the carried wake IFF it was registered by the await with this
+   * STEP key; unreadable afterward. Matching by step (unique per await),
+   * not by event name (shared across awaits of the same event), is what
+   * keeps one await from consuming another await's wake.
+   */
+  private takeWake(stepKey: string): ClaimedRun['wake'] {
+    if (this.pendingWake?.step !== stepKey) return undefined
     const wake = this.pendingWake
     this.pendingWake = undefined
     return wake
@@ -209,18 +214,19 @@ export class ReplayContext implements TaskContext {
     }
     const key = this.storageName(EngineKey.awaitEvent(parsed))
     if (this.seen.has(key)) {
-      // A memo already covers this await — retire the carried wake too, so a
-      // later same-name await cannot consume it (the memo IS its receipt).
-      this.takeWake(name)
+      // A memo already covers THIS await (matched by its step key) — retire
+      // its carried wake so it cannot be re-read; a wake for a different
+      // await (same event name, different step) is left untouched.
+      this.takeWake(key)
       const memo = this.seen.get(key) as { timedOut?: boolean; payloadJson?: string }
       if (memo.timedOut) throw new EventTimeoutError(name)
       return memo.payloadJson as string
     }
     // A wake delivered with this claim resolves the await, consumed once:
-    // the run row's wake fields persist after delivery, so re-reading them
-    // would give a later same-name await a free second timeout or lose a
-    // late emit (the worst confirmed bug of the events review).
-    const wake = this.takeWake(name)
+    // the run row's wake fields persist after delivery, so matching by the
+    // unique step key (not the shared event name) keeps a later same-name
+    // await from stealing this one's wake.
+    const wake = this.takeWake(key)
     if (wake) {
       const memo = 'payloadJson' in wake ? { payloadJson: wake.payloadJson } : { timedOut: true }
       await this.commitMarker(key, JSON.stringify(memo))
