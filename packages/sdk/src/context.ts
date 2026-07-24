@@ -1,6 +1,7 @@
 import {
   type Checkpoint,
   type ClaimedRun,
+  durationToMs,
   FatalTaskError,
   requireEpochMs,
   type SchedulerStore,
@@ -39,6 +40,7 @@ export class ReplayContext implements TaskContext {
   readonly taskName: string
   private readonly seen = new Map<string, unknown>()
   private readonly nameUses = new Map<string, number>()
+  private inStep = false
 
   constructor(
     private readonly store: SchedulerStore,
@@ -76,16 +78,31 @@ export class ReplayContext implements TaskContext {
         `step name '${name}' uses reserved characters ('#' anywhere, '$' prefix)`,
       )
     }
+    // Reentrancy corrupts the repeat counters on replay: an inner call
+    // consumes a slot a replaying pass (which skips the outer body) never
+    // sees, so a later same-named step replays the WRONG checkpoint.
+    if (this.inStep) {
+      throw new FatalTaskError(`ctx.step('${name}') called inside another step — steps cannot nest`)
+    }
     const key = this.storageName(name)
     if (this.seen.has(key)) {
       return this.seen.get(key) as T
     }
     // Execute, then commit. A throwing step checkpoints NOTHING — the next
     // attempt re-executes it (retries are the failure story, not replay).
-    // `undefined` is pinned to null so the executing pass and every replay
-    // return the same value.
-    const result = ((await fn()) ?? null) as T
-    const stateJson = JSON.stringify(result)
+    this.inStep = true
+    let raw: unknown
+    try {
+      raw = (await fn()) ?? null
+    } finally {
+      this.inStep = false
+    }
+    const stateJson = JSON.stringify(raw)
+    // ONE representation: the caller gets the serialize-then-parse
+    // CANONICAL value on the executing pass too, so NaN, Dates, dropped
+    // undefined fields, and -0 read identically on every pass of every
+    // schedule (there is no second path for divergence to live in).
+    const result = JSON.parse(stateJson) as T
     await this.store.setCheckpoint(
       this.queue,
       this.run.taskId,
@@ -100,11 +117,23 @@ export class ReplayContext implements TaskContext {
   }
 
   async sleepFor(seconds: number): Promise<void> {
+    // Validate HERE, before any suspend signal exists: an invalid duration
+    // is a permanent user error, and validating later (inside the park)
+    // would loop the deterministic bad call through lease recovery.
+    try {
+      durationToMs('sleepFor seconds', seconds)
+    } catch (error) {
+      throw new FatalTaskError(String(error))
+    }
     await this.suspendPoint(`$sleep`, { inSeconds: seconds })
   }
 
   async sleepUntil(epochMs: number): Promise<void> {
-    requireEpochMs('sleepUntil epochMs', epochMs)
+    try {
+      requireEpochMs('sleepUntil epochMs', epochMs)
+    } catch (error) {
+      throw new FatalTaskError(String(error))
+    }
     await this.suspendPoint(`$sleep-until`, { atEpochMs: epochMs })
   }
 

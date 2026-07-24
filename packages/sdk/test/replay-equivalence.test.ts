@@ -133,7 +133,7 @@ async function runProgram(
           if (calls === failAtCall) {
             return Promise.reject(new StoreUnavailableError('injected outage'))
           }
-          return (value as CallableFunction).apply(target, args)
+          return (value as (...a: unknown[]) => unknown).apply(target, args)
         }
       },
     }) as SchedulerStore
