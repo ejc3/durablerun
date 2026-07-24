@@ -18,10 +18,11 @@ ENGINE_SRC_DIRS=(
   # join on arrival — dialect stores are engine code too.
 )
 ALLOWLIST=(
-  packages/core/src/ids.ts # systemIdSource IS the id/entropy boundary
+  packages/core/src/ids.ts          # systemIdSource IS the id/entropy boundary
+  packages/core/src/system-clock.ts # systemClock IS the local-time boundary
 )
 
-PATTERN='Date\.now|new Date\(|Math\.random|setTimeout|setInterval|setImmediate|performance\.now|process\.hrtime|crypto\.randomUUID'
+PATTERN='Date\.now|new Date\(|Math\.random|setTimeout|setInterval|setImmediate|performance\.now|process\.hrtime|crypto\.randomUUID|systemClock\(|systemIdSource\(|AbortSignal\.timeout|scheduler\.wait'
 
 violations=0
 for dir in "${ENGINE_SRC_DIRS[@]}"; do

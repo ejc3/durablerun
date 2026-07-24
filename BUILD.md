@@ -91,7 +91,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR2.3 worker runtime + Launcher**: local worker HTTP server (activate →
   preload → execute → transition → unconditional ping), HMAC fire-and-forget
   launcher over localhost, SDK core (`ctx.step`, `sleepFor/Until`). Local e2e:
-  enqueue → done; kill-worker chaos → sweep recovers.
+  enqueue → done; kill-worker chaos → sweep recovers. Carries two deferrals
+  from the loop review: the `/wake` HTTP endpoint (producers currently
+  cannot reach the in-process wake(); it rides the worker server's process
+  entry), and an abort signal through the Launcher port so a timed-out
+  transport call can actually be cancelled instead of abandoned.
 - **PR2.4 local chaos e2e**: multi-driver + multi-worker processes against one
   SQLite file; scripted kill/drop/duplicate scenarios from the sim harness run
   against real processes. Includes the systematic fault MATRIX from the

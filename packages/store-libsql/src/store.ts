@@ -651,6 +651,32 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     return (expired?.rowsAffected ?? 0) === 1
   }
 
+  /**
+   * Observability only: upsert this driver's liveness row. Nothing in the
+   * protocol reads it — operators (and later, ops tooling) see the fleet.
+   * Replay-safe: re-applying the same beat is the same row.
+   */
+  async driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void> {
+    const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
+    await this.db.batch('driver-heartbeat', [
+      {
+        sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
+              VALUES (?, ?, ${NOW_MS}, ${NOW_MS} + ?)
+              ON CONFLICT (queue, driver_id) DO UPDATE SET
+                last_beat_ms = excluded.last_beat_ms,
+                expires_at_ms = excluded.expires_at_ms`,
+        args: [queue, driverId, ttlMs],
+      },
+      // Self-cleaning: every beat also buries the expired (a fresh id per
+      // process restart must not grow the table forever — bounds are
+      // invariants too).
+      {
+        sql: `DELETE FROM drivers WHERE expires_at_ms < ${NOW_MS}`,
+        args: [],
+      },
+    ])
+  }
+
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
     return this.cancelTransition('cancel-task', queue, taskId, false)
   }

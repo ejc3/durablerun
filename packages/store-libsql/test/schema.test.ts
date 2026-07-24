@@ -1,5 +1,11 @@
+import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CURRENT_SCHEMA_VERSION, LibsqlExecutor, LibsqlStoreAdmin } from '../src/index.js'
+import {
+  CURRENT_SCHEMA_VERSION,
+  LibsqlExecutor,
+  LibsqlStoreAdmin,
+  MIGRATIONS,
+} from '../src/index.js'
 
 let db: LibsqlExecutor
 let admin: LibsqlStoreAdmin
@@ -61,5 +67,28 @@ describe('engine time', () => {
     await admin.setFakeNowEpochMs(null)
     const now = await admin.nowEpochMs()
     expect(Math.abs(now - Date.now())).toBeLessThan(5000)
+  })
+})
+
+describe('migrations are append-only', () => {
+  /**
+   * The runner skips versions a database has already applied, so EDITING a
+   * shipped migration silently strands every existing database without the
+   * change (found when the drivers table was first added by editing v1).
+   * These hashes freeze each migration's content the moment a later version
+   * exists: to change the schema, append a new migration — the build refuses
+   * a rewrite of history. When you APPEND version N+1, add its hash here.
+   */
+  const FROZEN: Record<number, string> = {
+    1: 'fa525645bb25c0ae6c0d9c5922e2d3005e00c5a120372cf6a72d030cdc484dcb',
+    2: '120485faedab6f3f915c60d2f8dbbba5b810fa9233e4a6423c843d6dac4eecfa',
+  }
+
+  it('every migration hash matches its frozen value', () => {
+    for (const migration of MIGRATIONS) {
+      const hash = createHash('sha256').update(migration.statements.join('\n')).digest('hex')
+      expect(FROZEN[migration.version], `migration v${migration.version} is not frozen`).toBe(hash)
+    }
+    expect(Object.keys(FROZEN)).toHaveLength(MIGRATIONS.length)
   })
 })

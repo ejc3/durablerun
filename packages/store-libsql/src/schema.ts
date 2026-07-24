@@ -126,6 +126,21 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS waits_event ON waits (queue, event_name)`,
     ],
   },
+  {
+    // Migrations are APPEND-ONLY: the runner skips versions a database has
+    // already applied, so editing a shipped migration silently strands every
+    // existing database without the change (schema.test.ts pins v1 frozen).
+    version: 2,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS drivers (
+        queue TEXT NOT NULL,
+        driver_id TEXT NOT NULL,
+        last_beat_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (queue, driver_id)
+      ) WITHOUT ROWID`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

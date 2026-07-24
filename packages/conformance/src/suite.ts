@@ -612,6 +612,32 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('driver registry', () => {
+      it('a heartbeat is visible, refreshes, and buries expired rows', async () => {
+        await f.admin.setFakeNowEpochMs(1_000_000)
+        await f.store.driverHeartbeat(Q, 'd1', 10)
+        const read = async () =>
+          (
+            await f.raw.batch(
+              't',
+              [
+                {
+                  sql: `SELECT driver_id, expires_at_ms FROM drivers ORDER BY driver_id`,
+                  args: [],
+                },
+              ],
+              'read',
+            )
+          )[0]?.rows ?? []
+        expect(await read()).toMatchObject([{ driver_id: 'd1', expires_at_ms: 1_010_000 }])
+        // Refresh extends; a second driver appears; the expired one is
+        // buried by any later beat (self-cleaning registry).
+        await f.admin.setFakeNowEpochMs(1_011_000)
+        await f.store.driverHeartbeat(Q, 'd2', 10)
+        expect(await read()).toMatchObject([{ driver_id: 'd2' }])
+      })
+    })
+
     describe('nextWakeAtEpochMs', () => {
       it('is null on an empty queue and the true min across all wake sources', async () => {
         expect(await f.store.nextWakeAtEpochMs(Q)).toBeNull()

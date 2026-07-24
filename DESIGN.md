@@ -270,6 +270,14 @@ deployment:
 Either way, every trigger — poll timer, ping, alarm, cron — means the same thing:
 *"there may be runnable work; look."*
 
+Resident-driver launch watchdog: with an ASYNC (fire-and-forget) launcher,
+the loop abandons a launch call that has not acked within a deadline
+(default 10s) and treats it as a failed launch — the run recovers through
+the normal lost-launch path, so a hung transport costs one timeout, never a
+stalled driver. With a bounded-slot SYNC launcher (§3.9 — the call runs the
+worker inline and legitimately lasts as long as the run) the watchdog must
+be DISABLED; the slot bound, not a timeout, is the backpressure.
+
 ```
 tick():
   0. cancel: enforce cancellation policies (max_delay / max_duration):
@@ -582,7 +590,7 @@ Dialect implementations:
 | scale-out | DB-per-tenant/queue via Platform API (free, ~100ms create + ~2.5s data-plane readiness gate — see §5) | vitess sharding | partitioning (Absurd has it) |
 
 Schema: Absurd's five tables essentially verbatim (`tasks`, `runs`, `checkpoints`,
-`events`, `waits`), minus per-queue dynamic DDL (use a `queue` column + the hot
+`events`, `waits`), plus an observability-only `drivers` registry table, minus per-queue dynamic DDL (use a `queue` column + the hot
 index instead; per-queue table-sets were a Postgres-partitioning affordance),
 minus `'infinity'` timestamps (use NULL/sentinel max), JSON as TEXT for the lowest
 common denominator.
@@ -858,7 +866,12 @@ lease timer would do anyway, never directly complete or fail a run.
    `reschedule`, `complete`, `fail` (retry policy in core, applied fenced),
    `sweep` (expired leases + cancellation, classified by activation state),
    `expireLeaseNow`, `emitEvent`/`registerWait` (worker-initiated
-   registration is claim-fenced like every worker write), `nextWakeAt`.
+   registration is claim-fenced like every worker write), `nextWakeAt`, and
+   `driverHeartbeat` — an observability-only upsert of the driver's liveness
+   row (`drivers` table: queue+driver id, last beat, expiry at twice the
+   beat cadence; each beat also deletes expired rows so the registry is
+   self-cleaning). Nothing in the protocol reads it; a failed beat costs
+   nothing but visibility.
 2. **Launcher** (execution transport, agnostic on "how"):
    `launch({runId, attempt, claimToken, claimGen, shard, deadlineHint}) →`
    `accepted` (fire-and-forget ack — may still be lost) |
