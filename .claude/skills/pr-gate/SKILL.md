@@ -52,6 +52,11 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    GitHub refuses, not a rule to remember — it was forgotten under
    momentum twice; now the failure mode requires deliberately attesting
    falsely, a different and auditable class.
+7. **Simplify + elegance pass ran** — before the final push, a dedicated
+   simplification review over the FULL branch diff (`/simplify`, or an
+   equivalent walk of Part 5): every accepted simplification lands in the
+   PR, every rejected one gets a written reason in the PR body. "It works"
+   is not the bar. [CLAUDE.md standing rule]
 
 ## Part 2 — Correctness checks (what reviews hunt, learned here)
 
@@ -245,6 +250,17 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
 - **Prevention + class altitude**: every fix ships the class-level tripwire —
   invariant checker, fuzz op, sim actor, or lint — not just the instance
   test.
+- **Every review-caught bug is a SEV**: a bug that survives the author's
+  machinery and is found by review — or later (nightly, production) — gets
+  a complete postmortem under `postmortems/` committed in the SAME PR:
+  impact, red/green commits, the finder artifact quoted, per-finding layer
+  analysis (which layer should have caught it and why it could not), the
+  mechanisms instituted with their ladder rungs, deferrals in BUILD.md.
+  MECHANIZED: review-attest.sh refuses to attest a branch carrying red-test
+  commits unless the PR adds a postmortem with all required sections (or
+  the body declares `review-findings: 0`, publicly claiming every red
+  commit was machinery-caught — the same auditable-if-false class as the
+  attestation itself). [CLAUDE.md standing rule]
 - **DESIGN.md updates in the same diff** for any observable behavior change
   (thrown error types, LWW semantics, mirror rules — all were missed once).
 - **BUILD.md scope reconciliation**: promised-but-deferred items get an

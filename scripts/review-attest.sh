@@ -12,6 +12,16 @@
 # 'reviews-abandoned:<reason>' trailer in the PR body (which this script
 # echoes into the status description so the exception is public).
 #
+# SEV rule (CLAUDE.md): every review-caught bug requires a complete
+# postmortem in the same PR. Red-test commits ('RED:' subjects, required
+# by the red-test-before-fix rule) are the structural signal that findings
+# were accepted, so:
+#   3. a branch with RED commits (or a declared nonzero finding count)
+#      must add a postmortems/*.md containing every required section, or
+#      attestation is refused. A branch whose red commits were all caught
+#      by the author's own machinery (fuzz, TLC, sims — not review) says
+#      so publicly with a 'review-findings: 0' line in the PR body.
+#
 # It cannot force the reviews to be GOOD — it forces the failure mode from
 # "forgot under momentum" (which happened twice) to "deliberately attested
 # falsely", a different and auditable class.
@@ -36,6 +46,27 @@ grep -q "tokens used" "$CODEX_LOG" || { echo "codex log INCOMPLETE (no terminal 
 if [[ "$JOURNAL" != "-" ]]; then
   [[ -f "$JOURNAL" ]] || { echo "no workflow journal: $JOURNAL" >&2; exit 1; }
   grep -q '"type":"result"' "$JOURNAL" || { echo "journal has no agent results" >&2; exit 1; }
+fi
+
+HEADLINES=$(gh pr view "$PR" --json commits --jq '.commits[].messageHeadline')
+DECLARED=$(grep -E '^review-findings:[[:space:]]*[0-9]+' <<<"$BODY" | head -1 | grep -oE '[0-9]+' || true)
+NEEDS_PM=0
+if [[ -n "$DECLARED" && "$DECLARED" -gt 0 ]]; then NEEDS_PM=1; fi
+if [[ -z "$DECLARED" ]] && grep -qE '^RED[: ]' <<<"$HEADLINES"; then NEEDS_PM=1; fi
+if [[ "$NEEDS_PM" -eq 1 ]]; then
+  PM_FILES=$(gh pr diff "$PR" --name-only | grep -E '^postmortems/' | grep -v 'TEMPLATE' || true)
+  if [[ -z "$PM_FILES" ]]; then
+    echo "SEV rule: branch has red-test commits (or declared findings) but the PR adds no postmortems/*.md — refusing to attest" >&2
+    exit 1
+  fi
+  while IFS= read -r f; do
+    CONTENT=$(gh api "repos/{owner}/{repo}/contents/$f?ref=$SHA" --jq .content | base64 -d)
+    for section in '## Severity' '## Findings' '## Evidence' '## Root cause' '## Mechanisms'; do
+      grep -qF "$section" <<<"$CONTENT" || {
+        echo "SEV rule: postmortem $f is missing required section '$section'" >&2; exit 1; }
+    done
+  done <<<"$PM_FILES"
+  echo "SEV rule satisfied: postmortem present with all required sections ($PM_FILES)"
 fi
 
 gh api "repos/{owner}/{repo}/statuses/$SHA" -f state=success \

@@ -125,3 +125,43 @@ a conformance case) — max_attempts was guarded in the model and enforced
 nowhere, and the fuzz ran green while violating it; (2) safety checking
 needs a progress floor — a fuzz walk that accomplishes nothing must fail,
 or total fence-loss regressions pass invariant-clean.
+
+## Standing rule: every review-caught bug is a SEV
+
+A bug that survives the author's machinery and is found by adversarial
+review — or anything later: the nightly volume legs, a sim escape after
+merge, production — is a severity incident, not a routine fix. The code's
+failure is the small part; the interesting failure is the machinery that
+let it through. Every such round produces a complete postmortem, committed
+in the same PR under `postmortems/` (copy `postmortems/TEMPLATE.md`), with
+the evidence attached to the PR:
+
+- per finding: the failing behavior and its user-visible impact;
+- the red-test commit (run and seen failing) and the green-fix commit;
+- the review artifact that found it — where it ran and its quoted verdict;
+- per finding: the layer that structurally should have caught it, the
+  precise reason it could not, and the mechanism instituted, with its rung
+  on the prevention ladder;
+- what was built now vs deferred (deferrals recorded in BUILD.md).
+
+Enforced, not remembered: `scripts/review-attest.sh` refuses to produce the
+required `adversarial-review` status for a PR whose branch carries red-test
+commits (or whose body declares a nonzero finding count) unless the PR also
+adds a postmortem containing every required section. Bugs caught by the
+author's own machinery before review — TLC at spec time, red tests, fuzz —
+are the system working, not SEVs; a PR whose red commits were all
+machinery-caught says so publicly with a `review-findings: 0` line in its
+body, the same auditable-if-false class as the attestation itself.
+
+## Standing rule: a simplify and elegance pass gates every PR
+
+Correctness outranks speed here, and elegance is a correctness input: the
+subtle bugs in this repo's history lived in duplicated shapes, method-local
+guards, and second read paths — exactly what simplification removes. Before
+the final push of every PR, run a dedicated simplification pass over the
+FULL branch diff (`/simplify`, or an equivalent walk of the pr-gate
+simplify checklist): hoist repeated shapes, collapse second representations,
+push guards to chokepoints, delete config nobody can set. Every accepted
+simplification lands in the PR; every rejected one gets a written reason in
+the PR body. "It works" is not the bar — the implementation should read as
+if written by someone who knew everything learned while building it.

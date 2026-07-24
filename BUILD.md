@@ -117,7 +117,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   batches), timeout branch, wait rows. Conformance: emit-before-await,
   await-before-emit, timeout-vs-emit race, one-shot first-write-wins, plus
   executable twins of the spec's no-lost-wakeup and no-resurrection
-  invariants.
+  invariants. The review round found five bugs (see
+  postmortems/pr11-events-review.md); it carries three deferrals from that
+  round: a stale-fence fault column in the generated fault matrix
+  (per-label zombie probes with snapshot comparison), a fence-surface lint
+  (every caller-supplied identity parameter appears in every write fence
+  of its batch or carries an explicit waiver), and structural
+  wake-consumption binding (a wake bound to its awaiting step instead of
+  consumed by a flag).
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
