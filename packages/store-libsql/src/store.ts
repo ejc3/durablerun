@@ -281,10 +281,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                   SELECT r.run_id FROM runs r
                   WHERE r.task_id = tasks.task_id AND r.claimed_by = ? AND r.state = 'running'
                 )
-              WHERE task_id IN (
-                SELECT task_id FROM runs
-                WHERE queue = ? AND claimed_by = ? AND state = 'running'
-              )`,
+              WHERE state IN ${LIVE}
+                AND task_id IN (
+                  SELECT task_id FROM runs
+                  WHERE queue = ? AND claimed_by = ? AND state = 'running'
+                )`,
         args: [claimToken, queue, claimToken],
       },
       // 3. A timed-out waiter's claim consumes its wait row, so a later emit
@@ -299,11 +300,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 AND timeout_at_ms <= ${NOW_MS}`,
         args: [queue, claimToken],
       },
-      // 4. Hand back run⋈task data for the launch payloads.
+      // 4. Hand back run⋈task data for the launch payloads — only for LIVE
+      //    tasks, so a terminal task's corrupt running run is never launched.
       {
         sql: `SELECT ${CLAIMED_RUN_COLUMNS}
               FROM runs r JOIN tasks t ON t.task_id = r.task_id
               WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
+                AND t.state IN ${LIVE}
               ORDER BY r.run_id`,
         args: [queue, claimToken],
       },
@@ -352,10 +355,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                       + json_extract(cancellation, '$.maxDurationSeconds') * 1000 AS INTEGER)
                   ELSE NULL
                 END
-              WHERE task_id = (
-                SELECT task_id FROM runs
-                WHERE run_id = ? AND claimed_by = ? AND activated_gen = ?
-              )`,
+              WHERE state IN ${LIVE}
+                AND task_id = (
+                  SELECT task_id FROM runs
+                  WHERE run_id = ? AND claimed_by = ? AND activated_gen = ?
+                )`,
         args: [runId, claimToken, claimGen],
       },
       // Full payload for the winning worker, keyed on the post-CAS state.
