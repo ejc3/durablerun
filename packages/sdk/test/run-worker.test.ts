@@ -1,4 +1,4 @@
-import type { Clock, SchedulerStore } from '@durablerun/core'
+import { type Clock, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
@@ -268,6 +268,38 @@ describe('runClaimedRun', () => {
     ])
     expect(task?.rows[0]?.state).not.toBe('completed')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('a store outage during the failure write aborts cleanly, like every other transition', async () => {
+    // Every transition write (complete, suspend, fail, the rolling-deploy
+    // defer) classifies a StoreUnavailableError the same way: no transition
+    // committed, the lease story recovers, the user's budget is untouched —
+    // {kind:'aborted'}. Two of the five catch sites used to drop that arm
+    // and rethrow raw, so a store blip during a user-failure write surfaced
+    // as an unexpected crash instead of a clean abort.
+    const f = await fx('sdk-fail-outage')
+    const failing = new Proxy(f.store, {
+      get(target, prop, receiver) {
+        if (prop === 'fail') {
+          return () => Promise.reject(new StoreUnavailableError('outage during fail'))
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    const reg = registry({
+      job: () => {
+        throw new Error('user failure that must be recorded as a fail()')
+      },
+    })
+    await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    const outcome = await runClaimedRun(
+      { store: failing as SchedulerStore, clock: f.clock, registry: reg },
+      { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+    )
+    expect(outcome).toEqual({ kind: 'aborted' })
     f.close()
   })
 
