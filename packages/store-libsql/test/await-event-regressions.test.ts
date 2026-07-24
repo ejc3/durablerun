@@ -100,6 +100,34 @@ describe('awaitEvent review regressions', () => {
     f.close()
   })
 
+  it('a stale invocation cannot recreate a wait on a run left sleeping under the same step', async () => {
+    // Codex re-review (round 3): a run left sleeping by a preserve reschedule
+    // carries its wake_step but has no wait row. A stale awaitEvent with a
+    // consumed token must NOT recreate the wait — the registration is fenced
+    // on the live claim token, not the (non-unique) wake_step.
+    const f = await fixture('stale')
+    await insertTask(f.raw, 't1', 'sleeping', null)
+    // Run sleeping under wake_step '$await:go', owned by a dead reschedule
+    // stamp (NOT the caller's token below), timed-out (event_payload NULL).
+    await f.raw.batch(
+      'setup',
+      [
+        {
+          sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, claimed_by,
+                  claim_gen, activated_gen, available_at_ms, wake_event, wake_step, created_at_ms)
+                VALUES ('r1', ?, 't1', 1, 'sleeping', 'dead-stamp', 1, 1, ?, 'go', '$await:go', ?)`,
+          args: [Q, NOW, NOW],
+        },
+      ],
+      'write',
+    )
+    await expect(
+      f.store.awaitEvent(Q, 't1', 'r1', 'consumed-token', '$await:go', 'go', 30),
+    ).rejects.toThrow(LeaseLostError)
+    expect(await countWaits(f.raw, 'r1')).toBe(0)
+    f.close()
+  })
+
   it('does not mirror the caller task to sleeping when the park parked a different run', async () => {
     // Finding 3: the task-mirror only checked that the given run is
     // sleeping, not that it belongs to the caller task. A mismatched call
