@@ -103,4 +103,57 @@ describe('multi-process chaos (real kills, one database file)', () => {
     expect(Number(task?.rows[0]?.infra_retries)).toBeGreaterThanOrEqual(1)
     raw.close()
   }, 120_000)
+
+  it('a task survives kill -9 of its DRIVER and a sleep across the restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-chaos2-'))
+    const db = join(dir, 'chaos2.db')
+    const raw = LibsqlExecutor.open(`file:${db}`)
+    const admin = new LibsqlStoreAdmin(raw)
+    await admin.migrate()
+    const store = new LibsqlSchedulerStore(raw, systemIdSource())
+
+    const workerPort = 42117
+    await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
+    const driver1 = await host('packages/driver/bin/driver-host.ts', [
+      db,
+      Q,
+      `http://127.0.0.1:${workerPort}`,
+      SECRET,
+    ])
+
+    // A task that checkpoints, sleeps 4s durably, then finishes.
+    const spawned = await store.spawn(Q, 'napper', JSON.stringify({ seconds: 4 }))
+    await until(async () => {
+      const [r] = await raw.batch('t', [
+        { sql: `SELECT COUNT(*) AS n FROM checkpoints WHERE checkpoint_name = '$sleep'`, args: [] },
+      ])
+      return Number(r?.rows[0]?.n) === 1
+    }, 'suspended into the durable sleep')
+
+    driver1.kill('SIGKILL') // the scheduler's driver dies while the task sleeps
+
+    await new Promise((r) => setTimeout(r, 500))
+    await host('packages/driver/bin/driver-host.ts', [
+      db,
+      Q,
+      `http://127.0.0.1:${workerPort}`,
+      SECRET,
+    ])
+    // The replacement driver wakes the sleeper and finishes the task; the
+    // pre-sleep step replays, never re-executes.
+    await until(
+      async () => {
+        return (await store.getTaskResult(Q, spawned.taskId))?.state === 'completed'
+      },
+      'completion across driver murder + sleep',
+      60_000,
+    )
+    const result = await store.getTaskResult(Q, spawned.taskId)
+    expect(JSON.parse(result?.completedPayloadJson ?? 'null')).toBe('rested')
+    const [task] = await raw.batch('t', [
+      { sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(Number(task?.rows[0]?.attempts)).toBe(0)
+    raw.close()
+  }, 120_000)
 })
