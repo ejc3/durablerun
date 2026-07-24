@@ -128,6 +128,33 @@ describe('awaitEvent review regressions', () => {
     f.close()
   })
 
+  it('a losing stale invocation writes nothing — not even a same-value task mirror', async () => {
+    // Codex re-review (round 4): the task-mirror fired on a pre-existing
+    // sleeping run even when the park matched zero (a losing batch still
+    // wrote, §3.4 rule 1). Observable here by constructing a run already
+    // sleeping under a task still 'running': a stale awaitEvent whose park
+    // fails must NOT flip the task to sleeping.
+    const f = await fixture('losing-mirror')
+    await insertTask(f.raw, 't1', 'running', null)
+    await f.raw.batch(
+      'setup',
+      [
+        {
+          sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, claimed_by,
+                  claim_gen, activated_gen, available_at_ms, wake_event, wake_step, created_at_ms)
+                VALUES ('r1', ?, 't1', 1, 'sleeping', 'dead-stamp', 1, 1, ?, 'go', '$await:go', ?)`,
+          args: [Q, NOW, NOW],
+        },
+      ],
+      'write',
+    )
+    await expect(
+      f.store.awaitEvent(Q, 't1', 'r1', 'consumed-token', '$await:go', 'go', 30),
+    ).rejects.toThrow(LeaseLostError)
+    expect(await taskState(f.raw, 't1')).toBe('running') // mirror never fired
+    f.close()
+  })
+
   it('does not mirror the caller task to sleeping when the park parked a different run', async () => {
     // Finding 3: the task-mirror only checked that the given run is
     // sleeping, not that it belongs to the caller task. A mismatched call
