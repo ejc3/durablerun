@@ -1130,49 +1130,71 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
     const emittedGuard = `NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)`
-    const [park, , , event] = await this.db.batch('await-event', [
+    const [, park, , event] = await this.db.batch('await-event', [
       {
-        // Park FIRST, so the wait registration below derives from its
-        // post-state (rule 1) instead of re-reading NOW. The eligibility
-        // decision — including the cancellation deadline inside eligibleTask,
-        // which is database time — is made exactly once here; a wait can no
-        // longer be registered under a NOW that a 1ms-later park then refuses.
+        // Wait registration FIRST, fenced on the LIVE claim token
+        // (claimed_by = this invocation's token) + running + task eligible:
+        // a stale invocation whose token was consumed matches zero and writes
+        // nothing, so a run left sleeping under the same wake_step (e.g. by a
+        // preserve reschedule) cannot have a wait recreated on it. The single
+        // eligibility decision — including the cancellation deadline, which is
+        // database time — and the timeout deadline are computed exactly once
+        // here; the park below COPIES timeout_at_ms, so the two never drift.
+        sql: `INSERT INTO waits
+                (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
+              SELECT ?, ?, ?, ?, ?, 'waiting',
+                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END, ${NOW_MS}
+              WHERE ${emittedGuard}
+                AND EXISTS (SELECT 1 FROM runs r
+                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
+                              AND r.claimed_by = ? AND r.state = 'running')
+                AND EXISTS (SELECT 1 FROM tasks t
+                            WHERE t.task_id = ? AND ${eligibleTask('t')})
+              ON CONFLICT (run_id, step_name) DO NOTHING`,
+        args: [
+          runId,
+          stepName,
+          queue,
+          taskId,
+          eventName,
+          timeoutMs,
+          timeoutMs,
+          queue,
+          eventName,
+          runId,
+          queue,
+          taskId,
+          claimToken,
+          taskId,
+        ],
+      },
+      {
+        // The park fires IFF the wait above was just registered (post-state,
+        // rule 1) AND this invocation still owns the running run — so a stale
+        // invocation cannot park, and eligibility is NOT re-evaluated against
+        // a second NOW. available_at_ms IS the wait's timeout_at_ms, one value.
         sql: `UPDATE runs SET
                 state = 'sleeping',
-                available_at_ms = CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END,
+                available_at_ms = (SELECT timeout_at_ms FROM waits
+                                   WHERE run_id = ? AND step_name = ?),
                 wake_event = ?, event_payload = NULL, wake_step = ?,
                 claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
               WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
                 AND state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND ${eligibleTask('t')})
-                AND ${emittedGuard}`,
+                AND EXISTS (SELECT 1 FROM waits
+                            WHERE run_id = ? AND step_name = ? AND status = 'waiting')`,
         args: [
-          timeoutMs,
-          timeoutMs,
+          runId,
+          stepName,
           eventName,
           stepName,
           runId,
           queue,
           taskId,
           claimToken,
-          queue,
-          eventName,
+          runId,
+          stepName,
         ],
-      },
-      {
-        // The wait derives ENTIRELY from the just-parked run: it fires iff
-        // the park set this run sleeping under this wake_step, and its
-        // timeout_at_ms IS the run's available_at_ms — so the deadline can
-        // never disagree with the run's wake time (two independent NOW reads
-        // could differ by 1ms), and no orphan wait survives a refused park.
-        sql: `INSERT INTO waits
-                (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
-              SELECT r.run_id, ?, r.queue, r.task_id, ?, 'waiting', r.available_at_ms, ${NOW_MS}
-              FROM runs r
-              WHERE r.run_id = ? AND r.wake_step = ? AND r.state = 'sleeping'
-              ON CONFLICT (run_id, step_name) DO NOTHING`,
-        args: [stepName, eventName, runId, stepName],
       },
       {
         // The mirror is fenced to the run THIS call parked: the sleeping run
