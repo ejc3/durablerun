@@ -121,11 +121,15 @@ export class ReplayContext implements TaskContext {
     return use === 1 ? raw : `${raw}#${use}`
   }
 
-  async step<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
-    const parsed = UserName.parse('step name', name)
-    // Reentrancy corrupts the repeat counters on replay: an inner call
-    // consumes a slot a replaying pass (which skips the outer body) never
-    // sees, so a later same-named step replays the WRONG checkpoint.
+  /**
+   * The single gate every durable primitive (step, sleep, await) passes
+   * before it allocates a replay key. It rejects nesting ANY durable op
+   * inside a step: an inner durable call advances the repeat counters a
+   * replaying pass (which skips the memoized step body) never sees, so a
+   * later same-named op replays the wrong checkpoint or consumes the wrong
+   * wake. Reentrancy-proof by construction, not by remembering to check.
+   */
+  private enterDurableOp(what: string): void {
     // The pump observed the lease gone: stop the handler at the next
     // context call — the fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
@@ -133,8 +137,15 @@ export class ReplayContext implements TaskContext {
       throw new LeaseLostError(`lease lost during pass (run ${this.run.runId})`)
     }
     if (this.inStep) {
-      throw new FatalTaskError(`ctx.step('${name}') called inside another step — steps cannot nest`)
+      throw new FatalTaskError(
+        `${what} called inside a step — durable operations cannot nest inside a step`,
+      )
     }
+  }
+
+  async step<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+    const parsed = UserName.parse('step name', name)
+    this.enterDurableOp(`ctx.step('${name}')`)
     const key = this.storageName(parsed)
     if (this.seen.has(key)) {
       return this.seen.get(key) as T
@@ -168,6 +179,7 @@ export class ReplayContext implements TaskContext {
   }
 
   async sleepFor(seconds: number): Promise<void> {
+    this.enterDurableOp('ctx.sleepFor')
     // Validate HERE, before any suspend signal exists: an invalid duration
     // is a permanent user error, and validating later (inside the park)
     // would loop the deterministic bad call through lease recovery.
@@ -176,6 +188,7 @@ export class ReplayContext implements TaskContext {
   }
 
   async sleepUntil(epochMs: number): Promise<void> {
+    this.enterDurableOp('ctx.sleepUntil')
     userEpochMs('sleepUntil epochMs', epochMs)
     await this.suspendPoint(EngineKey.sleepUntil, { atEpochMs: epochMs })
   }
@@ -190,6 +203,7 @@ export class ReplayContext implements TaskContext {
 
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
     const parsed = UserName.parse('event name', name)
+    this.enterDurableOp('ctx.awaitEvent')
     if (opts?.timeoutSeconds !== undefined) {
       userDurationToMs('awaitEvent timeoutSeconds', opts.timeoutSeconds, { positive: true })
     }
