@@ -124,7 +124,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (every caller-supplied identity parameter appears in every write fence
   of its batch or carries an explicit waiver), and structural
   wake-consumption binding (a wake bound to its awaiting step instead of
-  consumed by a flag).
+  consumed by a flag — DONE: the wake_step column, codex final review).
+  A second review round against the final head found six more bugs (see
+  postmortems/pr11-codex-final-review.md), leaving three deferrals of its
+  own: enforce attestation-artifact freshness in review-attest.sh (refuse
+  a codex log or journal older than the branch head — the header promises
+  it, the code does not check it); a schema/emit-boundary guarantee that an
+  event payload is never SQL NULL (lifting the timeout sentinel from a
+  type-only to a structural guarantee); and canonicalize-and-classify a
+  handler result at the source so a non-serializable result is a permanent
+  user failure, not a silent completion with NULL.
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
