@@ -205,7 +205,7 @@ describe('transition-layer review regressions (second round)', () => {
     // A carried wake arrives with the claim (as the event emit will park it).
     await f.raw.batch('t', [
       {
-        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}', wake_step = '$await:e1' WHERE run_id = ?`,
         args: [run.runId],
       },
     ])
@@ -275,7 +275,7 @@ describe('transition-layer review regressions (first round)', () => {
     // Park a wake (as the event emit will), fail with retry so it carries.
     await f.raw.batch('t', [
       {
-        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}', wake_step = '$await:e1' WHERE run_id = ?`,
         args: [run.runId],
       },
     ])

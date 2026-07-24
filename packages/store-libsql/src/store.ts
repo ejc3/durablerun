@@ -1130,42 +1130,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
     const emittedGuard = `NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)`
-    const [, park, , event] = await this.db.batch('await-event', [
+    const [park, , , event] = await this.db.batch('await-event', [
       {
-        // The wait registration and the park below MUST share one
-        // eligibility guard: registering under a weaker guard than the park
-        // leaves an orphan waiting row on a run that never parked (e.g. a
-        // task past its cancellation deadline with a live lease). Both carry
-        // the same eligibleTask predicate, so they fail together or not at all.
-        sql: `INSERT INTO waits
-                (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
-              SELECT ?, ?, ?, ?, ?, 'waiting',
-                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END, ${NOW_MS}
-              WHERE ${emittedGuard}
-                AND EXISTS (SELECT 1 FROM runs r
-                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                              AND r.claimed_by = ? AND r.state = 'running')
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = ? AND ${eligibleTask('t')})
-              ON CONFLICT (run_id, step_name) DO NOTHING`,
-        args: [
-          runId,
-          stepName,
-          queue,
-          taskId,
-          eventName,
-          timeoutMs,
-          timeoutMs,
-          queue,
-          eventName,
-          runId,
-          queue,
-          taskId,
-          claimToken,
-          taskId,
-        ],
-      },
-      {
+        // Park FIRST, so the wait registration below derives from its
+        // post-state (rule 1) instead of re-reading NOW. The eligibility
+        // decision — including the cancellation deadline inside eligibleTask,
+        // which is database time — is made exactly once here; a wait can no
+        // longer be registered under a NOW that a 1ms-later park then refuses.
         sql: `UPDATE runs SET
                 state = 'sleeping',
                 available_at_ms = CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END,
@@ -1188,6 +1159,20 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           queue,
           eventName,
         ],
+      },
+      {
+        // The wait derives ENTIRELY from the just-parked run: it fires iff
+        // the park set this run sleeping under this wake_step, and its
+        // timeout_at_ms IS the run's available_at_ms — so the deadline can
+        // never disagree with the run's wake time (two independent NOW reads
+        // could differ by 1ms), and no orphan wait survives a refused park.
+        sql: `INSERT INTO waits
+                (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
+              SELECT r.run_id, ?, r.queue, r.task_id, ?, 'waiting', r.available_at_ms, ${NOW_MS}
+              FROM runs r
+              WHERE r.run_id = ? AND r.wake_step = ? AND r.state = 'sleeping'
+              ON CONFLICT (run_id, step_name) DO NOTHING`,
+        args: [stepName, eventName, runId, stepName],
       },
       {
         // The mirror is fenced to the run THIS call parked: the sleeping run
@@ -1251,11 +1236,14 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
     headers:
       row.headers === null ? {} : (JSON.parse(String(row.headers)) as Record<string, string>),
   }
-  if (row.wake_event !== null) {
+  if (row.wake_event !== null && row.wake_step !== null) {
+    // A wake sets wake_event and wake_step together (park) and clears them
+    // together, so a set wake_event always has its wake_step — the SDK
+    // matches on the step key. A row with wake_event set but wake_step NULL
+    // cannot occur in this version (events were introduced with wake_step),
+    // and is ignored rather than mis-bound to a fabricated step.
     const event = String(row.wake_event)
-    // A wake registered before wake_step existed (or a non-await wake) has
-    // no step; fall back to the event name so old rows still decode.
-    const step = row.wake_step === null ? event : String(row.wake_step)
+    const step = String(row.wake_step)
     claimed.wake =
       row.event_payload === null
         ? { event, step, timedOut: true }

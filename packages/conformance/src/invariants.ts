@@ -143,6 +143,16 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
             WHERE w.status = 'waiting' AND r.wake_event IS NOT w.event_name`,
     },
     {
+      // WaitIntegrity: a timed wait's deadline IS the run's wake time — they
+      // are one value, so nextWakeAt never schedules the timeout after its
+      // registered deadline (IS NOT is NULL-safe: an untimed wait has both
+      // NULL and is clean).
+      name: 'wait-timeout-availability-mismatch',
+      sql: `SELECT w.run_id || '/' || w.step_name AS v
+            FROM waits w JOIN runs r ON r.run_id = w.run_id
+            WHERE w.status = 'waiting' AND w.timeout_at_ms IS NOT r.available_at_ms`,
+    },
+    {
       // PayloadMatchesEvent's executable twin: a delivered wake payload
       // must be the stored event's payload (a NULL event_payload is the
       // timeout marker and carries no obligation). LEFT JOIN so a payload
