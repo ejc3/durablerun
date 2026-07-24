@@ -43,9 +43,15 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    where two of the four driver-review bugs lived (claim idempotency, cancels
    ordering).
 5. **Merge on green only** — CI (verify + tla jobs) must pass on the PR head.
-6. **Launched reviewers report before merge** — or are explicitly
-   abandoned in the PR body. A wedged reviewer is not a completed review:
-   merging with codex silently stuck cost a thirteen-finding follow-up.
+6. **Launched reviewers report before merge** — MECHANIZED: main's branch
+   protection requires the 'adversarial-review' commit status, which only
+   scripts/review-attest.sh produces, and it refuses to attest unless the
+   codex log and the review-workflow journal verifiably COMPLETED (or the
+   PR body carries an explicit 'reviews-abandoned:<reason>' trailer, which
+   the status echoes publicly). Merging without reviews is an operation
+   GitHub refuses, not a rule to remember — it was forgotten under
+   momentum twice; now the failure mode requires deliberately attesting
+   falsely, a different and auditable class.
 
 ## Part 2 — Correctness checks (what reviews hunt, learned here)
 
