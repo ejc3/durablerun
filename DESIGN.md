@@ -380,10 +380,18 @@ One invocation executes one claimed run to its next suspension point:
   ONE fenced batch — `suspendRun` — because a marker whose park failed would
   read as "the wake already happened" to the next attempt), `awaitEvent`
   (checkpoint-or-register-wait, throw Suspend), `emitEvent`, `spawn` (child tasks).
-  Step names may not contain `#` (reserved for the SDK's repeat counters —
-  `poll`, `poll#2` — which are user-visible in the checkpoints table) or start
-  with `$` (reserved for engine markers); both are refused as permanent
-  failures. Step results are JSON; `undefined` pins to `null` on every pass.
+  User-supplied names — step names AND event names, on `awaitEvent` and
+  `emitEvent` alike — may not contain `#` (reserved for the SDK's repeat
+  counters — `poll`, `poll#2` — which are user-visible in the checkpoints
+  table) or start with `$` (reserved for engine markers); both are refused
+  as permanent failures. So are invalid numeric knobs (`sleepFor`,
+  `sleepUntil`, `awaitEvent` timeouts): deterministic bad inputs must never
+  loop through lease recovery. Structurally, every user input crosses the
+  context through ONE classified boundary (core's `UserName.parse` /
+  `userDurationToMs` / `userEpochMs`, which throw `FatalTaskError`
+  directly); durable replay keys are only constructible from validated
+  names, so a future context method cannot re-open the class. Step results
+  are JSON; `undefined` pins to `null` on every pass.
   Error taxonomy on a pass: infrastructure failures (typed
   `StoreUnavailableError`, thrown at the executor boundary) abort the pass
   with NO transition — recovery is the lease story and the user's retry

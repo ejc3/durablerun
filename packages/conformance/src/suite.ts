@@ -545,7 +545,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           LeaseLostError,
         )
         await expect(
-          f.store.suspendRun(Q, run.runId, 'stale', { inSeconds: 1 }, { key: 's', stateJson: '{}' }),
+          f.store.suspendRun(
+            Q,
+            run.runId,
+            'stale',
+            { inSeconds: 1 },
+            { key: 's', stateJson: '{}' },
+          ),
         ).rejects.toThrow(LeaseLostError)
         await expect(f.store.complete(Q, run.runId, 'stale', '{}')).rejects.toThrow(LeaseLostError)
         await expect(f.store.fail(Q, run.runId, 'stale', '{}', null)).rejects.toThrow(

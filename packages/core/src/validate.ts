@@ -10,6 +10,8 @@
  * milliseconds are computed (and rounded) here.
  */
 
+import { FatalTaskError } from './errors.js'
+
 /** 9999-12-31T23:59:59Z — no legitimate engine timestamp lies beyond it. */
 export const MAX_EPOCH_MS = 253_402_300_799_000
 
@@ -55,4 +57,59 @@ export function requirePositiveInt(name: string, value: number, min = 1): number
     throw new RangeError(`${name} must be an integer >= ${min}, got ${value}`)
   }
   return value
+}
+
+/*
+ * User-boundary validators: task-facing inputs (names and knobs a task
+ * function passes to its context) cross into the engine ONLY through the
+ * forms below. The validator IS the classifier — a deterministic bad input
+ * is a permanent task failure (FatalTaskError), never a retryable one, so
+ * it can never loop through lease recovery burning attempts. The raw
+ * RangeError validators above remain the PORT classification for store
+ * callers; packages/sdk/src is lint-banned from importing them.
+ */
+
+/**
+ * A validated user-supplied name, mintable only through parse — code that
+ * builds durable replay keys can demand this type and become structurally
+ * unable to accept a raw string (the events round shipped the same
+ * reserved-charset bug a second time because the check lived per-method).
+ */
+export class UserName {
+  private constructor(readonly value: string) {}
+
+  /**
+   * '#' anywhere collides with DERIVED replay keys (`poll#2`); a '$'
+   * prefix collides with the engine's own markers (`$sleep`, `$await:`).
+   */
+  static parse(what: string, raw: string): UserName {
+    if (raw.includes('#') || raw.startsWith('$')) {
+      throw new FatalTaskError(
+        `${what} '${raw}' uses reserved characters ('#' anywhere, '$' prefix)`,
+      )
+    }
+    return new UserName(raw)
+  }
+}
+
+/** durationToMs, classified for the task boundary. */
+export function userDurationToMs(
+  name: string,
+  seconds: number,
+  opts: { positive?: boolean } = {},
+): number {
+  try {
+    return durationToMs(name, seconds, opts)
+  } catch (error) {
+    throw new FatalTaskError(String(error))
+  }
+}
+
+/** requireEpochMs, classified for the task boundary. */
+export function userEpochMs(name: string, epochMs: number): number {
+  try {
+    return requireEpochMs(name, epochMs)
+  } catch (error) {
+    throw new FatalTaskError(String(error))
+  }
 }

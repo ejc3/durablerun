@@ -1,14 +1,31 @@
 import {
   type Checkpoint,
   type ClaimedRun,
-  durationToMs,
   EventTimeoutError,
   FatalTaskError,
   LeaseLostError,
-  requireEpochMs,
   type SchedulerStore,
   SuspendSignal,
+  userDurationToMs,
+  userEpochMs,
+  UserName,
 } from '@durablerun/core'
+
+/**
+ * An engine-namespace replay key ('$'-prefixed, so no validated user name
+ * can collide with it). Only the static constructors exist: a context
+ * method structurally cannot build a durable key from a raw string —
+ * every user-supplied part enters through UserName.parse, which is also
+ * where the reserved-charset rule lives, once.
+ */
+class EngineKey {
+  private constructor(readonly value: string) {}
+  static readonly sleep = new EngineKey('$sleep')
+  static readonly sleepUntil = new EngineKey('$sleep-until')
+  static awaitEvent(name: UserName): EngineKey {
+    return new EngineKey(`$await:${name.value}`)
+  }
+}
 
 /**
  * The durable task context (DESIGN.md §3.2). A task function runs many
@@ -81,22 +98,15 @@ export class ReplayContext implements TaskContext {
    * matches by call ORDER within a name, which is stable as long as the
    * task's step sequence is deterministic (the contract user code signs).
    */
-  private storageName(name: string): string {
-    const use = (this.nameUses.get(name) ?? 0) + 1
-    this.nameUses.set(name, use)
-    return use === 1 ? name : `${name}#${use}`
+  private storageName(name: UserName | EngineKey): string {
+    const raw = name.value
+    const use = (this.nameUses.get(raw) ?? 0) + 1
+    this.nameUses.set(raw, use)
+    return use === 1 ? raw : `${raw}#${use}`
   }
 
   async step<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
-    // Reserved characters would break replay-key injectivity: a literal
-    // 'poll#2' collides with the DERIVED key of the second 'poll' call and
-    // silently replays the wrong checkpoint; '$' prefixes the engine's own
-    // markers. A config bug this fundamental is a permanent failure.
-    if (name.includes('#') || name.startsWith('$')) {
-      throw new FatalTaskError(
-        `step name '${name}' uses reserved characters ('#' anywhere, '$' prefix)`,
-      )
-    }
+    const parsed = UserName.parse('step name', name)
     // Reentrancy corrupts the repeat counters on replay: an inner call
     // consumes a slot a replaying pass (which skips the outer body) never
     // sees, so a later same-named step replays the WRONG checkpoint.
@@ -109,7 +119,7 @@ export class ReplayContext implements TaskContext {
     if (this.inStep) {
       throw new FatalTaskError(`ctx.step('${name}') called inside another step — steps cannot nest`)
     }
-    const key = this.storageName(name)
+    const key = this.storageName(parsed)
     if (this.seen.has(key)) {
       return this.seen.get(key) as T
     }
@@ -145,21 +155,13 @@ export class ReplayContext implements TaskContext {
     // Validate HERE, before any suspend signal exists: an invalid duration
     // is a permanent user error, and validating later (inside the park)
     // would loop the deterministic bad call through lease recovery.
-    try {
-      durationToMs('sleepFor seconds', seconds)
-    } catch (error) {
-      throw new FatalTaskError(String(error))
-    }
-    await this.suspendPoint(`$sleep`, { inSeconds: seconds })
+    userDurationToMs('sleepFor seconds', seconds)
+    await this.suspendPoint(EngineKey.sleep, { inSeconds: seconds })
   }
 
   async sleepUntil(epochMs: number): Promise<void> {
-    try {
-      requireEpochMs('sleepUntil epochMs', epochMs)
-    } catch (error) {
-      throw new FatalTaskError(String(error))
-    }
-    await this.suspendPoint(`$sleep-until`, { atEpochMs: epochMs })
+    userEpochMs('sleepUntil epochMs', epochMs)
+    await this.suspendPoint(EngineKey.sleepUntil, { atEpochMs: epochMs })
   }
 
   /**
@@ -172,23 +174,19 @@ export class ReplayContext implements TaskContext {
    * sleep is over. No clock is consulted anywhere.
    */
   async emitEvent(name: string, payloadJson: string): Promise<void> {
-    await this.store.emitEvent(this.queue, name, payloadJson)
+    // Validated for symmetry with awaitEvent: a reserved-charset event
+    // name could never be awaited, so emitting one is a permanent bug,
+    // not a payload nobody can receive.
+    const parsed = UserName.parse('event name', name)
+    await this.store.emitEvent(this.queue, parsed.value, payloadJson)
   }
 
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
-    if (name.includes('#') || name.startsWith('$')) {
-      throw new FatalTaskError(
-        `event name '${name}' uses reserved characters ('#' anywhere, '$' prefix)`,
-      )
-    }
+    const parsed = UserName.parse('event name', name)
     if (opts?.timeoutSeconds !== undefined) {
-      try {
-        durationToMs('awaitEvent timeoutSeconds', opts.timeoutSeconds, { positive: true })
-      } catch (error) {
-        throw new FatalTaskError(String(error))
-      }
+      userDurationToMs('awaitEvent timeoutSeconds', opts.timeoutSeconds, { positive: true })
     }
-    const key = this.storageName(`$await:${name}`)
+    const key = this.storageName(EngineKey.awaitEvent(parsed))
     if (this.seen.has(key)) {
       // The memo IS this wake's consumption record: retire the carried
       // wake so a later same-name await cannot re-consume it.
@@ -244,7 +242,7 @@ export class ReplayContext implements TaskContext {
   }
 
   private async suspendPoint(
-    kind: string,
+    kind: EngineKey,
     wake: { inSeconds: number } | { atEpochMs: number },
   ): Promise<void> {
     const key = this.storageName(kind)
