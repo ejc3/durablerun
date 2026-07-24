@@ -125,3 +125,23 @@ Deferred (recorded in BUILD.md):
 - Finding 8 hardening: canonicalize the handler result at the source and
   classify a non-serializable result as a permanent user failure, rather than
   completing silently with NULL.
+
+## Third round: the reorder's own regression
+
+The re-review's `awaitEvent` reorder was itself re-reviewed and found to have
+introduced one bug: its wait INSERT keyed on `wake_step + state='sleeping'`,
+a replay key rather than a batch-unique stamp. A run left sleeping by a
+preserve reschedule carries its `wake_step` but no wait; a stale `awaitEvent`
+with a consumed token re-matched that pre-existing post-state and recreated
+the wait, even though its own park matched zero rows — a §3.4-rule-1
+violation (a losing batch still wrote). Fixed by restoring the wait INSERT as
+the FIRST statement, fenced on the LIVE claim token (unique to this
+invocation), with the park deriving from it (fires only if the wait was just
+registered; `available_at_ms` copies the wait's `timeout_at_ms`). This keeps
+round 2's no-drift property and closes the stale-write: the batch-unique
+fence is the claim token, never the replay key. Landed red→green; verify
+(321 tests) and a 2000-seed fuzz green. TLA re-proved the protocol.
+
+Convergence: rounds found 8, then 3, then 1 — each against the head being
+merged. The lesson holds: review the code you are about to ship, and treat a
+fix as new code that itself needs review.
