@@ -86,22 +86,31 @@ them. Prose rules are where this codebase's repeat bugs live.
 
 ## Mechanisms
 
-Landing in this PR before merge (the merge is held on them):
+Built in this PR:
 
-- **Ledger guard-twin check** (rung 2): the spec ledger already maps each
-  batch label to its TLA actions; the checker now requires every fenced
-  action to name an executable twin test, so a modeled-but-unenforced guard
-  fails the build. Defect 2's class.
-- **SDK entry chokepoint + generated event coverage** (rungs 1–3): branded
-  key constructors for the memo namespace, user-knob validators that own
-  error classification, a context-method inventory tied to the
-  replay-equivalence program generator, and event operations plus
-  adversarial name/duration corpora in the generated programs. Defects 1,
-  4, 5 as classes, for every future context method.
-- **Waits referential invariant** (rung 3): the cross-task consistency
-  check the waits table should have inherited from the checkpoints
-  precedent — the point fix bound `task_id` into the fences, but the
-  detection twin was still missing. Defect 3's class.
+- **Ledger guard-twin check** (rung 2, commit `a6e556a`): the spec ledger
+  already maps each batch label to its TLA actions; the checker now
+  requires every fenced action to name an executable twin test
+  (`fenceTwin('Action')` markers, checked per action with stale markers
+  refused), so a modeled-but-unenforced guard fails the build. Run before
+  tagging, it listed all 13 fenced actions red. Defect 2's class.
+- **SDK entry chokepoint + generated event coverage** (rungs 1–3, commit
+  `136d319`): user names and knobs enter the context only through core's
+  classified validators (UserName.parse / userDurationToMs / userEpochMs,
+  lint-enforced); durable replay keys are only constructible from
+  validated names; a context-method inventory gate ties the TaskContext
+  interface to the replay-equivalence program generator, which now
+  generates emits, awaits (inline, park-then-wake, timeout), absolute
+  sleeps, and an adversarial legal-name corpus; and a generated
+  invalid-input enumeration asserts permanent failure at attempt 1 for
+  every method's bad inputs. Defects 1, 4, 5 as classes, for every future
+  context method.
+- **Event invariants incl. the waits referential check** (rung 3, commit
+  `a6e556a`): wait-cross-task (the checkpoints precedent the waits table
+  never inherited), wait-for-fired-event (a surviving waiter for an
+  emitted event IS a lost wakeup), and wake-payload-mismatch (payload
+  provenance), each proven to fire on constructed corruption. Defect 3's
+  class.
 
 Deferred (recorded in BUILD.md):
 
