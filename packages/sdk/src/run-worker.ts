@@ -37,6 +37,26 @@ export interface RunInvocation {
 }
 
 /**
+ * The infrastructure-failure classification, in ONE place: a lost lease and
+ * a store outage each abort the pass without spending the user's budget,
+ * and every transition write (complete, suspend, fail, the rolling-deploy
+ * defer) must treat them identically. Returns undefined for anything else —
+ * a genuine user failure — so the caller rethrows or classifies it. Two of
+ * the five call sites once open-coded this and silently dropped the outage
+ * arm, rethrowing raw; a single definition makes that divergence unwritable.
+ */
+function infraOutcome(error: unknown): WorkerOutcome | undefined {
+  if (error instanceof LeaseLostError) return { kind: 'lease-lost' }
+  if (error instanceof StoreUnavailableError) return { kind: 'aborted' }
+  return undefined
+}
+
+/** A throw as an expression, so `infraOutcome(e) ?? raise(e)` reads inline. */
+function raise(error: unknown): never {
+  throw error
+}
+
+/**
  * Execute one claimed run to its next suspension point or terminal state.
  * Transport-free: the HTTP worker server (driver package) wraps this; tests
  * call it directly. The contract, in order:
@@ -79,8 +99,7 @@ export async function runClaimedRun(
         'preserve',
       )
     } catch (error) {
-      if (error instanceof LeaseLostError) return { kind: 'lease-lost' }
-      throw error
+      return infraOutcome(error) ?? raise(error)
     }
     return { kind: 'deferred' }
   }
@@ -115,8 +134,7 @@ export async function runClaimedRun(
   } catch (error) {
     pumpStop.abort()
     await pump
-    if (error instanceof StoreUnavailableError) return { kind: 'aborted' }
-    throw error
+    return infraOutcome(error) ?? raise(error)
   }
   const ctx = new ReplayContext(store, queue, run, checkpoints, leaseLost.signal)
 
@@ -134,9 +152,7 @@ export async function runClaimedRun(
     try {
       await store.complete(queue, runId, claimToken, JSON.stringify(result ?? null))
     } catch (inner) {
-      if (inner instanceof LeaseLostError) return { kind: 'lease-lost' }
-      if (inner instanceof StoreUnavailableError) return { kind: 'aborted' }
-      throw inner
+      return infraOutcome(inner) ?? raise(inner)
     }
     return { kind: 'completed' }
   } catch (error) {
@@ -157,19 +173,17 @@ export async function runClaimedRun(
         }
         return { kind: 'suspended' }
       } catch (inner) {
-        if (inner instanceof LeaseLostError) return { kind: 'lease-lost' }
-        if (inner instanceof StoreUnavailableError) return { kind: 'aborted' }
-        throw inner
+        return infraOutcome(inner) ?? raise(inner)
       }
     }
-    if (error instanceof LeaseLostError) return { kind: 'lease-lost' }
-    // Infrastructure failure by TYPE (a store outage inside a step arrives
-    // here through user code): abort with no transition — the lease story
-    // recovers, and the user's retry budget is never touched.
-    if (error instanceof StoreUnavailableError) return { kind: 'aborted' }
+    // Infrastructure failure by TYPE (a lost lease, or a store outage inside
+    // a step arriving here through user code): abort with no transition —
+    // the lease story recovers and the user's retry budget is untouched.
+    const infra = infraOutcome(error)
+    if (infra) return infra
 
     // A user failure: core decides retry over the USER ordinal.
-    const userAttempt = run.attempt - run.infraRetries
+    const userAttempt = ctx.attempt
     const decision =
       error instanceof FatalTaskError
         ? ({ retry: false } as const)
@@ -187,8 +201,7 @@ export async function runClaimedRun(
         decision.retry ? { delaySeconds: decision.delaySeconds } : null,
       )
     } catch (inner) {
-      if (inner instanceof LeaseLostError) return { kind: 'lease-lost' }
-      throw inner
+      return infraOutcome(inner) ?? raise(inner)
     }
     return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
   } finally {
