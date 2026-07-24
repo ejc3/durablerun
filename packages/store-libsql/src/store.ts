@@ -178,12 +178,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           maxDelayMs,
         ],
       },
-      // 2. Initial run — only when OUR task insert won (post-state key, rule 1).
+      // 2. Initial run — only when OUR task insert won: the task must be
+      //    LIVE (rule 6 — a terminal task at a colliding id gets no new run)
+      //    AND have no run yet (an idempotency hit on an existing task, or a
+      //    losing insert under an id collision, adds nothing).
       {
         sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
               SELECT ?, ?, task_id, 1, 'pending', enqueue_at_ms, ${NOW_MS}
-              FROM tasks WHERE task_id = ?`,
-        args: [runId, queue, taskId],
+              FROM tasks WHERE task_id = ? AND state IN ${LIVE}
+                AND NOT EXISTS (SELECT 1 FROM runs WHERE task_id = ?)`,
+        args: [runId, queue, taskId, taskId],
       },
       // 3. Resolve winner (ours or the pre-existing task for this key).
       {
@@ -347,11 +351,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // started"); max_duration runs from first start. The earlier MIN() kept
       // the stale spawn deadline and cancelled healthy running tasks.
       {
+        // first_started and cancel_at DERIVE from the run's started_at_ms —
+        // stamped by the CAS above at ITS single NOW — not a second NOW, so
+        // the lease expiry and the max-duration deadline share one activation
+        // instant and never split across a millisecond boundary.
         sql: `UPDATE tasks SET
-                first_started_at_ms = COALESCE(first_started_at_ms, ${NOW_MS}),
+                first_started_at_ms = COALESCE(first_started_at_ms,
+                  (SELECT r.started_at_ms FROM runs r
+                   WHERE r.run_id = ? AND r.claimed_by = ? AND r.activated_gen = ?)),
                 cancel_at_ms = CASE
                   WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
-                    CAST(COALESCE(first_started_at_ms, ${NOW_MS})
+                    CAST(COALESCE(first_started_at_ms,
+                      (SELECT r.started_at_ms FROM runs r
+                       WHERE r.run_id = ? AND r.claimed_by = ? AND r.activated_gen = ?))
                       + json_extract(cancellation, '$.maxDurationSeconds') * 1000 AS INTEGER)
                   ELSE NULL
                 END
@@ -360,7 +372,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                   SELECT task_id FROM runs
                   WHERE run_id = ? AND claimed_by = ? AND activated_gen = ?
                 )`,
-        args: [runId, claimToken, claimGen],
+        args: [
+          runId,
+          claimToken,
+          claimGen,
+          runId,
+          claimToken,
+          claimGen,
+          runId,
+          claimToken,
+          claimGen,
+        ],
       },
       // Full payload for the winning worker, keyed on the post-CAS state.
       {
@@ -1178,23 +1200,30 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ],
       },
       {
-        // The park fires IFF the wait above was just registered (post-state,
-        // rule 1) AND this invocation still owns the running run — so a stale
-        // invocation cannot park, and eligibility is NOT re-evaluated against
-        // a second NOW. available_at_ms IS the wait's timeout_at_ms, one value.
+        // The park fires IFF the wait above was just registered FOR THIS
+        // EVENT (post-state, rule 1) AND this invocation still owns the
+        // running run AND the owning task is LIVE — so a stale invocation
+        // cannot park, a pre-existing wait for a DIFFERENT event cannot be
+        // borrowed, and a terminal task's corrupt run is never parked
+        // (rule 6, state-only so no second NOW). available_at_ms IS this
+        // event's wait timeout_at_ms, one value.
         sql: `UPDATE runs SET
                 state = 'sleeping',
                 available_at_ms = (SELECT timeout_at_ms FROM waits
-                                   WHERE run_id = ? AND step_name = ?),
+                                   WHERE run_id = ? AND step_name = ? AND event_name = ?),
                 wake_event = ?, event_payload = NULL, wake_step = ?,
                 claimed_by = ?, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
               WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
                 AND state = 'running'
+                AND EXISTS (SELECT 1 FROM tasks t
+                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
                 AND EXISTS (SELECT 1 FROM waits
-                            WHERE run_id = ? AND step_name = ? AND status = 'waiting')`,
+                            WHERE run_id = ? AND step_name = ? AND event_name = ?
+                              AND status = 'waiting')`,
         args: [
           runId,
           stepName,
+          eventName,
           eventName,
           stepName,
           parkStamp,
@@ -1204,6 +1233,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           claimToken,
           runId,
           stepName,
+          eventName,
         ],
       },
       {

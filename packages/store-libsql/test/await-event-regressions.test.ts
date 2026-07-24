@@ -128,6 +128,35 @@ describe('awaitEvent review regressions', () => {
     f.close()
   })
 
+  it('never parks a terminal task run via a pre-existing wait (rule 6 provenance)', async () => {
+    // Codex PR#11 round 6, finding 2: the wait INSERT ON CONFLICT DO NOTHING,
+    // but the park keyed on ANY existing (run_id, step_name) wait. A terminal
+    // task with a corrupt running run and a pre-existing wait: the INSERT does
+    // nothing, but the park borrowed the pre-existing wait and parked the run.
+    const f = await fixture('await-terminal-preexisting')
+    await insertTask(f.raw, 't1', 'completed', null)
+    await insertRun(f.raw, 'r1', 't1', 'running', 'T')
+    await f.raw.batch(
+      'setup',
+      [
+        {
+          sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+                VALUES ('r1', '$await:go', ?, 't1', 'go', 'waiting', ?)`,
+          args: [Q, NOW],
+        },
+      ],
+      'write',
+    )
+    await f.store.awaitEvent(Q, 't1', 'r1', 'T', '$await:go', 'go', null).catch(() => {})
+    const [run] = await f.raw.batch(
+      't',
+      [{ sql: `SELECT state FROM runs WHERE run_id = 'r1'`, args: [] }],
+      'read',
+    )
+    expect(run?.rows[0]?.state).toBe('running') // terminal-owned run not parked
+    f.close()
+  })
+
   it('a losing stale invocation writes nothing — not even a same-value task mirror', async () => {
     // Codex re-review (round 4): the task-mirror fired on a pre-existing
     // sleeping run even when the park matched zero (a losing batch still

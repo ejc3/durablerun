@@ -218,6 +218,35 @@ describe('transition-layer review regressions (second round)', () => {
     f.close()
   })
 
+  it('spawn under an id collision with a terminal task creates no run (rule 6)', async () => {
+    // Codex PR#11 round 6: the initial-run INSERT selected a bare task_id
+    // even when the task insert lost (idempotency conflict). With an injected
+    // uuid colliding an existing TERMINAL task, a pending run was booked under
+    // it. Predict spawn's taskId (its first uuidv7) and pre-seed that state.
+    const seed = 'spawn-collide'
+    const f = await makeLibsqlFixture(seed)
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const collidingId = seededIdSource(new Rng(seed)).uuidv7()
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
+                idempotency_key, state, enqueue_at_ms, created_at_ms)
+              VALUES (?, ?, 'x', '{}', '{"kind":"none"}', 1, 'k', 'completed', 1000000, 1000000)`,
+        args: [collidingId, Q],
+      },
+    ])
+    await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'k' }).catch(() => {})
+    const [runs] = await f.raw.batch('t', [
+      { sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ?`, args: [collidingId] },
+    ])
+    expect(Number(runs?.rows[0]?.n)).toBe(0) // no run under the terminal task
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [collidingId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('completed')
+    f.close()
+  })
+
   it('a same-token claim receipt never revives a terminal task (rule 6)', async () => {
     // Codex PR#11 round 5: a completed task whose run still carries token T
     // (the externally-corrupted state rule 6 covers). A same-token claim(T)
