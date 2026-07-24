@@ -54,6 +54,50 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
+  it('flags a waiting wait row on a run that is not sleeping (a wait implies a parked run)', async () => {
+    // Codex PR#11 finding 6: WaitIntegrity requires a waiting wait to sit on
+    // a SLEEPING run; an orphan wait on a running run (finding 2's corruption)
+    // must be detectable, not invariant-clean.
+    const f = await seeded('wait-on-running')
+    await f.raw.batch(
+      'setup',
+      [
+        { sql: `UPDATE runs SET state = 'running' WHERE run_id = 'r1'`, args: [] },
+        { sql: `UPDATE tasks SET state = 'running' WHERE task_id = 't1'`, args: [] },
+        {
+          sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, created_at_ms)
+                VALUES ('r1', '$await:go', ?, 't1', 'go', ?)`,
+          args: [Q, NOW],
+        },
+      ],
+      'write',
+    )
+    const violations = await engineInvariantViolations(f.raw)
+    expect(violations.some((v) => v.startsWith('wait-on-non-sleeping-run:'))).toBe(true)
+    f.close()
+  })
+
+  it("flags a parked run whose carried wake name disagrees with its wait row", async () => {
+    // Codex PR#11 finding 6: a run parked on await('go') must carry
+    // wake_event='go'; a mismatch means the park and the wait disagree.
+    const f = await seeded('wait-wake-mismatch')
+    await f.raw.batch(
+      'setup',
+      [
+        { sql: `UPDATE runs SET wake_event = 'other' WHERE run_id = 'r1'`, args: [] },
+        {
+          sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, created_at_ms)
+                VALUES ('r1', '$await:go', ?, 't1', 'go', ?)`,
+          args: [Q, NOW],
+        },
+      ],
+      'write',
+    )
+    const violations = await engineInvariantViolations(f.raw)
+    expect(violations.some((v) => v.startsWith('wait-wake-name-mismatch:'))).toBe(true)
+    f.close()
+  })
+
   it('flags a waiting wait row for an event that has already fired (a lost wakeup)', async () => {
     const f = await seeded('wait-fired-event')
     await f.raw.batch(
