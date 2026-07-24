@@ -144,6 +144,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   never trigger rollback; `output === undefined` for started-not-persisted
   steps; rollback-failure halts the chain and surfaces in the result.
 
+- **PR3.5 simplification sweep**: the deferred findings from the
+  full-codebase simplify/elegance review (SIMPLIFY-BACKLOG.md) — chiefly
+  the store SQL builders (successor-insert, checkpoint LWW tail, the
+  eligibility/stamped-fence fragments repeated 9–11 times), the
+  bounded-pump-teardown helper, TaskResult as a discriminated union, the
+  `forEachSeed` conformance helper, and a batch of stale spec/script
+  comments. Correctness-flavoured items (the successor-insert drift
+  surface, the pump-teardown race) sequence first. The events PR applied
+  the review's correctness-critical findings and the ones in its own new
+  code; this sweep is the pre-existing remainder, kept explicit rather than
+  dropped.
+
 ## Phase 4 — dialect matrix
 
 - **PR4.1 suite extraction hardening**: conformance runs from a store factory
