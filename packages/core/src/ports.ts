@@ -79,6 +79,21 @@ export interface SchedulerStore {
 
   complete(queue: string, runId: string, claimToken: string, resultJson: string): Promise<void>
 
+  /**
+   * Suspend WITH a durable marker, atomically: the park and the checkpoint
+   * commit in one transition or neither does. A marker whose park failed
+   * would lie ("the wake already happened") and let an infrastructure
+   * successor skip the whole sleep. Used by the SDK's sleep/await points;
+   * markerless suspensions use reschedule.
+   */
+  suspendRun(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    wake: { inSeconds: number } | { atEpochMs: number },
+    checkpoint: { key: string; stateJson: string },
+  ): Promise<void>
+
   /** Retry policy decided in core; the store applies the fenced transition. */
   fail(
     queue: string,

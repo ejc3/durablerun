@@ -64,6 +64,8 @@ export interface ClaimedRun {
   claimToken: string
   /** Lease deadline as stamped by the claim — the worker's chaining budget. */
   claimExpiresAtEpochMs: number
+  /** The lease length this claim was granted (worker heartbeat cadence). */
+  leaseSeconds: number
   paramsJson: string
   retryStrategy: RetryStrategy
   maxAttempts: number

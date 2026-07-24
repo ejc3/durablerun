@@ -1,5 +1,5 @@
 {
-  "name": "@durablerun/driver",
+  "name": "@durablerun/sdk",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@durablerun/core": "workspace:*",
-    "@durablerun/sdk": "workspace:*"
+    "@durablerun/core": "workspace:*"
   },
   "devDependencies": {
     "@durablerun/conformance": "workspace:*",

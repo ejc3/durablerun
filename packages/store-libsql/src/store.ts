@@ -52,7 +52,7 @@ export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
 export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
-const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms,
+const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
        r.wake_event, r.event_payload,
        t.task_name, t.params, t.retry_strategy, t.max_attempts, t.headers, t.infra_retries`
 
@@ -772,6 +772,61 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     if (won !== 'suspend') throw new LeaseLostError(`reschedule ${runId}`)
   }
 
+  /**
+   * The atomic suspend: reschedule's exact transition PLUS the suspension
+   * marker, in one batch — the marker commits only if the park does. The
+   * checkpoint keys on the batch's own stamp (the post-transition state),
+   * so a lost fence writes neither.
+   */
+  async suspendRun(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    wake: { inSeconds: number } | { atEpochMs: number },
+    checkpoint: { key: string; stateJson: string },
+  ): Promise<void> {
+    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`
+    const wakeArg =
+      'inSeconds' in wake
+        ? durationToMs('wake.inSeconds', wake.inSeconds)
+        : requireEpochMs('wake.atEpochMs', wake.atEpochMs)
+    const { won } = await new FencedBatch('suspend', this.ids.token())
+      .cas(
+        'suspend',
+        `UPDATE runs SET
+           state = CASE WHEN ${wakeExpr} <= ${NOW_MS} THEN 'pending' ELSE 'sleeping' END,
+           available_at_ms = ${wakeExpr},
+           wake_event = NULL, event_payload = NULL,
+           claimed_by = ${STAMP}, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
+         WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+           AND EXISTS (SELECT 1 FROM tasks t
+                       WHERE t.task_id = runs.task_id AND ${eligibleTask('t')})`,
+        [wakeArg, wakeArg, runId, queue, claimToken],
+      )
+      .followOn(
+        'marker',
+        `INSERT INTO checkpoints
+           (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+         SELECT r.task_id, ?, r.queue, ?, r.run_id, r.attempt, ${NOW_MS}
+         FROM runs r WHERE r.run_id = ? AND r.claimed_by = ${STAMP}
+         ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
+           state = excluded.state,
+           owner_run_id = excluded.owner_run_id,
+           owner_attempt = excluded.owner_attempt,
+           updated_at_ms = excluded.updated_at_ms`,
+        [checkpoint.key, checkpoint.stateJson, runId],
+      )
+      .followOn(
+        'task-mirror',
+        `UPDATE tasks SET state = (SELECT state FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
+         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
+           AND state IN ${LIVE}`,
+        [runId, runId],
+      )
+      .run(this.db)
+    if (won !== 'suspend') throw new LeaseLostError(`suspendRun ${runId}`)
+  }
+
   async complete(
     queue: string,
     runId: string,
@@ -1020,6 +1075,7 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
     claimGen: Number(row.claim_gen),
     claimToken,
     claimExpiresAtEpochMs: Number(row.claim_expires_at_ms),
+    leaseSeconds: Number(row.lease_ms) / 1000,
     paramsJson: String(row.params),
     retryStrategy: JSON.parse(String(row.retry_strategy)) as RetryStrategy,
     maxAttempts: Number(row.max_attempts),

@@ -1,5 +1,11 @@
 import { type Client, createClient } from '@libsql/client'
-import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
+import {
+  type SqlBatchMode,
+  type SqlExecutor,
+  type SqlResult,
+  type SqlStatement,
+  StoreUnavailableError,
+} from '@durablerun/core'
 
 /**
  * SqlExecutor over @libsql/client. `batch(…, 'write')` is atomic — implicit
@@ -29,10 +35,19 @@ export class LibsqlExecutor implements SqlExecutor {
     statements: readonly SqlStatement[],
     mode: SqlBatchMode = 'write',
   ): Promise<SqlResult[]> {
-    const results = await this.client.batch(
-      statements.map((s) => ({ sql: s.sql, args: [...s.args] })),
-      mode,
-    )
+    let results: Awaited<ReturnType<Client['batch']>>
+    try {
+      results = await this.client.batch(
+        statements.map((s) => ({ sql: s.sql, args: [...s.args] })),
+        mode,
+      )
+    } catch (error) {
+      // Typed so consumers can classify INFRASTRUCTURE failure by type —
+      // a store outage must never be mistaken for a user failure.
+      throw new StoreUnavailableError(`batch(${_label}) failed: ${String(error)}`, {
+        cause: error,
+      })
+    }
     return results.map((r) => ({
       rows: r.rows.map((row) => {
         const out: Record<string, string | number | bigint | Uint8Array | null> = {}

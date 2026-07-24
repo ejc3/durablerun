@@ -1,3 +1,4 @@
+export { createWakeServer, createWorkerServer, httpLauncher, signBody } from './http.js'
 export {
   DriverLoop,
   type DriverLoopOptions,
