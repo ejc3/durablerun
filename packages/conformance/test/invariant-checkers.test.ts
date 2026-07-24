@@ -98,6 +98,31 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
+  it("flags a timed wait whose deadline disagrees with its run's wake time", async () => {
+    // Codex re-review finding 2: timeout_at_ms and available_at_ms are one
+    // value; a mismatch (two independent NOW reads) would schedule the
+    // timeout after its registered deadline.
+    const f = await seeded('wait-timeout-drift')
+    await f.raw.batch(
+      'setup',
+      [
+        {
+          sql: `UPDATE runs SET wake_event = 'go', available_at_ms = ? WHERE run_id = 'r1'`,
+          args: [NOW + 30_000],
+        },
+        {
+          sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, timeout_at_ms, created_at_ms)
+                VALUES ('r1', '$await:go', ?, 't1', 'go', ?, ?)`,
+          args: [Q, NOW + 30_001, NOW], // 1ms off from available_at_ms
+        },
+      ],
+      'write',
+    )
+    const violations = await engineInvariantViolations(f.raw)
+    expect(violations.some((v) => v.startsWith('wait-timeout-availability-mismatch:'))).toBe(true)
+    f.close()
+  })
+
   it('flags a waiting wait row for an event that has already fired (a lost wakeup)', async () => {
     const f = await seeded('wait-fired-event')
     await f.raw.batch(
