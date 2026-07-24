@@ -88,6 +88,45 @@ describe('event regressions', () => {
     f.close()
   })
 
+  it('two same-name timed awaits that BOTH time out complete, never re-parking forever', async () => {
+    // Codex PR#11 finding 1: the carried wake matches by event NAME, which
+    // is not unique across awaits. When the SECOND await('go') times out,
+    // replaying the FIRST await's memo consumes the second's wake, so the
+    // second re-parks — forever. Bind the wake to the step key instead.
+    const f = await fx('ev-double-timeout')
+    const trace: string[] = []
+    const reg: TaskRegistry = new Map([
+      [
+        'twice',
+        async (ctx) => {
+          for (let i = 0; i < 2; i++) {
+            try {
+              await ctx.awaitEvent('go', { timeoutSeconds: 30 })
+              trace.push('got')
+            } catch (e) {
+              if (!(e instanceof EventTimeoutError)) throw e
+              trace.push('timeout')
+            }
+          }
+          trace.push('done')
+          return trace
+        },
+      ],
+    ])
+    const spawned = await f.store.spawn(Q, 'twice', '{}')
+    // Drive passes, firing each timeout; the run must terminate. With the
+    // bug the second await re-parks on every timer fire and never completes.
+    let completed = false
+    for (let round = 0; round < 8 && !completed; round++) {
+      const outcome = await pass(f, reg, `w${round}`)
+      completed = outcome.kind === 'completed'
+      await f.advance(31_000)
+    }
+    expect(completed).toBe(true)
+    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('completed')
+    f.close()
+  })
+
   // fenceTwin('AwaitEventHit') — the already-emitted read path: the model
   // fences AwaitEventHit, so a swept zombie gets the lease error, never the
   // payload (this guard shipped without its twin once; the twin is now
