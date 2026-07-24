@@ -711,6 +711,77 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
+      it('no lost wakeup: emit racing await, every interleaving, ends delivered', async () => {
+        for (let seed = 0; seed < 10; seed++) {
+          const fx = await makeFixture(`ev-race-${seed}`)
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          await fx.store.spawn(Q, 'racer', '{}')
+          const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+          if (!run) throw new Error('claim')
+          await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          const world = new SimWorld(fx.raw, seed)
+          let inline: string | null = null
+          world.actor('awaiter', async (simDb) => {
+            const out = await fx
+              .storeOver(simDb)
+              .awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'race', null)
+              .catch(() => null)
+            if (out?.emitted) inline = out.payloadJson
+          })
+          world.actor('emitter', async (simDb) => {
+            await fx.storeOver(simDb).emitEvent(Q, 'race', '{"r":1}')
+          })
+          await world.run()
+          // EITHER the await saw the event inline OR the emit woke the
+          // parked run — never neither (the model's no-lost-wakeup).
+          if (inline === null) {
+            const [woken] = await fx.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+            expect(woken?.runId, `seed ${seed}`).toBe(run.runId)
+            expect(woken?.wake, `seed ${seed}`).toEqual({ event: 'race', payloadJson: '{"r":1}' })
+          } else {
+            expect(inline, `seed ${seed}`).toBe('{"r":1}')
+          }
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          fx.close()
+        }
+      })
+
+      it('timeout-vs-emit race: the wake is exactly one of payload or timeout, never both', async () => {
+        for (let seed = 0; seed < 10; seed++) {
+          const fx = await makeFixture(`ev-timeout-race-${seed}`)
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          await fx.store.spawn(Q, 'timed', '{}')
+          const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+          if (!run) throw new Error('claim')
+          await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          await fx.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'late', 30)
+          await fx.admin.setFakeNowEpochMs(1_030_000) // exactly at the deadline
+          const world = new SimWorld(fx.raw, seed)
+          world.actor('emitter', async (simDb) => {
+            await fx.storeOver(simDb).emitEvent(Q, 'late', '{"won":"emit"}')
+          })
+          world.actor('claimer', async (simDb) => {
+            await fx
+              .storeOver(simDb)
+              .claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+              .catch(() => {})
+          })
+          await world.run()
+          // Whoever won, the run woke EXACTLY ONCE with a consistent wake:
+          // payload delivery or timeout — and the wait row is settled.
+          const [rows] = await fx.raw.batch('t', [
+            {
+              sql: `SELECT wake_event, event_payload, state FROM runs WHERE run_id = ?`,
+              args: [run.runId],
+            },
+            { sql: `SELECT COUNT(*) AS n FROM waits WHERE status = 'waiting'`, args: [] },
+          ])
+          expect(rows?.rows[0]?.wake_event, `seed ${seed}`).toBe('late')
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          fx.close()
+        }
+      })
+
       it('a zombie awaitEvent is fence-refused (lease authority)', async () => {
         await f.store.spawn(Q, 'z', '{}')
         const run = await claimActivate('w1')

@@ -184,7 +184,7 @@ export class ReplayContext implements TaskContext {
     // A wake delivered with this claim resolves the await: memoize it so
     // stale wake fields on later claims are never re-consumed.
     const wake = this.run.wake
-    if (wake && wake.event === name) {
+    if (wake?.event === name) {
       const memo = 'payloadJson' in wake ? { payloadJson: wake.payloadJson } : { timedOut: true }
       await this.commitMarker(key, JSON.stringify(memo))
       if (memo.timedOut) throw new EventTimeoutError(name)

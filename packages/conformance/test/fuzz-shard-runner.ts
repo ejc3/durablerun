@@ -34,6 +34,8 @@ export function runFuzzShard(shard: number, of: number): void {
         sweepTransitions: 0,
         cancels: 0,
         nextWakes: 0,
+        emits: 0,
+        awaits: 0,
       }
       let walks = 0
       for (let seed = shard; seed < SEEDS; seed += of) {
