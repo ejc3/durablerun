@@ -98,7 +98,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   transport call can actually be cancelled instead of abandoned.
 - **PR2.4 local chaos e2e**: multi-driver + multi-worker processes against one
   SQLite file; scripted kill/drop/duplicate scenarios from the sim harness run
-  against real processes. Includes the systematic fault MATRIX from the
+  against real processes. Also carries the transport-lifecycle deferrals
+  from the residual review: graceful worker shutdown that drains queued
+  acks before force-closing sockets, deadlines + abort on the detached
+  launch and wake fetches, connection/header timeouts and body draining on
+  every route, and splitting permanent SQL errors from transient
+  unavailability in the executor's error typing. Includes the systematic fault MATRIX from the
   PR2.1 lesson: every batch label x every legal fault (crash, duplicate),
   with per-operation bounds asserted — curated fault lists missed the
   duplicated-claim bound violation for four review cycles. *Phase gate: a dogfood job (e.g. a local repo-backup

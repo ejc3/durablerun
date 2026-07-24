@@ -21,8 +21,11 @@ export type WorkerOutcome =
   | { kind: 'failed' } // user failure, terminal
   | { kind: 'superseded' } // duplicate delivery / stale claim: did nothing
   | { kind: 'lease-lost' } // lost the lease mid-run: aborted quietly
-  | { kind: 'aborted' } // store unreachable mid-pass: no transition, the
-  //                       lease story recovers, user budget untouched
+  | { kind: 'aborted' } // store unreachable mid-pass: user budget untouched
+  //   and the lease story recovers. NOTE: 'unreachable' includes a lost
+  //   RESPONSE — the write may or may not have committed; recovery is
+  //   correct either way (fences + sweep), but do not read 'aborted' as
+  //   proof that nothing changed.
   | { kind: 'deferred' } // unknown task name: parked untouched for a
 //                        worker build that knows it (rolling deploys)
 
@@ -82,13 +85,13 @@ export async function runClaimedRun(
     return { kind: 'deferred' }
   }
 
-  const checkpoints = await store.getCheckpoints(queue, run.taskId, run.attempt)
-  const ctx = new ReplayContext(store, queue, run, checkpoints)
-
-  // Heartbeat pump: extend at half-lease cadence until the pass ends. A
-  // zero-row heartbeat is the lease-lost signal — stop pumping; the fenced
-  // store writes will refuse the zombie's next commit on their own.
+  // Heartbeat pump FIRST (before any further unfenced reads): extend at
+  // half-lease cadence until the pass ends. A zero-row heartbeat is the
+  // lease-lost signal — the fences already refuse a zombie's writes; the
+  // leaseLost signal additionally stops the HANDLER at its next context
+  // call, so a zombie stops burning side effects too.
   const pumpStop = new AbortController()
+  const leaseLost = new AbortController()
   const leaseMs = Math.max(1000, run.leaseSeconds * 1000)
   const pump = (async () => {
     for (;;) {
@@ -96,12 +99,26 @@ export async function runClaimedRun(
       if (pumpStop.signal.aborted) return
       try {
         const lease = await store.heartbeat(queue, runId, claimToken, run.leaseSeconds)
-        if (!lease.held) return
+        if (!lease.held) {
+          leaseLost.abort()
+          return
+        }
       } catch {
         return // heartbeat is advisory upkeep; the fences are the truth
       }
     }
   })()
+
+  let checkpoints: Awaited<ReturnType<SchedulerStore['getCheckpoints']>>
+  try {
+    checkpoints = await store.getCheckpoints(queue, run.taskId, run.attempt)
+  } catch (error) {
+    pumpStop.abort()
+    await pump
+    if (error instanceof StoreUnavailableError) return { kind: 'aborted' }
+    throw error
+  }
+  const ctx = new ReplayContext(store, queue, run, checkpoints, leaseLost.signal)
 
   try {
     let params: unknown
@@ -173,6 +190,9 @@ export async function runClaimedRun(
     return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
   } finally {
     pumpStop.abort()
-    await pump
+    // Bounded finalization: a heartbeat call that never settles must not
+    // retain this pass (and its HTTP request) forever after the run's
+    // transition already committed.
+    await Promise.race([pump, clock.sleep(5_000)])
   }
 }

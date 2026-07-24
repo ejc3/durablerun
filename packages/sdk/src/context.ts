@@ -3,6 +3,7 @@ import {
   type ClaimedRun,
   durationToMs,
   FatalTaskError,
+  LeaseLostError,
   requireEpochMs,
   type SchedulerStore,
   SuspendSignal,
@@ -18,7 +19,13 @@ import {
  * whole pass quietly (another claim owns the run now).
  */
 export interface TaskContext {
-  /** Durable memoization: fn runs at most once per step name, ever. */
+  /**
+   * Durable memoization. fn's RESULT commits at most once — but fn itself
+   * runs AT LEAST once: a crash between executing and committing means the
+   * next attempt re-executes it. External side effects (emails, payments)
+   * need their own idempotency key. The returned value is the serialized
+   * canonical form on every pass.
+   */
   step<T>(name: string, fn: () => Promise<T> | T): Promise<T>
   /**
    * Durable sleep. Suspends the run now and resumes AFTER the duration —
@@ -47,6 +54,7 @@ export class ReplayContext implements TaskContext {
     private readonly queue: string,
     private readonly run: ClaimedRun,
     checkpoints: Checkpoint[],
+    private readonly leaseLost?: AbortSignal,
   ) {
     this.attempt = run.attempt - run.infraRetries
     this.taskName = run.taskName
@@ -81,6 +89,12 @@ export class ReplayContext implements TaskContext {
     // Reentrancy corrupts the repeat counters on replay: an inner call
     // consumes a slot a replaying pass (which skips the outer body) never
     // sees, so a later same-named step replays the WRONG checkpoint.
+    // The pump observed the lease gone: stop the handler at the next
+    // context call — the fences protect STATE regardless; this stops a
+    // zombie from burning further side effects and worker time.
+    if (this.leaseLost?.aborted) {
+      throw new LeaseLostError(`lease lost during pass (run ${this.run.runId})`)
+    }
     if (this.inStep) {
       throw new FatalTaskError(`ctx.step('${name}') called inside another step — steps cannot nest`)
     }
