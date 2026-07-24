@@ -217,6 +217,57 @@ describe('transition-layer review regressions (second round)', () => {
     expect(again?.wake).toMatchObject({ payloadJson: '{"x":1}' })
     f.close()
   })
+
+  it('a same-token claim receipt never revives a terminal task (rule 6)', async () => {
+    // Codex PR#11 round 5: a completed task whose run still carries token T
+    // (the externally-corrupted state rule 6 covers). A same-token claim(T)
+    // must not revive the task to 'running' nor hand the run back to launch.
+    const f = await makeLibsqlFixture('terminal-claim-receipt')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'completed', completed_payload = '{}' WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    const again = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('completed') // not revived
+    expect(again).toHaveLength(0) // no terminal run handed back
+    f.close()
+  })
+
+  it('a losing duplicate activate never re-arms a terminal task deadline (rule 6)', async () => {
+    // Codex PR#11 round 5: a duplicate activate loses the CAS (returns null)
+    // but its follow-on matched the pre-existing activated state and re-armed
+    // a completed task's cleared cancellation deadline.
+    const f = await makeLibsqlFixture('terminal-activate-dup')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}', {
+      cancellation: { maxDurationSeconds: 100 },
+    })
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'completed', cancel_at_ms = NULL WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).toBeNull()
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state, cancel_at_ms FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('completed')
+    expect(task?.rows[0]?.cancel_at_ms).toBeNull() // deadline not re-armed
+    f.close()
+  })
 })
 
 describe('transition-layer review regressions (first round)', () => {
