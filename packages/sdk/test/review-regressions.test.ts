@@ -201,3 +201,70 @@ describe('SDK review regressions', () => {
     f.close()
   })
 })
+
+describe('SDK residual review regressions', () => {
+  it('nested ctx.step calls are refused (they corrupt repeat counters on replay)', async () => {
+    const f = await fx('sdk-reentrant')
+    const reg: TaskRegistry = new Map([
+      [
+        'job',
+        async (ctx) => {
+          // The inner call consumes a counter slot the replaying pass never
+          // sees; a later same-named step then replays the WRONG checkpoint.
+          await ctx.step('outer', () => ctx.step('x', () => 'A'))
+          return ctx.step('x', () => 'B')
+        },
+      ],
+    ])
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+    expect(await claimAndRun(f, f.store, reg, 'w1')).toEqual({ kind: 'failed' })
+    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('failed')
+    f.close()
+  })
+
+  it('a suspension marker never downgrades a newer attempt (last writer wins)', async () => {
+    const f = await fx('sdk-suspend-lww')
+    await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // A NEWER attempt's marker already exists (crafted): the stale attempt's
+    // suspension must not overwrite it — same rule setCheckpoint enforces.
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES (?, '$sleep', ?, '{"inSeconds":999}', 'newer-run', 5, 1000000)`,
+        args: [run.taskId, Q],
+      },
+    ])
+    await f.store
+      .suspendRun(
+        Q,
+        run.runId,
+        run.claimToken,
+        { inSeconds: 10 },
+        {
+          key: '$sleep',
+          stateJson: '{"inSeconds":10}',
+        },
+      )
+      .catch(() => {})
+    const [row] = await f.raw.batch('t', [
+      { sql: `SELECT owner_attempt FROM checkpoints WHERE checkpoint_name = '$sleep'`, args: [] },
+    ])
+    expect(Number(row?.rows[0]?.owner_attempt)).toBe(5)
+    f.close()
+  })
+
+  it('an invalid sleep duration is a permanent user error, never an infrastructure loop', async () => {
+    const f = await fx('sdk-bad-sleep')
+    const reg: TaskRegistry = new Map([['job', async (ctx) => ctx.sleepFor(Number.NaN)]])
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 3 })
+    // Before the fix: SuspendSignal thrown first, validation exploded later
+    // inside the park, the run stayed active, and lease recovery repeated
+    // the deterministic bad call toward the infrastructure cap.
+    expect(await claimAndRun(f, f.store, reg, 'w1')).toEqual({ kind: 'failed' })
+    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('failed')
+    f.close()
+  })
+})

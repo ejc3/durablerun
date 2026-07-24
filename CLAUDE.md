@@ -106,6 +106,16 @@ patched instead of the hole. Reviews exist to FIND mechanism gaps; every
 confirmed finding must produce a mechanism, and the review process itself
 is a detection net of last resort.
 
+Two laws from the SDK residual round: (1) EVERY NEW LAYER gets its own
+GENERATED fault surface at birth — the store's machinery enumerates batch
+labels, so it structurally cannot cover a layer whose units are steps,
+passes, and values; "the layer below is verified" is the scoped-review
+fallacy in mechanism form (the SDK's surface is the replay-equivalence
+harness: generated programs x fault-at-every-call x adversarial values).
+(2) SINGLE REPRESENTATION: a value that crosses a serialization boundary
+is returned in canonical (serialize-then-parse) form at the SOURCE — two
+read paths for one value is where divergence lives.
+
 Tests live at the CLASS altitude, not just the instance: every fixed bug
 gets, besides its red test, an extension of the layer that should have
 caught the class — an invariant-library checker (run by every sim, scenario,

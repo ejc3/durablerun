@@ -43,6 +43,9 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    where two of the four driver-review bugs lived (claim idempotency, cancels
    ordering).
 5. **Merge on green only** — CI (verify + tla jobs) must pass on the PR head.
+6. **Launched reviewers report before merge** — or are explicitly
+   abandoned in the PR body. A wedged reviewer is not a completed review:
+   merging with codex silently stuck cost a thirteen-finding follow-up.
 
 ## Part 2 — Correctness checks (what reviews hunt, learned here)
 

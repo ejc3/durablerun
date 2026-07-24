@@ -813,7 +813,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            state = excluded.state,
            owner_run_id = excluded.owner_run_id,
            owner_attempt = excluded.owner_attempt,
-           updated_at_ms = excluded.updated_at_ms`,
+           updated_at_ms = excluded.updated_at_ms
+         WHERE excluded.owner_attempt >= checkpoints.owner_attempt`,
         [checkpoint.key, checkpoint.stateJson, runId],
       )
       .followOn(
