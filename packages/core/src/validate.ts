@@ -88,6 +88,16 @@ export class UserName {
         `${what} '${raw}' uses reserved characters ('#' anywhere, '$' prefix)`,
       )
     }
+    // A durable key must survive a round-trip through storage. A NUL
+    // truncates a SQLite TEXT value at the first byte, and a lone surrogate
+    // (not well-formed UTF-16) is re-encoded to U+FFFD — either way two
+    // distinct JS names collide or a name silently changes, and its wake
+    // never matches. Reject both at the single mint point.
+    if (raw.includes("\u0000") || /\p{Surrogate}/u.test(raw)) {
+      throw new FatalTaskError(
+        `${what} '${raw}' contains characters that do not round-trip through storage (NUL or a lone surrogate)`,
+      )
+    }
     return new UserName(raw)
   }
 }
