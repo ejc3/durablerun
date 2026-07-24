@@ -1122,6 +1122,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const emittedGuard = `NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)`
     const [, park, , event] = await this.db.batch('await-event', [
       {
+        // The wait registration and the park below MUST share one
+        // eligibility guard: registering under a weaker guard than the park
+        // leaves an orphan waiting row on a run that never parked (e.g. a
+        // task past its cancellation deadline with a live lease). Both carry
+        // the same eligibleTask predicate, so they fail together or not at all.
         sql: `INSERT INTO waits
                 (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
               SELECT ?, ?, ?, ?, ?, 'waiting',
@@ -1130,6 +1135,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 AND EXISTS (SELECT 1 FROM runs r
                             WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
                               AND r.claimed_by = ? AND r.state = 'running')
+                AND EXISTS (SELECT 1 FROM tasks t
+                            WHERE t.task_id = ? AND ${eligibleTask('t')})
               ON CONFLICT (run_id, step_name) DO NOTHING`,
         args: [
           runId,
@@ -1145,6 +1152,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           queue,
           taskId,
           claimToken,
+          taskId,
         ],
       },
       {
@@ -1161,11 +1169,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         args: [timeoutMs, timeoutMs, eventName, runId, queue, taskId, claimToken, queue, eventName],
       },
       {
+        // The mirror is fenced to the run THIS call parked: the sleeping run
+        // must belong to the caller task (run_id AND task_id), or a
+        // mismatched call could flip the caller task to sleeping on the back
+        // of some unrelated run that happens to be sleeping.
         sql: `UPDATE tasks SET state = 'sleeping'
               WHERE task_id = ? AND state IN ${LIVE}
-                AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND state = 'sleeping')
+                AND EXISTS (SELECT 1 FROM runs
+                            WHERE run_id = ? AND task_id = ? AND state = 'sleeping')
                 AND ${emittedGuard}`,
-        args: [taskId, runId, queue, eventName],
+        args: [taskId, runId, taskId, queue, eventName],
       },
       {
         // The HIT read is fenced too (the model's AwaitEventHit is a
