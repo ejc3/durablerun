@@ -124,6 +124,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).toBeNull()
       })
 
+      // fenceTwin('Activate') — the per-claim generation CAS refuses the
+      // old claim's token and generation once a re-claim has minted a new one.
       it('rejects stale tokens and stale generations after a re-claim', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const first = await claimOne('tick-1')
@@ -185,6 +187,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(lease.remainingMs).toBe(120_000)
       })
 
+      // fenceTwin('Heartbeat') — a stale token never extends a lease.
       it('reports lease lost for a stale token — the AB002 signal', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'tick-1', { leaseSeconds: 60, limit: 1 })
@@ -429,6 +432,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
+      // fenceTwin('CompleteRun') — the swept zombie's complete is refused
+      // with a before/after snapshot proving zero state change.
       it('a zombie complete after the sweep throws LeaseLostError and changes nothing', async () => {
         const run = await activatedRun()
         await f.admin.setFakeNowEpochMs(1_100_000)
@@ -443,7 +448,15 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('fail with retry inserts the successor and is the ONLY mover of attempts', async () => {
         const run = await activatedRun()
+        // A carried wake must be a LEGAL wake: the payload's source event
+        // exists in the store (wake-payload-mismatch enforces provenance —
+        // stamping the columns alone constructs an impossible world).
         await f.raw.batch('t', [
+          {
+            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                  VALUES (?, 'e1', '{"x":1}', 1000000)`,
+            args: [Q],
+          },
           {
             sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
             args: [run.runId],
@@ -519,11 +532,21 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(again?.runId).toBe(run.runId)
       })
 
+      // fenceTwin('FailRun') fenceTwin('SleepSuspend') fenceTwin('VoluntaryChain')
+      // — the executable twins of the modeled CAS guards: every park/terminal
+      // disposition refuses a stale token, including the immediate chain
+      // (inSeconds: 0) and the marker-carrying suspend, which share the CAS.
       it('stale-token transitions throw LeaseLostError', async () => {
         const run = await activatedRun()
         await expect(f.store.reschedule(Q, run.runId, 'stale', { inSeconds: 1 })).rejects.toThrow(
           LeaseLostError,
         )
+        await expect(f.store.reschedule(Q, run.runId, 'stale', { inSeconds: 0 })).rejects.toThrow(
+          LeaseLostError,
+        )
+        await expect(
+          f.store.suspendRun(Q, run.runId, 'stale', { inSeconds: 1 }, { key: 's', stateJson: '{}' }),
+        ).rejects.toThrow(LeaseLostError)
         await expect(f.store.complete(Q, run.runId, 'stale', '{}')).rejects.toThrow(LeaseLostError)
         await expect(f.store.fail(Q, run.runId, 'stale', '{}', null)).rejects.toThrow(
           LeaseLostError,
@@ -662,6 +685,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(row?.rows[0]?.state).toBe('running') // still ours, not parked
       })
 
+      // fenceTwin('EmitEvent') — the duplicate emit's insert loses and the
+      // stored payload stays the first writer's.
       it('first write wins: a second emit changes nothing for late awaiters', async () => {
         await f.store.emitEvent(Q, 'once', '{"v":"first"}')
         await f.store.emitEvent(Q, 'once', '{"v":"second"}')
@@ -782,6 +807,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }
       })
 
+      // fenceTwin('AwaitEventMiss') — the un-emitted path: a swept zombie's
+      // awaitEvent registers no wait and parks nothing.
       it('a zombie awaitEvent is fence-refused (lease authority)', async () => {
         await f.store.spawn(Q, 'z', '{}')
         const run = await claimActivate('w1')
@@ -1036,6 +1063,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     describe('concurrent sweep exclusivity (simulated)', () => {
+      // fenceTwin('SweepLostLaunch') fenceTwin('SweepClaimTimeout') — racing
+      // sweepers reopen or succeed a timed-out run EXACTLY once each; the
+      // loser's CAS matches zero rows on every seed.
       it('exactly one successor per timed-out run under racing sweepers, any seed', async () => {
         for (let seed = 0; seed < 10; seed++) {
           const fx = await makeFixture(`sweep-${seed}`)

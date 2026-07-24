@@ -60,7 +60,45 @@ if untagged:
             f"tag — exactly one of {', '.join(TAGS)} required on its ledger line"
         )
     sys.exit(1)
+# Every modeled guard needs an EXECUTABLE twin (CLAUDE.md class rule): for
+# each ledger line mapping a label to actions with [cas-fenced], every
+# ACTION named must be claimed by a fenceTwin('Action') marker inside a
+# test file — placed on the test that exercises that action's fence/guard
+# refusal (zombie or replay gets zero rows / an error, never success).
+# Per-ACTION, not per-label, is load-bearing: 'await-event' had a twin for
+# its miss branch while the hit branch shipped an unfenced success read.
+fenced_actions = set()
+for ln in block.splitlines():
+    m = re.search(r"'[a-zA-Z0-9:_-]+'\s*->\s*([A-Za-z0-9_/ ]+?)\s*\[cas-fenced\]", ln)
+    if m:
+        fenced_actions.update(a.strip() for a in m.group(1).split("/"))
+tests = ""
+for path in sorted(root.glob("packages/*/test/**/*.ts")):
+    tests += path.read_text()
+# The conformance suite's tests live in src/ (run via the per-store runner).
+for path in sorted(root.glob("packages/conformance/src/*.ts")):
+    tests += path.read_text()
+marked = set(re.findall(r"fenceTwin\('([A-Za-z0-9_]+)'\)", tests))
+untwinned = sorted(a for a in fenced_actions if a not in marked)
+if untwinned:
+    for action in untwinned:
+        print(
+            f"spec-ledger: fenced action '{action}' has no executable twin — "
+            f"add fenceTwin('{action}') to the test that proves its "
+            f"fence/guard refuses a stale or duplicate caller"
+        )
+    sys.exit(1)
+stale_marks = sorted(m for m in marked if m not in fenced_actions)
+if stale_marks:
+    for mark in stale_marks:
+        print(
+            f"spec-ledger: fenceTwin('{mark}') marks an action that is not a "
+            f"[cas-fenced] mapping in the ledger — remove or rename it"
+        )
+    sys.exit(1)
+
 print(
     f"spec-ledger: all {len(labels)} batch labels accounted for and "
-    f"duplicate-classified (block-scoped)"
+    f"duplicate-classified; all {len(fenced_actions)} fenced actions "
+    f"have executable twins (block-scoped)"
 )

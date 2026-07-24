@@ -371,6 +371,8 @@ describe('sweep and cancellation review regressions', () => {
     expect(corruptSeeds, 'seeds reaching an invariant-violating state').toEqual([])
   })
 
+  // fenceTwin('CancelSweep') — the disarmed-deadline guard blocks the
+  // sweep's cancel CAS from firing on a task that started in time.
   it('max_delay never cancels a task that started on time', async () => {
     const f = await makeLibsqlFixture('max-delay')
     await f.admin.setFakeNowEpochMs(1_000_000)
@@ -527,6 +529,8 @@ describe('sweep and cancellation review regressions', () => {
     f.close()
   })
 
+  // fenceTwin('CancelExplicit') — the losing cancel CAS returns false and
+  // its follow-ons touch nothing.
   it('a losing cancel executes none of its follow-ons', async () => {
     const f = await makeLibsqlFixture('lose-cancel')
     await f.admin.setFakeNowEpochMs(1_000_000)

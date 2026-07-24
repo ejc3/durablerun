@@ -88,6 +88,10 @@ describe('event regressions', () => {
     f.close()
   })
 
+  // fenceTwin('AwaitEventHit') — the already-emitted read path: the model
+  // fences AwaitEventHit, so a swept zombie gets the lease error, never the
+  // payload (this guard shipped without its twin once; the twin is now
+  // ledger-enforced per fenced ACTION).
   it('a zombie awaitEvent HIT is fence-refused, never a success signal', async () => {
     const f = await fx('ev-zombie-hit')
     await f.store.spawn(Q, 'z', '{}')

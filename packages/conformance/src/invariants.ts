@@ -103,6 +103,39 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
             WHERE r.run_id IS NULL`,
     },
     {
+      // Wait referential integrity: a wait's run must belong to the wait's
+      // task and queue (same fence-scope class as checkpoint-cross-task —
+      // the waits table shipped without inheriting this check and the
+      // unbound-task_id fence gap had no detection twin).
+      name: 'wait-cross-task',
+      sql: `SELECT w.run_id || '/' || w.step_name AS v
+            FROM waits w JOIN runs r ON r.run_id = w.run_id
+            WHERE r.task_id <> w.task_id OR r.queue <> w.queue`,
+    },
+    {
+      // WaitIntegrity's executable twin: no waiter may still be 'waiting'
+      // on an event that has fired — emit deletes satisfied waits in the
+      // same batch, and registration is guarded on the event not existing,
+      // so a surviving pair IS a lost wakeup.
+      name: 'wait-for-fired-event',
+      sql: `SELECT w.run_id || '/' || w.step_name AS v
+            FROM waits w JOIN events e
+              ON e.queue = w.queue AND e.event_name = w.event_name
+            WHERE w.status = 'waiting'`,
+    },
+    {
+      // PayloadMatchesEvent's executable twin: a delivered wake payload
+      // must be the stored event's payload (a NULL event_payload is the
+      // timeout marker and carries no obligation). LEFT JOIN so a payload
+      // from a nonexistent event is corruption, not invisibility.
+      name: 'wake-payload-mismatch',
+      sql: `SELECT r.run_id AS v
+            FROM runs r LEFT JOIN events e
+              ON e.queue = r.queue AND e.event_name = r.wake_event
+            WHERE r.event_payload IS NOT NULL
+              AND (e.event_name IS NULL OR r.event_payload <> e.payload)`,
+    },
+    {
       // TypeOK twin, storage-class arm: INTEGER columns are affinity, not
       // enforcement — a REAL or text epoch is corruption regardless of path
       // (§3.4 rule 7 is the prevention; this is the detection).
