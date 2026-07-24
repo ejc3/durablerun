@@ -77,7 +77,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
-  it("flags a parked run whose carried wake name disagrees with its wait row", async () => {
+  it('flags a parked run whose carried wake name disagrees with its wait row', async () => {
     // Codex PR#11 finding 6: a run parked on await('go') must carry
     // wake_event='go'; a mismatch means the park and the wait disagree.
     const f = await seeded('wait-wake-mismatch')

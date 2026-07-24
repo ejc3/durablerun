@@ -23,7 +23,12 @@ async function fixture(seed: string) {
   return { raw, admin, store, close: () => raw.close() }
 }
 
-async function insertTask(raw: LibsqlExecutor, taskId: string, state: string, cancelAtMs: number | null) {
+async function insertTask(
+  raw: LibsqlExecutor,
+  taskId: string,
+  state: string,
+  cancelAtMs: number | null,
+) {
   await raw.batch(
     'setup',
     [
@@ -40,7 +45,13 @@ async function insertTask(raw: LibsqlExecutor, taskId: string, state: string, ca
   )
 }
 
-async function insertRun(raw: LibsqlExecutor, runId: string, taskId: string, state: string, claimedBy: string | null) {
+async function insertRun(
+  raw: LibsqlExecutor,
+  runId: string,
+  taskId: string,
+  state: string,
+  claimedBy: string | null,
+) {
   await raw.batch(
     'setup',
     [
@@ -82,9 +93,9 @@ describe('awaitEvent review regressions', () => {
     const f = await fixture('f2')
     await insertTask(f.raw, 't1', 'running', NOW - 1) // deadline already passed
     await insertRun(f.raw, 'r1', 't1', 'running', 'tok-live')
-    await expect(f.store.awaitEvent(Q, 't1', 'r1', 'tok-live', '$await:go', 'go', null)).rejects.toThrow(
-      LeaseLostError,
-    )
+    await expect(
+      f.store.awaitEvent(Q, 't1', 'r1', 'tok-live', '$await:go', 'go', null),
+    ).rejects.toThrow(LeaseLostError)
     expect(await countWaits(f.raw, 'r1')).toBe(0)
     f.close()
   })
@@ -100,9 +111,9 @@ describe('awaitEvent review regressions', () => {
     await insertTask(f.raw, 'B', 'sleeping', null)
     await insertRun(f.raw, 'runB', 'B', 'sleeping', null)
     // task A's token, but run B's id — the park guards all fail.
-    await expect(f.store.awaitEvent(Q, 'A', 'runB', 'tok-A', '$await:go', 'go', null)).rejects.toThrow(
-      LeaseLostError,
-    )
+    await expect(
+      f.store.awaitEvent(Q, 'A', 'runB', 'tok-A', '$await:go', 'go', null),
+    ).rejects.toThrow(LeaseLostError)
     expect(await taskState(f.raw, 'A')).toBe('running') // never mirrored to sleeping
     f.close()
   })

@@ -93,7 +93,7 @@ export class UserName {
     // (not well-formed UTF-16) is re-encoded to U+FFFD — either way two
     // distinct JS names collide or a name silently changes, and its wake
     // never matches. Reject both at the single mint point.
-    if (raw.includes("\u0000") || /\p{Surrogate}/u.test(raw)) {
+    if (raw.includes('\u0000') || /\p{Surrogate}/u.test(raw)) {
       throw new FatalTaskError(
         `${what} '${raw}' contains characters that do not round-trip through storage (NUL or a lone surrogate)`,
       )
