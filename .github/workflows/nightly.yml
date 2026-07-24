@@ -19,7 +19,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
       - run: FUZZ_SEEDS=20000 FUZZ_STEPS=150 pnpm exec vitest run packages/conformance/test
+  # One TLC process per runner: six concurrent JVMs on one 7 GB runner
+  # starve each other (the shared disk filling under three liveness graphs
+  # once failed all three heavy groups in the same minute, printing
+  # lasso-less trace fragments that read as a phantom spec violation).
+  # Each matrix job gets the whole runner; scripts/tla.sh labels a failure
+  # as MODEL VIOLATION vs INFRA ERROR from TLC's exit code.
   tla:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [safety, liveness1, liveness2, liveness3, liveness4, liveness5]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,4 +37,4 @@ jobs:
         with:
           distribution: temurin
           java-version: 25
-      - run: bash scripts/tla.sh
+      - run: TLA_ONLY=${{ matrix.target }} bash scripts/tla.sh
