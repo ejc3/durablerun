@@ -124,16 +124,36 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
             WHERE w.status = 'waiting'`,
     },
     {
+      // WaitIntegrity: a waiting wait implies its run is PARKED (sleeping).
+      // An orphan wait on a running run — the INSERT/park guard asymmetry —
+      // must be visible, not invariant-clean.
+      name: 'wait-on-non-sleeping-run',
+      sql: `SELECT w.run_id || '/' || w.step_name AS v
+            FROM waits w JOIN runs r ON r.run_id = w.run_id
+            WHERE w.status = 'waiting' AND r.state <> 'sleeping'`,
+    },
+    {
+      // WaitIntegrity: a run parked on a wait carries that wait's event as
+      // its wake_event; a disagreement means the park and the wait row
+      // registered different events (IS NOT is NULL-safe: a NULL wake_event
+      // under a waiting wait is itself a violation).
+      name: 'wait-wake-name-mismatch',
+      sql: `SELECT w.run_id || '/' || w.step_name AS v
+            FROM waits w JOIN runs r ON r.run_id = w.run_id
+            WHERE w.status = 'waiting' AND r.wake_event IS NOT w.event_name`,
+    },
+    {
       // PayloadMatchesEvent's executable twin: a delivered wake payload
       // must be the stored event's payload (a NULL event_payload is the
       // timeout marker and carries no obligation). LEFT JOIN so a payload
-      // from a nonexistent event is corruption, not invisibility.
+      // from a nonexistent event is corruption; IS NOT is NULL-safe so a
+      // NULL stored payload cannot silently escape the comparison.
       name: 'wake-payload-mismatch',
       sql: `SELECT r.run_id AS v
             FROM runs r LEFT JOIN events e
               ON e.queue = r.queue AND e.event_name = r.wake_event
             WHERE r.event_payload IS NOT NULL
-              AND (e.event_name IS NULL OR r.event_payload <> e.payload)`,
+              AND (e.event_name IS NULL OR r.event_payload IS NOT e.payload)`,
     },
     {
       // TypeOK twin, storage-class arm: INTEGER columns are affinity, not
