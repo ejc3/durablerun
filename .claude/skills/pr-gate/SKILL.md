@@ -51,7 +51,10 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    the status echoes publicly). Merging without reviews is an operation
    GitHub refuses, not a rule to remember — it was forgotten under
    momentum twice; now the failure mode requires deliberately attesting
-   falsely, a different and auditable class.
+   falsely, a different and auditable class. The same script enforces the
+   SEV rule FIRST — a mandatory `review-findings: <count>` line in the PR
+   body, and for a nonzero count an added, filled-in postmortem (Part 6);
+   the abandonment trailer never skips that gate.
 7. **Simplify + elegance pass ran** — before the final push, a dedicated
    simplification review over the FULL branch diff (`/simplify`, or an
    equivalent walk of Part 5): every accepted simplification lands in the
@@ -256,11 +259,13 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   impact, red/green commits, the finder artifact quoted, per-finding layer
   analysis (which layer should have caught it and why it could not), the
   mechanisms instituted with their ladder rungs, deferrals in BUILD.md.
-  MECHANIZED: review-attest.sh refuses to attest a branch carrying red-test
-  commits unless the PR adds a postmortem with all required sections (or
-  the body declares `review-findings: 0`, publicly claiming every red
-  commit was machinery-caught — the same auditable-if-false class as the
-  attestation itself). [CLAUDE.md standing rule]
+  MECHANIZED: review-attest.sh requires a `review-findings: <count>` line
+  in every PR body; a nonzero count requires the PR to ADD a postmortem
+  containing every template section, placeholders filled, findings table
+  non-empty; the abandonment trailer never skips this gate. Declaring 0
+  over a branch with red-test commits publicly claims they were
+  machinery-caught — the same auditable-if-false class as the attestation
+  itself. [CLAUDE.md standing rule]
 - **DESIGN.md updates in the same diff** for any observable behavior change
   (thrown error types, LWW semantics, mirror rules — all were missed once).
 - **BUILD.md scope reconciliation**: promised-but-deferred items get an

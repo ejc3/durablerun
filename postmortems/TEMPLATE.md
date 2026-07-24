@@ -19,7 +19,9 @@ user-visible impact of each escaped bug. State the worst finding first.>
 - Fixes: commit `<hash>`; gate after fix: <verify / fuzz / TLC results>.
 - Finder: <which review round / tool>, quoted verdict: "<...>".
 - <Links or quoted excerpts sufficient for an outside reader to audit the
-  round without access to any session-local files.>
+  round. Never cite session-local or machine-local paths — quote the
+  content itself. The attestation script machine-rejects a postmortem that
+  still contains template placeholders or an empty findings table.>
 
 ## Root cause
 

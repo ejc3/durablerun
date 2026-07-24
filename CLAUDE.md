@@ -145,13 +145,17 @@ the evidence attached to the PR:
 - what was built now vs deferred (deferrals recorded in BUILD.md).
 
 Enforced, not remembered: `scripts/review-attest.sh` refuses to produce the
-required `adversarial-review` status for a PR whose branch carries red-test
-commits (or whose body declares a nonzero finding count) unless the PR also
-adds a postmortem containing every required section. Bugs caught by the
-author's own machinery before review — TLC at spec time, red tests, fuzz —
-are the system working, not SEVs; a PR whose red commits were all
-machinery-caught says so publicly with a `review-findings: 0` line in its
-body, the same auditable-if-false class as the attestation itself.
+required `adversarial-review` status unless the PR body declares
+`review-findings: <count>` — mandatory, so a round can never silently claim
+nothing was found. A nonzero count requires the PR to ADD a postmortem
+(added files; touching or renaming an old one does not count) containing
+every section of the template, placeholders filled, findings table
+non-empty. The `reviews-abandoned:` trailer can excuse incomplete review
+artifacts, never this gate. Bugs caught by the author's own machinery
+before review — TLC at spec time, red tests, fuzz — are the system
+working, not SEVs; declaring `review-findings: 0` over a branch with red
+commits publicly claims exactly that, the same auditable-if-false class as
+the attestation itself.
 
 ## Standing rule: a simplify and elegance pass gates every PR
 
