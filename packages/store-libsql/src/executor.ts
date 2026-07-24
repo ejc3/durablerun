@@ -24,10 +24,31 @@ import {
  *   the Uint8Array the SqlRow contract promises.
  */
 export class LibsqlExecutor implements SqlExecutor {
-  constructor(private readonly client: Client) {}
+  private pragmas: Promise<void> | null = null
+
+  constructor(
+    private readonly client: Client,
+    private readonly fileBacked = false,
+  ) {}
 
   static open(url: string, authToken?: string): LibsqlExecutor {
-    return new LibsqlExecutor(createClient(authToken ? { url, authToken } : { url }))
+    const fileBacked = url.startsWith('file:') && !url.includes(':memory:')
+    return new LibsqlExecutor(createClient(authToken ? { url, authToken } : { url }), fileBacked)
+  }
+
+  /**
+   * Multi-PROCESS operation on one database file needs write-ahead logging
+   * (readers stop blocking the writer) and a busy timeout (a locked write
+   * waits instead of failing) — per connection. PRAGMAs cannot run inside
+   * a transaction, so this happens once, outside batch(), lazily before
+   * the first one.
+   */
+  private applyConnectionPragmas(): Promise<void> {
+    this.pragmas ??= (async () => {
+      await this.client.execute('PRAGMA journal_mode=WAL')
+      await this.client.execute('PRAGMA busy_timeout=5000')
+    })()
+    return this.pragmas
   }
 
   async batch(
@@ -37,6 +58,7 @@ export class LibsqlExecutor implements SqlExecutor {
   ): Promise<SqlResult[]> {
     let results: Awaited<ReturnType<Client['batch']>>
     try {
+      if (this.fileBacked) await this.applyConnectionPragmas()
       results = await this.client.batch(
         statements.map((s) => ({ sql: s.sql, args: [...s.args] })),
         mode,
