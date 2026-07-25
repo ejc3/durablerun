@@ -42,7 +42,7 @@ import {
   fenced,
   fencedAt,
   LIVE,
-  registeredWaitStep,
+  registeredWait,
   successorOwned,
 } from './fragments.js'
 import { NOW_MS } from './time.js'
@@ -336,6 +336,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
     // must drain via the successor-tick chain, never assume a full batch.
     const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
+    const claimedWait = registeredWait('runs')
+    const candidateWait = registeredWait('cr')
     const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS })
     // Due runs of live tasks → running, holding the caller's lease token AND
     // this batch's provenance. The two are now different things, which is the
@@ -357,7 +359,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          lease_ms = ?,
          claim_expires_at_ms = ${NOW} + ?,
          heartbeat_at_ms = ${NOW},
-         wake_step = COALESCE(wake_step, ${registeredWaitStep('runs')}),
+         wake_step = COALESCE(wake_step, ${claimedWait.step}),
          ${FENCE_SET}
        WHERE run_id IN (
          SELECT c.run_id FROM (
@@ -378,6 +380,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          JOIN runs cr ON cr.run_id = c.run_id
          JOIN tasks t ON t.task_id = cr.task_id
          WHERE ${eligibleTask('t', NOW)}
+           AND (cr.wake_step IS NOT NULL OR ${candidateWait.unambiguous})
          ORDER BY c.available_at_ms, c.run_id
          LIMIT ?
        )
@@ -1354,6 +1357,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     )
     const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
     const emitted = fencedAt('events', thisEvent, b.fence('event'))
+    const runWait = registeredWait('runs')
     // THE ONE FOLLOW-ON THAT CANNOT BE GENERATED, and the reason is worth
     // stating rather than hiding. Every other follow-on selects its rows from
     // a table THIS batch stamped, so the primitive can build the selection
@@ -1417,7 +1421,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `UPDATE runs SET
          state = 'pending',
          available_at_ms = ${emitted},
-         wake_step = COALESCE(wake_step, ${registeredWaitStep('runs')}),
+         wake_step = COALESCE(wake_step, ${runWait.step}),
          wake_event = ?,
          event_payload = (SELECT f.payload FROM events f
                           WHERE ${thisEvent}),
@@ -1432,6 +1436,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                        AND s.status = 'waiting'
                        AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step)
                        AND s.timeout_at_ms IS runs.available_at_ms)
+         AND (runs.wake_step IS NOT NULL OR ${runWait.unambiguous})
          AND ${fenced('events', thisEvent, b.fence('event'))}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,

@@ -828,16 +828,18 @@ AwaitEventMiss(c, e) ==
 \* the WAIT ROWS -- never on runs.wake_event ALONE -- is what makes timed-out
 \* and cancelled waits non-resurrectable: their wait rows are already gone.
 \*
-\* MODEL/IMPL GAP, now closed in the impl: here a run has AT MOST ONE wait
+\* MODEL/IMPL GAP: here a run has AT MOST ONE wait
 \* (waitEv[r]), so "a wait row for e names run r" and "r is parked on e" are
 \* the same statement.  The implementation's waits table is keyed
 \* (run_id, step_name), so a run can carry a wait row while being parked on
 \* something else entirely -- a durable timer, say -- and keying the flip on
 \* the wait row alone woke it, up to its whole remaining sleep early.  The
 \* impl therefore intersects the two: the wait row AND the run's own
-\* wake_event/wake_step.  That is strictly NARROWER than this action, so
-\* every property proved here still holds; it is the model's one-wait-per-run
-\* restriction being enforced rather than assumed.
+\* wake_event/wake_step, and refuses a legacy NULL-step recovery when more
+\* than one full witness matches.  Those checks narrow the gap but do not
+\* prove that a matching row is the CURRENT registration.  PR3.8's immutable
+\* wait_id/runs.active_wait_id is still required before the implementation is
+\* a refinement of this one-wait-per-run action.
 EmitEvent(e, p) ==
   /\ eventState[e] = NoPayload
   /\ eventState' = [eventState EXCEPT ![e] = p]

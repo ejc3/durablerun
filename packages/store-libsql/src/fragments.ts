@@ -50,17 +50,30 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
  * `wake_step` did not exist until schema v3, but waits always carried the step.
  * Every transition that consumes a legacy registration first copies that
  * immutable identity into the run. Keeping the full witness here means claim
- * and emit cannot recover a step from different or partial registrations.
+ * and emit cannot recover a step from different or partial registrations. A
+ * legacy run may match several old rows, and without an active-wait id there
+ * is no truthful way to choose among them, so the scalar exists only when the
+ * full witness identifies exactly one registration.
  */
-export const registeredWaitStep = (run: string): string =>
-  `(SELECT w.step_name FROM waits w
-    WHERE w.run_id = ${run}.run_id
+export const registeredWait = (run: string): { step: string; unambiguous: string } => {
+  const witness = `w.run_id = ${run}.run_id
       AND w.queue = ${run}.queue
       AND w.task_id = ${run}.task_id
       AND w.event_name = ${run}.wake_event
       AND w.status = 'waiting'
-      AND w.timeout_at_ms IS ${run}.available_at_ms
-    ORDER BY w.step_name LIMIT 1)`
+      AND w.timeout_at_ms IS ${run}.available_at_ms`
+  return {
+    step: `(SELECT MIN(w.step_name) FROM waits w
+            WHERE ${witness}
+            HAVING COUNT(*) = 1)`,
+    // Zero matches can mean there is no active event wait (a successor may
+    // legitimately carry historical wake fields). More than one is the
+    // unsafe state: no caller may consume it by guessing a step.
+    unambiguous: `NOT EXISTS (SELECT COUNT(*) FROM waits w
+                              WHERE ${witness}
+                              HAVING COUNT(*) > 1)`,
+  }
+}
 
 /**
  * Successor identity, keyed on immutable ownership rather than on a fence.
