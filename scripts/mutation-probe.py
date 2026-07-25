@@ -97,14 +97,14 @@ MUTATIONS = [
         "generated-update-provenance",
         "packages/core/src/fenced-batch.ts",
         "    const provenance = `,\\n         fence_stamp = ${STAMP},\n"
-        "         fence_at_ms = (SELECT f.fence_at_ms FROM ${spec.from} f\n"
+        "         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f\n"
         "                        WHERE ${src}f.fence_stamp = ${fence})`\n"
         "    return this.add({\n"
         "      name,\n"
         "      kind: 'followOn',\n"
         "      target: spec.target,",
         "    const provenance = `,\\n         fence_stamp = fence_stamp,\n"
-        "         fence_at_ms = (SELECT f.fence_at_ms FROM ${spec.from} f\n"
+        "         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f\n"
         "                        WHERE ${src}f.fence_stamp = ${fence})`\n"
         "    return this.add({\n"
         "      name,\n"

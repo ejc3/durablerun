@@ -317,8 +317,11 @@ export class FencedBatch {
         generated: true,
       })
     }
+    // A many-row source still carries one statement instant. Reduce it to one
+    // SQL scalar explicitly: SQLite otherwise picks an arbitrary row while
+    // PostgreSQL and MySQL reject the same subquery for returning several.
     const provenance = `,\n         fence_stamp = ${STAMP},
-         fence_at_ms = (SELECT f.fence_at_ms FROM ${spec.from} f
+         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f
                         WHERE ${src}f.fence_stamp = ${fence})`
     return this.add({
       name,
