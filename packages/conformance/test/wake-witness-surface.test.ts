@@ -1,3 +1,4 @@
+import type { SqlExecutor, SqlStatement } from '@durablerun/core'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
@@ -126,11 +127,47 @@ function shouldWake(park: Park, rows: readonly Row[]): boolean {
   )
 }
 
-async function open() {
+type StatementMutator = (
+  label: string,
+  statements: readonly SqlStatement[],
+) => readonly SqlStatement[]
+
+function mutateWake(find: string, replace: string): StatementMutator {
+  return (label, statements) => {
+    if (label !== 'emit-event') return statements
+    let changed = 0
+    const mutated = statements.map((statement) => {
+      if (!/^\s*UPDATE runs SET/.test(statement.sql)) return statement
+      const sql = statement.sql.replace(find, () => {
+        changed += 1
+        return replace
+      })
+      return { ...statement, sql }
+    })
+    if (changed !== 1) throw new Error(`wake mutation changed ${changed} statements`)
+    return mutated
+  }
+}
+
+const NULL_ONLY_TIMEOUT = mutateWake(
+  's.timeout_at_ms IS runs.available_at_ms',
+  's.timeout_at_ms IS NULL AND runs.available_at_ms IS NULL',
+)
+const NO_LIVE_TASK_GUARD = mutateWake(
+  "t.state IN ('pending','running','sleeping')",
+  't.state IS NOT NULL',
+)
+
+async function open(mutate?: StatementMutator) {
   const { raw, admin } = await openTestDb({ nowMs: NOW })
   let n = 0
   let seeds = 0
-  const store = new LibsqlSchedulerStore(raw, {
+  const db: SqlExecutor = mutate
+    ? {
+        batch: (label, statements, mode) => raw.batch(label, mutate(label, statements), mode),
+      }
+    : raw
+  const store = new LibsqlSchedulerStore(db, {
     uuidv7: () => `id-${++n}`,
     token: () => `tok-${++seeds}`,
   })
@@ -221,8 +258,8 @@ interface Case {
 }
 
 /** Runs every case and returns the ones the engine and the oracle disagree on. */
-async function disagreements(cases: readonly Case[]): Promise<string[]> {
-  const f = await open()
+async function disagreements(cases: readonly Case[], mutate?: StatementMutator): Promise<string[]> {
+  const f = await open(mutate)
   try {
     const wrong: string[] = []
     for (const [i, c] of cases.entries()) {
@@ -236,17 +273,28 @@ async function disagreements(cases: readonly Case[]): Promise<string[]> {
 }
 
 const parks = Object.entries(PARKS)
+const singleCases = parks.flatMap(([label, park]) =>
+  SUBSETS.map((fields) => ({
+    label: `${label} / ${name(fields)}`,
+    park,
+    rows: [corrupt(fields)],
+  })),
+)
+const atStep = SUBSETS.filter((fields) => !fields.includes('step_name'))
+const atOther = SUBSETS.filter((fields) => fields.includes('step_name'))
+const pairCases = parks.flatMap(([label, park]) =>
+  atStep.flatMap((a) =>
+    atOther.map((b) => ({
+      label: `${label} / ${name(a)} | ${name(b)}`,
+      park,
+      rows: [corrupt(a), corrupt(b)],
+    })),
+  ),
+)
 
 describe('a wake needs ONE row that justifies it', () => {
   it('decides every park against every single-row corruption', async () => {
-    const cases = parks.flatMap(([label, park]) =>
-      SUBSETS.map((fields) => ({
-        label: `${label} / ${name(fields)}`,
-        park,
-        rows: [corrupt(fields)],
-      })),
-    )
-    expect(await disagreements(cases)).toEqual([])
+    expect(await disagreements(singleCases)).toEqual([])
   })
 
   it('decides every park against every PAIR of corruptions', async () => {
@@ -257,17 +305,14 @@ describe('a wake needs ONE row that justifies it', () => {
     // shape that produced the defect: the row with the right step was wrong
     // about the queue, and the row with the right queue was wrong about the
     // step.
-    const atStep = SUBSETS.filter((f) => !f.includes('step_name'))
-    const atOther = SUBSETS.filter((f) => f.includes('step_name'))
-    const cases = parks.flatMap(([label, park]) =>
-      atStep.flatMap((a) =>
-        atOther.map((b) => ({
-          label: `${label} / ${name(a)} | ${name(b)}`,
-          park,
-          rows: [corrupt(a), corrupt(b)],
-        })),
-      ),
-    )
-    expect(await disagreements(cases)).toEqual([])
+    expect(await disagreements(pairCases)).toEqual([])
+  })
+
+  it('rejects a wake predicate that accepts only NULL timeout pairs', async () => {
+    expect(await disagreements(singleCases, NULL_ONLY_TIMEOUT)).not.toEqual([])
+  })
+
+  it('rejects a wake predicate with no live-task guard', async () => {
+    expect(await disagreements(singleCases, NO_LIVE_TASK_GUARD)).not.toEqual([])
   })
 })
