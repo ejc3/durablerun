@@ -270,6 +270,36 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     f.close()
   })
 
+  it('still wakes a run parked before wake_step existed', async () => {
+    // Waits and events predate the wake_step column; the migration that added
+    // it backfills nothing. A run parked by the older code is sleeping with
+    // wake_event set and wake_step NULL, and the step correlation compares
+    // against NULL, which is never true — so the run is not woken, while the
+    // delete removes its wait row regardless. The event is immutable and the
+    // wait is gone, so re-emitting cannot help: an untimed await strands
+    // forever. Reachable by upgrading a database, and by a rolling deploy
+    // where an older process parks a run after a newer one has migrated.
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:go', 'go', null)
+    // Exactly what the pre-v3 code left behind: no step recorded on the run.
+    await f.raw.batch('t', [
+      { sql: `UPDATE runs SET wake_step = NULL WHERE run_id = ?`, args: [run.runId] },
+    ])
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [after] = await query(f.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
+      run.runId,
+    ])
+    expect(after?.state).toBe('pending')
+    expect(after?.event_payload).toBe('{"x":1}')
+    f.close()
+  })
+
   it('still wakes a run that really is parked on the event', async () => {
     const f = await fixture()
     const spawned = await f.store.spawn(Q, 'job', '{}')
@@ -296,6 +326,78 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     expect(after?.event_payload).toBe('{"x":1}')
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
     expect(task?.state).toBe('pending')
+    f.close()
+  })
+})
+
+describe('a successor id that collides with the run being replaced', () => {
+  /**
+   * The insert's "a run of my task already sits at that id" guard treats the
+   * PARENT as such a run, so a self-collision makes it write nothing — and
+   * then every arm keyed on the successor writes nothing too. What commits is
+   * a half-transition: in the sweep, a failed run under a task still marked
+   * running, which no later claim or sweep can rediscover; in a worker
+   * failure with budget remaining, a permanently failed task the caller asked
+   * to retry.
+   *
+   * A collision with a FOREIGN row fails loudly. This one must too: it is an
+   * id-generation failure, and committing either outcome is worse than
+   * raising.
+   */
+  it('fails loudly instead of committing a half-transition', async () => {
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+    // An id source that hands back the id of the run being replaced.
+    const colliding = new LibsqlSchedulerStore(f.raw, {
+      uuidv7: () => run.runId,
+      token: () => 'collide-tok',
+    })
+    await expect(
+      colliding.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 }),
+    ).rejects.toThrow()
+
+    // Nothing of the half-transition committed: the batch is atomic.
+    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
+    expect(task?.state).toBe('running')
+    const [after] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [run.runId])
+    expect(after?.state).toBe('running')
+    f.close()
+  })
+})
+
+describe('an exact replay of spawn', () => {
+  /**
+   * A lost response makes the caller retry the same batch. The task insert
+   * correctly writes nothing the second time -- the task exists -- but the
+   * task still CARRIES the first pass's stamp, so the run follow-on matches
+   * it and inserts the same run again, dying on the run's primary key.
+   *
+   * The caller sees an error for a spawn that fully succeeded. A retry
+   * without an idempotency key then creates duplicate work. This is the same
+   * class as the successor replay: a fence proves a row carries a stamp, not
+   * that this execution wrote it.
+   */
+  it('returns the original receipt rather than colliding on the run', async () => {
+    const f = await fixture()
+    const rec = recorder(f.raw)
+    const store = f.storeOver(rec.db)
+
+    const first = await store.spawn(Q, 'job', '{}', { idempotencyKey: 'k' })
+    expect(first.created).toBe(true)
+
+    await rec.replay('spawn')
+
+    // Exactly one task and one run: the replay added nothing.
+    const [counts] = await query(
+      f.raw,
+      `SELECT (SELECT COUNT(*) FROM tasks) AS tasks, (SELECT COUNT(*) FROM runs) AS runs`,
+    )
+    expect(counts).toMatchObject({ tasks: 1, runs: 1 })
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
 })

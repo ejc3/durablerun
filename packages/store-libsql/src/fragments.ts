@@ -58,21 +58,32 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
  * tick. Ownership does not decay, so these ask about that instead.
  *
  * `mine` is the insert's guard: a run of MY task already sits at that id, so
- * there is nothing to create. It has no self-exclusion on purpose — when the
- * minted id collided with the id of the run being replaced, that parent row
- * blocks the insert, which is right, because writing over the parent is not a
- * successor. A row at that id belonging to some OTHER task is not covered, so
- * it still collides loudly rather than being quietly adopted.
+ * there is nothing to create — which is what a replay looks like. It excludes
+ * the run being REPLACED, so a minted id colliding with the parent is not
+ * mistaken for an already-created successor; the insert then proceeds and
+ * fails on the primary key, loudly.
  *
- * `exists` is the terminal arm's guard, and it does exclude the parent: the
- * question there is whether a real successor exists, and the parent standing
- * at a colliding id is not one. Conflating the two is what let a failing run
- * answer for its own successor and skip the only statement that records why
- * the task failed.
+ * That exclusion is load-bearing. Letting the parent satisfy `mine` made the
+ * insert write nothing, and every arm keyed on the successor wrote nothing
+ * too, so what committed was a HALF-transition: in the sweep, a failed run
+ * under a task still marked running, which no later claim or sweep can
+ * rediscover; in a worker failure with retry budget left, a permanently
+ * failed task the caller had asked to retry. A collision with a FOREIGN row
+ * already failed loudly, and an id-generation failure against our own parent
+ * is no less a failure — raising is strictly better than committing either
+ * of those.
+ *
+ * `exists` is the terminal arm's guard, and it excludes the parent for a
+ * different reason: the question there is whether a real successor exists,
+ * and the parent standing at a colliding id is not one. Conflating the two
+ * is what let a failing run answer for its own successor and skip the only
+ * statement that records why the task failed.
  */
 export const successor = {
-  mine: (idParam: string, taskCol: string): string =>
-    `EXISTS (SELECT 1 FROM runs s WHERE s.run_id = ${idParam} AND s.task_id = ${taskCol})`,
+  mine: (idParam: string, taskCol: string, selfParam: string): string =>
+    `EXISTS (SELECT 1 FROM runs s
+             WHERE s.run_id = ${idParam} AND s.task_id = ${taskCol}
+               AND s.run_id <> ${selfParam})`,
   exists: (idParam: string, taskCol: string, selfParam: string): string =>
     `EXISTS (SELECT 1 FROM runs s
              WHERE s.run_id = ${idParam} AND s.task_id = ${taskCol}

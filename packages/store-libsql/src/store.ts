@@ -237,11 +237,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         taskId,
       ],
     )
-    // The initial run, for the task THIS batch just created. Two guards the
-    // old version needed have deleted themselves: the task cannot be terminal
-    // (we inserted it 'pending' one statement ago) and cannot already have a
-    // run (it did not exist one statement ago). Both were only there because
-    // the statement could not tell whose task it was looking at.
+    // The initial run, for the task THIS batch just created. One guard the
+    // old version needed has deleted itself: the task cannot be terminal, we
+    // inserted it 'pending' one statement ago.
+    //
+    // The "no run yet" guard stays, in ownership form, because the task's
+    // STAMP does not distinguish this execution from the previous one. On an
+    // exact replay after a lost response the task insert correctly writes
+    // nothing — the task is already there — but the task still CARRIES the
+    // first pass's stamp, so this statement matched and inserted the same run
+    // again, dying on the run's primary key. The caller then saw an error for
+    // a spawn that had fully succeeded, and a retry without an idempotency
+    // key made duplicate work. Asking whether the task already has a run is a
+    // question about ownership, which does not decay.
     b.followOn(
       'run',
       'runs',
@@ -249,7 +257,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          available_at_ms, created_at_ms, ${FENCE_COLS})
        SELECT ?, f.queue, f.task_id, 1, 'pending', f.enqueue_at_ms, f.fence_at_ms,
          ${STAMP}, f.fence_at_ms
-       FROM tasks f WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('task')}`,
+       FROM tasks f WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('task')}
+         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = f.task_id)`,
       [runId, taskId],
       'one',
     )
@@ -470,8 +479,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          first_started_at_ms = COALESCE(first_started_at_ms, ${activated}),
          cancel_at_ms = CASE
            WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
-             CAST(COALESCE(first_started_at_ms, ${activated})
-               + json_extract(cancellation, '$.maxDurationSeconds') * 1000 AS INTEGER)
+             -- ROUND, not a bare CAST. The port validates this duration with
+             -- durationToMs, which promises rounding to the nearest
+             -- millisecond, and then the raw SECONDS are what get stored; CAST
+             -- truncates, so the two disagree below a millisecond. At 0.0005
+             -- seconds the port says 1ms and the CAST said 0, making the
+             -- deadline the start instant and cancelling the task on the spot.
+             CAST(ROUND(COALESCE(first_started_at_ms, ${activated})
+               + json_extract(cancellation, '$.maxDurationSeconds') * 1000) AS INTEGER)
            ELSE NULL
          END,
          ${fenceFrom('runs', BY_RUN, b.fence('activate'))}
@@ -714,8 +729,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        FROM runs f JOIN tasks t ON t.task_id = f.task_id
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
          AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}
-         AND NOT ${successor.mine('?', 'f.task_id')}`,
-      [successorId, item.attempt + 1, item.runId, successorId],
+         AND NOT ${successor.mine('?', 'f.task_id', '?')}`,
+      [successorId, item.attempt + 1, item.runId, successorId, item.runId],
       'one',
     )
     // At the cap (pre-increment): terminal. Terminal ONLY when this batch
@@ -1095,8 +1110,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          FROM runs f JOIN tasks t ON t.task_id = f.task_id
          WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
            AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
-           AND NOT ${successor.mine('?', 'f.task_id')}`,
-        [successorId, retryDelayMs, retryDelayMs, runId, successorId],
+           AND NOT ${successor.mine('?', 'f.task_id', '?')}`,
+        [successorId, retryDelayMs, retryDelayMs, runId, successorId, runId],
         'one',
       )
       const successorWritten = fenced('runs', BY_RUN, b.fence('successor'))
@@ -1312,6 +1327,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // full pass over the largest table in the engine, on every emit. Keeping
     // it uncorrelated leaves the waits index driving and makes the step match
     // a primary-key probe. Measured both ways.
+    //
+    // A NULL wake_step matches ANY step of the event. Waits and events
+    // predate the wake_step column and its migration backfills nothing, so a
+    // run parked by the older code carries wake_event with no step — and
+    // `s.step_name = NULL` is never true, so the run would not be woken while
+    // the delete below removed its wait anyway. The event is immutable and
+    // the wait is gone, so re-emitting cannot recover it: an untimed await
+    // would strand forever, on any upgraded database and on any rolling
+    // deploy where an older process parks a run after a newer one migrated.
     b.followOn(
       'wake-runs',
       'runs',
@@ -1327,8 +1351,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND run_id IN (SELECT w.run_id FROM waits w
                         WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')
          AND EXISTS (SELECT 1 FROM waits s
-                     WHERE s.run_id = runs.run_id AND s.step_name = runs.wake_step
-                       AND s.event_name = ? AND s.status = 'waiting')
+                     WHERE s.run_id = runs.run_id AND s.event_name = ?
+                       AND s.status = 'waiting'
+                       AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step))
          AND ${fenced('events', thisEvent, b.fence('event'))}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
