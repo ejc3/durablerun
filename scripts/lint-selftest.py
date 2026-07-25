@@ -48,7 +48,12 @@ def store(body: str, name: str = "store.ts") -> dict[str, str]:
 
 
 
-def gate(verify: str, extra_scripts: tuple[str, ...] = (), base_gate: bool = True) -> dict[str, str]:
+def gate(
+    verify: str,
+    extra_scripts: tuple[str, ...] = (),
+    base_gate: bool = True,
+    base_gate_run: bool = True,
+) -> dict[str, str]:
     """A miniature repo for gate-lint: a package.json, a scripts/ dir, a CI file.
 
     gate-lint grades the SHAPE OF THE GATE rather than the contents of a source
@@ -56,15 +61,56 @@ def gate(verify: str, extra_scripts: tuple[str, ...] = (), base_gate: bool = Tru
     scripts/ and it excludes itself from its own on-disk sweep, so only
     `extra_scripts` stand as checkers here.
     """
+    ci = "jobs:\n"
+    if base_gate:
+        ci += "  base-gate:\n"
+        if base_gate_run:
+            ci += (
+                "    steps:\n"
+                "      - run: python3 scripts/gate-lint.py --run-base HEAD BASE\n"
+            )
+    else:
+        ci += "  verify:\n"
+
     files = {
         "package.json": json.dumps({"scripts": {"verify": verify}}),
-        ".github/workflows/ci.yml": "jobs:\n  base-gate:\n" if base_gate else "jobs:\n  verify:\n",
+        ".github/workflows/ci.yml": ci,
         # Named the way the real self-test names them: quoted, one per case.
         "scripts/lint-selftest.py": "".join(f'BAD_CASES: "{n}"\n' for n in extra_scripts),
     }
     for name in extra_scripts:
         files[f"scripts/{name}"] = "# a checker\n"
     return files
+
+
+def under(prefix: str, files: dict[str, str]) -> dict[str, str]:
+    return {f"{prefix}/{rel}": body for rel, body in files.items()}
+
+
+def base_runner_fixture(
+    *,
+    reject_from: str | None,
+    base_verify: str | None = None,
+) -> dict[str, str]:
+    verify = (
+        "python3 scripts/a-lint.py && bash scripts/b-lint.sh "
+        "&& python3 scripts/lint-selftest.py"
+    )
+    head = gate(verify, ("a-lint.py", "b-lint.sh"))
+    base = gate(base_verify if base_verify is not None else verify, ("a-lint.py", "b-lint.sh"))
+    base["scripts/a-lint.py"] = (
+        "from pathlib import Path\n"
+        "raise SystemExit(1 if "
+        "(Path(__file__).resolve().parent.parent / 'REJECT').exists() else 0)\n"
+        if reject_from == "python"
+        else "raise SystemExit(0)\n"
+    )
+    base["scripts/b-lint.sh"] = (
+        "#!/usr/bin/env bash\ntest ! -f REJECT\n"
+        if reject_from == "shell"
+        else "#!/usr/bin/env bash\nexit 0\n"
+    )
+    return {**under("head", head), **under("base", base), "head/REJECT": "reject\n"}
 
 
 
@@ -372,6 +418,34 @@ export class S {
         "a checker runs in the gate with nothing proving it can reject anything",
     ),
     (
+        "gate-lint.py",
+        gate(
+            "echo scripts/a-lint.py && python3 scripts/b-lint.py "
+            "&& python3 scripts/lint-selftest.py",
+            ("a-lint.py", "b-lint.py"),
+        ),
+        "a checker path printed by echo is a textual reference, not an execution",
+    ),
+    (
+        "gate-lint.py",
+        gate(
+            "exit 0; python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+            "&& python3 scripts/lint-selftest.py",
+            ("a-lint.py", "b-lint.py"),
+        ),
+        "a checker after an unconditional exit is unreachable despite appearing in the script",
+    ),
+    (
+        "gate-lint.py",
+        gate(
+            "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+            "&& python3 scripts/lint-selftest.py",
+            ("a-lint.py", "b-lint.py"),
+            base_gate_run=False,
+        ),
+        "an empty base-gate mapping executes no base-owned composition or checker runner",
+    ),
+    (
         "review-bot-lint.py",
         corpus(WHOLE_RULE.replace("Allowed cases (do NOT flag these):", "Some other heading:")),
         "a rule with no Allowed section — it will flag correct code and be switched off",
@@ -532,6 +606,27 @@ export class S {
     )
 ]
 
+BAD_INVOCATIONS = [
+    (
+        "gate-lint.py",
+        base_runner_fixture(reject_from="python"),
+        ("--run-base", "{root}/head", "{root}/base"),
+        "the base-owned Python checker rejects the head tree but is never executed",
+    ),
+    (
+        "gate-lint.py",
+        base_runner_fixture(reject_from="shell"),
+        ("--run-base", "{root}/head", "{root}/base"),
+        "the base-owned shell checker rejects the head tree but is omitted from execution",
+    ),
+    (
+        "gate-lint.py",
+        base_runner_fixture(reject_from=None, base_verify="pnpm test"),
+        ("--run-base", "{root}/head", "{root}/base"),
+        "a base gate containing zero checker invocations is accepted as meaningful",
+    ),
+]
+
 # Inputs each lint must ACCEPT. A checker that rejects everything passes every
 # case above while being useless — but the real repo already covers that
 # direction, because `pnpm verify` runs every checker over it and the build is
@@ -560,7 +655,11 @@ GOOD_CASES = [
 ]
 
 
-def run(lint: str, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run(
+    lint: str,
+    files: dict[str, str],
+    args: tuple[str, ...] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run `lint` against a throwaway tree that looks like the repo.
 
     The script is COPIED into the fixture tree rather than run from scripts/,
@@ -575,8 +674,13 @@ def run(lint: str, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
         copied = root / "scripts" / lint
         copied.write_text((SCRIPTS / lint).read_text())
         runner = ["bash"] if lint.endswith(".sh") else [sys.executable]
+        lint_args = (
+            [str(root)]
+            if args is None
+            else [arg.replace("{root}", str(root)) for arg in args]
+        )
         return subprocess.run(
-            [*runner, str(copied), str(root)],
+            [*runner, str(copied), *lint_args],
             capture_output=True,
             text=True,
             cwd=str(root),
@@ -597,7 +701,9 @@ EXEMPT = {
     "lint-selftest.py",
     "review-attest.sh",
 }
-covered = {lint for lint, _, _ in BAD_CASES}
+covered = {lint for lint, _, _ in BAD_CASES} | {
+    lint for lint, _, _, _ in BAD_INVOCATIONS
+}
 for script in sorted(SCRIPTS.iterdir()):
     name = script.name
     if name in EXEMPT or not ("lint" in name or "ledger" in name):
@@ -614,6 +720,14 @@ for lint, files, why in BAD_CASES:
     if result.returncode == 0:
         failures.append(f"{lint} ACCEPTED a bad input — {why}\n    {next(iter(files.values())).strip()[:120]}")
 
+for lint, files, args, why in BAD_INVOCATIONS:
+    result = run(lint, files, args)
+    if result.returncode == 0:
+        failures.append(
+            f"{lint} ACCEPTED a bad invocation — {why}\n"
+            f"    {' '.join(args)}"
+        )
+
 for lint, files, why in GOOD_CASES:
     result = run(lint, files)
     if result.returncode != 0:
@@ -623,4 +737,7 @@ for f in failures:
     print(f"lint-selftest: {f}")
 if failures:
     sys.exit(1)
-print(f"lint-selftest: {len(BAD_CASES)} bad inputs rejected, {len(GOOD_CASES)} good inputs accepted")
+print(
+    f"lint-selftest: {len(BAD_CASES)} bad inputs and {len(BAD_INVOCATIONS)} "
+    f"bad invocations rejected, {len(GOOD_CASES)} good inputs accepted"
+)
