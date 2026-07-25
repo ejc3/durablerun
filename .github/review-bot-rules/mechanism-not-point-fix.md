@@ -117,10 +117,13 @@ Allowed cases (do NOT flag these):
   `scripts/review-bot-lint.py`: "What it deliberately does NOT do is judge the rules." Flag the
   overclaim, never the technique.
 - **A guard attacked by a rejection test instead of a probe mutation.** `hasTopLevelOr` and the
-  upsert re-stamp branch have no `MUTATIONS` entry and are fully attacked by
+  construction guard for the upsert re-stamp branch are fully attacked by
   `packages/core/test/fenced-batch.test.ts` — 'rejects a fence that appears ONLY in the SET
-  clause' beside 'accepts a statement carrying both a positive and a negative fence'. A per-guard
-  probe entry is not this repo's convention; deleting the guard turns those tests red.
+  clause' beside 'accepts a statement carrying both a positive and a negative fence', and
+  'rejects an upsert whose DO UPDATE branch leaves provenance stale'. A per-construction-guard
+  probe entry is not this repo's convention; deleting either guard turns those tests red. The
+  event call site's semantic choice to preserve its first instant is separately attacked by the
+  `emit-replay-preserves-event-instant` mutation.
 - **A dynamic mechanism with its own discriminating control.** The delayed compiled-emit
   regression drives `one-batch-two-instants` red by reusing one seed at two database instants.
   Separately, `clock-jitter.test.ts` injects a later-clock retry that leaves both invariant

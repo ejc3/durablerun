@@ -34,6 +34,14 @@ before every commit.
 - **PR0.1 scaffold**: `git init`; pnpm workspace + TS strict (`.js` specifiers,
   ts-api lessons); lint/format; `pnpm verify` gate; repo CLAUDE.md (commands +
   invariants pointer). *Gate: verify green on empty suite.*
+- **PR0.2 externally owned review configuration** — NOT STARTED. CodeRabbit
+  and Greptile both select review configuration from the pull request's source
+  branch, so no file in this repository can stop that same branch from
+  weakening its review rules. Move the required rules into an organization-
+  or service-managed policy that a pull request cannot edit, then make that
+  policy a required check. Until an administrator does that, both hosted
+  reviews are advisory and source-branch-owned; `base-gate` independently
+  grades code but does not change their configuration provenance.
 
 ## Phase 1 — scheduler plane on SQLite (inline placement)
 
@@ -147,14 +155,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 - **PR3.7 close the provenance residual** — MOSTLY DONE in PR3.6 after the
   detection ledger showed the automated machinery had found 0 of 38 defects.
-  Landed: the typed target expression (the primitive generates each follow-on's
-  row selection from the fence and `narrow` can only shrink it — 22 of the 23
-  statements that can over-write rows now contain no caller-authored WHERE at
-  all); the data-level provenance audit as two invariants
+  Landed: the typed target expression (the primitive generates each
+  overwriting follow-on's row selection from the fence whenever its source is
+  a table this batch stamped, and `narrow` can only shrink it; `wake-runs` is
+  the sole structural exception described below); the data-level provenance
+  audit as two invariants
   (`one-batch-two-instants`, `provenance-pair-broken`) which hold for any write
   path, including ones that never touch the primitive; the per-statement
-  clock-jitter executor, which makes the second-clock-read class observable at
-  all (under a frozen fake clock it is invisible, proven by mutation); and a
+  clock-jitter executor, which compares complete traces and protocol tables in
+  its enumerated retry, event, suspend, and cancellation scenarios, including
+  an invariant-clean later-clock retry mutation; and a
   canonical monotone source for routine test IDs and provenance tokens. The
   invariant found two fixtures whose reused seeds survived at different
   instants, but it is not an issuance-uniqueness assertion: same-instant reuse,
@@ -176,9 +186,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     name is generated from the runs the emit woke. What guards it meanwhile is
     a generated surface (`wake-witness-surface.test.ts`) comparing the engine
     against a row-at-a-time statement of what a legitimate registration is,
-    across every corruption of a wait row in ones and pairs crossed with every
-    shape of park — 1728 cases, and eight of the predicate's nine conditions
-    fail it when deleted.
+    across every corruption of a wait row in ones and pairs, both timeout
+    arms, both task-liveness arms, and every shape of park — 6,912 cases.
     The gap that remains after all of it is owned by PR3.8.
 
 - **PR3.8 active-wait identity** (SPEC-FIRST). Everything above makes a wait row
