@@ -369,10 +369,11 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
 
     // The state is already inconsistent -- that is what makes it a
     // counterexample -- so the question is not whether violations exist but
-    // whether the emit CHANGES them. A wrong wake shows up here twice: it
-    // adds a waiting row under a pending run, and it deletes the rows that
-    // prove the state was bad. Comparing before to after catches both, and
-    // needs no list of which violations this fixture happens to create.
+    // what the emit does to them. Declining to wake is only half of right:
+    // an emit that also erased the rows proving why would leave a database
+    // that looks clean and has silently dropped a wakeup. So nothing may
+    // disappear, and the declined registration must show up as the alarm for
+    // a wait outliving its event.
     const before = await engineInvariantViolations(f.raw)
 
     await f.store.emitEvent(Q, 'go', '{"x":1}')
@@ -382,7 +383,9 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     ])
     expect(after?.state).toBe('sleeping')
     expect(after?.event_payload).toBeNull()
-    expect(await engineInvariantViolations(f.raw)).toEqual(before)
+    const now = await engineInvariantViolations(f.raw)
+    expect(now).toEqual(expect.arrayContaining(before))
+    expect(now).toContain(`wait-for-fired-event: ${run.runId}/$await:go#stale`)
     f.close()
   })
 
@@ -428,6 +431,12 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     expect(await query(f.raw, `SELECT step_name FROM waits WHERE run_id = ?`, [rb.runId])).toEqual([
       { step_name: '$await:go' },
     ])
+    // And it is not kept quietly: a wait outliving its event is a lost wakeup
+    // whichever way it happened, so it stands as an alarm until repaired --
+    // which is the whole difference from deleting it.
+    expect(await engineInvariantViolations(f.raw)).toContain(
+      `wait-for-fired-event: ${rb.runId}/$await:go`,
+    )
     f.close()
   })
 

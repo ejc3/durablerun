@@ -1469,13 +1469,35 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // DELETE, not a status flip: the wake fields on the run carry the
     // delivery, and retained rows would leak forever (cancel deletes waits
     // the same way).
-    b.followOn(
-      'waits-gone',
-      `DELETE FROM waits WHERE queue = ? AND event_name = ? AND status = 'waiting'
-         AND ${fenced('events', `f.queue = waits.queue AND f.event_name = waits.event_name`, b.fence('event'))}`,
-      [queue, eventName],
-      { many: 'every waiter for a fired event' },
-    )
+    //
+    // Driven by the runs this emit WOKE, not by the event it fired. Keying it
+    // on the event name made the delete a second statement deciding which
+    // registrations count, under a weaker rule than the one above it — so
+    // every condition added to the wake predicate turned some run from "not
+    // woken" into "not woken, and its registration destroyed", and the event
+    // row is immutable, so nothing can deliver it afterwards. Every
+    // legitimate end of a wait already reaps its rows (complete, fail, both
+    // sweeps, cancel), so a row left here is either repairable or evidence of
+    // corruption, and deleting it is the only option that makes it neither.
+    //
+    // It also stops being the second statement in this batch selecting rows
+    // the batch did not write: the runs it deletes for are the ones
+    // `wake-runs` just stamped, so the primitive builds the selection and
+    // `wake-runs` is left as the only hand-written escape.
+    b.derived('waits-gone', {
+      target: 'waits',
+      key: 'run_id',
+      from: 'runs',
+      column: 'run_id',
+      fence: 'wake-runs',
+      // Same reason as wake-tasks: the queue narrows the source to an index,
+      // and `state = 'pending'` is what wake-runs just set on these rows.
+      where: `f.queue = ? AND f.state = 'pending'`,
+      whereArgs: [queue],
+      narrow: `event_name = ? AND status = 'waiting'`,
+      narrowArgs: [eventName],
+      rows: { many: 'the registration each woken run just spent' },
+    })
     await b.run(this.db)
   }
 

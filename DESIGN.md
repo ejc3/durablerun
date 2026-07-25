@@ -513,6 +513,22 @@ are load-bearing):
    sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
    payload is the TimeoutError path, and that claim batch deletes the wait row
    so a later emit cannot resurrect a timed-out wait.
+   **A wake needs ONE wait row that justifies it, and the cleanup follows the
+   wake.** Emit selects waiters from `waits`, a table its batch never wrote,
+   so it is the one place the fence cannot decide which rows may be written
+   and a hand-written predicate does. Two obligations follow. First, a run
+   wakes only if a SINGLE row says all of: it belongs to this run, in this
+   queue, for this event, still waiting, at the run's `wake_step` (or the run
+   has none — parks predating the column match any step), with
+   `timeout_at_ms` equal to the run's `available_at_ms`. Where an index-driver
+   subquery is split out for the query plan, every condition on it must also
+   appear on the witness, or the two are answered by different rows and the
+   pair accepts what neither row would. Second, the cleanup deletes the
+   registrations of the runs the emit WOKE, never every registration naming
+   the event: those two sets are kept equal by nothing, and the event row is
+   immutable, so a registration deleted without its run being woken can never
+   be delivered. A registration the emit declines therefore survives, where
+   `wait-for-fired-event` names it as the lost wakeup it is.
 3. **Engine time is database time.** All absolute timestamps are computed in SQL
    (`unixepoch('subsec')` / `NOW(6)` / `statement_timestamp()`); clients pass only
    relative durations. User-supplied absolutes (`sleepUntil`) are the only

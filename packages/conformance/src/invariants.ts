@@ -136,6 +136,13 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
       // on an event that has fired — emit deletes satisfied waits in the
       // same batch, and registration is guarded on the event not existing,
       // so a surviving pair IS a lost wakeup.
+      //
+      // It became reachable when emit stopped deleting the registrations of
+      // runs it declined to wake. Before that the only state this could name
+      // was erased by the same batch that created it, so the check was true
+      // by construction rather than by the engine being correct — and the
+      // lost wakeup it describes happened silently. A row surviving here is
+      // now the alarm for exactly that, and it is repairable while it exists.
       name: 'wait-for-fired-event',
       sql: `SELECT w.run_id || '/' || w.step_name AS v
             FROM waits w JOIN events e
