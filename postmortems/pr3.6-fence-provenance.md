@@ -1,4 +1,4 @@
-# Postmortem: write provenance — thirty-four ways a batch statement acted without proof (PR3.6)
+# Postmortem: write provenance — thirty-eight ways a batch statement acted without proof (PR3.6)
 
 The engine executes each store operation as one atomic batch of SQL
 statements. Later statements in a batch see the effects of earlier ones, and
@@ -7,11 +7,15 @@ compare-and-set, and the rest are supposed to fire only when it won. The rule
 (DESIGN.md §3.4 rule 1) is that a later statement must key on state *this
 batch just wrote*, never on state that could already have been there.
 
-Five review passes against this branch found thirty-four defects. Six were
+Six review passes against this branch found thirty-eight defects. Six were
 later statements firing on state that could pre-exist. Seven were in the
 checkers and gates this same PR had just built — three of which could not fail
 at all. Twelve more came from a re-review. A fourth pass and a mutation probe
-found nine more, five of them introduced by the rewrite itself. The verdict of
+found nine more, five of them introduced by the rewrite itself; a fifth pass,
+run in an isolated worktree after two earlier attempts died on an upstream
+content filter, found four more -- three of them the same "a stamp is not
+authorship" class in operations the earlier rounds had not reached, and one a
+lost wakeup created by the fix for a spurious one. The verdict of
 the first round was "do not merge"; the second round's was "snapshot `3ff14bf`
 is not correct".
 
@@ -92,6 +96,10 @@ re-reading my own diff.
 | 31 | S: `reschedule` and `suspendRun` are documented as one transition and used different eligibility guards | A run whose task is past its cancellation deadline could re-park itself, putting it back into the queue the claim path refuses to launch from | Nothing | The comment asserted they were the same, which reads as a check and is not one | One predicate for both, with a test that fails if either drifts (rung 3) |
 | 32 | S: the SDK sent the raw event name on await and the parsed one on emit | Identical today, since parsing only validates. The moment it normalizes anything, a wait registers under one spelling while the emit fires the other and never matches — a silently lost wakeup | The user-boundary lint | It governs which validator is called, not which of its two outputs is used afterwards | The validated value is the only one passed downstream (rung 3) |
 | 33 | M: each half of the event correlation was untested | One regression test was satisfied by either half, so deleting either kept the suite green | The test added with finding 15 | It exercised one state, and the guard had become two independent conditions | A state that only `wake_event` rules out, and one that only `wake_step` does (rung 3) |
+| 35 | R2: an exact replay of spawn dies on the run's primary key instead of returning a receipt | A caller retrying after a lost response gets an error for a spawn that fully succeeded; a retry without an idempotency key then creates duplicate work | The duplicate-injection fault matrix | It replays a batch back to back and spawn's label was covered, but the run insert's guard had been REMOVED as self-evidently unnecessary when the task became "one statement old" — true within one execution, false across two | The "no run yet" guard restored in ownership form (rung 1) |
+| 36 | R2: a successor id colliding with the run being replaced commits a half-transition | In the sweep, a failed run under a task still marked running that no later claim or sweep rediscovers. In a worker failure with budget left, a permanently failed task the caller asked to retry | Finding 14's own fix | It made the parent satisfy "a run of my task already sits there", which is right for a replay and wrong for a collision | The parent is excluded, so a self-collision raises like a foreign one (rung 1) |
+| 37 | R2: a run parked before `wake_step` existed can never be woken again | Waits and events predate that column and the migration backfills nothing, so such a run compares its step against NULL and is never woken — while the delete removes its wait anyway. The event is immutable and the wait is gone, so re-emitting cannot recover it: an untimed await strands forever on any upgraded database, and on any rolling deploy where an older process parks a run after a newer one migrated | Nothing | Introduced by finding 15's fix, two commits earlier: a lost wakeup created by the fix for a spurious one. No test covered a row written by an older schema | A NULL step matches any step of the event (rung 3) |
+| 38 | R2: the max-duration deadline truncated where the port rounds | The port validates the duration promising nearest-millisecond rounding and then stores raw seconds; at 0.0005s the port says 1ms and the CAST said 0, making the deadline the start instant and cancelling the task on the spot | The numeric port contract (rule 7) | It governs what crosses the boundary, not what SQL does with it afterwards | ROUND, so the two agree (rung 3) |
 | 34 | X: the claim-timeout sweep reported an exhausted infrastructure cap for two other reasons | An operator sees a cap exhaustion that did not happen, when the successor id already belongs to a run of this task or the task stopped being live partway | Nothing | It inferred the outcome from "the successor insert wrote nothing", which had one cause when written and gained two more | Each arm keys on the statement that actually fired (rung 3) |
 
 ## Evidence
