@@ -236,4 +236,34 @@ describe('ambiguous legacy wait registrations', () => {
     expect(waits?.rows).toEqual([{ step_name: f.staleStep }, { step_name: f.currentStep }])
     f.close()
   })
+
+  it('does not recover a legacy step from a foreign-owned registration', async () => {
+    const f = await ambiguousLegacyWait(null)
+    await f.raw.batch('legacy-foreign-wait', [
+      {
+        sql: `DELETE FROM waits WHERE run_id = ? AND step_name = ?`,
+        args: [f.run.runId, f.staleStep],
+      },
+      {
+        sql: `UPDATE waits SET task_id = 'foreign' WHERE run_id = ? AND step_name = ?`,
+        args: [f.run.runId, f.currentStep],
+      },
+    ])
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [run] = await f.raw.batch(
+      't',
+      [{ sql: `SELECT state, wake_step FROM runs WHERE run_id = ?`, args: [f.run.runId] }],
+      'read',
+    )
+    expect(run?.rows[0]).toMatchObject({ state: 'sleeping', wake_step: null })
+    const [waits] = await f.raw.batch(
+      't',
+      [{ sql: `SELECT COUNT(*) AS n FROM waits WHERE run_id = ?`, args: [f.run.runId] }],
+      'read',
+    )
+    expect(Number(waits?.rows[0]?.n)).toBe(1)
+    f.close()
+  })
 })
