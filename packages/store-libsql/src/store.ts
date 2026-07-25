@@ -91,12 +91,16 @@ const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
  * which is exactly the part that must not be copied by hand.
  */
 function waitsGone(b: FencedBatch, runId: string, after: string): void {
-  b.followOn(
-    'waits-gone',
-    `DELETE FROM waits WHERE run_id = ? AND ${fenced('runs', BY_RUN, b.fence(after))}`,
-    [runId, runId],
-    { many: 'a run may hold several waits' },
-  )
+  b.derived('waits-gone', {
+    target: 'waits',
+    key: 'run_id',
+    from: 'runs',
+    column: 'run_id',
+    fence: after,
+    where: 'f.run_id = ?',
+    whereArgs: [runId],
+    rows: { many: 'a run may hold several waits' },
+  })
 }
 
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
@@ -395,18 +399,18 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // deleted by the delivery that had claimed nothing. Now it sees only rows
     // this batch stamped, and compares against the instant that batch
     // recorded.
-    b.followOn(
-      'waits-timeout',
-      `DELETE FROM waits
-       WHERE run_id IN (SELECT r.run_id FROM runs r
-                        WHERE r.queue = ? AND r.state = 'running'
-                          AND r.fence_stamp = ${b.fence('claim')})
-         AND status = 'waiting'
-         AND timeout_at_ms IS NOT NULL
-         AND timeout_at_ms <= ${fencedAt('runs', `f.run_id = waits.run_id`, b.fence('claim'))}`,
-      [queue],
-      { many: 'a run may hold several timed waits' },
-    )
+    b.derived('waits-timeout', {
+      target: 'waits',
+      key: 'run_id',
+      from: 'runs',
+      column: 'run_id',
+      fence: 'claim',
+      where: `f.queue = ? AND f.state = 'running'`,
+      whereArgs: [queue],
+      narrow: `status = 'waiting' AND timeout_at_ms IS NOT NULL
+            AND timeout_at_ms <= ${fencedAt('runs', `f.run_id = waits.run_id`, b.fence('claim'))}`,
+      rows: { many: 'a run may hold several timed waits' },
+    })
     // Deliberately keyed on the LEASE token, not this batch's stamp: §3.4
     // rule 4 makes a same-token claim an idempotent receipt that returns the
     // ORIGINAL selection, so this read must see rows a PREVIOUS batch stamped.
@@ -878,12 +882,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [taskId, taskId, taskId],
       { many: 'a cancelled task kills every run it still has' },
     )
-    b.followOn(
-      'waits',
-      `DELETE FROM waits WHERE task_id = ? AND ${fenced('tasks', BY_TASK, b.fence('cancel'))}`,
-      [taskId, taskId],
-      { many: 'a task may hold several waits' },
-    )
+    b.derived('waits', {
+      target: 'waits',
+      key: 'task_id',
+      from: 'tasks',
+      column: 'task_id',
+      fence: 'cancel',
+      where: 'f.task_id = ?',
+      whereArgs: [taskId],
+      rows: { many: 'a task may hold several waits' },
+    })
     const { won } = await b.run(this.db)
     return won === 'cancel'
   }

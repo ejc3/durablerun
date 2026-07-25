@@ -225,6 +225,82 @@ export class FencedBatch {
     })
   }
 
+  /**
+   * A follow-on whose row set is GENERATED from the fence.
+   *
+   * This is the shape every UPDATE and DELETE follow-on should have, and the
+   * reason is not tidiness. When the caller writes the WHERE clause, the
+   * primitive can only inspect the resulting text, and 126 lines of hand-rolled
+   * SQL scanning here try to decide whether the fence actually reaches the rows
+   * being written. Every false negative this primitive has ever had was in that
+   * scanning: a fence joined by OR, a fence under `NOT (…)`, a WHERE inside a
+   * comment. Generating the selection removes the thing being inspected.
+   *
+   *   UPDATE <target> SET <set>, <provenance>
+   *   WHERE <key> IN (SELECT f.<column> FROM <from> f WHERE <where> AND f.fence_stamp = …)
+   *     AND (<narrow>)
+   *
+   * `narrow` is ANDed and parenthesised, so it can only ever SHRINK the set —
+   * there is no way to write an alternative that widens it.
+   *
+   * `where`'s arguments are supplied once and bound twice, because the
+   * correlation appears in both the provenance subquery and the row selection.
+   * Callers were duplicating them by hand, which is its own quiet hazard.
+   */
+  derived(
+    name: string,
+    spec: {
+      target: string
+      stamp?: FenceTable
+      key: string
+      from: FenceTable
+      column: string
+      fence: string
+      where?: string
+      whereArgs?: SqlStatement['args']
+      set?: string
+      setArgs?: SqlStatement['args']
+      narrow?: string
+      narrowArgs?: SqlStatement['args']
+      rows: RowBound
+    },
+  ): this {
+    const src = spec.where ? `${spec.where} AND ` : ''
+    const fence = this.fence(spec.fence)
+    const selection = `${spec.key} IN (SELECT f.${spec.column} FROM ${spec.from} f
+                       WHERE ${src}f.fence_stamp = ${fence})`
+    const narrow = spec.narrow ? `\n         AND (${spec.narrow})` : ''
+    const w = spec.whereArgs ?? []
+
+    if (spec.set === undefined) {
+      return this.add({
+        name,
+        kind: 'followOn',
+        target: null,
+        sql: `DELETE FROM ${spec.target}\n       WHERE ${selection}${narrow}`,
+        args: [...w, ...(spec.narrowArgs ?? [])],
+        rows: spec.rows,
+        max: null,
+        generated: true,
+      })
+    }
+    const provenance = spec.stamp
+      ? `,\n         fence_stamp = ${STAMP},
+         fence_at_ms = (SELECT f.fence_at_ms FROM ${spec.from} f
+                        WHERE ${src}f.fence_stamp = ${fence})`
+      : ''
+    return this.add({
+      name,
+      kind: 'followOn',
+      target: spec.stamp ?? null,
+      sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}\n       WHERE ${selection}${narrow}`,
+      args: [...(spec.setArgs ?? []), ...w, ...w, ...(spec.narrowArgs ?? [])],
+      rows: spec.rows,
+      max: null,
+      generated: true,
+    })
+  }
+
   /** A trailing SELECT that may only see rows this batch stamped. */
   tail(name: string, sql: string, args: SqlStatement['args'] = []): this {
     return this.add({ name, sql, args, kind: 'tail', target: null, rows: null, max: null })
@@ -269,6 +345,9 @@ export class FencedBatch {
     rows: RowBound | null
     max: number | null
     open?: string
+    /** Built by `derived()`: the row selection came from the fence, so the
+     *  text checks below have nothing left to verify. */
+    generated?: boolean
   }): this {
     const { name, sql, kind, target } = s
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
@@ -305,7 +384,7 @@ export class FencedBatch {
     // subquery does not count: the statement would still match every row and
     // merely write a NULL into them. Neither does a fence that appears only
     // under NOT — that is a statement asserting the fence is ABSENT.
-    if (!isCas && s.open === undefined && !hasPositiveFence(sql)) {
+    if (!isCas && s.open === undefined && !s.generated && !hasPositiveFence(sql)) {
       throw new Error(
         `${at} has no positive fence in its WHERE clause — a follow-on must filter on fence('<a cas of this batch>') so a losing invocation matches nothing (§3.4 rule 1)`,
       )
@@ -314,7 +393,7 @@ export class FencedBatch {
     // A fence joined by OR reaches nothing. Requiring the top-level WHERE to
     // be a pure AND-chain is what turns "the statement mentions a fence" into
     // "every row it writes satisfies the fence".
-    if (!isCas && s.open === undefined && hasTopLevelOr(sql)) {
+    if (!isCas && s.open === undefined && !s.generated && hasTopLevelOr(sql)) {
       throw new Error(
         `${at} has an OR at the top level of its WHERE clause — then the fence can be false while the row is still written. Narrow with AND, or move the alternation inside a subquery.`,
       )
