@@ -144,57 +144,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (PR3.7, PR3.2, PR4.1). A deferral parked under a DONE heading is a silent
   drop, because DONE is the section a reader skips.
 
-- **PR3.7 close the provenance residual** (the PR3.6 postmortem's "what this
-  round still would not catch", each item owned rather than parked):
-  - **A typed target expression for follow-ons — and it makes the primitive
-    SMALLER.** This is the one mechanism that closes the class that recurred
-    in every PR3.6 review round, and it should not be read as more machinery.
-    Today the caller writes free-form SQL and 126 lines of hand-rolled
-    scanning (`topLevelWhere`, `negatedSpans`, `hasTopLevelOr`,
-    `blankComments`, `skipString`, `matchingParen`, …) try to verify a
-    property of that text afterwards — 18% of `fenced-batch.ts`, 19 of its 45
-    unit tests, and every false negative the round found. Generating the row
-    selection instead:
-
-    ```ts
-    b.followOn('wake-tasks', {
-      target: 'tasks',
-      key: 'task_id',
-      derivedFrom: { table: 'runs', column: 'task_id', fence: 'wake-runs' },
-      set: `state = 'pending'`,
-      narrow: `state IN ${LIVE}`,   // ANDed: may only shrink the set
-      rows: { many: 'one task per woken run' },
-    })
-    ```
-
-    `WHERE key IN (SELECT col FROM src WHERE fence_stamp = ?) AND (narrow)`
-    is generated, so there is no caller-authored WHERE to parse, no OR to
-    ban, no comment to blank, and no NOT to recognise. The whole scanner and
-    its 19 tests are DELETED, and "the write set derives from this batch's
-    post-state" holds by construction. PR3.6 deferred this claiming join
-    shapes differ per dialect; that was never tested and looks wrong —
-    `IN (SELECT …)` is ordinary SQL in all three. Test the claim first.
-
-    Known residual, to be an explicit escape with a written reason rather
-    than a hole: emitEvent's fan-out genuinely selects from `waits`, which
-    this batch did not stamp, and uses the event's fence only as a gate. One
-    escape with a reason is a better shape than a scanner defending every
-    statement — the same trade `openTail` already makes for reads.
-  - **A data-level provenance audit**: every inserted-or-changed row carries a
-    well-formed `<seed>:<statement>` stamp, over paths that never touch the
-    primitive. Measured too slow for the deep fuzz leg (a scan per batch), so:
-    always-on in conformance and the fault matrix, sampled in the volume legs.
-  - **A per-statement clock-jitter executor.** Now a DIFFERENTIAL proof rather
-    than a bug hunt: with the clock banned outside a compare-and-set, jittering
-    each statement's clock must produce zero behavioural change.
-  - **A generated corrupt-pre-state ("poison") fault surface** driving every
-    write label against each invariant-forbidden pre-state.
-  - **A simulation assertion that a batch seed is never issued twice.** The
-    whole scheme is exactly as strong as `IdSource.token()` uniqueness, and the
-    harness deliberately hands out colliding ids.
+- **PR3.7 close the provenance residual** — MOSTLY DONE in PR3.6 after the
+  detection ledger showed the automated machinery had found 0 of 38 defects.
+  Landed: the typed target expression (the primitive generates each follow-on's
+  row selection from the fence and `narrow` can only shrink it — 22 of the 23
+  statements that can over-write rows now contain no caller-authored WHERE at
+  all); the data-level provenance audit as two invariants
+  (`one-batch-two-instants`, `provenance-pair-broken`) which hold for any write
+  path, including ones that never touch the primitive; the per-statement
+  clock-jitter executor, which makes the second-clock-read class observable at
+  all (under a frozen fake clock it is invisible, proven by mutation); and the
+  seed-uniqueness assertion, delivered for free by the same invariant — it
+  found two fixtures reusing a batch seed on its first run. Remaining:
   - **A bound on many-row follow-ons.** `{ many: reason }` costs a sentence and
     bounds nothing, so amplification is unlimited wherever the target set is
-    wider than intended.
+    wider than intended. The generated selection now makes the bound derivable
+    — a follow-on cannot touch more distinct keys than its source stamped — so
+    this is a runtime assertion, not a design problem.
+  - **A generated corrupt-pre-state ("poison") fault surface** driving every
+    write label against each invariant-forbidden pre-state.
+  - **emitEvent's `wake-runs` is the one follow-on that cannot be generated**,
+    because it selects from `waits` — rows an earlier await registered, which
+    the batch never stamped — and uses the event fence only as a gate. It keeps
+    the hand-written WHERE and the text checks that guard it, documented in
+    place. Closing it needs a second escape shape, not more scanning.
 
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation

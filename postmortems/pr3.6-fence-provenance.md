@@ -376,26 +376,38 @@ Deferred (recorded in BUILD.md):
 
 ## What this round still would not catch
 
-Read straight off the mechanism audit: every false negative recorded there is
-a defect shape that ships today.
+Written from the mechanism audit, then REVISED after the audit was acted on:
+four of the false negatives recorded above were closed, and the class that
+produced them was removed rather than patched.
 
-- **A follow-on whose fence does not gate its write.** `OR`, a fence under
-  `NOT (…)`, or a comment that moves the WHERE boundary all pass. This is the
-  class that recurred in every round, and it is still only proxied.
-- **A follow-on that reads the clock** by interpolating the expression's text
-  rather than the token.
-- **A fan-out that writes any number of rows.** `{ many }` costs a sentence
-  and bounds nothing, so amplification is unbounded wherever the target set is
-  wider than intended.
-- **Anything the automated machinery has never been able to see.** The
-  detection ledger shows the fault matrix, the fuzz, TLC, the invariants and
-  every lint found zero of thirty-eight. They cover the states and faults they
-  enumerate; none of them enumerates SQL SHAPE, which is where every defect in
-  this round lived. Adding another state dimension will not change that.
+Closed since the audit:
 
-The single mechanism that would close the recurring class is a typed target
-expression: the primitive generating the row selection from the fence, with
-the caller able only to NARROW it. It is on the deferral list above, and this
-round is the argument for promoting it — five rounds of point fixes against
-one class have now cost more than building it would have, and the audit says
-the class is still open.
+- The fence-does-not-gate-the-write class. Twenty-two of the twenty-three
+  statements that can over-write rows no longer contain a caller-authored
+  WHERE at all — the primitive generates the selection from the fence and the
+  caller's `narrow` is ANDed, so it can only shrink the set. `OR`, `NOT (…)`
+  and a WHERE-in-a-comment are not "now rejected"; they have nowhere to appear.
+- A follow-on reading the clock. Banned for the token AND the spliced
+  expression, and the `one-batch-two-instants` invariant now checks it in the
+  DATA, where a raw read no construction check could see still shows up.
+
+Still true:
+
+- **emitEvent's `wake-runs` is not generated**, because it selects from
+  `waits` — rows the batch never stamped — and uses the event fence as a gate.
+  It keeps the hand-written WHERE and the scanning that guards it. One
+  documented escape, not a silent one.
+- **A fan-out has no upper bound.** `{ many: reason }` costs a sentence.
+  The generated selection makes the bound derivable, so this is now a missing
+  runtime assertion rather than a design gap.
+- **The automated machinery still enumerates states and faults, not SQL
+  shape.** The two new oracles are the first exceptions, and they cover one
+  class each. The detection ledger is the measurement that will say whether
+  that changed: 11% is the baseline, and if the next round's rate has not
+  moved, the mechanisms added here were not the ones that mattered.
+
+The honest summary of the round is that the mechanism audit was worth more
+than any individual fix in it. It is the section that turned "we added
+mechanisms" into "four of them have a demonstrated false negative, here is
+the code" — and everything above under "closed" happened because of that,
+not because of another review.
