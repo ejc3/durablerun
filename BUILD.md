@@ -199,6 +199,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
   limit is written down: it can only find a wrong DECISION about rows it
   constructs, never a wrong payload, and never a row shape nobody thought of.
 
+- **PR3.9 compile the SQL instead of scanning it** (candidate, spiked not started).
+  Every recurring defect in this engine's history is the same shape: a checker
+  that matches one way of WRITING a condition and misses an equivalent one.
+  `NOT EXISTS (` was recognised and `NOT (EXISTS (` was not; `x = x + 1` was and
+  `x = 1 + x` was not; `UNIXEPOCH()` was and `now()` was not; and finding 39 was
+  a string-concatenation precedence bug inside the generator built to end the
+  class. Text is the wrong representation to be checking, and no amount of
+  better regexes fixes that.
+  The alternative is to BUILD the SQL as a tree and check the tree. Kysely
+  (0.29) is the closest thing TypeScript has to jOOQ for this purpose: an
+  immutable `OperationNode` AST, `.compile()` to `{sql, parameters}` without any
+  connection, and dialect compilers for exactly our three targets. Used as a
+  COMPILER ONLY -- never as a client -- FencedBatch keeps its batch semantics
+  and swaps string templates for composed nodes.
+  Spiked at scratchpad/kysely-spike: the three checks rewritten against the node
+  tree decide all six shapes correctly, including the two spellings that beat
+  the regexes and the OR bug that shipped this week. Two things the spike also
+  established, both worth knowing before committing:
+  - The first version of the AST check was WRONG in the same way the regex was:
+    it asked whether a conjunct CONTAINED a fence rather than whether it WAS
+    one, and passed the OR case exactly like its predecessor. An AST does not
+    make the question easy, it makes the question ANSWERABLE -- position is
+    expressible in a tree and is not expressible in a substring match.
+  - Raw SQL fragments reintroduce untyped text, and we need several
+    for `IS` null-safe comparisons and partial-index upserts. But "is there a
+    raw fragment in a boolean position" is itself a structural question, so the
+    escape hatch stays countable instead of invisible.
+  Against the standing rule that the contract must not live only in TypeScript
+  types: this makes it MORE language-neutral, not less. `.compile()` yields the
+  exact per-dialect SQL, so the contract artifact becomes a generated corpus of
+  every labelled statement in every dialect, derived rather than hand-kept.
+  Its own PR: it rewrites the SQL of thirteen operations, and this branch has
+  already produced eight fix-induced defects.
+
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
