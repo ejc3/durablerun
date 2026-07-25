@@ -11,7 +11,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parent.parent
 spec = (root / "specs" / "Scheduler.tla").read_text()
 src = ""
-for path in sorted((root / "packages" / "store-libsql" / "src").glob("*.ts")):
+for path in sorted((root / "packages" / "store-libsql" / "src").rglob("*.ts")):
     src += path.read_text()
 
 # Harvest string-literal labels across newlines: batch( 'x' | FencedBatch( 'x'
@@ -76,7 +76,7 @@ tests = ""
 for path in sorted(root.glob("packages/*/test/**/*.ts")):
     tests += path.read_text()
 # The conformance suite's tests live in src/ (run via the per-store runner).
-for path in sorted(root.glob("packages/conformance/src/*.ts")):
+for path in sorted(root.glob("packages/conformance/src/**/*.ts")):
     tests += path.read_text()
 marked = set(re.findall(r"fenceTwin\('([A-Za-z0-9_]+)'\)", tests))
 untwinned = sorted(a for a in fenced_actions if a not in marked)

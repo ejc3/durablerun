@@ -169,6 +169,23 @@ export class S {
         ),
         "an eligibility comparison outside fragments.ts is how the claim lost the deadline predicate",
     ),
+    # Every store-source checker must see a file BELOW src/. Three of the four
+    # globbed exactly one directory deep, so anything in a subfolder was
+    # invisible to them; the recursive fix landed in one and the other three
+    # kept the hole. One case each, so a checker cannot regress alone.
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM tasks WHERE cancel_at_ms <= 5`\n",
+            name="nested/deep/probe.ts",
+        ),
+        "a nested file must not be invisible to the fragment checker",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT unixepoch('subsec')`\n", name="nested/deep/probe.ts"),
+        "a nested file must not be invisible to the clock checker",
+    ),
     (
         "fragment-lint.py",
         store(

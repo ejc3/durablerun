@@ -372,10 +372,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          last_attempt_run = (SELECT f.run_id FROM runs f
                              WHERE f.task_id = tasks.task_id
                                AND f.fence_stamp = ${b.fence('claim')}),
-         fence_stamp = ${STAMP},
-         fence_at_ms = (SELECT f.fence_at_ms FROM runs f
-                        WHERE f.task_id = tasks.task_id
-                          AND f.fence_stamp = ${b.fence('claim')})
+         ${fenceFrom('runs', 'f.task_id = tasks.task_id', b.fence('claim'))}
        WHERE state IN ${LIVE} AND task_id IN (${claimedByThisBatch})`,
       [queue],
       { many: 'one task per claimed run' },
@@ -1324,7 +1321,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          wake_event = ?,
          event_payload = (SELECT f.payload FROM events f
                           WHERE ${thisEvent}),
-         fence_stamp = ${STAMP}, fence_at_ms = ${emitted}
+         ${fenceFrom('events', thisEvent, b.fence('event'))}
        WHERE state = 'sleeping'
          AND wake_event = ?
          AND run_id IN (SELECT w.run_id FROM waits w
@@ -1357,8 +1354,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'wake-tasks',
       'tasks',
       `UPDATE tasks SET state = 'pending',
-         fence_stamp = ${STAMP},
-         fence_at_ms = ${fencedAt('events', `f.queue = tasks.queue AND f.event_name = ?`, b.fence('event'))}
+         ${fenceFrom('events', `f.queue = tasks.queue AND f.event_name = ?`, b.fence('event'))}
        WHERE state IN ${LIVE}
          AND task_id IN (SELECT r.task_id FROM waits w JOIN runs r ON r.run_id = w.run_id
                          WHERE w.queue = ? AND w.event_name = ?

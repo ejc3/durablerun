@@ -20,7 +20,7 @@ RULES = [
 
 violations = 0
 for store_dir in sorted(root.glob('packages/store-*/src')):
-    for path in sorted(store_dir.glob('*.ts')):
+    for path in sorted(store_dir.rglob('*.ts')):
         if path.name in EXEMPT:
             continue
         for lineno, line in enumerate(path.read_text().splitlines(), 1):

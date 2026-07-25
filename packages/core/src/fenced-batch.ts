@@ -232,9 +232,17 @@ export class FencedBatch {
 
   /**
    * A trailing SELECT of rows this batch did NOT write. Legal, but rare and
-   * always deliberate — the reason is mandatory and is printed whenever the
-   * batch is traced, because an unfenced read is how a caller learns about
-   * state some other actor produced and every such read is a judgement call.
+   * always deliberate: an unfenced read is how a caller learns about state
+   * some other actor produced, and every one of them is a judgement call.
+   *
+   * `reason` is a COMPILE-TIME forcing function, not runtime data. Nothing
+   * reads it back — its whole job is to make the author write the
+   * justification down, in the source, beside the statement, where the next
+   * reader is looking. The emptiness check exists so it cannot be satisfied
+   * with `''`. An earlier version of this comment claimed the reason was
+   * printed in the batch trace, which was never true; a comment describing a
+   * mechanism that does not exist is worse than no comment, because it stops
+   * the reader looking.
    */
   openTail(name: string, reason: string, sql: string, args: SqlStatement['args'] = []): this {
     if (reason.trim() === '') {
