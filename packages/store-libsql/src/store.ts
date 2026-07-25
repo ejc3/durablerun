@@ -85,6 +85,30 @@ const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
   WHERE excluded.owner_attempt >= checkpoints.owner_attempt`
 
 /**
+ * The task follows its run's suspension state. `reschedule` and `suspendRun`
+ * had this written out identically -- the same statement, the same args, in
+ * two places -- which is the shape that drifts. Their eligibility guards had
+ * already drifted once.
+ */
+function taskMirrorsRun(b: FencedBatch, runId: string, after: string): void {
+  b.derived('task-mirror', {
+    target: 'tasks',
+    stamp: 'tasks',
+    key: 'task_id',
+    from: 'runs',
+    column: 'task_id',
+    fence: after,
+    where: 'f.run_id = ?',
+    whereArgs: [runId],
+    set: `state = (SELECT f.state FROM runs f
+                   WHERE f.run_id = ? AND f.fence_stamp = ${b.fence(after)})`,
+    setArgs: [runId],
+    narrow: `state IN ${LIVE}`,
+    rows: 'one',
+  })
+}
+
+/**
  * A run's waits die with the run. Four transitions end a run — the relaunch
  * cap, the claim timeout, completion and failure — and each wrote this
  * statement out. They differed only in which compare-and-set they follow,
@@ -662,23 +686,33 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // The task mirrors the run (the reviewed phantom-'running' divergence
     // from the TLA SweepLostLaunch action). Each arm names the CAS it
     // follows, so neither can fire for the other's outcome.
-    b.followOn(
-      'task-pending',
-      'tasks',
-      `UPDATE tasks SET state = 'pending', ${fenceFrom('runs', BY_RUN, b.fence('reopen'))}
-       WHERE task_id = ? AND state IN ${LIVE} AND ${fenced('runs', BY_RUN, b.fence('reopen'))}`,
-      [item.runId, item.taskId, item.runId],
-      'one',
-    )
-    b.followOn(
-      'task-fail',
-      'tasks',
-      `UPDATE tasks SET state = 'failed', failure_reason = ?,
-         ${fenceFrom('runs', BY_RUN, b.fence('cap'))}
-       WHERE task_id = ? AND state IN ${LIVE} AND ${fenced('runs', BY_RUN, b.fence('cap'))}`,
-      [REASON_RELAUNCH_CAP, item.runId, item.taskId, item.runId],
-      'one',
-    )
+    b.derived('task-pending', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'reopen',
+      where: 'f.run_id = ?',
+      whereArgs: [item.runId],
+      set: `state = 'pending'`,
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+    b.derived('task-fail', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'cap',
+      where: 'f.run_id = ?',
+      whereArgs: [item.runId],
+      set: `state = 'failed', failure_reason = ?`,
+      setArgs: [REASON_RELAUNCH_CAP],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
     waitsGone(b, item.runId, 'cap')
     const { won } = await b.run(this.db)
     if (won === 'reopen') {
@@ -741,34 +775,42 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // actually failed to place a successor — keying on the cap alone made an
     // exact replay terminalize the task over the successor the first pass had
     // just created (rule 6).
-    b.followOn(
-      'task-terminal',
-      'tasks',
-      `UPDATE tasks SET state = 'failed', failure_reason = ?,
-         ${fenceFrom('runs', BY_RUN, b.fence('fail'))}
-       WHERE task_id = ? AND state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
-         AND ${fenced('runs', BY_RUN, b.fence('fail'))}
-         AND NOT ${successor.exists('?', 'tasks.task_id', '?')}`,
-      [REASON_INFRA_CAP, item.runId, item.taskId, item.runId, successorId, item.runId],
-      'one',
-    )
+    b.derived('task-terminal', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'fail',
+      where: 'f.run_id = ?',
+      whereArgs: [item.runId],
+      set: `state = 'failed', failure_reason = ?`,
+      setArgs: [REASON_INFRA_CAP],
+      narrow: `state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
+            AND NOT ${successor.exists('?', 'tasks.task_id', '?')}`,
+      narrowArgs: [successorId, item.runId],
+      rows: 'one',
+    })
     // Bookkeeping keyed on our successor existing. The counter DERIVES from
     // the successor's own attempt ordinal rather than incrementing:
     // run.attempt counts every successor (user + infra), so infra = attempt -
     // 1 - user attempts. Applying this twice is the same as applying it once,
     // so an exact replay cannot double-count.
-    b.followOn(
-      'bookkeeping',
-      'tasks',
-      `UPDATE tasks SET
-         infra_retries = ${INFRA_RETRIES_FROM('?', b.fence('successor'))},
-         state = 'pending', last_attempt_run = ?,
-         ${fenceFrom('runs', BY_RUN, b.fence('successor'))}
-       WHERE task_id = ? AND state IN ${LIVE}
-         AND ${fenced('runs', BY_RUN, b.fence('successor'))}`,
-      [successorId, successorId, successorId, item.taskId, successorId],
-      'one',
-    )
+    b.derived('bookkeeping', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'successor',
+      where: 'f.run_id = ?',
+      whereArgs: [successorId],
+      set: `infra_retries = ${INFRA_RETRIES_FROM('?', b.fence('successor'))},
+         state = 'pending', last_attempt_run = ?`,
+      setArgs: [successorId, successorId],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
     // The dead run's waits die with it (the reviewed orphan-waits leak).
     waitsGone(b, item.runId, 'fail')
     const { won, results } = await b.run(this.db)
@@ -873,15 +915,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}`,
       [REASON_CANCELLED, taskId, queue],
     )
-    b.followOn(
-      'runs',
-      'runs',
-      `UPDATE runs SET state = 'cancelled', claimed_by = NULL, claim_expires_at_ms = NULL,
-         ${fenceFrom('tasks', BY_TASK, b.fence('cancel'))}
-       WHERE task_id = ? AND state IN ${LIVE} AND ${fenced('tasks', BY_TASK, b.fence('cancel'))}`,
-      [taskId, taskId, taskId],
-      { many: 'a cancelled task kills every run it still has' },
-    )
+    b.derived('runs', {
+      target: 'runs',
+      stamp: 'runs',
+      key: 'task_id',
+      from: 'tasks',
+      column: 'task_id',
+      fence: 'cancel',
+      where: 'f.task_id = ?',
+      whereArgs: [taskId],
+      set: `state = 'cancelled', claimed_by = NULL, claim_expires_at_ms = NULL`,
+      narrow: `state IN ${LIVE}`,
+      rows: { many: 'a cancelled task kills every run it still has' },
+    })
     b.derived('waits', {
       target: 'waits',
       key: 'task_id',
@@ -954,18 +1000,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       ],
     )
     // The task mirrors the run's suspension state (LIVE-guarded: rule 6).
-    b.followOn(
-      'task-mirror',
-      'tasks',
-      `UPDATE tasks SET
-         state = (SELECT f.state FROM runs f WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('suspend')}),
-         ${fenceFrom('runs', BY_RUN, b.fence('suspend'))}
-       WHERE task_id = (SELECT f.task_id FROM runs f
-                        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('suspend')})
-         AND state IN ${LIVE}`,
-      [runId, runId, runId],
-      'one',
-    )
+    taskMirrorsRun(b, runId, 'suspend')
     const { won } = await b.run(this.db)
     if (won !== 'suspend') throw new LeaseLostError(`reschedule ${runId}`)
   }
@@ -1018,18 +1053,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [checkpoint.key, checkpoint.stateJson, runId],
       'one',
     )
-    b.followOn(
-      'task-mirror',
-      'tasks',
-      `UPDATE tasks SET
-         state = (SELECT f.state FROM runs f WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('suspend')}),
-         ${fenceFrom('runs', BY_RUN, b.fence('suspend'))}
-       WHERE task_id = (SELECT f.task_id FROM runs f
-                        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('suspend')})
-         AND state IN ${LIVE}`,
-      [runId, runId, runId],
-      'one',
-    )
+    taskMirrorsRun(b, runId, 'suspend')
     const { won } = await b.run(this.db)
     if (won !== 'suspend') throw new LeaseLostError(`suspendRun ${runId}`)
   }
@@ -1051,17 +1075,20 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
       [resultJson, runId, queue, claimToken],
     )
-    b.followOn(
-      'task',
-      'tasks',
-      `UPDATE tasks SET state = 'completed', completed_payload = ?, cancel_at_ms = NULL,
-         ${fenceFrom('runs', BY_RUN, b.fence('complete'))}
-       WHERE task_id = (SELECT f.task_id FROM runs f
-                        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('complete')})
-         AND state IN ${LIVE}`,
-      [resultJson, runId, runId],
-      'one',
-    )
+    b.derived('task', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'complete',
+      where: 'f.run_id = ?',
+      whereArgs: [runId],
+      set: `state = 'completed', completed_payload = ?, cancel_at_ms = NULL`,
+      setArgs: [resultJson],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
     waitsGone(b, runId, 'complete')
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw new LeaseLostError(`complete ${runId}`)
@@ -1127,48 +1154,57 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // user ordinal: run.attempt counts every successor, infra_retries the
       // infrastructure ones), so applying this twice equals applying it
       // once — an exact replay cannot double-count.
-      b.followOn(
-        'task-retrying',
-        'tasks',
-        `UPDATE tasks SET
-           attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
+      b.derived('task-retrying', {
+        target: 'tasks',
+        stamp: 'tasks',
+        key: 'task_id',
+        from: 'runs',
+        column: 'task_id',
+        fence: 'successor',
+        where: 'f.run_id = ?',
+        whereArgs: [successorId],
+        set: `attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
            state = (SELECT f.state FROM runs f
-                    WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('successor')}),
-           last_attempt_run = ?,
-           ${fenceFrom('runs', BY_RUN, b.fence('successor'))}
-         WHERE task_id = ${taskOfFailedRun}
-           AND state IN ${LIVE}
-           AND ${successorWritten}`,
-        [runId, successorId, successorId, successorId, runId, successorId],
-        'one',
-      )
+                    WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('successor')}),
+           last_attempt_run = ?`,
+        setArgs: [runId, successorId, successorId],
+        narrow: `state IN ${LIVE}`,
+        rows: 'one',
+      })
       // Cap refused (or task no longer live): terminal, same as no-retry.
-      b.followOn(
-        'task-terminal',
-        'tasks',
-        `UPDATE tasks SET
-           attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
-           state = 'failed', failure_reason = ?,
-           ${fenceFrom('runs', BY_RUN, b.fence('fail'))}
-         WHERE task_id = ${taskOfFailedRun}
-           AND state IN ${LIVE}
-           AND NOT ${successor.exists('?', 'tasks.task_id', '?')}`,
-        [runId, failureJson, runId, runId, successorId, runId],
-        'one',
-      )
+      b.derived('task-terminal', {
+        target: 'tasks',
+        stamp: 'tasks',
+        key: 'task_id',
+        from: 'runs',
+        column: 'task_id',
+        fence: 'fail',
+        where: 'f.run_id = ?',
+        whereArgs: [runId],
+        set: `attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
+           state = 'failed', failure_reason = ?`,
+        setArgs: [runId, failureJson],
+        narrow: `state IN ${LIVE}
+            AND NOT ${successor.exists('?', 'tasks.task_id', '?')}`,
+        narrowArgs: [successorId, runId],
+        rows: 'one',
+      })
     } else {
-      b.followOn(
-        'task',
-        'tasks',
-        `UPDATE tasks SET
-           attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
-           state = 'failed', failure_reason = ?,
-           ${fenceFrom('runs', BY_RUN, b.fence('fail'))}
-         WHERE task_id = ${taskOfFailedRun}
-           AND state IN ${LIVE}`,
-        [runId, failureJson, runId, runId],
-        'one',
-      )
+      b.derived('task', {
+        target: 'tasks',
+        stamp: 'tasks',
+        key: 'task_id',
+        from: 'runs',
+        column: 'task_id',
+        fence: 'fail',
+        where: 'f.run_id = ?',
+        whereArgs: [runId],
+        set: `attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
+           state = 'failed', failure_reason = ?`,
+        setArgs: [runId, failureJson],
+        narrow: `state IN ${LIVE}`,
+        rows: 'one',
+      })
     }
     waitsGone(b, runId, 'fail')
     const { won } = await b.run(this.db)
