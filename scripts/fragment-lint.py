@@ -9,7 +9,13 @@ import re
 import sys
 from pathlib import Path
 
-root = Path(__file__).resolve().parent.parent
+# Optional [root]: grade a tree other than this script's own, so the BASE
+# branch's copy can be run against a pull request (ci.yml `base-gate`).
+root = (
+    Path(sys.argv[1])
+    if len(sys.argv) > 1 and not sys.argv[1].startswith('-')
+    else Path(__file__).resolve().parent.parent
+)
 EXEMPT = {'fragments.ts', 'schema.ts'}
 RULES = [
     (re.compile(r'cancel_at_ms\s*(<=|>=|<|>)'),

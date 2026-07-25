@@ -33,3 +33,33 @@ jobs:
           java-version: 25
       - name: Model-check the scheduler protocol (CI scope)
         run: TLA_SCOPE=ci bash scripts/tla.sh
+
+  # The gate cannot be allowed to grade itself.
+  #
+  # `verify` above runs from the pull request's own checkout, and the list of
+  # checks it runs is a string in that same tree's package.json. Deleting
+  # `&& pnpm lint:clock` from it is therefore green by construction — the
+  # branch under review decides what reviews it. Every checker here has the
+  # same shape: its rules live in the tree it is grading.
+  #
+  # So this job runs the BASE branch's copies against the pull request's tree.
+  # A change may add checks and may not quietly drop or loosen them, and the
+  # copy enforcing that is one the branch cannot edit.
+  base-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check out the base commit beside it
+        run: git worktree add /tmp/base ${{ github.event.pull_request.base.sha }}
+      - name: The base gate's composition rules, applied to this tree
+        run: python3 /tmp/base/scripts/gate-lint.py "$GITHUB_WORKSPACE" /tmp/base
+      - name: The base branch's checkers, applied to this tree
+        run: |
+          set -euo pipefail
+          for c in clock-lint batch-lint fragment-lint spec-ledger deferral-lint; do
+            echo "== base $c"
+            python3 "/tmp/base/scripts/$c.py" "$GITHUB_WORKSPACE"
+          done

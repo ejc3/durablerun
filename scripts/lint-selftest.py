@@ -25,6 +25,7 @@ just as useless as one that fails nothing.
 Run by `pnpm verify`. A new lint belongs in LINTS below with at least one bad
 fixture per rule it claims to enforce.
 """
+import json
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,26 @@ def tree(root: Path, files: dict[str, str]) -> Path:
 
 def store(body: str, name: str = "store.ts") -> dict[str, str]:
     return {f"packages/store-fixture/src/{name}": body}
+
+
+
+def gate(verify: str, extra_scripts: tuple[str, ...] = (), base_gate: bool = True) -> dict[str, str]:
+    """A miniature repo for gate-lint: a package.json, a scripts/ dir, a CI file.
+
+    gate-lint grades the SHAPE OF THE GATE rather than the contents of a source
+    file, so its fixture is a whole tiny repo. `run` copies gate-lint.py into
+    scripts/ and it excludes itself from its own on-disk sweep, so only
+    `extra_scripts` stand as checkers here.
+    """
+    files = {
+        "package.json": json.dumps({"scripts": {"verify": verify}}),
+        ".github/workflows/ci.yml": "jobs:\n  base-gate:\n" if base_gate else "jobs:\n  verify:\n",
+        # Named the way the real self-test names them: quoted, one per case.
+        "scripts/lint-selftest.py": "".join(f'BAD_CASES: "{n}"\n' for n in extra_scripts),
+    }
+    for name in extra_scripts:
+        files[f"scripts/{name}"] = "# a checker\n"
+    return files
 
 
 CLEAN_STORE = store(
@@ -226,6 +247,32 @@ export class S {
         },
         "a batch label mapped to no TLA action must fail until it is mapped or excluded",
     ),
+    (
+        "gate-lint.py",
+        gate(
+            "python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py",
+            ("a-lint.py", "b-lint.py", "orphan-lint.py"),
+        ),
+        "a checker sits in scripts/ that the verify chain never runs and nothing declares",
+    ),
+    (
+        "gate-lint.py",
+        gate("python3 scripts/a-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py",), base_gate=False),
+        "no base-gate job, so the whole gate is graded by the branch under review",
+    ),
+    (
+        "gate-lint.py",
+        gate("vitest run", ()),
+        "a verify chain that runs no checker makes every other rule here vacuous",
+    ),
+    (
+        "gate-lint.py",
+        {
+            **gate("python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py", "b-lint.py")),
+            "scripts/lint-selftest.py": 'BAD_CASES: "a-lint.py"\n',
+        },
+        "a checker runs in the gate with nothing proving it can reject anything",
+    ),
 ] + [
     (
         "clock-lint.py",
@@ -270,6 +317,11 @@ export class S {
 # violation. Every entry below is a false positive a checker actually produced.
 GOOD_CASES = [
     ("batch-lint.py", CLEAN_STORE, "a classified read batch"),
+    (
+        "gate-lint.py",
+        gate("python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py", "b-lint.py")),
+        "every checker run by the gate, every one self-tested, base-gate present",
+    ),
     ("clock-lint.py", CLEAN_STORE, "a batch label containing the word 'now'"),
     (
         "clock-lint.py",

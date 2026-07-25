@@ -23,7 +23,13 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# Optional [root]: grade a tree other than this script's own, so the BASE
+# branch's copy can be run against a pull request (ci.yml `base-gate`).
+ROOT = (
+    Path(sys.argv[1])
+    if len(sys.argv) > 1 and not sys.argv[1].startswith('-')
+    else Path(__file__).resolve().parent.parent
+)
 BUILD = ROOT / "BUILD.md"
 
 # Work that is announced rather than described as shipped.
