@@ -39,34 +39,201 @@ usage() {
   exit 2
 }
 
+# One parser owns both sides of the arithmetic. The earlier global row count
+# and permissive ledger pipeline were two hand-kept views: a prose ledger (or
+# any malformed ledger the pipeline reduced to nothing) skipped validation.
+# The offline entry point below exercises this exact path without GitHub.
 check_postmortem_tables() {
-  local path="$1" content="$2" rows ledger sum
-  rows=$(grep -cE -e '^\| [0-9]' <<<"$content" || true)
-  [[ "$rows" -gt 0 ]] || {
-    echo "SEV rule: postmortem $path has an empty findings table" >&2
-    return 1
-  }
+  local path="$1" content="$2"
+  awk -v path="$path" '
+    BEGIN {
+      findings_header = "| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |"
+      findings_separator = "|---|--------|--------|----------------------------------|------------------|-------------------------|"
+      ledger_header = "| Detector | Findings | Ours? |"
+      ledger_separator = "|----------|----------|-------|"
+    }
 
-  # The detection ledger must account for every finding. It is the headline
-  # number of the whole document -- what fraction our own machinery caught --
-  # and it is a hand-kept tally beside a hand-kept table, so the two drift.
-  # They did: a round took the table from 38 rows to 44 and left the ledger
-  # summing to 43, with one finding attributed to no detector at all. An
-  # unattributed finding is exactly the one that flatters the rate.
-  ledger=$(awk '/^## Detection ledger/{f=1;next} /^## /{f=0} f' <<<"$content" \
-    | grep -E '^\|' | grep -vE '^\|[-: ]+\|' | tail -n +2 \
-    | sed -E 's/\*\*//g; s/^\|[^|]*\|[[:space:]]*([0-9 +]+)[[:space:]]*\|.*/\1/' \
-    | tr -d ' ' | paste -sd+ | sed 's/++*/+/g' || true)
-  if [[ -n "$ledger" ]]; then
-    sum=$((ledger))
-    if [[ "$sum" -ne "$rows" ]]; then
-      echo "SEV rule: postmortem $path has $rows findings but its detection ledger" >&2
-      echo "  accounts for $sum ($ledger). Every finding was found by something;" >&2
-      echo "  a row the ledger omits is one that counts for nobody." >&2
-      return 1
-    fi
-  fi
-  printf '%s\n' "$rows"
+    function reject(message) {
+      print "SEV rule: postmortem " path " " message > "/dev/stderr"
+      failed = 1
+      exit 1
+    }
+
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+
+    function parse_row(line, expected, table,    i, character, escaped, count, value, key) {
+      for (key in cells) {
+        delete cells[key]
+      }
+      if (substr(line, 1, 1) != "|" || substr(line, length(line), 1) != "|") {
+        reject("has a " table " row without leading and trailing pipes")
+      }
+
+      for (i = 2; i < length(line); i++) {
+        character = substr(line, i, 1)
+        if (escaped) {
+          value = value character
+          escaped = 0
+        } else if (character == "\\") {
+          value = value character
+          escaped = 1
+        } else if (character == "|") {
+          cells[++count] = value
+          value = ""
+        } else {
+          value = value character
+        }
+      }
+      if (escaped) {
+        reject("has a " table " row whose trailing pipe is escaped")
+      }
+      cells[++count] = value
+      if (count != expected) {
+        reject("has a " table " row with " count " data cells; expected exactly " expected)
+      }
+      return count
+    }
+
+    /^## Findings$/ {
+      findings_sections++
+      if (findings_sections > 1) {
+        reject("has more than one exact ## Findings section")
+      }
+      section = "findings"
+      next
+    }
+
+    /^## Detection ledger$/ {
+      ledger_sections++
+      if (ledger_sections > 1) {
+        reject("has more than one exact ## Detection ledger section")
+      }
+      section = "ledger"
+      next
+    }
+
+    /^## / {
+      section = ""
+      next
+    }
+
+    section == "findings" && $0 == findings_header {
+      findings_headers++
+      if (findings_headers > 1 || findings_done) {
+        reject("has more than one canonical findings table")
+      }
+      expect_findings_separator = 1
+      next
+    }
+
+    section == "findings" && expect_findings_separator {
+      if ($0 != findings_separator) {
+        reject("does not put the exact template separator below its findings header")
+      }
+      expect_findings_separator = 0
+      in_findings = 1
+      next
+    }
+
+    section == "findings" && in_findings {
+      if ($0 ~ /^\|/) {
+        parse_row($0, 6, "findings")
+        finding = trim(cells[1])
+        if (finding !~ /^[0-9]+$/) {
+          reject("has a non-numeric row in its canonical findings table")
+        }
+        findings_rows++
+        next
+      }
+      in_findings = 0
+      findings_done = 1
+    }
+
+    section == "findings" && !findings_headers && $0 ~ /^\|/ {
+      reject("has an unexpected pipe-delimited block before its canonical findings table")
+    }
+
+    section == "findings" && findings_done && $0 ~ /^\|/ {
+      reject("has a second pipe-delimited block in its Findings section")
+    }
+
+    section == "ledger" && $0 == ledger_header {
+      ledger_headers++
+      if (ledger_headers > 1 || ledger_done) {
+        reject("has more than one canonical detection ledger table")
+      }
+      expect_ledger_separator = 1
+      next
+    }
+
+    section == "ledger" && expect_ledger_separator {
+      if ($0 != ledger_separator) {
+        reject("does not put the exact template separator below its detection ledger header")
+      }
+      expect_ledger_separator = 0
+      in_ledger = 1
+      next
+    }
+
+    section == "ledger" && in_ledger {
+      if ($0 ~ /^\|/) {
+        parse_row($0, 3, "detection ledger")
+        expression = cells[2]
+        gsub(/\*\*/, "", expression)
+        gsub(/[[:space:]]/, "", expression)
+        if (expression !~ /^[0-9]+(\+[0-9]+)*$/) {
+          reject("has a malformed Findings cell in its detection ledger")
+        }
+        term_count = split(expression, terms, "[+]")
+        for (i = 1; i <= term_count; i++) {
+          ledger_sum += terms[i]
+        }
+        ledger_rows++
+        ledger_expression = ledger_expression (ledger_expression == "" ? "" : "+") expression
+        next
+      }
+      in_ledger = 0
+      ledger_done = 1
+    }
+
+    section == "ledger" && !ledger_headers && $0 ~ /^\|/ {
+      reject("has an unexpected pipe-delimited block before its canonical detection ledger table")
+    }
+
+    section == "ledger" && ledger_done && $0 ~ /^\|/ {
+      reject("has a second pipe-delimited block in its Detection ledger section")
+    }
+
+    END {
+      if (failed) {
+        exit 1
+      }
+      if (findings_sections != 1) {
+        reject("must contain exactly one exact ## Findings section")
+      }
+      if (findings_headers != 1 || findings_rows == 0) {
+        reject("has no parsable findings rows under the exact template header")
+      }
+      if (ledger_sections != 1) {
+        reject("must contain exactly one exact ## Detection ledger section")
+      }
+      if (ledger_headers != 1 || ledger_rows == 0) {
+        reject("has no parsable detection ledger rows under the exact template header")
+      }
+      if (ledger_sum == 0) {
+        reject("has a zero-total detection ledger for a non-empty findings table")
+      }
+      if (ledger_sum != findings_rows) {
+        message = "has " findings_rows " findings but its detection ledger accounts for " ledger_sum " (" ledger_expression ")"
+        reject(message)
+      }
+      print findings_rows
+    }
+  ' <<<"$content"
 }
 
 if [[ "${1:-}" == "--check-postmortem" ]]; then

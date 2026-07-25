@@ -963,6 +963,28 @@ BAD_INVOCATIONS = [
         "a prose ledger must not let a postmortem's finding count pass unaccounted",
     ),
     (
+        "review-attest.sh",
+        {
+            "postmortem.md": """# Postmortem: fixture
+
+## Findings
+
+| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
+|---|--------|--------|----------------------------------|------------------|-------------------------|
+| 1 | one | impact | layer | reason | mechanism |
+
+## Detection ledger
+
+| Detector | Findings | Ours? |
+|----------|----------|-------|
+| external review | 1 | no | unparsed extra cell |
+""",
+        },
+        ("--check-postmortem", "{root}/postmortem.md"),
+        "detection ledger row with 4 data cells; expected exactly 3",
+        "an extra ledger cell must not be silently discarded from the canonical table",
+    ),
+    (
         "batch-lint.py",
         store(
             "await this.db.batch('brand-new-write', "
@@ -1044,6 +1066,38 @@ GOOD_CASES = [
         "clock-lint.py",
         store("const SQL = `SELECT 'NOW()' AS label`\n"),
         "a database clock name inside a SQL string literal",
+    ),
+]
+
+GOOD_INVOCATIONS = [
+    (
+        "review-attest.sh",
+        {
+            "postmortem.md": """# Postmortem: fixture
+
+## Findings
+
+| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
+|---|--------|--------|----------------------------------|------------------|-------------------------|
+| 1 | one | impact | layer | reason | mechanism |
+| 2 | two | impact | layer | reason | mechanism |
+| 3 | three | impact | layer | reason | mechanism |
+| 4 | four | impact | layer | reason | mechanism |
+| 5 | five | impact | layer | reason | mechanism |
+| 6 | six | impact | layer | reason | mechanism |
+| 7 | seven | impact | layer | reason | mechanism |
+
+## Detection ledger
+
+| Detector | Findings | Ours? |
+|----------|----------|-------|
+| no findings | **0** | — |
+| first detector | 1 + 1 | no |
+| second detector | 3 + 2 | **yes** |
+""",
+        },
+        ("--check-postmortem", "{root}/postmortem.md"),
+        "the canonical tables accept bold zeroes and additive finding counts",
     ),
 ]
 
@@ -1202,6 +1256,14 @@ for lint, files, why in GOOD_CASES:
     if result.returncode != 0:
         failures.append(f"{lint} REJECTED a good input — {why}\n    {result.stdout.strip()[:200]}")
 
+for lint, files, args, why in GOOD_INVOCATIONS:
+    result = run(lint, files, args)
+    if result.returncode != 0:
+        failures.append(
+            f"{lint} REJECTED a good invocation — {why}\n"
+            f"    {(result.stdout + result.stderr).strip()[:200]}"
+        )
+
 for f in failures:
     print(f"lint-selftest: {f}")
 if failures:
@@ -1210,5 +1272,5 @@ print(
     f"lint-selftest: {len(BAD_CASES)} bad inputs, {len(GIT_BAD_CASES)} Git-state "
     f"inputs, {len(ENV_BAD_CASES)} environment inputs, and "
     f"{len(BAD_INVOCATIONS)} bad invocations rejected, "
-    f"{len(GOOD_CASES)} good inputs accepted"
+    f"{len(GOOD_CASES) + len(GOOD_INVOCATIONS)} good inputs accepted"
 )

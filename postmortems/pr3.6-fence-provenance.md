@@ -8,19 +8,20 @@ compare-and-set, and the rest are supposed to fire only when it won. The rule
 batch just wrote*, never on state that could already have been there.
 
 Seven review passes against this branch found forty-four defects. Six were
-later statements firing on state that could pre-exist. Seven were in the
-checkers and gates this same PR had just built — three of which could not fail
-at all. Twelve more came from a re-review. A fourth pass and a mutation probe
-found nine more, five of them introduced by the rewrite itself; a fifth pass,
-run in an isolated worktree after two earlier attempts died on an upstream
-content filter, found four more -- three of them the same "a stamp is not
-authorship" class in operations the earlier rounds had not reached, and one a
-lost wakeup created by the fix for a spurious one. A sixth pass, asked for a
-design opinion rather than a review, found three more — one of them inside the
-generator this round built to make the recurring class unwritable — while the
-mutation probe and one tooling accident found three others. The verdict of
-the first round was "do not merge"; the second round's was "snapshot `3ff14bf`
-is not correct"; the sixth's was "the current state is not acceptable".
+later statements firing on state that could pre-exist. Findings 7–10, 13, and
+17–19 were in the checkers and gates this same PR had just built; three could
+not fail at all. Twelve more came from a re-review. A fourth pass and a
+mutation probe found nine more, five of them introduced by the rewrite itself;
+a fifth pass, run in an isolated worktree after two earlier attempts died on
+an upstream content filter, found four more -- three of them the same "a stamp
+is not authorship" class in operations the earlier rounds had not reached, and
+one a lost wakeup created by the fix for a spurious one. A sixth pass, asked
+for a design opinion rather than a review, found three more — one of them
+inside the generator this round built to make the recurring class unwritable —
+while the mutation probe and one tooling accident found three others. The
+verdict of the first round was "do not merge"; the second round's was "snapshot
+`3ff14bf` is not correct"; the sixth's was "the current state is not
+acceptable".
 
 The common shape is one sentence: **the engine had nowhere to write down who
 made a write, so every operation borrowed a column that already meant
@@ -50,12 +51,12 @@ polling a run id that does not exist**, forever, indistinguishable from a run
 that has not started. Then **corrupt state amplified into a healthy task**,
 which rule 6 forbids outright.
 
-Three of the seven gate defects are their own severity: a checker that cannot
-fail is worse than no checker, because it is believed. One of them — the
-attestation gate — **refused to attest the very branch that introduced it**,
-so the only ways forward were to mangle good documents or to bypass branch
-protection. A gate that can only be satisfied by defeating it teaches people
-to defeat it.
+Those checker and gate defects are their own severity: a checker that cannot
+fail is worse than no checker, because it is believed. Three could not fail at
+all. One of them — the attestation gate — **refused to attest the very branch
+that introduced it**, so the only ways forward were to mangle good documents
+or to bypass branch protection. A gate that can only be satisfied by defeating
+it teaches people to defeat it.
 
 ## Findings
 
@@ -433,10 +434,6 @@ Deferred (recorded in BUILD.md):
   differ per dialect. Class B moves from *writable by default* to *writable
   only by disconnecting a fence you were forced to type*. Reading this as
   "class B is now impossible" is reading it wrong.
-- **A data-level provenance audit** — that every changed row carries a
-  well-formed stamp, checkable over paths that never touch the primitive.
-  Measured too slow for the deep fuzz leg; belongs in conformance and the
-  fault matrix first.
 - **Postgres double-claim** — `casMany` guarantees a win rule, not a
   concurrency semantics; store-pg needs `FOR UPDATE SKIP LOCKED` and a
   conformance scenario before it is done.
