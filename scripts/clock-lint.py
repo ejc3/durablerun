@@ -12,11 +12,12 @@ routing writes through FencedBatch).
 Usage: clock-lint.py [root]   (root defaults to the repo; the self-test
 passes a fixture tree, which is how this checker gets checked.)
 """
+
 import re
 import sys
 from pathlib import Path
 
-from source_lex import sql_template_view, validated_root
+from source_lex import sql_template_view, store_typescript_sources, validated_root
 
 try:
     root = validated_root(
@@ -24,6 +25,7 @@ try:
         Path(__file__).resolve().parent.parent,
         "clock-lint.py",
     )
+    source_paths = store_typescript_sources(root, "clock-lint.py")
 except ValueError as error:
     sys.exit(str(error))
 
@@ -57,22 +59,26 @@ CLOCKS = re.compile(
     re.IGNORECASE,
 )
 violations = 0
-for store_dir in sorted(root.glob("packages/store-*/src")):
-    for path in sorted(store_dir.rglob("*.ts")):
-        if path == store_dir / "time.ts":
-            continue
-        source = path.read_text()
-        # `datetime('now')` is a clock call whose sentinel is itself a SQL
-        # literal. Preserve only that exact literal spelling; every other SQL
-        # string remains blank, so `'NOW()'` cannot impersonate a call.
+for path in source_paths:
+    if path.name == "time.ts" and path.parent.parent.parent == root / "packages":
+        continue
+    source = path.read_text()
+    # `datetime('now')` is a clock call whose sentinel is itself a SQL
+    # literal. Preserve only that exact literal spelling; every other SQL
+    # string remains blank, so `'NOW()'` cannot impersonate a call.
+    try:
         visible = sql_template_view(source, frozenset({"now"}))
-        for match in CLOCKS.finditer(visible):
-            lineno = source.count("\n", 0, match.start()) + 1
-            print(
-                f"{path.relative_to(root)}:{lineno}: raw wall-clock function in "
-                f"store SQL — database time enters ONLY through NOW_MS (time.ts)"
-            )
-            violations += 1
+    except ValueError as error:
+        print(f"{path.relative_to(root)}: cannot lex TypeScript source: {error}")
+        violations += 1
+        continue
+    for match in CLOCKS.finditer(visible):
+        lineno = source.count("\n", 0, match.start()) + 1
+        print(
+            f"{path.relative_to(root)}:{lineno}: raw wall-clock function in "
+            f"store SQL — database time enters ONLY through NOW_MS (time.ts)"
+        )
+        violations += 1
 
 if violations:
     sys.exit(1)

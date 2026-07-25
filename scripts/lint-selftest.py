@@ -1132,6 +1132,27 @@ export class S {
     (
         "batch-lint.py",
         store(
+            """
+export class S {
+  async ok() {
+    await this.db.batch(
+      'sweep:scan',
+      [
+        { sql: `SELECT 1`, args: [] },
+        /* statement-list trailing trivia */
+      ],
+      'read',
+      // argument-list trailing trivia
+    )
+  }
+}
+"""
+        ),
+        "comments after trailing commas remain trivia rather than opaque expressions",
+    ),
+    (
+        "batch-lint.py",
+        store(
             r"""
 // this.db.batch('brand-new-write', [])
 const quoted = "this.db.batch('brand-new-write', [])"
