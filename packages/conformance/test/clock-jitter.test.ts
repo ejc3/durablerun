@@ -1,5 +1,5 @@
 import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
-import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { type LibsqlExecutor, LibsqlSchedulerStore, NOW_MS } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
@@ -66,8 +66,37 @@ class JitteringExecutor implements SqlExecutor {
   }
 }
 
+type StatementMutator = (
+  label: string,
+  statements: readonly SqlStatement[],
+) => readonly SqlStatement[]
+
+function mutating(real: SqlExecutor, mutate: StatementMutator): SqlExecutor {
+  return {
+    batch: (label, statements, mode) => real.batch(label, mutate(label, statements), mode),
+  }
+}
+
+const retryAvailabilityFromSecondClock: StatementMutator = (label, statements) => {
+  if (label !== 'fail') return statements
+  let changed = 0
+  const mutated = statements.map((statement) => {
+    const sql = statement.sql.replace('f.fence_at_ms + ?', () => {
+      changed += 1
+      return `${NOW_MS} + ?`
+    })
+    return { ...statement, sql }
+  })
+  if (changed !== 1) throw new Error(`retry clock mutation changed ${changed} statements`)
+  return mutated
+}
+
 /** One deterministic pass over the engine; `jitterMs` 0 means no jitter. */
-async function run(jitterMs: number, scenario: string): Promise<string[]> {
+async function run(
+  jitterMs: number,
+  scenario: string,
+  mutate?: StatementMutator,
+): Promise<string[]> {
   const { raw, admin } = await openTestDb({ nowMs: NOW })
   // SEPARATE counters. Sharing one made `token()` return the same string for
   // two consecutive batches whenever no id was minted between them — and the
@@ -76,7 +105,8 @@ async function run(jitterMs: number, scenario: string): Promise<string[]> {
   // The invariant below caught it on its first run.
   let ids = 0
   let seeds = 0
-  const db: SqlExecutor = jitterMs === 0 ? raw : new JitteringExecutor(raw, jitterMs)
+  const clocked: SqlExecutor = jitterMs === 0 ? raw : new JitteringExecutor(raw, jitterMs)
+  const db = mutate ? mutating(clocked, mutate) : clocked
   const store = new LibsqlSchedulerStore(db, {
     uuidv7: () => `id-${++ids}`,
     token: () => `tok-${++seeds}`,
@@ -140,6 +170,12 @@ async function run(jitterMs: number, scenario: string): Promise<string[]> {
 }
 
 describe('moving the clock between statements breaks no invariant', () => {
+  it('distinguishes a retry stranded by a second database-clock read', async () => {
+    const control = await run(997, 'retry')
+    const broken = await run(997, 'retry', retryAvailabilityFromSecondClock)
+    expect(broken).not.toEqual(control)
+  })
+
   for (const scenario of ['retry', 'events', 'suspend', 'cancel']) {
     it(`${scenario}: clean under per-statement clock jitter`, async () => {
       // Deliberately large, uneven and prime, so no two statements of a batch
