@@ -198,3 +198,40 @@ push guards to chokepoints, delete config nobody can set. Every accepted
 simplification lands in the PR; every rejected one gets a written reason in
 the PR body. "It works" is not the bar — the implementation should read as
 if written by someone who knew everything learned while building it.
+
+## Standing rule: ratchet, and never let a proxy sit where a property fits
+
+The prevention ladder is not a menu to pick a comfortable rung from; it is a
+direction of travel. Every round moves at least one thing UP it, and the
+target is always rung 1 — a shape the type system, the structure, or a single
+definition makes unsayable — because everything below rung 1 is a check that
+can be true while the property is false.
+
+That gap has a name here and it is the same defect every time: a PROXY
+standing in for the property it approximates. The catalogue, all paid for:
+
+- `hasPositiveFence` checked that a statement's TEXT contains a fence; the
+  property is whether the fence REACHES the rows. Four rounds of findings.
+- `lint-selftest` found its subjects by FILENAME; the property is which
+  checkers the gate runs.
+- `gate-lint` counts a textual `scripts/foo` occurrence as execution; the
+  property is that the checker EXECUTES. `echo scripts/determinism-lint.sh`
+  satisfies it.
+- Every clock and counter lint matched one SPELLING; the property is the
+  operation. `NOT (EXISTS (` beat `NOT EXISTS (`, `x = 1 + x` beat `x = x + 1`,
+  `now()` beat `UNIXEPOCH()`.
+- A mechanism with one failing case was treated as proven; the property is
+  that it fails for EVERY condition it claims. Two conditions of the wake
+  surface could be deleted with all 1728 cases still green.
+
+So when a finding lands, the question is not only "what mechanism catches
+this" but "is that mechanism the property, or a picture of it?" — and if it is
+a picture, the follow-up task is to replace it, recorded in BUILD.md with a
+named PR rather than left as an intention. Two are open now: PR3.9 compiles
+the SQL into a tree instead of scanning its text, and the red-mutation rule
+requires a mutation per claimed condition instead of one per mechanism.
+
+The ratchet only turns one way. A change that moves a check DOWN the ladder —
+replacing a structural guarantee with a lint, or a lint with a review
+instruction — needs the same written justification as any other loosening of
+the gate, in the PR body under `gate-changes:`.
