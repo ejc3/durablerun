@@ -91,6 +91,40 @@ describe('a CAS must write its own provenance', () => {
     expect(() => insert(`a, b`, FENCE_VALS)).toThrow(/must insert/)
   })
 
+  it('rejects a follow-on that writes a fenced table without stamping it', () => {
+    // The CAS side of this check had tests; the follow-on side had none, and
+    // deleting it broke nothing — found by mutation probe, not by review.
+    // A follow-on that writes a provenance-carrying table and leaves the
+    // provenance alone produces rows whose fence_stamp still names whatever
+    // batch touched them last, so the next batch to fence on that value acts
+    // on rows it did not write.
+    const b = withCas()
+    expect(() =>
+      b.followOn(
+        'x',
+        'tasks',
+        `UPDATE tasks SET state = 'pending'
+         WHERE task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
+        [],
+        'one',
+      ),
+    ).toThrow(/does not stamp it/)
+  })
+
+  it('rejects a follow-on INSERT into a fenced table that omits the columns', () => {
+    const b = withCas()
+    expect(() =>
+      b.followOn(
+        'x',
+        'runs',
+        `INSERT INTO runs (run_id, task_id)
+         SELECT ?, f.task_id FROM runs f WHERE f.fence_stamp = ${b.fence('win')}`,
+        ['r'],
+        'one',
+      ),
+    ).toThrow(/must insert/)
+  })
+
   it('rejects an upsert whose DO UPDATE branch leaves provenance stale', () => {
     const upsert = (doUpdate: string) =>
       batch().cas(

@@ -235,7 +235,13 @@ describe('transition-layer review regressions (second round)', () => {
         args: [collidingId, Q],
       },
     ])
-    await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'k' }).catch(() => {})
+    // Deliberately NOT wrapped in .catch(): a colliding task id must make the
+    // insert LOSE, the same as any other conflict, not raise a constraint
+    // error out of spawn. Swallowing the rejection here made this test pass
+    // either way, so deleting the guard that converts the collision into a
+    // lost compare-and-set broke nothing — found by mutation probe.
+    const result = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'k' })
+    expect(result.created).toBe(false)
     const [runs] = await f.raw.batch('t', [
       { sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ?`, args: [collidingId] },
     ])
@@ -244,6 +250,43 @@ describe('transition-layer review regressions (second round)', () => {
       { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [collidingId] },
     ])
     expect(task?.rows[0]?.state).toBe('completed')
+    f.close()
+  })
+
+  it('spawn loses rather than crashing when only the task id collides', async () => {
+    // The case above collides on BOTH the task id and the idempotency key, so
+    // the targeted ON CONFLICT absorbs it and the primary-key guard is never
+    // needed — which is why deleting that guard broke nothing. The guard
+    // exists for a collision on the id ALONE, where the targeted conflict
+    // clause does not apply and the insert would raise a constraint error out
+    // of spawn to a caller who did nothing wrong.
+    const seed = 'spawn-collide-id-only'
+    const f = await makeLibsqlFixture(seed)
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const collidingId = seededIdSource(new Rng(seed)).uuidv7()
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
+                state, enqueue_at_ms, created_at_ms)
+              VALUES (?, ?, 'other', '{}', '{"kind":"none"}', 1, 'pending', 1000000, 1000000)`,
+        args: [collidingId, Q],
+      },
+    ])
+
+    const result = await f.store.spawn(Q, 'job', '{}') // no idempotency key
+    expect(result.created).toBe(false)
+
+    // The pre-existing task is untouched: no run was attached to it, and its
+    // name is still its own.
+    const [rows] = await f.raw.batch('t', [
+      {
+        sql: `SELECT (SELECT COUNT(*) FROM runs WHERE task_id = t.task_id) AS runs,
+                     t.task_name
+              FROM tasks t WHERE t.task_id = ?`,
+        args: [collidingId],
+      },
+    ])
+    expect(rows?.rows[0]).toMatchObject({ runs: 0, task_name: 'other' })
     f.close()
   })
 
