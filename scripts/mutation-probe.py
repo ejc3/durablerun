@@ -76,6 +76,37 @@ MUTATIONS = [
         "a narrowing clause that WIDENS the set instead of shrinking it",
     ),
     (
+        # The generator interpolates the caller's correlation into a boolean
+        # position. Unbracketed, `a OR b` binds as `a OR (b AND fence)` and
+        # every row matching `a` enters the selection unstamped -- the class
+        # the generator exists to prevent, inside the generator.
+        "generated-where-parens",
+        "packages/core/src/fenced-batch.ts",
+        "    const src = spec.where ? `(${spec.where}) AND ` : ''",
+        "    const src = spec.where ? `${spec.where} AND ` : ''",
+        "a disjunctive correlation lets unstamped rows into a generated selection",
+    ),
+    (
+        # The one condition holding the wake predicate's two subqueries to the
+        # same row. Redundant for any single row, load-bearing across two.
+        "emit-wake-one-witness",
+        "packages/store-libsql/src/store.ts",
+        "                       AND s.queue = runs.queue\n",
+        "",
+        "two wait rows, each disqualifying, combine into a wake",
+    ),
+    (
+        # Not correctness: the emit's access path. Removing the driver leaves
+        # the same rows written by a full scan of the largest table in the
+        # engine, which only a plan pinned to the SHIPPED statement can see.
+        "emit-index-driver",
+        "packages/store-libsql/src/store.ts",
+        "         AND run_id IN (SELECT w.run_id FROM waits w\n"
+        "                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')",
+        "         AND ? IS NOT NULL AND ? IS NOT NULL",
+        "every emit scans the runs table instead of seeking the waits index",
+    ),
+    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "         AND wake_event = ?\n",

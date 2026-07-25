@@ -1,7 +1,9 @@
 import { type Client, createClient } from '@libsql/client'
+import type { SqlExecutor } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   LibsqlExecutor,
+  LibsqlSchedulerStore,
   LibsqlStoreAdmin,
   MIGRATIONS,
   NEXT_WAKE_SQL,
@@ -136,14 +138,44 @@ describe('the emit fan-out, which is a WRITE', () => {
       AND run_id IN (SELECT w.run_id FROM waits w
                      WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'${stepMatch})`
 
+  /**
+   * The statement emitEvent ACTUALLY sends, recovered by running the real
+   * operation through a recording executor.
+   *
+   * This pin used to EXPLAIN a hand-copied statement described as
+   * "structurally the same" — a second representation of the shipped SQL,
+   * which is the shape this repo has a standing rule against, and it drifted
+   * exactly as that rule predicts: conditions added to the real statement
+   * never reached the copy, and deleting the whole index driver from the
+   * engine left this file green. A pin that can pass while the shipped
+   * statement scans the runs table is not pinning anything.
+   */
+  async function shippedWakeStatement(): Promise<{ sql: string; args: unknown[] }> {
+    const seen: { sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, mode) => {
+        for (const st of statements) seen.push({ sql: st.sql, args: [...st.args] })
+        return db.batch(label, statements, mode)
+      },
+    }
+    let n = 0
+    const store = new LibsqlSchedulerStore(recorder, {
+      uuidv7: () => `id-${++n}`,
+      token: () => `tok-${n}`,
+    })
+    await store.emitEvent('q', 'e', '{}')
+    // emitEvent writes runs exactly once. If that stops being true the pin
+    // must be rewritten rather than silently pinning whichever came first.
+    const updates = seen.filter((st) => /^\s*UPDATE runs\b/.test(st.sql))
+    expect(updates).toHaveLength(1)
+    const only = updates[0]
+    if (!only) throw new Error('unreachable')
+    return only
+  }
+
   it('is driven by the waits index, not by a scan of runs', async () => {
-    const p = await writePlan(
-      `${wakeRuns('')}
-       AND EXISTS (SELECT 1 FROM waits s
-                   WHERE s.run_id = runs.run_id AND s.step_name = runs.wake_step
-                     AND s.event_name = ? AND s.status = 'waiting')`,
-      ['e', 'e', 'q', 'e', 'e'],
-    )
+    const st = await shippedWakeStatement()
+    const p = await writePlan(st.sql, st.args as (string | number)[])
     expect(p).toContain('waits_event')
     expect(p).toContain('SEARCH runs USING PRIMARY KEY')
     expect(p).not.toContain('SCAN runs')
