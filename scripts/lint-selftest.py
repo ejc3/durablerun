@@ -68,21 +68,57 @@ def gate(verify: str, extra_scripts: tuple[str, ...] = (), base_gate: bool = Tru
 
 
 
-def corpus(rule_body: str, *, in_coderabbit: bool = True, greptile_id: str = "durablerun-a-rule",
-           status_check: bool = True) -> dict[str, str]:
+def corpus(
+    rule_body: str,
+    *,
+    in_coderabbit: bool = True,
+    active_coderabbit: bool = True,
+    coderabbit_name: str = "durablerun: a-rule",
+    coderabbit_mode: str = "error",
+    coderabbit_instructions: str = (
+        "Apply `.github/review-bot-rules/a-rule.md` and fail on its rejection cases."
+    ),
+    greptile_id: str = "durablerun-a-rule",
+    greptile_rule: str = (
+        "Apply `.github/review-bot-rules/a-rule.md` and flag something decidable."
+    ),
+    status_check: bool = True,
+    coderabbit_path: str = "**/*",
+    coderabbit_path_instructions: str = (
+        "Apply `.github/review-bot-rules/a-rule.md`."
+    ),
+    coderabbit_extra_path: str = "",
+) -> dict[str, str]:
     """A miniature review-bot corpus: one rule, and the two configs that must
     both reference it. `git ls-files` returns nothing in a fixture, so the
     scope-matches-something rule stands down there and is exercised for real
     against the repo itself."""
     cr = "reviews:\n  path_instructions:\n"
     if in_coderabbit:
-        cr += "    - path: '**/*'\n      instructions: |\n        Apply `.github/review-bot-rules/a-rule.md`.\n"
+        cr += (
+            f"    - path: {json.dumps(coderabbit_path)}\n"
+            "      instructions: |\n"
+            f"        {coderabbit_path_instructions}\n"
+            f"{coderabbit_extra_path}"
+        )
+        if active_coderabbit:
+            cr += (
+                "  pre_merge_checks:\n"
+                "    custom_checks:\n"
+                f"      - name: {json.dumps(coderabbit_name)}\n"
+                f"        mode: {coderabbit_mode}\n"
+                "        instructions: |\n"
+                f"          {coderabbit_instructions}\n"
+            )
     return {
         ".github/review-bot-rules/a-rule.md": rule_body,
         ".github/review-bot-rules/README.md": "# Rules\n\n- `a-rule.md`\n",
         ".coderabbit.yaml": cr,
         ".greptile/config.json": json.dumps(
-            {"statusCheck": status_check, "rules": [{"id": greptile_id, "rule": "Flag x.", "scope": []}]}
+            {
+                "statusCheck": status_check,
+                "rules": [{"id": greptile_id, "rule": greptile_rule, "scope": []}],
+            }
         ),
     }
 
@@ -324,16 +360,92 @@ export class S {
     ),
     (
         "review-bot-lint.py",
-        {**corpus(WHOLE_RULE),
-         ".coderabbit.yaml": corpus(WHOLE_RULE)[".coderabbit.yaml"]
-         + '  pre_merge_checks:\n    custom_checks:\n      - name: "'
-         + "x" * 60 + '"\n'},
+        corpus(WHOLE_RULE, coderabbit_name="x" * 60),
         "a custom-check name CodeRabbit refuses, which voids the whole config file",
     ),
     (
         "review-bot-lint.py",
         corpus(WHOLE_RULE, status_check=False),
         "Greptile posting no status check, so its findings cannot gate anything",
+    ),
+    (
+        "review-bot-lint.py",
+        {
+            rel: body
+            for rel, body in corpus(WHOLE_RULE).items()
+            if not rel.startswith(".github/review-bot-rules/")
+        },
+        "the rule corpus is missing, so both hosted reviewers have no enforceable local source",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, active_coderabbit=False),
+        "a path instruction names the rule but no active CodeRabbit pre-merge check applies it",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, coderabbit_mode="warning"),
+        "a CodeRabbit custom check that cannot fail the gate is not an active error rule",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, coderabbit_instructions=""),
+        "an empty CodeRabbit custom-check body applies no rule despite its derived name",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, greptile_rule=""),
+        "an empty Greptile rule body applies nothing despite retaining the expected id",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, greptile_rule="Flag x."),
+        "a Greptile rule body unrelated to the corpus file can silently drift from it",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(
+            WHOLE_RULE,
+            coderabbit_instructions=(
+                "Apply `.github/review-bot-rules/a-rule.md` during review. "
+                "Flag an unrelated shape. Pass for another unrelated shape."
+            ),
+            greptile_rule="Flag an unrelated shape. Pass for another unrelated shape.",
+        ),
+        "two active bot bodies can agree with each other while both contradict the corpus",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, coderabbit_path_instructions="Ignore every custom review rule."),
+        "CodeRabbit path instructions can contradict every active error check",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(
+            WHOLE_RULE,
+            coderabbit_extra_path=(
+                "    - path: \"**/*\"\n"
+                "      instructions: |\n"
+                "        Ignore every custom review rule.\n"
+            ),
+        ),
+        "an extra CodeRabbit path entry can countermand every active error check",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, coderabbit_path="untracked/**"),
+        "a dead CodeRabbit path glob applies its review instruction nowhere",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(
+            WHOLE_RULE,
+            coderabbit_extra_path=(
+                "      instructions: |\n"
+                "        Apply `.github/review-bot-rules/a-rule.md`.\n"
+            ),
+        ),
+        "duplicate CodeRabbit instruction fields leave the active body ambiguous",
     ),
 ] + [
     (
