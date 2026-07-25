@@ -173,10 +173,12 @@ function mutateWake(find: string, replace: string): StatementMutator {
     let changed = 0
     const mutated = statements.map((statement) => {
       if (!/^\s*UPDATE runs SET/.test(statement.sql)) return statement
-      const sql = statement.sql.replace(find, () => {
-        changed += 1
-        return replace
-      })
+      if (!statement.sql.includes(find)) return statement
+      changed += 1
+      // A canonical witness can be spliced into more than one decision arm.
+      // Mutate every compiled occurrence so the probe still deletes the one
+      // shared condition rather than leaving a duplicate to answer for it.
+      const sql = statement.sql.split(find).join(replace)
       return { ...statement, sql }
     })
     if (changed !== 1) throw new Error(`wake mutation changed ${changed} statements`)
@@ -185,8 +187,8 @@ function mutateWake(find: string, replace: string): StatementMutator {
 }
 
 const NULL_ONLY_TIMEOUT = mutateWake(
-  's.timeout_at_ms IS runs.available_at_ms',
-  's.timeout_at_ms IS NULL AND runs.available_at_ms IS NULL',
+  'w.timeout_at_ms IS runs.available_at_ms',
+  'w.timeout_at_ms IS NULL AND runs.available_at_ms IS NULL',
 )
 const NO_LIVE_TASK_GUARD = mutateWake(
   "t.state IN ('pending','running','sleeping')",

@@ -55,7 +55,9 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
  * is no truthful way to choose among them, so the scalar exists only when the
  * full witness identifies exactly one registration.
  */
-export const registeredWait = (run: string): { step: string; unambiguous: string } => {
+export const registeredWait = (
+  run: string,
+): { step: string; current: string; unambiguous: string } => {
   const witness = `w.run_id = ${run}.run_id
       AND w.queue = ${run}.queue
       AND w.task_id = ${run}.task_id
@@ -66,6 +68,9 @@ export const registeredWait = (run: string): { step: string; unambiguous: string
     step: `(SELECT MIN(w.step_name) FROM waits w
             WHERE ${witness}
             HAVING COUNT(*) = 1)`,
+    current: `EXISTS (SELECT 1 FROM waits w
+                      WHERE ${witness}
+                        AND w.step_name = ${run}.wake_step)`,
     // Zero matches can mean there is no active event wait (a successor may
     // legitimately carry historical wake fields). More than one is the
     // unsafe state: no caller may consume it by guessing a step.
