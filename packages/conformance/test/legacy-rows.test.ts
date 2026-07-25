@@ -129,5 +129,31 @@ describe('rows written before a column existed', () => {
       expect(await engineInvariantViolations(f.raw)).toEqual([])
       f.close()
     })
+
+    it(`a timed wake still decodes when ${table}.${column} is NULL (pre-v${version})`, async () => {
+      const f = await fixture()
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('expected a claim')
+      await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      const step = '$await:go#2'
+      await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, step, 'go', 30)
+
+      // The wait row is the only pre-v3 record of the exact await step. Claim
+      // must carry it into the run before consuming that row.
+      await f.raw.batch('legacy', [{ sql: `UPDATE ${table} SET ${column} = NULL`, args: [] }])
+      await f.admin.setFakeNowEpochMs(NOW + 30_000)
+      const [woken] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+
+      expect(woken?.wake).toEqual({ event: 'go', step, timedOut: true })
+      const [waits] = await f.raw.batch(
+        't',
+        [{ sql: `SELECT COUNT(*) AS n FROM waits WHERE run_id = ?`, args: [run.runId] }],
+        'read',
+      )
+      expect(Number(waits?.rows[0]?.n)).toBe(0)
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+      f.close()
+    })
   }
 })
