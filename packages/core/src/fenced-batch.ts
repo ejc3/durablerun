@@ -265,7 +265,12 @@ export class FencedBatch {
       rows: RowBound
     },
   ): this {
-    const src = spec.where ? `${spec.where} AND ` : ''
+    // Parenthesised for the same reason `narrow` is: AND binds tighter than
+    // OR, so an unbracketed `a OR b` would compile to `a OR (b AND fence)`
+    // and let every row matching `a` into the selection unstamped. The
+    // caller's text lands in a boolean position, so the primitive brackets
+    // it rather than trusting it to be conjunctive.
+    const src = spec.where ? `(${spec.where}) AND ` : ''
     const fence = this.fence(spec.fence)
     const selection = `${spec.key} IN (SELECT f.${spec.column} FROM ${spec.from} f
                        WHERE ${src}f.fence_stamp = ${fence})`
@@ -388,7 +393,7 @@ export class FencedBatch {
     // subquery does not count: the statement would still match every row and
     // merely write a NULL into them. Neither does a fence that appears only
     // under NOT — that is a statement asserting the fence is ABSENT.
-    if (!isCas && s.open === undefined && !s.generated && !hasPositiveFence(sql)) {
+    if (!isCas && s.open === undefined && !hasPositiveFence(sql)) {
       throw new Error(
         `${at} has no positive fence in its WHERE clause — a follow-on must filter on fence('<a cas of this batch>') so a losing invocation matches nothing (§3.4 rule 1)`,
       )
@@ -397,7 +402,7 @@ export class FencedBatch {
     // A fence joined by OR reaches nothing. Requiring the top-level WHERE to
     // be a pure AND-chain is what turns "the statement mentions a fence" into
     // "every row it writes satisfies the fence".
-    if (!isCas && s.open === undefined && !s.generated && hasTopLevelOr(sql)) {
+    if (!isCas && s.open === undefined && hasTopLevelOr(sql)) {
       throw new Error(
         `${at} has an OR at the top level of its WHERE clause — then the fence can be false while the row is still written. Narrow with AND, or move the alternation inside a subquery.`,
       )
