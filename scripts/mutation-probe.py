@@ -122,11 +122,44 @@ def run_suite() -> tuple[bool, str]:
     return r.returncode == 0, r.stdout
 
 
+def assert_clean() -> None:
+    """Refuse to start with uncommitted changes, and say why.
+
+    This probe edits sources and restores them in a `finally`. A `finally`
+    does not run when the process is KILLED — and this one was, mid-run, by
+    the OOM killer while running the suite for the eleventh time. It left a
+    mutated `store.ts` behind: a fence quietly removed from `complete`, in a
+    working tree that looked like ordinary in-progress work.
+
+    That is the worst possible artefact for a tool whose whole job is
+    introducing plausible-looking defects, so the guard is placement rather
+    than care: starting from a clean tree means anything this leaves behind
+    is visible in `git status` as the only change, and `git checkout --` is
+    always the right recovery.
+    """
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.strip()
+    if dirty:
+        print(
+            "mutation-probe: refusing to run with a dirty tree.\n"
+            "  This tool edits sources and restores them afterwards; if it is killed\n"
+            "  mid-run the restore does not happen, and a mutation left in a tree that\n"
+            "  already had changes is indistinguishable from your own work.\n"
+            "  Commit or stash first. If a previous run WAS killed, the leftover is\n"
+            "  below and `git checkout -- <file>` is the fix:\n"
+            f"{dirty}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only mutations whose name contains this")
     args = ap.parse_args()
 
+    assert_clean()
     green, _ = run_suite()
     if not green:
         print("baseline is RED — fix the suite before probing it", file=sys.stderr)
