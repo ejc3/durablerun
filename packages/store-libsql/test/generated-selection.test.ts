@@ -133,7 +133,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     expect(row?.s).toBe('seed:spread')
     // One instant for the whole batch: the follow-on copies the CAS's, it
     // does not read the clock again (§3.4 rule 3).
-    expect(row?.a).toBe(row?.ra)
+    expect({ followOn: row?.a, cas: row?.ra }).toEqual({ followOn: NOW, cas: NOW })
     f.close()
   })
 })

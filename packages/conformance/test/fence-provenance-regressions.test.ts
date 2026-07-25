@@ -409,12 +409,21 @@ describe('fence provenance', () => {
       [Q, NOW - 999],
     )
 
-    await f.store.awaitEvent(Q, 'T', 'R', 'worker', '$await:go', 'go', 30).catch(() => {})
+    let refusal: unknown = null
+    await f.store
+      .awaitEvent(Q, 'T', 'R', 'worker', '$await:go', 'go', 30)
+      .catch((error: unknown) => {
+        refusal = error
+      })
 
     const [run] = await query(f.raw, `SELECT state, available_at_ms FROM runs WHERE run_id = 'R'`)
-    // Either the call refused outright (run untouched) or it parked under ITS
-    // OWN 30-second deadline — never parked forever on the stale row's NULL.
-    expect(run?.state === 'running' || run?.available_at_ms === NOW + 30_000).toBe(true)
+    if (refusal !== null) {
+      expect(refusal).toBeInstanceOf(LeaseLostError)
+      expect(run).toMatchObject({ state: 'running', available_at_ms: null })
+    } else {
+      // Parked under ITS OWN 30-second deadline, never the stale row's NULL.
+      expect(run?.available_at_ms).toBe(NOW + 30_000)
+    }
     f.close()
   })
 

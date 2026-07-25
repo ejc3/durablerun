@@ -1,4 +1,4 @@
-import { StoreUnavailableError } from '@durablerun/core'
+import { SchemaMismatchError, StoreUnavailableError } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -60,18 +60,19 @@ describe('a database older than the binary', () => {
    * unserializable event payload burn 20 attempts; it must not survive at a
    * second layer.
    */
-  it('reports a missing column as a permanent fault, never as a transient outage', async () => {
+  it('classifies every SQLite schema-shape error as a permanent fault', async () => {
     await migrateTo(3)
-    const error = await db
-      .batch('probe', [{ sql: `SELECT fence_stamp FROM runs`, args: [] }], 'read')
-      .catch((e: unknown) => e)
-
-    expect(error).toBeInstanceOf(Error)
-    expect(String(error)).toMatch(/schema/i)
-    expect(
-      error instanceof StoreUnavailableError,
-      'classified as transient — every worker will retry it until its infrastructure budget is gone',
-    ).toBe(false)
+    const cases = [
+      `SELECT 1 FROM missing_table`,
+      `SELECT fence_stamp FROM runs`,
+      `INSERT INTO runs (missing_column) VALUES ('x')`,
+      `ALTER TABLE runs ADD COLUMN task_id TEXT`,
+    ]
+    for (const sql of cases) {
+      await expect(db.batch('probe', [{ sql, args: [] }], 'read'), sql).rejects.toBeInstanceOf(
+        SchemaMismatchError,
+      )
+    }
   })
 
   it('still reports a genuinely unreachable database as an outage', async () => {

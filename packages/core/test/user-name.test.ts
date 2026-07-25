@@ -32,8 +32,22 @@ describe('UserName.parse rejects non-round-tripping names', () => {
     // deterministic bad call is re-run up to maxAttempts, repeating whatever
     // the handler did before it each time. Deterministic bad input must be
     // permanent, which is what FatalTaskError means here.
-    for (const bad of [undefined, null, 42, {}, ['a'], Symbol('s')]) {
-      expect(() => UserName.parse('step name', bad as unknown as string)).toThrow(FatalTaskError)
+    const nonStrings: [kind: string, value: unknown][] = [
+      ['undefined', undefined],
+      ['null', null],
+      ['boolean', false],
+      ['number', 42],
+      ['bigint', 0n],
+      ['object', {}],
+      ['array', ['a']],
+      ['symbol', Symbol('s')],
+      ['function', () => {}],
+    ]
+    for (const [kind, bad] of nonStrings) {
+      expect(
+        () => UserName.parse('step name', bad as string),
+        `${kind} reached the string-only boundary`,
+      ).toThrow(FatalTaskError)
     }
   })
 

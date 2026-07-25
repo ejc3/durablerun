@@ -520,11 +520,13 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     if (!run) throw new Error('expected a claim')
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:go', 'go', 30)
-    const [{ timeout_at_ms: parkedTimeout } = { timeout_at_ms: null }] = await query(
-      f.raw,
-      `SELECT timeout_at_ms FROM waits WHERE run_id = ?`,
-      [run.runId],
-    )
+    const [parked] = await query(f.raw, `SELECT timeout_at_ms FROM waits WHERE run_id = ?`, [
+      run.runId,
+    ])
+    // The disagreement under test IS this deadline; without it the fixture
+    // silently becomes the untimed-wait case above.
+    expect(typeof parked?.timeout_at_ms).toBe('number')
+    const parkedTimeout = Number(parked?.timeout_at_ms)
 
     // The timeout fires: claim delivers it and takes the wait row with it.
     await f.admin.setFakeNowEpochMs(NOW + 31_000)
@@ -542,7 +544,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
         sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
                 timeout_at_ms, created_at_ms)
               VALUES (?, '$await:go', ?, ?, 'go', 'waiting', ?, ?)`,
-        args: [run.runId, Q, spawned.taskId, parkedTimeout as number, NOW],
+        args: [run.runId, Q, spawned.taskId, parkedTimeout, NOW],
       },
     ])
 
