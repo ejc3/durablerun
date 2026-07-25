@@ -793,8 +793,19 @@ AwaitEventMiss(c, e) ==
 \* registered waiter of the event flips sleeping -> pending due now with
 \* the payload parked on its run row, its wait row deleted, and its task
 \* flipped pending (durable-at-emit, inline placement).  Keying the flip on
-\* the WAIT ROWS -- never on runs.wake_event -- is what makes timed-out and
-\* cancelled waits non-resurrectable: their wait rows are already gone.
+\* the WAIT ROWS -- never on runs.wake_event ALONE -- is what makes timed-out
+\* and cancelled waits non-resurrectable: their wait rows are already gone.
+\*
+\* MODEL/IMPL GAP, now closed in the impl: here a run has AT MOST ONE wait
+\* (waitEv[r]), so "a wait row for e names run r" and "r is parked on e" are
+\* the same statement.  The implementation's waits table is keyed
+\* (run_id, step_name), so a run can carry a wait row while being parked on
+\* something else entirely -- a durable timer, say -- and keying the flip on
+\* the wait row alone woke it, up to its whole remaining sleep early.  The
+\* impl therefore intersects the two: the wait row AND the run's own
+\* wake_event/wake_step.  That is strictly NARROWER than this action, so
+\* every property proved here still holds; it is the model's one-wait-per-run
+\* restriction being enforced rather than assumed.
 EmitEvent(e, p) ==
   /\ eventState[e] = NoPayload
   /\ eventState' = [eventState EXCEPT ![e] = p]
