@@ -62,7 +62,7 @@ export interface TaskContext {
    * never re-see a stale wake.
    */
   awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string>
-  /** First write wins: a second emit of the same name changes nothing. */
+  /** First write wins: a later emit cannot replace the stored payload. */
   emitEvent(name: string, payloadJson: string): Promise<void>
   /** This attempt's user-visible ordinal (infrastructure retries excluded). */
   readonly attempt: number

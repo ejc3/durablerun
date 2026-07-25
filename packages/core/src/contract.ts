@@ -55,3 +55,13 @@ export const REASON_CANCELLED = '{"name":"$Cancelled"}'
  */
 export const FENCED_TABLES = ['tasks', 'runs', 'waits', 'events'] as const
 export type FenceTable = (typeof FENCED_TABLES)[number]
+
+/**
+ * Conflict updates for first-write-wins facts re-stamp provenance without
+ * moving the fact's original instant. This enumeration is shared by every
+ * dialect; callers choose a target, never an arbitrary SQL expression.
+ */
+export const PRESERVED_FENCE_INSTANTS = {
+  events: 'emitted_at_ms',
+} as const satisfies Partial<Record<FenceTable, string>>
+export type PreservedFenceTable = keyof typeof PRESERVED_FENCE_INSTANTS

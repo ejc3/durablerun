@@ -694,9 +694,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(row?.rows[0]?.state).toBe('running') // still ours, not parked
       })
 
-      // fenceTwin('EmitEvent') — the duplicate emit's insert loses and the
-      // stored payload stays the first writer's.
-      it('first write wins: a second emit changes nothing for late awaiters', async () => {
+      // fenceTwin('EmitEvent') — the later emit may establish a delivery
+      // fence, but the stored payload stays the first writer's.
+      it('first write wins: a later emit cannot replace the payload', async () => {
         await f.store.emitEvent(Q, 'once', '{"v":"first"}')
         await f.store.emitEvent(Q, 'once', '{"v":"second"}')
         await f.store.spawn(Q, 'late', '{}')

@@ -4,6 +4,7 @@ import {
   FENCE_SET,
   FENCE_VALS,
   FencedBatch,
+  fenceSetAt,
   NOW,
   type SqlBatchMode,
   type SqlExecutor,
@@ -126,16 +127,28 @@ describe('a CAS must write its own provenance', () => {
   })
 
   it('rejects an upsert whose DO UPDATE branch leaves provenance stale', () => {
-    const upsert = (doUpdate: string) =>
+    const upsert = (target: 'events' | 'runs', doUpdate: string) =>
       batch().cas(
         'win',
-        'events',
-        `INSERT INTO events (queue, ${FENCE_COLS}) VALUES (?, ${FENCE_VALS})
+        target,
+        `INSERT INTO ${target} (queue, ${FENCE_COLS}) VALUES (?, ${FENCE_VALS})
          ON CONFLICT (queue) DO UPDATE SET ${doUpdate}`,
         ['q'],
       )
-    expect(() => upsert(`emitted_at_ms = 1`)).toThrow(/re-stamp/)
-    expect(() => upsert(FENCE_SET)).not.toThrow()
+    expect(() => upsert('events', `emitted_at_ms = 1`)).toThrow(/preserve/)
+    expect(() => upsert('events', `fence_stamp = ${STAMP}`)).toThrow(/preserve/)
+    expect(() => upsert('events', `fence_stamp = ${STAMP}, fence_at_ms = events.payload`)).toThrow(
+      /preserve events\.emitted_at_ms/,
+    )
+    expect(() => upsert('events', FENCE_SET)).toThrow(/preserve events\.emitted_at_ms/)
+    expect(() => upsert('events', fenceSetAt('events'))).not.toThrow()
+    expect(() => upsert('events', `${fenceSetAt('events')} + 1`)).toThrow(/preserve/)
+    expect(() => upsert('events', `${fenceSetAt('events')}, fence_at_ms = events.payload`)).toThrow(
+      /preserve/,
+    )
+    expect(() => upsert('runs', FENCE_SET)).not.toThrow()
+    // @ts-expect-error only events has a contract-preserved fact instant
+    expect(() => fenceSetAt('runs')).toThrow(/no contract-preserved fence instant/)
   })
 })
 
@@ -192,6 +205,25 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       'one',
     )
     expect(() => b.fence('mirror')).not.toThrow()
+  })
+
+  it('seals an intermediate fence with a fresh stamp at the source instant', async () => {
+    const b = withCas()
+    b.seal('finished', {
+      target: 'runs',
+      key: 'run_id',
+      fence: 'win',
+      where: 'f.run_id = ?',
+      whereArgs: ['r'],
+      rows: 'one',
+    })
+    expect(() => b.fence('finished')).not.toThrow()
+
+    const db = new FakeDb()
+    await b.run(db)
+    const sealed = db.calls[0]?.statements[1]
+    expect(sealed?.sql).toContain('fence_stamp = ?')
+    expect(sealed?.args).toEqual(['seed:finished', 'r', 'seed:win', 'r', 'seed:win'])
   })
 })
 

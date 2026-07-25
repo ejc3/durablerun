@@ -87,6 +87,32 @@ MUTATIONS = [
         "a disjunctive correlation lets unstamped rows into a generated selection",
     ),
     (
+        "generated-update-provenance",
+        "packages/core/src/fenced-batch.ts",
+        "    const provenance = `,\\n         fence_stamp = ${STAMP},\n"
+        "         fence_at_ms = (SELECT f.fence_at_ms FROM ${spec.from} f\n"
+        "                        WHERE ${src}f.fence_stamp = ${fence})`\n"
+        "    return this.add({\n"
+        "      name,\n"
+        "      kind: 'followOn',\n"
+        "      target: spec.target,",
+        "    const provenance = `,\\n         fence_stamp = fence_stamp,\n"
+        "         fence_at_ms = (SELECT f.fence_at_ms FROM ${spec.from} f\n"
+        "                        WHERE ${src}f.fence_stamp = ${fence})`\n"
+        "    return this.add({\n"
+        "      name,\n"
+        "      kind: 'followOn',\n"
+        "      target: null,",
+        "a generated UPDATE can leave stale provenance on every row it writes",
+    ),
+    (
+        "seal-intermediate-fence",
+        "packages/core/src/fenced-batch.ts",
+        "    return this.derived(name, {\n      ...spec,",
+        "    if (name) return this\n    return this.derived(name, {\n      ...spec,",
+        "an exact replay can reuse an intermediate fence left by its first execution",
+    ),
+    (
         # The one condition holding the wake predicate's two subqueries to the
         # same row. Redundant for any single row, load-bearing across two.
         "emit-wake-one-witness",
@@ -94,6 +120,15 @@ MUTATIONS = [
         "                       AND s.queue = runs.queue\n",
         "",
         "two wait rows, each disqualifying, combine into a wake",
+    ),
+    (
+        "emit-replay-preserves-event-instant",
+        "packages/store-libsql/src/store.ts",
+        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}\n"
+        "       WHERE events.fence_stamp IS NOT ${STAMP}`",
+        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${FENCE_SET}\n"
+        "       WHERE events.fence_stamp IS NOT ${STAMP}`",
+        "an older emit replayed after a fresh emit moves its seed to a second instant",
     ),
     (
         # Not correctness: the emit's access path. Removing the driver leaves

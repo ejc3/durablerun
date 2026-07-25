@@ -130,10 +130,11 @@
 \*    removes no reachable states -- only timing, which fairness abstracts.
 \*  - Heartbeat throttling, clock skew (engine time is the single `now` --
 \*    S3.4 rule 3 "engine time is database time" makes this faithful).
-\*  - Re-emit of an already-emitted event: the implementation's no-op branch
-\*    (first-write-wins insert loses; no waiter can exist for a fired event,
-\*    see WaitIntegrity) is a stutter step, which [][Next]_vars always
-\*    allows; the checked content is EventImmutable + WaitIntegrity.
+\*  - Re-emit of an already-emitted event: the implementation may refresh an
+\*    unmodeled delivery-provenance stamp while preserving the first payload
+\*    and emitted instant.  No valid waiter can exist for a fired event (see
+\*    WaitIntegrity), so the modeled state stutters, which [][Next]_vars
+\*    always allows; the checked content is EventImmutable + WaitIntegrity.
 \*  - Event GC / iterable events: events are one-shot by contract (S3.8.3);
 \*    occurrence ids live in the event NAME, outside the model.
 \*  - The dedicated-placement wait state 'delivered' (materialize-on-resume,
@@ -266,8 +267,9 @@
 \*   Activate -- one label, one action, even when the batch has follow-ons)
 \* Modeled ahead of implementation (the event implementation must use these labels and match
 \* these actions -- spec-first per the standing rule):
-\*   'emit-event' -> EmitEvent  [cas-fenced]  (first-write-wins insert:
-\*     the replay's insert loses; EventImmutable)
+\*   'emit-event' -> EmitEvent  [cas-fenced]  (first-write-wins fact:
+\*     replay may refresh unmodeled delivery provenance but preserves the
+\*     payload and first instant; EventImmutable)
 \*   'await-event' -> AwaitEventHit / AwaitEventMiss  [cas-fenced]  (hit
 \*     replay re-reads under a live fence; miss replay is zero-row -- the
 \*     run it parked is no longer 'running')
@@ -818,7 +820,8 @@ AwaitEventMiss(c, e) ==
 
 \* 'emit-event' (SPEC-FIRST): ONE atomic batch, first-write-wins
 \* (S3.8.3).  Guard: only the FIRST emit of a name transitions -- a re-emit
-\* is the impl's no-op branch (= stutter here; see header).  Every
+\* is a payload/first-instant no-op and may refresh only implementation
+\* provenance (= stutter here; see header).  Every
 \* registered waiter of the event flips sleeping -> pending due now with
 \* the payload parked on its run row, its wait row deleted, and its task
 \* flipped pending (durable-at-emit, inline placement).  Keying the flip on
@@ -1218,8 +1221,8 @@ LeaseAuthority ==
     ]_vars
 
 \* PROPERTY (events): first-write-wins immutability -- once an event's
-\* payload is written it NEVER changes (a re-emit is a no-op; there is no
-\* delete/GC in scope).
+\* payload is written it NEVER changes (a re-emit is a payload no-op; there
+\* is no delete/GC in scope).
 EventImmutable ==
   [][ \A e \in Events :
         eventState[e] # NoPayload => eventState'[e] = eventState[e]

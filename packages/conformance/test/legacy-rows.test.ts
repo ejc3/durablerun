@@ -16,10 +16,10 @@ import { engineInvariantViolations } from '../src/invariants.js'
  * That happened: correlating an event wake on `runs.wake_step` meant a run
  * parked before that column existed could never be woken again, while the
  * same batch deleted its wait row — an untimed await stranded forever, with
- * the event immutable so re-emitting could not recover it. Nothing in this
- * repo could have caught it. The fault matrix varies faults, states and
- * labels; the conformance suite always starts from a freshly migrated
- * database. Schema version was a dimension nothing varied.
+ * no registration left for a later delivery to recover. Nothing in this repo
+ * could have caught it. The fault matrix varies faults, states and labels;
+ * the conformance suite always starts from a freshly migrated database.
+ * Schema version was a dimension nothing varied.
  *
  * This is that dimension. The column list is DERIVED from MIGRATIONS, so a
  * future migration that adds one enrols automatically and cannot ship without

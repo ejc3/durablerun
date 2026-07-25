@@ -116,8 +116,9 @@ function generateProgram(rng: Rng): ProgramOp[] {
       })
     } else if (roll < 0.52) {
       // The park→wake path: the driver loop emits ext* names every round
-      // (first-write-wins makes the repeats no-ops), so whether a schedule
-      // parks first or arrives late, the await resolves to the SAME payload.
+      // (first-write-wins keeps the stored payload unchanged), so whether a
+      // schedule parks first or arrives late, the await resolves to the SAME
+      // payload even if delivery provenance refreshes.
       const base = { kind: 'await-external' as const, valueIndex, nameIndex, eventName: `ext${i}` }
       ops.push(rng.next() < 0.5 ? { ...base, timeoutSeconds: 120 } : base)
     } else if (roll < 0.58) {
@@ -271,8 +272,9 @@ async function runProgram(
       if (done && done.state !== 'pending' && done.state !== 'running' && done.state !== 'sleeping')
         break
       // External wakes, delivered on a fixed cadence from round 2 on:
-      // first-write-wins makes the re-emits no-ops, so EVERY schedule sees
-      // the same payload whether its await parked early or arrived late.
+      // first-write-wins keeps the stored payload unchanged, so EVERY schedule
+      // sees the same result whether its await parked early or arrived late,
+      // even though a re-emit may refresh delivery provenance.
       if (round >= 2) {
         for (const name of externals) {
           await real.emitEvent(Q, name, JSON.stringify({ ext: name }))

@@ -158,9 +158,13 @@ describe('the emit fan-out, which is a WRITE', () => {
       token: () => `tok-${n}`,
     })
     await store.emitEvent('q', 'e', '{}')
-    // emitEvent writes runs exactly once. If that stops being true the pin
-    // must be rewritten rather than silently pinning whichever came first.
-    const updates = seen.filter((st) => /^\s*UPDATE runs\b/.test(st.sql))
+    // Sealing consumes the delivery statement's intermediate fence with a
+    // second runs UPDATE. Select the one statement that writes the payload,
+    // and still require exactly one so the pin cannot silently choose among
+    // competing delivery representations.
+    const updates = seen.filter(
+      (st) => /^\s*UPDATE runs\b/.test(st.sql) && st.sql.includes('event_payload ='),
+    )
     expect(updates).toHaveLength(1)
     const only = updates[0]
     if (!only) throw new Error('unreachable')

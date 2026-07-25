@@ -103,9 +103,12 @@ Per-queue tables: `t_<q>` tasks, `r_<q>` runs, `c_<q>` checkpoints, `e_<q>` even
 - **Sleep** = persist wake time as a checkpoint, then `schedule_run(run,wake_at)`
   (state='sleeping', available_at=wake_at) and throw an internal SuspendTask. Wake
   is purely "a poller notices available_at <= now".
-- **Events** are first-write-wins immutable rows in a queue-global namespace
-  (`emit_event` flips all sleeping waiters to pending and writes each waiter's
-  checkpoint atomically); `await_event` checkpoints-or-registers-a-wait.
+- **Events** are first-write-wins facts in a queue-global namespace: their key,
+  stored payload, and `emitted_at` never change. Delivery provenance may be
+  re-stamped by a fresh invocation, but always at that immutable emitted
+  instant; exact replay can therefore never move one seed to a second instant.
+  `emit_event` flips all sleeping waiters to pending and writes each waiter's
+  checkpoint atomically; `await_event` checkpoints-or-registers-a-wait.
 - **Retry math is data**: `retry_strategy` jsonb (fixed/exponential/none, base,
   factor, cap), computed at fail time; a new run row (attempt+1) is inserted with
   `available_at = now + delay`.
@@ -449,17 +452,19 @@ Every code path that makes work runnable **commits first, then pings**:
 
 - `spawn(task)` → INSERT (idempotency_key upsert) → `waitUntil(ping)`.
 - `emitEvent(name, payload)` → one atomic scheduler-plane batch: first-write-wins
-  event row; sleeping waiters flip to pending/`available_at=now`. Under `inline`
-  placement the waiters' checkpoints are written in the same batch (Absurd
-  verbatim — durable-at-emit); under `dedicated` placement the payload is parked
-  on the run row and wait rows flip to `delivered` for materialize-on-resume
-  (§3.8.3) → ping. The parked run carries `wake_step` — the replay key of the
-  await that registered the wait — alongside `wake_event`/`event_payload`, so a
-  delivered wake binds to the exact await that requested it. The SDK matches a
-  carried wake by `wake_step` (unique per await), never by the event name
-  (shared across a task's awaits of the same event), so one await can never
-  consume another's wake. `wake_step` travels with the wake through every
-  transition (suspend/reschedule consume or preserve it as a unit; failure and
+  payload and emitted instant; a fresh invocation may establish a new delivery
+  fence at that original instant, while exact replay preserves it. Sleeping
+  waiters flip to pending/`available_at=emitted_at`. Under `inline` placement
+  the waiters' checkpoints are written in the same batch (Absurd verbatim —
+  durable-at-emit); under `dedicated` placement the payload is parked on the
+  run row and wait rows flip to `delivered` for materialize-on-resume (§3.8.3)
+  → ping. The parked run carries `wake_step` — the replay key of the await that
+  registered the wait — alongside `wake_event`/`event_payload`, so a delivered
+  wake binds to the exact await that requested it. The SDK matches a carried
+  wake by `wake_step` (unique per await), never by the event name (shared across
+  a task's awaits of the same event), so one await can never consume another's
+  wake. `wake_step` travels with the wake through every transition
+  (suspend/reschedule consume or preserve it as a unit; failure and
   claim-timeout successors carry it forward).
 - Hook/webhook arrivals (HTTP routes) → same.
 - Worker suspending or finishing with any future work created (its own sleep, a
@@ -532,9 +537,9 @@ are load-bearing):
    appear on the witness, or the two are answered by different rows and the
    pair accepts what neither row would. Second, the cleanup deletes the
    registrations of the runs the emit WOKE, never every registration naming
-   the event: those two sets are kept equal by nothing, and the event row is
-   immutable, so a registration deleted without its run being woken can never
-   be delivered. A registration the emit declines therefore survives, where
+   the event: those two sets are kept equal by nothing, and no later emit is
+   guaranteed to repair a registration whose evidence was deleted. A
+   registration the emit declines therefore survives, where
    `wait-for-fired-event` names it as the lost wakeup it is.
    Before claim or emit consumes a pre-`wake_step` registration whose run
    still has `wake_step = NULL`, it copies the exact `step_name` from that same
@@ -612,7 +617,7 @@ are load-bearing):
    than this batch, so a follow-on keyed on it fires for a stale or
    duplicated caller; that is not a coding mistake to be avoided but the
    direct consequence of having nowhere correct to write.
-   Two consequences are contract, not implementation detail:
+   Three consequences are contract, not implementation detail:
    *(a)* the stamp names a STATEMENT, not just a batch. One stamp per batch
    aliases across its statements, and a follow-on asking "does the row at
    this id carry my batch's stamp" can then be answered by a *different* row
@@ -621,6 +626,20 @@ are load-bearing):
    *(b)* a follow-on may not read the clock at all. It has `fence_at_ms`, so
    the class of bug where two statements of one batch disagree about "now"
    has no remaining legal instance to hide in.
+   *(c)* every generated UPDATE follow-on writes its own stamp and copies the
+   instant from its earlier fenced source. When later statements use an
+   intermediate statement stamp as an execution capability, the batch
+   consumes it after the final dependent by re-stamping those source rows at
+   the same source instant. A delayed exact replay then cannot borrow work
+   that the first execution left behind. A first-write-wins fact may acquire
+   a fresh invocation's stamp, but its `fence_at_ms` stays the immutable
+   instant at which the fact first became true. The exception is enumerated
+   in the dialect-neutral contract, not supplied as SQL by a caller: the only
+   preserved fact instant is `(events, emitted_at_ms)`. An events upsert
+   conflict arm re-stamps `fence_stamp` while copying
+   `events.emitted_at_ms`; `$NOW$` and every other column are illegal there.
+   Adding another exception requires extending that enumeration and its
+   rejection tests.
    The columns are nullable, unindexed, and never a lookup key — a stamp is
    only ever a filter, and every fenced statement is anchored by a primary key
    or an existing index. Rows written before the provenance migration read

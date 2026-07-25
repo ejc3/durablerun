@@ -452,8 +452,8 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     // of the two WHERE clauses, and the delete's is the weaker one -- so every
     // condition ever added to the wake predicate silently converts some run
     // from "not woken" into "not woken, and its registration destroyed". The
-    // event row is immutable, so re-emitting returns the existing event and
-    // delivers nothing: an untimed await in that position strands forever.
+    // the payload is already immutable and no future emit is guaranteed, so
+    // an untimed await in that position can strand forever.
     //
     // Every legitimate way a run stops waiting already reaps its rows --
     // complete, fail, the sweeps and cancel all delete a run's waits -- so a
@@ -573,8 +573,8 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     // it backfills nothing. A run parked by the older code is sleeping with
     // wake_event set and wake_step NULL, and the step correlation compares
     // against NULL, which is never true — so the run is not woken, while the
-    // delete removes its wait row regardless. The event is immutable and the
-    // wait is gone, so re-emitting cannot help: an untimed await strands
+    // delete removes its wait row regardless. With the wait gone, no future
+    // delivery is guaranteed to repair it, so an untimed await strands
     // forever. Reachable by upgrading a database, and by a rolling deploy
     // where an older process parks a run after a newer one has migrated.
     const f = await fixture()

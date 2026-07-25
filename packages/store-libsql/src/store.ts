@@ -7,6 +7,7 @@ import {
   FENCE_SET,
   FENCE_VALS,
   FencedBatch,
+  fenceSetAt,
   INFRA_BACKOFF_SECONDS,
   INFRA_RETRY_CAP,
   LeaseLostError,
@@ -94,7 +95,6 @@ const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
 function taskMirrorsRun(b: FencedBatch, runId: string, after: string): void {
   b.derived('task-mirror', {
     target: 'tasks',
-    stamp: 'tasks',
     key: 'task_id',
     from: 'runs',
     column: 'task_id',
@@ -405,7 +405,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // only on user-failure transitions, never at claim.
     b.derived('task-book', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -507,7 +506,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const activated = fencedAt('runs', BY_RUN, b.fence('activate'))
     b.derived('task-start', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -695,7 +693,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // follows, so neither can fire for the other's outcome.
     b.derived('task-pending', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -708,7 +705,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     })
     b.derived('task-fail', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -784,7 +780,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // just created (rule 6).
     b.derived('task-terminal', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -805,7 +800,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // so an exact replay cannot double-count.
     b.derived('bookkeeping', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -924,7 +918,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     )
     b.derived('runs', {
       target: 'runs',
-      stamp: 'runs',
       key: 'task_id',
       from: 'tasks',
       column: 'task_id',
@@ -1084,7 +1077,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     )
     b.derived('task', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -1163,7 +1155,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // once — an exact replay cannot double-count.
       b.derived('task-retrying', {
         target: 'tasks',
-        stamp: 'tasks',
         key: 'task_id',
         from: 'runs',
         column: 'task_id',
@@ -1181,7 +1172,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // Cap refused (or task no longer live): terminal, same as no-retry.
       b.derived('task-terminal', {
         target: 'tasks',
-        stamp: 'tasks',
         key: 'task_id',
         from: 'runs',
         column: 'task_id',
@@ -1203,7 +1193,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     } else {
       b.derived('task', {
         target: 'tasks',
-        stamp: 'tasks',
         key: 'task_id',
         from: 'runs',
         column: 'task_id',
@@ -1338,26 +1327,29 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   // ── events (implements the TLC-verified EmitEvent / AwaitEvent actions) ─
 
   /**
-   * First write wins (EventImmutable): a second emit changes nothing and
-   * every waiter receives the STORED payload (PayloadMatchesEvent). The
-   * same batch delivers to all registered waiters: their runs wake with
-   * the event and its payload, their tasks mirror to pending, and the
-   * wait rows flip to delivered — one atomic action, so an interleaved
-   * await either sees the event row or gets woken, never neither.
+   * First write wins (EventImmutable): later emits cannot change the stored
+   * payload, and every waiter receives that payload (PayloadMatchesEvent).
+   * A fresh invocation may establish a fresh delivery fence at the event's
+   * original instant. The same batch delivers to all registered waiters:
+   * their runs wake with the event and its payload, their tasks mirror to
+   * pending, and the wait rows are consumed — one atomic action, so an
+   * interleaved await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
     const b = new FencedBatch('emit-event', this.ids.token(), { now: NOW_MS })
-    // First write wins on the PAYLOAD; the conflict branch re-stamps only, so
-    // a re-emit changes no data yet still fences this batch's deliveries.
-    // That preserves re-emit-re-delivers, which matters because a wait
-    // registered in the window between two emits would otherwise never be
-    // deliverable.
+    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
+    // so a repaired/restored wait remains deliverable. Every conflict keeps
+    // the event's immutable emitted_at_ms as its provenance instant. The
+    // same-token guard avoids an unnecessary write while that token is
+    // current; the stored instant is what stays correct even after another
+    // invocation overwrites the token and the older batch replays.
     b.cas(
       'event',
       'events',
       `INSERT INTO events (queue, event_name, payload, emitted_at_ms, ${FENCE_COLS})
        VALUES (?, ?, ?, ${NOW}, ${FENCE_VALS})
-       ON CONFLICT (queue, event_name) DO UPDATE SET ${FENCE_SET}`,
+       ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}
+       WHERE events.fence_stamp IS NOT ${STAMP}`,
       [queue, eventName, payloadJson],
     )
     const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
@@ -1412,13 +1404,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // deploy where an older process parks a run after a newer one migrated.
     //
     // It used to be worse than unwoken: the cleanup deleted its wait anyway,
-    // and the event row is immutable, so an untimed await stranded with
-    // nothing left describing it. The cleanup now follows the wake, so a run
-    // this predicate declines keeps its registration and shows up under
-    // `wait-for-fired-event`. Before consuming a legacy registration, the
-    // update copies its exact step into the run through the same full witness
-    // claim uses for timed wakes. That keeps the decoder from fabricating a
-    // step when an event name appeared at several call sites.
+    // leaving an untimed await with nothing that a future delivery could use.
+    // The cleanup now follows the wake, so a run this predicate declines keeps
+    // its registration and shows up under `wait-for-fired-event`. Before
+    // consuming a legacy registration, the update copies its exact step into
+    // the run through the same full witness claim uses for timed wakes. That
+    // keeps the decoder from fabricating a step when an event name appeared at
+    // several call sites.
     b.followOn(
       'wake-runs',
       'runs',
@@ -1463,9 +1455,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // that was never waiting at all.
     b.derived('wake-tasks', {
       target: 'tasks',
-      // The provenance instant comes from the EVENT, not from the runs this
-      // selects: every woken run carries the emit's instant anyway, and the
-      // event row is the one this batch created.
+      // UPDATE provenance is generated from the runs this statement follows.
+      // Every woken run carries the event's instant, so this is the same value
+      // without a caller-controlled stamping escape.
       key: 'task_id',
       from: 'runs',
       column: 'task_id',
@@ -1474,9 +1466,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // `state = 'pending'` is what wake-runs just set on exactly these rows.
       where: `f.queue = ? AND f.state = 'pending'`,
       whereArgs: [queue],
-      set: `state = 'pending',
-         ${fenceFrom('events', `f.queue = tasks.queue AND f.event_name = ?`, b.fence('event'))}`,
-      setArgs: [eventName],
+      set: `state = 'pending'`,
       narrow: `state IN ${LIVE}`,
       rows: { many: 'one task per woken run' },
     })
@@ -1511,6 +1501,18 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       narrow: `event_name = ? AND status = 'waiting'`,
       narrowArgs: [eventName],
       rows: { many: 'the registration each woken run just spent' },
+    })
+    // `wake-runs` is an intermediate capability, not durable state. Once both
+    // dependents have consumed it, overwrite that statement stamp at the same
+    // instant. A delayed delivery of these exact compiled statements can no
+    // longer treat the first execution's wake as work performed by the replay.
+    b.seal('wake-finished', {
+      target: 'runs',
+      key: 'run_id',
+      fence: 'wake-runs',
+      where: `f.queue = ? AND f.state = 'pending'`,
+      whereArgs: [queue],
+      rows: { many: 'every woken run has spent its intermediate wake fence' },
     })
     await b.run(this.db)
   }
@@ -1591,7 +1593,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const thisWait = `f.run_id = ? AND f.step_name = ?`
     b.derived('park', {
       target: 'runs',
-      stamp: 'runs',
       key: 'run_id',
       from: 'waits',
       column: 'run_id',
@@ -1612,7 +1613,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     })
     b.derived('task-mirror', {
       target: 'tasks',
-      stamp: 'tasks',
       key: 'task_id',
       from: 'runs',
       column: 'task_id',

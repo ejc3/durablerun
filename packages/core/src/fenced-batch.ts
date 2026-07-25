@@ -1,4 +1,4 @@
-import type { FenceTable } from './contract.js'
+import { PRESERVED_FENCE_INSTANTS, type FenceTable, type PreservedFenceTable } from './contract.js'
 import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from './primitives.js'
 
 /**
@@ -50,12 +50,53 @@ export const FENCE_COLS = `fence_stamp, fence_at_ms`
 export const FENCE_VALS = `${STAMP}, ${NOW}`
 
 /**
+ * Re-stamp an immutable fact without moving the instant at which it became
+ * true. The target selects a contract-owned stored instant; accepting an
+ * arbitrary column here would let a caller give provenance a second meaning.
+ */
+export function fenceSetAt(target: PreservedFenceTable): string {
+  const column = PRESERVED_FENCE_INSTANTS[target]
+  if (column === undefined) {
+    throw new Error(`${target} has no contract-preserved fence instant`)
+  }
+  return preservedFenceSet(target, column)
+}
+
+function preservedFenceSet(target: FenceTable, column: string): string {
+  return `fence_stamp = ${STAMP}, fence_at_ms = ${target}.${column}`
+}
+
+/**
  * How many rows a statement may write. `'one'` is checked after the batch
  * commits; `{ many: reason }` costs a written justification, because
  * "this one really can touch many rows" is exactly the judgement that should
  * not be made silently.
  */
 export type RowBound = 'one' | { many: string }
+
+interface DerivedSelection {
+  key: string
+  from: FenceTable
+  column: string
+  fence: string
+  where?: string
+  whereArgs?: SqlStatement['args']
+  narrow?: string
+  narrowArgs?: SqlStatement['args']
+  rows: RowBound
+}
+
+type DerivedSpec =
+  | (DerivedSelection & {
+      target: string
+      set?: undefined
+      setArgs?: never
+    })
+  | (DerivedSelection & {
+      target: FenceTable
+      set: string
+      setArgs?: SqlStatement['args']
+    })
 
 type Kind = 'cas' | 'casMany' | 'followOn' | 'tail'
 
@@ -246,25 +287,12 @@ export class FencedBatch {
    * `where`'s arguments are supplied once and bound twice, because the
    * correlation appears in both the provenance subquery and the row selection.
    * Callers were duplicating them by hand, which is its own quiet hazard.
+   *
+   * The presence of `set` selects UPDATE rather than DELETE. Every UPDATE
+   * target is a FenceTable and the primitive always generates its provenance;
+   * there is no optional flag with which a caller can bypass the write check.
    */
-  derived(
-    name: string,
-    spec: {
-      target: string
-      stamp?: FenceTable
-      key: string
-      from: FenceTable
-      column: string
-      fence: string
-      where?: string
-      whereArgs?: SqlStatement['args']
-      set?: string
-      setArgs?: SqlStatement['args']
-      narrow?: string
-      narrowArgs?: SqlStatement['args']
-      rows: RowBound
-    },
-  ): this {
+  derived(name: string, spec: DerivedSpec): this {
     // Parenthesised for the same reason `narrow` is: AND binds tighter than
     // OR, so an unbracketed `a OR b` would compile to `a OR (b AND fence)`
     // and let every row matching `a` into the selection unstamped. The
@@ -289,24 +317,41 @@ export class FencedBatch {
         generated: true,
       })
     }
-    const provenance = spec.stamp
-      ? `,\n         fence_stamp = ${STAMP},
+    const provenance = `,\n         fence_stamp = ${STAMP},
          fence_at_ms = (SELECT f.fence_at_ms FROM ${spec.from} f
                         WHERE ${src}f.fence_stamp = ${fence})`
-      : ''
     return this.add({
       name,
       kind: 'followOn',
-      target: spec.stamp ?? null,
+      target: spec.target,
       sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}\n       WHERE ${selection}${narrow}`,
-      // The correlation is bound ONCE PER OCCURRENCE, and it occurs twice only
-      // when the provenance subquery is emitted. Doubling it unconditionally
-      // was wrong for a statement that does not stamp, and the arg-count check
-      // caught it immediately — which is the argument for that check existing.
-      args: [...(spec.setArgs ?? []), ...(spec.stamp ? w : []), ...w, ...(spec.narrowArgs ?? [])],
+      // UPDATE always emits provenance, so the correlation occurs once in its
+      // instant subquery and once in its row selection. DELETE has no stamp to
+      // write and returned through the branch above.
+      args: [...(spec.setArgs ?? []), ...w, ...w, ...(spec.narrowArgs ?? [])],
       rows: spec.rows,
       max: null,
       generated: true,
+    })
+  }
+
+  /**
+   * Consume an intermediate fence after its last dependent statement.
+   *
+   * Exact replay can otherwise mistake a surviving source stamp for work this
+   * execution just performed. The generated no-op UPDATE changes only
+   * provenance, at the source's original instant, so later delivery of the
+   * same compiled batch cannot re-run dependents keyed on the old statement.
+   */
+  seal(
+    name: string,
+    spec: Omit<DerivedSelection, 'from' | 'column'> & { target: FenceTable },
+  ): this {
+    return this.derived(name, {
+      ...spec,
+      from: spec.target,
+      column: spec.key,
+      set: `${spec.key} = ${spec.key}`,
     })
   }
 
@@ -575,10 +620,19 @@ function assertWritesStamp(
     // An upsert that leaves the conflicting row's provenance alone would let
     // a later statement fence on a stamp this batch never wrote there.
     const doUpdate = /\bDO\s+UPDATE\b([\s\S]*)$/i.exec(sql)
-    if (doUpdate?.[1] && !doUpdate[1].includes(FENCE_SET)) {
-      throw new Error(
-        `${at} has a DO UPDATE branch that does not re-stamp the row: needs FENCE_SET`,
-      )
+    if (doUpdate?.[1]) {
+      const preserved: Partial<Record<FenceTable, string>> = PRESERVED_FENCE_INSTANTS
+      const column = preserved[target]
+      const required = column === undefined ? FENCE_SET : preservedFenceSet(target, column)
+      const stampWrites = doUpdate[1].match(/\bfence_stamp\s*=/gi)?.length ?? 0
+      const instantWrites = doUpdate[1].match(/\bfence_at_ms\s*=/gi)?.length ?? 0
+      if (stampWrites !== 1 || instantWrites !== 1 || !containsCompleteSet(doUpdate[1], required)) {
+        const requirement =
+          column === undefined
+            ? 'does not re-stamp the row and its instant'
+            : `must preserve ${target}.${column} while re-stamping`
+        throw new Error(`${at} ${requirement}`)
+      }
     }
     return
   }
@@ -589,12 +643,17 @@ function assertWritesStamp(
     return
   }
   // A follow-on cannot read the clock, so it stamps with its own name and
-  // derives the instant from the row the CAS stamped.
+  // derives the instant from the earlier fenced source row.
   if (!head.includes(`fence_stamp = ${STAMP}`) || !/\bfence_at_ms\s*=/.test(head)) {
     throw new Error(
       `${at} writes ${target} but does not stamp it — set 'fence_stamp = ${STAMP}' and derive fence_at_ms from the fenced row`,
     )
   }
+}
+
+function containsCompleteSet(sql: string, set: string): boolean {
+  const escaped = set.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  return new RegExp(`${escaped}\\s*(?=,|\\bWHERE\\b|$)`).test(sql)
 }
 
 /**
