@@ -45,14 +45,15 @@ jobs:
   #
   # Two limits, both found by this job's own first live run:
   #
-  # 1. A checker can only grade a foreign tree if it ACCEPTS a root argument,
-  #    and none did before the pull request that added this job. A base copy
-  #    that ignores the argument lints the base's own tree and passes — a check
-  #    that appears to run while grading the wrong thing, which is exactly the
-  #    class this job exists to catch. So capability is probed BEHAVIOURALLY:
-  #    run the base copy against both trees and use it only if the answers
-  #    differ. Identical output means either it ignored the argument or it
-  #    cannot tell the trees apart, and in both cases running it proves nothing.
+  # 1. Older checkers derive their root from __file__ and ignore a supplied
+  #    root argument. The runner therefore stages the head tree in a temporary
+  #    directory and replaces its scripts/ directory with the base branch's
+  #    whole scripts/ directory. Base-owned code then resolves __file__ inside
+  #    the head-shaped tree. Its command inventory comes semantically from the
+  #    base package.json, includes both Python and shell checks, and must be
+  #    nonempty. Once the base owns this runner, its copy executes too; the
+  #    head copy is an explicit one-release bootstrap for a base that predates
+  #    gate-lint.py.
   # 2. This workflow file comes from the pull request head, like everything
   #    else. The threat model is CLAUDE.md's — "forgot under momentum", not a
   #    determined edit — and against that a copy the branch did not write is
@@ -77,25 +78,8 @@ jobs:
           python3 /tmp/base/scripts/gate-lint.py "$GITHUB_WORKSPACE" /tmp/base
       - name: The base branch's checkers, applied to this tree
         run: |
-          set -uo pipefail
-          ran=0; skipped=0
-          for c in clock-lint batch-lint fragment-lint spec-ledger deferral-lint review-bot-lint; do
-            f="/tmp/base/scripts/$c.py"
-            if [ ! -f "$f" ]; then
-              echo "skip $c — not on the base branch"; skipped=$((skipped+1)); continue
-            fi
-            here=$(cd /tmp/base && python3 "$f" "$GITHUB_WORKSPACE" 2>&1; echo "rc=$?")
-            there=$(cd /tmp/base && python3 "$f" /tmp/base 2>&1; echo "rc=$?")
-            if [ "$here" = "$there" ]; then
-              echo "skip $c — the base copy answers identically for both trees, so it is"
-              echo "     not honouring the root argument and would be grading /tmp/base"
-              skipped=$((skipped+1)); continue
-            fi
-            echo "== base $c applied to this tree"
-            printf '%s\n' "$here"
-            case "$here" in
-              *"rc=0") ran=$((ran+1)) ;;
-              *) echo "base $c REJECTS this tree"; exit 1 ;;
-            esac
-          done
-          echo "base checkers: $ran applied, $skipped skipped"
+          if [ -f /tmp/base/scripts/gate-lint.py ] && grep -q -- '--run-base HEAD BASE' /tmp/base/scripts/gate-lint.py; then
+            python3 /tmp/base/scripts/gate-lint.py --run-base "$GITHUB_WORKSPACE" /tmp/base
+          else
+            python3 scripts/gate-lint.py --run-base "$GITHUB_WORKSPACE" /tmp/base
+          fi

@@ -63,11 +63,19 @@ def gate(
     """
     ci = "jobs:\n"
     if base_gate:
-        ci += "  base-gate:\n"
+        ci += "  base-gate:\n    if: github.event_name == 'pull_request'\n"
         if base_gate_run:
             ci += (
                 "    steps:\n"
-                "      - run: python3 scripts/gate-lint.py --run-base HEAD BASE\n"
+                "      - run: |\n"
+                "          if [ -f /tmp/base/scripts/gate-lint.py ] && "
+                "grep -q -- '--run-base HEAD BASE' /tmp/base/scripts/gate-lint.py; then\n"
+                "            python3 /tmp/base/scripts/gate-lint.py --run-base "
+                '"$GITHUB_WORKSPACE" /tmp/base\n'
+                "          else\n"
+                "            python3 scripts/gate-lint.py --run-base "
+                '"$GITHUB_WORKSPACE" /tmp/base\n'
+                "          fi\n"
             )
     else:
         ci += "  verify:\n"

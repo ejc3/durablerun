@@ -23,26 +23,38 @@ harvest rule, which this repo already applies to batch labels and spec entries.
 
 What this CANNOT do, stated plainly because the next reader will assume
 otherwise: it runs from inside the branch it is checking, so a change that
-deletes a checker AND its entry here passes. That hole is closed in CI by
-running the BASE branch's copy of the gate against the pull request's tree --
-see .github/workflows/ci.yml, job `base-gate`. This script is what makes that
-job's job small.
+deletes a checker AND its entry here passes. CI closes the ordinary version of
+that hole by staging the pull request tree with the BASE branch's checker
+sources and running the BASE branch's semantic inventory there -- see
+.github/workflows/ci.yml, job `base-gate`. The workflow itself still comes
+from the head branch; CLAUDE.md states that threat-model limit explicitly.
 """
 
 import json
+import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-# Optional [root]: grade a tree other than this script's own. `--base <tree>`
-# additionally asserts that the graded tree's gate is a SUPERSET of the gate in
-# <tree>. Run from the base checkout against the pull request's tree, that is
-# the check a branch cannot edit its way past, because the copy doing the
-# comparing is not the copy under review.
-_args = [a for a in sys.argv[1:] if not a.startswith("-")]
+# Optional [root] [base]: grade a tree other than this script's own and assert
+# that its gate is a superset of base. `--run-base HEAD BASE` is the execution
+# door used by CI: stage HEAD with BASE's scripts and run BASE's semantically
+# enumerated checker commands there.
 OWN = Path(__file__).resolve().parent.parent
-ROOT = Path(_args[0]).resolve() if _args else OWN
-BASE = Path(_args[1]).resolve() if len(_args) > 1 else None
+RUN_BASE = sys.argv[1:2] == ["--run-base"]
+if RUN_BASE:
+    if len(sys.argv) != 4:
+        sys.exit("usage: gate-lint.py --run-base HEAD BASE")
+    ROOT = Path(sys.argv[2]).resolve()
+    BASE = Path(sys.argv[3]).resolve()
+else:
+    _args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    ROOT = Path(_args[0]).resolve() if _args else OWN
+    BASE = Path(_args[1]).resolve() if len(_args) > 1 else None
 
 # Executables under scripts/ that the gate deliberately does NOT run, each with
 # the reason. Adding a line here is the honest way to keep something out of the
@@ -62,28 +74,170 @@ NOT_IN_GATE = {
 }
 
 
-def gate_checkers(root: Path) -> tuple[set[str], list[str]]:
-    """Every scripts/ file reachable from `pnpm verify`, by following the chain."""
-    scripts = json.loads((root / "package.json").read_text())["scripts"]
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.S)
+SCRIPT_PATH = re.compile(r"^(?:\./)?scripts/([\w.-]+\.(?:py|sh))$")
+CONTROL_COMMANDS = {
+    ".",
+    "break",
+    "cd",
+    "continue",
+    "eval",
+    "exec",
+    "exit",
+    "false",
+    "return",
+    "source",
+}
+BASE_RUNNER_BODY = """if [ -f /tmp/base/scripts/gate-lint.py ] && grep -q -- '--run-base HEAD BASE' /tmp/base/scripts/gate-lint.py; then
+  python3 /tmp/base/scripts/gate-lint.py --run-base "$GITHUB_WORKSPACE" /tmp/base
+else
+  python3 scripts/gate-lint.py --run-base "$GITHUB_WORKSPACE" /tmp/base
+fi"""
 
-    seen: set[str] = set()
+
+def shell_commands(
+    body: str, context: str
+) -> tuple[list[tuple[dict[str, str], tuple[str, ...]]], list[str]]:
+    """Parse the deliberately small shell language allowed in package scripts.
+
+    Only `&&` composition is accepted. Constructs whose reachability or exit
+    status needs a shell evaluator fail closed instead of being counted by
+    textual occurrence.
+    """
+    if "\n" in body or "\r" in body:
+        return [], [f"{context} contains a command separator newline; use explicit `&&`."]
+    if "$(" in body or "`" in body:
+        return [], [f"{context} uses command substitution, which gate-lint cannot prove reachable."]
+
+    lexer = shlex.shlex(body, posix=True, punctuation_chars=";&|()<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError as exc:
+        return [], [f"{context} does not parse as a shell command: {exc}."]
+
+    forbidden = [token for token in tokens if token and set(token) <= set(";&|()<>") and token != "&&"]
+    if forbidden:
+        return [], [
+            f"{context} uses unsupported shell control {forbidden[0]!r}; only `&&` is "
+            "accepted so checker reachability stays decidable."
+        ]
+
+    groups: list[list[str]] = [[]]
+    for token in tokens:
+        if token == "&&":
+            if not groups[-1]:
+                return [], [f"{context} has an empty command beside `&&`."]
+            groups.append([])
+        else:
+            groups[-1].append(token)
+    if not groups[-1]:
+        return [], [f"{context} ends with `&&` and an unreachable empty command."]
+
+    commands: list[tuple[dict[str, str], tuple[str, ...]]] = []
+    for tokens_in_command in groups:
+        environment: dict[str, str] = {}
+        while tokens_in_command and ASSIGNMENT.fullmatch(tokens_in_command[0]):
+            key, value = tokens_in_command.pop(0).split("=", 1)
+            environment[key] = value
+        if not tokens_in_command:
+            return [], [f"{context} contains only environment assignments, not an execution."]
+        if tokens_in_command[0] in CONTROL_COMMANDS:
+            return [], [
+                f"{context} executes shell control {tokens_in_command[0]!r}; checker "
+                "reachability after it is not accepted."
+            ]
+        if "$" in tokens_in_command[0]:
+            return [], [f"{context} computes its executable dynamically; refusing to guess."]
+        commands.append((environment, tuple(tokens_in_command)))
+    return commands, []
+
+
+def executed_script(argv: tuple[str, ...]) -> str | None:
+    """Return a scripts/*.py|sh file only when it occupies command position."""
+    executable = Path(argv[0]).name
+    candidate: str | None = None
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable) or executable in {
+        "bash",
+        "sh",
+    }:
+        arguments = list(argv[1:])
+        if arguments[:1] == ["--"]:
+            arguments.pop(0)
+        if arguments and not arguments[0].startswith("-"):
+            candidate = arguments[0]
+    else:
+        candidate = argv[0]
+
+    match = SCRIPT_PATH.fullmatch(candidate or "")
+    return match.group(1) if match else None
+
+
+def gate_checkers(
+    root: Path,
+) -> tuple[set[str], list[str], list[dict[str, object]], list[str]]:
+    """Semantically enumerate checker executions reachable from `pnpm verify`."""
+    errors: list[str] = []
+    try:
+        package = json.loads((root / "package.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return set(), [], [], [f"{root / 'package.json'} cannot be read: {exc}."]
+    scripts = package.get("scripts")
+    if not isinstance(scripts, dict):
+        return set(), [], [], [f"{root / 'package.json'} has no scripts object."]
+
+    active: set[str] = set()
     found: set[str] = set()
     order: list[str] = []
+    invocations: list[dict[str, object]] = []
 
-    def expand(name: str) -> None:
-        if name in seen or name not in scripts:
+    def expand(name: str, inherited: dict[str, str] | None = None) -> None:
+        if name in active:
+            errors.append(f"package script recursion reaches {name!r} twice before returning.")
             return
-        seen.add(name)
-        body = scripts[name]
-        for ref in re.findall(r"pnpm (?:run )?([\w:-]+)", body):
-            expand(ref)
-        for path in re.findall(r"scripts/([\w.-]+)", body):
-            if path not in found:
-                found.add(path)
-                order.append(path)
+        body = scripts.get(name)
+        if not isinstance(body, str):
+            errors.append(f"package script {name!r} is missing or is not a string.")
+            return
+        active.add(name)
+        commands, parse_errors = shell_commands(body, f"package script {name!r}")
+        errors.extend(parse_errors)
+        if parse_errors:
+            active.remove(name)
+            return
+
+        for environment, argv in commands:
+            merged_environment = {**(inherited or {}), **environment}
+            ref: str | None = None
+            if argv[0] == "pnpm":
+                if len(argv) >= 3 and argv[1] == "run" and argv[2] in scripts:
+                    ref = argv[2]
+                elif len(argv) >= 2 and argv[1] in scripts:
+                    ref = argv[1]
+            if ref is not None:
+                expand(ref, merged_environment)
+                continue
+
+            path = executed_script(argv)
+            if path is None:
+                continue
+            if path in found:
+                errors.append(
+                    f"scripts/{path} is invoked more than once from `pnpm verify`; "
+                    "refusing to discard one invocation's arguments or exit status."
+                )
+                continue
+            found.add(path)
+            order.append(path)
+            invocations.append(
+                {"name": path, "argv": argv, "environment": merged_environment}
+            )
+
+        active.remove(name)
 
     expand("verify")
-    return found, order
+    return found, order, invocations, errors
 
 
 def selftest_subjects(root: Path) -> set[str]:
@@ -94,7 +248,174 @@ def selftest_subjects(root: Path) -> set[str]:
     )
 
 
+def workflow_run_blocks(text: str) -> tuple[list[str], list[str]]:
+    """Return active run scalars from the two-space-indented base-gate job."""
+    lines = text.splitlines()
+    jobs = [i for i, line in enumerate(lines) if re.fullmatch(r"  base-gate:\s*", line)]
+    if len(jobs) != 1:
+        return [], [f"ci.yml has {len(jobs)} base-gate jobs; expected exactly one."]
+
+    end = len(lines)
+    for i in range(jobs[0] + 1, len(lines)):
+        if re.match(r"^  [A-Za-z0-9_-]+:\s*", lines[i]):
+            end = i
+            break
+
+    errors: list[str] = []
+    job_lines = lines[jobs[0] + 1 : end]
+    job_guards = [line.strip() for line in job_lines if re.match(r"^    if:\s*", line)]
+    if job_guards != ["if: github.event_name == 'pull_request'"]:
+        errors.append(
+            "base-gate must have exactly one `if: github.event_name == 'pull_request'` guard."
+        )
+    if any(re.match(r"^(?:      - |        )if:\s*", line) for line in job_lines):
+        errors.append("base-gate steps may not carry a conditional `if` guard.")
+    if any(
+        re.match(r"^(?:      - |        )continue-on-error:\s*", line)
+        for line in job_lines
+    ):
+        errors.append("base-gate may not set continue-on-error.")
+
+    blocks: list[str] = []
+    i = jobs[0] + 1
+    while i < end:
+        match = re.match(r"^(?:      - |        )run:\s*(.*?)\s*$", lines[i])
+        if not match:
+            i += 1
+            continue
+        value = match.group(1)
+        if value in {"|", "|-", ">", ">-"}:
+            body: list[str] = []
+            i += 1
+            while i < end:
+                line = lines[i]
+                if line.strip() and len(line) - len(line.lstrip()) <= 8:
+                    break
+                body.append(line[10:] if line.startswith("          ") else line.strip())
+                i += 1
+            blocks.append("\n".join(body))
+            continue
+        blocks.append(value)
+        i += 1
+    return blocks, errors
+
+
+def has_base_runner(ci: Path) -> tuple[bool, list[str]]:
+    if not ci.exists():
+        return False, [".github/workflows/ci.yml is missing."]
+    blocks, errors = workflow_run_blocks(ci.read_text())
+    return any(body.strip() == BASE_RUNNER_BODY for body in blocks), errors
+
+
+def run_base_checkers(head: Path, base: Path) -> int:
+    """Run BASE's checker commands with BASE scripts resolving inside HEAD."""
+    _found, order, invocations, errors = gate_checkers(base)
+    if errors:
+        print("gate-lint: cannot enumerate the base gate", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 1
+    if not order:
+        print(
+            "gate-lint: the base `pnpm verify` reaches zero script checkers; "
+            "refusing a vacuous base gate.",
+            file=sys.stderr,
+        )
+        return 1
+    if len(invocations) != len(order):
+        print(
+            f"gate-lint: enumerated {len(order)} base checkers but recovered "
+            f"{len(invocations)} invocations.",
+            file=sys.stderr,
+        )
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="durablerun-base-gate-") as tmp:
+        staged = Path(tmp) / "head"
+        shutil.copytree(
+            head,
+            staged,
+            ignore=shutil.ignore_patterns(".git", "node_modules", ".pnpm-store", ".store-cache"),
+        )
+        staged_scripts = staged / "scripts"
+        if staged_scripts.exists():
+            shutil.rmtree(staged_scripts)
+        shutil.copytree(base / "scripts", staged_scripts)
+
+        # Several checkers total-harvest `git ls-files`. A plain directory copy
+        # would make that inventory empty and silently disable their scope
+        # checks, so give the staged tree a synthetic index containing exactly
+        # the files the checkers can inspect.
+        for command in (("git", "init", "-q"), ("git", "add", "-f", "--", ".")):
+            indexed = subprocess.run(
+                command,
+                cwd=staged,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if indexed.returncode != 0:
+                print(
+                    f"gate-lint: could not build the staged Git index with "
+                    f"{' '.join(command)!r}: {indexed.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                return 1
+
+        ran = 0
+        for invocation in invocations:
+            name = str(invocation["name"])
+            argv = tuple(str(arg) for arg in invocation["argv"])
+            environment = {
+                **os.environ,
+                **{str(k): str(v) for k, v in dict(invocation["environment"]).items()},
+            }
+            print(f"== base-owned scripts/{name} applied to the head tree")
+            try:
+                result = subprocess.run(
+                    argv,
+                    cwd=staged,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError as exc:
+                print(f"gate-lint: could not execute scripts/{name}: {exc}", file=sys.stderr)
+                return 1
+            if result.stdout:
+                print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+            if result.stderr:
+                print(
+                    result.stderr,
+                    end="" if result.stderr.endswith("\n") else "\n",
+                    file=sys.stderr,
+                )
+            if result.returncode != 0:
+                print(
+                    f"gate-lint: base-owned scripts/{name} rejected the head tree "
+                    f"with exit {result.returncode}.",
+                    file=sys.stderr,
+                )
+                return 1
+            ran += 1
+
+    if ran != len(order):
+        print(
+            f"gate-lint: expected {len(order)} base checkers but ran {ran}.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"gate-lint: {ran} base-owned checkers applied to the head tree")
+    return 0
+
+
 def main() -> int:
+    if RUN_BASE:
+        if BASE is None:
+            return 1
+        return run_base_checkers(ROOT, BASE)
+
     problems: list[str] = []
 
     on_disk = {
@@ -102,7 +423,8 @@ def main() -> int:
         for p in (ROOT / "scripts").iterdir()
         if p.is_file() and p.suffix in {".py", ".sh"}
     }
-    in_gate, order = gate_checkers(ROOT)
+    in_gate, order, _invocations, parse_errors = gate_checkers(ROOT)
+    problems.extend(parse_errors)
 
     # 1. Every checker on disk is either run by the gate or declared out of it.
     for name in sorted(on_disk - in_gate - set(NOT_IN_GATE) - {Path(__file__).name}):
@@ -158,22 +480,25 @@ def main() -> int:
         )
 
     # 5. Everything above reads the working tree, which a branch can edit. The
-    #    only defence is the base branch's copy, so the job that provides it has
-    #    to exist.
+    #    base-gate job must actively invoke the runner that stages base-owned
+    #    checker sources over the head tree; a job name or prose reference
+    #    executes nothing.
     ci = ROOT / ".github" / "workflows" / "ci.yml"
-    if not ci.exists() or "base-gate" not in ci.read_text():
+    runner_active, workflow_errors = has_base_runner(ci)
+    problems.extend(workflow_errors)
+    if not runner_active:
         problems.append(
-            "There is no `base-gate` job in .github/workflows/ci.yml. Without it "
-            "the whole gate — including this script — is evaluated from the branch "
-            "under review, so a change that removes a checker and its declaration "
-            "together is green by construction."
+            "The `base-gate` job does not actively run "
+            "`python3 scripts/gate-lint.py --run-base HEAD BASE`. Without that "
+            "execution, the whole gate is evaluated from the branch under review."
         )
 
     # 6. Run from the base branch against a pull request: the gate may grow,
     #    never shrink. This is the one rule the branch under review cannot edit
     #    its way past, because the copy enforcing it is the base's.
     if BASE is not None:
-        base_gate, _ = gate_checkers(BASE)
+        base_gate, _base_order, _base_invocations, base_errors = gate_checkers(BASE)
+        problems.extend(f"base gate: {error}" for error in base_errors)
         for name in sorted(base_gate - in_gate):
             problems.append(
                 f"scripts/{name} runs in the gate on the base branch and does not "
