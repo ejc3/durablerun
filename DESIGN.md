@@ -536,6 +536,10 @@ are load-bearing):
    immutable, so a registration deleted without its run being woken can never
    be delivered. A registration the emit declines therefore survives, where
    `wait-for-fired-event` names it as the lost wakeup it is.
+   Before claim or emit consumes a pre-`wake_step` registration whose run
+   still has `wake_step = NULL`, it copies the exact `step_name` from that same
+   full witness into the run. The decoder never infers a step from the event
+   name: one task may await the same event at several replay keys.
 3. **Engine time is database time.** All absolute timestamps are computed in SQL
    (`unixepoch('subsec')` / `NOW(6)` / `statement_timestamp()`); clients pass only
    relative durations. User-supplied absolutes (`sleepUntil`) are the only

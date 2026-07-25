@@ -41,6 +41,7 @@ import {
   fenced,
   fencedAt,
   LIVE,
+  registeredWaitStep,
   successorOwned,
 } from './fragments.js'
 import { NOW_MS } from './time.js'
@@ -356,6 +357,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          lease_ms = ?,
          claim_expires_at_ms = ${NOW} + ?,
          heartbeat_at_ms = ${NOW},
+         wake_step = COALESCE(wake_step, ${registeredWaitStep('runs')}),
          ${FENCE_SET}
        WHERE run_id IN (
          SELECT c.run_id FROM (
@@ -1413,16 +1415,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // and the event row is immutable, so an untimed await stranded with
     // nothing left describing it. The cleanup now follows the wake, so a run
     // this predicate declines keeps its registration and shows up under
-    // `wait-for-fired-event`. That makes the concession here a matter of
-    // waking the run rather than of not destroying it — still worth making,
-    // and no longer the only thing standing between a migrated database and
-    // permanent loss.
+    // `wait-for-fired-event`. Before consuming a legacy registration, the
+    // update copies its exact step into the run through the same full witness
+    // claim uses for timed wakes. That keeps the decoder from fabricating a
+    // step when an event name appeared at several call sites.
     b.followOn(
       'wake-runs',
       'runs',
       `UPDATE runs SET
          state = 'pending',
          available_at_ms = ${emitted},
+         wake_step = COALESCE(wake_step, ${registeredWaitStep('runs')}),
          wake_event = ?,
          event_payload = (SELECT f.payload FROM events f
                           WHERE ${thisEvent}),
@@ -1669,11 +1672,10 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
       row.headers === null ? {} : (JSON.parse(String(row.headers)) as Record<string, string>),
   }
   if (row.wake_event !== null && row.wake_step !== null) {
-    // A wake sets wake_event and wake_step together (park) and clears them
-    // together, so a set wake_event always has its wake_step — the SDK
-    // matches on the step key. A row with wake_event set but wake_step NULL
-    // cannot occur in this version (events were introduced with wake_step),
-    // and is ignored rather than mis-bound to a fabricated step.
+    // The SDK matches on the exact step key. Rows parked before schema v3
+    // carry it only in waits, so claim and emit copy it into the run before
+    // deleting that registration. Never fabricate a step from the event name:
+    // repeated awaits may share the event while using distinct step keys.
     const event = String(row.wake_event)
     const step = String(row.wake_step)
     claimed.wake =

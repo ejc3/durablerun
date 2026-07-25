@@ -45,6 +45,24 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
   `fence_stamp = ${STAMP}, fence_at_ms = ${fencedAt(table, key, fence)}`
 
 /**
+ * The exact wait registration owned by a parked run.
+ *
+ * `wake_step` did not exist until schema v3, but waits always carried the step.
+ * Every transition that consumes a legacy registration first copies that
+ * immutable identity into the run. Keeping the full witness here means claim
+ * and emit cannot recover a step from different or partial registrations.
+ */
+export const registeredWaitStep = (run: string): string =>
+  `(SELECT w.step_name FROM waits w
+    WHERE w.run_id = ${run}.run_id
+      AND w.queue = ${run}.queue
+      AND w.task_id = ${run}.task_id
+      AND w.event_name = ${run}.wake_event
+      AND w.status = 'waiting'
+      AND w.timeout_at_ms IS ${run}.available_at_ms
+    ORDER BY w.step_name LIMIT 1)`
+
+/**
  * Successor identity, keyed on immutable ownership rather than on a fence.
  *
  * A fence proves a row carries a stamp right now. That is not the same as

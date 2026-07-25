@@ -154,6 +154,13 @@ MUTATIONS = [
         "a historical run of the same task answers for the intended successor",
     ),
     (
+        "legacy-wait-step-backfill",
+        "packages/store-libsql/src/store.ts",
+        "         wake_step = COALESCE(wake_step, ${registeredWaitStep('runs')}),",
+        "         wake_step = wake_step,",
+        "a claimed pre-v3 timed wait loses the only copy of its exact step",
+    ),
+    (
         "schema-fault-is-permanent",
         "packages/store-libsql/src/executor.ts",
         "      if (SCHEMA_FAULT.test(String(error))) {",
