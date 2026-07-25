@@ -5,7 +5,8 @@
 export class Rng {
   private state: number
 
-  constructor(seed: number | string) {
+  /** Kept so a caller can derive an INDEPENDENT stream from the same seed. */
+  constructor(readonly seed: number | string) {
     this.state = typeof seed === 'number' ? seed >>> 0 : fnv1a(seed)
     if (this.state === 0) this.state = 0x9e3779b9
   }

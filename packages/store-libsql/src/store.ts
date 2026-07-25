@@ -33,7 +33,7 @@ import {
   type SweptRun,
   type TaskResult,
 } from '@durablerun/core'
-import { cancelDue, eligibleTask, fenceFrom, fenced, LIVE } from './fragments.js'
+import { cancelDue, eligibleTask, fenceFrom, fenced, fencedAt, LIVE } from './fragments.js'
 import { NOW_MS } from './time.js'
 
 const DEFAULT_RETRY: RetryStrategy = {
@@ -338,80 +338,75 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // Buggify: a lost activation is always legal — the launch channel may
     // drop any delivery; the sweep classifies and relaunches without cost.
     if (this.buggify('activate:lost')) return null
-    const [cas, , data] = await this.db.batch('activate', [
-      // Per-claim latch: only this claim's first delivery passes; re-extends
-      // the lease so channel-delayed launches don't start life nearly
-      // expired. A launch whose task is already past its cancellation
-      // deadline must not start (codex): the sweep will cancel it.
-      {
-        sql: `UPDATE runs SET
-                activated_gen = ?,
-                started_at_ms = COALESCE(started_at_ms, ${NOW_MS}),
-                claim_expires_at_ms = ${NOW_MS} + lease_ms,
-                heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-                AND claim_gen = ? AND activated_gen < ?
-                AND EXISTS (
-                  SELECT 1 FROM tasks t
-                  WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW_MS)}
-                )`,
-        args: [claimGen, runId, queue, claimToken, claimGen, claimGen],
-      },
-      // First-ever start stamps the task and REPLACES the deadline: max_delay
-      // is disarmed by starting (its whole meaning is "cancel if never
-      // started"); max_duration runs from first start. The earlier MIN() kept
-      // the stale spawn deadline and cancelled healthy running tasks.
-      {
-        // first_started and cancel_at DERIVE from the run's started_at_ms —
-        // stamped by the CAS above at ITS single NOW — not a second NOW, so
-        // the lease expiry and the max-duration deadline share one activation
-        // instant and never split across a millisecond boundary.
-        sql: `UPDATE tasks SET
-                first_started_at_ms = COALESCE(first_started_at_ms,
-                  (SELECT r.started_at_ms FROM runs r
-                   WHERE r.run_id = ? AND r.claimed_by = ? AND r.activated_gen = ?)),
-                cancel_at_ms = CASE
-                  WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
-                    CAST(COALESCE(first_started_at_ms,
-                      (SELECT r.started_at_ms FROM runs r
-                       WHERE r.run_id = ? AND r.claimed_by = ? AND r.activated_gen = ?))
-                      + json_extract(cancellation, '$.maxDurationSeconds') * 1000 AS INTEGER)
-                  ELSE NULL
-                END
-              WHERE state IN ${LIVE}
-                AND task_id = (
-                  SELECT task_id FROM runs
-                  WHERE run_id = ? AND claimed_by = ? AND activated_gen = ?
-                )`,
-        args: [
-          runId,
-          claimToken,
-          claimGen,
-          runId,
-          claimToken,
-          claimGen,
-          runId,
-          claimToken,
-          claimGen,
-        ],
-      },
-      // Full payload for the winning worker, keyed on the post-CAS state.
-      {
-        sql: `SELECT ${CLAIMED_RUN_COLUMNS}
-              FROM runs r JOIN tasks t ON t.task_id = r.task_id
-              WHERE r.run_id = ? AND r.claimed_by = ? AND r.state = 'running'
-                AND r.claim_gen = ? AND r.activated_gen = ?`,
-        args: [runId, claimToken, claimGen, claimGen],
-      },
-    ])
-    // The SELECT's post-state cannot distinguish "this delivery won" from "a
-    // prior delivery of the SAME claim already won" — both show
-    // activated_gen = claim_gen. The CAS's own rowsAffected is the
-    // discriminator: a duplicate delivery matches zero rows because
-    // activated_gen is no longer < claim_gen. This is why the executor's
-    // rowsAffected contract (primitives.ts) is load-bearing.
-    if ((cas?.rowsAffected ?? 0) !== 1) return null
-    const row = data?.rows[0]
+    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS })
+    // Per-claim latch: only this claim's first delivery passes; re-extends
+    // the lease so channel-delayed launches don't start life nearly expired.
+    // A launch whose task is already past its cancellation deadline must not
+    // start: the sweep will cancel it. claimed_by is deliberately left alone —
+    // the worker keeps its lease — which is exactly the freedom the batch
+    // needed and did not have while claimed_by was also the stamp.
+    b.cas(
+      'activate',
+      'runs',
+      `UPDATE runs SET
+         activated_gen = ?,
+         started_at_ms = COALESCE(started_at_ms, ${NOW}),
+         claim_expires_at_ms = ${NOW} + lease_ms,
+         heartbeat_at_ms = ${NOW},
+         ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND claim_gen = ? AND activated_gen < ?
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}
+         )`,
+      [claimGen, runId, queue, claimToken, claimGen, claimGen],
+    )
+    // First-ever start stamps the task and REPLACES the deadline: max_delay is
+    // disarmed by starting (its whole meaning is "cancel if never started");
+    // max_duration runs from first start. The earlier MIN() kept the stale
+    // spawn deadline and cancelled healthy running tasks.
+    //
+    // Fencing on this batch's own stamp is what makes that safe. The previous
+    // fence was (claimed_by, activated_gen) — values the WINNER wrote — so a
+    // losing duplicate delivery matched the very row the winner had just
+    // updated and re-ran this statement, whose ELSE arm clears cancel_at_ms.
+    // A task with an armed start deadline and no max-duration clause had that
+    // deadline silently disarmed by a delivery that had already been refused,
+    // and was then never cancelled.
+    const activated = fencedAt('runs', BY_RUN, b.fence('activate'))
+    b.followOn(
+      'task-start',
+      'tasks',
+      `UPDATE tasks SET
+         first_started_at_ms = COALESCE(first_started_at_ms, ${activated}),
+         cancel_at_ms = CASE
+           WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
+             CAST(COALESCE(first_started_at_ms, ${activated})
+               + json_extract(cancellation, '$.maxDurationSeconds') * 1000 AS INTEGER)
+           ELSE NULL
+         END,
+         ${fenceFrom('runs', BY_RUN, b.fence('activate'))}
+       WHERE state IN ${LIVE}
+         AND task_id = (SELECT f.task_id FROM runs f
+                        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('activate')})`,
+      [runId, runId, runId, runId],
+      'one',
+    )
+    // Full payload for the winning worker. Fenced, so it can only return the
+    // row THIS delivery activated — the post-state alone cannot tell "I won"
+    // from "a previous delivery of the same claim won", since both leave
+    // activated_gen equal to claim_gen.
+    b.tail(
+      'payload',
+      `SELECT ${CLAIMED_RUN_COLUMNS}
+       FROM runs r JOIN tasks t ON t.task_id = r.task_id
+       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'`,
+      [runId],
+    )
+    const { won, results } = await b.run(this.db)
+    if (won !== 'activate') return null
+    const row = results.payload?.rows[0]
     return row ? decodeClaimedRun(row, claimToken) : null
   }
 
