@@ -65,7 +65,6 @@ async function spread(raw: LibsqlExecutor): Promise<void> {
   ])
   b.derived('spread', {
     target: 'tasks',
-    stamp: 'tasks',
     key: 'task_id',
     from: 'runs',
     column: 'task_id',
@@ -109,8 +108,9 @@ describe('a generated selection restricts to rows this batch stamped', () => {
   })
 
   it('still writes provenance derived from the stamped source', async () => {
-    // The provenance subquery interpolates the same correlation, so it has to
-    // agree with the selection about which rows are in scope.
+    // UPDATE is the discriminator: derived() must generate provenance with no
+    // caller opt-out. The provenance subquery interpolates the same
+    // correlation, so it also has to agree with the selection about scope.
     const f = await fixture()
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
 

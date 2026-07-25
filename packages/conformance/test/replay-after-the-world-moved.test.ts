@@ -77,6 +77,20 @@ function recorder(raw: LibsqlExecutor) {
 }
 
 describe('a replay after the world moved on', () => {
+  async function emittedWait() {
+    const f = await fixture()
+    const rec = recorder(f.raw)
+    const store = f.storeOver(rec.db)
+    const spawned = await store.spawn(Q, 'job', '{}')
+    const [run] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    const step = '$await:go'
+    await store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, step, 'go', null)
+    await store.emitEvent(Q, 'go', '{"x":1}')
+    return { f, rec, spawned, run, step }
+  }
+
   it('does not terminalize a task whose successor has since been claimed', async () => {
     // 1. Run 1 of a two-attempt task fails with a retry, creating run 2.
     // 2. The response is lost, so the caller does not know it committed.
@@ -146,6 +160,51 @@ describe('a replay after the world moved on', () => {
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
     expect(task?.state).toBe('running')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('does not reuse one emit provenance seed at a later instant', async () => {
+    const { f, rec } = await emittedWait()
+    await f.admin.setFakeNowEpochMs(NOW + 100_000)
+
+    await rec.replay('emit-event')
+
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('does not reuse an emit seed after a fresh emit overwrites its receipt', async () => {
+    const { f, rec } = await emittedWait()
+    await f.admin.setFakeNowEpochMs(NOW + 100_000)
+    await f.store.emitEvent(Q, 'go', '{"x":2}')
+    await f.admin.setFakeNowEpochMs(NOW + 200_000)
+
+    await rec.replay('emit-event')
+
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('does not let a delayed emit replay delete a restored registration', async () => {
+    const { f, rec, spawned, run, step } = await emittedWait()
+    await f.raw.batch('restore', [
+      {
+        sql: `INSERT INTO waits
+                (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+              VALUES (?, ?, ?, ?, 'go', 'waiting', ?)`,
+        args: [run.runId, step, Q, spawned.taskId, NOW],
+      },
+    ])
+    await f.admin.setFakeNowEpochMs(NOW + 100_000)
+
+    await rec.replay('emit-event')
+
+    const [restored] = await query(
+      f.raw,
+      `SELECT COUNT(*) AS n FROM waits WHERE run_id = ? AND step_name = ?`,
+      [run.runId, step],
+    )
+    expect(Number(restored?.n)).toBe(1)
     f.close()
   })
 })
