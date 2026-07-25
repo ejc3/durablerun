@@ -440,6 +440,77 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     f.close()
   })
 
+  it('does not re-deliver to a run whose timeout was already selected', async () => {
+    // The reviewer's second counterexample, spelled out and executed rather
+    // than argued away. Its whole point is that no field is corrupt: the run
+    // really did await this event at this step, and the wait row really was
+    // its own.
+    //
+    //   1. the timed wait expires; claim selects the timeout wake (event set,
+    //      payload NULL) and deletes the wait row in the same batch
+    //   2. a worker that cannot dispatch the task defers with 'preserve',
+    //      which consumes nothing -- so the run goes back to sleeping still
+    //      carrying wake_event and wake_step
+    //   3. a leftover row for that same await survives or is recreated
+    //   4. the emit arrives
+    //
+    // Everything the predicate compared before this round now agrees: run,
+    // event, step, status. What does not agree is the deadline -- the row
+    // still carries the timeout the run was parked on originally, and the
+    // run's available_at_ms is the deferral's new wake time. The outcome
+    // matters: waking here replaces an ALREADY-SELECTED timeout with an event
+    // success, so a workflow that timed out is told it did not.
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:go', 'go', 30)
+    const [{ timeout_at_ms: parkedTimeout } = { timeout_at_ms: null }] = await query(
+      f.raw,
+      `SELECT timeout_at_ms FROM waits WHERE run_id = ?`,
+      [run.runId],
+    )
+
+    // The timeout fires: claim delivers it and takes the wait row with it.
+    await f.admin.setFakeNowEpochMs(NOW + 31_000)
+    const [timedOut] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!timedOut) throw new Error('expected the timeout wake')
+    expect(timedOut.wake).toEqual({ event: 'go', step: '$await:go', timedOut: true })
+    expect(await query(f.raw, `SELECT 1 FROM waits WHERE run_id = ?`, [run.runId])).toEqual([])
+
+    // A driver that cannot dispatch defers it, preserving the carried wake.
+    await f.store.reschedule(Q, run.runId, timedOut.claimToken, { inSeconds: 1000 }, 'preserve')
+    // The row comes back -- a replayed registration, a restored backup, a
+    // straggling older process -- carrying the deadline it was written with.
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
+                timeout_at_ms, created_at_ms)
+              VALUES (?, '$await:go', ?, ?, 'go', 'waiting', ?, ?)`,
+        args: [run.runId, Q, spawned.taskId, parkedTimeout as number, NOW],
+      },
+    ])
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [after] = await query(
+      f.raw,
+      `SELECT state, available_at_ms, event_payload FROM runs WHERE run_id = ?`,
+      [run.runId],
+    )
+    expect({
+      state: after?.state,
+      at: after?.available_at_ms,
+      payload: after?.event_payload,
+    }).toEqual({
+      state: 'sleeping',
+      at: NOW + 31_000 + 1_000_000, // the deferral's wake time, untouched
+      payload: null, // still the timeout it already selected
+    })
+    f.close()
+  })
+
   it('still wakes a run parked before wake_step existed', async () => {
     // Waits and events predate the wake_step column; the migration that added
     // it backfills nothing. A run parked by the older code is sleeping with
