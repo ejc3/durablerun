@@ -55,7 +55,14 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    SEV rule FIRST — a mandatory `review-findings: <count>` line in the PR
    body, and for a nonzero count an added, filled-in postmortem (Part 6);
    the abandonment trailer never skips that gate.
-7. **`bash scripts/session-state.sh` clean** — before reporting a round
+7. **`python3 scripts/mutation-probe.py` clean** — when the PR adds or
+   changes a guard. It deletes each one in turn and requires the suite to
+   fail; a survivor is a guard nothing is maintaining, and the next
+   refactor can drop it with the build still green. A STALE pattern is
+   also a failure: a guard rewritten out from under its mutation has
+   quietly stopped being probed. Do not skip this because the suite is
+   green — green is what it is testing the meaning of.
+8. **`bash scripts/session-state.sh` clean** — before reporting a round
    finished. It enumerates what is still alive from ground truth: processes
    whose command line names this repo, wait loops (a `sleep` with a live
    parent), worktrees, stashes, uncommitted files. Never grep the process
@@ -66,7 +73,7 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    `! pgrep -f "tla.sh"`, which matched the waiter's own command line and so
    could never become true. A negative claim needs a check that would
    visibly fail if the claim were false.
-8. **Simplify + elegance pass ran** — before the final push, a dedicated
+9. **Simplify + elegance pass ran** — before the final push, a dedicated
    simplification review over the FULL branch diff (`/simplify`, or an
    equivalent walk of Part 5): every accepted simplification lands in the
    PR, every rejected one gets a written reason in the PR body. "It works"
