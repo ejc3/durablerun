@@ -54,20 +54,26 @@ MUTATIONS = [
         "a hand-written fence token naming nothing compiles to a dead filter",
     ),
     (
-        "activate-task-fence",
-        "packages/store-libsql/src/store.ts",
-        "         AND task_id = (SELECT f.task_id FROM runs f\n"
-        "                        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('activate')})`,",
-        "         AND task_id = (SELECT f.task_id FROM runs f WHERE ${BY_RUN})`,",
-        "a losing duplicate activation clears an armed cancellation deadline",
+        # Replaces the two per-call-site fence mutations. Those statements no
+        # longer CONTAIN a fence a caller could remove — the primitive builds
+        # the selection — so the mutation moves to the generator, where one
+        # entry now covers all twenty-two generated follow-ons instead of two
+        # covering two. That the old mutations went stale rather than passing
+        # is the probe reporting the refactor accurately.
+        "generated-selection-fence",
+        "packages/core/src/fenced-batch.ts",
+        "    const selection = `${spec.key} IN (SELECT f.${spec.column} FROM ${spec.from} f\n"
+        "                       WHERE ${src}f.fence_stamp = ${fence})`",
+        "    const selection = `${spec.key} IN (SELECT f.${spec.column} FROM ${spec.from} f\n"
+        "                       WHERE ${src}1 = 1)`",
+        "every generated follow-on acts on rows this batch never wrote",
     ),
     (
-        "complete-task-fence",
-        "packages/store-libsql/src/store.ts",
-        "       WHERE task_id = (SELECT f.task_id FROM runs f\n"
-        "                        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('complete')})",
-        "       WHERE task_id = (SELECT f.task_id FROM runs f WHERE ${BY_RUN})",
-        "a losing complete still marks the task completed",
+        "generated-narrow-widens",
+        "packages/core/src/fenced-batch.ts",
+        "    const narrow = spec.narrow ? `\\n         AND (${spec.narrow})` : ''",
+        "    const narrow = spec.narrow ? `\\n         OR (${spec.narrow})` : ''",
+        "a narrowing clause that WIDENS the set instead of shrinking it",
     ),
     (
         "emit-wake-event-correlation",
