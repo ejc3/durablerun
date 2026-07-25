@@ -421,6 +421,28 @@ export class S {
         "work parked under a completed entry is dropped silently, because DONE is skipped",
     ),
     (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 something** — DONE. It shipped.\n"
+                "  - **TODO:** add the missing mechanism.\n"
+            )
+        },
+        "TODO still names unfinished work when it appears under a completed entry",
+    ),
+    (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 something** — DONE. It shipped.\n"
+                "  - **A gap requiring closure:** add the missing mechanism.\n"
+            )
+        },
+        "requiring closure still names unfinished work under a completed entry",
+    ),
+    (
         "spec-ledger.py",
         {
             "packages/store-libsql/src/probe.ts": (
