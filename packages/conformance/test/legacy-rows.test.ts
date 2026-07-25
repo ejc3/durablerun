@@ -51,11 +51,19 @@ async function fixture() {
   const admin = new LibsqlStoreAdmin(raw)
   await admin.migrate()
   await admin.setFakeNowEpochMs(NOW)
-  let n = 0
+  // Separate counters: a shared one returns the same token for two
+  // consecutive batches whenever no id is minted between them, and two
+  // batches sharing a seed is the one corruption the provenance scheme
+  // cannot survive. The one-batch-two-instants invariant catches it.
+  let ids = 0
+  let seeds = 0
   return {
     raw,
     admin,
-    store: new LibsqlSchedulerStore(raw, { uuidv7: () => `id-${++n}`, token: () => `tok-${n}` }),
+    store: new LibsqlSchedulerStore(raw, {
+      uuidv7: () => `id-${++ids}`,
+      token: () => `tok-${++seeds}`,
+    }),
     close: () => raw.close(),
   }
 }

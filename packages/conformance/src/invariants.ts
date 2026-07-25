@@ -205,6 +205,62 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
     },
     {
       // TypeOK twin, generation/counter arm.
+      /**
+       * Rule 8, as data: every row a single batch stamped carries the SAME
+       * instant. A batch reads the clock once, in its compare-and-set, and
+       * every later statement derives from the `fence_at_ms` that recorded.
+       * Two rows sharing a seed and disagreeing about when it happened means
+       * some statement read the clock a second time.
+       *
+       * This is the executable twin of a rule that was previously enforced
+       * only by looking for a token in SQL text — a check four different
+       * spellings walked past, and which cannot see a raw clock read at all.
+       * Here the evidence is in the database, so it holds for any path,
+       * including ones that never touch the primitive.
+       */
+      /**
+       * The provenance pair is written together or not at all, and always in
+       * the shape the primitive generates. A stamp without an instant means
+       * some statement wrote half the pair — a fresh claim of authorship
+       * beside a stale or absent record of when — and a malformed stamp means
+       * a row was written by something that is not the primitive at all.
+       *
+       * This is the data-level half of the audit: a construction check can
+       * only see code that goes through `FencedBatch`, and this sees every
+       * row however it got there.
+       */
+      name: 'provenance-pair-broken',
+      sql: `WITH stamped AS (
+              SELECT 'tasks'  AS t, task_id  AS id, fence_stamp AS s, fence_at_ms AS at FROM tasks
+              UNION ALL SELECT 'runs',   run_id,  fence_stamp, fence_at_ms FROM runs
+              UNION ALL SELECT 'waits',  run_id,  fence_stamp, fence_at_ms FROM waits
+              UNION ALL SELECT 'events', event_name, fence_stamp, fence_at_ms FROM events
+            )
+            SELECT t || '/' || id AS v FROM stamped
+            WHERE (s IS NOT NULL AND at IS NULL)
+               OR (s IS NULL AND at IS NOT NULL)
+               OR (s IS NOT NULL AND instr(s, ':') <= 1)
+               OR (s IS NOT NULL AND length(s) - instr(s, ':') < 1)`,
+    },
+    {
+      name: 'one-batch-two-instants',
+      sql: `WITH stamped AS (
+              SELECT fence_stamp AS s, fence_at_ms AS at FROM tasks  WHERE fence_stamp IS NOT NULL
+              UNION ALL
+              SELECT fence_stamp, fence_at_ms      FROM runs   WHERE fence_stamp IS NOT NULL
+              UNION ALL
+              SELECT fence_stamp, fence_at_ms      FROM waits  WHERE fence_stamp IS NOT NULL
+              UNION ALL
+              SELECT fence_stamp, fence_at_ms      FROM events WHERE fence_stamp IS NOT NULL
+            ),
+            seeded AS (
+              SELECT substr(s, 1, instr(s, ':') - 1) AS seed, at FROM stamped
+              WHERE instr(s, ':') > 0
+            )
+            SELECT seed || ' saw ' || MIN(at) || ' and ' || MAX(at) AS v
+            FROM seeded GROUP BY seed HAVING MIN(at) <> MAX(at)`,
+    },
+    {
       name: 'generation-or-counter-corrupt',
       sql: `SELECT run_id AS v FROM runs
             WHERE activated_gen > claim_gen OR claim_gen < 0 OR relaunch_count < 0

@@ -24,8 +24,12 @@ async function fixture() {
   const admin = new LibsqlStoreAdmin(raw)
   await admin.migrate()
   await admin.setFakeNowEpochMs(NOW)
+  // Separate counters — see legacy-rows.test.ts: a shared counter hands
+  // two consecutive batches the same seed, which the provenance scheme
+  // cannot survive and the one-batch-two-instants invariant catches.
   let n = 0
-  const ids = { uuidv7: () => `id-${++n}`, token: () => `tok-${n}` }
+  let seeds = 0
+  const ids = { uuidv7: () => `id-${++n}`, token: () => `tok-${++seeds}` }
   return {
     raw,
     admin,
