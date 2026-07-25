@@ -177,10 +177,7 @@ def corpus(
     coderabbit_extra_path: str = "",
     greptile_scope: list[str] | None = None,
 ) -> dict[str, str]:
-    """A miniature review-bot corpus: one rule, and the two configs that must
-    both reference it. `git ls-files` returns nothing in a fixture, so the
-    scope-matches-something rule stands down there and is exercised for real
-    against the repo itself."""
+    """A miniature review-bot corpus: one rule and both active configurations."""
     cr = (
         f"# {CODERABBIT_PROVENANCE}\n"
         "reviews:\n"
@@ -219,11 +216,16 @@ def corpus(
                     {
                         "id": greptile_id,
                         "rule": greptile_rule,
-                        "scope": greptile_scope if greptile_scope is not None else [],
+                        "scope": (
+                            greptile_scope
+                            if greptile_scope is not None
+                            else ["packages/**"]
+                        ),
                     }
                 ],
             }
         ),
+        "packages/example.ts": "// tracked scope witness\n",
     }
 
 
@@ -744,6 +746,21 @@ def run(
         (root / "scripts").mkdir(parents=True, exist_ok=True)
         copied = root / "scripts" / lint
         copied.write_text((SCRIPTS / lint).read_text())
+        if lint == "review-bot-lint.py":
+            subprocess.run(
+                ["git", "init", "-q"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
         runner = ["bash"] if lint.endswith(".sh") else [sys.executable]
         lint_args = (
             [str(root)]

@@ -1,5 +1,18 @@
 # Dialect portability: the engine layer must be spellable in three dialects
 
+<!-- review-bot-scope:start -->
+packages/core/src/**
+packages/sdk/src/**
+packages/driver/src/**
+packages/harness/src/**
+packages/conformance/src/**
+packages/conformance/test/**
+packages/store-*/src/**
+scripts/**
+DESIGN.md
+specs/*.tla
+<!-- review-bot-scope:end -->
+
 Scope: `packages/core/src/**`, `packages/sdk/src/**`, `packages/driver/src/**`,
 `packages/harness/src/**`, `packages/conformance/src/**`,
 `packages/conformance/test/**`, `packages/store-*/src/**`, `scripts/**`,

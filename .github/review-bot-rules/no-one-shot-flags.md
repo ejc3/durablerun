@@ -1,5 +1,14 @@
 # Re-entrant lifecycles latch on a generation, never on a flag
 
+<!-- review-bot-scope:start -->
+packages/store-libsql/src/**/*.ts
+packages/core/src/**/*.ts
+packages/sdk/src/**/*.ts
+packages/driver/src/**/*.ts
+packages/conformance/src/**/*.ts
+specs/*.tla
+<!-- review-bot-scope:end -->
+
 Scope: `packages/store-libsql/src/**/*.ts`, `packages/core/src/**/*.ts`, `packages/sdk/src/**/*.ts`, `packages/driver/src/**/*.ts`, `packages/conformance/src/**/*.ts`, `specs/*.tla`. This rule asks exactly one question of any state that records "this already happened": can the thing it describes legitimately happen AGAIN, and does the latch carry WHICH occurrence it happened for? Deliberately NOT covered here: whether a follow-on keys on its batch's own stamp and the post-transition state (DESIGN §3.4 rules 1 and 8) — that belongs to the batch-provenance/fenced-follow-on rule; terminal-state inertness (rule 6), where being one-way IS the invariant; clock sources (rule 3). A guard can be flawlessly fenced and still be a one-shot flag; this rule reads only that second half.
 
 **The invariant.** A run row is re-claimed many times in one life — every sleep wake, every lost-launch relaunch, every chain hop — so, in DESIGN §3.2's words, "a one-shot flag can never work". The latch that phrase rejects is "the run has started": `started_at IS NULL`. Trace it through today's code. The first sleep wake re-claims the row; the second claim's launch is delivered; activation refuses it because the run started once already; the worker exits; `sweep` classifies by `activated_gen < claim_gen` (`store.ts:647`), reads a launch that never arrived, and reopens the run. With `RELAUNCH_CAP = 5` and 5–60s linear backoff (`core/src/contract.ts`), five reopens later `sweepLostLaunch`'s `cap` arm fails the run AND its task terminally with `$RelaunchCapExhausted` (`store.ts:682-720`). Every workflow that slept even once would die about a minute later reporting a launcher failure that never happened — nothing thrown, nothing logged, the failure reason naming the wrong subsystem. This one was caught at design time and never shipped; the rule exists because the shape is cheap to reintroduce and its symptom always accuses a healthy subsystem.

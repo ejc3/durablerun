@@ -1,5 +1,10 @@
 # A fence must gate every write, not merely appear in it
 
+<!-- review-bot-scope:start -->
+packages/store-*/src/**/*.ts
+packages/core/src/fenced-batch.ts
+<!-- review-bot-scope:end -->
+
 Scope: `packages/store-*/src/**/*.ts` and `packages/core/src/fenced-batch.ts` — the SQL of every dialect store and the primitive that builds it. The question this rule asks of a diff is WHICH ROWS a statement may write and what proves this batch produced them. Deliberately not covered here: which instant a statement may read (§3.4 rule 8b, the clock-in-a-follow-on class — a sibling rule owns `$NOW$`, `fence_at_ms` and the one-instant-per-batch property); validation of client numbers at the port (rule 7); terminal-task inertness as a policy question (rule 6) except where a `narrow` guard is the thing being weakened; and the postmortem/attestation gate. Reads are in scope only through `openTail`.
 
 Every store operation is one atomic batch. Later statements see earlier statements' effects, so a statement's own WHERE cannot tell "my compare-and-set won" from "the row already looked like this". DESIGN.md §3.4 rule 1 says a follow-on keys on the post-transition state PLUS this batch's stamp; rule 8 says the stamp lives in `fence_stamp`/`fence_at_ms` and names a STATEMENT (`<seed>:<name>`), never a batch. This is the recurring class in this repo's history: fourteen of the forty-four findings in `postmortems/pr3.6-fence-provenance.md`, in review rounds 1, 3, 5 and 6, after round 1 had already instituted a rung-1 mechanism against it — and finding 39 was the class occurring INSIDE the generator built to end it.

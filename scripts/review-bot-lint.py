@@ -41,6 +41,8 @@ GREPTILE = ROOT / ".greptile" / "config.json"
 GREPTILE_RULES = ROOT / ".greptile" / "rules.md"
 SYNOPSIS_START = "<!-- review-bot-synopsis:start -->"
 SYNOPSIS_END = "<!-- review-bot-synopsis:end -->"
+SCOPE_START = "<!-- review-bot-scope:start -->"
+SCOPE_END = "<!-- review-bot-scope:end -->"
 GLOBAL_START = "<!-- review-bot-global:start -->"
 GLOBAL_END = "<!-- review-bot-global:end -->"
 
@@ -337,11 +339,17 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
     return checks, errors
 
 
-def tracked(root: Path) -> list[str]:
+def tracked(root: Path) -> tuple[list[str], str | None]:
     out = subprocess.run(
         ["git", "-C", str(root), "ls-files"], capture_output=True, text=True, check=False
     )
-    return out.stdout.splitlines()
+    if out.returncode != 0:
+        detail = out.stderr.strip() or f"exit status {out.returncode}"
+        return [], f"git ls-files failed, so review scopes cannot be audited: {detail}"
+    paths = out.stdout.splitlines()
+    if not paths:
+        return [], "git ls-files returned no paths, so review scope validation would be vacuous."
+    return paths, None
 
 
 def main() -> int:
@@ -369,6 +377,7 @@ def main() -> int:
     # 1. Each rule file has the sections that make it applicable to a diff,
     #    plus the compact synopsis both hosted configurations must apply.
     synopses: dict[str, str] = {}
+    rule_scopes: dict[str, list[str]] = {}
     for p in files:
         body = p.read_text()
         rel = str(p.relative_to(ROOT))
@@ -387,6 +396,16 @@ def main() -> int:
         problems.extend(synopsis_problems)
         if synopsis:
             synopses[p.stem] = synopsis
+        scope_body, scope_problems = marked_body(body, SCOPE_START, SCOPE_END, rel)
+        problems.extend(scope_problems)
+        if scope_body:
+            scopes = [line.strip() for line in scope_body.splitlines() if line.strip()]
+            if any(re.search(r"\s", scope) for scope in scopes):
+                problems.append(f"{rel} has whitespace inside a canonical review scope.")
+            elif len(scopes) != len(set(scopes)):
+                problems.append(f"{rel} repeats a canonical review scope.")
+            else:
+                rule_scopes[p.stem] = scopes
 
     readme = RULES_DIR / "README.md"
     readme_text = readme.read_text() if readme.exists() else ""
@@ -516,6 +535,17 @@ def main() -> int:
                     f"Greptile rule {rule_id(p.stem)!r} is not present verbatim in the "
                     "corresponding active CodeRabbit instructions; the two rule bodies drifted."
                 )
+        canonical_scope = rule_scopes.get(p.stem)
+        configured_scope = gp_scopes.get(rule_id(p.stem))
+        if (
+            canonical_scope is not None
+            and configured_scope is not None
+            and configured_scope != canonical_scope
+        ):
+            problems.append(
+                f"Greptile rule {rule_id(p.stem)!r} has scope {configured_scope!r}, not "
+                f"the canonical scope {canonical_scope!r} from {rel}."
+            )
 
     # 3. And the reverse: a config naming a rule that does not exist points the
     #    reviewer at nothing, silently.
@@ -540,8 +570,10 @@ def main() -> int:
 
     # 4. A scope that matches nothing grades an empty set and reports clean
     #    forever, which is indistinguishable from a rule that found no problems.
-    paths = tracked(ROOT)
-    if paths:
+    paths, tracking_problem = tracked(ROOT)
+    if tracking_problem:
+        problems.append(tracking_problem)
+    else:
         for rid, globs in sorted(gp_scopes.items()):
             for g in globs:
                 pat = re.escape(g).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
@@ -632,9 +664,9 @@ def main() -> int:
 
     print(
         f"review-bot-lint: clean — {len(files)} rules, each active in CodeRabbit and Greptile, "
-        "with corpus-derived matching bodies, one canonical global path instruction, "
-        "disclosed source-branch provenance, and every "
-        "scope matching tracked files"
+        "with corpus-derived matching bodies and scopes, one canonical global path "
+        "instruction, disclosed source-branch provenance, and every scope matching "
+        "tracked files"
     )
     return 0
 

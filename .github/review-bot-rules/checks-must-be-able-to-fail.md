@@ -1,5 +1,14 @@
 # Checks must be able to fail
 
+<!-- review-bot-scope:start -->
+scripts/**
+packages/*/test/**/*.ts
+packages/conformance/src/invariants.ts
+packages/conformance/src/fault-matrix.ts
+packages/conformance/src/fuzz.ts
+packages/core/src/fenced-batch.ts
+<!-- review-bot-scope:end -->
+
 Scope: every checker and audit tool under `scripts/**`; every test, fixture, generated
 surface and query-plan pin under `packages/*/test/**/*.ts`; the checking layer that ships
 as library code (`packages/conformance/src/invariants.ts`, `fault-matrix.ts`, `fuzz.ts`);

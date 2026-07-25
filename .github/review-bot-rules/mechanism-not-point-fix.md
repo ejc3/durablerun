@@ -1,5 +1,17 @@
 # Mechanism, not point fix — every correctness fix lands at a rung of the prevention ladder
 
+<!-- review-bot-scope:start -->
+packages/*/src/**
+packages/*/test/**
+scripts/**
+specs/**
+postmortems/**
+BUILD.md
+CLAUDE.md
+DESIGN.md
+.claude/skills/pr-gate/SKILL.md
+<!-- review-bot-scope:end -->
+
 Scope: any diff over `packages/*/src/**`, `packages/*/test/**`, `scripts/**`, `specs/**`,
 `postmortems/**`, `BUILD.md`, `CLAUDE.md`, `DESIGN.md`, and `.claude/skills/pr-gate/SKILL.md`
 that removes a defect, or that adds a checker, invariant, generated surface, lint, or

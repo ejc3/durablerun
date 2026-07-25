@@ -1,5 +1,18 @@
 # Prose that describes behaviour must be true of the diff that ships
 
+<!-- review-bot-scope:start -->
+DESIGN.md
+BUILD.md
+CLAUDE.md
+postmortems/**/*.md
+specs/**/*.tla
+packages/**/*.ts
+scripts/**/*.py
+scripts/**/*.sh
+.claude/skills/pr-gate/SKILL.md
+package.json
+<!-- review-bot-scope:end -->
+
 Scope: `DESIGN.md`, `BUILD.md`, `CLAUDE.md`, `postmortems/**/*.md`, `specs/**/*.tla`, comments and
 docstrings in `packages/**/*.ts` and `scripts/**/*.{py,sh}`, `.claude/skills/pr-gate/SKILL.md`, and
 `package.json` where a document makes claims about the `verify` chain. This rule covers one thing: a

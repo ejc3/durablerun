@@ -1,5 +1,13 @@
 # Single representation: one definition, one read path
 
+<!-- review-bot-scope:start -->
+packages/*/src/**/*.ts
+packages/*/test/**/*.ts
+scripts/*.py
+scripts/*.sh
+.github/workflows/*.yml
+<!-- review-bot-scope:end -->
+
 Scope: `packages/*/src/**/*.ts`, `packages/*/test/**/*.ts`, `scripts/*.py`, `scripts/*.sh`,
 `.github/workflows/*.yml`. This rule is about *a value, statement, list, or constant that exists
 twice* — one authoritative, the other a copy that can drift. It does NOT cover: a batch computing an

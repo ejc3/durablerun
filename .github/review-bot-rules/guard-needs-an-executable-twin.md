@@ -1,5 +1,14 @@
 # Every guard and every stated invariant needs an executable twin
 
+<!-- review-bot-scope:start -->
+specs/**/*.tla
+scripts/spec-ledger.py
+packages/conformance/src/**/*.ts
+packages/*/test/**/*.ts
+packages/store-libsql/src/**/*.ts
+DESIGN.md
+<!-- review-bot-scope:end -->
+
 Scope: `specs/**/*.tla`, `scripts/spec-ledger.py`, `packages/conformance/src/**/*.ts`, every `packages/*/test/**/*.ts` (that is where `fenceTwin` markers live — conformance, sdk, store), `packages/store-libsql/src/**/*.ts`, and `DESIGN.md`. This rule is about one distance only: between a property STATED somewhere (a TLA action guard, a `TypeOK` bound, a §3.4 contract rule, a checker in the invariant library) and the executable thing that can actually catch its violation. It does not cover whether a follow-on carries a positive fence, keys on the post-transition state, or stamps provenance — that is the fence-gates-the-write rule. Not per-statement clock reads (one-batch-one-clock), not validation at the port (user-boundary), not whether a `scripts/` checker has a rejection fixture (lint-selftest). Statement-level fencing is a sibling's business even when this rule quotes the same statement.
 
 **The incident, checked line by line.** `FailRunWithRetry` has guarded `attempts[t] + 1 < MaxAttempts` since the spec was written, and the ledger has mapped `'fail'` to it just as long. PR1.6 (`bf5669b`) then shipped `fail()` with a successor insert carrying **no cap condition at all**; the red test (`8b10cf6`) records it as "cap enforced nowhere; the fuzz walk provably retries unboundedly today". A task's user-visible retry budget was a lie, so a handler with a permanent bug ran more times than the caller asked for, repeating whatever side effects it had already performed. The fix was one row of SQL (`attempts-exceeds-cap`, `5612b5a`). Note what the introducing diff touched: **store code only, no `.tla` file**. A rule that fires only when a spec guard is ADDED would have watched this land. That is why the first shape below runs model → implementation, not the other way.

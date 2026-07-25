@@ -1,5 +1,16 @@
 # One instant per batch
 
+<!-- review-bot-scope:start -->
+packages/store-*/src/**/*.ts
+packages/core/src/fenced-batch.ts
+packages/conformance/src/invariants.ts
+packages/conformance/test/clock-jitter.test.ts
+scripts/clock-lint.py
+scripts/batch-lint.py
+scripts/lint-selftest.py
+scripts/mutation-probe.py
+<!-- review-bot-scope:end -->
+
 Scope: all dialect SQL (`packages/store-*/src/**/*.ts`), the primitive that enforces the rule (`packages/core/src/fenced-batch.ts`), and its executable twins — `packages/conformance/src/invariants.ts` (`one-batch-two-instants`), `packages/conformance/test/clock-jitter.test.ts`, `scripts/clock-lint.py`, `scripts/batch-lint.py`, `scripts/lint-selftest.py`, `scripts/mutation-probe.py`. This rule is only about WHEN a statement gets its instant. Whether a follow-on carries a fence at all, and whether that fence reaches every row it writes (the `OR`/`NOT`/selection shapes), belongs to the fence-provenance rule. Ambient JavaScript time in engine code — `Date.now`, `new Date`, timers — belongs to the determinism rule and `scripts/determinism-lint.sh`. Validation of client durations and absolute instants at the port (`durationToMs`, `requireEpochMs`) belongs to the numeric-boundary rule.
 
 DESIGN.md §3.4 rule 3 says engine time is database time, and says exactly how far that reaches: the clock expression is stable WITHIN one statement — measured 4000/4000 identical for SQLite `unixepoch('subsec')`, including inside scalar subqueries — and is NOT stable across statements. Two statements of one local SQLite batch saw two different instants 94 times in 4000, about 2%, and far more over a network. Rule 8 draws the only safe line from that: only the guarded compare-and-set may read the clock, and every later statement derives its instants from the `fence_at_ms` that statement recorded. That column exists for this reason — without it the suspension marker would be a standing exemption to the ban.

@@ -1,5 +1,13 @@
 # Test determinism: advance a clock, don't wait on one
 
+<!-- review-bot-scope:start -->
+packages/*/test/**/*.ts
+packages/conformance/src/**/*.ts
+packages/harness/src/**/*.ts
+packages/store-libsql/src/testing.ts
+packages/driver/bin/*.ts
+<!-- review-bot-scope:end -->
+
 Scope: `packages/*/test/**/*.ts`, `packages/conformance/src/**/*.ts` and `packages/harness/src/**/*.ts` (the fuzz, fault-matrix, invariant and simulator machinery), `packages/store-libsql/src/testing.ts`, and `packages/driver/bin/*.ts` (the hosts the chaos leg spawns). Note `scripts/determinism-lint.sh` already bans ambient time/randomness/timers structurally across `packages/{core,store-libsql,conformance,driver,sdk}/src` — so inside `packages/conformance/src` this rule adds only the shapes that lint cannot see (seed guards, floors, shared state), while `packages/*/test`, `packages/harness/src` and `packages/driver/bin` are territory that lint deliberately excludes ("tests and the harness own their nondeterminism") and this rule governs. Deliberately NOT covered: whether a test asserts the right thing about provenance (the fence-provenance rule) and whether a checker is capable of failing at all (`scripts/lint-selftest.py`, `scripts/mutation-probe.py`).
 
 A test's verdict must be a function of the code under test and its declared seed — never of elapsed wall time, of what else is running on the box, or of the order the suite happened to run in. Two operational forms, both already built here: **invert the time dependency** (engine time is database time, so move it with `admin.setFakeNowEpochMs` or the fixture's `advance()`, never by sleeping and hoping) and **assert on causality, not latency** (a launch count, a row state, a `SimWorld.trace` entry, a `clock.fired` length — never a measured duration).

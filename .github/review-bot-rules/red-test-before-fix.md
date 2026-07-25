@@ -1,5 +1,13 @@
 # Red test before fix
 
+<!-- review-bot-scope:start -->
+packages/*/src/**/*.ts
+packages/*/test/**/*.ts
+scripts/*.py
+scripts/*.sh
+postmortems/*.md
+<!-- review-bot-scope:end -->
+
 Scope: `packages/*/src/**/*.ts`, `packages/*/test/**/*.ts`, `scripts/*.py`, `scripts/*.sh`, `postmortems/*.md`. This rule judges one thing: whether a change that repairs a bug arrived with a test that could have **failed against the broken code**. It does not judge whether the fix is correct (the fencing/provenance rules do that), whether a class-level tripwire was also instituted or sits at the right altitude (the prevention-mechanism rule), whether a postmortem's non-Evidence sections are complete (the postmortem rule), or whether a new protocol was TLC-verified before its SQL existed (the spec-first rule). New capability that never shipped a bug owes no red test and is deliberately outside this rule.
 
 The invariant is CLAUDE.md's standing rule: every bug fix lands as two commits — a regression test run and **seen failing**, then the fix that turns it green — and if a bug cannot be expressed as a red test, that is a missing seam and the seam is built first. The seams exist for exactly this: pinned `SimWorld`/`Rng` seeds for interleavings, `admin.setFakeNowEpochMs` for time, raw fixture SQL through `f.raw.batch` for states the fences make unreachable, `seededIdSource` id/token sequences for deliberate collisions, `buggify` for legal-rare paths, and `FencedBatch`'s construction checks. The reason this is a hard rule and not a preference is arithmetic: across the 44 findings of `postmortems/pr3.6-fence-provenance.md`, this project's automated machinery — 236 fault-matrix cells, 32 fuzz shards, a TLC model of 111.8M states, an invariant library, nine checkers — found **zero**. Green proves the tests accept correct code and says nothing about whether they reject incorrect code.
