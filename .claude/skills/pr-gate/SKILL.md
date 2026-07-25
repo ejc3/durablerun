@@ -55,7 +55,18 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    SEV rule FIRST — a mandatory `review-findings: <count>` line in the PR
    body, and for a nonzero count an added, filled-in postmortem (Part 6);
    the abandonment trailer never skips that gate.
-7. **Simplify + elegance pass ran** — before the final push, a dedicated
+7. **`bash scripts/session-state.sh` clean** — before reporting a round
+   finished. It enumerates what is still alive from ground truth: processes
+   whose command line names this repo, wait loops (a `sleep` with a live
+   parent), worktrees, stashes, uncommitted files. Never grep the process
+   table for tool names to decide nothing is running: that answer was given
+   once from `ps | grep -E 'codex-cli|tla2tools|vitest'`, which cannot match
+   a shell loop sitting in `sleep`, and it missed two — one spinning for 38
+   hours from an earlier session, and one whose own exit condition was
+   `! pgrep -f "tla.sh"`, which matched the waiter's own command line and so
+   could never become true. A negative claim needs a check that would
+   visibly fail if the claim were false.
+8. **Simplify + elegance pass ran** — before the final push, a dedicated
    simplification review over the FULL branch diff (`/simplify`, or an
    equivalent walk of Part 5): every accepted simplification lands in the
    PR, every rejected one gets a written reason in the PR body. "It works"
