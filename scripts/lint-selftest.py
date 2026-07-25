@@ -481,6 +481,34 @@ export class S {
     ),
     (
         "gate-lint.py",
+        {
+            **gate(
+                "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+                "&& python3 scripts/fence-audit.py && python3 scripts/lint-selftest.py",
+                ("a-lint.py", "b-lint.py", "fence-audit.py"),
+            ),
+            "scripts/lint-selftest.py": (
+                'BAD_CASES = [("a-lint.py",), ("b-lint.py",)]\n'
+                'GOOD_CASES = [("fence-audit.py",)]\n'
+            ),
+        },
+        "a gate checker mentioned only by an acceptance case has no proof it can refuse",
+    ),
+    (
+        "gate-lint.py",
+        {
+            rel: body
+            for rel, body in gate(
+                "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+                "&& python3 scripts/lint-selftest.py",
+                ("a-lint.py", "b-lint.py"),
+            ).items()
+            if rel != "scripts/lint-selftest.py"
+        },
+        "a missing self-test source must be a normal refusal, never a checker crash",
+    ),
+    (
+        "gate-lint.py",
         gate(
             "echo scripts/a-lint.py && python3 scripts/b-lint.py "
             "&& python3 scripts/lint-selftest.py",
@@ -827,16 +855,22 @@ for script in sorted(SCRIPTS.iterdir()):
 
 for lint, files, why in BAD_CASES:
     result = run(lint, files)
+    output = result.stdout + result.stderr
     if result.returncode == 0:
         failures.append(f"{lint} ACCEPTED a bad input — {why}\n    {next(iter(files.values())).strip()[:120]}")
+    elif "Traceback (most recent call last)" in output:
+        failures.append(f"{lint} CRASHED on a bad input — {why}\n    {output.strip()[:200]}")
 
 for lint, files, args, why in BAD_INVOCATIONS:
     result = run(lint, files, args)
+    output = result.stdout + result.stderr
     if result.returncode == 0:
         failures.append(
             f"{lint} ACCEPTED a bad invocation — {why}\n"
             f"    {' '.join(args)}"
         )
+    elif "Traceback (most recent call last)" in output:
+        failures.append(f"{lint} CRASHED on a bad invocation — {why}\n    {output.strip()[:200]}")
 
 for lint, files, why in GOOD_CASES:
     result = run(lint, files)
