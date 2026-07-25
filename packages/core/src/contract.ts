@@ -39,3 +39,19 @@ export const RELAUNCH_BACKOFF_MAX_SECONDS = 60
 export const REASON_CLAIM_TIMEOUT = '{"name":"$ClaimTimeout"}'
 export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
 export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
+export const REASON_CANCELLED = '{"name":"$Cancelled"}'
+
+/**
+ * The tables that carry write provenance (§3.4 rule 8): every one of them is
+ * the target of some compare-and-set, and each must have `fence_stamp TEXT`
+ * and `fence_at_ms INTEGER`. This list is the CONTRACT — every dialect
+ * generates its own migration from it, and `FencedBatch` accepts it as the
+ * only legal CAS target, so a CAS against a table with nowhere to record
+ * provenance does not compile.
+ *
+ * checkpoints, drivers and meta are absent because nothing compare-and-sets
+ * them: checkpoints are lease-fenced by the worker's claim token (rule 5),
+ * drivers are advisory, meta is configuration.
+ */
+export const FENCED_TABLES = ['tasks', 'runs', 'waits', 'events'] as const
+export type FenceTable = (typeof FENCED_TABLES)[number]

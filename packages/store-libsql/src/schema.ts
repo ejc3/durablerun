@@ -13,6 +13,8 @@
  * The `meta` table is created by the runner itself before any migration.
  */
 
+import { FENCED_TABLES } from '@durablerun/core'
+
 export interface Migration {
   version: number
   statements: string[]
@@ -148,6 +150,42 @@ export const MIGRATIONS: Migration[] = [
     // Travels with wake_event/event_payload through every transition.
     version: 3,
     statements: [`ALTER TABLE runs ADD COLUMN wake_step TEXT`],
+  },
+  {
+    // Write provenance (DESIGN.md §3.4 rule 8). A batch's compare-and-set
+    // stamps every row it transitions with `<batch seed>:<statement name>`
+    // and records the ONE instant that batch read; every later statement in
+    // the batch filters on that stamp and derives every instant it needs from
+    // fence_at_ms, never from a second clock read.
+    //
+    // Before this, a batch had no column of its own to write provenance into,
+    // so each transition borrowed a column that already meant something else —
+    // runs.claimed_by (the lease), tasks.failure_reason (a user-visible JSON
+    // string). Borrowing is why the two recurring bug classes kept recurring:
+    // a borrowed column can be written by something OTHER than this batch, so
+    // a follow-on keyed on it fires for a stale or duplicated caller.
+    //
+    // Nullable, no default, no index. Rows written before v4 read NULL, and
+    // NULL never equals a stamp, so no fence can match a pre-v4 row. A stamp
+    // is a FILTER, never a lookup key — every fenced statement is anchored by
+    // a primary key or an existing index, so no index is needed and adding one
+    // would cost a write on every transition.
+    //
+    // checkpoints, drivers and meta deliberately get no columns: nothing
+    // compare-and-sets them. That exemption is not a maintained list — the
+    // audit derives its table set from the schema, and batch-lint requires any
+    // table named as a CAS target to declare fence_stamp here.
+    // The table list is the CONTRACT's (core's FENCED_TABLES), not this
+    // dialect's: the same four tables carry provenance in every dialect, and
+    // each dialect writes its own DDL for them. Because the frozen-hash test
+    // hashes these statements, widening the contract list changes v4's hash
+    // and fails the build until a v5 migration is appended — which is the
+    // correct outcome, since v4 has already shipped.
+    version: 4,
+    statements: FENCED_TABLES.flatMap((table) => [
+      `ALTER TABLE ${table} ADD COLUMN fence_stamp TEXT`,
+      `ALTER TABLE ${table} ADD COLUMN fence_at_ms INTEGER`,
+    ]),
   },
 ]
 
