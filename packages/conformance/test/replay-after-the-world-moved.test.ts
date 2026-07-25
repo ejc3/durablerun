@@ -274,6 +274,58 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     f.close()
   })
 
+  it('does not wake a run whose park is not this wait', async () => {
+    // The three guards added earlier -- wake_event matches, wake_step matches,
+    // a waiting row exists -- are each necessary and together still not
+    // sufficient. A run asleep on an ordinary TIMER, belonging to a different
+    // task, that never awaited anything, is woken by an emit as soon as those
+    // three happen to line up: set its wake fields and give it a wait row.
+    //
+    // What separates it from a genuine waiter is that its available_at_ms is
+    // its own timer deadline, not the wait's timeout -- which is exactly what
+    // the `wait-timeout-availability-mismatch` invariant already says about
+    // this pair. The invariant stated the relationship and the statement that
+    // CONSUMES the state did not enforce it; worse, the emit then deleted the
+    // wait row, so a state the invariant library could see became one it
+    // could not.
+    const f = await fixture()
+    const a = await f.store.spawn(Q, 'job', '{}')
+    const [ra] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!ra) throw new Error('expected a claim')
+    await f.store.activate(Q, ra.runId, ra.claimToken, ra.claimGen)
+    await f.store.awaitEvent(Q, a.taskId, ra.runId, ra.claimToken, '$await:go', 'go', null)
+
+    const bTask = await f.store.spawn(Q, 'other', '{}')
+    const [rb] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!rb) throw new Error('expected a claim')
+    await f.store.activate(Q, rb.runId, rb.claimToken, rb.claimGen)
+    await f.store.reschedule(Q, rb.runId, rb.claimToken, { inSeconds: 1000 })
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE runs SET wake_event = 'go', wake_step = '$await:go' WHERE run_id = ?`,
+        args: [rb.runId],
+      },
+      {
+        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+              VALUES (?, '$await:go', ?, ?, 'go', 'waiting', ?)`,
+        args: [rb.runId, Q, bTask.taskId, NOW],
+      },
+    ])
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [woken] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [ra.runId])
+    expect(woken?.state).toBe('pending') // the genuine waiter still wakes
+    const [timer] = await query(f.raw, `SELECT state, available_at_ms FROM runs WHERE run_id = ?`, [
+      rb.runId,
+    ])
+    expect({ state: timer?.state, at: timer?.available_at_ms }).toEqual({
+      state: 'sleeping',
+      at: NOW + 1_000_000, // its own deadline, untouched
+    })
+    f.close()
+  })
+
   it('still wakes a run parked before wake_step existed', async () => {
     // Waits and events predate the wake_step column; the migration that added
     // it backfills nothing. A run parked by the older code is sleeping with

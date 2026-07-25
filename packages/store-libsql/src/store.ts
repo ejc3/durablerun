@@ -1413,7 +1413,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND EXISTS (SELECT 1 FROM waits s
                      WHERE s.run_id = runs.run_id AND s.event_name = ?
                        AND s.status = 'waiting'
-                       AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step))
+                       AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step)
+                       AND s.timeout_at_ms IS runs.available_at_ms)
          AND ${fenced('events', thisEvent, b.fence('event'))}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
