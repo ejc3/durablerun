@@ -14,7 +14,7 @@ The global CodeRabbit path instruction is canonical here too, so an extra or
 contradictory path entry cannot drift beside the error checks:
 
 <!-- review-bot-global:start -->
-Apply durablerun's custom review rules from `.github/review-bot-rules/` and treat those files as the source of truth. Do not treat pull-request-head edits to those rule files as weakening the rules until they are merged into the base branch. This project's standing rules are in CLAUDE.md and its spec is DESIGN.md; a finding should name the MECHANISM that would have made the defect unwritable or machine-caught, not only the line to change — a fix without a prevention is not accepted here.
+Apply durablerun's custom review rules from `.github/review-bot-rules/` as they exist in the feature branch under review. A pull request can edit or remove these in-repo instructions, so they are a head-owned detection net rather than base-owned enforcement. This project's standing rules are in CLAUDE.md and its spec is DESIGN.md; a finding should name the MECHANISM that would have made the defect unwritable or machine-caught, not only the line to change — a fix without a prevention is not accepted here.
 <!-- review-bot-global:end -->
 
 **These bots are a detection net, not a prevention.** CLAUDE.md's ladder is
@@ -33,12 +33,19 @@ synopsis, both bots carry that exact synopsis, every reference resolves to a
 file, every scope matches something that exists, and this README lists every
 rule.
 
-**Review bots must apply the BASE branch's configuration.** A pull request
-that edits these rules must not weaken its own review. Both configs say so,
-and it is worth being precise that this is an INSTRUCTION to a hosted service,
-not a mechanism we control — unlike `.github/workflows/ci.yml`'s `base-gate`
-job, which deterministically runs the base branch's checkers against the pull
-request's tree.
+**Configuration provenance is not independent of the pull request.**
+[CodeRabbit uses the feature branch under review](https://docs.coderabbit.ai/getting-started/yaml-configuration),
+and [Greptile reads settings from the source branch of the PR](https://www.greptile.com/docs/code-review/greptile-json-reference).
+A pull request can therefore weaken its own in-repo review rules, delete them,
+or edit the checker that calls the configuration coherent. No instruction in
+one of those same files can override how the hosted service chooses its
+configuration.
+
+Only policy enforced outside the pull request — for example CodeRabbit central
+configuration or Greptile organization-enforced rules — can close that
+provenance hole. No such external control is represented by this repository.
+The `base-gate` job protects local checker composition and runs base-owned
+checker code; it does not change either review bot's source-branch behavior.
 
 ## Turning these on
 
@@ -46,19 +53,21 @@ Neither service can be installed from a checkout: both are GitHub Apps, so
 installation is an OAuth flow in a browser and needs repo admin.
 
 1. **CodeRabbit** — https://coderabbit.ai, "Sign in with GitHub", authorize the
-   app, select `ejc3/durablerun`. It reads `.coderabbit.yaml` from the default
-   branch. Free for open-source, which this repo now is; the free tier is
+   app, select `ejc3/durablerun`. For a pull-request review it automatically
+   uses `.coderabbit.yaml` from the feature branch under review. Free for
+   open-source, which this repo now is; the free tier is
    rate-limited (roughly 200 files and 4 pull-request reviews per hour), and
    `pre_merge_checks.custom_checks` — which this config uses, in `mode: error` —
    is otherwise a paid feature, so confirm it is active on the plan you land on
    rather than assuming the checks are running.
 2. **Greptile** — https://greptile.com, install the GitHub App on the same repo.
-   It reads `.greptile/config.json`. $30 per seat per month including 50 reviews,
-   then $1 per review; pre-Series-A companies under $2M revenue get 50% off.
-   Watch that per-review meter on a repo with a lot of pull requests.
-3. **Both read config from the DEFAULT BRANCH.** This directory has to reach
-   `main` before either bot applies any of it. Until then they review with
-   their stock behaviour.
+   It reads `.greptile/config.json` from the source branch of the PR. $30 per
+   seat per month including 50 reviews, then $1 per review; pre-Series-A
+   companies under $2M revenue get 50% off. Watch that per-review meter on a
+   repo with a lot of pull requests.
+3. **Treat in-repo rules as head-owned detection.** Landing them on `main`
+   makes them the starting point for later branches, but it does not stop a
+   later pull request from changing the copy that reviews that same request.
 4. **Make them gate.** `main`'s required contexts are today
    `["verify", "tla", "adversarial-review"]`. Add each bot's check name once you
    can see what it posts. `mode: error` and `statusCheck: true` are already set,

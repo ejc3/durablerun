@@ -1,6 +1,6 @@
 # durablerun custom review rules
 
-Apply durablerun's custom review rules from `.github/review-bot-rules/` and treat those files as the source of truth. Do not treat pull-request-head edits to those rule files as weakening the rules until they are merged into the base branch. This project's standing rules are in CLAUDE.md and its spec is DESIGN.md; a finding should name the MECHANISM that would have made the defect unwritable or machine-caught, not only the line to change — a fix without a prevention is not accepted here.
+Apply durablerun's custom review rules from `.github/review-bot-rules/` as they exist in the source branch of the PR. A pull request can edit or remove these in-repo instructions, so they are a head-owned detection net rather than base-owned enforcement. This project's standing rules are in CLAUDE.md and its spec is DESIGN.md; a finding should name the MECHANISM that would have made the defect unwritable or machine-caught, not only the line to change — a fix without a prevention is not accepted here.
 
 durablerun is a durable task-execution engine over SQLite/libSQL. Every store
 operation is ONE atomic batch of SQL statements, and most of this repo's

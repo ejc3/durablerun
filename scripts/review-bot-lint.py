@@ -38,10 +38,25 @@ ROOT = Path(_args[0]).resolve() if _args else Path(__file__).resolve().parent.pa
 RULES_DIR = ROOT / ".github" / "review-bot-rules"
 CODERABBIT = ROOT / ".coderabbit.yaml"
 GREPTILE = ROOT / ".greptile" / "config.json"
+GREPTILE_RULES = ROOT / ".greptile" / "rules.md"
 SYNOPSIS_START = "<!-- review-bot-synopsis:start -->"
 SYNOPSIS_END = "<!-- review-bot-synopsis:end -->"
 GLOBAL_START = "<!-- review-bot-global:start -->"
 GLOBAL_END = "<!-- review-bot-global:end -->"
+
+PROVENANCE_MARKERS = (
+    "https://docs.coderabbit.ai/getting-started/yaml-configuration",
+    "feature branch under review",
+    "https://www.greptile.com/docs/code-review/greptile-json-reference",
+    "source branch of the PR",
+    "can therefore weaken its own in-repo review rules",
+)
+FORBIDDEN_PROVENANCE = (
+    "Do not treat pull-request-head edits",
+    "Review bots must apply the BASE branch's configuration",
+    "Both read config from the DEFAULT BRANCH",
+    "reads `.coderabbit.yaml` from the default branch",
+)
 
 # Sections every rule must carry. The Allowed list is not optional and not a
 # formality: a rule that flags correct code gets switched off, and a switched-
@@ -565,6 +580,50 @@ def main() -> int:
                     f"{readme.relative_to(ROOT)} lists {named}, which no longer exists."
                 )
 
+    # 7. Configuration provenance is a service fact, not an instruction a
+    #    source-branch file can wish away. Preserve the explicit residual in
+    #    the human index and every bot-facing copy so this repository never
+    #    again describes head-owned review rules as base-owned enforcement.
+    if readme.exists():
+        readme_text = readme.read_text()
+        for marker in PROVENANCE_MARKERS:
+            if marker not in readme_text:
+                problems.append(
+                    f"{readme.relative_to(ROOT)} omits configuration-provenance marker "
+                    f"{marker!r}."
+                )
+
+    provenance_docs = {
+        CODERABBIT: ("feature branch under review", "can edit or remove"),
+        GREPTILE: ("source branch of the PR", "can edit or remove"),
+        GREPTILE_RULES: ("source branch of the PR", "can edit or remove"),
+    }
+    for path, markers in provenance_docs.items():
+        if not path.exists():
+            problems.append(f"{path.relative_to(ROOT)} is missing its provenance disclosure.")
+            continue
+        body = path.read_text()
+        for marker in markers:
+            if marker not in body:
+                problems.append(
+                    f"{path.relative_to(ROOT)} omits configuration-provenance marker {marker!r}."
+                )
+        for false_claim in FORBIDDEN_PROVENANCE:
+            if false_claim in body:
+                problems.append(
+                    f"{path.relative_to(ROOT)} repeats the false provenance claim "
+                    f"{false_claim!r}."
+                )
+
+    if readme.exists():
+        body = readme.read_text()
+        for false_claim in FORBIDDEN_PROVENANCE:
+            if false_claim in body:
+                problems.append(
+                    f"{readme.relative_to(ROOT)} repeats the false provenance claim "
+                    f"{false_claim!r}."
+                )
+
     if problems:
         print("review-bot-lint: the rule corpus and the bots disagree\n", file=sys.stderr)
         for p in problems:
@@ -574,7 +633,8 @@ def main() -> int:
     print(
         f"review-bot-lint: clean — {len(files)} rules, each active in CodeRabbit and Greptile, "
         "with corpus-derived matching bodies, one canonical global path instruction, "
-        "and every scope matching tracked files"
+        "disclosed source-branch provenance, and every "
+        "scope matching tracked files"
     )
     return 0
 

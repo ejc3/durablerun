@@ -124,13 +124,13 @@ def base_runner_fixture(
 
 ACTIVE_RULE = "Flag something decidable. Pass for the nearest legitimate shape."
 CODERABBIT_GLOBAL = (
-    "Apply durablerun's custom review rules from `.github/review-bot-rules/` and treat "
-    "those files as the source of truth. Do not treat pull-request-head edits to those "
-    "rule files as weakening the rules until they are merged into the base branch. This "
-    "project's standing rules are in CLAUDE.md and its spec is DESIGN.md; a finding "
-    "should name the MECHANISM that would have made the defect unwritable or "
-    "machine-caught, not only the line to change — a fix without a prevention is not "
-    "accepted here."
+    "Apply durablerun's custom review rules from `.github/review-bot-rules/` as they "
+    "exist in the feature branch under review. A pull request can edit or remove these "
+    "in-repo instructions, so they are a head-owned detection net rather than base-owned "
+    "enforcement. This project's standing rules are in CLAUDE.md and its spec is "
+    "DESIGN.md; a finding should name the MECHANISM that would have made the defect "
+    "unwritable or machine-caught, not only the line to change — a fix without a "
+    "prevention is not accepted here."
 )
 PROVENANCE_NOTE = (
     "CodeRabbit uses the feature branch under review: "
@@ -138,6 +138,14 @@ PROVENANCE_NOTE = (
     "Greptile reads settings from the source branch of the PR: "
     "https://www.greptile.com/docs/code-review/greptile-json-reference. "
     "A pull request can therefore weaken its own in-repo review rules."
+)
+CODERABBIT_PROVENANCE = (
+    "CodeRabbit uses the feature branch under review; a pull request can edit or remove "
+    "these in-repo instructions."
+)
+GREPTILE_PROVENANCE = (
+    "Greptile reads settings from the source branch of the PR; a pull request can edit or "
+    "remove these in-repo instructions."
 )
 
 
@@ -173,6 +181,7 @@ def corpus(
     scope-matches-something rule stands down there and is exercised for real
     against the repo itself."""
     cr = (
+        f"# {CODERABBIT_PROVENANCE}\n"
         "reviews:\n"
         "  path_instructions:\n"
         f"    - path: {json.dumps(coderabbit_path)}\n"
@@ -200,8 +209,10 @@ def corpus(
             "- `a-rule.md`\n"
         ),
         ".coderabbit.yaml": cr,
+        ".greptile/rules.md": f"# Rules\n\n{GREPTILE_PROVENANCE}\n",
         ".greptile/config.json": json.dumps(
             {
+                "instructions": GREPTILE_PROVENANCE,
                 "statusCheck": status_check,
                 "rules": [{"id": greptile_id, "rule": greptile_rule, "scope": []}],
             }
