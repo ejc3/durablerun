@@ -194,6 +194,29 @@ describe('event regressions', () => {
  * the database driver unchecked.
  */
 describe('user-boundary values', () => {
+  it('stores equivalent event payloads in one canonical form', async () => {
+    const f = await fx('emit-canonical')
+    const reg: TaskRegistry = new Map([
+      [
+        'emitter',
+        async (ctx) => {
+          await ctx.emitEvent('go', `{ "a": 1 }`)
+          return null
+        },
+      ],
+    ])
+    await f.store.spawn(Q, 'emitter', '{}')
+
+    expect(await pass(f, reg, 'w1')).toEqual({ kind: 'completed' })
+    const [events] = await f.raw.batch(
+      'event-payload',
+      [{ sql: `SELECT payload FROM events WHERE event_name = ?`, args: ['go'] }],
+      'read',
+    )
+    expect(events?.rows[0]?.payload).toBe('{"a":1}')
+    f.close()
+  })
+
   it('a payload that is not a string fails the task permanently, not as an outage', async () => {
     const f = await fx('emit-unserializable')
     let bodyRuns = 0
