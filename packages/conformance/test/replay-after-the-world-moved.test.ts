@@ -185,6 +185,80 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     f.close()
   })
 
+  it('does not deliver event B to a run parked on event A', async () => {
+    // The run is legitimately parked, so the timer-sleep case does not cover
+    // this: it is awaiting 'A', and a stale waiting row for 'B' names it at
+    // the same step. Delivering B here hands user code a payload for an event
+    // it never asked for, and resumes it at a step whose await has not
+    // completed. Only the wake_event match rules it out.
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:A', 'A', null)
+
+    // The run's own wait is gone and a row for a DIFFERENT event occupies its
+    // step — corrupt state, which rule 6 says must not be amplified. Only the
+    // wake_event match rules it out; the step match cannot, because the step
+    // is exactly the one the run is parked at.
+    await f.raw.batch('t', [
+      { sql: `DELETE FROM waits WHERE run_id = ?`, args: [run.runId] },
+      {
+        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+              VALUES (?, '$await:A', ?, ?, 'B', 'waiting', ?)`,
+        args: [run.runId, Q, spawned.taskId, NOW],
+      },
+    ])
+
+    await f.store.emitEvent(Q, 'B', '{"wrong":1}')
+
+    const [after] = await query(
+      f.raw,
+      `SELECT state, wake_event, event_payload FROM runs WHERE run_id = ?`,
+      [run.runId],
+    )
+    expect({ state: after?.state, wake: after?.wake_event }).toEqual({
+      state: 'sleeping',
+      wake: 'A',
+    })
+    expect(after?.event_payload).toBeNull()
+    f.close()
+  })
+
+  it('does not let one await step consume another step of the same event', async () => {
+    // A run may await the same event name at two call sites. Each await
+    // carries its own step key, which is the entire reason wake_step exists.
+    // Here the run is parked at one step and a leftover waiting row for the
+    // same event sits at another; without the step match the wake is
+    // delivered against an await that never registered it.
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:go#2', 'go', null)
+    // A leftover from the FIRST call site, at a different step.
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+              VALUES (?, '$await:go#1', ?, ?, 'go', 'waiting', ?)`,
+        args: [run.runId, Q, spawned.taskId, NOW - 1],
+      },
+      // Remove the run's OWN wait, leaving only the other step's.
+      { sql: `DELETE FROM waits WHERE run_id = ? AND step_name = '$await:go#2'`, args: [run.runId] },
+    ])
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [after] = await query(f.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
+      run.runId,
+    ])
+    expect(after?.state).toBe('sleeping') // its own await never registered this
+    expect(after?.event_payload).toBeNull()
+    f.close()
+  })
+
   it('still wakes a run that really is parked on the event', async () => {
     const f = await fixture()
     const spawned = await f.store.spawn(Q, 'job', '{}')

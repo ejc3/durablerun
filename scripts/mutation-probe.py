@@ -72,14 +72,16 @@ MUTATIONS = [
     (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
-        "         AND wake_event = ?\n"
-        "         AND run_id IN (SELECT w.run_id FROM waits w\n"
-        "                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'\n"
-        "                          AND w.run_id = runs.run_id AND w.step_name = runs.wake_step)",
-        "         AND ? IS NOT NULL\n"
-        "         AND run_id IN (SELECT w.run_id FROM waits w\n"
-        "                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')",
+        "         AND wake_event = ?\n",
+        "         AND ? IS NOT NULL\n",
         "an emit wakes a run that is not parked on that event",
+    ),
+    (
+        "emit-wake-step-correlation",
+        "packages/store-libsql/src/store.ts",
+        "                     WHERE s.run_id = runs.run_id AND s.step_name = runs.wake_step\n",
+        "                     WHERE s.run_id = runs.run_id\n",
+        "an emit delivers to a run parked at a DIFFERENT step of the same event",
     ),
     (
         "successor-ownership",
