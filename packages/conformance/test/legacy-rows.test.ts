@@ -30,9 +30,11 @@ const Q = 'q'
 const NOW = 1_000_000
 
 /** Every column added by a migration to a table an earlier one created. */
-function columnsAddedAfterTheirTable(): { table: string; column: string; version: number }[] {
+function columnsAddedAfterTheirTable(
+  migrations = MIGRATIONS,
+): { table: string; column: string; version: number }[] {
   const out: { table: string; column: string; version: number }[] = []
-  for (const m of MIGRATIONS) {
+  for (const m of migrations) {
     for (const s of m.statements) {
       const match = /^ALTER TABLE (\w+) ADD COLUMN (\w+)/.exec(s.trim())
       if (match?.[1] && match[2])
@@ -91,6 +93,15 @@ async function ambiguousLegacyWait(timeoutSeconds: number | null) {
 }
 
 describe('rows written before a column existed', () => {
+  it('discovers added columns from SQL formatting it did not anticipate', () => {
+    expect(
+      columnsAddedAfterTheirTable([
+        { version: 1, statements: [`CREATE TABLE runs (run_id TEXT)`] },
+        { version: 2, statements: [`alter table runs\n  add column wake_kind TEXT`] },
+      ]),
+    ).toEqual([{ table: 'runs', column: 'wake_kind', version: 2 }])
+  })
+
   it('finds the columns to test from the migrations themselves', () => {
     // If this is empty the suite below is vacuous, which is the failure mode
     // a generated surface is most prone to.
