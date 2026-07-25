@@ -39,12 +39,24 @@ jobs:
   # `verify` above runs from the pull request's own checkout, and the list of
   # checks it runs is a string in that same tree's package.json. Deleting
   # `&& pnpm lint:clock` from it is therefore green by construction — the
-  # branch under review decides what reviews it. Every checker here has the
-  # same shape: its rules live in the tree it is grading.
+  # branch under review decides what reviews it. Every checker has the same
+  # shape: its rules live in the tree it grades. So this job runs the BASE
+  # branch's copies against the pull request's tree.
   #
-  # So this job runs the BASE branch's copies against the pull request's tree.
-  # A change may add checks and may not quietly drop or loosen them, and the
-  # copy enforcing that is one the branch cannot edit.
+  # Two limits, both found by this job's own first live run:
+  #
+  # 1. A checker can only grade a foreign tree if it ACCEPTS a root argument,
+  #    and none did before the pull request that added this job. A base copy
+  #    that ignores the argument lints the base's own tree and passes — a check
+  #    that appears to run while grading the wrong thing, which is exactly the
+  #    class this job exists to catch. So capability is probed BEHAVIOURALLY:
+  #    run the base copy against both trees and use it only if the answers
+  #    differ. Identical output means either it ignored the argument or it
+  #    cannot tell the trees apart, and in both cases running it proves nothing.
+  # 2. This workflow file comes from the pull request head, like everything
+  #    else. The threat model is CLAUDE.md's — "forgot under momentum", not a
+  #    determined edit — and against that a copy the branch did not write is
+  #    the defence. It is not a sandbox.
   base-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -55,11 +67,35 @@ jobs:
       - name: Check out the base commit beside it
         run: git worktree add /tmp/base ${{ github.event.pull_request.base.sha }}
       - name: The base gate's composition rules, applied to this tree
-        run: python3 /tmp/base/scripts/gate-lint.py "$GITHUB_WORKSPACE" /tmp/base
-      - name: The base branch's checkers, applied to this tree
         run: |
           set -euo pipefail
-          for c in clock-lint batch-lint fragment-lint spec-ledger deferral-lint; do
-            echo "== base $c"
-            python3 "/tmp/base/scripts/$c.py" "$GITHUB_WORKSPACE"
+          if [ ! -f /tmp/base/scripts/gate-lint.py ]; then
+            echo "The base branch predates gate-lint.py, so there is no earlier"
+            echo "composition to compare this one against. True only until this merges."
+            exit 0
+          fi
+          python3 /tmp/base/scripts/gate-lint.py "$GITHUB_WORKSPACE" /tmp/base
+      - name: The base branch's checkers, applied to this tree
+        run: |
+          set -uo pipefail
+          ran=0; skipped=0
+          for c in clock-lint batch-lint fragment-lint spec-ledger deferral-lint review-bot-lint; do
+            f="/tmp/base/scripts/$c.py"
+            if [ ! -f "$f" ]; then
+              echo "skip $c — not on the base branch"; skipped=$((skipped+1)); continue
+            fi
+            here=$(cd /tmp/base && python3 "$f" "$GITHUB_WORKSPACE" 2>&1; echo "rc=$?")
+            there=$(cd /tmp/base && python3 "$f" /tmp/base 2>&1; echo "rc=$?")
+            if [ "$here" = "$there" ]; then
+              echo "skip $c — the base copy answers identically for both trees, so it is"
+              echo "     not honouring the root argument and would be grading /tmp/base"
+              skipped=$((skipped+1)); continue
+            fi
+            echo "== base $c applied to this tree"
+            printf '%s\n' "$here"
+            case "$here" in
+              *"rc=0") ran=$((ran+1)) ;;
+              *) echo "base $c REJECTS this tree"; exit 1 ;;
+            esac
           done
+          echo "base checkers: $ran applied, $skipped skipped"
