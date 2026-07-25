@@ -330,6 +330,22 @@ export class S {
         store(
             """
 export class S {
+  async probe(suffix: string) {
+    await this.db.batch('heartbeat' + suffix, [
+      { sql: `UPDATE tasks SET a = 1`, args: [] },
+    ])
+  }
+}
+"""
+        ),
+        "a computed label is invisible to this lint",
+        "a literal prefix must not disguise a computed runtime label",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
   async probe(q: string, v: number) {
     await this.db.batch(`migrate:v${v}`, [{ sql: `UPDATE tasks SET a = 1`, args: [] }])
   }
@@ -370,6 +386,21 @@ export class S {
         ),
         "raw this.db.batch('brand-new-write') is unclassified",
         "comments and spacing between call tokens must not hide a real batch",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
+  async probe(n: number) {
+    const statements = [{ sql: `UPDATE tasks SET a = 1`, args: [] }]
+    return n++ / Number(this.db.batch('brand-new-write', statements)) / 2
+  }
+}
+"""
+        ),
+        "raw this.db.batch('brand-new-write') is unclassified",
+        "division after postfix increment must not turn executable code into a regex",
     ),
     (
         "batch-lint.py",
