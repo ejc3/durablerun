@@ -1,163 +1,534 @@
+import type { FenceTable } from './contract.js'
 import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from './primitives.js'
 
 /**
- * Structural enforcement of §3.4 rule 1 (prevention, per the standing rule:
- * three hand-written batches violated the "plus the batch's own stamp" rule
- * in one PR — rules held by discipline decay at generation speed).
+ * Structural enforcement of DESIGN.md §3.4 rules 1 and 8.
  *
- * A FencedBatch is a single-item engine transition: one or more mutually
- * exclusive CAS statements that WRITE the batch's stamp into the row they
- * win, followed by follow-on statements that may only key on that stamp.
- * The builder throws at construction time unless every CAS and every
- * follow-on references the STAMP placeholder — "loser executes a follow-on"
- * becomes inexpressible, which is exactly the atomic-action semantics the
- * TLA+ model assumes of each labeled batch. Results come back by NAME
- * (positional blank-slot destructuring was the other reviewed hazard).
+ * A FencedBatch is one engine transition: one or more mutually exclusive
+ * compare-and-set statements, each of which WRITES its own provenance into
+ * the row it transitions, followed by statements that may only touch rows
+ * carrying that provenance. The builder throws at construction time when a
+ * statement does not have that shape, so "a losing batch still writes" and
+ * "two clock reads in one batch" stop being mistakes to avoid and become
+ * sentences you cannot say.
+ *
+ * Three things make it work, and each replaced a bug that shipped:
+ *
+ * 1. THE STAMP NAMES A STATEMENT, NOT A BATCH. `cas('a', …)` writes
+ *    `<seed>:a`; a follow-on says `fence('a')` and gets exactly that. One
+ *    stamp for the whole batch aliases across its statements, so a follow-on
+ *    asking "does the row at this id carry my stamp" could be answered by a
+ *    DIFFERENT row the same batch stamped — which is how a failing run whose
+ *    successor id collided with its own answered for the successor and
+ *    skipped the only statement that records why the task failed.
+ *
+ * 2. THE PRIMITIVE GENERATES THE FENCE VALUE. `fence(name)` throws unless
+ *    `name` is a statement already added to THIS batch that writes a stamp.
+ *    A typo, or a fence on a statement added later (whose provenance cannot
+ *    exist yet), is a construction error rather than a filter that silently
+ *    matches nothing.
+ *
+ * 3. A FOLLOW-ON CANNOT READ THE CLOCK. `$NOW$` is rejected outside a CAS.
+ *    Follow-ons derive instants from `fence_at_ms`, the one value the CAS
+ *    recorded. Real libSQL and MySQL re-read the wall clock per statement —
+ *    measured at ~2% divergence between two statements of one local batch —
+ *    so any pair of statements that must agree on "now" eventually will not.
+ *
+ * Results come back by NAME; positional destructuring of batch results was
+ * its own reviewed hazard.
  */
 
+/** This statement's own provenance value: `<seed>:<statement name>`. */
 export const STAMP = '$STAMP$'
+
+/** The batch's clock expression, spliced as SQL. Legal only in a CAS. */
+export const NOW = '$NOW$'
+
+/** The single definition of the provenance write. Shared by every dialect. */
+export const FENCE_SET = `fence_stamp = ${STAMP}, fence_at_ms = ${NOW}`
+export const FENCE_COLS = `fence_stamp, fence_at_ms`
+export const FENCE_VALS = `${STAMP}, ${NOW}`
+
+/**
+ * How many rows a statement may write. `'one'` is checked after the batch
+ * commits; `{ many: reason }` costs a written justification, because
+ * "this one really can touch many rows" is exactly the judgement that should
+ * not be made silently.
+ */
+export type RowBound = 'one' | { many: string }
+
+type Kind = 'cas' | 'casMany' | 'followOn' | 'tail'
 
 interface Named {
   name: string
   sql: string
   args: SqlStatement['args']
-  kind: 'cas' | 'followOn' | 'fanOut' | 'tail'
+  kind: Kind
+  /** Set when this statement writes a stamp — i.e. `fence()` may name it. */
+  stamps: boolean
+  rows: RowBound | null
+  max: number | null
 }
 
 /**
- * A blind counter bump in a follow-on (`attempts = attempts + 1`) is not
- * idempotent: an exact re-execution of the same compiled batch — same bound
- * stamp — re-matches its own stamped row and counts twice. Follow-ons must
- * derive a counter from the winning row's post-state instead (e.g.
- * `attempts = (SELECT r.attempt - t.infra_retries FROM ...)`), so applying
- * the statement twice is the same as applying it once.
+ * A blind counter bump (`attempts = attempts + 1`) is not idempotent: an
+ * exact re-execution of the same compiled batch — same bound stamps —
+ * re-matches its own stamped row and counts twice. Derive the value from the
+ * winning row's post-state instead, so applying the statement twice is the
+ * same as applying it once.
  */
 const BLIND_COUNTER = /\b(\w+)\s*=\s*\1\s*\+\s*\d/i
 
+/** Statement names are spliced into a bound value and into a token. */
+const NAME_OK = /^[a-zA-Z0-9_-]+$/
+
+export interface FencedResult {
+  /** The name of the CAS that won, or null if none did. */
+  won: string | null
+  /** Rows the winning CAS affected (1 for `cas`, up to `max` for `casMany`). */
+  count: number
+  results: Record<string, SqlResult>
+}
+
 export class FencedBatch {
   private readonly statements: Named[] = []
+  private readonly now: string
 
+  /**
+   * @param label the batch's tracing and fault-injection address
+   * @param seed  unique per invocation; every stamp this batch writes is
+   *              `<seed>:<statement name>`
+   */
   constructor(
     readonly label: string,
-    readonly stamp: string,
-  ) {}
-
-  /** A guarded CAS that stamps the row it transitions. Multiple CASes are
-   * allowed when their guards are mutually exclusive (e.g. under-cap vs
-   * at-cap); exactly one may win. */
-  cas(name: string, sql: string, args: SqlStatement['args'] = []): this {
-    this.push(name, sql, args, 'cas')
-    return this
-  }
-
-  /** Executes meaningfully only when a CAS of THIS batch won — enforced by
-   * requiring the stamp in the statement text. */
-  followOn(name: string, sql: string, args: SqlStatement['args'] = []): this {
-    this.push(name, sql, args, 'followOn')
-    return this
+    readonly seed: string,
+    opts: { now: string },
+  ) {
+    // $NOW$ is spliced as raw SQL, so a bind inside it would desynchronize
+    // every arg list in the batch.
+    if (opts.now.includes('?')) {
+      throw new Error(
+        `FencedBatch[${label}] clock expression contains '?' — it is spliced as SQL, not bound`,
+      )
+    }
+    this.now = opts.now
   }
 
   /**
-   * A follow-on that writes MANY rows discovered through the CAS's own
-   * post-state (emitEvent waking every registered waiter): there is no single
-   * stamped row to key on, so the gate is the CAS having won plus a join that
-   * derives the targets from rows this batch just transitioned. The statement
-   * must therefore reference the stamp (like any follow-on) OR name the
-   * provenance table in `via` — the rows whose existence this batch caused.
-   * Never a bare id list supplied by the caller: that is the "keyed on a
-   * pre-existing post-state" hazard this class exists to forbid.
+   * Exactly-one-row compare-and-set. Wins iff it affected one row. Must write
+   * `FENCE_SET` (or, for an INSERT, `FENCE_COLS`/`FENCE_VALS`) into `target`.
    */
-  fanOut(name: string, via: string, sql: string, args: SqlStatement['args'] = []): this {
-    if (!sql.includes(STAMP) && !sql.includes(via)) {
+  cas(name: string, target: FenceTable, sql: string, args: SqlStatement['args'] = []): this {
+    return this.add({ name, sql, args, kind: 'cas', target, rows: 'one', max: 1 })
+  }
+
+  /**
+   * Up-to-`max`-row compare-and-set (the claim). Wins iff it affected at
+   * least one row; `max` is asserted after the batch commits. Every row it
+   * touches carries this statement's stamp, so per-row provenance is
+   * unaffected by the relaxed win rule.
+   */
+  casMany(
+    name: string,
+    target: FenceTable,
+    max: number,
+    sql: string,
+    args: SqlStatement['args'] = [],
+  ): this {
+    if (!Number.isSafeInteger(max) || max < 1) {
+      throw new Error(`FencedBatch[${this.label}] casMany '${name}' max must be a positive integer`)
+    }
+    return this.add({ name, sql, args, kind: 'casMany', target, rows: { many: 'CAS' }, max })
+  }
+
+  /**
+   * The provenance value written by an earlier stamp-writing statement.
+   * Compiles to a bind of `<seed>:<name>`.
+   */
+  fence(name: string): string {
+    const source = this.statements.find((s) => s.name === name)
+    if (!source) {
       throw new Error(
-        `FencedBatch[${this.label}] fanOut '${name}' references neither ${STAMP} nor its provenance table '${via}' — a fan-out must derive its targets from this batch's own post-state (§3.4 rule 1)`,
+        `FencedBatch[${this.label}] fence('${name}') names no statement of this batch — add it before the statement that fences on it`,
       )
     }
-    if (this.statements.some((s) => s.name === name)) {
+    if (!source.stamps) {
+      throw new Error(
+        `FencedBatch[${this.label}] fence('${name}') names '${name}', which writes no stamp — there is no provenance to fence on`,
+      )
+    }
+    return `$FENCE:${name}$`
+  }
+
+  /**
+   * A statement that runs meaningfully only when a CAS of this batch won.
+   * Pass `target` when it writes to a provenance-carrying table: it must then
+   * stamp the rows it writes, so the audit and the builder agree about who
+   * wrote them.
+   */
+  followOn(name: string, sql: string, args: SqlStatement['args'], rows: RowBound): this
+  followOn(
+    name: string,
+    target: FenceTable,
+    sql: string,
+    args: SqlStatement['args'],
+    rows: RowBound,
+  ): this
+  followOn(
+    name: string,
+    a: string | FenceTable,
+    b: string | SqlStatement['args'],
+    c: SqlStatement['args'] | RowBound,
+    d?: RowBound,
+  ): this {
+    const targeted = d !== undefined
+    return this.add({
+      name,
+      kind: 'followOn',
+      target: targeted ? (a as FenceTable) : null,
+      sql: targeted ? (b as string) : (a as string),
+      args: (targeted ? c : b) as SqlStatement['args'],
+      rows: (targeted ? d : c) as RowBound,
+      max: null,
+    })
+  }
+
+  /** A trailing SELECT that may only see rows this batch stamped. */
+  tail(name: string, sql: string, args: SqlStatement['args'] = []): this {
+    return this.add({ name, sql, args, kind: 'tail', target: null, rows: null, max: null })
+  }
+
+  /**
+   * A trailing SELECT of rows this batch did NOT write. Legal, but rare and
+   * always deliberate — the reason is mandatory and is printed whenever the
+   * batch is traced, because an unfenced read is how a caller learns about
+   * state some other actor produced and every such read is a judgement call.
+   */
+  openTail(name: string, reason: string, sql: string, args: SqlStatement['args'] = []): this {
+    if (reason.trim() === '') {
+      throw new Error(`FencedBatch[${this.label}] openTail '${name}' needs a reason`)
+    }
+    return this.add({
+      name,
+      sql,
+      args,
+      kind: 'tail',
+      target: null,
+      rows: null,
+      max: null,
+      open: reason,
+    })
+  }
+
+  private add(s: {
+    name: string
+    sql: string
+    args: SqlStatement['args']
+    kind: Kind
+    target: FenceTable | null
+    rows: RowBound | null
+    max: number | null
+    open?: string
+  }): this {
+    const { name, sql, kind, target } = s
+    const at = `FencedBatch[${this.label}] ${kind} '${name}'`
+    if (!NAME_OK.test(name)) {
+      throw new Error(`${at}: name must match ${NAME_OK.source}`)
+    }
+    if (this.statements.some((x) => x.name === name)) {
       throw new Error(`FencedBatch[${this.label}] duplicate statement name '${name}'`)
     }
-    this.statements.push({ name, sql, args, kind: 'fanOut' })
-    return this
-  }
 
-  /** Unfenced trailing read (classification only — never a write). */
-  tail(name: string, sql: string, args: SqlStatement['args'] = []): this {
-    if (!/^\s*SELECT/i.test(sql)) {
-      throw new Error(`FencedBatch[${this.label}] tail '${name}' must be a SELECT`)
+    const isCas = kind === 'cas' || kind === 'casMany'
+    const stamps = isCas || target !== null
+    const head = beforeTopLevelWhere(sql)
+
+    if (isCas) {
+      assertWritesStamp(at, sql, head, target as FenceTable, true)
+    } else if (target !== null) {
+      assertWritesStamp(at, sql, head, target, false)
     }
-    this.statements.push({ name, sql, args, kind: 'tail' })
-    return this
-  }
 
-  private push(name: string, sql: string, args: SqlStatement['args'], kind: 'cas' | 'followOn') {
-    if (!sql.includes(STAMP)) {
+    if (kind === 'tail') {
+      if (!/^\s*SELECT/i.test(sql)) throw new Error(`${at} must be a SELECT`)
+    } else if (s.rows === null) {
+      throw new Error(`${at} must declare how many rows it may write`)
+    }
+
+    // A follow-on or tail proves it is downstream of a win by FILTERING on a
+    // fence, positively, in the WHERE side. A fence inside a SET-clause
+    // subquery does not count: the statement would still match every row and
+    // merely write a NULL into them. Neither does a fence that appears only
+    // under NOT — that is a statement asserting the fence is ABSENT.
+    if (!isCas && s.open === undefined && !hasPositiveFence(sql)) {
       throw new Error(
-        `FencedBatch[${this.label}] ${kind} '${name}' does not reference ${STAMP} — every CAS must write the stamp and every follow-on must key on it (§3.4 rule 1)`,
+        `${at} has no positive fence in its WHERE clause — a follow-on must filter on fence('<a cas of this batch>') so a losing invocation matches nothing (§3.4 rule 1)`,
       )
     }
+
+    // Class A dies here, with no exemptions: a follow-on has fence_at_ms to
+    // derive from, so it never needs to ask the database what time it is.
+    if (!isCas && sql.includes(NOW)) {
+      throw new Error(
+        `${at} reads the clock — only a CAS may, and every later statement derives its instants from the fence_at_ms the CAS recorded (§3.4 rule 8)`,
+      )
+    }
+
+    // Compilation replaces tokens by position and knows nothing about SQL
+    // syntax, so a token sitting inside a string literal would be silently
+    // turned into a bind parameter and change what the statement means. The
+    // engine writes JSON constants into failure_reason, which is exactly the
+    // place such a thing would appear.
+    const quoted = literals(sql).find((text) => /\$STAMP\$|\$NOW\$|\$FENCE:/.test(text))
+    if (quoted !== undefined) {
+      throw new Error(
+        `${at} has a fence token inside the string literal ${quoted} — tokens are substituted without parsing SQL, so it would become a bind parameter`,
+      )
+    }
+
+    // Follow-ons only. A CAS is guarded on the pre-state it consumes, so a
+    // replay of it matches nothing and its bump cannot run twice — claim
+    // legitimately does `claim_gen = claim_gen + 1`. A follow-on has no such
+    // guard: it keys on the post-state, which a replay reproduces exactly.
     if (kind === 'followOn' && BLIND_COUNTER.test(sql)) {
       throw new Error(
-        `FencedBatch[${this.label}] followOn '${name}' bumps a counter blindly (x = x + n) — an exact replay of this batch re-matches its own stamped row and counts twice; derive the value from the winning row's post-state instead`,
+        `${at} bumps a counter blindly (x = x + n) — an exact replay of this batch re-matches its own stamped rows and counts twice; derive the value from the winning row's post-state instead`,
       )
     }
-    if (this.statements.some((s) => s.name === name)) {
-      throw new Error(`FencedBatch[${this.label}] duplicate statement name '${name}'`)
-    }
-    this.statements.push({ name, sql, args, kind })
+
+    this.statements.push({
+      name,
+      sql,
+      args: s.args,
+      kind,
+      stamps,
+      rows: s.rows,
+      max: s.max,
+    })
+    return this
   }
 
-  async run(
-    db: SqlExecutor,
-    mode: SqlBatchMode = 'write',
-  ): Promise<{ won: string | null; results: Record<string, SqlResult> }> {
-    const casCount = this.statements.filter((s) => s.kind === 'cas').length
-    if (casCount === 0) throw new Error(`FencedBatch[${this.label}] has no CAS`)
-    const compiled: SqlStatement[] = this.statements.map((s) => compile(s, this))
+  async run(db: SqlExecutor, mode: SqlBatchMode = 'write'): Promise<FencedResult> {
+    if (!this.statements.some((s) => s.kind === 'cas' || s.kind === 'casMany')) {
+      throw new Error(`FencedBatch[${this.label}] has no CAS`)
+    }
+    const compiled = this.statements.map((s) => this.compile(s))
     const raw = await db.batch(this.label, compiled, mode)
+
     const results: Record<string, SqlResult> = {}
     let won: string | null = null
+    let count = 0
     this.statements.forEach((s, i) => {
       const result = raw[i]
       if (!result) return
       results[s.name] = result
-      if (s.kind === 'cas' && result.rowsAffected === 1) {
-        if (won !== null) {
+      const affected = result.rowsAffected
+      if (s.kind === 'cas' || s.kind === 'casMany') {
+        if (s.max !== null && affected > s.max) {
           throw new Error(
-            `FencedBatch[${this.label}]: CASes '${won}' and '${s.name}' both won — guards must be mutually exclusive`,
+            `FencedBatch[${this.label}] ${s.kind} '${s.name}' affected ${affected} rows, at most ${s.max} allowed`,
           )
         }
-        won = s.name
+        if (affected >= 1) {
+          if (won !== null) {
+            throw new Error(
+              `FencedBatch[${this.label}]: CASes '${won}' and '${s.name}' both won — guards must be mutually exclusive`,
+            )
+          }
+          won = s.name
+          count = affected
+        }
+      } else if (s.rows === 'one' && affected > 1) {
+        throw new Error(
+          `FencedBatch[${this.label}] followOn '${s.name}' wrote ${affected} rows but declared 'one' — its target set is wider than the transition it follows`,
+        )
       }
     })
-    return { won, results }
+    return { won, count, results }
+  }
+
+  /**
+   * `?`, `$STAMP$`, `$FENCE:x$` and `$NOW$` are consumed left to right, so
+   * they may appear in any order relative to one another. `$NOW$` splices SQL
+   * and consumes no argument slot; the other three each bind one value.
+   */
+  private compile(s: Named): SqlStatement {
+    const tokens = /\?|\$STAMP\$|\$NOW\$|\$FENCE:[a-zA-Z0-9_-]+\$/g
+    let out = ''
+    let last = 0
+    let argIndex = 0
+    const args: (string | number | bigint | Uint8Array | null)[] = []
+    for (const match of s.sql.matchAll(tokens)) {
+      const token = match[0]
+      const start = match.index ?? 0
+      out += s.sql.slice(last, start)
+      last = start + token.length
+      if (token === NOW) {
+        out += this.now
+        continue
+      }
+      out += '?'
+      if (token === '?') {
+        const value = s.args[argIndex++]
+        args.push(value === undefined ? null : value)
+      } else if (token === STAMP) {
+        args.push(`${this.seed}:${s.name}`)
+      } else {
+        args.push(`${this.seed}:${token.slice('$FENCE:'.length, -1)}`)
+      }
+    }
+    out += s.sql.slice(last)
+    if (argIndex !== s.args.length) {
+      throw new Error(
+        `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,
+      )
+    }
+    return { sql: out, args }
+  }
+}
+
+function assertWritesStamp(
+  at: string,
+  sql: string,
+  head: string,
+  target: FenceTable,
+  isCas: boolean,
+): void {
+  if (!new RegExp(`\\b(?:UPDATE|INTO)\\s+${target}\\b`, 'i').test(sql)) {
+    throw new Error(`${at} declares target '${target}' but does not write to it`)
+  }
+  if (/^\s*INSERT/i.test(sql)) {
+    // A CAS supplies the clock; a follow-on may not read it, so it supplies
+    // its own stamp and an instant derived from the row it follows.
+    const values = isCas ? FENCE_VALS : `${STAMP},`
+    if (!head.includes(FENCE_COLS) || !head.includes(values)) {
+      throw new Error(
+        `${at} must insert '${FENCE_COLS}' with values '${values} …' into ${target} (§3.4 rule 8)`,
+      )
+    }
+    // An upsert that leaves the conflicting row's provenance alone would let
+    // a later statement fence on a stamp this batch never wrote there.
+    const doUpdate = /\bDO\s+UPDATE\b([\s\S]*)$/i.exec(sql)
+    if (doUpdate?.[1] && !doUpdate[1].includes(FENCE_SET)) {
+      throw new Error(
+        `${at} has a DO UPDATE branch that does not re-stamp the row: needs FENCE_SET`,
+      )
+    }
+    return
+  }
+  if (isCas) {
+    if (!head.includes(FENCE_SET)) {
+      throw new Error(`${at} must set '${FENCE_SET}' on ${target} before its WHERE (§3.4 rule 8)`)
+    }
+    return
+  }
+  // A follow-on cannot read the clock, so it stamps with its own name and
+  // derives the instant from the row the CAS stamped.
+  if (!head.includes(`fence_stamp = ${STAMP}`) || !/\bfence_at_ms\s*=/.test(head)) {
+    throw new Error(
+      `${at} writes ${target} but does not stamp it — set 'fence_stamp = ${STAMP}' and derive fence_at_ms from the fenced row`,
+    )
   }
 }
 
 /**
- * Interleaved compilation: `?` and STAMP occurrences are consumed
- * left-to-right, so stamps may appear anywhere relative to explicit binds.
+ * The SQL before the first WHERE at paren depth zero — i.e. what the
+ * statement WRITES, as opposed to which rows it writes to. A WHERE inside a
+ * subquery belongs to that subquery and does not end the write clause.
+ * Returns the whole statement when there is no top-level WHERE.
  */
-function compile(s: { sql: string; args: SqlStatement['args'] }, batch: FencedBatch): SqlStatement {
-  const tokenRe = /\?|\$STAMP\$/g
-  let out = ''
-  let last = 0
-  let argIndex = 0
-  const args: (string | number | bigint | Uint8Array | null)[] = []
-  for (const match of s.sql.matchAll(tokenRe)) {
-    out += `${s.sql.slice(last, match.index)}?`
-    last = (match.index ?? 0) + match[0].length
-    if (match[0] === '?') {
-      const value = s.args[argIndex++]
-      args.push(value === undefined ? null : value)
-    } else {
-      args.push(batch.stamp)
+function beforeTopLevelWhere(sql: string): string {
+  const at = topLevelWhere(sql)
+  return at < 0 ? sql : sql.slice(0, at)
+}
+
+function topLevelWhere(sql: string): number {
+  let depth = 0
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i]
+    if (ch === "'") {
+      i = skipString(sql, i)
+      continue
     }
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    else if (depth === 0 && (ch === 'W' || ch === 'w') && matchesWord(sql, i, 'WHERE')) return i
   }
-  out += s.sql.slice(last)
-  if (argIndex !== s.args.length) {
-    throw new Error(
-      `FencedBatch[${batch.label}]: statement binds ${argIndex} of ${s.args.length} explicit args`,
-    )
+  return -1
+}
+
+/**
+ * A fence occurrence counts as proof only if it filters rows IN: it must sit
+ * in the WHERE side, and not under a NOT EXISTS / NOT IN, which asserts the
+ * fence is absent. `fail`'s terminal arm legitimately carries a negative
+ * fence — and also a positive one, which is what makes it a follow-on rather
+ * than a statement that fires whenever some unrelated row is missing.
+ */
+function hasPositiveFence(sql: string): boolean {
+  const start = topLevelWhere(sql)
+  if (start < 0) return false
+  const negated = negatedSpans(sql)
+  for (const match of sql.matchAll(/fence_stamp\s*=\s*\$FENCE:[a-zA-Z0-9_-]+\$/g)) {
+    const at = match.index ?? 0
+    if (at < start) continue
+    if (negated.some(([from, to]) => at >= from && at < to)) continue
+    return true
   }
-  return { sql: out, args }
+  return false
+}
+
+/** `[from, to)` ranges covered by a `NOT EXISTS (…)` or `NOT IN (…)` group. */
+function negatedSpans(sql: string): [number, number][] {
+  const spans: [number, number][] = []
+  for (const match of sql.matchAll(/\bNOT\s+(?:EXISTS|IN)\s*\(/gi)) {
+    const open = (match.index ?? 0) + match[0].length - 1
+    spans.push([open, matchingParen(sql, open)])
+  }
+  return spans
+}
+
+function matchingParen(sql: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < sql.length; i++) {
+    const ch = sql[i]
+    if (ch === "'") {
+      i = skipString(sql, i)
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')' && --depth === 0) return i + 1
+  }
+  return sql.length
+}
+
+/** Every single-quoted string literal in the statement, quotes included. */
+function literals(sql: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < sql.length; i++) {
+    if (sql[i] !== "'") continue
+    const end = skipString(sql, i)
+    out.push(sql.slice(i, end + 1))
+    i = end
+  }
+  return out
+}
+
+/** Index of the closing quote of the string literal starting at `i`. */
+function skipString(sql: string, i: number): number {
+  for (let j = i + 1; j < sql.length; j++) {
+    if (sql[j] !== "'") continue
+    if (sql[j + 1] === "'") {
+      j++
+      continue
+    }
+    return j
+  }
+  return sql.length
+}
+
+function matchesWord(sql: string, at: number, word: string): boolean {
+  if (sql.slice(at, at + word.length).toUpperCase() !== word) return false
+  const before = at === 0 ? ' ' : (sql[at - 1] ?? ' ')
+  const after = sql[at + word.length] ?? ' '
+  return !/[\w$]/.test(before) && !/[\w$]/.test(after)
 }

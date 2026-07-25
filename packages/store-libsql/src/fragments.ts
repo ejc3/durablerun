@@ -1,54 +1,69 @@
-import { NOW_MS } from './time.js'
+import { STAMP } from '@durablerun/core'
 
 /**
- * Shared eligibility fragments — the ONLY place engine SQL may say what
- * "live", "cancellation due", or "eligible to proceed" mean. Every door
- * (claim, activate, sweep, cancel) composes these; none re-derives them.
+ * Shared SQL fragments — the ONLY place engine SQL may say what "live",
+ * "cancellation due", "eligible to proceed", or "written by this batch" mean.
+ * Every door (claim, activate, sweep, cancel) composes these; none re-derives
+ * them.
  *
- * Why this file exists: the claim once re-derived task
- * eligibility without the cancellation-deadline predicate, so a task past
- * its deadline could be claimed and launched whenever the sweep budget ran
- * out before cancelling it. A predicate defined once cannot drift; a lint
- * (scripts/fragment-lint.py) fails any store SQL that writes an eligibility
- * comparison or a raw state list outside this file.
+ * Why this file exists: the claim once re-derived task eligibility without the
+ * cancellation-deadline predicate, so a task past its deadline could be
+ * claimed and launched whenever the sweep budget ran out before cancelling it.
+ * A predicate defined once cannot drift; a lint (scripts/fragment-lint.py)
+ * fails any store SQL that writes an eligibility comparison or a raw state
+ * list outside this file.
  */
 
 /** Non-terminal states — tasks and runs still in play. */
 export const LIVE = `('pending','running','sleeping')`
 
-/**
- * The states a freshly created successor run can be in: waiting for its turn,
- * never yet claimed. Distinguishing a successor from the run it replaces by
- * ROLE and not only by id is load-bearing — see `successorWritten` below.
- */
+/** The states a freshly created successor run can be in: waiting for its turn. */
 export const QUEUED = `('pending','sleeping')`
 
 /**
- * Proof that THIS batch created the successor run it minted an id for.
+ * Proof that a given statement of THIS batch wrote the row identified by
+ * `key`, and the instant that statement recorded.
  *
- * A stamp names a BATCH, not a row. Asking only "does a run with the
- * successor's id carry this batch's stamp" is therefore answerable by any
- * other row the same batch stamped — and the batch always stamps the run it
- * is failing. When the minted successor id collided with the failing run's
- * id, that failing run answered yes: the retry path fired even though no
- * successor existed, and the terminal path, the only writer of the task's
- * failure reason, was skipped. Pinning the successor's role as well as its
- * id makes the failing run unable to impersonate it.
+ * These two go together and are written as one shape because they answer one
+ * question. A follow-on cannot read the clock (§3.4 rule 8), so when it needs
+ * an instant it takes the one the fenced row already carries — the same row it
+ * is proving exists. `key` is the correlation, written against the alias `f`.
  */
-export const successorWritten = (idParam: string): string =>
-  `EXISTS (SELECT 1 FROM runs s
-           WHERE s.run_id = ${idParam} AND s.claimed_by = $STAMP$ AND s.state IN ${QUEUED})`
+export const fenced = (table: string, key: string, fence: string): string =>
+  `EXISTS (SELECT 1 FROM ${table} f WHERE ${key} AND f.fence_stamp = ${fence})`
 
-/** A materialized cancellation deadline that has already passed. */
-export const cancelDue = (col: string): string => `${col} IS NOT NULL AND ${col} <= ${NOW_MS}`
-
-/** No cancellation deadline, or one still in the future. */
-export const cancelNotDue = (col: string): string => `(${col} IS NULL OR ${col} > ${NOW_MS})`
+export const fencedAt = (table: string, key: string, fence: string): string =>
+  `(SELECT f.fence_at_ms FROM ${table} f WHERE ${key} AND f.fence_stamp = ${fence})`
 
 /**
- * A task eligible to make forward progress (be claimed, be activated):
- * still live AND not past a due cancellation deadline. `t` is the alias
- * of the tasks table in the calling query.
+ * The provenance a stamping follow-on writes: its own stamp, plus the instant
+ * of the row it is following. One definition, so the pair can never be half
+ * written — a fresh stamp beside a stale instant would be a lie about when the
+ * row was last transitioned.
  */
-export const eligibleTask = (t: string): string =>
-  `${t}.state IN ${LIVE} AND ${cancelNotDue(`${t}.cancel_at_ms`)}`
+export const fenceFrom = (table: string, key: string, fence: string): string =>
+  `fence_stamp = ${STAMP}, fence_at_ms = ${fencedAt(table, key, fence)}`
+
+/**
+ * A cancellation deadline that has already passed, as of `at`.
+ *
+ * `at` is explicit at every call site and has no default: which instant a
+ * comparison uses is precisely the thing that goes wrong. A compare-and-set
+ * passes the batch's clock; a follow-on passes the fence_at_ms its CAS
+ * recorded, because a follow-on re-reading the clock can disagree with the
+ * CAS that admitted it and undo the transition it was supposed to complete.
+ */
+export const cancelDue = (col: string, at: string): string =>
+  `${col} IS NOT NULL AND ${col} <= ${at}`
+
+/** No cancellation deadline, or one still in the future as of `at`. */
+export const cancelNotDue = (col: string, at: string): string =>
+  `(${col} IS NULL OR ${col} > ${at})`
+
+/**
+ * A task eligible to make forward progress (be claimed, be activated): still
+ * live AND not past a due cancellation deadline. `t` is the alias of the tasks
+ * table in the calling query.
+ */
+export const eligibleTask = (t: string, at: string): string =>
+  `${t}.state IN ${LIVE} AND ${cancelNotDue(`${t}.cancel_at_ms`, at)}`
