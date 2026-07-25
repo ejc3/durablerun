@@ -117,8 +117,8 @@ FENCED_DEBT: set[str] = set()
 CLASSIFIED = READS | SINGLE_WRITES | set(TOKEN_FENCED) | FENCED_DEBT | DYNAMIC_LABELS
 
 CALL = re.compile(r"\bthis\s*\.\s*db\s*\.\s*batch\s*\(")
-STATIC_LABEL = re.compile(r"\A\s*'([a-zA-Z0-9:_-]+)'")
-DYNAMIC_LABEL = re.compile(r"\A\s*`([a-zA-Z0-9:_-]*)\$\{")
+STATIC_LABEL = re.compile(r"\s*'([a-zA-Z0-9:_-]+)'\s*")
+DYNAMIC_LABEL = re.compile(r"\s*`([a-zA-Z0-9:_-]*)\$\{[^{}]+\}`\s*", re.DOTALL)
 NOW_REFERENCE = re.compile(r"\$\{\s*NOW_MS\s*\}")
 
 
@@ -280,8 +280,8 @@ for path in source_paths:
             continue
         body = src[open_paren + 1 : close_paren]
         label_argument = src[arguments[0][0] : arguments[0][1]]
-        static = STATIC_LABEL.match(label_argument)
-        dynamic = DYNAMIC_LABEL.match(label_argument)
+        static = STATIC_LABEL.fullmatch(label_argument)
+        dynamic = DYNAMIC_LABEL.fullmatch(label_argument)
         if static:
             label = static.group(1)
         elif dynamic and (rel, dynamic.group(1)) in DYNAMIC:

@@ -161,6 +161,13 @@ class _TypeScriptLexer:
                 index = self._template(index)
                 expects_expression = False
                 continue
+            if self.source.startswith(("++", "--"), index):
+                # Prefix and postfix forms preserve the state on their left:
+                # `++n` still needs an expression, while `n++` has completed
+                # one. Treating postfix `++` as two binary plus operators made
+                # the following division slash look like a regex opener.
+                index += 2
+                continue
             if char == "/" and expects_expression:
                 end = self._regex_end(index)
                 _blank(self.structure, index, end)
