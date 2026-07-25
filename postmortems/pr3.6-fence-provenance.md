@@ -259,6 +259,14 @@ more dangerous than average code, not less.
     with `UNIQUE constraint failed: runs.task_id, runs.attempt` and with a
     timer sleep woken about a thousand seconds early.
   - the port and primitive tests for findings 23, 24 and 25.
+  - round 6, each verified failing at the stated assertion before its fix:
+    `b55032f` (finding 39, "expected 'cancelled' to be 'running'" — the task
+    in the unstamped queue was written), `d166c65` (finding 40, "expected
+    'pending' to be 'sleeping'"), `fcc7cfa` (finding 41, B's registration
+    gone after an emit that did not wake B). Fixes: `aec536f`, `76b7835`,
+    `f434586`. Mechanisms: `29d95fe` (the generated wake surface), `5551b5a`
+    (the plan pin recovered from the shipped statement), `805b84e` (the
+    probe's restore guard, verified in both directions).
 - Fixes: the migration and eight-op retrofit; then activate, spawn,
   awaitEvent/emitEvent and claim in turn; then the ownership fix and the
   checker rewrites. Gate after fix: `pnpm verify` green — 563 tests across 58
