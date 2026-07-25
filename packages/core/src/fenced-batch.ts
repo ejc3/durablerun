@@ -86,13 +86,13 @@ interface Named {
 const COLUMN = String.raw`(?:\w+\.)?"?(\w+)"?`
 const SAME_COLUMN = String.raw`(?:\w+\.)?"?\1"?`
 const BLIND_COUNTER = new RegExp(
-  String.raw`\b${COLUMN}\s*=\s*\(?\s*(?:` +
-    // x = x + n, x = x - n
-    String.raw`${SAME_COLUMN}\s*[-+]` +
-    '|' +
-    // x = n + x
-    String.raw`[\w?]+\s*\+\s*${SAME_COLUMN}\b` +
+  [
+    String.raw`\b${COLUMN}\s*=\s*\(?\s*(?:`,
+    String.raw`${SAME_COLUMN}\s*[-+]`, // x = x + n, x = x - n
+    '|',
+    String.raw`[\w?]+\s*\+\s*${SAME_COLUMN}\b`, // x = n + x
     ')',
+  ].join(''),
   'i',
 )
 

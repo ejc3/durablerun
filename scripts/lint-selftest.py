@@ -102,6 +102,102 @@ export class S {
         ),
         "an unclassified literal label must fail until it is classified",
     ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
+  async probe(q: string) {
+    await this.db.batch('heartbeat', [
+      { sql: `UPDATE runs SET a = 1 WHERE id = ?`, args: [q] },
+      { sql: `UPDATE tasks SET state = 'running'`, args: [] },
+    ])
+  }
+}
+"""
+        ),
+        "a label declared a SINGLE write must fail once it grows a second statement",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
+  async probe(q: string) {
+    await this.db.batch('sweep:scan', [{ sql: `UPDATE runs SET a = 1`, args: [] }])
+  }
+}
+"""
+        ),
+        "a label declared a READ must fail when it is not run in read mode",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
+  async probe(q: string) {
+    await this.db.batch('set-checkpoint', [
+      { sql: `UPDATE runs SET claim_expires_at_ms = ${NOW_MS} + 1 WHERE id = ?`, args: [q] },
+      { sql: `INSERT INTO checkpoints (updated_at_ms) VALUES (${NOW_MS})`, args: [] },
+    ])
+  }
+}
+"""
+        ),
+        "two statements of one batch reading the clock is the class-A bug itself",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
+  async probe(q: string) {
+    await this.db.batch('brand-new-write', [{ sql: `UPDATE tasks SET a = 1`, args: [] }])
+  }
+}
+""",
+            name="nested/deeper/store.ts",
+        ),
+        "a file below the package's src directory must not be invisible",
+    ),
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM tasks WHERE cancel_at_ms <= 5`\n",
+            name="probe.ts",
+        ),
+        "an eligibility comparison outside fragments.ts is how the claim lost the deadline predicate",
+    ),
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM runs WHERE state IN ('pending','running')`\n",
+            name="probe.ts",
+        ),
+        "a raw state list outside fragments.ts is a second definition of 'live'",
+    ),
+    (
+        "determinism-lint.sh",
+        {"packages/core/src/probe.ts": "export const at = Date.now()\n"},
+        "ambient time in engine source is the nondeterminism this repo forbids",
+    ),
+    (
+        "user-boundary-lint.sh",
+        {"packages/sdk/src/probe.ts": "import { durationToMs } from '@durablerun/core'\n"},
+        "the SDK using the raw validator makes bad input retryable instead of fatal",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/probe.ts": (
+                "await this.db.batch('brand-new-label', [{ sql: `SELECT 1`, args: [] }])\n"
+            ),
+            "specs/Scheduler.tla": "---- MODULE Scheduler ----\n====\n",
+            "scripts/spec-ledger-map.md": "",
+        },
+        "a batch label mapped to no TLA action must fail until it is mapped or excluded",
+    ),
 ] + [
     (
         "clock-lint.py",
@@ -125,12 +221,25 @@ export class S {
         "CLOCK_TIMESTAMP()",
         "SYSDATE()",
         "sysdate()",
+        # Spellings a review found the pattern did not know. Each is a real
+        # clock in some dialect this engine intends to support, so each is a
+        # way to write the class-A bug that the checker would have called
+        # clean.
+        "UTC_TIMESTAMP(6)",
+        "UTC_TIMESTAMP",
+        "LOCALTIME",
+        "LOCALTIMESTAMP",
+        "timeofday()",
+        "GETDATE()",
     )
 ]
 
-# Inputs each lint must ACCEPT — a checker that rejects everything passes the
-# cases above while being useless, and the false positives here are real ones
-# the stricter clock pattern produced on its first run.
+# Inputs each lint must ACCEPT. A checker that rejects everything passes every
+# case above while being useless — but the real repo already covers that
+# direction, because `pnpm verify` runs every checker over it and the build is
+# green, so each one demonstrably accepts a large body of correct code. What
+# is NOT covered there is the near miss: correct code that looks like a
+# violation. Every entry below is a false positive a checker actually produced.
 GOOD_CASES = [
     ("batch-lint.py", CLEAN_STORE, "a classified read batch"),
     ("clock-lint.py", CLEAN_STORE, "a batch label containing the word 'now'"),
@@ -148,16 +257,54 @@ GOOD_CASES = [
 
 
 def run(lint: str, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run `lint` against a throwaway tree that looks like the repo.
+
+    The script is COPIED into the fixture tree rather than run from scripts/,
+    because several checkers locate the repo from their own path — pointing
+    them at a fixture any other way would silently run them over the real
+    repo and report whatever it happens to say. The root is also passed as an
+    argument for the checkers that accept one; the two agree.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         root = tree(Path(tmp), files)
+        (root / "scripts").mkdir(parents=True, exist_ok=True)
+        copied = root / "scripts" / lint
+        copied.write_text((SCRIPTS / lint).read_text())
+        runner = ["bash"] if lint.endswith(".sh") else [sys.executable]
         return subprocess.run(
-            [sys.executable, str(SCRIPTS / lint), str(root)],
+            [*runner, str(copied), str(root)],
             capture_output=True,
             text=True,
+            cwd=str(root),
         )
 
 
 failures = []
+
+# The inventory check. Without it, this file silently covers whichever
+# checkers someone remembered: a new lint could be written, wired into the
+# gate and believed, with no evidence it can fail — which is exactly how the
+# two broken ones shipped. Every checker in scripts/ must appear here with at
+# least one input it must REJECT. A checker with no bad case is a checker
+# nobody has watched fail.
+EXEMPT = {
+    # Not checkers: this file, and the review-attestation tool (which has its
+    # own test because it talks to git and GitHub).
+    "lint-selftest.py",
+    "review-attest.sh",
+}
+covered = {lint for lint, _, _ in BAD_CASES}
+for script in sorted(SCRIPTS.iterdir()):
+    name = script.name
+    if name in EXEMPT or not ("lint" in name or "ledger" in name):
+        continue
+    if name not in covered:
+        failures.append(
+            f"{name} has no case here proving it can fail. Add at least one input "
+            f"it must reject to BAD_CASES in scripts/lint-selftest.py — a checker "
+            f"nobody has watched fail is a checker nobody should believe."
+        )
+
 for lint, files, why in BAD_CASES:
     result = run(lint, files)
     if result.returncode == 0:

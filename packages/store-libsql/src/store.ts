@@ -785,10 +785,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       },
       // Self-cleaning: every beat also buries the expired (a fresh id per
       // process restart must not grow the table forever — bounds are
-      // invariants too).
+      // invariants too). "Now" is the beat just written, not a second clock
+      // read, so the two statements cannot disagree about the time.
       {
-        sql: `DELETE FROM drivers WHERE expires_at_ms < ${NOW_MS}`,
-        args: [],
+        sql: `DELETE FROM drivers
+              WHERE expires_at_ms < (SELECT d.last_beat_ms FROM drivers d
+                                     WHERE d.queue = ? AND d.driver_id = ?)`,
+        args: [queue, driverId],
       },
     ])
   }
@@ -1180,9 +1183,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         args: [extendMs, runId, queue, taskId, claimToken],
       },
       {
+        // updated_at_ms comes from the heartbeat statement 1 just wrote, not
+        // from a second clock read: the two statements of one batch see
+        // different clocks on a real backend.
         sql: `INSERT INTO checkpoints
                 (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-              SELECT ?, ?, ?, ?, r.run_id, r.attempt, ${NOW_MS}
+              SELECT ?, ?, ?, ?, r.run_id, r.attempt, r.heartbeat_at_ms
               FROM runs r
               WHERE r.run_id = ? AND r.task_id = ? AND r.queue = ? AND r.claimed_by = ?
                 AND r.state = 'running'

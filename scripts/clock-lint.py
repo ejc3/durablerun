@@ -34,10 +34,18 @@ EXEMPT = {"time.ts"}
 # which is the failure that trains people to weaken a checker until it is
 # quiet. The bare-keyword forms (CURRENT_TIMESTAMP, CURRENT_TIME) take no
 # parentheses in any dialect and so stay word-matched.
-CALLS = "unixepoch|julianday|strftime|now|sysdate|clock_timestamp|statement_timestamp|transaction_timestamp|getdate"
+CALLS = (
+    "unixepoch|julianday|strftime|now|sysdate|clock_timestamp|statement_timestamp"
+    "|transaction_timestamp|getdate|timeofday|utc_timestamp|utc_date|utc_time"
+    "|localtime|localtimestamp|current_timestamp"
+)
 CLOCKS = re.compile(
     rf"\b(?:{CALLS})\s*\("
-    r"|\b(?:current_timestamp|current_time|current_date)\b"
+    # Bare keyword forms: legal with no parentheses in at least one dialect,
+    # so the call-shaped pattern above would miss them. MySQL accepts
+    # LOCALTIME and UTC_TIMESTAMP bare; Postgres accepts LOCALTIMESTAMP.
+    r"|\b(?:current_timestamp|current_time|current_date"
+    r"|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\b"
     r"|\b(?:datetime|date|time)\s*\(\s*'now'",
     re.IGNORECASE,
 )
