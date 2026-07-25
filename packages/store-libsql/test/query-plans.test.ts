@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   LibsqlExecutor,
   LibsqlStoreAdmin,
+  NEXT_WAKE_SQL,
   SWEEP_SCAN_CANCELS_SQL,
   SWEEP_SCAN_EXPIRED_SQL,
 } from '../src/index.js'
@@ -81,6 +82,20 @@ describe('lease queries', () => {
       ['q'],
     )
     expect(p).toContain('runs_lease')
+  })
+
+  it('the PRODUCTION next-wake query seeks an index on every leg', async () => {
+    // NEXT_WAKE_SQL was exported "so the query-plan suite pins it" and then
+    // never imported: the pins above are hand-written stand-ins for its legs,
+    // which is exactly the mistake this file's own header warns about — a pin
+    // on a stand-in cannot catch drift in the query it protects. Every driver
+    // tick runs this one, so a lost index term is a per-tick full scan.
+    const p = await plan(NEXT_WAKE_SQL, ['q', 'q', 'q', 'q'])
+    expect(p).not.toContain('SCAN runs')
+    expect(p).not.toContain('SCAN tasks')
+    expect(p).toContain('runs_poll')
+    expect(p).toContain('runs_lease')
+    expect(p).toContain('tasks_cancel')
   })
 })
 

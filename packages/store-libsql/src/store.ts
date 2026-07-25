@@ -71,6 +71,34 @@ const INFRA_RETRIES_FROM = (successorParam: string, fence: string): string =>
 /** A run's own row, by id — the correlation every fence in this file uses. */
 const BY_RUN = `f.run_id = ?`
 
+/**
+ * The last-writer-wins tiebreak on a checkpoint upsert. Wire-visible
+ * semantics, so it is ONE constant: the two write sites (the inline
+ * checkpoint and the suspension marker) drifting apart would mean a step's
+ * state was retained by one path and discarded by the other.
+ */
+const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
+    state = excluded.state,
+    owner_run_id = excluded.owner_run_id,
+    owner_attempt = excluded.owner_attempt,
+    updated_at_ms = excluded.updated_at_ms
+  WHERE excluded.owner_attempt >= checkpoints.owner_attempt`
+
+/**
+ * A run's waits die with the run. Four transitions end a run — the relaunch
+ * cap, the claim timeout, completion and failure — and each wrote this
+ * statement out. They differed only in which compare-and-set they follow,
+ * which is exactly the part that must not be copied by hand.
+ */
+function waitsGone(b: FencedBatch, runId: string, after: string): void {
+  b.followOn(
+    'waits-gone',
+    `DELETE FROM waits WHERE run_id = ? AND ${fenced('runs', BY_RUN, b.fence(after))}`,
+    [runId, runId],
+    { many: 'a run may hold several waits' },
+  )
+}
+
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
 const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
        r.wake_event, r.event_payload, r.wake_step,
@@ -635,12 +663,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [REASON_RELAUNCH_CAP, item.runId, item.taskId, item.runId],
       'one',
     )
-    b.followOn(
-      'waits-gone',
-      `DELETE FROM waits WHERE run_id = ? AND ${fenced('runs', BY_RUN, b.fence('cap'))}`,
-      [item.runId, item.runId],
-      { many: 'a run may hold several waits' },
-    )
+    waitsGone(b, item.runId, 'cap')
     const { won } = await b.run(this.db)
     if (won === 'reopen') {
       return {
@@ -731,12 +754,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'one',
     )
     // The dead run's waits die with it (the reviewed orphan-waits leak).
-    b.followOn(
-      'waits-gone',
-      `DELETE FROM waits WHERE run_id = ? AND ${fenced('runs', BY_RUN, b.fence('fail'))}`,
-      [item.runId, item.runId],
-      { many: 'a run may hold several waits' },
-    )
+    waitsGone(b, item.runId, 'fail')
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') return null // lost the race
     return (results.successor?.rowsAffected ?? 0) === 1
@@ -956,12 +974,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
        SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
        FROM runs f WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('suspend')}
-       ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
-         state = excluded.state,
-         owner_run_id = excluded.owner_run_id,
-         owner_attempt = excluded.owner_attempt,
-         updated_at_ms = excluded.updated_at_ms
-       WHERE excluded.owner_attempt >= checkpoints.owner_attempt`,
+       ${CHECKPOINT_LWW}`,
       [checkpoint.key, checkpoint.stateJson, runId],
       'one',
     )
@@ -1009,12 +1022,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [resultJson, runId, runId],
       'one',
     )
-    b.followOn(
-      'waits-gone',
-      `DELETE FROM waits WHERE run_id = ? AND ${fenced('runs', BY_RUN, b.fence('complete'))}`,
-      [runId, runId],
-      { many: 'a run may hold several waits' },
-    )
+    waitsGone(b, runId, 'complete')
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw new LeaseLostError(`complete ${runId}`)
   }
@@ -1122,12 +1130,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         'one',
       )
     }
-    b.followOn(
-      'waits-gone',
-      `DELETE FROM waits WHERE run_id = ? AND ${failedRun}`,
-      [runId, runId],
-      { many: 'a run may hold several waits' },
-    )
+    waitsGone(b, runId, 'fail')
     const { won } = await b.run(this.db)
     if (won !== 'fail') throw new LeaseLostError(`fail ${runId}`)
   }
@@ -1194,12 +1197,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 AND r.state = 'running'
                 AND EXISTS (SELECT 1 FROM tasks t2
                             WHERE t2.task_id = r.task_id AND t2.state IN ${LIVE})
-              ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
-                state = excluded.state,
-                owner_run_id = excluded.owner_run_id,
-                owner_attempt = excluded.owner_attempt,
-                updated_at_ms = excluded.updated_at_ms
-              WHERE excluded.owner_attempt >= checkpoints.owner_attempt`,
+              ${CHECKPOINT_LWW}`,
         args: [taskId, checkpointName, queue, stateJson, runId, taskId, queue, claimToken],
       },
     ])
@@ -1469,10 +1467,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
 function clampLimit(limit: number): number {
   if (!Number.isFinite(limit)) throw new RangeError(`limit ${limit}`)
   return Math.max(0, Math.floor(limit))
-}
-
-function notYet(method: string): Promise<never> {
-  return Promise.reject(new Error(`LibsqlSchedulerStore.${method}: not implemented yet`))
 }
 
 function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
