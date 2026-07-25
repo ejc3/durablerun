@@ -14,14 +14,15 @@
     "format-check": "biome format .",
     "lint:determinism": "bash scripts/determinism-lint.sh",
     "lint:user-boundary": "bash scripts/user-boundary-lint.sh",
-    "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:user-boundary && pnpm lint:ledger && pnpm lint:fragments && pnpm lint:batches && pnpm lint:clock && pnpm format-check && pnpm typecheck && pnpm test",
+    "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:user-boundary && pnpm lint:ledger && pnpm lint:fragments && pnpm lint:batches && pnpm lint:clock && pnpm lint:selftest && pnpm format-check && pnpm typecheck && pnpm test",
     "lint:ledger": "python3 scripts/spec-ledger.py",
     "lint:fragments": "python3 scripts/fragment-lint.py",
     "lint:batches": "python3 scripts/batch-lint.py",
     "lint:clock": "python3 scripts/clock-lint.py",
     "verify:tla": "bash scripts/confine.sh bash scripts/tla.sh",
     "verify:fuzz": "FUZZ_SEEDS=2000 FUZZ_STEPS=100 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test",
-    "verify:fuzz:deep": "FUZZ_SEEDS=100000 FUZZ_STEPS=150 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test"
+    "verify:fuzz:deep": "FUZZ_SEEDS=100000 FUZZ_STEPS=150 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test",
+    "lint:selftest": "python3 scripts/lint-selftest.py"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

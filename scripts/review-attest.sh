@@ -13,9 +13,15 @@
 #      on the branch were caught by the author's own machinery, not by
 #      review).
 #   2. A nonzero count requires the PR to ADD (not merely touch or rename)
-#      a postmortems/*.md containing every '## ' section of
+#      a postmortem containing every '## ' section of
 #      postmortems/TEMPLATE.md, with its placeholders filled and at least
 #      one row in its findings table. This is the SEV rule (CLAUDE.md).
+#      A postmortem is identified the same way the template defines one —
+#      by its '# Postmortem' heading — so other documents may live in
+#      postmortems/ without being mistaken for one. Selecting by directory
+#      instead made this gate refuse the very branch that introduced it,
+#      whose design notes live there too; a mechanism that can only be
+#      satisfied by mangling good documents teaches people to bypass it.
 #   3. The review artifacts verifiably COMPLETED: a codex log containing
 #      its terminal 'tokens used' marker, and a review-workflow journal
 #      with per-finding results — or an explicit 'reviews-abandoned:<reason>'
@@ -56,32 +62,55 @@ if [[ "$DECLARED" -gt 0 ]]; then
   # ADDED files only: a whitespace edit or rename of an existing postmortem
   # must not satisfy a new round's obligation (and deleted/renamed paths
   # must not 404 the content fetch below).
-  PM_FILES=$(gh api "repos/{owner}/{repo}/pulls/$PR/files" --paginate \
+  ADDED=$(gh api "repos/{owner}/{repo}/pulls/$PR/files" --paginate \
     --jq '.[] | select(.status == "added") | .filename' \
     | grep -E '^postmortems/.*\.md$' | grep -vx 'postmortems/TEMPLATE.md' || true)
-  if [[ -z "$PM_FILES" ]]; then
-    echo "SEV rule: review-findings: $DECLARED declared but the PR ADDS no postmortems/*.md — refusing to attest" >&2
-    exit 1
-  fi
-  # Required sections come from the template itself — one definition, no
-  # drift between the checker and what authors copy.
-  mapfile -t REQ_SECTIONS < <(grep -E '^## ' "$(dirname "$0")/../postmortems/TEMPLATE.md")
-  [[ "${#REQ_SECTIONS[@]}" -gt 0 ]] || { echo "cannot read required sections from postmortems/TEMPLATE.md" >&2; exit 1; }
+
+  TEMPLATE="$(dirname "$0")/../postmortems/TEMPLATE.md"
+  # Everything the checker demands is READ FROM THE TEMPLATE, so adding a
+  # section or a placeholder there extends this gate automatically and the
+  # checker can never describe a different document than authors copy.
+  REQ_SECTIONS=$(grep -E '^## ' "$TEMPLATE")
+  [[ -n "$REQ_SECTIONS" ]] || { echo "cannot read required sections from $TEMPLATE" >&2; exit 1; }
+  # A placeholder is any template LINE carrying an angle-bracket slot. Taking
+  # whole lines catches the multi-line prose slots too, which a '<[^>]*>'
+  # match cannot see — those were most of them, so naming two by hand let a
+  # verbatim copy of the template attest.
+  PLACEHOLDERS=$(grep -F '<' "$TEMPLATE" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | grep -v '^$')
+  [[ -n "$PLACEHOLDERS" ]] || { echo "cannot read placeholders from $TEMPLATE" >&2; exit 1; }
+
+  PM_FILES=""
   while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
     CONTENT=$(gh api "repos/{owner}/{repo}/contents/$f?ref=$SHA" --jq .content | base64 -d)
-    for section in "${REQ_SECTIONS[@]}"; do
+    # A postmortem is what the template says a postmortem is. Other documents
+    # are allowed to live here and are simply not candidates.
+    head -1 <<<"$CONTENT" | grep -q '^# Postmortem' || continue
+    PM_FILES="$PM_FILES$f"$'\n'
+    while IFS= read -r section; do
       grep -qF "$section" <<<"$CONTENT" || {
         echo "SEV rule: postmortem $f is missing required section '$section'" >&2; exit 1; }
-    done
-    if grep -qF '<hash>' <<<"$CONTENT" || grep -qF '<round name>' <<<"$CONTENT"; then
-      echo "SEV rule: postmortem $f still contains template placeholders — fill it in" >&2
-      exit 1
-    fi
+    done <<<"$REQ_SECTIONS"
+    while IFS= read -r slot; do
+      grep -qF "$slot" <<<"$CONTENT" && {
+        echo "SEV rule: postmortem $f still contains the template line '$slot' — fill it in" >&2
+        exit 1; }
+    done <<<"$PLACEHOLDERS"
+    # An author's own deferral marker is an unfinished postmortem too.
+    grep -qE '<!--[[:space:]]*(TODO|filled in)' <<<"$CONTENT" && {
+      echo "SEV rule: postmortem $f still carries an unfilled-section marker" >&2; exit 1; }
     grep -qE '^\| [0-9]' <<<"$CONTENT" || {
       echo "SEV rule: postmortem $f has an empty findings table" >&2; exit 1; }
-  done <<<"$PM_FILES"
+  done <<<"$ADDED"
+
+  if [[ -z "$PM_FILES" ]]; then
+    echo "SEV rule: review-findings: $DECLARED declared but the PR ADDS no postmortem" >&2
+    echo "  (a postmortem is a postmortems/*.md whose first line begins '# Postmortem';" >&2
+    echo "   copy postmortems/TEMPLATE.md)" >&2
+    exit 1
+  fi
   echo "SEV rule satisfied: $DECLARED findings declared, postmortem(s) added with all required sections:"
-  echo "$PM_FILES"
+  printf '%s' "$PM_FILES"
 fi
 
 # --- artifact completeness (or explicit public abandonment) -----------------
@@ -101,7 +130,9 @@ if [[ "$JOURNAL" != "-" ]]; then
   grep -q '"type":"result"' "$JOURNAL" || { echo "journal has no agent results" >&2; exit 1; }
 fi
 
+RAN="codex"
+[[ "$JOURNAL" != "-" ]] && RAN="codex + verified multi-lens review"
 gh api "repos/{owner}/{repo}/statuses/$SHA" -f state=success \
   -f context=adversarial-review \
-  -f description="codex + verified multi-lens review reported for $SHA; review-findings: $DECLARED"
+  -f description="$RAN reported for $SHA; review-findings: $DECLARED"
 echo "attested: adversarial-review success on $SHA (review-findings: $DECLARED)"
