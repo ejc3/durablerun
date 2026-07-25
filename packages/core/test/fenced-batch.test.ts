@@ -485,6 +485,22 @@ describe('compilation binds tokens left to right', () => {
     expect(after?.args).toEqual(['seed:after', 7, 't', 'seed:win'])
   })
 
+  it('refuses an undefined bind instead of quietly making it null', async () => {
+    // The executor rejects undefined binds so that a typo cannot be laundered
+    // into an infrastructure outage and retried until the run's budget is
+    // gone. This compiler used to coerce undefined to null first — and every
+    // protocol operation goes through it, so that coercion covered the entire
+    // surface the executor's check was added to protect, and sent a valid
+    // statement carrying a value the caller never meant.
+    const b = batch().cas(
+      'win',
+      'runs',
+      `UPDATE runs SET ${FENCE_SET} WHERE run_id = ? AND queue = ?`,
+      ['r', undefined as unknown as string],
+    )
+    await expect(b.run(new FakeDb([1]))).rejects.toThrow(/is undefined/)
+  })
+
   it('fails when a statement binds a different number of args than it has', async () => {
     const b = batch().cas(
       'win',

@@ -1297,6 +1297,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // the mismatch was deleted in the same batch, so nothing afterwards looked
     // wrong. A run parked by awaitEvent carries the event and step it parked
     // on; a timer sleep carries neither.
+    //
+    // The step match is a SEPARATE existence probe rather than extra
+    // conditions on the IN subquery, and the difference is the whole query
+    // plan. Correlating that subquery to `runs` demotes it from the DRIVER to
+    // a filter, so the statement goes from `SEARCH runs USING PRIMARY KEY`
+    // over the handful of waiters to `SCAN runs USING INDEX runs_poll` — a
+    // full pass over the largest table in the engine, on every emit. Keeping
+    // it uncorrelated leaves the waits index driving and makes the step match
+    // a primary-key probe. Measured both ways.
     b.followOn(
       'wake-runs',
       'runs',
@@ -1310,12 +1319,24 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        WHERE state = 'sleeping'
          AND wake_event = ?
          AND run_id IN (SELECT w.run_id FROM waits w
-                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'
-                          AND w.run_id = runs.run_id AND w.step_name = runs.wake_step)
+                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')
+         AND EXISTS (SELECT 1 FROM waits s
+                     WHERE s.run_id = runs.run_id AND s.step_name = runs.wake_step
+                       AND s.event_name = ? AND s.status = 'waiting')
          AND ${fenced('events', thisEvent, b.fence('event'))}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
-      [eventName, eventName, eventName, eventName, eventName, queue, eventName, eventName],
+      [
+        eventName,
+        eventName,
+        eventName,
+        eventName,
+        eventName,
+        queue,
+        eventName,
+        eventName,
+        eventName,
+      ],
       { many: 'an emit wakes every registered waiter' },
     )
     // Driven by the runs this batch actually woke, and never by waits.task_id.

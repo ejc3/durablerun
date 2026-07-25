@@ -408,8 +408,27 @@ export class FencedBatch {
       }
       out += '?'
       if (token === '?') {
-        const value = s.args[argIndex++]
-        args.push(value === undefined ? null : value)
+        const index = argIndex++
+        const value = s.args[index]
+        // NOT coerced to null. The executor rejects an undefined bind because
+        // an undefined reaching the driver becomes a driver throw, which the
+        // store wraps as an outage, which the worker retries until the run's
+        // infrastructure budget is gone — a typo reported as exhausted
+        // infrastructure. Quietly substituting null here would instead send a
+        // perfectly valid statement carrying a value the caller never meant,
+        // and the executor's check would never see it: every protocol
+        // operation goes through this compiler, so the coercion covered the
+        // entire surface that check exists to protect.
+        //
+        // Only when the slot EXISTS: running off the end of a short argument
+        // list also reads undefined, and the count mismatch below says
+        // something far more useful about that.
+        if (index < s.args.length && value === undefined) {
+          throw new TypeError(
+            `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,
+          )
+        }
+        args.push(value as string | number | bigint | Uint8Array | null)
       } else if (token === STAMP) {
         args.push(`${this.seed}:${s.name}`)
       } else {

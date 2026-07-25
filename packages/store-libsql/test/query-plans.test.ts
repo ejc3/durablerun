@@ -1,7 +1,9 @@
+import { type Client, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   LibsqlExecutor,
   LibsqlStoreAdmin,
+  MIGRATIONS,
   NEXT_WAKE_SQL,
   SWEEP_SCAN_CANCELS_SQL,
   SWEEP_SCAN_EXPIRED_SQL,
@@ -16,19 +18,39 @@ import {
  */
 
 let db: LibsqlExecutor
+let raw: Client
 
 async function plan(sql: string, args: (string | number)[] = []): Promise<string> {
   const [r] = await db.batch('plan', [{ sql: `EXPLAIN QUERY PLAN ${sql}`, args }], 'read')
   return (r?.rows ?? []).map((row) => String(row.detail)).join('\n')
 }
 
+/**
+ * The plan for a WRITE, which needs a raw client: `EXPLAIN QUERY PLAN UPDATE`
+ * through the executor's batch takes the writer lock and fails.
+ *
+ * That gap is why the suite pinned only reads, and it cost a real regression:
+ * correlating emit's waiter subquery to `runs` — a correctness fix — silently
+ * demoted it from the query's driver to a filter, turning a lookup over the
+ * handful of waiters into a full scan of the runs table on every emit.
+ * Nothing failed, because no write had a plan pinned.
+ */
+async function writePlan(sql: string, args: (string | number)[] = []): Promise<string> {
+  const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args })
+  return r.rows.map((row) => String(row.detail)).join('\n')
+}
+
 beforeEach(async () => {
   db = LibsqlExecutor.open(':memory:')
   await new LibsqlStoreAdmin(db).migrate()
+  raw = createClient({ url: ':memory:' })
+  await raw.execute(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+  for (const m of MIGRATIONS) for (const s of m.statements) await raw.execute(s)
 })
 
 afterEach(() => {
   db.close()
+  raw.close()
 })
 
 describe('claim candidate legs', () => {
@@ -96,6 +118,45 @@ describe('lease queries', () => {
     expect(p).toContain('runs_poll')
     expect(p).toContain('runs_lease')
     expect(p).toContain('tasks_cancel')
+  })
+})
+
+describe('the emit fan-out, which is a WRITE', () => {
+  /**
+   * Structurally the same statement emitEvent builds: the waits index picks
+   * the waiters, and everything else filters them. The assertion is on the
+   * DRIVER — `SEARCH runs USING PRIMARY KEY` means the waiters were looked up
+   * and each run fetched by key; `SCAN runs` means every run in the table was
+   * examined and the waits index reduced to a filter. Those differ by the size
+   * of the runs table, which is unbounded in a durable-execution engine.
+   */
+  const wakeRuns = (stepMatch: string) => `
+    UPDATE runs SET state = 'pending', wake_event = ?
+    WHERE state = 'sleeping' AND wake_event = ?
+      AND run_id IN (SELECT w.run_id FROM waits w
+                     WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'${stepMatch})`
+
+  it('is driven by the waits index, not by a scan of runs', async () => {
+    const p = await writePlan(
+      `${wakeRuns('')}
+       AND EXISTS (SELECT 1 FROM waits s
+                   WHERE s.run_id = runs.run_id AND s.step_name = runs.wake_step
+                     AND s.event_name = ? AND s.status = 'waiting')`,
+      ['e', 'e', 'q', 'e', 'e'],
+    )
+    expect(p).toContain('waits_event')
+    expect(p).toContain('SEARCH runs USING PRIMARY KEY')
+    expect(p).not.toContain('SCAN runs')
+  })
+
+  it('degrades to a full scan if the waiter subquery is correlated', async () => {
+    // The shape that shipped briefly, kept as the counter-example so the
+    // assertion above is known to be discriminating rather than vacuous.
+    const p = await writePlan(
+      wakeRuns(' AND w.run_id = runs.run_id AND w.step_name = runs.wake_step'),
+      ['e', 'e', 'q', 'e'],
+    )
+    expect(p).toContain('SCAN runs')
   })
 })
 
