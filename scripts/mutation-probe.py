@@ -79,17 +79,17 @@ MUTATIONS = [
     (
         "emit-wake-step-correlation",
         "packages/store-libsql/src/store.ts",
-        "                     WHERE s.run_id = runs.run_id AND s.step_name = runs.wake_step\n",
-        "                     WHERE s.run_id = runs.run_id\n",
+        "                       AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step))",
+        "                       AND (runs.wake_step IS NULL OR ? IS NOT NULL))",
         "an emit delivers to a run parked at a DIFFERENT step of the same event",
     ),
     (
         "successor-ownership",
         "packages/store-libsql/src/store.ts",
-        "           AND NOT ${successor.mine('?', 'f.task_id')}`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
-        "           AND NOT ${fenced('runs', BY_RUN, b.fence('successor'))}`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
+        "           AND NOT ${successor.mine('?', 'f.task_id', '?')}`,\n"
+        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId, runId],",
+        "           AND NOT ${fenced('runs', BY_RUN, b.fence('successor'))} AND ? IS NOT NULL`,\n"
+        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId, runId],",
         "a replayed failure re-inserts a successor that has since been claimed",
     ),
     (
