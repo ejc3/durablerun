@@ -132,12 +132,6 @@ describe('the emit fan-out, which is a WRITE', () => {
    * examined and the waits index reduced to a filter. Those differ by the size
    * of the runs table, which is unbounded in a durable-execution engine.
    */
-  const wakeRuns = (stepMatch: string) => `
-    UPDATE runs SET state = 'pending', wake_event = ?
-    WHERE state = 'sleeping' AND wake_event = ?
-      AND run_id IN (SELECT w.run_id FROM waits w
-                     WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'${stepMatch})`
-
   /**
    * The statement emitEvent ACTUALLY sends, recovered by running the real
    * operation through a recording executor.
@@ -185,7 +179,11 @@ describe('the emit fan-out, which is a WRITE', () => {
     // The shape that shipped briefly, kept as the counter-example so the
     // assertion above is known to be discriminating rather than vacuous.
     const p = await writePlan(
-      wakeRuns(' AND w.run_id = runs.run_id AND w.step_name = runs.wake_step'),
+      `UPDATE runs SET state = 'pending', wake_event = ?
+       WHERE state = 'sleeping' AND wake_event = ?
+         AND run_id IN (SELECT w.run_id FROM waits w
+                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'
+                          AND w.run_id = runs.run_id AND w.step_name = runs.wake_step)`,
       ['e', 'e', 'q', 'e'],
     )
     expect(p).toContain('SCAN runs')

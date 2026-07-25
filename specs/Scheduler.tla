@@ -99,6 +99,22 @@
 \* guard analyses -- see the [dup-class] tags in the BATCH-LABEL LEDGER.
 \*
 \* DELIBERATELY NOT MODELED (honest list):
+\*  - THE WAITS TABLE.  A wait is modeled as two per-run fields, waitEv[r]
+\*    and waitAt[r]: one registration per run, named by the run.  The
+\*    implementation stores waits in a TABLE keyed (run_id, step_name), so it
+\*    can hold rows the run is not parked on -- a leftover from an earlier
+\*    step, a row naming another task, a row whose deadline is not the run's.
+\*    None of those states exists here, so EmitEvent's guard can be the whole
+\*    truth (waitEv[r] = e) while the implementation needs five conditions to
+\*    approximate it.  This is not a small abstraction: EVERY emit defect
+\*    found by review -- waking a run parked on a timer, moving a task named
+\*    by a foreign wait row, and two rows answering one question between them
+\*    -- lives exactly in the gap, which is why TLC could not have found any
+\*    of them.  The model is not wrong; the implementation is not yet a
+\*    refinement of it.  PR3.8 (an immutable wait id plus runs.active_wait_id)
+\*    is what closes the gap, and it is this abstraction written down as
+\*    schema.  Until then the executable twin is a generated fault surface
+\*    over corrupt wait rows, not this spec.
 \*  - Checkpoint content, the data plane (RunStateStore), child tasks,
 \*    defer-unknown-task, multi-queue, multi-shard, sagas.
 \*  - SQL atomicity: assumed as action atomicity (see mapping above).

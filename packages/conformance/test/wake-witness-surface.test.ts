@@ -216,20 +216,39 @@ function name(fields: readonly Field[]): string {
   return fields.length === 0 ? 'healthy' : fields.join('+')
 }
 
+interface Case {
+  label: string
+  park: Park
+  rows: Row[]
+}
+
+/** Runs every case and returns the ones the engine and the oracle disagree on. */
+async function disagreements(cases: readonly Case[]): Promise<string[]> {
+  const f = await open()
+  try {
+    const wrong: string[] = []
+    for (const [i, c] of cases.entries()) {
+      const got = await wakes(f, `${Q}-${i}`, c.park, c.rows)
+      if (got !== shouldWake(c.park, c.rows)) wrong.push(`${c.label}: woke=${got}`)
+    }
+    return wrong
+  } finally {
+    f.close()
+  }
+}
+
+const parks = Object.entries(PARKS)
+
 describe('a wake needs ONE row that justifies it', () => {
   it('decides every park against every single-row corruption', async () => {
-    const f = await open()
-    const wrong: string[] = []
-    let i = 0
-    for (const [label, park] of Object.entries(PARKS)) {
-      for (const fields of SUBSETS) {
-        const rows = [corrupt(fields)]
-        const got = await wakes(f, `${Q}-${i++}`, park, rows)
-        if (got !== shouldWake(park, rows)) wrong.push(`${label} / ${name(fields)}: woke=${got}`)
-      }
-    }
-    expect(wrong).toEqual([])
-    f.close()
+    const cases = parks.flatMap(([label, park]) =>
+      SUBSETS.map((fields) => ({
+        label: `${label} / ${name(fields)}`,
+        park,
+        rows: [corrupt(fields)],
+      })),
+    )
+    expect(await disagreements(cases)).toEqual([])
   })
 
   it('decides every park against every PAIR of corruptions', async () => {
@@ -240,23 +259,17 @@ describe('a wake needs ONE row that justifies it', () => {
     // shape that produced the defect: the row with the right step was wrong
     // about the queue, and the row with the right queue was wrong about the
     // step.
-    const f = await open()
-    const atStep = SUBSETS.filter((s) => !s.includes('step_name'))
-    const atOther = SUBSETS.filter((s) => s.includes('step_name'))
-    const wrong: string[] = []
-    let i = 0
-    for (const [label, park] of Object.entries(PARKS)) {
-      for (const a of atStep) {
-        for (const b of atOther) {
-          const rows = [corrupt(a), corrupt(b)]
-          const got = await wakes(f, `${Q}-pair-${i++}`, park, rows)
-          if (got !== shouldWake(park, rows)) {
-            wrong.push(`${label} / ${name(a)} | ${name(b)}: woke=${got}`)
-          }
-        }
-      }
-    }
-    expect(wrong).toEqual([])
-    f.close()
+    const atStep = SUBSETS.filter((f) => !f.includes('step_name'))
+    const atOther = SUBSETS.filter((f) => f.includes('step_name'))
+    const cases = parks.flatMap(([label, park]) =>
+      atStep.flatMap((a) =>
+        atOther.map((b) => ({
+          label: `${label} / ${name(a)} | ${name(b)}`,
+          park,
+          rows: [corrupt(a), corrupt(b)],
+        })),
+      ),
+    )
+    expect(await disagreements(cases)).toEqual([])
   })
 })
