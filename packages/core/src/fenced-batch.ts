@@ -163,18 +163,33 @@ export class FencedBatch {
    * Compiles to a bind of `<seed>:<name>`.
    */
   fence(name: string): string {
+    this.requireFenceSource(name, `fence('${name}')`)
+    return `$FENCE:${name}$`
+  }
+
+  /**
+   * The check behind `fence()`, applied to EVERY fence token in a statement's
+   * text — because the token `fence()` returns is ordinary text, so it can be
+   * typed by hand and skip the call entirely. A hand-written
+   * `$FENCE:whatever$` compiles to a bind of a value nothing in the batch ever
+   * writes, so the statement matches no rows: silently, forever, with the
+   * batch reporting success. That is worse than the bug the fence prevents,
+   * since a follow-on that never runs looks exactly like one with nothing to
+   * do. Enforcing here rather than in `fence()` makes the two spellings
+   * equivalent instead of making one of them a hole.
+   */
+  private requireFenceSource(name: string, at: string): void {
     const source = this.statements.find((s) => s.name === name)
     if (!source) {
       throw new Error(
-        `FencedBatch[${this.label}] fence('${name}') names no statement of this batch — add it before the statement that fences on it`,
+        `FencedBatch[${this.label}] ${at} names no statement of this batch — add it before the statement that fences on it`,
       )
     }
     if (!source.stamps) {
       throw new Error(
-        `FencedBatch[${this.label}] fence('${name}') names '${name}', which writes no stamp — there is no provenance to fence on`,
+        `FencedBatch[${this.label}] ${at} names '${name}', which writes no stamp — there is no provenance to fence on`,
       )
     }
-    return `$FENCE:${name}$`
   }
 
   /**
@@ -254,6 +269,11 @@ export class FencedBatch {
     }
     if (this.statements.some((x) => x.name === name)) {
       throw new Error(`FencedBatch[${this.label}] duplicate statement name '${name}'`)
+    }
+
+    // Every fence token in the text, however it got there.
+    for (const match of sql.matchAll(/\$FENCE:([a-zA-Z0-9_-]+)\$/g)) {
+      this.requireFenceSource(match[1] as string, `the fence token ${match[0]}`)
     }
 
     const isCas = kind === 'cas' || kind === 'casMany'

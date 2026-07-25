@@ -123,6 +123,29 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     expect(() => b.fence('unstamped')).toThrow(/writes no stamp/)
   })
 
+  it('applies the same rules to a fence token written by hand', () => {
+    // fence() is a convenience, not the enforcement point: the token it
+    // returns is ordinary text, so anyone can type `$FENCE:whatever$` into
+    // the SQL and skip every check. All three shapes below compile to a bind
+    // of a value NOTHING in the batch ever writes, so the statement matches
+    // no rows — silently, forever, with the batch reporting success. That is
+    // worse than the bug the fence exists to prevent, because a follow-on
+    // that never runs looks exactly like a follow-on that had nothing to do.
+    const cases: [string, RegExp][] = [
+      ['$FENCE:typo$', /names no statement/],
+      ['$FENCE:later$', /names no statement/],
+      ['$FENCE:plain$', /writes no stamp/],
+    ]
+    for (const [token, message] of cases) {
+      const b = withCas()
+      b.followOn('plain', `DELETE FROM waits WHERE fence_stamp = ${b.fence('win')}`, [], 'one')
+      expect(
+        () => b.followOn('x', `DELETE FROM waits WHERE fence_stamp = ${token}`, [], 'one'),
+        token,
+      ).toThrow(message)
+    }
+  })
+
   it('accepts a stamping follow-on as a fence source', () => {
     const b = withCas()
     b.followOn(
