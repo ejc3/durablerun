@@ -175,6 +175,7 @@ def corpus(
     coderabbit_path: str = "**/*",
     coderabbit_path_instructions: str = CODERABBIT_GLOBAL,
     coderabbit_extra_path: str = "",
+    greptile_scope: list[str] | None = None,
 ) -> dict[str, str]:
     """A miniature review-bot corpus: one rule, and the two configs that must
     both reference it. `git ls-files` returns nothing in a fixture, so the
@@ -214,7 +215,13 @@ def corpus(
             {
                 "instructions": GREPTILE_PROVENANCE,
                 "statusCheck": status_check,
-                "rules": [{"id": greptile_id, "rule": greptile_rule, "scope": []}],
+                "rules": [
+                    {
+                        "id": greptile_id,
+                        "rule": greptile_rule,
+                        "scope": greptile_scope if greptile_scope is not None else [],
+                    }
+                ],
             }
         ),
     }
@@ -223,6 +230,10 @@ def corpus(
 WHOLE_RULE = """# A Rule
 
 Scope: `packages/**` — siblings cover the rest.
+
+<!-- review-bot-scope:start -->
+packages/**
+<!-- review-bot-scope:end -->
 
 <!-- review-bot-synopsis:start -->
 """ + ACTIVE_RULE + """
@@ -596,6 +607,16 @@ export class S {
         "review-bot-lint.py",
         corpus(WHOLE_RULE, coderabbit_path="untracked/**"),
         "a dead CodeRabbit path glob applies the global review instruction nowhere",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, greptile_scope=["untracked/**"]),
+        "a dead Greptile scope passes when the tracked-file inventory is unavailable",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, greptile_scope=[".github/**"]),
+        "a Greptile scope can narrow a packages rule to an irrelevant tracked file",
     ),
     (
         "review-bot-lint.py",
