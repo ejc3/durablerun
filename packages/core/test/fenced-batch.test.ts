@@ -226,6 +226,28 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     expect(sealed?.args).toEqual(['seed:finished', 'r', 'seed:win', 'r', 'seed:win'])
   })
 
+  it('rejects a later consumer of a sealed intermediate fence', () => {
+    const b = withCas()
+    b.seal('finished', {
+      target: 'runs',
+      key: 'run_id',
+      fence: 'win',
+      rows: 'one',
+    })
+
+    expect(() =>
+      b.derived('too-late', {
+        target: 'tasks',
+        key: 'task_id',
+        from: 'runs',
+        column: 'task_id',
+        fence: 'win',
+        set: `state = 'pending'`,
+        rows: 'one',
+      }),
+    ).toThrow(/fence 'win' was already sealed/)
+  })
+
   it('reduces a many-row provenance source to one portable scalar', async () => {
     const b = withCas()
     b.derived('spread', {
