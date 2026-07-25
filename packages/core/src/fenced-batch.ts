@@ -105,8 +105,8 @@ interface Named {
   sql: string
   args: SqlStatement['args']
   kind: Kind
-  /** Set when this statement writes a stamp — i.e. `fence()` may name it. */
-  stamps: boolean
+  /** Present while this statement's stamp may still be consumed. */
+  fence: { sealedBy: string | null } | null
   rows: RowBound | null
   max: number | null
 }
@@ -219,18 +219,24 @@ export class FencedBatch {
    * do. Enforcing here rather than in `fence()` makes the two spellings
    * equivalent instead of making one of them a hole.
    */
-  private requireFenceSource(name: string, at: string): void {
+  private requireFenceSource(name: string, at: string): { sealedBy: string | null } {
     const source = this.statements.find((s) => s.name === name)
     if (!source) {
       throw new Error(
         `FencedBatch[${this.label}] ${at} names no statement of this batch — add it before the statement that fences on it`,
       )
     }
-    if (!source.stamps) {
+    if (source.fence === null) {
       throw new Error(
         `FencedBatch[${this.label}] ${at} names '${name}', which writes no stamp — there is no provenance to fence on`,
       )
     }
+    if (source.fence.sealedBy !== null) {
+      throw new Error(
+        `FencedBatch[${this.label}] ${at}: fence '${name}' was already sealed by '${source.fence.sealedBy}' — later statements must depend on '${source.fence.sealedBy}'`,
+      )
+    }
+    return source.fence
   }
 
   /**
@@ -350,12 +356,15 @@ export class FencedBatch {
     name: string,
     spec: Omit<DerivedSelection, 'from' | 'column'> & { target: FenceTable },
   ): this {
-    return this.derived(name, {
+    const source = this.requireFenceSource(spec.fence, `seal('${name}')`)
+    this.derived(name, {
       ...spec,
       from: spec.target,
       column: spec.key,
       set: `${spec.key} = ${spec.key}`,
     })
+    source.sealedBy = name
+    return this
   }
 
   /** A trailing SELECT that may only see rows this batch stamped. */
@@ -421,7 +430,7 @@ export class FencedBatch {
     }
 
     const isCas = kind === 'cas' || kind === 'casMany'
-    const stamps = isCas || target !== null
+    const fence = isCas || target !== null ? { sealedBy: null } : null
     const head = beforeTopLevelWhere(sql)
 
     if (isCas) {
@@ -496,7 +505,7 @@ export class FencedBatch {
       sql,
       args: s.args,
       kind,
-      stamps,
+      fence,
       rows: s.rows,
       max: s.max,
     })
