@@ -91,9 +91,9 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     // and every row matching `a` entered the selection carrying no stamp at
     // all. That is the exact class the primitive was built to make
     // unwritable, reintroduced inside the thing that was supposed to prevent
-    // it: `generated: true` also skips the OR scanner, on the reasoning that
-    // generated SQL needs no scanning, which held right up until the
-    // generator interpolated caller text into a boolean position.
+    // it. The generator now brackets caller text before placing it in a
+    // boolean position, and generated SQL passes the same construction checks
+    // as every other statement.
     const f = await fixture()
     // Stamped: queue 'b'. Never stamped: queue 'a' — it can only be selected
     // through a disjunct that escaped the fence.

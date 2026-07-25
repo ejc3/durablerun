@@ -320,7 +320,6 @@ export class FencedBatch {
         args: [...w, ...(spec.narrowArgs ?? [])],
         rows: spec.rows,
         max: null,
-        generated: true,
       })
     }
     // A many-row source still carries one statement instant. Reduce it to one
@@ -340,7 +339,6 @@ export class FencedBatch {
       args: [...(spec.setArgs ?? []), ...w, ...w, ...(spec.narrowArgs ?? [])],
       rows: spec.rows,
       max: null,
-      generated: true,
     })
   }
 
@@ -411,9 +409,6 @@ export class FencedBatch {
     rows: RowBound | null
     max: number | null
     open?: string
-    /** Built by `derived()`: the row selection came from the fence, so the
-     *  text checks below have nothing left to verify. */
-    generated?: boolean
   }): this {
     const { name, sql, kind, target } = s
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
@@ -431,12 +426,13 @@ export class FencedBatch {
 
     const isCas = kind === 'cas' || kind === 'casMany'
     const fence = isCas || target !== null ? { sealedBy: null } : null
-    const head = beforeTopLevelWhere(sql)
+    const bare = blankComments(sql)
+    const head = beforeTopLevelWhere(bare)
 
     if (isCas) {
-      assertWritesStamp(at, sql, head, target as FenceTable, true)
+      assertWritesStamp(at, bare, head, target as FenceTable, true)
     } else if (target !== null) {
-      assertWritesStamp(at, sql, head, target, false)
+      assertWritesStamp(at, bare, head, target, false)
     }
 
     if (kind === 'tail') {
@@ -450,7 +446,7 @@ export class FencedBatch {
     // subquery does not count: the statement would still match every row and
     // merely write a NULL into them. Neither does a fence that appears only
     // under NOT — that is a statement asserting the fence is ABSENT.
-    if (!isCas && s.open === undefined && !hasPositiveFence(sql)) {
+    if (!isCas && s.open === undefined && !hasPositiveFence(bare)) {
       throw new Error(
         `${at} has no positive fence in its WHERE clause — a follow-on must filter on fence('<a cas of this batch>') so a losing invocation matches nothing (§3.4 rule 1)`,
       )
@@ -459,7 +455,7 @@ export class FencedBatch {
     // A fence joined by OR reaches nothing. Requiring the top-level WHERE to
     // be a pure AND-chain is what turns "the statement mentions a fence" into
     // "every row it writes satisfies the fence".
-    if (!isCas && s.open === undefined && hasTopLevelOr(sql)) {
+    if (!isCas && s.open === undefined && hasTopLevelOr(bare)) {
       throw new Error(
         `${at} has an OR at the top level of its WHERE clause — then the fence can be false while the row is still written. Narrow with AND, or move the alternation inside a subquery.`,
       )
@@ -518,13 +514,17 @@ export class FencedBatch {
     }
     const compiled = this.statements.map((s) => this.compile(s))
     const raw = await db.batch(this.label, compiled, mode)
+    if (raw.length !== compiled.length) {
+      throw new Error(
+        `FencedBatch[${this.label}] executor returned ${raw.length} results for ${compiled.length} statements — the batch audit cannot run`,
+      )
+    }
 
     const results: Record<string, SqlResult> = {}
     let won: string | null = null
     let count = 0
     this.statements.forEach((s, i) => {
-      const result = raw[i]
-      if (!result) return
+      const result = raw[i] as SqlResult
       results[s.name] = result
       const affected = result.rowsAffected
       if (s.kind === 'cas' || s.kind === 'casMany') {
@@ -707,11 +707,10 @@ function topLevelWhere(sql: string): number {
  * syntactic residual until SQL is represented as an AST.
  */
 function hasPositiveFence(sql: string): boolean {
-  const bare = blankComments(sql)
-  const start = topLevelWhere(bare)
+  const start = topLevelWhere(sql)
   if (start < 0) return false
-  const negated = negatedSpans(bare)
-  for (const match of bare.matchAll(/fence_stamp\s*=\s*\$FENCE:[a-zA-Z0-9_-]+\$/g)) {
+  const negated = negatedSpans(sql)
+  for (const match of sql.matchAll(/fence_stamp\s*=\s*\$FENCE:[a-zA-Z0-9_-]+\$/g)) {
     const at = match.index ?? 0
     if (at < start) continue
     if (negated.some(([from, to]) => at >= from && at < to)) continue
@@ -725,19 +724,18 @@ function hasPositiveFence(sql: string): boolean {
  * can then be false while the statement still writes the row.
  */
 function hasTopLevelOr(sql: string): boolean {
-  const bare = blankComments(sql)
-  const start = topLevelWhere(bare)
+  const start = topLevelWhere(sql)
   if (start < 0) return false
   let depth = 0
-  for (let i = start; i < bare.length; i++) {
-    const ch = bare[i]
+  for (let i = start; i < sql.length; i++) {
+    const ch = sql[i]
     if (ch === "'") {
-      i = skipString(bare, i)
+      i = skipString(sql, i)
       continue
     }
     if (ch === '(') depth++
     else if (ch === ')') depth--
-    else if (depth === 0 && (ch === 'O' || ch === 'o') && matchesWord(bare, i, 'OR')) return true
+    else if (depth === 0 && (ch === 'O' || ch === 'o') && matchesWord(sql, i, 'OR')) return true
   }
   return false
 }
