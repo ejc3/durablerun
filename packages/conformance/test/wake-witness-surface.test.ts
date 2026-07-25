@@ -143,22 +143,23 @@ const OWNERS: readonly Owner[] = [
  * wakes iff its owning task is live, it is parked on this event, AND some
  * single registration says every one of these things at once.
  *
- * A NULL wake_step matches any step — that is the deliberate concession to
- * databases migrated while runs were parked, and it belongs in the oracle
- * rather than in a list of expected exceptions.
+ * A NULL wake_step may recover exactly one matching legacy registration.
+ * Several matches are ambiguous: without the active-wait identity deferred
+ * to PR3.8, choosing any of them would fabricate a step.
  */
 function shouldWake(owner: Owner, park: Park, rows: readonly Row[]): boolean {
   if (!owner.live) return false
   if (park.state !== 'sleeping') return false
   if (park.wake_event !== EVENT) return false
-  return rows.some(
+  const matching = rows.filter(
     (r) =>
       r.queue === Q &&
       r.event_name === EVENT &&
       r.status === 'waiting' &&
-      (park.wake_step === null || r.step_name === park.wake_step) &&
       r.timeout_at_ms === park.available_at_ms,
   )
+  if (park.wake_step === null) return matching.length === 1
+  return matching.some((r) => r.step_name === park.wake_step)
 }
 
 type StatementMutator = (

@@ -57,6 +57,39 @@ async function fixture() {
 
 const ADDED = columnsAddedAfterTheirTable()
 
+async function ambiguousLegacyWait(timeoutSeconds: number | null) {
+  const f = await fixture()
+  const spawned = await f.store.spawn(Q, 'job', '{}')
+  const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+  if (!run) throw new Error('expected a claim')
+  await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+  const currentStep = '$await:z-current'
+  const staleStep = '$await:a-stale'
+  await f.store.awaitEvent(
+    Q,
+    spawned.taskId,
+    run.runId,
+    run.claimToken,
+    currentStep,
+    'go',
+    timeoutSeconds,
+  )
+  await f.raw.batch('legacy-ambiguous-wait', [
+    { sql: `UPDATE runs SET wake_step = NULL WHERE run_id = ?`, args: [run.runId] },
+    {
+      sql: `INSERT INTO waits
+              (run_id, step_name, queue, task_id, event_name, status,
+               timeout_at_ms, created_at_ms)
+            SELECT run_id, ?, queue, task_id, event_name, status,
+                   timeout_at_ms, created_at_ms
+            FROM waits WHERE run_id = ? AND step_name = ?`,
+      args: [staleStep, run.runId, currentStep],
+    },
+  ])
+  return { ...f, run, currentStep, staleStep }
+}
+
 describe('rows written before a column existed', () => {
   it('finds the columns to test from the migrations themselves', () => {
     // If this is empty the suite below is vacuous, which is the failure mode
@@ -150,4 +183,57 @@ describe('rows written before a column existed', () => {
       f.close()
     })
   }
+})
+
+describe('ambiguous legacy wait registrations', () => {
+  it('does not choose a timed wait step when several registrations match', async () => {
+    const f = await ambiguousLegacyWait(30)
+    await f.admin.setFakeNowEpochMs(NOW + 30_000)
+
+    expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toEqual([])
+
+    const [run] = await f.raw.batch(
+      't',
+      [{ sql: `SELECT state, wake_step FROM runs WHERE run_id = ?`, args: [f.run.runId] }],
+      'read',
+    )
+    expect(run?.rows[0]).toMatchObject({ state: 'sleeping', wake_step: null })
+    const [waits] = await f.raw.batch(
+      't',
+      [
+        {
+          sql: `SELECT step_name FROM waits WHERE run_id = ? ORDER BY step_name`,
+          args: [f.run.runId],
+        },
+      ],
+      'read',
+    )
+    expect(waits?.rows).toEqual([{ step_name: f.staleStep }, { step_name: f.currentStep }])
+    f.close()
+  })
+
+  it('does not choose an event wait step when several registrations match', async () => {
+    const f = await ambiguousLegacyWait(null)
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [run] = await f.raw.batch(
+      't',
+      [{ sql: `SELECT state, wake_step FROM runs WHERE run_id = ?`, args: [f.run.runId] }],
+      'read',
+    )
+    expect(run?.rows[0]).toMatchObject({ state: 'sleeping', wake_step: null })
+    const [waits] = await f.raw.batch(
+      't',
+      [
+        {
+          sql: `SELECT step_name FROM waits WHERE run_id = ? ORDER BY step_name`,
+          args: [f.run.runId],
+        },
+      ],
+      'read',
+    )
+    expect(waits?.rows).toEqual([{ step_name: f.staleStep }, { step_name: f.currentStep }])
+    f.close()
+  })
 })
