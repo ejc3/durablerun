@@ -29,7 +29,8 @@
       "__probe*.ts",
       "__dump*.ts",
       "zz-*.test.ts",
-      "tmp-repro"
+      "tmp-repro",
+      "*.probe-conflict"
     ]
   }
 }

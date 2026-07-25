@@ -20,3 +20,7 @@ __probe*.ts
 __dump*.ts
 zz-*.test.ts
 tmp-repro/
+
+# What the mutation probe saves when a source changes underneath it, so the
+# rescued version cannot be committed by accident either.
+*.probe-conflict

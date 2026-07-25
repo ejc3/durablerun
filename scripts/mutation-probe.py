@@ -191,6 +191,37 @@ def assert_clean() -> None:
         raise SystemExit(2)
 
 
+def restore(path: Path, mutated: str, original: str) -> None:
+    """Put the file back, but only over the text this probe actually wrote.
+
+    The dirty-tree guard covers starting on top of someone's work. It does
+    nothing about work that arrives DURING a run, and a run is minutes long:
+    an edit landing mid-mutation is silently reverted when the `finally` puts
+    the pre-run copy back. That happened -- an uncommitted change to
+    `store.ts` disappeared under a restore holding a snapshot taken before it
+    existed, and it looked like the edit had never been applied.
+
+    Which is this repo's own rule, arriving from the other side: a writer may
+    only overwrite state it wrote, and it establishes that by comparing what
+    is there against what it left. So compare, and if the file has moved on,
+    keep that version beside it and say so rather than deciding the probe's
+    snapshot wins.
+    """
+    if path.read_text() == mutated:
+        path.write_text(original)
+        return
+    kept = path.with_suffix(f"{path.suffix}.probe-conflict")
+    kept.write_text(path.read_text())
+    path.write_text(original)
+    print(
+        f"\n  !! {path.name} changed while the probe held it.\n"
+        f"     That version is saved at {kept.relative_to(ROOT)}; the file itself is back\n"
+        f"     to the pre-run state. Editing sources while this runs cannot work — the\n"
+        f"     probe rewrites them between every mutation.",
+        file=sys.stderr,
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only mutations whose name contains this")
@@ -213,8 +244,9 @@ def main() -> int:
             print(f"  ?? {name}: pattern not found in {rel} — the mutation is stale")
             survivors.append((name, "stale pattern"))
             continue
+        mutated = original.replace(find, replace, 1)
         try:
-            path.write_text(original.replace(find, replace, 1))
+            path.write_text(mutated)
             caught, out = run_suite()
             if caught:
                 print(f"  !! {name}: SURVIVED — nothing failed. {breaks}")
@@ -224,7 +256,7 @@ def main() -> int:
                 first = failed[0].strip()[:90] if failed else "(suite failed)"
                 print(f"  ok {name}: caught by {first}")
         finally:
-            path.write_text(original)
+            restore(path, mutated, original)
 
     print()
     if survivors:
