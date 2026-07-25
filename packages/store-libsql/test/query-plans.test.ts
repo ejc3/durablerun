@@ -56,6 +56,16 @@ afterEach(() => {
   raw.close()
 })
 
+it('builds the write-plan schema through the production migration contract', async () => {
+  const version = await raw.execute(
+    `SELECT value FROM meta WHERE key IN ('schema_version', 'applied:v1') ORDER BY key`,
+  )
+  expect(version.rows.map((row) => String(row.value))).toEqual([
+    '1',
+    String(MIGRATIONS.at(-1)?.version),
+  ])
+})
+
 describe('claim candidate legs', () => {
   const leg = (state: string) => `
     SELECT r.run_id, r.available_at_ms FROM runs r
