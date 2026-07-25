@@ -51,6 +51,20 @@ export const REASON_CLAIM_TIMEOUT = '{"name":"$ClaimTimeout"}'
 export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
 export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 
+/**
+ * Attempt counters DERIVED from a stamped run's ordinal, never bumped
+ * (`x = x + 1` is not idempotent: an exact batch replay re-matches its own
+ * stamped row and counts twice — FencedBatch rejects that shape). run.attempt
+ * counts EVERY successor; infra_retries counts the infrastructure ones; the
+ * user ordinal is the difference. One definition each, used at every site.
+ */
+const USER_ATTEMPTS_FROM = (runIdParam: string): string =>
+  `(SELECT f.attempt - tasks.infra_retries FROM runs f
+    WHERE f.run_id = ${runIdParam} AND f.claimed_by = ${STAMP})`
+const INFRA_RETRIES_FROM = (successorParam: string): string =>
+  `(SELECT s.attempt - 1 - tasks.attempts FROM runs s
+    WHERE s.run_id = ${successorParam} AND s.claimed_by = ${STAMP})`
+
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
 const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
        r.wake_event, r.event_payload, r.wake_step,
@@ -627,17 +641,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            )`,
         [item.taskId, item.runId],
       )
-      // Bookkeeping keyed on the stamp AND our successor existing.
+      // Bookkeeping keyed on the stamp AND our successor existing. The
+      // counter DERIVES from the successor's own attempt ordinal rather than
+      // incrementing: run.attempt counts every successor (user + infra), so
+      // infra = attempt - 1 - user attempts. Applying this twice is the same
+      // as applying it once, so an exact replay cannot double-count.
       .followOn(
         'bookkeeping',
         `UPDATE tasks SET
-           infra_retries = infra_retries + 1, state = 'pending', last_attempt_run = ?
+           infra_retries = ${INFRA_RETRIES_FROM('?')},
+           state = 'pending', last_attempt_run = ?
          WHERE task_id = ? AND state IN ${LIVE}
            AND EXISTS (
              SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
            )
            AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
-        [successorId, item.taskId, item.runId, successorId],
+        [successorId, successorId, item.taskId, item.runId, successorId],
       )
       // The dead run's waits die with it (the reviewed orphan-waits leak).
       .followOn(
@@ -941,33 +960,41 @@ export class LibsqlSchedulerStore implements SchedulerStore {
              AND t.state IN ${LIVE} AND t.attempts + 1 < t.max_attempts`,
           [successorId, retryDelayMs, retryDelayMs, runId],
         )
+        // attempts DERIVES from the failing run's own ordinal (the documented
+        // user ordinal: run.attempt counts every successor, infra_retries the
+        // infrastructure ones), so applying this twice equals applying it
+        // once — an exact replay cannot double-count.
         .followOn(
           'task-retrying',
           `UPDATE tasks SET
-             attempts = attempts + 1,
+             attempts = ${USER_ATTEMPTS_FROM('?')},
              state = (SELECT state FROM runs WHERE run_id = ? AND claimed_by = ${STAMP}),
              last_attempt_run = ?
            WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
              AND state IN ${LIVE}
              AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
-          [successorId, successorId, runId, successorId],
+          [runId, successorId, successorId, runId, successorId],
         )
         // Cap refused (or task no longer live): terminal, same as no-retry.
         .followOn(
           'task-terminal',
-          `UPDATE tasks SET attempts = attempts + 1, state = 'failed', failure_reason = ?
+          `UPDATE tasks SET
+             attempts = ${USER_ATTEMPTS_FROM('?')},
+             state = 'failed', failure_reason = ?
            WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
              AND state IN ${LIVE}
              AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
-          [failureJson, runId, successorId],
+          [runId, failureJson, runId, successorId],
         )
     } else {
       batch.followOn(
         'task',
-        `UPDATE tasks SET attempts = attempts + 1, state = 'failed', failure_reason = ?
+        `UPDATE tasks SET
+           attempts = ${USER_ATTEMPTS_FROM('?')},
+           state = 'failed', failure_reason = ?
          WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
            AND state IN ${LIVE}`,
-        [failureJson, runId],
+        [runId, failureJson, runId],
       )
     }
     const { won } = await batch

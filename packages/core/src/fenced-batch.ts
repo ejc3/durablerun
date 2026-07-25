@@ -21,8 +21,18 @@ interface Named {
   name: string
   sql: string
   args: SqlStatement['args']
-  kind: 'cas' | 'followOn' | 'tail'
+  kind: 'cas' | 'followOn' | 'fanOut' | 'tail'
 }
+
+/**
+ * A blind counter bump in a follow-on (`attempts = attempts + 1`) is not
+ * idempotent: an exact re-execution of the same compiled batch — same bound
+ * stamp — re-matches its own stamped row and counts twice. Follow-ons must
+ * derive a counter from the winning row's post-state instead (e.g.
+ * `attempts = (SELECT r.attempt - t.infra_retries FROM ...)`), so applying
+ * the statement twice is the same as applying it once.
+ */
+const BLIND_COUNTER = /\b(\w+)\s*=\s*\1\s*\+\s*\d/i
 
 export class FencedBatch {
   private readonly statements: Named[] = []
@@ -47,6 +57,29 @@ export class FencedBatch {
     return this
   }
 
+  /**
+   * A follow-on that writes MANY rows discovered through the CAS's own
+   * post-state (emitEvent waking every registered waiter): there is no single
+   * stamped row to key on, so the gate is the CAS having won plus a join that
+   * derives the targets from rows this batch just transitioned. The statement
+   * must therefore reference the stamp (like any follow-on) OR name the
+   * provenance table in `via` — the rows whose existence this batch caused.
+   * Never a bare id list supplied by the caller: that is the "keyed on a
+   * pre-existing post-state" hazard this class exists to forbid.
+   */
+  fanOut(name: string, via: string, sql: string, args: SqlStatement['args'] = []): this {
+    if (!sql.includes(STAMP) && !sql.includes(via)) {
+      throw new Error(
+        `FencedBatch[${this.label}] fanOut '${name}' references neither ${STAMP} nor its provenance table '${via}' — a fan-out must derive its targets from this batch's own post-state (§3.4 rule 1)`,
+      )
+    }
+    if (this.statements.some((s) => s.name === name)) {
+      throw new Error(`FencedBatch[${this.label}] duplicate statement name '${name}'`)
+    }
+    this.statements.push({ name, sql, args, kind: 'fanOut' })
+    return this
+  }
+
   /** Unfenced trailing read (classification only — never a write). */
   tail(name: string, sql: string, args: SqlStatement['args'] = []): this {
     if (!/^\s*SELECT/i.test(sql)) {
@@ -60,6 +93,11 @@ export class FencedBatch {
     if (!sql.includes(STAMP)) {
       throw new Error(
         `FencedBatch[${this.label}] ${kind} '${name}' does not reference ${STAMP} — every CAS must write the stamp and every follow-on must key on it (§3.4 rule 1)`,
+      )
+    }
+    if (kind === 'followOn' && BLIND_COUNTER.test(sql)) {
+      throw new Error(
+        `FencedBatch[${this.label}] followOn '${name}' bumps a counter blindly (x = x + n) — an exact replay of this batch re-matches its own stamped row and counts twice; derive the value from the winning row's post-state instead`,
       )
     }
     if (this.statements.some((s) => s.name === name)) {
