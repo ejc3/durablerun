@@ -757,14 +757,25 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     waitsGone(b, item.runId, 'fail')
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') return null // lost the race
-    return (results.successor?.rowsAffected ?? 0) === 1
-      ? {
-          kind: 'claim-timeout',
-          runId: item.runId,
-          taskId: item.taskId,
-          successorRunId: successorId,
-        }
-      : { kind: 'infra-cap-exhausted', runId: item.runId, taskId: item.taskId }
+    // Report what the batch DID, not what it can be inferred to have done.
+    // Reading "the successor insert wrote nothing" as "the cap is exhausted"
+    // conflates every other reason it can write nothing — the id already
+    // belongs to a run of this task, or the task stopped being live partway —
+    // and reports a cap exhaustion that did not happen. Each arm names the
+    // statement that actually fired; when none did, this sweep has nothing to
+    // report rather than something untrue.
+    if ((results.bookkeeping?.rowsAffected ?? 0) === 1) {
+      return {
+        kind: 'claim-timeout',
+        runId: item.runId,
+        taskId: item.taskId,
+        successorRunId: successorId,
+      }
+    }
+    if ((results['task-terminal']?.rowsAffected ?? 0) === 1) {
+      return { kind: 'infra-cap-exhausted', runId: item.runId, taskId: item.taskId }
+    }
+    return null
   }
 
   /**
