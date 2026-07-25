@@ -146,14 +146,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 - **PR3.7 close the provenance residual** (the PR3.6 postmortem's "what this
   round still would not catch", each item owned rather than parked):
-  - **A typed target expression for follow-ons.** The one mechanism that
-    closes the class that recurred in EVERY PR3.6 review round: the primitive
-    generates the row selection from the fence and the caller may only NARROW
-    it, so "the write set derives from this batch's post-state" holds by
-    construction instead of by a text check. PR3.6 deferred this on the
-    grounds that join shapes differ per dialect; that reason was never
-    tested and looks wrong — `key IN (SELECT col FROM src WHERE fence = ?)`
-    is ordinary SQL in all three. Test the claim first; if it holds, say how.
+  - **A typed target expression for follow-ons — and it makes the primitive
+    SMALLER.** This is the one mechanism that closes the class that recurred
+    in every PR3.6 review round, and it should not be read as more machinery.
+    Today the caller writes free-form SQL and 126 lines of hand-rolled
+    scanning (`topLevelWhere`, `negatedSpans`, `hasTopLevelOr`,
+    `blankComments`, `skipString`, `matchingParen`, …) try to verify a
+    property of that text afterwards — 18% of `fenced-batch.ts`, 19 of its 45
+    unit tests, and every false negative the round found. Generating the row
+    selection instead:
+
+    ```ts
+    b.followOn('wake-tasks', {
+      target: 'tasks',
+      key: 'task_id',
+      derivedFrom: { table: 'runs', column: 'task_id', fence: 'wake-runs' },
+      set: `state = 'pending'`,
+      narrow: `state IN ${LIVE}`,   // ANDed: may only shrink the set
+      rows: { many: 'one task per woken run' },
+    })
+    ```
+
+    `WHERE key IN (SELECT col FROM src WHERE fence_stamp = ?) AND (narrow)`
+    is generated, so there is no caller-authored WHERE to parse, no OR to
+    ban, no comment to blank, and no NOT to recognise. The whole scanner and
+    its 19 tests are DELETED, and "the write set derives from this batch's
+    post-state" holds by construction. PR3.6 deferred this claiming join
+    shapes differ per dialect; that was never tested and looks wrong —
+    `IN (SELECT …)` is ordinary SQL in all three. Test the claim first.
+
+    Known residual, to be an explicit escape with a written reason rather
+    than a hole: emitEvent's fan-out genuinely selects from `waits`, which
+    this batch did not stamp, and uses the event's fence only as a gate. One
+    escape with a reason is a better shape than a scanner defending every
+    statement — the same trade `openTail` already makes for reads.
   - **A data-level provenance audit**: every inserted-or-changed row carries a
     well-formed `<seed>:<statement>` stamp, over paths that never touch the
     primitive. Measured too slow for the deep fuzz leg (a scan per batch), so:

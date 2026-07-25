@@ -42,8 +42,8 @@ MUTATIONS = [
     (
         "clock-ban-in-followon",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && sql.includes(NOW)) {",
-        "    if (false && !isCas && sql.includes(NOW)) {",
+        "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
+        "    if (false && !isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
         "a follow-on may read the clock a second time",
     ),
     (
