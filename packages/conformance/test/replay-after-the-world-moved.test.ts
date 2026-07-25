@@ -1,0 +1,216 @@
+import type { SqlExecutor } from '@durablerun/core'
+import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { describe, expect, it } from 'vitest'
+import { engineInvariantViolations } from '../src/invariants.js'
+
+/**
+ * Replays where TIME PASSED between the original batch and the replay.
+ *
+ * The existing duplicate-injection tests replay a batch immediately, back to
+ * back, so every row still looks exactly as the batch left it. That hides a
+ * whole class: a fence proves a row CURRENTLY carries a stamp, which is not
+ * the same as proving this batch WROTE it. A later batch that legitimately
+ * transitions the same row overwrites the stamp, and a discriminator built on
+ * "is my stamp still there" silently flips its answer.
+ *
+ * These drive the real operations, let the world move on, and then replay.
+ */
+
+const Q = 'q'
+const NOW = 1_000_000
+
+async function fixture() {
+  const raw = LibsqlExecutor.open(':memory:')
+  const admin = new LibsqlStoreAdmin(raw)
+  await admin.migrate()
+  await admin.setFakeNowEpochMs(NOW)
+  let n = 0
+  const ids = { uuidv7: () => `id-${++n}`, token: () => `tok-${n}` }
+  return {
+    raw,
+    admin,
+    store: new LibsqlSchedulerStore(raw, ids),
+    storeOver: (db: SqlExecutor) => new LibsqlSchedulerStore(db, ids),
+    close: () => raw.close(),
+  }
+}
+
+async function query(
+  raw: LibsqlExecutor,
+  sql: string,
+  args: (string | number | null)[] = [],
+): Promise<Record<string, unknown>[]> {
+  const [rows] = await raw.batch('probe', [{ sql, args }], 'read')
+  return (rows?.rows ?? []) as unknown as Record<string, unknown>[]
+}
+
+/**
+ * Re-executes the exact statements of the first batch carrying `label`, the
+ * way a retried request or a duplicated delivery would. Recording the
+ * compiled statements is the point: a replay must bind the SAME stamps.
+ */
+function recorder(raw: LibsqlExecutor) {
+  const seen: { label: string; statements: { sql: string; args: unknown[] }[] }[] = []
+  const db: SqlExecutor = {
+    batch: (label, statements, mode) => {
+      seen.push({
+        label,
+        statements: statements.map((s) => ({ sql: s.sql, args: [...s.args] })),
+      })
+      return raw.batch(label, statements, mode)
+    },
+  }
+  return {
+    db,
+    replay: (label: string) => {
+      const call = seen.find((c) => c.label === label)
+      if (!call) throw new Error(`no batch labelled ${label} was recorded`)
+      return raw.batch(
+        label,
+        call.statements as { sql: string; args: never[] }[],
+        label.startsWith('sweep:scan') ? 'read' : 'write',
+      )
+    },
+  }
+}
+
+describe('a replay after the world moved on', () => {
+  it('does not terminalize a task whose successor has since been claimed', async () => {
+    // 1. Run 1 of a two-attempt task fails with a retry, creating run 2.
+    // 2. The response is lost, so the caller does not know it committed.
+    // 3. A tick claims run 2 — which overwrites run 2's provenance, because
+    //    claiming is itself a transition that stamps the row.
+    // 4. The original batch is delivered again.
+    //
+    // The failure arm asks "did I create the successor" by looking for its
+    // stamp. Step 3 removed that stamp, so the answer flips from yes to no
+    // and the terminal arm fires: the task is failed permanently while its
+    // successor is running under a live worker. The run cannot activate under
+    // a terminal task, so a perfectly good retry is lost and the task reports
+    // a failure that never happened.
+    const f = await fixture()
+    const rec = recorder(f.raw)
+    const store = f.storeOver(rec.db)
+
+    const spawned = await store.spawn(Q, 'job', '{}', { maxAttempts: 3 })
+    const [run] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+
+    const [successor] = await query(
+      f.raw,
+      `SELECT run_id FROM runs WHERE task_id = ? AND attempt = 2`,
+      [spawned.taskId],
+    )
+    const successorId = String(successor?.run_id)
+
+    // The world moves on: the successor is claimed by another tick.
+    const [claimed] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    expect(claimed?.runId).toBe(successorId)
+
+    await rec.replay('fail')
+
+    const [task] = await query(f.raw, `SELECT state, failure_reason FROM tasks WHERE task_id = ?`, [
+      spawned.taskId,
+    ])
+    expect(task?.state).toBe('running') // NOT failed — its successor is live
+    const [after] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [successorId])
+    expect(after?.state).toBe('running')
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('does not terminalize when an infrastructure successor has since been claimed', async () => {
+    // The same shape through the sweep's claim-timeout path.
+    const f = await fixture()
+    const rec = recorder(f.raw)
+    const store = f.storeOver(rec.db)
+
+    const spawned = await store.spawn(Q, 'job', '{}')
+    const [run] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.admin.setFakeNowEpochMs(NOW + 100_000) // lease expired
+    const swept = await store.sweep(Q, 10)
+    expect(swept[0]?.kind).toBe('claim-timeout')
+
+    await f.admin.setFakeNowEpochMs(NOW + 200_000)
+    const [claimed] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!claimed) throw new Error('expected the successor to be claimable')
+
+    await rec.replay('sweep:claim-timeout')
+
+    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
+    expect(task?.state).toBe('running')
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+})
+
+describe('emitEvent only wakes runs that are parked on that event', () => {
+  it('leaves a timer sleep alone when a stale wait row names its run', async () => {
+    // A run sleeping on a durable timer until much later, plus a leftover
+    // waiting row naming that run and some event. The emit sees the wait,
+    // wakes the run and deletes the wait — so the run resumes roughly a
+    // thousand seconds early and the evidence is gone. Replay then sees the
+    // sleep checkpoint already recorded and treats the sleep as finished, so
+    // user code continues as though it had slept.
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // A plain timer sleep: no wake_event, wakes at NOW + 1_000_000.
+    await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1000 })
+
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+              VALUES (?, '$await:go', ?, ?, 'go', 'waiting', ?)`,
+        args: [run.runId, Q, spawned.taskId, NOW],
+      },
+    ])
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [after] = await query(
+      f.raw,
+      `SELECT state, available_at_ms, wake_event FROM runs WHERE run_id = ?`,
+      [run.runId],
+    )
+    expect(after?.state).toBe('sleeping') // still asleep
+    expect(after?.available_at_ms).toBe(NOW + 1_000_000) // at its own deadline
+    expect(after?.wake_event).toBeNull()
+    f.close()
+  })
+
+  it('still wakes a run that really is parked on the event', async () => {
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    const parked = await f.store.awaitEvent(
+      Q,
+      spawned.taskId,
+      run.runId,
+      run.claimToken,
+      '$await:go',
+      'go',
+      null,
+    )
+    expect(parked).toEqual({ emitted: false })
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const [after] = await query(f.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
+      run.runId,
+    ])
+    expect(after?.state).toBe('pending')
+    expect(after?.event_payload).toBe('{"x":1}')
+    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
+    expect(task?.state).toBe('pending')
+    f.close()
+  })
+})
