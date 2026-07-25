@@ -191,15 +191,14 @@ def corpus(
         f"{coderabbit_extra_path}"
     )
     if in_coderabbit:
-        if active_coderabbit:
-            cr += (
-                "  pre_merge_checks:\n"
-                "    custom_checks:\n"
-                f"      - name: {json.dumps(coderabbit_name)}\n"
-                f"        mode: {coderabbit_mode}\n"
-                "        instructions: |\n"
-                f"          {coderabbit_instructions}\n"
-            )
+        cr += (
+            "  pre_merge_checks:\n"
+            "    custom_checks:\n"
+            f"      - name: {json.dumps(coderabbit_name)}\n"
+            f"        mode: {coderabbit_mode if active_coderabbit else 'off'}\n"
+            "        instructions: |\n"
+            f"          {coderabbit_instructions}\n"
+        )
     return {
         ".github/review-bot-rules/a-rule.md": rule_body,
         ".github/review-bot-rules/README.md": (
@@ -350,15 +349,15 @@ export class S {
             """
 export class S {
   async probe(q: string) {
-    await this.db.batch('set-checkpoint', [
-      { sql: `UPDATE runs SET claim_expires_at_ms = ${NOW_MS} + 1 WHERE id = ?`, args: [q] },
-      { sql: `INSERT INTO checkpoints (updated_at_ms) VALUES (${NOW_MS})`, args: [] },
-    ])
+    await this.db.batch('get-checkpoints', [
+      { sql: `SELECT ${NOW_MS} AS first_clock`, args: [] },
+      { sql: `SELECT ${NOW_MS} AS second_clock`, args: [] },
+    ], 'read')
   }
 }
 """
         ),
-        "'set-checkpoint' reads the clock in 2 places across 2 statements",
+        "'get-checkpoints' reads the clock in 2 places across 2 statements",
         "two statements of one batch reading the clock is the class-A bug itself",
     ),
     (
@@ -465,10 +464,18 @@ export class S {
         "spec-ledger.py",
         {
             "packages/store-libsql/src/probe.ts": (
+                "await this.db.batch('cancel-task', [{ sql: `SELECT 1`, args: [] }])\n"
+                "await this.db.batch('sweep:cancel', [{ sql: `SELECT 1`, args: [] }])\n"
                 "await this.db.batch('brand-new-label', [{ sql: `SELECT 1`, args: [] }])\n"
             ),
-            "specs/Scheduler.tla": "---- MODULE Scheduler ----\n====\n",
-            "scripts/spec-ledger-map.md": "",
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
         },
         "batch label 'brand-new-label' is not in the ledger block",
         "a batch label mapped to no TLA action must fail until it is mapped or excluded",
