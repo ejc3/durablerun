@@ -169,6 +169,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     pre-existing, identical on main, and modelled nowhere in
     `specs/Scheduler.tla`. The spec-first rule applies: model it, TLC it,
     then fix it.
+  - **`SleepSuspend`'s task-eligibility guard is not in the model.** Both
+    suspension paths require the owning task live and not past a due
+    cancellation deadline; `Fenced(c)` constrains only the run. The guard is
+    strictly narrower than the modelled action, so safety is unaffected, but
+    the refusal reaches the worker as a lost lease and whether THAT path
+    preserves the liveness properties is not settled by a model that lacks
+    the guard. Belongs with PR3.2's cancellation-discovery work, where "task
+    terminal" and "fence lost" stop being the same signal.
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its

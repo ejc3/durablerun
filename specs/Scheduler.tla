@@ -694,6 +694,19 @@ FailRunTerminal(c) ==
 \* SleepSuspend <-> reschedule() with a future wake (S3.2 sleepFor): SAME
 \* run row re-scheduled, no accounting consumed; context exits.  Parked
 \* wake fields are deliberately NOT cleared (header note).
+\*
+\* MODEL/IMPL GAP, deliberate and recorded in BUILD.md: Fenced(c) constrains
+\* only the RUN.  Both implementations additionally require the owning TASK to
+\* be eligible -- live, and not past a due cancellation deadline -- so a run
+\* whose task is about to be cancelled cannot re-park itself into the queue
+\* the claim path is already refusing to launch from.  That is STRICTLY
+\* NARROWER than this action, so every safety property proved here still
+\* holds of the implementation.  It is not free, though: the refusal reaches
+\* the worker as a lost lease, and whether that path preserves the liveness
+\* properties is NOT settled by this model, because the guard is not in it.
+\* Modelling it belongs with the cancellation-discovery work (PR3.2), which
+\* is where the "task terminal" and "fence lost" signals stop being the same
+\* thing.
 SleepSuspend(c) ==
   /\ c \in contexts
   /\ Fenced(c)
