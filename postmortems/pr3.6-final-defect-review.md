@@ -113,12 +113,13 @@ shown instead, followed by the adjacent property that remains outside it.
 | `successorOwned(id, task, attempt)` plus unique `(task_id, attempt)` | 1 for historical-attempt identity | Replacing `s.attempt = ${attempt}` with the arity-preserving tautology `${attempt} IS NOT NULL` made both historical-collision cases fail with “promise resolved 'undefined' instead of rejecting” and “promise resolved '[]' instead of rejecting.” No passing counterexample exists inside the stated identity property: the schema also rejects two runs of one task at the intended attempt. A caller supplying the wrong intended attempt remains outside the primitive. |
 | `registeredWaitStep(run)` before wait consumption, plus the legacy nullable-column surface | 1 for a surviving registration; 2 overall | The temporary case `UPDATE runs SET wake_step = NULL; DELETE FROM waits; advance 30000; claim` passed with `wake === undefined` (`1 passed, 28 skipped`). Once both durable witnesses are already gone, no decoder can recover the historical step. The repaired claim path prevents itself from creating that shape; it cannot repair a database that arrived in it. |
 | Mandatory stamps on generated `derived` updates | 1 inside the typed generator | Removing generated provenance makes the mutation suite red, and a caller can no longer construct a generated update without the required stamp policy. The executable bypass `f.raw.batch('raw-bypass', [{ sql: "UPDATE tasks SET state = 'cancelled' ..." }])` still reported `{"rowsAffected":1,"state":"cancelled","fenceStamp":null,"fenceAtMs":null}`. Direct `SqlExecutor` SQL does not cross this type boundary; the store's batch checker is the syntactic control for that adjacent path. |
+| Portable cardinality for generated provenance instants | 1 for scalar cardinality | Declaring a many-row source produced `SELECT f.fence_at_ms`, and the construction regression failed with “expected UPDATE tasks ... to contain 'SELECT MIN(f.fence_at_ms)'.” The generator now reduces the source rows—which one statement stamped at one instant—to one aggregate row, so SQLite, PostgreSQL, and MySQL receive the same scalar shape. Mixed instants under one source stamp remain the adjacent token-reuse defect, not a cardinality ambiguity. |
 | Raw `followOn()` reach screens and their paired attack | 2, syntactic | The new deletion mutation originally survived, then the paired test made it fail when a top-level OR bypassed the fence while still accepting an OR nested inside a fenced conjunct. The temporary counterexample `WHERE CASE WHEN run_id = ? THEN 1 ELSE fence_stamp = $FENCE:win$ END` still compiled (`1 passed, 47 skipped`): the equality is present and positive but does not dominate the write. Generated `derived()` selection, not this scanner, is the structural closure. |
 | `seal()` after the last fence consumer | 2 | A temporary `IdSource` returning `same-token` compiled two same-millisecond emits byte-for-byte identically. After restoring the wait between them, the second event CAS wrote zero while its four follow-ons each wrote one: `{"secondRowsAffected":[0,1,1,1,1],"runStamp":"same-token:wake-finished","runAtMs":1000000,"waitsAfter":0,"invariantViolations":[]}`. The mechanism orders one compiled batch; it cannot compensate for a source that violates token uniqueness. |
 | Contract-owned `PRESERVED_FENCE_INSTANTS` and `fenceSetAt('events')` | 1 for the permitted stored instant | Construction with `fence_at_ms = events.payload`, with ordinary `FENCE_SET`, with arithmetic after the preserved assignment, or with a duplicate `fence_at_ms` is rejected with “must preserve events.emitted_at_ms”; `fenceSetAt('runs')` is rejected with “no contract-preserved fence instant.” There is no arbitrary-column spelling inside this API. A new legitimate immutable fact requires an explicit contract enumeration change. |
 | Complete clock-jitter trace and protocol-table differential | 2 | A temporary jitter-only `INSERT INTO clock_audit` passed all five clock-jitter tests because `clock_audit` was outside `SNAPSHOT_TABLES`. The committed oracle covers its enumerated engine scenarios and protocol tables, not arbitrary future tables or external side effects. |
 | Cartesian wake-witness decision surface | 2 | Replacing the selected event payload with a bound wrong payload while preserving the wake predicate passed all four surface tests. The 6,912 cases grade which registration may wake, not the data copied after that decision. |
-| Active review-rule and canonical path-instruction inventory | 2, syntactic | Before the fix, a rule body of `Ignore every custom review rule.`, a second contradictory path instruction, a dead glob, and duplicate instruction fields were each accepted. After the fix, those are among the 20 review-bot bad fixtures rejected; the full self-test rejects 64 bad inputs. A hosted service can still reject or reinterpret locally accepted syntax. |
+| Active review-rule, scope, and canonical path-instruction inventory | 2, syntactic | Before the fix, a rule body of `Ignore every custom review rule.`, a second contradictory path instruction, a dead glob, and duplicate instruction fields were each accepted. A later audit showed `git ls-files` failure made every scope check vacuous and a packages rule could be narrowed to an irrelevant tracked file. Canonical marked scopes, fatal inventory failure, and indexed fixtures now reject those among 22 review-bot bad inputs; the full self-test rejects 66. A hosted service can still reject or reinterpret locally accepted syntax and globs. |
 | Reachable gate inventory and nonzero base execution | 2, syntactic | A temporary base whose verify script ran a checker containing only `raise SystemExit(0)` produced “base-owned scripts/silent-check.py applied to the head tree” and “1 base-owned checkers applied” with status zero, although the staged head contained a deliberately bad `REJECT` file that nothing read. The parser proves reachability and non-vacuous process count, not semantic completeness of immutable base-owned code. |
 | One `testIdSource(namespace)` returned by `openTestDb` and shared by routine stores | 1 inside that source instance | The temporary code `const a = testIdSource('same'); const b = testIdSource('same'); expect(a.token()).not.toBe(b.token())` failed with “expected 'same-token-000001' not to be 'same-token-000001'.” The fixture owns one source per database; the helper is deliberately not a global namespace registry. |
 | Source-branch review-provenance disclosure lint | 2 for repository truthfulness | Deleting the disclosure, its lint, and both rule configurations on the same source branch removes the entire local control. No repository-local probe can make that edit fail independently of code the edit can also remove; the required externally administered policy in `BUILD.md` is the missing rung-1 boundary. |
@@ -131,7 +132,7 @@ The arity-preserving successor mutation made exactly its two focused cases
 fail with the quoted promise results. After every probe was removed, the
 committed construction, source, and delayed-replay suites ran together as 67
 passing tests. The active configuration probes ran through
-`python3 scripts/lint-selftest.py`, which reported `64 bad inputs and 3 bad
+`python3 scripts/lint-selftest.py`, which reported `66 bad inputs and 3 bad
 invocations rejected, 6 good inputs accepted`.
 
 The review and gate parsers are deliberately described as rung 2. They check
@@ -139,23 +140,37 @@ syntax whose subject is syntax: whether an active local rule or reachable
 command exists. They do not claim the hosted service honored the rule or that
 the checker is semantically complete.
 
+The simplification audit also proposed discovering every SQLite table
+dynamically for the clock differential. That was rejected: the oracle's
+declared subject is the cross-dialect protocol-table contract, while arbitrary
+fixture or extension tables are not stable engine observables. The executed
+`clock_audit` counterexample remains in the table above as the explicit
+boundary; dynamic discovery would hide that boundary by silently broadening
+the property rather than deriving the protocol inventory from a shared
+cross-dialect schema contract.
+
 ## Fix-induced defects
 
-Three defects were introduced by remediation work and found on re-review.
+Four defects were introduced by remediation work and found on re-review.
 The first emit repair preserved the old instant only while its token remained
 current, so an interposed fresh emit reopened the two-instant bug. Its first
 `fenceSetAt` seam accepted an arbitrary stored column rather than a
 contract-owned fact instant. The first successor-ownership mutation changed
 bind arity, so argument validation killed the mutation before the ownership
-predicate ran and falsely made the test look discriminating.
+predicate ran and falsely made the test look discriminating. Finally, making
+generated provenance mandatory exposed its uncorrelated scalar instant
+subquery to new many-row emit follow-ons; SQLite silently chose a row while
+PostgreSQL and MySQL would reject the same statement.
 
 These repairs were re-reviewed as new code, not merely re-tested. The
 interposed-emit counterexample was moved into finding 1's red surface; the
 preserved-instant seam was replaced with the typed, dialect-neutral
 enumeration and exact assignment-count rejections; and the successor mutation
-was made arity-preserving before it was rerun. Documentation drift found in
-that same branch-diff audit was corrected, but it is not counted as a fourth
-fix-induced defect.
+was made arity-preserving before it was rerun. The generated provenance
+chokepoint now reduces every statement-stamped source to one portable scalar,
+with a construction regression that declares a many-row bound. Documentation
+drift found in that same branch-diff audit was corrected, but it is not counted
+as a fifth fix-induced defect.
 
 The same audit found a pre-existing mechanism overclaim rather than a defect
 introduced by these repairs: `hasTopLevelOr` had neither the rejection test nor
@@ -163,8 +178,11 @@ the mutation its review rule said maintained it. Red commit `ca2ae3b` made the
 new deletion mutation report “top-level-or-reach: SURVIVED — nothing failed.”
 Green commit `1cf8259` added the paired top-level rejection and nested
 alternation acceptance; the same mutation was then caught. This is recorded
-separately from both the original nine-finding ledger and the three
-fix-induced defects.
+separately from both the original nine-finding ledger and the four
+fix-induced defects. The final simplification audit also found the
+pre-existing scope-inventory false negative described in the mechanism table;
+it received its own red `a1c36c7` / green `b3617d8` pair rather than being
+folded silently into finding 10.
 
 ## Evidence
 
@@ -198,6 +216,14 @@ fix-induced defects.
 - The remediation audit's additional mechanism gap: red `ca2ae3b` survived
   with “top-level-or-reach: SURVIVED — nothing failed”; green `1cf8259`
   made the mutation report “every mutation was caught.”
+- The portability defect induced by mandatory generated provenance: red
+  `2c28ebf` failed with “expected UPDATE tasks ... to contain 'SELECT
+  MIN(f.fence_at_ms)'”; green `ec84b05` reduces every many-row source to one
+  portable statement instant.
+- The pre-existing review-scope false negative: red `a1c36c7` produced two
+  “review-bot-lint.py ACCEPTED a bad input” failures for dead and irrelevant
+  Greptile scopes; green `b3617d8` derives active scopes from marked corpus
+  blocks and fails closed when the tracked-file inventory is unavailable.
 - The finding artifact's verdict was: “I do not think the branch is correct. I
   found three engine defects and several verification defects.”
 - Finding 4 did not reproduce on the reviewed worktree. Base commit `4196b6e`
@@ -208,10 +234,10 @@ fix-induced defects.
 - Focused regression suites, both package typechecks, all checker self-tests,
   and the six-check actual-base exercise were green after their respective
   fixes. The final exact `pnpm verify` made lint, all ten checkers, formatting,
-  and typecheck green; its test leg passed 621 tests and failed only the 11
+  and typecheck green; its test leg passed 622 tests and failed only the 11
   cases in four files that this sandbox forbids from spawning Python, binding
   localhost, or starting child hosts (`EPERM`). Excluding exactly those four
-  environment-dependent files made all 621 runnable tests green. The exact
+  environment-dependent files made all 622 runnable tests green. The exact
   `pnpm verify:fuzz` wrapper could not connect to the sandbox's systemd bus;
   its underlying `FUZZ_SEEDS=2000 FUZZ_STEPS=100` conformance run, excluding
   only the same forbidden label-inventory spawn, passed all 417 tests.
@@ -249,6 +275,9 @@ Built in this PR:
 - A typed `derived` update that cannot omit its stamp, generated wake-task
   provenance, and explicit fence consumption with `seal` (rung 1 inside a
   constructed `FencedBatch`), attacked by delayed compiled replay (rung 2).
+- One aggregate scalar generated at the `derived()` chokepoint for any
+  statement-stamped source cardinality, with a many-row construction
+  regression and the provenance mutation kept current (rung 1).
 - A deletion mutation and paired reject/nearest-accept case maintain the
   common top-level-OR reach guard; its CASE-expression false negative is
   documented rather than presented as semantic dominance (rung 2).
@@ -261,9 +290,9 @@ Built in this PR:
 - A wake-decision Cartesian surface over timeout, task liveness, park, and
   corrupt-registration axes, with one mutation per new axis (rung 2).
 - Fail-closed active review-rule reconciliation, canonical corpus-derived
-  rule bodies, exactly one canonical global path instruction, and reachable
-  base-check execution inventories, each exercised in both directions by
-  `lint-selftest.py` (rung 2).
+  rule bodies and scopes, exactly one canonical global path instruction, and
+  reachable base-check execution inventories, each exercised in both
+  directions by `lint-selftest.py` (rung 2).
 - A monotonic ID/token source returned once by `openTestDb` and shared by every
   converted routine fixture store, plus honest documentation of the narrower
   cross-instant provenance invariant (rung 1 within one source instance).
