@@ -83,8 +83,11 @@ def gate(
     files = {
         "package.json": json.dumps({"scripts": {"verify": verify}}),
         ".github/workflows/ci.yml": ci,
-        # Named the way the real self-test names them: quoted, one per case.
-        "scripts/lint-selftest.py": "".join(f'BAD_CASES: "{n}"\n' for n in extra_scripts),
+        "scripts/lint-selftest.py": (
+            "BAD_CASES = [\n"
+            + "".join(f"    ({json.dumps(name)},),\n" for name in extra_scripts)
+            + "]\nBAD_INVOCATIONS = []\nGOOD_CASES = []\n"
+        ),
     }
     for name in extra_scripts:
         files[f"scripts/{name}"] = "# a checker\n"
@@ -475,7 +478,9 @@ export class S {
         "gate-lint.py",
         {
             **gate("python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py", "b-lint.py")),
-            "scripts/lint-selftest.py": 'BAD_CASES: "a-lint.py"\n',
+            "scripts/lint-selftest.py": (
+                'BAD_CASES = [("a-lint.py",)]\nBAD_INVOCATIONS = []\n'
+            ),
         },
         "a checker runs in the gate with nothing proving it can reject anything",
     ),
@@ -827,26 +832,30 @@ def run(
 
 failures = []
 
-# The inventory check. Without it, this file silently covers whichever
-# checkers someone remembered: a new lint could be written, wired into the
-# gate and believed, with no evidence it can fail — which is exactly how the
-# two broken ones shipped. Every checker in scripts/ must appear here with at
-# least one input it must REJECT. A checker with no bad case is a checker
-# nobody has watched fail.
-EXEMPT = {
-    # Not checkers: this file, and the review-attestation tool (which has its
-    # own test because it talks to git and GitHub).
-    "lint-selftest.py",
-    "review-attest.sh",
-}
+# The inventory is the gate's executable inventory, not a filename convention
+# or a second hand-kept list. A new checker becomes an obligation here at the
+# same instant it becomes reachable from `pnpm verify`.
 covered = {lint for lint, _, _ in BAD_CASES} | {
     lint for lint, _, _, _ in BAD_INVOCATIONS
 }
-for script in sorted(SCRIPTS.iterdir()):
-    name = script.name
-    if name in EXEMPT or not ("lint" in name or "ledger" in name):
-        continue
-    if name not in covered:
+inventory = subprocess.run(
+    [
+        sys.executable,
+        str(SCRIPTS / "gate-lint.py"),
+        "--list-checkers",
+        str(SCRIPTS.parent),
+    ],
+    capture_output=True,
+    text=True,
+)
+if inventory.returncode != 0:
+    failures.append(
+        "gate-lint.py could not enumerate the executable checker inventory:\n"
+        f"    {(inventory.stdout + inventory.stderr).strip()[:300]}"
+    )
+else:
+    gate_members = {line for line in inventory.stdout.splitlines() if line}
+    for name in sorted(gate_members - {"lint-selftest.py"} - covered):
         failures.append(
             f"{name} has no case here proving it can fail. Add at least one input "
             f"it must reject to BAD_CASES in scripts/lint-selftest.py — a checker "

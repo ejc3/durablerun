@@ -30,6 +30,7 @@ sources and running the BASE branch's semantic inventory there -- see
 from the head branch; CLAUDE.md states that threat-model limit explicitly.
 """
 
+import ast
 import json
 import os
 import re
@@ -46,11 +47,17 @@ from pathlib import Path
 # enumerated checker commands there.
 OWN = Path(__file__).resolve().parent.parent
 RUN_BASE = sys.argv[1:2] == ["--run-base"]
+LIST_CHECKERS = sys.argv[1:2] == ["--list-checkers"]
 if RUN_BASE:
     if len(sys.argv) != 4:
         sys.exit("usage: gate-lint.py --run-base HEAD BASE")
     ROOT = Path(sys.argv[2]).resolve()
     BASE = Path(sys.argv[3]).resolve()
+elif LIST_CHECKERS:
+    if len(sys.argv) != 3:
+        sys.exit("usage: gate-lint.py --list-checkers ROOT")
+    ROOT = Path(sys.argv[2]).resolve()
+    BASE = None
 else:
     _args = [a for a in sys.argv[1:] if not a.startswith("-")]
     ROOT = Path(_args[0]).resolve() if _args else OWN
@@ -240,12 +247,63 @@ def gate_checkers(
     return found, order, invocations, errors
 
 
-def selftest_subjects(root: Path) -> set[str]:
-    """The checkers lint-selftest.py exercises, read out of its own source."""
-    src = (root / "scripts" / "lint-selftest.py").read_text()
-    return set(re.findall(r"scripts/([\w.-]+)", src)) | set(
-        re.findall(r"[\"']([\w.-]+\.(?:py|sh))[\"']", src)
-    )
+def selftest_subjects(root: Path) -> tuple[set[str], list[str]]:
+    """Read refusal subjects only from the self-test's canonical tables."""
+    path = root / "scripts" / "lint-selftest.py"
+    try:
+        module = ast.parse(path.read_text(), filename=str(path))
+    except (OSError, SyntaxError) as exc:
+        return set(), [f"{path} cannot be read: {exc}."]
+
+    assignments: dict[str, list[ast.expr]] = {
+        "BAD_CASES": [],
+        "BAD_INVOCATIONS": [],
+    }
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in assignments:
+                assignments[target.id].append(node.value)
+
+    errors: list[str] = []
+    subjects: set[str] = set()
+
+    def subject(entry: ast.expr, table: str) -> None:
+        if (
+            not isinstance(entry, ast.Tuple)
+            or not entry.elts
+            or not isinstance(entry.elts[0], ast.Constant)
+            or not isinstance(entry.elts[0].value, str)
+        ):
+            errors.append(f"{path} {table} contains an entry with no literal checker name.")
+            return
+        name = entry.elts[0].value
+        if not re.fullmatch(r"[\w.-]+\.(?:py|sh)", name):
+            errors.append(f"{path} {table} names invalid checker {name!r}.")
+            return
+        subjects.add(name)
+
+    def harvest(value: ast.expr, table: str) -> None:
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for entry in value.elts:
+                subject(entry, table)
+            return
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            harvest(value.left, table)
+            harvest(value.right, table)
+            return
+        if isinstance(value, ast.ListComp):
+            subject(value.elt, table)
+            return
+        errors.append(f"{path} {table} is not a statically enumerable list.")
+
+    for table, values in assignments.items():
+        if len(values) != 1:
+            errors.append(f"{path} must assign {table} exactly once; found {len(values)}.")
+            continue
+        harvest(values[0], table)
+    return subjects, errors
 
 
 def workflow_run_blocks(text: str) -> tuple[list[str], list[str]]:
@@ -424,6 +482,19 @@ def main() -> int:
         if p.is_file() and p.suffix in {".py", ".sh"}
     }
     in_gate, order, _invocations, parse_errors = gate_checkers(ROOT)
+    if LIST_CHECKERS:
+        if parse_errors:
+            for error in parse_errors:
+                print(f"gate-lint: {error}", file=sys.stderr)
+            return 1
+        if not order:
+            print(
+                "gate-lint: `pnpm verify` reaches zero script checkers; refusing a vacuous inventory.",
+                file=sys.stderr,
+            )
+            return 1
+        print("\n".join(order))
+        return 0
     problems.extend(parse_errors)
 
     # 1. Every checker on disk is either run by the gate or declared out of it.
@@ -460,7 +531,8 @@ def main() -> int:
     # 3. Every checker the gate runs must be exercised by the self-test, so
     #    "it can fail" is proven for the whole gate and not for a subset the
     #    self-test happened to find by filename.
-    subjects = selftest_subjects(ROOT)
+    subjects, subject_errors = selftest_subjects(ROOT)
+    problems.extend(subject_errors)
     for name in sorted(in_gate - subjects):
         if name == "lint-selftest.py":
             continue
