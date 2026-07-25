@@ -67,6 +67,40 @@ def gate(verify: str, extra_scripts: tuple[str, ...] = (), base_gate: bool = Tru
     return files
 
 
+
+def corpus(rule_body: str, *, in_coderabbit: bool = True, greptile_id: str = "durablerun-a-rule",
+           status_check: bool = True) -> dict[str, str]:
+    """A miniature review-bot corpus: one rule, and the two configs that must
+    both reference it. `git ls-files` returns nothing in a fixture, so the
+    scope-matches-something rule stands down there and is exercised for real
+    against the repo itself."""
+    cr = "reviews:\n  path_instructions:\n"
+    if in_coderabbit:
+        cr += "    - path: '**/*'\n      instructions: |\n        Apply `.github/review-bot-rules/a-rule.md`.\n"
+    return {
+        ".github/review-bot-rules/a-rule.md": rule_body,
+        ".github/review-bot-rules/README.md": "# Rules\n\n- `a-rule.md`\n",
+        ".coderabbit.yaml": cr,
+        ".greptile/config.json": json.dumps(
+            {"statusCheck": status_check, "rules": [{"id": greptile_id, "rule": "Flag x.", "scope": []}]}
+        ),
+    }
+
+
+WHOLE_RULE = """# A Rule
+
+Scope: `packages/**` — siblings cover the rest.
+
+Report a failure when the diff does any of:
+
+- something decidable
+
+Allowed cases (do NOT flag these):
+
+- the nearest legitimate shape
+"""
+
+
 CLEAN_STORE = store(
     """
 export class S {
@@ -273,6 +307,26 @@ export class S {
         },
         "a checker runs in the gate with nothing proving it can reject anything",
     ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE.replace("Allowed cases (do NOT flag these):", "Some other heading:")),
+        "a rule with no Allowed section — it will flag correct code and be switched off",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, in_coderabbit=False),
+        "a rule no config references, so no reviewer ever applies it",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, greptile_id="durablerun-renamed"),
+        "a config naming a rule file that does not exist points the reviewer at nothing",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, status_check=False),
+        "Greptile posting no status check, so its findings cannot gate anything",
+    ),
 ] + [
     (
         "clock-lint.py",
@@ -317,6 +371,7 @@ export class S {
 # violation. Every entry below is a false positive a checker actually produced.
 GOOD_CASES = [
     ("batch-lint.py", CLEAN_STORE, "a classified read batch"),
+    ("review-bot-lint.py", corpus(WHOLE_RULE), "a complete rule referenced by both bots"),
     (
         "gate-lint.py",
         gate("python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py", "b-lint.py")),
