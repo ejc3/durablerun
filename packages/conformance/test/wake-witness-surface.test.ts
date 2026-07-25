@@ -17,8 +17,9 @@ import { describe, expect, it } from 'vitest'
  * That is the class. A condition list cannot be audited by reading it, because
  * the defect is not in any condition — it is in which ROW satisfies which
  * condition. So the surface is generated: build every combination of a
- * corrupt wait row, in ones and in pairs, and compare the engine against an
- * independently written statement of what a legitimate registration IS.
+ * corrupt wait row, in ones and in pairs, across both timeout arms and both
+ * task-liveness arms, and compare the engine against an independently written
+ * statement of what a legitimate registration IS.
  *
  * The oracle is deliberately shaped the way the SQL is not — one row at a
  * time, all properties at once — because that shape is exactly what the SQL
@@ -44,27 +45,42 @@ interface Row {
   timeout_at_ms: number | null
 }
 
-/** The row a genuine untimed `awaitEvent` registers. */
-const HEALTHY: Row = {
-  queue: Q,
-  event_name: EVENT,
-  status: 'waiting',
-  step_name: STEP,
-  timeout_at_ms: null,
+interface Deadline {
+  label: string
+  healthy: number | null
+  corrupt: number | null
+}
+
+/**
+ * Both positive timeout arms. Keeping the corrupt value opposite the healthy
+ * one makes timeout mismatches part of every generated corruption subset.
+ */
+const DEADLINES: readonly Deadline[] = [
+  { label: 'untimed', healthy: null, corrupt: NOW + 5_000 },
+  { label: 'timed', healthy: NOW + 30_000, corrupt: null },
+]
+
+function healthy(deadline: Deadline): Row {
+  return {
+    queue: Q,
+    event_name: EVENT,
+    status: 'waiting',
+    step_name: STEP,
+    timeout_at_ms: deadline.healthy,
+  }
 }
 
 /** One plausible wrong value per field: a different queue, a stale step, … */
-const CORRUPT: Row = {
-  queue: 'elsewhere',
-  event_name: 'other-event',
-  status: 'delivered',
-  step_name: `${STEP}#stale`,
-  timeout_at_ms: NOW + 5_000,
-}
-
-function corrupt(fields: readonly Field[]): Row {
-  const row = { ...HEALTHY }
-  for (const f of fields) Object.assign(row, { [f]: CORRUPT[f] })
+function corrupt(deadline: Deadline, fields: readonly Field[]): Row {
+  const row = healthy(deadline)
+  const wrong: Row = {
+    queue: 'elsewhere',
+    event_name: 'other-event',
+    status: 'delivered',
+    step_name: `${STEP}#stale`,
+    timeout_at_ms: deadline.corrupt,
+  }
+  for (const f of fields) Object.assign(row, { [f]: wrong[f] })
   return row
 }
 
@@ -86,35 +102,53 @@ interface Park {
   available_at_ms: number | null
 }
 
-const AT: Omit<Park, 'state'> = { wake_event: EVENT, wake_step: STEP, available_at_ms: null }
-
-const PARKS: Record<string, Park> = {
-  /** What awaitEvent writes. */
-  parked: { state: 'sleeping', ...AT },
-  /** Parked on some other event: this emit is not the one it is waiting for. */
-  'other-event': { state: 'sleeping', ...AT, wake_event: 'other-event' },
-  /** Parked before wake_step existed; its migration backfills nothing. */
-  'legacy-null-step': { state: 'sleeping', ...AT, wake_step: null },
-  /** Asleep on a durable timer, with the wake fields left over from before. */
-  timer: { state: 'sleeping', ...AT, available_at_ms: NOW + 1_000 },
-  /** Running right now, under a wait row that should not exist. Waking it
-   *  would hand a live worker's run to a second launch. */
-  running: { state: 'running', ...AT },
-  /** Already queued to run: waking is a no-op it must still not perform,
-   *  because it would move available_at_ms and re-deliver the payload. */
-  pending: { state: 'pending', ...AT },
+function parksFor(deadline: Deadline): Record<string, Park> {
+  const at: Omit<Park, 'state'> = {
+    wake_event: EVENT,
+    wake_step: STEP,
+    available_at_ms: deadline.healthy,
+  }
+  return {
+    /** What awaitEvent writes. */
+    parked: { state: 'sleeping', ...at },
+    /** Parked on some other event: this emit is not the one it is waiting for. */
+    'other-event': { state: 'sleeping', ...at, wake_event: 'other-event' },
+    /** Parked before wake_step existed; its migration backfills nothing. */
+    'legacy-null-step': { state: 'sleeping', ...at, wake_step: null },
+    /** Asleep on a durable timer, with the wake fields left over from before. */
+    timer: { state: 'sleeping', ...at, available_at_ms: deadline.corrupt },
+    /** Running right now, under a wait row that should not exist. Waking it
+     *  would hand a live worker's run to a second launch. */
+    running: { state: 'running', ...at },
+    /** Already queued to run: waking is a no-op it must still not perform,
+     *  because it would move available_at_ms and re-deliver the payload. */
+    pending: { state: 'pending', ...at },
+  }
 }
+
+interface Owner {
+  label: string
+  state: string
+  live: boolean
+}
+
+/** Both positive arms of the task-liveness guard. */
+const OWNERS: readonly Owner[] = [
+  { label: 'live-owner', state: 'running', live: true },
+  { label: 'terminal-owner', state: 'completed', live: false },
+]
 
 /**
  * What the engine is supposed to decide, stated over ONE row at a time: a run
- * wakes iff it is parked on this event AND some single registration says
- * every one of these things at once.
+ * wakes iff its owning task is live, it is parked on this event, AND some
+ * single registration says every one of these things at once.
  *
  * A NULL wake_step matches any step — that is the deliberate concession to
  * databases migrated while runs were parked, and it belongs in the oracle
  * rather than in a list of expected exceptions.
  */
-function shouldWake(park: Park, rows: readonly Row[]): boolean {
+function shouldWake(owner: Owner, park: Park, rows: readonly Row[]): boolean {
+  if (!owner.live) return false
   if (park.state !== 'sleeping') return false
   if (park.wake_event !== EVENT) return false
   return rows.some(
@@ -194,6 +228,7 @@ const WRITTEN = `state, available_at_ms, event_payload, wake_event, fence_stamp`
 async function wakes(
   f: Awaited<ReturnType<typeof open>>,
   queue: string,
+  owner: Owner,
   park: Park,
   rows: readonly Row[],
 ): Promise<boolean> {
@@ -203,8 +238,8 @@ async function wakes(
       sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy,
               max_attempts, cancellation, state, enqueue_at_ms, created_at_ms)
             VALUES (?, ?, 'job', '{}', '{"kind":"none"}', 3,
-              '{"maxDurationSeconds":1}', 'running', ?, ?)`,
-      args: [id, queue, NOW, NOW],
+              '{"maxDurationSeconds":1}', ?, ?, ?)`,
+      args: [id, queue, owner.state, NOW, NOW],
     },
     {
       sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, claim_gen, activated_gen,
@@ -253,6 +288,7 @@ function name(fields: readonly Field[]): string {
 
 interface Case {
   label: string
+  owner: Owner
   park: Park
   rows: Row[]
 }
@@ -263,8 +299,8 @@ async function disagreements(cases: readonly Case[], mutate?: StatementMutator):
   try {
     const wrong: string[] = []
     for (const [i, c] of cases.entries()) {
-      const got = await wakes(f, `${Q}-${i}`, c.park, c.rows)
-      if (got !== shouldWake(c.park, c.rows)) wrong.push(`${c.label}: woke=${got}`)
+      const got = await wakes(f, `${Q}-${i}`, c.owner, c.park, c.rows)
+      if (got !== shouldWake(c.owner, c.park, c.rows)) wrong.push(`${c.label}: woke=${got}`)
     }
     return wrong
   } finally {
@@ -272,22 +308,33 @@ async function disagreements(cases: readonly Case[], mutate?: StatementMutator):
   }
 }
 
-const parks = Object.entries(PARKS)
-const singleCases = parks.flatMap(([label, park]) =>
+const axes = DEADLINES.flatMap((deadline) =>
+  OWNERS.flatMap((owner) =>
+    Object.entries(parksFor(deadline)).map(([parkLabel, park]) => ({
+      deadline,
+      owner,
+      parkLabel,
+      park,
+    })),
+  ),
+)
+const singleCases = axes.flatMap(({ deadline, owner, parkLabel, park }) =>
   SUBSETS.map((fields) => ({
-    label: `${label} / ${name(fields)}`,
+    label: `${deadline.label} / ${owner.label} / ${parkLabel} / ${name(fields)}`,
+    owner,
     park,
-    rows: [corrupt(fields)],
+    rows: [corrupt(deadline, fields)],
   })),
 )
 const atStep = SUBSETS.filter((fields) => !fields.includes('step_name'))
 const atOther = SUBSETS.filter((fields) => fields.includes('step_name'))
-const pairCases = parks.flatMap(([label, park]) =>
+const pairCases = axes.flatMap(({ deadline, owner, parkLabel, park }) =>
   atStep.flatMap((a) =>
     atOther.map((b) => ({
-      label: `${label} / ${name(a)} | ${name(b)}`,
+      label: `${deadline.label} / ${owner.label} / ${parkLabel} / ${name(a)} | ${name(b)}`,
+      owner,
       park,
-      rows: [corrupt(a), corrupt(b)],
+      rows: [corrupt(deadline, a), corrupt(deadline, b)],
     })),
   ),
 )
@@ -306,7 +353,7 @@ describe('a wake needs ONE row that justifies it', () => {
     // about the queue, and the row with the right queue was wrong about the
     // step.
     expect(await disagreements(pairCases)).toEqual([])
-  })
+  }, 15_000)
 
   it('rejects a wake predicate that accepts only NULL timeout pairs', async () => {
     expect(await disagreements(singleCases, NULL_ONLY_TIMEOUT)).not.toEqual([])
