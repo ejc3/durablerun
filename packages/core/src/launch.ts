@@ -19,22 +19,21 @@ export class LaunchOutcome {
   private constructor(
     private readonly kind: 'accepted' | 'ended' | 'launch-failed',
     private readonly ending: Ending | null,
-    private readonly error: unknown,
   ) {}
 
   /** The transport took the launch (fire-and-forget ack). */
   static accepted(): LaunchOutcome {
-    return new LaunchOutcome('accepted', null, undefined)
+    return new LaunchOutcome('accepted', null)
   }
 
   /** A sync (bounded-slot resident) launcher observed the worker end. */
   static ended(ending: Ending): LaunchOutcome {
-    return new LaunchOutcome('ended', ending, undefined)
+    return new LaunchOutcome('ended', ending)
   }
 
   /** The launch never left the building. */
-  static launchFailed(error: unknown): LaunchOutcome {
-    return new LaunchOutcome('launch-failed', null, error)
+  static launchFailed(_error: unknown): LaunchOutcome {
+    return new LaunchOutcome('launch-failed', null)
   }
 
   /**

@@ -401,9 +401,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         claimToken,
       ],
     )
-    const claimedByThisBatch = `SELECT r.task_id FROM runs r
-                                WHERE r.queue = ? AND r.state = 'running'
-                                  AND r.fence_stamp = ${b.fence('claim')}`
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
     b.derived('task-book', {
@@ -909,7 +906,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   ): Promise<boolean> {
     const b = new FencedBatch(label, this.ids.token(), { now: NOW_MS })
     const deadlineGuard = deadlineOnly ? `AND ${cancelDue('cancel_at_ms', NOW)}` : ''
-    const BY_TASK = `f.task_id = ?`
     b.cas(
       'cancel',
       'tasks',
@@ -1122,9 +1118,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
       [failureJson, runId, queue, claimToken],
     )
-    const failedRun = fenced('runs', BY_RUN, b.fence('fail'))
-    const taskOfFailedRun = `(SELECT f.task_id FROM runs f
-                              WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')})`
     if (retry && successorId) {
       // Only a LIVE task with user budget remaining gets a retry run. The cap
       // is expressed with the SAME user-ordinal definition the counter uses
@@ -1151,7 +1144,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         [successorId, retryDelayMs, retryDelayMs, runId, successorId],
         'one',
       )
-      const successorWritten = fenced('runs', BY_RUN, b.fence('successor'))
       // attempts DERIVES from the failing run's own ordinal (the documented
       // user ordinal: run.attempt counts every successor, infra_retries the
       // infrastructure ones), so applying this twice equals applying it

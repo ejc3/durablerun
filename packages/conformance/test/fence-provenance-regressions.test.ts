@@ -38,7 +38,7 @@ interface Fixture {
  * collision it is about; anything past the list gets a unique spare.
  */
 async function fixture(ids: string[] = [], tokens: string[] = []): Promise<Fixture> {
-  const { raw, admin } = await openTestDb({ nowMs: NOW })
+  const { raw } = await openTestDb({ nowMs: NOW })
   const idSource = () => {
     let nextId = 0
     let nextToken = 0

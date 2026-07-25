@@ -10,7 +10,7 @@ const Q = 'q'
 const SECRET = 'test-secret'
 
 async function workerFx(seed: string) {
-  const { raw, admin } = await openTestDb()
+  const { raw } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   const worker = createWorkerServer({

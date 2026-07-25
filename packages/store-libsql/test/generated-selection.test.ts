@@ -15,7 +15,7 @@ const NOW = 1_000_000
  * same syntactic proxy that let this class through twice already.
  */
 async function fixture() {
-  const { raw, admin } = await openTestDb({ nowMs: NOW })
+  const { raw } = await openTestDb({ nowMs: NOW })
   return { raw, close: () => raw.close() }
 }
 
