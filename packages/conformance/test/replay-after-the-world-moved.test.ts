@@ -608,6 +608,64 @@ describe('a successor id that collides with the run being replaced', () => {
   })
 })
 
+describe('a successor id that collides with a historical run of the same task', () => {
+  async function runningRetry() {
+    const f = await fixture()
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+    const [historical] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!historical) throw new Error('expected the first claim')
+    await f.store.activate(Q, historical.runId, historical.claimToken, historical.claimGen)
+    await f.store.fail(Q, historical.runId, historical.claimToken, '{"name":"First"}', {
+      delaySeconds: 0,
+    })
+    const [current] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!current) throw new Error('expected the retry claim')
+    await f.store.activate(Q, current.runId, current.claimToken, current.claimGen)
+    return { f, spawned, historical, current }
+  }
+
+  function collidingStore(raw: LibsqlExecutor, historicalRunId: string) {
+    let tokens = 0
+    return new LibsqlSchedulerStore(raw, {
+      uuidv7: () => historicalRunId,
+      token: () => `historical-collision-${++tokens}`,
+    })
+  }
+
+  it('rejects a worker failure instead of committing a half-transition', async () => {
+    const { f, spawned, historical, current } = await runningRetry()
+    const colliding = collidingStore(f.raw, historical.runId)
+
+    await expect(
+      colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
+        delaySeconds: 0,
+      }),
+    ).rejects.toThrow()
+
+    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
+    expect(task?.state).toBe('running')
+    const [run] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [current.runId])
+    expect(run?.state).toBe('running')
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('rejects a claim-timeout sweep instead of committing a half-transition', async () => {
+    const { f, spawned, historical, current } = await runningRetry()
+    const colliding = collidingStore(f.raw, historical.runId)
+    await f.admin.setFakeNowEpochMs(NOW + 100_000)
+
+    await expect(colliding.sweep(Q, 10)).rejects.toThrow()
+
+    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
+    expect(task?.state).toBe('running')
+    const [run] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [current.runId])
+    expect(run?.state).toBe('running')
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+})
+
 describe('an exact replay of spawn', () => {
   /**
    * A lost response makes the caller retry the same batch. The task insert
