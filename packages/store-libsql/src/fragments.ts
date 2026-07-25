@@ -45,7 +45,7 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
   `fence_stamp = ${STAMP}, fence_at_ms = ${fencedAt(table, key, fence)}`
 
 /**
- * Successor identity, keyed on OWNERSHIP rather than on a fence.
+ * Successor identity, keyed on immutable ownership rather than on a fence.
  *
  * A fence proves a row carries a stamp right now. That is not the same as
  * proving this batch wrote it, and the difference is not academic: claiming a
@@ -55,40 +55,24 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
  * about a successor that exists and is running — and the failure's terminal
  * arm kills a task whose retry is live under a worker, or its insert runs
  * again and dies on the unique (task_id, attempt) index, discarding a whole
- * tick. Ownership does not decay, so these ask about that instead.
+ * tick. Ownership does not decay, so this asks about that instead.
  *
- * `mine` is the insert's guard: a run of MY task already sits at that id, so
- * there is nothing to create — which is what a replay looks like. It excludes
- * the run being REPLACED, so a minted id colliding with the parent is not
- * mistaken for an already-created successor; the insert then proceeds and
- * fails on the primary key, loudly.
+ * A run id and task id are not enough to identify the intended successor: an
+ * id source can collide with a historical run of the same task. The attempt is
+ * the third immutable component. Requiring all three in this primitive makes a
+ * call site unable to classify either the parent or a historical attempt as a
+ * replay of the successor; the insert proceeds and fails on the primary key,
+ * loudly.
  *
- * That exclusion is load-bearing. Letting the parent satisfy `mine` made the
- * insert write nothing, and every arm keyed on the successor wrote nothing
- * too, so what committed was a HALF-transition: in the sweep, a failed run
- * under a task still marked running, which no later claim or sweep can
- * rediscover; in a worker failure with retry budget left, a permanently
- * failed task the caller had asked to retry. A collision with a FOREIGN row
- * already failed loudly, and an id-generation failure against our own parent
- * is no less a failure — raising is strictly better than committing either
- * of those.
- *
- * `exists` is the terminal arm's guard, and it excludes the parent for a
- * different reason: the question there is whether a real successor exists,
- * and the parent standing at a colliding id is not one. Conflating the two
- * is what let a failing run answer for its own successor and skip the only
- * statement that records why the task failed.
+ * Misclassifying any older attempt makes the insert and every follow-on write
+ * nothing, committing a HALF-transition: a failed run under a task still
+ * marked running. A collision with a foreign row already fails loudly, and an
+ * id-generation failure against any run of our own task is no less a failure.
  */
-export const successor = {
-  mine: (idParam: string, taskCol: string, selfParam: string): string =>
-    `EXISTS (SELECT 1 FROM runs s
-             WHERE s.run_id = ${idParam} AND s.task_id = ${taskCol}
-               AND s.run_id <> ${selfParam})`,
-  exists: (idParam: string, taskCol: string, selfParam: string): string =>
-    `EXISTS (SELECT 1 FROM runs s
-             WHERE s.run_id = ${idParam} AND s.task_id = ${taskCol}
-               AND s.run_id <> ${selfParam})`,
-}
+export const successorOwned = (id: string, task: string, attempt: string): string =>
+  `EXISTS (SELECT 1 FROM runs s
+           WHERE s.run_id = ${id} AND s.task_id = ${task}
+             AND s.attempt = ${attempt})`
 
 /**
  * A cancellation deadline that has already passed, as of `at`.

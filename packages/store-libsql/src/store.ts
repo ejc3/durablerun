@@ -41,7 +41,7 @@ import {
   fenced,
   fencedAt,
   LIVE,
-  successor,
+  successorOwned,
 } from './fragments.js'
 import { NOW_MS } from './time.js'
 
@@ -772,8 +772,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        FROM runs f JOIN tasks t ON t.task_id = f.task_id
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
          AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}
-         AND NOT ${successor.mine('?', 'f.task_id', '?')}`,
-      [successorId, item.attempt + 1, item.runId, successorId, item.runId],
+         AND NOT ${successorOwned('?', 'f.task_id', '?')}`,
+      [successorId, item.attempt + 1, item.runId, successorId, item.attempt + 1],
       'one',
     )
     // At the cap (pre-increment): terminal. Terminal ONLY when this batch
@@ -792,8 +792,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       set: `state = 'failed', failure_reason = ?`,
       setArgs: [REASON_INFRA_CAP],
       narrow: `state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
-            AND NOT ${successor.exists('?', 'tasks.task_id', '?')}`,
-      narrowArgs: [successorId, item.runId],
+            AND NOT ${successorOwned('?', 'tasks.task_id', '?')}`,
+      narrowArgs: [successorId, item.attempt + 1],
       rows: 'one',
     })
     // Bookkeeping keyed on our successor existing. The counter DERIVES from
@@ -1150,8 +1150,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          FROM runs f JOIN tasks t ON t.task_id = f.task_id
          WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
            AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
-           AND NOT ${successor.mine('?', 'f.task_id', '?')}`,
-        [successorId, retryDelayMs, retryDelayMs, runId, successorId, runId],
+           AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
+        [successorId, retryDelayMs, retryDelayMs, runId, successorId],
         'one',
       )
       const successorWritten = fenced('runs', BY_RUN, b.fence('successor'))
@@ -1190,7 +1190,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            state = 'failed', failure_reason = ?`,
         setArgs: [runId, failureJson],
         narrow: `state IN ${LIVE}
-            AND NOT ${successor.exists('?', 'tasks.task_id', '?')}`,
+            AND NOT ${successorOwned(
+              '?',
+              'tasks.task_id',
+              '(SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)',
+            )}`,
         narrowArgs: [successorId, runId],
         rows: 'one',
       })

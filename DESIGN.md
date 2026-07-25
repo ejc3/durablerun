@@ -499,6 +499,13 @@ are load-bearing):
    rows on every follow-on. Where a partial effect would still be corrupt, add
    an abort-sentinel statement that deliberately errors (CHECK violation) when
    the guard fails, rolling the batch back.
+   Successor replay identity is the immutable triple `(run_id, task_id,
+   attempt)`. An existing row may suppress a successor insert or its terminal
+   alternative only when all three fields equal the intended successor;
+   collision with the parent, a historical attempt of the same task, or a
+   foreign task must abort the whole transition. The schema's unique
+   `(task_id, attempt)` key makes two attempts of one task unable to claim the
+   same ordinal.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:

@@ -140,11 +140,18 @@ MUTATIONS = [
     (
         "successor-ownership",
         "packages/store-libsql/src/store.ts",
-        "           AND NOT ${successor.mine('?', 'f.task_id', '?')}`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId, runId],",
-        "           AND NOT ${fenced('runs', BY_RUN, b.fence('successor'))} AND ? IS NOT NULL`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId, runId],",
+        "           AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,\n"
+        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
+        "           AND ? IS NOT NULL`,\n"
+        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
         "a replayed failure re-inserts a successor that has since been claimed",
+    ),
+    (
+        "successor-attempt-identity",
+        "packages/store-libsql/src/fragments.ts",
+        " AND s.task_id = ${task}\n             AND s.attempt = ${attempt})`",
+        " AND s.task_id = ${task}\n             AND ${attempt} IS NOT NULL)`",
+        "a historical run of the same task answers for the intended successor",
     ),
     (
         "schema-fault-is-permanent",
