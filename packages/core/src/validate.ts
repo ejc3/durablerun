@@ -115,6 +115,40 @@ export function userDurationToMs(
   }
 }
 
+/**
+ * A serialized VALUE crossing the user boundary — the third kind of user
+ * input, alongside names and knobs.
+ *
+ * The boundary only had validators for names and knobs, so a value had
+ * nowhere to be checked and went straight to the database driver. That
+ * matters because `JSON.stringify` is typed `(value: any) => string` but
+ * returns `undefined` for undefined, functions and symbols, so
+ * `JSON.stringify(obj.missingProperty)` type-checks and yields undefined.
+ * The driver then rejects the bind, the store wraps every driver throw as an
+ * outage, and the worker treats an outage as infrastructure — so an ordinary
+ * typo consumed the whole infrastructure-retry budget, re-ran the task body
+ * on every one of those attempts, and reported exhausted infrastructure with
+ * no user-visible reason. Deterministic bad input must never loop through
+ * lease recovery.
+ *
+ * Parsing, not just type-checking, is deliberate: this is the one place that
+ * can promise the rest of the engine a value is really JSON, and a string
+ * that is not JSON fails identically far away and much later.
+ */
+export function userJsonValue(what: string, json: string): string {
+  if (typeof json !== 'string') {
+    throw new FatalTaskError(
+      `${what} is ${json === undefined ? 'undefined' : typeof json}, not a JSON string — JSON.stringify returns undefined for undefined, functions and symbols`,
+    )
+  }
+  try {
+    JSON.parse(json)
+  } catch (error) {
+    throw new FatalTaskError(`${what} is not valid JSON: ${String(error)}`)
+  }
+  return json
+}
+
 /** requireEpochMs, classified for the task boundary. */
 export function userEpochMs(name: string, epochMs: number): number {
   try {

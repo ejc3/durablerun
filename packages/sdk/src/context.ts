@@ -8,6 +8,7 @@ import {
   SuspendSignal,
   userDurationToMs,
   userEpochMs,
+  userJsonValue,
   UserName,
 } from '@durablerun/core'
 
@@ -203,6 +204,8 @@ export class ReplayContext implements TaskContext {
     // name could never be awaited, so emitting one is a permanent bug,
     // not a payload nobody can receive.
     const parsed = UserName.parse('event name', name)
+    // The payload is a user VALUE, and values cross the boundary here.
+    const payload = userJsonValue('event payload', payloadJson)
     // A zombie whose lease was lost must not win a first-write event and
     // wake waiters — emitEvent is not fenced by the store (the emit is
     // global), so the pump's lease-loss signal is the only stop. (emitEvent
@@ -211,7 +214,7 @@ export class ReplayContext implements TaskContext {
     if (this.leaseLost?.aborted) {
       throw new LeaseLostError(`lease lost during pass (run ${this.run.runId})`)
     }
-    await this.store.emitEvent(this.queue, parsed.value, payloadJson)
+    await this.store.emitEvent(this.queue, parsed.value, payload)
   }
 
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {

@@ -56,6 +56,22 @@ export class LibsqlExecutor implements SqlExecutor {
     statements: readonly SqlStatement[],
     mode: SqlBatchMode = 'write',
   ): Promise<SqlResult[]> {
+    // An `undefined` bind is a programming error, not an outage. Letting it
+    // reach the driver put its TypeError inside the catch below, where every
+    // driver throw becomes StoreUnavailableError — so a deterministic bad
+    // value was reported as infrastructure and retried until the
+    // infrastructure budget ran out. Rejecting it HERE, outside the try,
+    // keeps that misclassification unwritable for every value that crosses
+    // this port, not only the ones a boundary validator happens to cover.
+    for (const [i, s] of statements.entries()) {
+      for (const [j, arg] of s.args.entries()) {
+        if (arg === undefined) {
+          throw new TypeError(
+            `batch(${_label}) statement ${i} argument ${j} is undefined — bind null explicitly if that is what you mean`,
+          )
+        }
+      }
+    }
     let results: Awaited<ReturnType<Client['batch']>>
     try {
       if (this.fileBacked) await this.applyConnectionPragmas()

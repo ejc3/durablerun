@@ -327,8 +327,13 @@ describe('fence provenance', () => {
     // or a half-built task) therefore hands the caller a run id that does not
     // exist, and every poll on it reports nothing forever.
     //
-    // The correct answer must come from what this batch actually wrote, so
-    // both halves are asserted together: the task attribution AND the run id.
+    // The correct answer has to come from what this batch actually wrote.
+    // This asserts only that — NOT that the losing insert wrote no run. An
+    // earlier version of this test demanded both "no runs exist" and "the
+    // reported run exists", which no implementation can satisfy; whether the
+    // right repair is to report the winner's real run or to give the runless
+    // winner one is a semantics question the spawn rewrite decides, and both
+    // answers pass this test.
     const f = await fixture(['NEW-TASK', 'NEW-RUN'])
     await insertTask(f.raw, { id: 'OLD-TASK', state: 'pending', idempotencyKey: 'key' })
     // Deliberately no run for OLD-TASK.
@@ -339,11 +344,9 @@ describe('fence provenance', () => {
       created: false,
       taskId: 'OLD-TASK',
     })
-    // Our losing insert must not have attached a run to a task it did not create.
-    expect(await query(f.raw, `SELECT run_id FROM runs`)).toEqual([])
-    // ...and the run id it reports must be one that exists.
-    const reported = await query(f.raw, `SELECT run_id FROM runs WHERE run_id = ?`, [result.runId])
-    expect(reported.length).toBe(1)
+    const reported = await query(f.raw, `SELECT task_id FROM runs WHERE run_id = ?`, [result.runId])
+    expect(reported.length).toBe(1) // the reported run must exist...
+    expect(reported[0]?.task_id).toBe('OLD-TASK') // ...and belong to the winner
     f.close()
   })
 
