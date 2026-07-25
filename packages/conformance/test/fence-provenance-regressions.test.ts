@@ -327,13 +327,13 @@ describe('fence provenance', () => {
     // or a half-built task) therefore hands the caller a run id that does not
     // exist, and every poll on it reports nothing forever.
     //
-    // The correct answer has to come from what this batch actually wrote.
-    // This asserts only that — NOT that the losing insert wrote no run. An
-    // earlier version of this test demanded both "no runs exist" and "the
-    // reported run exists", which no implementation can satisfy; whether the
-    // right repair is to report the winner's real run or to give the runless
-    // winner one is a semantics question the spawn rewrite decides, and both
-    // answers pass this test.
+    // The contract asserted here: a reported run id NAMES A REAL RUN OF THE
+    // REPORTED TASK. Null is allowed and is the honest answer when the
+    // winning task has no run — spawn's job is to create a task or report
+    // that one already exists, not to repair somebody else's. Giving the
+    // runless winner a run was the other candidate repair and is deliberately
+    // not taken: against a terminal task at a colliding id it would be
+    // exactly the amplification rule 6 forbids.
     const f = await fixture(['NEW-TASK', 'NEW-RUN'])
     await insertTask(f.raw, { id: 'OLD-TASK', state: 'pending', idempotencyKey: 'key' })
     // Deliberately no run for OLD-TASK.
@@ -344,9 +344,16 @@ describe('fence provenance', () => {
       created: false,
       taskId: 'OLD-TASK',
     })
-    const reported = await query(f.raw, `SELECT task_id FROM runs WHERE run_id = ?`, [result.runId])
-    expect(reported.length).toBe(1) // the reported run must exist...
-    expect(reported[0]?.task_id).toBe('OLD-TASK') // ...and belong to the winner
+    expect(result.runId).toBeNull()
+
+    // And when the winner DOES have a run, that run is what comes back —
+    // never the id this call minted and never inserted.
+    await insertRun(f.raw, { id: 'OLD-RUN', taskId: 'OLD-TASK', state: 'pending' })
+    const again = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'key' })
+    expect({ created: again.created, runId: again.runId }).toEqual({
+      created: false,
+      runId: 'OLD-RUN',
+    })
     f.close()
   })
 

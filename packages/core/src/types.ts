@@ -37,7 +37,17 @@ export interface SpawnOptions {
 
 export interface SpawnResult {
   taskId: string
-  runId: string
+  /**
+   * The run this call created, or — when it lost — the newest run the winning
+   * task already had.
+   *
+   * Null is a real answer, not an error: a task that already exists may have
+   * no run at all, and there is then nothing honest to report. It is typed
+   * nullable so callers have to decide what to do about that; the previous
+   * version returned the id it had minted and never inserted, so a caller
+   * polling that id found nothing, forever, with no way to tell.
+   */
+  runId: string | null
   /** False when the idempotency key matched an existing task. */
   created: boolean
 }

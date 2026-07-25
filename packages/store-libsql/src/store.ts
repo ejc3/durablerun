@@ -5,6 +5,7 @@ import {
   durationToMs,
   FENCE_COLS,
   FENCE_SET,
+  FENCE_VALS,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   INFRA_RETRY_CAP,
@@ -158,67 +159,96 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       durationToMs('cancellation.maxDurationSeconds', opts.cancellation.maxDurationSeconds)
     }
 
-    const [, , chosen] = await this.db.batch('spawn', [
-      // 1. Idempotent task insert: loses silently when the key already
-      //    exists. enqueue/cancel deadlines are computed in SQL (rule 3);
-      //    cancel_at_ms materializes max_delay so sweeps and nextWakeAt are
-      //    indexed reads, never JSON scans.
-      {
-        sql: `INSERT INTO tasks (task_id, queue, task_name, params, headers, retry_strategy,
-                max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
-                cancel_at_ms, created_at_ms)
-              SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW_MS} + ?,
-                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? + ? ELSE NULL END,
-                ${NOW_MS}
-              WHERE 1
-              ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
-              DO NOTHING`,
-        args: [
-          taskId,
-          queue,
-          taskName,
-          paramsJson,
-          opts.headers ? JSON.stringify(opts.headers) : null,
-          retry,
-          maxAttempts,
-          opts.cancellation ? JSON.stringify(opts.cancellation) : null,
-          opts.idempotencyKey ?? null,
-          delayMs,
-          maxDelayMs,
-          delayMs,
-          maxDelayMs,
-        ],
-      },
-      // 2. Initial run — only when OUR task insert won: the task must be
-      //    LIVE (rule 6 — a terminal task at a colliding id gets no new run)
-      //    AND have no run yet (an idempotency hit on an existing task, or a
-      //    losing insert under an id collision, adds nothing).
-      {
-        sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
-              SELECT ?, ?, task_id, 1, 'pending', enqueue_at_ms, ${NOW_MS}
-              FROM tasks WHERE task_id = ? AND state IN ${LIVE}
-                AND NOT EXISTS (SELECT 1 FROM runs WHERE task_id = ?)`,
-        args: [runId, queue, taskId, taskId],
-      },
-      // 3. Resolve winner (ours or the pre-existing task for this key).
-      {
-        sql: `SELECT t.task_id AS task_id,
-                     (SELECT r.run_id FROM runs r WHERE r.task_id = t.task_id
-                        ORDER BY r.run_id DESC LIMIT 1) AS run_id
-              FROM tasks t
-              WHERE t.task_id = ?
-                 OR (? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?)
-              ORDER BY (t.task_id = ?) DESC
-              LIMIT 1`,
-        args: [taskId, opts.idempotencyKey ?? null, queue, opts.idempotencyKey ?? null, taskId],
-      },
-    ])
+    const key = opts.idempotencyKey ?? null
+    const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
+    // Idempotent task insert: loses silently when the key already exists.
+    // enqueue/cancel deadlines are computed in SQL (rule 3); cancel_at_ms
+    // materializes max_delay so sweeps and nextWakeAt are indexed reads, never
+    // JSON scans.
+    //
+    // The NOT EXISTS on the primary key is what makes this a compare-and-set
+    // rather than a crash: the targeted ON CONFLICT covers the idempotency
+    // index only, so a colliding task_id raised a constraint error out of
+    // spawn instead of losing. Losing is the right answer — some other task
+    // already occupies that identity — and it is one the batch can reason
+    // about.
+    b.cas(
+      'task',
+      'tasks',
+      `INSERT INTO tasks (task_id, queue, task_name, params, headers, retry_strategy,
+         max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
+         cancel_at_ms, created_at_ms, ${FENCE_COLS})
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,
+         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,
+         ${NOW}, ${FENCE_VALS}
+       WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
+       ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
+       DO NOTHING`,
+      [
+        taskId,
+        queue,
+        taskName,
+        paramsJson,
+        opts.headers ? JSON.stringify(opts.headers) : null,
+        retry,
+        maxAttempts,
+        opts.cancellation ? JSON.stringify(opts.cancellation) : null,
+        key,
+        delayMs,
+        maxDelayMs,
+        delayMs,
+        maxDelayMs,
+        taskId,
+      ],
+    )
+    // The initial run, for the task THIS batch just created. Two guards the
+    // old version needed have deleted themselves: the task cannot be terminal
+    // (we inserted it 'pending' one statement ago) and cannot already have a
+    // run (it did not exist one statement ago). Both were only there because
+    // the statement could not tell whose task it was looking at.
+    b.followOn(
+      'run',
+      'runs',
+      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
+         available_at_ms, created_at_ms, ${FENCE_COLS})
+       SELECT ?, f.queue, f.task_id, 1, 'pending', f.enqueue_at_ms, f.fence_at_ms,
+         ${STAMP}, f.fence_at_ms
+       FROM tasks f WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('task')}`,
+      [runId, taskId],
+      'one',
+    )
+    // Only reached when the insert lost, so by definition it reads a task some
+    // OTHER caller created — fenced by the unique (queue, idempotency_key)
+    // index, not by this batch's stamp. Ordering prefers the idempotency
+    // winner over a bare id collision and breaks ties on task_id, so it is
+    // deterministic on every dialect; an `ORDER BY (t.task_id = ?) DESC` would
+    // not be, since Postgres sorts NULLs first.
+    b.openTail(
+      'receipt',
+      'the winner is a task another caller created; the unique idempotency index is its fence, not this batch stamp',
+      `SELECT t.task_id AS task_id,
+              (SELECT r.run_id FROM runs r WHERE r.task_id = t.task_id
+                 ORDER BY r.attempt DESC, r.run_id DESC LIMIT 1) AS run_id
+       FROM tasks t
+       WHERE t.task_id = ? OR (? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?)
+       ORDER BY CASE WHEN ? IS NOT NULL AND t.idempotency_key = ? THEN 0 ELSE 1 END, t.task_id
+       LIMIT 1`,
+      [taskId, key, queue, key, key, key],
+    )
+    const { won, results } = await b.run(this.db)
+    if (won === 'task') return { taskId, runId, created: true }
 
-    const row = chosen?.rows[0]
-    if (!row) throw new Error('spawn: winner resolution returned no row')
-    const wonTaskId = String(row.task_id)
-    const wonRunId = row.run_id === null ? runId : String(row.run_id)
-    return { taskId: wonTaskId, runId: wonRunId, created: wonTaskId === taskId }
+    const row = results.receipt?.rows[0]
+    if (!row) throw new Error('spawn: the task insert lost but no existing task explains it')
+    // A pre-existing task may legitimately have no run — swept away, or never
+    // given one. There is no honest run id to report then, and the previous
+    // version reported the one it had minted and never inserted, so every
+    // poll on it found nothing forever.
+    return {
+      taskId: String(row.task_id),
+      runId: row.run_id === null ? null : String(row.run_id),
+      created: false,
+    }
   }
 
   async claim(
