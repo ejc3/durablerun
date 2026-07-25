@@ -152,10 +152,10 @@ GREPTILE_PROVENANCE = (
 )
 
 
-def active_check(rule: str = ACTIVE_RULE) -> str:
+def active_check(rule: str = ACTIVE_RULE, rule_stem: str = "a-rule") -> str:
     return (
         "Fail when the diff introduces or materially widens any failure shape in "
-        "`.github/review-bot-rules/a-rule.md`. "
+        f"`.github/review-bot-rules/{rule_stem}.md`. "
         + rule
         + " Pass for the cases listed in that file Allowed section, for test-only "
         "scaffolding that does not make production behaviour worse, and for existing "
@@ -166,12 +166,13 @@ def active_check(rule: str = ACTIVE_RULE) -> str:
 def corpus(
     rule_body: str,
     *,
+    rule_stem: str = "a-rule",
     in_coderabbit: bool = True,
     active_coderabbit: bool = True,
-    coderabbit_name: str = "durablerun: a-rule",
+    coderabbit_name: str | None = None,
     coderabbit_mode: str = "error",
-    coderabbit_instructions: str = active_check(),
-    greptile_id: str = "durablerun-a-rule",
+    coderabbit_instructions: str | None = None,
+    greptile_id: str | None = None,
     greptile_rule: str = ACTIVE_RULE,
     readme_note: str = PROVENANCE_NOTE,
     status_check: bool = True,
@@ -181,6 +182,10 @@ def corpus(
     greptile_scope: list[str] | None = None,
 ) -> dict[str, str]:
     """A miniature review-bot corpus: one rule and both active configurations."""
+    coderabbit_name = coderabbit_name or f"durablerun: {rule_stem}"
+    greptile_id = greptile_id or f"durablerun-{rule_stem}"
+    if coderabbit_instructions is None:
+        coderabbit_instructions = active_check(greptile_rule, rule_stem)
     cr = (
         f"# {CODERABBIT_PROVENANCE}\n"
         "reviews:\n"
@@ -200,13 +205,13 @@ def corpus(
             f"          {coderabbit_instructions}\n"
         )
     return {
-        ".github/review-bot-rules/a-rule.md": rule_body,
+        f".github/review-bot-rules/{rule_stem}.md": rule_body,
         ".github/review-bot-rules/README.md": (
             f"# Rules\n\n{readme_note}\n\n"
             "<!-- review-bot-global:start -->\n"
             f"{CODERABBIT_GLOBAL}\n"
             "<!-- review-bot-global:end -->\n\n"
-            "- `a-rule.md`\n"
+            f"- `{rule_stem}.md`\n"
         ),
         ".coderabbit.yaml": cr,
         ".greptile/rules.md": f"# Rules\n\n{GREPTILE_PROVENANCE}\n",
@@ -251,6 +256,42 @@ Allowed cases (do NOT flag these):
 
 - the nearest legitimate shape
 """
+
+RED_PAIR_SYNOPSIS = (
+    "Flag a repair whose regression test and fix share one commit. "
+    "Pass for separate red-test and fix commits."
+)
+
+
+def red_pair_rule(synopsis: str = RED_PAIR_SYNOPSIS, allowed: str = "") -> str:
+    return f"""# Red test before fix
+
+Scope: `packages/**` — siblings cover the rest.
+
+<!-- review-bot-scope:start -->
+packages/**
+<!-- review-bot-scope:end -->
+
+<!-- review-bot-synopsis:start -->
+{synopsis}
+<!-- review-bot-synopsis:end -->
+
+Report a failure when the diff does any of:
+
+- a repair lands without a preceding failing regression
+
+Allowed cases (do NOT flag these):
+
+- a test-only red commit followed by a fix commit
+{allowed}"""
+
+
+def red_pair_corpus(rule_body: str, synopsis: str) -> dict[str, str]:
+    return corpus(
+        rule_body,
+        rule_stem="red-test-before-fix",
+        greptile_rule=synopsis,
+    )
 
 
 CLEAN_STORE = store(
@@ -572,6 +613,46 @@ export class S {
         ),
         "does not actively run `python3 scripts/gate-lint.py --run-base HEAD BASE`",
         "an empty base-gate mapping executes no base-owned composition or checker runner",
+    ),
+    (
+        "review-bot-lint.py",
+        red_pair_corpus(
+            red_pair_rule(
+                "Flag a repair whose test and fix share one commit unless its message "
+                "quotes the observed failure. Pass for separate red-test and fix commits."
+            ),
+            "Flag a repair whose test and fix share one commit unless its message "
+            "quotes the observed failure. Pass for separate red-test and fix commits.",
+        ),
+        "does not unconditionally reject a regression test and fix sharing one commit",
+        "the red-pair synopsis makes its rejection conditional on commit prose",
+    ),
+    (
+        "review-bot-lint.py",
+        red_pair_corpus(
+            red_pair_rule(
+                "Flag a repair whose regression test and fix share one commit. "
+                "Pass for separate red-test and fix commits and combined commits "
+                "quoting the failure they saw."
+            ),
+            "Flag a repair whose regression test and fix share one commit. "
+            "Pass for separate red-test and fix commits and combined commits "
+            "quoting the failure they saw.",
+        ),
+        "Pass for arm permits combined repair commits",
+        "the red-pair synopsis cannot waive the two-commit invariant",
+    ),
+    (
+        "review-bot-lint.py",
+        red_pair_corpus(
+            red_pair_rule(
+                RED_PAIR_SYNOPSIS,
+                "\n- **A combined commit quoting its observed failure.**",
+            ),
+            RED_PAIR_SYNOPSIS,
+        ),
+        "Allowed cases section permits a combined repair commit",
+        "the detailed allowed cases cannot contradict the mandatory pair",
     ),
     (
         "review-bot-lint.py",

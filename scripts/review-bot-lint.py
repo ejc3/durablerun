@@ -111,6 +111,27 @@ def rule_synopsis(text: str, rel: str) -> tuple[str, list[str]]:
     return body, []
 
 
+def red_pair_policy(text: str, synopsis: str, rel: str) -> list[str]:
+    """The canonical red-test rule may not grant a one-commit exception."""
+    if not rel.endswith("/red-test-before-fix.md") or not synopsis:
+        return []
+    rejection, allowance = synopsis.split("Pass for ", 1)
+    problems: list[str] = []
+    if "regression test and fix share one commit" not in rejection.lower():
+        problems.append(
+            f"{rel}'s active-review synopsis does not unconditionally reject a "
+            "regression test and fix sharing one commit."
+        )
+    if "combined commit" in allowance.lower():
+        problems.append(
+            f"{rel}'s active-review synopsis Pass for arm permits combined repair commits."
+        )
+    allowed = text.split("Allowed cases", 1)[1] if "Allowed cases" in text else ""
+    if re.search(r"(?im)^\s*-\s+.*combined commit", allowed):
+        problems.append(f"{rel}'s Allowed cases section permits a combined repair commit.")
+    return problems
+
+
 def marked_body(text: str, start_marker: str, end_marker: str, rel: str) -> tuple[str, list[str]]:
     """Read one canonical literal body from a pair of unique markers."""
     if text.count(start_marker) != 1 or text.count(end_marker) != 1:
@@ -396,6 +417,7 @@ def main() -> int:
         problems.extend(synopsis_problems)
         if synopsis:
             synopses[p.stem] = synopsis
+            problems.extend(red_pair_policy(body, synopsis, rel))
         scope_body, scope_problems = marked_body(body, SCOPE_START, SCOPE_END, rel)
         problems.extend(scope_problems)
         if scope_body:
