@@ -1,6 +1,7 @@
 import { LeaseLostError, type SqlExecutor } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 
@@ -37,10 +38,7 @@ interface Fixture {
  * collision it is about; anything past the list gets a unique spare.
  */
 async function fixture(ids: string[] = [], tokens: string[] = []): Promise<Fixture> {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  await admin.setFakeNowEpochMs(NOW)
+  const { raw, admin } = await openTestDb({ nowMs: NOW })
   const idSource = () => {
     let nextId = 0
     let nextToken = 0

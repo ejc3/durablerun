@@ -1,6 +1,7 @@
 import { FENCE_SET, FencedBatch } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { LibsqlExecutor, LibsqlStoreAdmin } from '../src/index.js'
+import type { LibsqlExecutor } from '../src/index.js'
+import { openTestDb } from '../src/testing.js'
 import { NOW_MS } from '../src/time.js'
 
 const NOW = 1_000_000
@@ -14,10 +15,7 @@ const NOW = 1_000_000
  * same syntactic proxy that let this class through twice already.
  */
 async function fixture() {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  await admin.setFakeNowEpochMs(NOW)
+  const { raw, admin } = await openTestDb({ nowMs: NOW })
   return { raw, close: () => raw.close() }
 }
 

@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./testing": "./src/testing.js"
   },
   "scripts": {
     "test": "vitest run"

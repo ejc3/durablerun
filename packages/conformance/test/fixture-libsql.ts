@@ -1,12 +1,11 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import type { StoreFixture } from '../src/index.js'
 
 export async function makeLibsqlFixture(seed: number | string): Promise<StoreFixture> {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   return {
     store: new LibsqlSchedulerStore(raw, ids),

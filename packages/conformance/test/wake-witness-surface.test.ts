@@ -1,4 +1,5 @@
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -126,10 +127,7 @@ function shouldWake(park: Park, rows: readonly Row[]): boolean {
 }
 
 async function open() {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  await admin.setFakeNowEpochMs(NOW)
+  const { raw, admin } = await openTestDb({ nowMs: NOW })
   let n = 0
   let seeds = 0
   const store = new LibsqlSchedulerStore(raw, {

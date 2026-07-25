@@ -1,17 +1,16 @@
-import { type Buggify, type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
-import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { type Buggify, type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
+import { Rng, SimWorld, seededIdSource } from '@durablerun/harness'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { tick, type TickOptions } from '../src/index.js'
+import { type TickOptions, tick } from '../src/index.js'
 
 const Q = 'q'
 const OPTS: TickOptions = { queue: Q, claimLimit: 3, sweepLimit: 5, leaseSeconds: 60 }
 
 async function fx(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   await admin.setFakeNowEpochMs(1_000_000)

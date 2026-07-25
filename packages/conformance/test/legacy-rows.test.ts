@@ -1,9 +1,5 @@
-import {
-  LibsqlExecutor,
-  LibsqlSchedulerStore,
-  LibsqlStoreAdmin,
-  MIGRATIONS,
-} from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore, MIGRATIONS } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 
@@ -47,10 +43,7 @@ function columnsAddedAfterTheirTable(): { table: string; column: string; version
 }
 
 async function fixture() {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  await admin.setFakeNowEpochMs(NOW)
+  const { raw, admin } = await openTestDb({ nowMs: NOW })
   // Separate counters: a shared one returns the same token for two
   // consecutive batches whenever no id is minted between them, and two
   // batches sharing a seed is the one corruption the provenance scheme

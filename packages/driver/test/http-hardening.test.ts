@@ -1,7 +1,8 @@
 import { connect } from 'node:net'
 import { systemClock } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { createWorkerServer, signBody } from '../src/index.js'
 
@@ -9,9 +10,7 @@ const Q = 'q'
 const SECRET = 'test-secret'
 
 async function workerFx(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   const worker = createWorkerServer({

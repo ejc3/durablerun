@@ -1,5 +1,5 @@
 import { type ClaimedRun, LeaseLostError } from '@durablerun/core'
-import { Rng, seededBuggify, SimWorld } from '@durablerun/harness'
+import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'

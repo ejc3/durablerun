@@ -1,8 +1,9 @@
 import { EventTimeoutError, LeaseLostError } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { runClaimedRun, type TaskRegistry } from '../src/index.js'
+import { type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 class InstantClock {
@@ -21,9 +22,7 @@ class InstantClock {
   }
 }
 async function fx(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   const clock = new InstantClock()

@@ -1,5 +1,6 @@
 import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 
@@ -67,10 +68,7 @@ class JitteringExecutor implements SqlExecutor {
 
 /** One deterministic pass over the engine; `jitterMs` 0 means no jitter. */
 async function run(jitterMs: number, scenario: string): Promise<string[]> {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  await admin.setFakeNowEpochMs(NOW)
+  const { raw, admin } = await openTestDb({ nowMs: NOW })
   // SEPARATE counters. Sharing one made `token()` return the same string for
   // two consecutive batches whenever no id was minted between them — and the
   // whole provenance scheme is exactly as strong as seed uniqueness, so two

@@ -1,9 +1,10 @@
-import { type Clock, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
+import { type Clock, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { runClaimedRun, type TaskHandler, type TaskRegistry } from '../src/index.js'
+import { type TaskHandler, type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 
@@ -45,9 +46,7 @@ class FakeClock implements Clock {
 }
 
 async function fx(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   const clock = new FakeClock()

@@ -1,5 +1,6 @@
 import type { SqlExecutor } from '@durablerun/core'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 
@@ -20,10 +21,7 @@ const Q = 'q'
 const NOW = 1_000_000
 
 async function fixture() {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  await admin.setFakeNowEpochMs(NOW)
+  const { raw, admin } = await openTestDb({ nowMs: NOW })
   // Separate counters — see legacy-rows.test.ts: a shared counter hands
   // two consecutive batches the same seed, which the provenance scheme
   // cannot survive and the one-batch-two-instants invariant catches.
