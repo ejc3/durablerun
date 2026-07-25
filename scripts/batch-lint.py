@@ -46,10 +46,6 @@ SINGLE_WRITES = {
 # they cannot mint a fresh one. Each needs a written reason, because "it is
 # fine" is exactly the judgement this lint exists to stop being made silently.
 TOKEN_FENCED = {
-    # DESIGN.md rule 5: the worker's claim token IS the stamp, minted at claim
-    # and unique to that worker. It must survive the batch because the worker
-    # keeps running, so a per-batch stamp is not available here.
-    "set-checkpoint": "claim token is the stamp (rule 5)",
     # Observability only; nothing in the protocol reads the drivers table, and
     # re-applying the same beat is the same row.
     "driver-heartbeat": "advisory liveness row, replay-identical",

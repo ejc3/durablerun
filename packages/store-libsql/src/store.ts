@@ -1170,11 +1170,25 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   /**
-   * Lease-fenced checkpoint upsert (§3.4 rule 5). The claim token IS the
-   * batch stamp here — minted at claim, unique to this worker — because the
-   * lease must survive the write (the worker continues). Statement 2 keys on
-   * the token fence; the attempt guard is the LWW tiebreaker, never the
-   * fence. Throws LeaseLostError when the lease is gone (AB002).
+   * Lease-fenced checkpoint upsert (§3.4 rule 5). Throws LeaseLostError when
+   * the lease is gone (AB002).
+   *
+   * This was the last hand-rolled multi-statement write, exempt because rule 5
+   * says the claim token IS the stamp here: the lease has to survive the batch
+   * because the worker keeps working, so there was nowhere to put a per-batch
+   * stamp. `fence_stamp` is that place, and it does not compete with the
+   * lease — claimed_by is untouched, exactly the freedom activate gained. The
+   * exemption was a workaround for a problem that no longer exists.
+   *
+   * The upsert's task id and queue now come from the RUN ROW the
+   * compare-and-set stamped rather than from the caller's arguments. Rule 5
+   * requires the fence to bind the full surface — run id, task id, queue and
+   * token — and the compare-and-set checked all four, so reading them back off
+   * the winning row is that requirement met by construction instead of by
+   * repeating four guards in a second statement. `updated_at_ms` comes from
+   * `fence_at_ms` rather than from the heartbeat column it was borrowing,
+   * which was itself a smaller instance of the borrowed-column problem this
+   * whole change exists to remove.
    */
   async setCheckpoint(
     queue: string,
@@ -1186,33 +1200,33 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     extendLeaseSeconds: number,
   ): Promise<void> {
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
-    const [extended] = await this.db.batch('set-checkpoint', [
-      {
-        sql: `UPDATE runs SET
-                claim_expires_at_ms = ${NOW_MS} + ?, heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
-                AND state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
-        args: [extendMs, runId, queue, taskId, claimToken],
-      },
-      {
-        // updated_at_ms comes from the heartbeat statement 1 just wrote, not
-        // from a second clock read: the two statements of one batch see
-        // different clocks on a real backend.
-        sql: `INSERT INTO checkpoints
-                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-              SELECT ?, ?, ?, ?, r.run_id, r.attempt, r.heartbeat_at_ms
-              FROM runs r
-              WHERE r.run_id = ? AND r.task_id = ? AND r.queue = ? AND r.claimed_by = ?
-                AND r.state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t2
-                            WHERE t2.task_id = r.task_id AND t2.state IN ${LIVE})
-              ${CHECKPOINT_LWW}`,
-        args: [taskId, checkpointName, queue, stateJson, runId, taskId, queue, claimToken],
-      },
-    ])
-    if ((extended?.rowsAffected ?? 0) !== 1) throw new LeaseLostError(`setCheckpoint ${runId}`)
+    const b = new FencedBatch('set-checkpoint', this.ids.token(), { now: NOW_MS })
+    b.cas(
+      'lease',
+      'runs',
+      `UPDATE runs SET
+         claim_expires_at_ms = ${NOW} + ?, heartbeat_at_ms = ${NOW}, ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
+         AND state = 'running'
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+      [extendMs, runId, queue, taskId, claimToken],
+    )
+    // The attempt comparison inside CHECKPOINT_LWW is the last-writer-wins
+    // tiebreaker, never the fence: a lower-attempt writer under a still-valid
+    // lease is dropped silently and its lease still extends.
+    b.followOn(
+      'checkpoint',
+      `INSERT INTO checkpoints
+         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
+       FROM runs f WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('lease')}
+       ${CHECKPOINT_LWW}`,
+      [checkpointName, stateJson, runId],
+      'one',
+    )
+    const { won } = await b.run(this.db)
+    if (won !== 'lease') throw new LeaseLostError(`setCheckpoint ${runId}`)
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
@@ -1291,7 +1305,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          available_at_ms = ${emitted},
          wake_event = ?,
          event_payload = (SELECT f.payload FROM events f
-                          WHERE ${thisEvent} AND f.fence_stamp = ${b.fence('event')}),
+                          WHERE ${thisEvent}),
          fence_stamp = ${STAMP}, fence_at_ms = ${emitted}
        WHERE state = 'sleeping'
          AND wake_event = ?

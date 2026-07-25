@@ -11,6 +11,18 @@ const SECRET = 'chaos-secret'
 const ROOT = join(import.meta.dirname, '../../..')
 const children: ChildProcess[] = []
 
+/**
+ * Ports unique to this RUN, not fixed constants.
+ *
+ * These tests spawn real processes on real ports. When a run fails partway
+ * its children can outlive it, and the next run then dies on "address in
+ * use" — reported as the host exiting early, which reads exactly like the
+ * engine bug the test exists to catch. It cost a real debugging detour
+ * chasing a regression that was a leftover process. Deriving the base from
+ * the pid means a stranded child never collides with the run that follows.
+ */
+const PORT_BASE = 42_000 + (process.pid % 1_000) * 3
+
 function host(script: string, args: string[]): Promise<ChildProcess> {
   const child = spawn('node', ['--import', 'tsx', join(ROOT, script), ...args], {
     cwd: ROOT,
@@ -51,7 +63,7 @@ describe('multi-process chaos (real kills, one database file)', () => {
     await admin.migrate()
     const store = new LibsqlSchedulerStore(raw, systemIdSource())
 
-    const workerPort = 42111
+    const workerPort = PORT_BASE
     const worker1 = await host('packages/driver/bin/worker-host.ts', [
       db,
       String(workerPort),
@@ -112,7 +124,7 @@ describe('multi-process chaos (real kills, one database file)', () => {
     await admin.migrate()
     const store = new LibsqlSchedulerStore(raw, systemIdSource())
 
-    const workerPort = 42117
+    const workerPort = PORT_BASE + 1
     await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
     const driver1 = await host('packages/driver/bin/driver-host.ts', [
       db,
@@ -164,7 +176,7 @@ describe('multi-process chaos (real kills, one database file)', () => {
     const admin = new LibsqlStoreAdmin(raw)
     await admin.migrate()
     const store = new LibsqlSchedulerStore(raw, systemIdSource())
-    const workerPort = 42123
+    const workerPort = PORT_BASE + 2
     await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
     await host('packages/driver/bin/driver-host.ts', [
       db,
