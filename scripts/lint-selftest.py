@@ -1026,6 +1026,10 @@ def run(
         (root / "scripts").mkdir(parents=True, exist_ok=True)
         copied = root / "scripts" / lint
         copied.write_text((SCRIPTS / lint).read_text())
+        if lint in {"batch-lint.py", "clock-lint.py"}:
+            (root / "scripts" / "source_lex.py").write_text(
+                (SCRIPTS / "source_lex.py").read_text()
+            )
         if lint == "review-bot-lint.py":
             if git_state not in {"unavailable", "empty", "tracked"}:
                 raise ValueError(f"unknown Git fixture state: {git_state}")

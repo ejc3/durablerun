@@ -28,7 +28,16 @@ import re
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
+from source_lex import matching_delimiter, typescript_structure, validated_root
+
+try:
+    root = validated_root(
+        sys.argv[1:],
+        Path(__file__).resolve().parent.parent,
+        "batch-lint.py",
+    )
+except ValueError as error:
+    sys.exit(str(error))
 
 # Read-only batches — no write to fence.
 READS = {
@@ -88,16 +97,8 @@ DYNAMIC_LABEL = re.compile(r"\A\s*`([a-zA-Z0-9:_-]*)\$\{")
 
 def call_body(src: str, open_paren: int) -> str:
     """The text between `batch(` and its matching `)`."""
-    depth = 0
-    for i in range(open_paren, len(src)):
-        ch = src[i]
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-            if depth == 0:
-                return src[open_paren + 1 : i]
-    return src[open_paren + 1 :]
+    close = matching_delimiter(src, open_paren)
+    return src[open_paren + 1 : close] if close is not None else src[open_paren + 1 :]
 
 
 violations = []
@@ -138,9 +139,14 @@ for store_dir in sorted(root.glob("packages/store-*/src")):
             # clock expression is stable within one statement (measured), so
             # using it three times there is one instant. Drift only happens
             # BETWEEN statements.
-            segments = body.split("sql:")[1:]
-            statements = len(segments)
-            clocks = sum(1 for s in segments if "${NOW_MS}" in s)
+            structural = typescript_structure(body)
+            starts = [match.end() for match in re.finditer(r"\bsql\s*:", structural)]
+            segments = [
+                body[start : starts[index + 1] if index + 1 < len(starts) else len(body)]
+                for index, start in enumerate(starts)
+            ]
+            statements = len(starts)
+            clocks = sum(1 for segment in segments if "${NOW_MS}" in segment)
             is_read = re.search(r"'read'\s*,?\s*\Z", body.strip()) is not None
 
             if label in SINGLE_WRITES and statements != 1:

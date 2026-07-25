@@ -16,9 +16,16 @@ import re
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
-# The sole sanctioned home of a database-clock read.
-EXEMPT = {"time.ts"}
+from source_lex import sql_template_view, validated_root
+
+try:
+    root = validated_root(
+        sys.argv[1:],
+        Path(__file__).resolve().parent.parent,
+        "clock-lint.py",
+    )
+except ValueError as error:
+    sys.exit(str(error))
 
 # SQL is case-insensitive, so this pattern must be. The first version was not,
 # and its alternatives were inconsistently cased on top of that — SQLite
@@ -49,24 +56,23 @@ CLOCKS = re.compile(
     r"|\b(?:datetime|date|time)\s*\(\s*'now'",
     re.IGNORECASE,
 )
-# Comments describe the rule; they must not trip it.
-LINE_COMMENT = re.compile(r"//.*$|/\*.*?\*/")
-BLOCK_COMMENT_LINE = re.compile(r"^\s*\*")
-
 violations = 0
 for store_dir in sorted(root.glob("packages/store-*/src")):
     for path in sorted(store_dir.rglob("*.ts")):
-        if path.name in EXEMPT:
+        if path == store_dir / "time.ts":
             continue
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if BLOCK_COMMENT_LINE.match(line):
-                continue
-            if CLOCKS.search(LINE_COMMENT.sub("", line)):
-                print(
-                    f"{path.relative_to(root)}:{lineno}: raw wall-clock function in "
-                    f"store SQL — database time enters ONLY through NOW_MS (time.ts)"
-                )
-                violations += 1
+        source = path.read_text()
+        # `datetime('now')` is a clock call whose sentinel is itself a SQL
+        # literal. Preserve only that exact literal spelling; every other SQL
+        # string remains blank, so `'NOW()'` cannot impersonate a call.
+        visible = sql_template_view(source, frozenset({"now"}))
+        for match in CLOCKS.finditer(visible):
+            lineno = source.count("\n", 0, match.start()) + 1
+            print(
+                f"{path.relative_to(root)}:{lineno}: raw wall-clock function in "
+                f"store SQL — database time enters ONLY through NOW_MS (time.ts)"
+            )
+            violations += 1
 
 if violations:
     sys.exit(1)

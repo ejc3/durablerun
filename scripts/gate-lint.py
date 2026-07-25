@@ -78,6 +78,7 @@ NOT_IN_GATE = {
     "mutation-probe.py": "edits sources and runs the suite once per mutation; a deliberate audit, not a gate",
     "review-attest.sh": "runs at PR time against a pull request, not against a working tree",
     "session-state.sh": "reports what is still running; an operator tool with nothing to assert",
+    "source_lex.py": "shared lexical and root-validation library imported by source checkers",
 }
 
 
