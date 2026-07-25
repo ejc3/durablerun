@@ -35,7 +35,7 @@ BUILD = ROOT / "BUILD.md"
 # Work that is announced rather than described as shipped.
 DEFERRED = re.compile(
     r"\b(deferr?(ed|al|s)?|still missing|not closed|to be done|left for|"
-    r"postponed|belongs to a later)\b",
+    r"postponed|belongs to a later|todo|requiring closure)\b",
     re.IGNORECASE,
 )
 EXCUSED = re.compile(r"\bABANDONED:", re.IGNORECASE)
