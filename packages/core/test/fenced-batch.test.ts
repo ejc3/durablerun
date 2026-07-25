@@ -280,6 +280,31 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
     ).not.toThrow()
   })
 
+  it('rejects a top-level OR but accepts alternation inside a fenced conjunct', () => {
+    const exposed = withCas()
+    expect(() =>
+      exposed.followOn(
+        'x',
+        `DELETE FROM waits
+         WHERE fence_stamp = ${exposed.fence('win')} OR run_id = ?`,
+        ['r'],
+        'one',
+      ),
+    ).toThrow(/OR at the top level/)
+
+    const nested = withCas()
+    expect(() =>
+      nested.followOn(
+        'x',
+        `DELETE FROM waits
+         WHERE (run_id = ? OR task_id = ?)
+           AND fence_stamp = ${nested.fence('win')}`,
+        ['r', 't'],
+        'one',
+      ),
+    ).not.toThrow()
+  })
+
   it('does not mistake a WHERE inside a subquery for the top-level one', () => {
     const b = withCas()
     expect(() =>

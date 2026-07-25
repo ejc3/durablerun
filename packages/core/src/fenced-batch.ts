@@ -683,22 +683,16 @@ function topLevelWhere(sql: string): number {
 }
 
 /**
- * A fence occurrence counts as proof only if it DOMINATES the write: it must
- * sit in the WHERE side, outside any negation, and — because the top-level
- * WHERE is required to be a pure AND-chain — every row the statement touches
- * must therefore satisfy it.
+ * This syntactic screen rejects common spellings where a fence cannot gate the
+ * write: it must be in the WHERE side, outside negation, and not joined by a
+ * top-level OR. `WHERE run_id = ? OR EXISTS (… fence …)` passed earlier
+ * versions while a losing batch still deleted the named row.
  *
- * That last clause is what makes this more than a text search. A fence joined
- * by OR is present, positive, and gates nothing: `WHERE run_id = ? OR EXISTS
- * (… fence …)` passed every earlier version of this check while a losing
- * batch still deleted the named row. The class it belongs to — a follow-on
- * acting on state it did not produce — recurred in every review round of this
- * PR, because the check verified the fence's PRESENCE and the property needed
- * is the fence's REACH.
- *
- * Banning top-level OR is not the whole property (see `assertDominates`), but
- * it converts a proxy with four demonstrated false negatives into one with
- * none, and it is checkable without parsing SQL properly.
+ * It does not prove semantic dominance. For example, a CASE can contain the
+ * positive equality while returning true through another arm, and this
+ * restricted scanner accepts it. Generated `derived()` selections close that
+ * boundary structurally; raw `followOn()` SQL retains this documented
+ * syntactic residual until SQL is represented as an AST.
  */
 function hasPositiveFence(sql: string): boolean {
   const bare = blankComments(sql)

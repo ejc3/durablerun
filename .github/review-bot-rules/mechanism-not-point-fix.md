@@ -106,24 +106,25 @@ Allowed cases (do NOT flag these):
   which classifies a driver's error string because that string is all there is. Adding a
   spelling plus its `BAD_CASES` entry is a complete rung-2 fix; do not demand a runtime oracle.
 - **A syntactic check that states its own residual and where it is closed.** `hasPositiveFence`
-  in `packages/core/src/fenced-batch.ts`: "the check verified the fence's PRESENCE and the
-  property needed is the fence's REACH … it converts a proxy with four demonstrated false
-  negatives into one with none". `scripts/gate-lint.py` uses a restricted, fail-closed shell
-  grammar to inventory reachable checker commands; in CI its `--run-base` path semantically
-  enumerates the base package's verify script, stages the head tree with the base's complete
-  `scripts/` directory, and refuses a zero-check run. Its residual is the semantics of a
-  base-owned checker that executes and returns zero, not whether a textual path appeared.
+  and `hasTopLevelOr` in `packages/core/src/fenced-batch.ts` reject common text shapes but do not
+  prove semantic reach: a CASE can carry the positive equality while returning true through
+  another arm. Generated `derived()` selections close that boundary structurally; raw
+  `followOn()` SQL retains the documented syntactic residual. `scripts/gate-lint.py` uses a
+  restricted, fail-closed shell grammar to inventory reachable checker commands; in CI its
+  `--run-base` path semantically enumerates the base package's verify script, stages the head
+  tree with the base's complete `scripts/` directory, and refuses a zero-check run. Its residual
+  is the semantics of a base-owned checker that executes and returns zero, not whether a textual
+  path appeared.
   `scripts/lint-selftest.py`'s filename filter, backstopped by gate-lint's check 3.
   `scripts/review-bot-lint.py`: "What it deliberately does NOT do is judge the rules." Flag the
   overclaim, never the technique.
-- **A guard attacked by a rejection test instead of a probe mutation.** `hasTopLevelOr` and the
-  construction guard for the upsert re-stamp branch are fully attacked by
-  `packages/core/test/fenced-batch.test.ts` — 'rejects a fence that appears ONLY in the SET
-  clause' beside 'accepts a statement carrying both a positive and a negative fence', and
-  'rejects an upsert whose DO UPDATE branch leaves provenance stale'. A per-construction-guard
-  probe entry is not this repo's convention; deleting either guard turns those tests red. The
-  event call site's semantic choice to preserve its first instant is separately attacked by the
-  `emit-replay-preserves-event-instant` mutation.
+- **A guard attacked by a rejection test instead of a probe mutation.** `hasTopLevelOr` is
+  attacked by the `top-level-or-reach` mutation and the paired core test 'rejects a top-level OR
+  but accepts alternation inside a fenced conjunct'. The construction guard for the upsert
+  re-stamp branch is attacked by 'rejects an upsert whose DO UPDATE branch leaves provenance
+  stale'. A per-construction-guard probe entry is not this repo's convention; deleting it turns
+  that test red. The event call site's semantic choice to preserve its first instant is
+  separately attacked by the `emit-replay-preserves-event-instant` mutation.
 - **A dynamic mechanism with its own discriminating control.** The delayed compiled-emit
   regression drives `one-batch-two-instants` red by reusing one seed at two database instants.
   Separately, `clock-jitter.test.ts` injects a later-clock retry that leaves both invariant
