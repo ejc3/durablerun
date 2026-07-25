@@ -4,6 +4,8 @@ import {
   type ClaimedRun,
   durationToMs,
   FencedBatch,
+  INFRA_BACKOFF_SECONDS,
+  INFRA_RETRY_CAP,
   LeaseLostError,
   requireEpochMs,
   requirePositiveInt,
@@ -11,6 +13,12 @@ import {
   type LeaseState,
   neverBuggify,
   normalizeRetryStrategy,
+  REASON_CLAIM_TIMEOUT,
+  REASON_INFRA_CAP,
+  REASON_RELAUNCH_CAP,
+  RELAUNCH_BACKOFF_BASE_SECONDS,
+  RELAUNCH_BACKOFF_MAX_SECONDS,
+  RELAUNCH_CAP,
   type RetryStrategy,
   type SchedulerStore,
   type SpawnOptions,
@@ -31,25 +39,6 @@ const DEFAULT_RETRY: RetryStrategy = {
   maxSeconds: 3600,
 }
 const DEFAULT_MAX_ATTEMPTS = 5
-
-/**
- * Contract constants (DESIGN.md §3.1/§3.8.2 pins them; the conformance suite
- * asserts them; dialects must match them — they are spec, not tuning knobs).
- */
-export const RELAUNCH_CAP = 5
-export const INFRA_RETRY_CAP = 20
-export const INFRA_BACKOFF_SECONDS = 5
-export const RELAUNCH_BACKOFF_BASE_SECONDS = 5
-export const RELAUNCH_BACKOFF_MAX_SECONDS = 60
-
-/**
- * Terminal failure reasons. Since the FencedBatch stamps carry batch
- * ownership, these are pure data (never fence keys) — but they are still
- * wire-visible contract values shared with the conformance suite.
- */
-export const REASON_CLAIM_TIMEOUT = '{"name":"$ClaimTimeout"}'
-export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
-export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 
 /**
  * Attempt counters DERIVED from a stamped run's ordinal, never bumped
