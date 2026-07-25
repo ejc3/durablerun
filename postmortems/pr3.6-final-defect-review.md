@@ -62,6 +62,38 @@ reproduce; they are not credited as finders. Crediting repair-time tests would
 turn every externally found defect into a self-catch and make the ledger
 meaningless.
 
+## Was the previous conclusion wrong?
+
+Yes. The previous postmortem's factual observation that three of round 6's six
+findings were self-caught was correct. Its inference that self-catch capability
+was improving was not earned. It warned that six findings were not a trend and
+then treated them as one anyway by crediting "mutate every mechanism the day
+it is written." Round 7 is the disconfirming sample: zero of ten self-caught,
+including five new mechanisms with false negatives an outside reviewer wrote
+immediately.
+
+This was not simply a right practice that nobody applied. The wake surface was
+mutated on the day it was written and found one missing run-side axis. The
+clock oracle was mutated and made `one-batch-two-instants` fire. Those attacks
+happened. The failure is that an author-selected mutation proves only that the
+selected mutation is killed. It does not prove that the oracle compares the
+things its comment says it compares, that every positive axis varies, or that
+the failure came from the intended property. The clock mutation flattered the
+test by triggering the invariant it already returned; no differential
+comparison existed. The wake mutations covered listed conjuncts while timeout
+positivity and task state were absent from the generator. The same pattern
+holds for textual gate inventory, same-instant seed reuse, and active hosted
+rules.
+
+The metric is not wrong for its stated headline question. It accurately says
+how dependent this branch is on outside review, and its answer is worse now.
+It was used to measure the wrong thing when it was offered as evidence that a
+particular mechanism or mutation habit had semantic coverage. Detector
+attribution among discovered defects cannot establish why a detector worked,
+what axes it omitted, or whether it will generalize. The previous conclusion
+was therefore too generous: a new detector existed, but improvement was not
+demonstrated.
+
 ## Recurrence
 
 “A stamp is not authorship” recurred in findings 1 and 8 after the branch
