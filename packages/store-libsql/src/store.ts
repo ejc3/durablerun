@@ -1207,43 +1207,73 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
-    await this.db.batch('emit-event', [
-      {
-        sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-              VALUES (?, ?, ?, ${NOW_MS})
-              ON CONFLICT (queue, event_name) DO NOTHING`,
-        args: [queue, eventName, payloadJson],
-      },
-      {
-        sql: `UPDATE runs SET
-                state = 'pending', available_at_ms = ${NOW_MS},
-                wake_event = ?,
-                event_payload = (SELECT payload FROM events WHERE queue = ? AND event_name = ?)
-              WHERE state = 'sleeping'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
-                AND run_id IN (
-                SELECT run_id FROM waits
-                WHERE queue = ? AND event_name = ? AND status = 'waiting'
-              )`,
-        args: [eventName, queue, eventName, queue, eventName],
-      },
-      {
-        sql: `UPDATE tasks SET state = 'pending'
-              WHERE state IN ${LIVE} AND task_id IN (
-                SELECT task_id FROM waits
-                WHERE queue = ? AND event_name = ? AND status = 'waiting'
-              )`,
-        args: [queue, eventName],
-      },
-      {
-        // DELETE, not a status flip: the wake fields on the run carry the
-        // delivery, and retained rows would leak forever (the verified
-        // inline shape — cancel deletes waits the same way).
-        sql: `DELETE FROM waits WHERE queue = ? AND event_name = ? AND status = 'waiting'`,
-        args: [queue, eventName],
-      },
-    ])
+    const b = new FencedBatch('emit-event', this.ids.token(), { now: NOW_MS })
+    // First write wins on the PAYLOAD; the conflict branch re-stamps only, so
+    // a re-emit changes no data yet still fences this batch's deliveries.
+    // That preserves re-emit-re-delivers, which matters because a wait
+    // registered in the window between two emits would otherwise never be
+    // deliverable.
+    b.cas(
+      'event',
+      'events',
+      `INSERT INTO events (queue, event_name, payload, emitted_at_ms, ${FENCE_COLS})
+       VALUES (?, ?, ?, ${NOW}, ${FENCE_VALS})
+       ON CONFLICT (queue, event_name) DO UPDATE SET ${FENCE_SET}`,
+      [queue, eventName, payloadJson],
+    )
+    const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
+    const emitted = fencedAt('events', thisEvent, b.fence('event'))
+    // Waiters wake with the STORED payload, never the one this call carried:
+    // on a re-emit they must agree with the event row. The waits index is the
+    // access path; the event's stamp is the fence.
+    b.followOn(
+      'wake-runs',
+      'runs',
+      `UPDATE runs SET
+         state = 'pending',
+         available_at_ms = ${emitted},
+         wake_event = ?,
+         event_payload = (SELECT f.payload FROM events f
+                          WHERE ${thisEvent} AND f.fence_stamp = ${b.fence('event')}),
+         fence_stamp = ${STAMP}, fence_at_ms = ${emitted}
+       WHERE state = 'sleeping'
+         AND run_id IN (SELECT w.run_id FROM waits w
+                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')
+         AND ${fenced('events', thisEvent, b.fence('event'))}
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+      [eventName, eventName, eventName, eventName, queue, eventName, eventName],
+      { many: 'an emit wakes every registered waiter' },
+    )
+    // Driven by the runs this batch actually woke, and never by waits.task_id.
+    // Reading the task id straight off the wait row meant a corrupt wait —
+    // one belonging to run A but naming healthy task B — flipped B to pending
+    // while B's own run kept running: corrupt state amplified into a task
+    // that was never waiting at all.
+    b.followOn(
+      'wake-tasks',
+      'tasks',
+      `UPDATE tasks SET state = 'pending',
+         fence_stamp = ${STAMP},
+         fence_at_ms = ${fencedAt('events', `f.queue = tasks.queue AND f.event_name = ?`, b.fence('event'))}
+       WHERE state IN ${LIVE}
+         AND task_id IN (SELECT r.task_id FROM waits w JOIN runs r ON r.run_id = w.run_id
+                         WHERE w.queue = ? AND w.event_name = ?
+                           AND r.fence_stamp = ${b.fence('wake-runs')})`,
+      [eventName, queue, eventName],
+      { many: 'one task per woken run' },
+    )
+    // DELETE, not a status flip: the wake fields on the run carry the
+    // delivery, and retained rows would leak forever (cancel deletes waits
+    // the same way).
+    b.followOn(
+      'waits-gone',
+      `DELETE FROM waits WHERE queue = ? AND event_name = ? AND status = 'waiting'
+         AND ${fenced('events', `f.queue = waits.queue AND f.event_name = waits.event_name`, b.fence('event'))}`,
+      [queue, eventName],
+      { many: 'every waiter for a fired event' },
+    )
+    await b.run(this.db)
   }
 
   /**
@@ -1268,114 +1298,117 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       timeoutSeconds === null
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
-    const emittedGuard = `NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)`
-    // A fresh per-invocation stamp the park writes into claimed_by, so the
-    // task-mirror below fires ONLY when THIS batch's park succeeded — not on
-    // a run that merely happens to be sleeping (rule 1: a losing batch writes
-    // nothing). The same shape reschedule/suspendRun use for their marker.
-    const parkStamp = this.ids.token()
-    const [, park, , event] = await this.db.batch('await-event', [
-      {
-        // Wait registration FIRST, fenced on the LIVE claim token
-        // (claimed_by = this invocation's token) + running + task eligible:
-        // a stale invocation whose token was consumed matches zero and writes
-        // nothing, so a run left sleeping under the same wake_step (e.g. by a
-        // preserve reschedule) cannot have a wait recreated on it. The single
-        // eligibility decision — including the cancellation deadline, which is
-        // database time — and the timeout deadline are computed exactly once
-        // here; the park below COPIES timeout_at_ms, so the two never drift.
-        sql: `INSERT INTO waits
-                (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
-              SELECT ?, ?, ?, ?, ?, 'waiting',
-                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END, ${NOW_MS}
-              WHERE ${emittedGuard}
-                AND EXISTS (SELECT 1 FROM runs r
-                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                              AND r.claimed_by = ? AND r.state = 'running')
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = ? AND ${eligibleTask('t', NOW_MS)})
-              ON CONFLICT (run_id, step_name) DO NOTHING`,
-        args: [
-          runId,
-          stepName,
-          queue,
-          taskId,
-          eventName,
-          timeoutMs,
-          timeoutMs,
-          queue,
-          eventName,
-          runId,
-          queue,
-          taskId,
-          claimToken,
-          taskId,
-        ],
-      },
-      {
-        // The park fires IFF the wait above was just registered FOR THIS
-        // EVENT (post-state, rule 1) AND this invocation still owns the
-        // running run AND the owning task is LIVE — so a stale invocation
-        // cannot park, a pre-existing wait for a DIFFERENT event cannot be
-        // borrowed, and a terminal task's corrupt run is never parked
-        // (rule 6, state-only so no second NOW). available_at_ms IS this
-        // event's wait timeout_at_ms, one value.
-        sql: `UPDATE runs SET
-                state = 'sleeping',
-                available_at_ms = (SELECT timeout_at_ms FROM waits
-                                   WHERE run_id = ? AND step_name = ? AND event_name = ?),
-                wake_event = ?, event_payload = NULL, wake_step = ?,
-                claimed_by = ?, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
-              WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
-                AND state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
-                AND EXISTS (SELECT 1 FROM waits
-                            WHERE run_id = ? AND step_name = ? AND event_name = ?
-                              AND status = 'waiting')`,
-        args: [
-          runId,
-          stepName,
-          eventName,
-          eventName,
-          stepName,
-          parkStamp,
-          runId,
-          queue,
-          taskId,
-          claimToken,
-          runId,
-          stepName,
-          eventName,
-        ],
-      },
-      {
-        // The mirror fires ONLY when THIS batch's park stamped the run
-        // (claimed_by = parkStamp): a losing invocation whose park matched
-        // zero rows never writes here, even against a run already sleeping.
-        sql: `UPDATE tasks SET state = 'sleeping'
-              WHERE task_id = ? AND state IN ${LIVE}
-                AND EXISTS (SELECT 1 FROM runs
-                            WHERE run_id = ? AND claimed_by = ? AND state = 'sleeping')`,
-        args: [taskId, runId, parkStamp],
-      },
-      {
-        // The HIT read is fenced too (the model's AwaitEventHit is a
-        // fenced action): a zombie must fall through to the park
-        // discriminator and get the lease error, never a success signal.
-        sql: `SELECT payload FROM events
-              WHERE queue = ? AND event_name = ?
-                AND EXISTS (SELECT 1 FROM runs r
-                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                              AND r.claimed_by = ? AND r.state = 'running')`,
-        args: [queue, eventName, runId, queue, taskId, claimToken],
-      },
-    ])
-    const row = event?.rows[0]
+    const b = new FencedBatch('await-event', this.ids.token(), { now: NOW_MS })
+    // Wait registration FIRST, fenced on the LIVE claim token + running + task
+    // eligible: a stale invocation whose token was consumed matches zero and
+    // writes nothing, so a run left sleeping under the same wake_step (e.g. by
+    // a preserve reschedule) cannot have a wait recreated on it. The single
+    // eligibility decision — including the cancellation deadline, which is
+    // database time — and the timeout deadline are computed exactly once here.
+    //
+    // ON CONFLICT DO NOTHING means a wait already at this (run, step) makes
+    // this lose, and losing is now the whole answer: the park below keys on
+    // the wait THIS statement inserted. It used to key on "some waiting wait
+    // for this event exists", so a stale untimed wait left by an earlier
+    // attempt was borrowed along with ITS null timeout, and a fresh
+    // 30-second await parked the run forever.
+    b.cas(
+      'register',
+      'waits',
+      `INSERT INTO waits
+         (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms,
+          created_at_ms, ${FENCE_COLS})
+       SELECT ?, ?, ?, ?, ?, 'waiting',
+         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}
+       WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)
+         AND EXISTS (SELECT 1 FROM runs r
+                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
+                       AND r.claimed_by = ? AND r.state = 'running')
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE t.task_id = ? AND ${eligibleTask('t', NOW)})
+       ON CONFLICT (run_id, step_name) DO NOTHING`,
+      [
+        runId,
+        stepName,
+        queue,
+        taskId,
+        eventName,
+        timeoutMs,
+        timeoutMs,
+        queue,
+        eventName,
+        runId,
+        queue,
+        taskId,
+        claimToken,
+        taskId,
+      ],
+    )
+    // available_at_ms IS this wait's own timeout_at_ms — copied from the row
+    // just inserted, so the two can never drift and the park physically
+    // cannot name the clock. claimed_by becomes NULL because a parked run
+    // holds no lease; it used to receive a second, hand-rolled stamp, which
+    // was this primitive reimplemented by hand.
+    const thisWait = `f.run_id = ? AND f.step_name = ?`
+    b.followOn(
+      'park',
+      'runs',
+      `UPDATE runs SET
+         state = 'sleeping',
+         available_at_ms = (SELECT f.timeout_at_ms FROM waits f
+                            WHERE ${thisWait} AND f.fence_stamp = ${b.fence('register')}),
+         wake_event = ?, event_payload = NULL, wake_step = ?,
+         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${fenceFrom('waits', thisWait, b.fence('register'))}
+       WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
+         AND state = 'running'
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
+         AND ${fenced('waits', `${thisWait} AND f.status = 'waiting'`, b.fence('register'))}`,
+      [
+        runId,
+        stepName,
+        eventName,
+        stepName,
+        runId,
+        stepName,
+        runId,
+        queue,
+        taskId,
+        claimToken,
+        runId,
+        stepName,
+      ],
+      'one',
+    )
+    b.followOn(
+      'task-mirror',
+      'tasks',
+      `UPDATE tasks SET state = 'sleeping', ${fenceFrom('runs', BY_RUN, b.fence('park'))}
+       WHERE task_id = ? AND state IN ${LIVE}
+         AND ${fenced('runs', `${BY_RUN} AND f.state = 'sleeping'`, b.fence('park'))}`,
+      [runId, taskId, runId],
+      'one',
+    )
+    // The event row belongs to whichever batch emitted it, so this read is
+    // fenced on the LIVE claim token instead: a zombie falls through to the
+    // register discriminator and gets the lease error, never a success signal.
+    b.openTail(
+      'hit',
+      'the event was written by the emitting batch, not this one; the live claim token is the fence here',
+      `SELECT payload FROM events
+       WHERE queue = ? AND event_name = ?
+         AND EXISTS (SELECT 1 FROM runs r
+                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
+                       AND r.claimed_by = ? AND r.state = 'running')`,
+      [queue, eventName, runId, queue, taskId, claimToken],
+    )
+    const { won, results } = await b.run(this.db)
+    const row = results.hit?.rows[0]
     if (row !== undefined) {
       return { emitted: true, payloadJson: String(row.payload) }
     }
-    if ((park?.rowsAffected ?? 0) !== 1) {
+    if (won !== 'register') {
       throw new LeaseLostError(`awaitEvent ${runId}`)
     }
     return { emitted: false }
