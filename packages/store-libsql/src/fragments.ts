@@ -45,6 +45,41 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
   `fence_stamp = ${STAMP}, fence_at_ms = ${fencedAt(table, key, fence)}`
 
 /**
+ * Successor identity, keyed on OWNERSHIP rather than on a fence.
+ *
+ * A fence proves a row carries a stamp right now. That is not the same as
+ * proving this batch wrote it, and the difference is not academic: claiming a
+ * run is itself a transition that re-stamps it, so a few seconds after a
+ * failure created a successor, the successor no longer carries the failure's
+ * stamp. A discriminator built on the stamp therefore answers "no successor"
+ * about a successor that exists and is running — and the failure's terminal
+ * arm kills a task whose retry is live under a worker, or its insert runs
+ * again and dies on the unique (task_id, attempt) index, discarding a whole
+ * tick. Ownership does not decay, so these ask about that instead.
+ *
+ * `mine` is the insert's guard: a run of MY task already sits at that id, so
+ * there is nothing to create. It has no self-exclusion on purpose — when the
+ * minted id collided with the id of the run being replaced, that parent row
+ * blocks the insert, which is right, because writing over the parent is not a
+ * successor. A row at that id belonging to some OTHER task is not covered, so
+ * it still collides loudly rather than being quietly adopted.
+ *
+ * `exists` is the terminal arm's guard, and it does exclude the parent: the
+ * question there is whether a real successor exists, and the parent standing
+ * at a colliding id is not one. Conflating the two is what let a failing run
+ * answer for its own successor and skip the only statement that records why
+ * the task failed.
+ */
+export const successor = {
+  mine: (idParam: string, taskCol: string): string =>
+    `EXISTS (SELECT 1 FROM runs s WHERE s.run_id = ${idParam} AND s.task_id = ${taskCol})`,
+  exists: (idParam: string, taskCol: string, selfParam: string): string =>
+    `EXISTS (SELECT 1 FROM runs s
+             WHERE s.run_id = ${idParam} AND s.task_id = ${taskCol}
+               AND s.run_id <> ${selfParam})`,
+}
+
+/**
  * A cancellation deadline that has already passed, as of `at`.
  *
  * `at` is explicit at every call site and has no default: which instant a

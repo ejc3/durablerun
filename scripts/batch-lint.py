@@ -60,11 +60,9 @@ TOKEN_FENCED = {
     "migrate:bootstrap": "migration sentinel fence (schema.ts)",
 }
 
-# FROZEN migration debt: hand-rolled MULTI-STATEMENT WRITE batches whose
-# follow-ons carry the two bug classes. Route through FencedBatch and DELETE
-# from this set. It may only shrink — adding a label here is the smell the
-# lint exists to surface in review.
-FENCED_DEBT = {"spawn", "claim", "activate", "emit-event", "await-event"}
+# Every protocol transition now goes through FencedBatch, so this set is
+# empty and stays empty: there is no longer a place to record new debt.
+FENCED_DEBT: set[str] = set()
 
 # Call sites whose label is legitimately computed. Each names the file and the
 # prefix it produces, so the label still has to be classified above; only the
