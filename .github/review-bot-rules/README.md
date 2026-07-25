@@ -34,26 +34,32 @@ request's tree.
 
 ## Turning these on
 
-The configuration is complete and checked; the two services are not installed.
-Neither can be installed from a checkout — both are GitHub Apps needing repo
-admin and a billing decision:
+Neither service can be installed from a checkout: both are GitHub Apps, so
+installation is an OAuth flow in a browser and needs repo admin.
 
-1. Install **CodeRabbit** (coderabbit.ai) and **Greptile** (greptile.com) on
-   `ejc3/durablerun`. Both read their config from the default branch, so this
-   directory must reach `main` before either does anything.
-2. Add their check names to the protected-branch contexts on `main`, which
-   today are `["verify", "tla", "adversarial-review"]`. Until that is done both
-   bots comment without blocking, which is worth having on its own — but
-   `pre_merge_checks` in `.coderabbit.yaml` is set to `mode: error` and
-   `statusCheck` is true in `.greptile/config.json`, so they are ready to gate
-   the moment the contexts are added.
-3. Nothing in `pnpm verify` changes. These are hosted reviewers; the local gate
-   neither runs nor needs them, and `scripts/review-bot-lint.py` checks only
-   that the configuration is coherent.
+1. **CodeRabbit** — https://coderabbit.ai, "Sign in with GitHub", authorize the
+   app, select `ejc3/durablerun`. It reads `.coderabbit.yaml` from the default
+   branch. Free for open-source, which this repo now is; the free tier is
+   rate-limited (roughly 200 files and 4 pull-request reviews per hour), and
+   `pre_merge_checks.custom_checks` — which this config uses, in `mode: error` —
+   is otherwise a paid feature, so confirm it is active on the plan you land on
+   rather than assuming the checks are running.
+2. **Greptile** — https://greptile.com, install the GitHub App on the same repo.
+   It reads `.greptile/config.json`. $30 per seat per month including 50 reviews,
+   then $1 per review; pre-Series-A companies under $2M revenue get 50% off.
+   Watch that per-review meter on a repo with a lot of pull requests.
+3. **Both read config from the DEFAULT BRANCH.** This directory has to reach
+   `main` before either bot applies any of it. Until then they review with
+   their stock behaviour.
+4. **Make them gate.** `main`'s required contexts are today
+   `["verify", "tla", "adversarial-review"]`. Add each bot's check name once you
+   can see what it posts. `mode: error` and `statusCheck: true` are already set,
+   so they block the moment the contexts include them; until then they comment
+   only, which is worth having on its own.
 
-A note on cost, since it is the reason this is a decision and not a default:
-both services charge per contributor and review every pull request by default.
-`auto_review.drafts` is off so drafts are skipped.
+Nothing in `pnpm verify` changes. These are hosted reviewers; the local gate
+neither runs nor needs them, and `scripts/review-bot-lint.py` checks only that
+the configuration is coherent.
 
 Current rules:
 
