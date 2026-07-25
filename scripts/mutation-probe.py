@@ -28,7 +28,7 @@ MUTATIONS = [
     (
         "followon-provenance-check",
         "packages/core/src/fenced-batch.ts",
-        "      assertWritesStamp(at, sql, head, target, false)",
+        "      assertWritesStamp(at, bare, head, target, false)",
         "      void 0 // MUTATION",
         "a follow-on may write a fenced table without stamping it",
     ),
@@ -42,8 +42,8 @@ MUTATIONS = [
     (
         "top-level-or-reach",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && s.open === undefined && hasTopLevelOr(sql)) {",
-        "    if (false && !isCas && s.open === undefined && hasTopLevelOr(sql)) {",
+        "    if (!isCas && s.open === undefined && hasTopLevelOr(bare)) {",
+        "    if (false && !isCas && s.open === undefined && hasTopLevelOr(bare)) {",
         "a top-level OR lets a follow-on write rows that did not satisfy its fence",
     ),
     (
@@ -128,11 +128,12 @@ MUTATIONS = [
         "an exact replay can reuse an intermediate fence left by its first execution",
     ),
     (
-        # The one condition holding the wake predicate's two subqueries to the
-        # same row. Redundant for any single row, load-bearing across two.
+        # The queue condition now lives in the one canonical wait witness
+        # shared by modern matching and legacy recovery. It remains redundant
+        # for one row and load-bearing across two.
         "emit-wake-one-witness",
-        "packages/store-libsql/src/store.ts",
-        "                       AND s.queue = runs.queue\n",
+        "packages/store-libsql/src/fragments.ts",
+        "      AND w.queue = ${run}.queue\n",
         "",
         "two wait rows, each disqualifying, combine into a wake",
     ),
@@ -182,9 +183,9 @@ MUTATIONS = [
         # "caught" by the compiler without any test of the guard ever running.
         # A mutation must change behaviour, not arity.
         "emit-wake-step-correlation",
-        "packages/store-libsql/src/store.ts",
-        "                       AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step)",
-        "                       AND (runs.wake_step IS NULL OR 1 = 1)",
+        "packages/store-libsql/src/fragments.ts",
+        "                        AND w.step_name = ${run}.wake_step)",
+        "                        AND 1 = 1)",
         "an emit delivers to a run parked at a DIFFERENT step of the same event",
     ),
     (
@@ -206,9 +207,23 @@ MUTATIONS = [
     (
         "legacy-wait-step-backfill",
         "packages/store-libsql/src/store.ts",
-        "         wake_step = COALESCE(wake_step, ${registeredWaitStep('runs')}),",
+        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
         "         wake_step = wake_step,",
         "a claimed pre-v3 timed wait loses the only copy of its exact step",
+    ),
+    (
+        "legacy-wait-step-unique-scalar",
+        "packages/store-libsql/src/fragments.ts",
+        "            HAVING COUNT(*) = 1)",
+        "            HAVING COUNT(*) >= 1)",
+        "an emit invents one step when several legacy registrations match",
+    ),
+    (
+        "legacy-wait-claim-cardinality",
+        "packages/store-libsql/src/fragments.ts",
+        "                              HAVING COUNT(*) > 1)",
+        "                              HAVING COUNT(*) > 2)",
+        "claim consumes a legacy run whose active wait cannot be identified",
     ),
     (
         "test-token-source-monotonic",
