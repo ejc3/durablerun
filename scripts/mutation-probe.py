@@ -107,6 +107,18 @@ MUTATIONS = [
         "every emit scans the runs table instead of seeking the waits index",
     ),
     (
+        # The cleanup must follow the WAKE, not the event. Fencing it on the
+        # event instead selects runs the event stamp never touched, so it
+        # deletes nothing and every woken run keeps a spent registration --
+        # the mirror of the bug that had it deleting registrations of runs it
+        # never woke.
+        "emit-cleanup-follows-the-wake",
+        "packages/store-libsql/src/store.ts",
+        "      fence: 'wake-runs',\n      // Same reason as wake-tasks",
+        "      fence: 'event',\n      // Same reason as wake-tasks",
+        "the cleanup stops tracking which runs were actually woken",
+    ),
+    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "         AND wake_event = ?\n",
