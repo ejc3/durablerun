@@ -137,46 +137,39 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
-  FencedBatch; the batch-lint debt set is empty and deleted. Three review
-  rounds found twenty-five defects — see
-  postmortems/pr3.6-fence-provenance.md. It carries these deferrals:
-  - **A follow-on's target SET is still not proved to derive from stamped
-    rows.** The fence proves the batch stamped a row; `rows: 'one'` bounds
-    the single-target case, and emit's fan-outs are necessarily many-row with
-    no bound. The rung-1 answer is a typed target-expression API where the
-    primitive generates the join, which fights pluggability because join
-    shapes differ per dialect. Class B is now writable only by disconnecting
-    a fence you were forced to type — not impossible.
-  - **A data-level provenance audit**: assert that every inserted or changed
-    row carries a well-formed `<seed>:<statement>` stamp, over paths that
-    never touch the primitive. Measured too slow for the deep fuzz leg
-    (a full scan per batch); belongs in conformance and the fault matrix
-    first, sampled in the volume legs.
-  - **A per-statement clock-jitter test executor.** Now a DIFFERENTIAL proof
-    rather than a bug hunt: with the clock banned outside a compare-and-set,
-    jittering each statement's clock must produce zero behavioural change.
+  FencedBatch; the batch-lint debt set is empty and deleted. Six review passes
+  found thirty-eight defects — see postmortems/pr3.6-fence-provenance.md,
+  whose detection ledger records that our own machinery found four of them.
+  Its residual is NOT recorded here: every item is owned by a named PR below
+  (PR3.7, PR3.2, PR4.1). A deferral parked under a DONE heading is a silent
+  drop, because DONE is the section a reader skips.
+
+- **PR3.7 close the provenance residual** (the PR3.6 postmortem's "what this
+  round still would not catch", each item owned rather than parked):
+  - **A typed target expression for follow-ons.** The one mechanism that
+    closes the class that recurred in EVERY PR3.6 review round: the primitive
+    generates the row selection from the fence and the caller may only NARROW
+    it, so "the write set derives from this batch's post-state" holds by
+    construction instead of by a text check. PR3.6 deferred this on the
+    grounds that join shapes differ per dialect; that reason was never
+    tested and looks wrong — `key IN (SELECT col FROM src WHERE fence = ?)`
+    is ordinary SQL in all three. Test the claim first; if it holds, say how.
+  - **A data-level provenance audit**: every inserted-or-changed row carries a
+    well-formed `<seed>:<statement>` stamp, over paths that never touch the
+    primitive. Measured too slow for the deep fuzz leg (a scan per batch), so:
+    always-on in conformance and the fault matrix, sampled in the volume legs.
+  - **A per-statement clock-jitter executor.** Now a DIFFERENTIAL proof rather
+    than a bug hunt: with the clock banned outside a compare-and-set, jittering
+    each statement's clock must produce zero behavioural change.
   - **A generated corrupt-pre-state ("poison") fault surface** driving every
     write label against each invariant-forbidden pre-state.
   - **A simulation assertion that a batch seed is never issued twice.** The
-    whole scheme is exactly as strong as `IdSource.token()` uniqueness, and
-    the harness deliberately hands out colliding ids.
-  - **Postgres/MySQL work this design implies**: `FOR UPDATE SKIP LOCKED` for
-    `casMany` (a win rule is not a concurrency semantics), a `lock()`
-    statement kind for rule 2's lock prelude, and a normalization contract
-    stating matched-not-changed row-count semantics, since MySQL cannot
-    derive the winner from row counts alone.
-  - **The rolling-deploy deferral disarms the start deadline** —
-    pre-existing, identical on main, and modelled nowhere in
-    `specs/Scheduler.tla`. The spec-first rule applies: model it, TLC it,
-    then fix it.
-  - **`SleepSuspend`'s task-eligibility guard is not in the model.** Both
-    suspension paths require the owning task live and not past a due
-    cancellation deadline; `Fenced(c)` constrains only the run. The guard is
-    strictly narrower than the modelled action, so safety is unaffected, but
-    the refusal reaches the worker as a lost lease and whether THAT path
-    preserves the liveness properties is not settled by a model that lacks
-    the guard. Belongs with PR3.2's cancellation-discovery work, where "task
-    terminal" and "fence lost" stop being the same signal.
+    whole scheme is exactly as strong as `IdSource.token()` uniqueness, and the
+    harness deliberately hands out colliding ids.
+  - **A bound on many-row follow-ons.** `{ many: reason }` costs a sentence and
+    bounds nothing, so amplification is unlimited wherever the target set is
+    wider than intended.
+
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
@@ -184,6 +177,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
   worker outcome need the store to distinguish "fence lost because task
   terminal"), and a wake-coalescing floor on the driver's /wake before it
   is exposed beyond localhost.
+  From PR3.6, because both turn on cancellation discovery:
+  - **The rolling-deploy deferral disarms the start deadline** — pre-existing,
+    identical on main, and modelled nowhere in `specs/Scheduler.tla`.
+    Spec-first: model it, TLC it, then fix it.
+  - **`SleepSuspend`'s task-eligibility guard is not in the model.** Both
+    suspension paths require the task live and not past a due cancellation
+    deadline; `Fenced(c)` constrains only the run. Strictly narrower, so safety
+    is unaffected, but the refusal reaches the worker as a lost lease and no
+    model lacking the guard can settle whether that path keeps liveness.
+
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, same-queue refusal; `/api/runs/:id` result route.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
@@ -212,6 +215,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 - **PR4.1 suite extraction hardening**: conformance runs from a store factory
   matrix; purge accidental turso-isms.
+  From PR3.6, because each is only decidable with a second dialect in hand:
+  - **Postgres double-claim**: `casMany` guarantees a win rule, not a
+    concurrency semantics; store-pg needs `FOR UPDATE SKIP LOCKED` and a
+    conformance scenario before it is DONE.
+  - **Rule 2's lock prelude**: the primitive has no statement kind for
+    acquiring a lock, and every non-tail statement must carry a fence.
+  - **MySQL cannot derive the winner from row counts alone** — no targeted
+    `ON CONFLICT`; the `SqlResult` normalization contract must state
+    matched-not-changed semantics.
+
 - **PR4.2 store-postgres**: transliterate absurd.sql (SKIP LOCKED CTE, row-lock
   awaitEvent); **oracle tests**: same scenario on real Absurd (docker) vs our
   engine, diff outcomes.

@@ -311,9 +311,21 @@ export class FencedBatch {
       )
     }
 
+    // A fence joined by OR reaches nothing. Requiring the top-level WHERE to
+    // be a pure AND-chain is what turns "the statement mentions a fence" into
+    // "every row it writes satisfies the fence".
+    if (!isCas && s.open === undefined && hasTopLevelOr(sql)) {
+      throw new Error(
+        `${at} has an OR at the top level of its WHERE clause — then the fence can be false while the row is still written. Narrow with AND, or move the alternation inside a subquery.`,
+      )
+    }
+
     // Class A dies here, with no exemptions: a follow-on has fence_at_ms to
     // derive from, so it never needs to ask the database what time it is.
-    if (!isCas && sql.includes(NOW)) {
+    // The TOKEN and the expression it splices. Checking only the token left
+    // the rule defeatable by interpolating the dialect's clock expression
+    // directly — the same text, arrived at without saying `$NOW$`.
+    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {
       throw new Error(
         `${at} reads the clock — only a CAS may, and every later statement derives its instants from the fence_at_ms the CAS recorded (§3.4 rule 8)`,
       )
@@ -524,17 +536,29 @@ function topLevelWhere(sql: string): number {
 }
 
 /**
- * A fence occurrence counts as proof only if it filters rows IN: it must sit
- * in the WHERE side, and not under a NOT EXISTS / NOT IN, which asserts the
- * fence is absent. `fail`'s terminal arm legitimately carries a negative
- * fence — and also a positive one, which is what makes it a follow-on rather
- * than a statement that fires whenever some unrelated row is missing.
+ * A fence occurrence counts as proof only if it DOMINATES the write: it must
+ * sit in the WHERE side, outside any negation, and — because the top-level
+ * WHERE is required to be a pure AND-chain — every row the statement touches
+ * must therefore satisfy it.
+ *
+ * That last clause is what makes this more than a text search. A fence joined
+ * by OR is present, positive, and gates nothing: `WHERE run_id = ? OR EXISTS
+ * (… fence …)` passed every earlier version of this check while a losing
+ * batch still deleted the named row. The class it belongs to — a follow-on
+ * acting on state it did not produce — recurred in every review round of this
+ * PR, because the check verified the fence's PRESENCE and the property needed
+ * is the fence's REACH.
+ *
+ * Banning top-level OR is not the whole property (see `assertDominates`), but
+ * it converts a proxy with four demonstrated false negatives into one with
+ * none, and it is checkable without parsing SQL properly.
  */
 function hasPositiveFence(sql: string): boolean {
-  const start = topLevelWhere(sql)
+  const bare = blankComments(sql)
+  const start = topLevelWhere(bare)
   if (start < 0) return false
-  const negated = negatedSpans(sql)
-  for (const match of sql.matchAll(/fence_stamp\s*=\s*\$FENCE:[a-zA-Z0-9_-]+\$/g)) {
+  const negated = negatedSpans(bare)
+  for (const match of bare.matchAll(/fence_stamp\s*=\s*\$FENCE:[a-zA-Z0-9_-]+\$/g)) {
     const at = match.index ?? 0
     if (at < start) continue
     if (negated.some(([from, to]) => at >= from && at < to)) continue
@@ -543,14 +567,70 @@ function hasPositiveFence(sql: string): boolean {
   return false
 }
 
-/** `[from, to)` ranges covered by a `NOT EXISTS (…)` or `NOT IN (…)` group. */
+/**
+ * A top-level OR in the WHERE clause: any conjunct — including the fence —
+ * can then be false while the statement still writes the row.
+ */
+function hasTopLevelOr(sql: string): boolean {
+  const bare = blankComments(sql)
+  const start = topLevelWhere(bare)
+  if (start < 0) return false
+  let depth = 0
+  for (let i = start; i < bare.length; i++) {
+    const ch = bare[i]
+    if (ch === "'") {
+      i = skipString(bare, i)
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    else if (depth === 0 && (ch === 'O' || ch === 'o') && matchesWord(bare, i, 'OR')) return true
+  }
+  return false
+}
+
+/**
+ * `[from, to)` ranges under a NOT. Covers `NOT EXISTS (…)`, `NOT IN (…)` and
+ * `NOT (…)` — the parenthesised form was not recognised, so `NOT (EXISTS (…
+ * fence …))` counted as a POSITIVE fence and a statement asserting the fence
+ * was absent read as one requiring it present.
+ */
 function negatedSpans(sql: string): [number, number][] {
   const spans: [number, number][] = []
-  for (const match of sql.matchAll(/\bNOT\s+(?:EXISTS|IN)\s*\(/gi)) {
+  for (const match of sql.matchAll(/\bNOT\s+(?:EXISTS\s*|IN\s*)?\(/gi)) {
     const open = (match.index ?? 0) + match[0].length - 1
     spans.push([open, matchingParen(sql, open)])
   }
   return spans
+}
+
+/** The statement with every `--` and block comment replaced by spaces. */
+function blankComments(sql: string): string {
+  let out = ''
+  for (let i = 0; i < sql.length; i++) {
+    if (sql[i] === "'") {
+      const end = skipString(sql, i)
+      out += sql.slice(i, end + 1)
+      i = end
+      continue
+    }
+    if (sql[i] === '-' && sql[i + 1] === '-') {
+      const end = sql.indexOf('\n', i)
+      const stop = end < 0 ? sql.length : end
+      out += ' '.repeat(stop - i)
+      i = stop - 1
+      continue
+    }
+    if (sql[i] === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i)
+      const stop = end < 0 ? sql.length : end + 2
+      out += ' '.repeat(stop - i)
+      i = stop - 1
+      continue
+    }
+    out += sql[i]
+  }
+  return out
 }
 
 function matchingParen(sql: string, open: number): number {

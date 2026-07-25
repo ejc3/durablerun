@@ -205,6 +205,17 @@ export class S {
         "the SDK using the raw validator makes bad input retryable instead of fatal",
     ),
     (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 something** — DONE. It shipped.\n"
+                "  - **A thing we did not do** — deferred to a later round.\n"
+            )
+        },
+        "work parked under a completed entry is dropped silently, because DONE is skipped",
+    ),
+    (
         "spec-ledger.py",
         {
             "packages/store-libsql/src/probe.ts": (
