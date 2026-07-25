@@ -137,9 +137,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
-  FencedBatch; the batch-lint debt set is empty and deleted. Six review passes
-  found thirty-eight defects — see postmortems/pr3.6-fence-provenance.md,
-  whose detection ledger records that our own machinery found four of them.
+  FencedBatch; the batch-lint debt set is empty and deleted. Seven review
+  passes found forty-four defects — see postmortems/pr3.6-fence-provenance.md,
+  whose detection ledger records that our own machinery found seven of them,
+  three of those in round 6.
   Its residual is NOT recorded here: every item is owned by a named PR below
   (PR3.7, PR3.2, PR4.1). A deferral parked under a DONE heading is a silent
   drop, because DONE is the section a reader skips.
@@ -167,7 +168,36 @@ these three things; nothing else in the system does I/O, time, or randomness.
     because it selects from `waits` — rows an earlier await registered, which
     the batch never stamped — and uses the event fence only as a gate. It keeps
     the hand-written WHERE and the text checks that guard it, documented in
-    place. Closing it needs a second escape shape, not more scanning.
+    place. Closing it needs a second escape shape, not more scanning. It is now
+    the ONLY such statement: the cleanup that used to select waits by event
+    name is generated from the runs the emit woke. What guards it meanwhile is
+    a generated surface (`wake-witness-surface.test.ts`) comparing the engine
+    against a row-at-a-time statement of what a legitimate registration is,
+    across every corruption of a wait row in ones and pairs crossed with every
+    shape of park — 1728 cases, and eight of the predicate's nine conditions
+    fail it when deleted.
+    The gap that remains after all of it is owned by PR3.8.
+
+- **PR3.8 active-wait identity** (SPEC-FIRST). Everything above makes a wait row
+  hard to misuse; none of it lets one PROVE it is current. Emit infers that
+  from five fields agreeing — run, queue, event, step, deadline — which is
+  inference, and three rounds of review each found a row that satisfied
+  whatever subset existed at the time. The structural answer, proposed by codex
+  in round 6: an immutable `wait_id` per registration plus `runs.active_wait_id`,
+  written by `awaitEvent`, cleared by emit, by timeout, by cancellation and by
+  every terminal transition, and deliberately NOT restored by a preserve-
+  deferral — so emit requires `waits.wait_id = runs.active_wait_id` and a stale
+  row cannot enlist anyone regardless of what its other columns say. The wake
+  predicate then collapses to an identity comparison plus liveness, and
+  `wake-runs` can finally be generated like every other follow-on.
+  Not done in PR3.6 on purpose, and the reasons are the ones this plan exists
+  to record: it is a migration plus a new field in six transitions; it is a
+  protocol change, so the spec-first rule says it is modelled in TLA and
+  TLC-verified before its SQL is written; and it would otherwise land unreviewed
+  at the end of a branch that has already produced six fix-induced defects.
+  Until it lands, the generated wake surface is what holds the line, and its
+  limit is written down: it can only find a wrong DECISION about rows it
+  constructs, never a wrong payload, and never a row shape nobody thought of.
 
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation

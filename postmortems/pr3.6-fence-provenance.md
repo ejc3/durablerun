@@ -1,4 +1,4 @@
-# Postmortem: write provenance — thirty-eight ways a batch statement acted without proof (PR3.6)
+# Postmortem: write provenance — forty-four ways a batch statement acted without proof (PR3.6)
 
 The engine executes each store operation as one atomic batch of SQL
 statements. Later statements in a batch see the effects of earlier ones, and
@@ -7,7 +7,7 @@ compare-and-set, and the rest are supposed to fire only when it won. The rule
 (DESIGN.md §3.4 rule 1) is that a later statement must key on state *this
 batch just wrote*, never on state that could already have been there.
 
-Six review passes against this branch found thirty-eight defects. Six were
+Seven review passes against this branch found forty-four defects. Six were
 later statements firing on state that could pre-exist. Seven were in the
 checkers and gates this same PR had just built — three of which could not fail
 at all. Twelve more came from a re-review. A fourth pass and a mutation probe
@@ -15,9 +15,12 @@ found nine more, five of them introduced by the rewrite itself; a fifth pass,
 run in an isolated worktree after two earlier attempts died on an upstream
 content filter, found four more -- three of them the same "a stamp is not
 authorship" class in operations the earlier rounds had not reached, and one a
-lost wakeup created by the fix for a spurious one. The verdict of
+lost wakeup created by the fix for a spurious one. A sixth pass, asked for a
+design opinion rather than a review, found three more — one of them inside the
+generator this round built to make the recurring class unwritable — while the
+mutation probe and one tooling accident found three others. The verdict of
 the first round was "do not merge"; the second round's was "snapshot `3ff14bf`
-is not correct".
+is not correct"; the sixth's was "the current state is not acceptable".
 
 The common shape is one sentence: **the engine had nowhere to write down who
 made a write, so every operation borrowed a column that already meant
@@ -101,6 +104,12 @@ re-reading my own diff.
 | 37 | R2: a run parked before `wake_step` existed can never be woken again | Waits and events predate that column and the migration backfills nothing, so such a run compares its step against NULL and is never woken — while the delete removes its wait anyway. The event is immutable and the wait is gone, so re-emitting cannot recover it: an untimed await strands forever on any upgraded database, and on any rolling deploy where an older process parks a run after a newer one migrated | Nothing | Introduced by finding 15's fix, two commits earlier: a lost wakeup created by the fix for a spurious one. No test covered a row written by an older schema | A NULL step matches any step of the event (rung 3) |
 | 38 | R2: the max-duration deadline truncated where the port rounds | The port validates the duration promising nearest-millisecond rounding and then stores raw seconds; at 0.0005s the port says 1ms and the CAST said 0, making the deadline the start instant and cancelling the task on the spot | The numeric port contract (rule 7) | It governs what crosses the boundary, not what SQL does with it afterwards | ROUND, so the two agree (rung 3) |
 | 34 | X: the claim-timeout sweep reported an exhausted infrastructure cap for two other reasons | An operator sees a cap exhaustion that did not happen, when the successor id already belongs to a run of this task or the task stopped being live partway | Nothing | It inferred the outcome from "the successor insert wrote nothing", which had one cause when written and gained two more | Each arm keys on the statement that actually fired (rung 3) |
+| 39 | C6: the generated selection splices the caller's correlation in unparenthesised, so `a OR b` binds as `a OR (b AND fence)` | Every row matching the first disjunct joins the selection carrying no stamp. This is the fence-does-not-gate-the-write class, occurring INSIDE the generator built to make it unwritable, and introduced by this round's own rewrite | The generator, which is that class's mechanism | It builds the selection but splices caller TEXT into a boolean position, and `generated: true` also exempted it from both clause scanners — granted on the reasoning that generated SQL does not need scanning, true until the generator started interpolating | Bracket the correlation, as `narrow` already was (rung 1); mutation `generated-where-parens` |
+| 40 | C6: the wake predicate's index driver and its witness can be satisfied by two DIFFERENT wait rows — one in this queue at the wrong step, one in another queue at the right step | A run wakes on a registration that does not exist, and the cleanup then removes only the first row, leaving a waiting row beneath a pending run. Introduced by finding 29's fix, which SPLIT the step match out of the driver subquery to keep the query plan indexed | Nothing. Three rounds had each added one condition to this predicate and each was right about its own counterexample | Every condition was checked; no one asked which ROW satisfied which condition, and reading the list cannot answer that | One witness carrying every condition (rung 1); a generated surface over corrupt wait rows in ones and PAIRS, crossed with every shape of park (rung 2) |
+| 41 | C6: the emit deletes every registration naming the event, including those of runs it declined to wake | The event row is immutable, so a registration deleted without its run being woken can never be delivered — an untimed await strands with nothing left describing what it asked for. Each of the three conditions added to the wake predicate widened this silently | The `wait-for-fired-event` invariant, which names exactly this state | It could not fire. The only state it described was erased by the same batch that produced it, so it was true by construction rather than by the engine being right | The cleanup derives from the runs `wake-runs` stamped, so a declined registration survives and the invariant becomes reachable (rung 1) |
+| 42 | M: the emit's query-plan pin EXPLAINed a hand-copied statement introduced as "structurally the same" | Deleting the entire index driver from the shipped statement left the plan suite green while every emit fell back to scanning the runs table. None of the conditions added over three rounds ever reached the copy | The query-plan suite itself | It pinned a second representation of the SQL — the shape this repo has a standing rule against — so it could only ever drift | Recover the statement by running the real operation through a recording executor (rung 2) |
+| 43 | M: the wake surface generated only the wait rows, not the run's park | Deleting the `wake_event` condition kept it green: a mechanism with a hole on the day it was built, over the predicate it was built for | The surface itself | It varied one side of a two-sided correlation. Every run in it was parked on the event being emitted, so the condition asking whether it was had nothing to distinguish | Generate the park and the run state too; the probe of the surface is what found it (rung 2) |
+| 44 | X: the mutation probe reverts work that arrives while it runs | An uncommitted fix vanished mid-session under a restore holding a snapshot from before it existed. The symptom was a test failing as though the edit had never been made, which is the most expensive way to learn it | The probe's own dirty-tree guard | It checks the START of a run; a run is minutes long and rewrites sources between every mutation | Restore only over the text the probe itself wrote, keeping anything else beside it (rung 1, for the tool) |
 
 ## Detection ledger
 
@@ -111,12 +120,25 @@ re-reading my own diff.
 | provenance review (round 1) | 6 | no |
 | independent simplification review | 4 | no |
 | codex round 5 | 4 | no |
-| the mutation probe, built during round 4 | 3 | **yes** |
+| codex round 6 (a design opinion, not a review) | 3 | no |
+| the mutation probe, built during round 4 | 3 + 2 | **yes** |
 | re-reading my own diff | 1 | **yes** |
+| the probe destroying my own uncommitted work | 1 | **yes** |
 | the fault matrix, the fuzz, TLC, the invariant library, every lint | **0** | — |
 
-Self-catch rate: **11%** (34 of 38 found by outside review). No previous round
+Self-catch rate: **16%** (37 of 44 found by outside review). No previous round
 recorded this number, which is itself part of the finding.
+
+Round 6 on its own is **50%** — three of six ours. That is the first movement
+in the number this document exists to track, and it is worth being precise
+about where it came from, because it is not from better reviewing. Both of the
+probe's two came from mutating code the round had just written: the plan pin
+that tested a copy, and the wake surface that generated only one side of a
+two-sided correlation. The mechanism that moved the rate is the habit of
+attacking a mechanism the moment it is built, and both of its catches were
+mechanisms that had a hole ON THE DAY THEY WERE WRITTEN. Six findings is a
+small sample and 50% of six is not a trend; the claim here is only that the
+detector which produced it now exists and did not before.
 
 The zero on the last row is the headline. This project's automated machinery —
 236 fault-matrix cells, 32 fuzz shards, a TLC model of 111.8M states, an
@@ -127,12 +149,34 @@ diff, and neither existed as a standing mechanism when the round began.
 
 ## Recurrence
 
-One class recurred in every round: **a follow-on fires on state it did not
-produce** — findings 1–6, 14, 21, 26, 35, 36. Eleven of thirty-eight, found in
-rounds 1, 3 and 5, after round 1 instituted a rung-1 mechanism against it. No
-other class recurred at all: the checker class stopped once `lint-selftest`
-took an inventory, the clock class stopped once `batch-lint` counted per
-statement, the port class stopped once the validators were typed.
+One class recurred in every round: **a statement acts on rows it cannot
+justify** — findings 1–6, 14, 21, 26, 35, 36, and now 39, 40 and 41. Fourteen
+of forty-four, found in rounds 1, 3, 5 and 6, after round 1 instituted a
+rung-1 mechanism against it. No other class recurred at all: the checker class
+stopped once `lint-selftest` took an inventory, the clock class stopped once
+`batch-lint` counted per statement, the port class stopped once the validators
+were typed.
+
+Finding 39 is the sharpest instance available: the class recurred INSIDE the
+mechanism built to end it. That deserves a precise reading rather than a
+despairing one, because the failure mode changed. Rounds 1–5 were a scanner
+missing a spelling — a proxy leaking once per call site, which is a leak that
+scales with the codebase and never closes. Finding 39 is a string-composition
+bug in a generator: one defect, at one place, reachable from every call site
+but fixed for all of them by four characters. A mechanism that concentrates a
+whole class into a single point of failure has done most of its job even when
+that point fails, and the evidence is that findings 40 and 41 are in the ONE
+statement the generator cannot build, which is exactly where the theory
+predicts the remaining bugs would be.
+
+What the theory did not predict, and what is the real content of round 6:
+having concentrated the class into one hand-written statement, we then went on
+adding conditions to it for three rounds without ever asking what shape the
+statement as a whole had to have. Findings 40 and 41 are both that — 40 is two
+conditions answered by two rows, 41 is two statements disagreeing about which
+registrations count. Neither is a missing condition, so no amount of the
+per-condition scrutiny that closed the earlier rounds would have reached
+either.
 
 The reason is in the next section and it is the whole lesson of this document:
 that mechanism checks a SYNTACTIC property (the statement's text contains a

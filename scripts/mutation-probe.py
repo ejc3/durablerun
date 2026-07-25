@@ -114,10 +114,15 @@ MUTATIONS = [
         "an emit wakes a run that is not parked on that event",
     ),
     (
+        # Weakened to a tautology rather than to `? IS NOT NULL`, which was
+        # the old spelling: that adds a bind the statement does not have, so
+        # the batch died on the argument-count check and the mutation was
+        # "caught" by the compiler without any test of the guard ever running.
+        # A mutation must change behaviour, not arity.
         "emit-wake-step-correlation",
         "packages/store-libsql/src/store.ts",
-        "                       AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step))",
-        "                       AND (runs.wake_step IS NULL OR ? IS NOT NULL))",
+        "                       AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step)",
+        "                       AND (runs.wake_step IS NULL OR 1 = 1)",
         "an emit delivers to a run parked at a DIFFERENT step of the same event",
     ),
     (
