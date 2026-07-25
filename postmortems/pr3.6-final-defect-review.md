@@ -248,7 +248,7 @@ shown instead, followed by the adjacent property that remains outside it.
 | Mechanism | Rung | Executed false negative, or rejection at an exact rung-1 boundary |
 |-----------|------|-------------------------------------------------------------------|
 | `successorOwned(id, task, attempt)` plus unique `(task_id, attempt)` | 1 for historical-attempt identity | Replacing `s.attempt = ${attempt}` with the arity-preserving tautology `${attempt} IS NOT NULL` made both historical-collision cases fail with “promise resolved 'undefined' instead of rejecting” and “promise resolved '[]' instead of rejecting.” No passing counterexample exists inside the stated identity property: the schema also rejects two runs of one task at the intended attempt. A caller supplying the wrong intended attempt remains outside the primitive. |
-| `registeredWaitStep(run)` before wait consumption, plus the legacy nullable-column surface | 1 for a surviving registration; 2 overall | The temporary case `UPDATE runs SET wake_step = NULL; DELETE FROM waits; advance 30000; claim` passed with `wake === undefined` (`1 passed, 28 skipped`). Once both durable witnesses are already gone, no decoder can recover the historical step. The repaired claim path prevents itself from creating that shape; it cannot repair a database that arrived in it. |
+| `registeredWait(run)` before wait consumption, plus the legacy nullable-column surface | 1 for a surviving registration; 2 overall | The temporary case `UPDATE runs SET wake_step = NULL; DELETE FROM waits; advance 30000; claim` passed with `wake === undefined` (`1 passed, 28 skipped`). Once both durable witnesses are already gone, no decoder can recover the historical step. The repaired claim path prevents itself from creating that shape; it cannot repair a database that arrived in it. Direct mutations now delete the backfill assignment, let the unique-step scalar choose among several rows, and let claim consume a two-row ambiguity; each makes the focused legacy suite red. |
 | Mandatory stamps on generated `derived` updates | 1 inside the typed generator | Removing generated provenance makes the mutation suite red, and a caller can no longer construct a generated update without the required stamp policy. The executable bypass `f.raw.batch('raw-bypass', [{ sql: "UPDATE tasks SET state = 'cancelled' ..." }])` still reported `{"rowsAffected":1,"state":"cancelled","fenceStamp":null,"fenceAtMs":null}`. Direct `SqlExecutor` SQL does not cross this type boundary; the store's batch checker is the syntactic control for that adjacent path. |
 | Portable cardinality for generated provenance instants | 1 for scalar cardinality | Declaring a many-row source produced `SELECT f.fence_at_ms`, and the construction regression failed with “expected UPDATE tasks ... to contain 'SELECT MIN(f.fence_at_ms)'.” The generator now reduces the source rows—which one statement stamped at one instant—to one aggregate row, so SQLite, PostgreSQL, and MySQL receive the same scalar shape. Mixed instants under one source stamp remain the adjacent token-reuse defect, not a cardinality ambiguity. |
 | Raw `followOn()` reach screens and their paired attack | 2, syntactic | The new deletion mutation originally survived, then the paired test made it fail when a top-level OR bypassed the fence while still accepting an OR nested inside a fenced conjunct. The temporary counterexample `WHERE CASE WHEN run_id = ? THEN 1 ELSE fence_stamp = $FENCE:win$ END` still compiled (`1 passed, 47 skipped`): the equality is present and positive but does not dominate the write. Generated `derived()` selection, not this scanner, is the structural closure. |
@@ -271,7 +271,7 @@ shown instead, followed by the adjacent property that remains outside it.
 | Canonical findings and detection-ledger parser | 2 | A postmortem containing two findings and only the prose line “External review: 2” attested; the red self-test reported that `review-attest.sh` accepted it. One exact table grammar now derives both counts and rejects zero, malformed, duplicate, or prose-only ledgers. It checks accounting, not the truth of row narratives. |
 | Full legacy wait witness with unique cardinality | 1 within the legacy schema | Two matching legacy waits made claim return a stale wake, emit choose the wrong step, and the generated pair surface disagree. A foreign-owned registration also woke the run. The shared witness refuses ambiguity and owns step recovery. It still cannot prove current-registration identity without PR3.8's immutable wait id. |
 | Canonical sealed-fence lifecycle | 1 inside FencedBatch construction | After `seal('finished', fence: 'win')`, a later `derived()` consumer of `win` compiled; the red case failed with “expected Function to throw.” Sealing now transitions the one source record. Compiled SQL replay and direct executor SQL remain outside future builder-state checks. |
-| Isolated provenance and seal mutations | 2 | The old provenance mutation changed two independent guards, and the old seal mutation short-circuited a call site that refactoring had made irrelevant. Each replacement now deletes one exact predicate or transition. A suite failure after that deletion still proves only the named observable asserted by its target tests. |
+| Canonically addressed provenance, seal, and wait mutations | 2 | The old provenance mutation changed two independent guards, and the old seal mutation short-circuited a call site that refactoring had made irrelevant. Later source-view and shared-witness refactors made five verbatim addresses stale; the probe reported every one rather than silently dropping it. The replacements delete one exact predicate or transition at the canonical lexical view or wait witness, and two independent attacks cover unique-step selection and claim cardinality. The final runnable audit caught all 26 mutations. A suite failure after any deletion still proves only the named observable asserted by its target tests. |
 
 The temporary legacy, clock, wake, raw/seal, CASE-reach, and two-source cases
 were inserted one at a time and run with focused Vitest commands. Their exact
@@ -353,6 +353,16 @@ fix-induced defects. The final simplification audit also found the
 pre-existing scope-inventory false negative described in the mechanism table;
 it received its own red `a1c36c7` / green `b3617d8` pair rather than being
 folded silently into finding 10.
+
+The final mutation audit then self-reported five stale verbatim addresses
+after the guarded code moved to the common statement view or full wait
+witness: `followon-provenance-check`, `top-level-or-reach`,
+`emit-wake-one-witness`, `emit-wake-step-correlation`, and
+`legacy-wait-step-backfill`. Commit `950760f` re-aimed rather than deleted
+them and added direct attacks on both legacy cardinality decisions. This is
+the mutation mechanism detecting its own maintenance need, not an externally
+reported correctness finding, so it is not one of the sixteen fix-induced
+rows and does not change the detection ledger.
 
 ## Evidence
 
@@ -445,7 +455,11 @@ folded silently into finding 10.
   into the one full witness by green `8728cde`.
 - CodeRabbit 48 and 49: probe-maintenance commit `c92be6f` separates the
   provenance mutations and aims seal mutations at the predicate and lifecycle
-  transition they claim. The final mutation run must report zero survivors.
+  transition they claim. Final maintenance commit `950760f` re-aims the five
+  addresses later moved by the common source view and full wait witness, and
+  adds separate unique-step and claim-cardinality attacks. Focused runs caught
+  all seven maintained or new attacks; the complete runnable audit reported
+  “every mutation was caught” for all 26 entries.
 - The sealed-fence continuation: red `d8517ba` failed with “expected
   [Function] to throw an error”; green `8f05ade`.
 - Lexical/root findings 47 through 50: red `a338330` reported seven accepted
@@ -473,7 +487,12 @@ folded silently into finding 10.
   that this sandbox forbids from spawning Python, binding localhost, or
   starting child hosts (`EPERM`). Excluding exactly those four
   environment-dependent files made all 640 runnable tests green across 59
-  files.
+  files. Exact `python3 scripts/mutation-probe.py` could not pass its baseline
+  in that same restricted environment because it includes those process and
+  listener tests. Running the unchanged 26-mutation loop with its standard
+  fuzz and chaos exclusions, plus the three remaining environment-dependent
+  files, produced zero stale entries and zero survivors: “every mutation was
+  caught.”
 
 ## Root cause
 
@@ -511,7 +530,8 @@ Built in this PR:
   (rung 1).
 - One full wait-registration witness shared by claim and emit, used to recover
   a legacy step before the witness is consumed (rung 1), plus a migration-axis
-  claim/decode surface (rung 2).
+  claim/decode surface and independent backfill, unique-step, and ambiguity
+  mutations (rung 2).
 - A typed `derived` update that cannot omit its stamp, generated wake-task
   provenance, and explicit fence consumption with `seal` (rung 1 inside a
   constructed `FencedBatch`), attacked by delayed compiled replay (rung 2).
@@ -562,9 +582,10 @@ Built in this PR:
   exception, and explicit rejection of other opaque batch lists, invalid
   roots, and zero-source harvests. This one mechanism closes the six
   separately reported lexical findings (rung 2).
-- Isolated mutation entries for generated provenance metadata, the stamp
-  assignment, the sealed-source predicate, and the seal lifecycle transition
-  (rung 2).
+- Canonically addressed mutation entries for generated provenance metadata,
+  the stamp assignment, the sealed-source predicate, the seal lifecycle
+  transition, the common statement view, the full wait witness, and both
+  legacy cardinality decisions (rung 2).
 
 Deferred (recorded in BUILD.md):
 
