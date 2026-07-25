@@ -1,4 +1,4 @@
-# Postmortem: write provenance — twenty-five ways a batch statement acted without proof (PR3.6)
+# Postmortem: write provenance — thirty-four ways a batch statement acted without proof (PR3.6)
 
 The engine executes each store operation as one atomic batch of SQL
 statements. Later statements in a batch see the effects of earlier ones, and
@@ -7,12 +7,13 @@ compare-and-set, and the rest are supposed to fire only when it won. The rule
 (DESIGN.md §3.4 rule 1) is that a later statement must key on state *this
 batch just wrote*, never on state that could already have been there.
 
-Three independent review rounds against this branch found twenty-five defects.
-Six were later statements firing on state that could pre-exist. Seven were in
-the checkers and gates this same PR had just built — three of which could not
-fail at all. Twelve more came from a re-review, including two the rewrite had
-introduced. The verdict of the first round was "do not merge"; the second
-round's was "snapshot `3ff14bf` is not correct".
+Five review passes against this branch found thirty-four defects. Six were
+later statements firing on state that could pre-exist. Seven were in the
+checkers and gates this same PR had just built — three of which could not fail
+at all. Twelve more came from a re-review. A fourth pass and a mutation probe
+found nine more, five of them introduced by the rewrite itself. The verdict of
+the first round was "do not merge"; the second round's was "snapshot `3ff14bf`
+is not correct".
 
 The common shape is one sentence: **the engine had nowhere to write down who
 made a write, so every operation borrowed a column that already meant
@@ -52,7 +53,9 @@ to defeat it.
 ## Findings
 
 Rounds: **P** = provenance review, **G** = gate/simplify review, **R** =
-re-review after the rewrite.
+re-review after the rewrite, **S** = independent simplification review,
+**M** = the mutation probe (this PR's own new audit), **X** = found by
+re-reading my own diff.
 
 | # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
 |---|--------|--------|----------------------------------|------------------|-------------------------|
@@ -81,6 +84,15 @@ re-review after the rewrite.
 | 23 | R: `UserName.parse` assumed a string | A non-string throws a plain TypeError, which the worker treats as an ordinary user failure and RETRIES — one deterministic bad call runs `maxAttempts` times, repeating whatever the handler did before it | The user-boundary lint | It governs which validator is called, not what the validator accepts | Type check inside the validator, classified as a permanent failure (rung 1) |
 | 24 | R: the blind-counter check matched only `x = x + <digit>` | `x = x + ?`, `x = t.x + 1`, `x = (x + 1)`, `x = 1 + x`, `x = x - 1` all double-count a failure on replay; the retry budget is spent twice. It also rejected a string literal merely containing the words | The checker itself | Written from one example | Every spelling, tested in both directions, against the write clause with literals blanked (rung 2) |
 | 25 | R: `requirePositiveInt` accepted `MAX_SAFE_INTEGER` | A successor written at an ordinal SQLite stores and JavaScript cannot represent; every later claim decoding it throws and the task sits pending with no worker able to take it | The numeric port contract (rule 7) | It bounded durations and epochs, not counts, and a count bounds a run ordinal | `MAX_COUNT` at the port (rung 1) |
+| 26 | R/S: the token `fence()` returns is ordinary text, so `$FENCE:typo$` can be typed straight into the SQL | A typo, a name added later, or a name that writes no stamp all build and compile to a filter matching nothing — the statement never runs, silently and forever, while the batch reports success. A follow-on that never runs looks exactly like one with nothing to do | `fence()` itself | It checked the caller and then handed back a string; the check lived at the convenient API rather than at the boundary — the same shape as the primitive's original `sql.includes(STAMP)` | Every fence token in a statement's text is validated where all statements pass (rung 1) |
+| 27 | M: deleting the follow-on half of the provenance check broke nothing | A follow-on could write a provenance table and leave the provenance alone, producing rows whose stamp still names whatever batch touched them last | The primitive's own unit tests | The compare-and-set half had tests; the follow-on half had none. Direction of evidence again: green proves the checks accept correct SQL | Rejection tests for both halves; the probe that found it (rung 2) |
+| 28 | M: deleting spawn's primary-key guard broke nothing | A task-id collision raises a constraint error out of spawn at a caller who did nothing wrong | The collision regression test | It collides on the id AND the key, so the targeted `ON CONFLICT` absorbs it and the guard is never reached — and the call was wrapped in `.catch()`, so it passed either way | A case that collides on the id alone, and the rejection no longer swallowed (rung 3) |
+| 29 | S: the emit fan-out scanned the whole runs table | Every emit walks every run in the engine. Introduced BY the fix for finding 15: adding the step match to the waiter subquery correlated it to `runs`, demoting it from the query's driver to a filter — measured, `SEARCH runs USING PRIMARY KEY` became `SCAN runs USING INDEX runs_poll` | The query-plan suite | It could not pin a WRITE at all: `EXPLAIN QUERY PLAN UPDATE` through the executor takes the writer lock and fails, so only reads had pins | A raw-client path for write plans, with the emit fan-out pinned and the correlated shape kept as a counter-example (rung 2) |
+| 30 | S: the batch compiler coerced an undefined bind to null | Defeats finding 12's fix across the entire protocol surface: every operation goes through this compiler, so the executor's undefined check never saw one. Instead of the loud error, a valid statement was sent carrying a value the caller never meant | The executor's chokepoint | It guards the port; the compiler sits above it and had already substituted | The compiler refuses, and only when the argument slot exists so a short list still gets the count error (rung 1) |
+| 31 | S: `reschedule` and `suspendRun` are documented as one transition and used different eligibility guards | A run whose task is past its cancellation deadline could re-park itself, putting it back into the queue the claim path refuses to launch from | Nothing | The comment asserted they were the same, which reads as a check and is not one | One predicate for both, with a test that fails if either drifts (rung 3) |
+| 32 | S: the SDK sent the raw event name on await and the parsed one on emit | Identical today, since parsing only validates. The moment it normalizes anything, a wait registers under one spelling while the emit fires the other and never matches — a silently lost wakeup | The user-boundary lint | It governs which validator is called, not which of its two outputs is used afterwards | The validated value is the only one passed downstream (rung 3) |
+| 33 | M: each half of the event correlation was untested | One regression test was satisfied by either half, so deleting either kept the suite green | The test added with finding 15 | It exercised one state, and the guard had become two independent conditions | A state that only `wake_event` rules out, and one that only `wake_step` does (rung 3) |
+| 34 | X: the claim-timeout sweep reported an exhausted infrastructure cap for two other reasons | An operator sees a cap exhaustion that did not happen, when the successor id already belongs to a run of this task or the task stopped being live partway | Nothing | It inferred the outcome from "the successor insert wrote nothing", which had one cause when written and gained two more | Each arm keys on the statement that actually fired (rung 3) |
 
 ## Evidence
 
@@ -152,12 +164,28 @@ question "did my batch do this?" was answered with proxies. Every proxy is
 approximately right and wrong in a specific case, and this PR is a catalogue
 of those cases.
 
-One further lesson has its own shape. Finding 17's obvious fix was **exactly
-backwards**: requiring the `tokens used` marker near the END of a codex log
-would have rejected the completed round and attested the one killed by a
-content filter, because a finished round keeps printing its verdict afterwards
-while an aborted one stops right there. That was caught only by running the
-check against both real logs. A checker reasoned about is a checker untested.
+Findings 26 to 34 add a second, sharper version of the same lesson: **five of
+them were introduced by the fixes for earlier findings in this round.** The
+emit fan-out's full scan came from the fix for the wrong-run wake. The
+undefined-bind coercion covered the surface an earlier fix in this same branch
+had just protected. Each half of a guard split in two lost its test. A repair
+is a change, and a change made under the confidence of having just understood
+something is not safer than any other change — it is less safe, because the
+understanding is about the old shape.
+
+Two lessons have their own shape.
+
+Finding 17's obvious fix was **exactly backwards**: requiring the `tokens used`
+marker near the END of a review log would have rejected the completed round and
+attested the one killed by a content filter, because a finished round keeps
+printing its verdict afterwards while an aborted one stops right there. Caught
+only by running the check against both real logs. A checker reasoned about is a
+checker untested.
+
+And the mutation probe is the general form of all of it. Every mechanism here
+was believed because the suite was green, which is evidence in the wrong
+direction. Deleting the guards one at a time found three that nothing was
+maintaining — including, twice, a guard added earlier in this very round.
 
 ## Mechanisms
 
@@ -198,6 +226,36 @@ Built in this PR:
   gone; `migrate()` asserts its own post-condition. (rung 1)
 - **Separate random streams for ids and tokens** — so a test predicting a
   minted id does not break when unrelated code takes a token. (rung 3)
+- **`scripts/mutation-probe.py`** — deletes one guard at a time and requires
+  something to fail. Eleven guards, and it found three unmaintained. Not part
+  of the gate (it edits sources and runs the suite once per mutation); it is a
+  deliberate audit to run after adding a mechanism. A stale mutation pattern
+  reports itself, so a guard that is rewritten cannot quietly stop being
+  probed. (rung 3)
+- **Write query plans can be pinned** — the suite could only `EXPLAIN` reads,
+  which is how a full table scan shipped inside a correctness fix. Writes now
+  go through a raw client, and the emit fan-out is pinned with its degraded
+  shape kept alongside so the assertion is known to discriminate. (rung 2)
+- **Review artifacts cannot be committed, and reviewers get their own tree** —
+  see below; a process failure, but the fix is mechanical. (rung 2)
+
+Process failures this round, and their mechanisms:
+
+- **An adversarial reviewer ran against the live working tree.** It wrote
+  probe files, mutated sources, created a `.bak`, and stashed my uncommitted
+  work under a name of its own. Twice its scratch was swept into a commit by
+  `git add -A`, and once its mutation of `store.ts` nearly shipped. Every
+  minute spent untangling that was a minute not spent reviewing. Mechanisms:
+  the scratch names are in `.gitignore` AND in the formatter's ignore list
+  (a probe file otherwise turns the whole gate red while a review runs), and
+  the reviewer now runs in a `git worktree` — a separate checkout it cannot
+  reach out of.
+- **The multi-process chaos tests used fixed ports.** A run that fails partway
+  strands its children, and the next run dies on "address in use" — which
+  surfaces as the host exiting early, indistinguishable from the engine bug
+  those tests exist to catch. It cost a real detour: two tests failed, looked
+  exactly like a regression from the commit in hand, and were a leftover
+  process. The ports now derive from the process id.
 
 Deferred (recorded in BUILD.md):
 
