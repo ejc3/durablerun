@@ -76,8 +76,25 @@ interface Named {
  * re-matches its own stamped row and counts twice. Derive the value from the
  * winning row's post-state instead, so applying the statement twice is the
  * same as applying it once.
+ *
+ * Written out rather than as one dense expression because the first version
+ * caught only `x = x + <digit>`, and `x = x + ?`, `x = t.x + 1`, `x = (x+1)`,
+ * `x = 1 + x` and `x = x - 1` are all the same non-idempotent write. Anything
+ * whose value comes from a DIFFERENT column, a subquery, or a literal is
+ * idempotent and must still be allowed.
  */
-const BLIND_COUNTER = /\b(\w+)\s*=\s*\1\s*\+\s*\d/i
+const COLUMN = String.raw`(?:\w+\.)?"?(\w+)"?`
+const SAME_COLUMN = String.raw`(?:\w+\.)?"?\1"?`
+const BLIND_COUNTER = new RegExp(
+  String.raw`\b${COLUMN}\s*=\s*\(?\s*(?:` +
+    // x = x + n, x = x - n
+    String.raw`${SAME_COLUMN}\s*[-+]` +
+    '|' +
+    // x = n + x
+    String.raw`[\w?]+\s*\+\s*${SAME_COLUMN}\b` +
+    ')',
+  'i',
+)
 
 /** Statement names are spliced into a bound value and into a token. */
 const NAME_OK = /^[a-zA-Z0-9_-]+$/
@@ -290,7 +307,9 @@ export class FencedBatch {
     // replay of it matches nothing and its bump cannot run twice — claim
     // legitimately does `claim_gen = claim_gen + 1`. A follow-on has no such
     // guard: it keys on the post-state, which a replay reproduces exactly.
-    if (kind === 'followOn' && BLIND_COUNTER.test(sql)) {
+    // Checked against the WRITE clause with string literals blanked, so a
+    // message that merely quotes the shape is not mistaken for the shape.
+    if (kind === 'followOn' && BLIND_COUNTER.test(blankLiterals(head))) {
       throw new Error(
         `${at} bumps a counter blindly (x = x + n) — an exact replay of this batch re-matches its own stamped rows and counts twice; derive the value from the winning row's post-state instead`,
       )
@@ -499,6 +518,21 @@ function matchingParen(sql: string, open: number): number {
     else if (ch === ')' && --depth === 0) return i + 1
   }
   return sql.length
+}
+
+/** The statement with every string literal's contents replaced by spaces. */
+function blankLiterals(sql: string): string {
+  let out = ''
+  for (let i = 0; i < sql.length; i++) {
+    if (sql[i] !== "'") {
+      out += sql[i]
+      continue
+    }
+    const end = skipString(sql, i)
+    out += `'${' '.repeat(Math.max(0, end - i - 1))}'`
+    i = end
+  }
+  return out
 }
 
 /** Every single-quoted string literal in the statement, quotes included. */

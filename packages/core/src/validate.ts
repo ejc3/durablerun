@@ -51,12 +51,30 @@ export function requireEpochMs(name: string, epochMs: number): number {
   return epochMs
 }
 
+/**
+ * A million. Every count that crosses this port ends up bounding a run
+ * ordinal, and the ordinal counts EVERY successor — so an accepted
+ * MAX_SAFE_INTEGER lets a successor be written at an ordinal SQLite stores
+ * happily and JavaScript cannot represent. Every later claim decoding that
+ * run then throws, and the task sits pending forever with no worker able to
+ * take it. No real workload needs more, and the bound leaves the ordinal
+ * ten orders of magnitude clear of the representable range.
+ */
+export const MAX_COUNT = 1_000_000
+
 /** Counts: maxAttempts, claim limits. */
 export function requirePositiveInt(name: string, value: number, min = 1): number {
-  if (!Number.isSafeInteger(value) || value < min) {
-    throw new RangeError(`${name} must be an integer >= ${min}, got ${value}`)
+  if (!Number.isSafeInteger(value) || value < min || value > MAX_COUNT) {
+    throw new RangeError(`${name} must be an integer in [${min}, ${MAX_COUNT}], got ${value}`)
   }
   return value
+}
+
+/** What a bad value IS, for an error message that saves a debugging session. */
+function describe(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'an array'
+  return typeof value
 }
 
 /*
@@ -83,6 +101,15 @@ export class UserName {
    * prefix collides with the engine's own markers (`$sleep`, `$await:`).
    */
   static parse(what: string, raw: string): UserName {
+    // The type says string; the callers include JavaScript, decoded JSON and
+    // anything typed `any`. Reaching .includes() on a non-string throws a
+    // plain TypeError, which the worker reads as an ordinary user failure and
+    // RETRIES — so one deterministic bad call runs maxAttempts times, redoing
+    // whatever the handler did before it each time. Deterministic bad input
+    // has to be permanent.
+    if (typeof raw !== 'string') {
+      throw new FatalTaskError(`${what} must be a string, got ${describe(raw)}`)
+    }
     if (raw.includes('#') || raw.startsWith('$')) {
       throw new FatalTaskError(
         `${what} '${raw}' uses reserved characters ('#' anywhere, '$' prefix)`,
