@@ -54,6 +54,32 @@ async function stateOf(raw: LibsqlExecutor, taskId: string): Promise<string> {
   return row?.state ?? '(missing)'
 }
 
+/**
+ * One stamped run in queue 'b', and a follow-on whose correlation is the
+ * natural spelling of "either of these two queues". The disjunction is the
+ * whole point: it lands in a boolean position, and unbracketed it binds as
+ * `a OR (b AND fence)`.
+ */
+async function spread(raw: LibsqlExecutor): Promise<void> {
+  const b = new FencedBatch('probe', 'seed', { now: NOW_MS })
+  b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
+    'run-stamped',
+  ])
+  b.derived('spread', {
+    target: 'tasks',
+    stamp: 'tasks',
+    key: 'task_id',
+    from: 'runs',
+    column: 'task_id',
+    fence: 'win',
+    where: `f.queue = ? OR f.queue = ?`,
+    whereArgs: ['a', 'b'],
+    set: `state = 'cancelled'`,
+    rows: { many: 'one task per stamped run' },
+  })
+  await b.run(raw)
+}
+
 describe('a generated selection restricts to rows this batch stamped', () => {
   it('holds when the caller correlation is a disjunction', async () => {
     // `where` was interpolated into the fence subquery unparenthesised:
@@ -77,23 +103,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
     await insert(f.raw, 'untouched', 'run-untouched', 'a')
 
-    const b = new FencedBatch('probe', 'seed', { now: NOW_MS })
-    b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
-      'run-stamped',
-    ])
-    b.derived('spread', {
-      target: 'tasks',
-      stamp: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
-      fence: 'win',
-      where: `f.queue = ? OR f.queue = ?`,
-      whereArgs: ['a', 'b'],
-      set: `state = 'cancelled'`,
-      rows: { many: 'one task per stamped run' },
-    })
-    await b.run(f.raw)
+    await spread(f.raw)
 
     expect(await stateOf(f.raw, 'stamped')).toBe('cancelled')
     expect(await stateOf(f.raw, 'untouched')).toBe('running')
@@ -106,23 +116,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     const f = await fixture()
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
 
-    const b = new FencedBatch('probe', 'seed', { now: NOW_MS })
-    b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
-      'run-stamped',
-    ])
-    b.derived('spread', {
-      target: 'tasks',
-      stamp: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
-      fence: 'win',
-      where: `f.queue = ? OR f.queue = ?`,
-      whereArgs: ['a', 'b'],
-      set: `state = 'cancelled'`,
-      rows: { many: 'one task per stamped run' },
-    })
-    await b.run(f.raw)
+    await spread(f.raw)
 
     const [row] = (
       await f.raw.batch(
