@@ -134,6 +134,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
   type-only to a structural guarantee); and canonicalize-and-classify a
   handler result at the source so a non-serializable result is a permanent
   user failure, not a silent completion with NULL.
+- **PR3.6 batch-fence migration** (from postmortems/pr11-store-batch-classes.md):
+  route spawn/claim/activate/awaitEvent/emitEvent through FencedBatch
+  (extended for fan-out, discriminator, and idempotent-insert shapes) so
+  "one stamp, one NOW, follow-ons keyed on the winning write" is structural
+  and the batch-lint debt set empties; add a per-statement clock-jitter test
+  executor (so the two-NOWs class manifests instead of hiding under fake-now)
+  and a generated corrupt-pre-state ("poison") fault surface that drives every
+  write label against each invariant-forbidden pre-state and asserts no
+  amplification. scripts/batch-lint.py + scripts/clock-lint.py (in verify now)
+  hold the line until then.
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
