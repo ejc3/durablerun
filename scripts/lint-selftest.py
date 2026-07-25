@@ -26,6 +26,7 @@ Run by `pnpm verify`. A new lint belongs in LINTS below with at least one bad
 fixture per rule it claims to enforce.
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -495,6 +496,12 @@ export class S {
         "the SDK using the raw validator makes bad input retryable instead of fatal",
     ),
     (
+        "session-state.sh",
+        {"README.md": "a non-Git work directory\n"},
+        "git worktree list failed",
+        "missing Git evidence must not be reported as a clean session",
+    ),
+    (
         "deferral-lint.py",
         {
             "BUILD.md": (
@@ -920,6 +927,19 @@ GIT_BAD_CASES = [
     ),
 ]
 
+ENV_BAD_CASES = [
+    (
+        "session-state.sh",
+        {
+            "README.md": "a process-enumeration fixture\n",
+            "fail-ps.sh": "ps() { return 7; }\n",
+        },
+        {"BASH_ENV": "{root}/fail-ps.sh"},
+        "ps rejected the sleep scan",
+        "a failed process-table query must not become an empty sleep inventory",
+    ),
+]
+
 BAD_INVOCATIONS = [
     (
         "batch-lint.py",
@@ -1012,6 +1032,7 @@ def run(
     files: dict[str, str],
     args: tuple[str, ...] | None = None,
     git_state: str = "tracked",
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `lint` against a throwaway tree that looks like the repo.
 
@@ -1062,6 +1083,13 @@ def run(
             capture_output=True,
             text=True,
             cwd=str(root),
+            env={
+                **os.environ,
+                **{
+                    key: value.replace("{root}", str(root))
+                    for key, value in (environment or {}).items()
+                },
+            },
         )
 
 
@@ -1133,6 +1161,12 @@ for lint, files, git_state, expected_marker, why in GIT_BAD_CASES:
     if problem:
         failures.append(f"{lint} {problem} — {why}\n    Git state: {git_state}")
 
+for lint, files, environment, expected_marker, why in ENV_BAD_CASES:
+    result = run(lint, files, environment=environment)
+    problem = refusal_problem(result, expected_marker)
+    if problem:
+        failures.append(f"{lint} {problem} — {why}\n    Environment: {environment}")
+
 for lint, files, args, expected_marker, why in BAD_INVOCATIONS:
     result = run(lint, files, args)
     problem = refusal_problem(result, expected_marker)
@@ -1153,6 +1187,7 @@ if failures:
     sys.exit(1)
 print(
     f"lint-selftest: {len(BAD_CASES)} bad inputs, {len(GIT_BAD_CASES)} Git-state "
-    f"inputs, and {len(BAD_INVOCATIONS)} bad invocations rejected, "
+    f"inputs, {len(ENV_BAD_CASES)} environment inputs, and "
+    f"{len(BAD_INVOCATIONS)} bad invocations rejected, "
     f"{len(GOOD_CASES)} good inputs accepted"
 )
