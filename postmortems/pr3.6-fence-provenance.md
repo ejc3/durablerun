@@ -201,16 +201,40 @@ recorded from its output.
 | `FENCED_TABLES` as the CAS target type | **1** | none found. A compare-and-set against a table with nowhere to record provenance does not typecheck |
 | `lint-selftest` inventory | 2 | a checker whose filename contains neither "lint" nor "ledger" is not enumerated |
 | the mutation probe | 3 | a guard with no mutation written for it; the probe reports a stale pattern but cannot invent a new one |
+| the generated selection | **1** for the fence, nothing above it | `key: 'run_id'` against `column: 'task_id'` — built and run: it compiles to `run_id IN (SELECT f.task_id FROM runs f …)`, fenced and generated and matching nothing, ever. The primitive proves the source rows were stamped and says nothing about whether the two sides are the same kind of identifier, so a mismatch is a statement that silently does nothing — the same class as finding 26 |
+| the generated wake surface | 2 | corrupting the delivered payload (`f.payload \|\| 'X'`, chosen to keep the bind count identical). The surface passes 2/2 while 175 tests elsewhere fail: it decides WHETHER a run is woken and never WHAT it is woken with, because its whole oracle is "did the wake statement write this row" |
+| the shipped query-plan pin | 2 | any semantically wrong statement whose access path is still indexed. It also explains exactly one write, asserted explicitly — a second write in the same batch would be unpinned rather than noticed |
+| the probe's restore guard | **1** for what it writes | an edit to a file the probe never mutates, or one that happens to reproduce the mutated text byte for byte |
+| the mutation probe's own mutations | 3 | a mutation that changes ARITY rather than behaviour. `s.step_name = runs.wake_step` -> `? IS NOT NULL` adds a bind the statement does not have, so the batch dies on the argument-count check and reports "caught" without the guard ever being exercised. One of the fourteen was this; it is now a tautology |
 
-Two mechanisms are genuinely rung 1. Four of the seven claimed at rung 1 or 2
+Three mechanisms are genuinely rung 1. Four of the seven claimed at rung 1 or 2
 against the recurring class are syntactic proxies, and all four have a
 demonstrated false negative.
 
+The last row is the uncomfortable one. The probe is the detector that produced
+both of our round-6 catches, and it had been certifying a guard it never
+reached — the mutation compiled to a statement with the wrong number of binds,
+so what failed was the compiler. A detector can be wrong in the direction that
+FLATTERS it, and the only reason this surfaced is that the same mutation went
+stale on an unrelated trailing paren. Nothing was looking for it.
+
 ## Fix-induced defects
 
-Six of the thirty-eight — findings 29, 30, 33, 36, 37, and the sweep's
+Eight of the forty-four — findings 29, 30, 33, 36, 37, 39, 40, and the sweep's
 misreported outcome — were introduced by the fixes for earlier findings in
 this same round.
+
+The two new ones sharpen the pattern rather than repeating it. Finding 39 was
+introduced by the rewrite that was itself the answer to this whole class: the
+generator removed the caller-authored WHERE from twenty-two statements and
+then reintroduced the same defect once, in its own string composition. Finding
+40 is more pointed still — it was introduced by the FIX FOR FINDING 29, which
+split the step match out of the driver subquery to keep the query plan
+indexed. That repair was correct about the plan, it was measured, and the
+measurement is why nobody asked what splitting one predicate into two does to
+the question of which row answers which half. A fix made under a performance
+constraint changed a correctness property, and the performance evidence was
+exactly what made it look finished.
 
 The sharpest is 37: the fix for a spurious wake (waking a run not parked on
 the event) created a lost wake (a run parked before `wake_step` existed can
@@ -439,16 +463,37 @@ Still true:
 
 - **emitEvent's `wake-runs` is not generated**, because it selects from
   `waits` — rows the batch never stamped — and uses the event fence as a gate.
-  It keeps the hand-written WHERE and the scanning that guards it. One
-  documented escape, not a silent one.
+  It keeps the hand-written WHERE and the scanning that guards it. It is now
+  genuinely the only one: the cleanup beside it used to select waits by event
+  name and is generated from the runs the emit woke. What guards it is no
+  longer scanning but a generated surface — every corruption of a wait row in
+  ones and pairs, crossed with every shape of park, against a row-at-a-time
+  statement of what a legitimate registration is — and eight of the
+  predicate's nine conditions fail it when deleted. The ninth is a pure access
+  path and fails the query-plan pin instead.
+- **A wait row still cannot prove it is CURRENT.** Everything above makes
+  misuse hard; none of it makes it impossible, because the predicate infers
+  currency from five fields agreeing. The structural answer is an explicit
+  active-wait identity, and it is deferred to PR3.8 with reasons rather than
+  silence: it is a migration plus a new field in six transitions, the
+  spec-first rule says a protocol change is TLC-verified before its SQL
+  exists, and this branch has already produced eight fix-induced defects.
 - **A fan-out has no upper bound.** `{ many: reason }` costs a sentence.
   The generated selection makes the bound derivable, so this is now a missing
   runtime assertion rather than a design gap.
 - **The automated machinery still enumerates states and faults, not SQL
-  shape.** The two new oracles are the first exceptions, and they cover one
-  class each. The detection ledger is the measurement that will say whether
-  that changed: 11% is the baseline, and if the next round's rate has not
-  moved, the mechanisms added here were not the ones that mattered.
+  shape.** The new oracles are the exceptions, and they cover one class each.
+  The detection ledger is the measurement: 11% was the baseline, round 6 came
+  in at 50% of six, and the overall figure is now 16%. Six findings is a small
+  sample and the honest claim is narrow — the detector that produced the
+  movement now exists, and it is not "review more carefully". It is: mutate
+  every mechanism the day it is written, because both of round 6's catches
+  were mechanisms that had a hole from birth.
+- **Nothing checks a mechanism's own mutations for arity.** The audit found
+  one mutation that could only ever be caught by the compiler, so it certified
+  a guard it never reached. It was found by accident. A probe that ran each
+  mutation and asserted the FAILING TEST NAMES differ from the compile-error
+  ones would close this; it is not written.
 
 The honest summary of the round is that the mechanism audit was worth more
 than any individual fix in it. It is the section that turned "we added
