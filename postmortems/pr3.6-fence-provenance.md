@@ -116,6 +116,7 @@ re-reading my own diff.
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | codex re-review (round 3) | 12 | no |
+| the re-review and the simplification review jointly (finding 26) | 1 | no |
 | gate/simplify review (round 2) | 7 | no |
 | provenance review (round 1) | 6 | no |
 | independent simplification review | 4 | no |
@@ -142,7 +143,7 @@ detector which produced it now exists and did not before.
 
 The zero on the last row is the headline. This project's automated machinery —
 236 fault-matrix cells, 32 fuzz shards, a TLC model of 111.8M states, an
-invariant library, eight linters — found **none** of the 38. Everything it
+invariant library, eight linters — found **none** of the 44. Everything it
 does catch, it caught before this round started. The two detectors that did
 work are a probe written in the middle of the round and a person reading a
 diff, and neither existed as a standing mechanism when the round began.
@@ -269,10 +270,10 @@ more dangerous than average code, not less.
     probe's restore guard, verified in both directions).
 - Fixes: the migration and eight-op retrofit; then activate, spawn,
   awaitEvent/emitEvent and claim in turn; then the ownership fix and the
-  checker rewrites. Gate after fix: `pnpm verify` green — 563 tests across 58
-  files, including 236 fault-matrix cells, 32 fuzz shards, the replay
-  equivalence harness and the multi-process chaos legs; all eight checkers
-  clean; the self-test rejects 34 bad inputs and accepts 4 good ones.
+  checker rewrites. Gate after the round-6 fixes: `pnpm verify` green — 620
+  tests across 64 files, including 236 fault-matrix cells, 32 fuzz shards, the
+  replay equivalence harness and the multi-process chaos legs; all nine
+  checkers clean; the self-test rejects 41 bad inputs and accepts 5 good ones.
 - Finders. The provenance round: *"Eight concrete correctness bugs remain. ...
   The full clock sweep found no remaining 'two NOWs that must agree' bug. No
   retained class finding exists in `claim`, `heartbeat`, `complete`,
@@ -390,9 +391,11 @@ Built in this PR:
 - **Separate random streams for ids and tokens** — so a test predicting a
   minted id does not break when unrelated code takes a token. (rung 3)
 - **`scripts/mutation-probe.py`** — deletes one guard at a time and requires
-  something to fail. Eleven guards, and it found three unmaintained. Not part
-  of the gate (it edits sources and runs the suite once per mutation); it is a
-  deliberate audit to run after adding a mechanism. A stale mutation pattern
+  something to fail. Fifteen guards; it found three unmaintained on its first
+  run and one mutation that was only ever caught by the compiler. Not part of
+  `pnpm verify` (it edits sources and runs the suite once per mutation), but
+  the pr-gate skill requires it, so "run it after adding a mechanism" is an
+  obligation rather than advice. A stale mutation pattern
   reports itself, so a guard that is rewritten cannot quietly stop being
   probed. (rung 3)
 - **Write query plans can be pinned** — the suite could only `EXPLAIN` reads,

@@ -110,6 +110,26 @@ if [[ "$DECLARED" -gt 0 ]]; then
     [[ "$ROWS" -gt 0 ]] || {
       echo "SEV rule: postmortem $f has an empty findings table" >&2; exit 1; }
     TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
+
+    # The detection ledger must account for every finding. It is the headline
+    # number of the whole document -- what fraction our own machinery caught --
+    # and it is a hand-kept tally beside a hand-kept table, so the two drift.
+    # They did: a round took the table from 38 rows to 44 and left the ledger
+    # summing to 43, with one finding attributed to no detector at all. An
+    # unattributed finding is exactly the one that flatters the rate.
+    LEDGER=$(awk '/^## Detection ledger/{f=1;next} /^## /{f=0} f' <<<"$CONTENT" \
+      | grep -E '^\|' | grep -vE '^\|[-: ]+\|' | tail -n +2 \
+      | sed -E 's/\*\*//g; s/^\|[^|]*\|[[:space:]]*([0-9 +]+)[[:space:]]*\|.*/\1/' \
+      | tr -d ' ' | paste -sd+ | sed 's/++*/+/g')
+    if [[ -n "$LEDGER" ]]; then
+      SUM=$((LEDGER))
+      if [[ "$SUM" -ne "$ROWS" ]]; then
+        echo "SEV rule: postmortem $f has $ROWS findings but its detection ledger" >&2
+        echo "  accounts for $SUM ($LEDGER). Every finding was found by something;" >&2
+        echo "  a row the ledger omits is one that counts for nobody." >&2
+        exit 1
+      fi
+    fi
   done <<<"$ADDED"
 
   if [[ -z "$PM_FILES" ]]; then
