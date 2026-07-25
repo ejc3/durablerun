@@ -254,3 +254,28 @@ describe('suspending a task past its cancellation deadline', () => {
     f.close()
   })
 })
+
+describe('fixture provenance seeds', () => {
+  it('does not let a no-work claim borrow an earlier claim fence', async () => {
+    const f = await fixture('same-seed')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [claimed] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    expect(claimed).toBeDefined()
+
+    await f.raw.batch('world-moved', [
+      {
+        sql: `UPDATE tasks SET last_attempt_run = 'world-moved' WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+
+    expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toEqual([])
+    const [task] = await f.raw.batch(
+      'probe',
+      [{ sql: `SELECT last_attempt_run FROM tasks WHERE task_id = ?`, args: [spawned.taskId] }],
+      'read',
+    )
+    expect(task?.rows[0]?.last_attempt_run).toBe('world-moved')
+    f.close()
+  })
+})
