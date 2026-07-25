@@ -357,6 +357,35 @@ describe('fence provenance', () => {
     f.close()
   })
 
+  it('spawn resolves to the idempotency winner when a task id ALSO collides', async () => {
+    // Both conflicts at once: the id spawn is about to mint already belongs to
+    // a live task X, and a different task Y is the real winner for the
+    // idempotency key. The insert loses on both, so the answer has to come
+    // from a read — and that read must prefer the key's winner. Reporting X
+    // instead hands the caller a task with a different name and parameters,
+    // and a later claim runs THAT work believing it was asked for.
+    //
+    // The ordering is also the reason this is not `ORDER BY (t.task_id = ?)
+    // DESC`, which is what it used to be: Postgres sorts NULLs first, so that
+    // shape is not deterministic across dialects.
+    const f = await fixture(['X', 'NEW-RUN'])
+    await insertTask(f.raw, { id: 'X', state: 'pending' }) // collides, no key
+    await insertTask(f.raw, { id: 'Y', state: 'pending', idempotencyKey: 'key' })
+    await insertRun(f.raw, { id: 'rY', taskId: 'Y', state: 'pending' })
+
+    const result = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'key' })
+
+    expect({ created: result.created, taskId: result.taskId, runId: result.runId }).toEqual({
+      created: false,
+      taskId: 'Y',
+      runId: 'rY',
+    })
+    // ...and nothing was attached to the task whose id merely collided.
+    const runsOfX = await query(f.raw, `SELECT run_id FROM runs WHERE task_id = 'X'`)
+    expect(runsOfX).toEqual([])
+    f.close()
+  })
+
   it('awaitEvent does not park on a wait row it did not register', async () => {
     // The wait insert does nothing on a conflicting (run, step) key, so a
     // pre-existing wait for the SAME run, step and event makes registration
