@@ -225,6 +225,23 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     expect(sealed?.sql).toContain('fence_stamp = ?')
     expect(sealed?.args).toEqual(['seed:finished', 'r', 'seed:win', 'r', 'seed:win'])
   })
+
+  it('reduces a many-row provenance source to one portable scalar', async () => {
+    const b = withCas()
+    b.derived('spread', {
+      target: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'win',
+      set: `state = 'pending'`,
+      rows: { many: 'one task per stamped run' },
+    })
+
+    const db = new FakeDb([1, 2])
+    await b.run(db)
+    expect(db.calls[0]?.statements[1]?.sql).toContain('SELECT MIN(f.fence_at_ms)')
+  })
 })
 
 describe('a follow-on must filter on a fence, positively, in the WHERE side', () => {
