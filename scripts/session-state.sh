@@ -25,8 +25,14 @@
 #
 # Run it before saying a round is finished.
 set -uo pipefail
-cd "$(dirname "$0")/.."
-ROOT=$(pwd -P)
+cd "$(dirname "$0")/.." || {
+  echo "session-state: cannot enter the repo root" >&2
+  exit 2
+}
+ROOT=$(pwd -P) || {
+  echo "session-state: cannot resolve the repo root" >&2
+  exit 2
+}
 SELF=$$
 found=0
 
@@ -51,12 +57,25 @@ is_furniture() {
   return 1
 }
 
-for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+[[ -d /proc && -r /proc ]] || {
+  echo "session-state: no readable /proc — cannot enumerate processes or report clean" >&2
+  exit 2
+}
+shopt -s nullglob
+proc_entries=(/proc/[0-9]*)
+[[ "${#proc_entries[@]}" -gt 0 ]] || {
+  echo "session-state: /proc has no numeric process entries — cannot report clean" >&2
+  exit 2
+}
+readable_proc=0
+for proc_entry in "${proc_entries[@]}"; do
+  pid=${proc_entry#/proc/}
   [[ "$pid" == "$SELF" ]] && continue
   # Braced so the REDIRECTION failure is suppressed too, not just tr's: a
   # process that exits between listing /proc and reading it is ordinary, and
   # a scanner that spews shell errors on it is one people learn to ignore.
   cmd=$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null ) || continue
+  readable_proc=$((readable_proc + 1))
   [[ -z "$cmd" ]] && continue
   is_furniture "$cmd" && continue
   if [[ "$cmd" == *"$ROOT"* || "$cmd" == *"claude-1000"*"scratchpad"* ]]; then
@@ -64,28 +83,51 @@ for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
     note "process   $pid  up $et  ${cmd:0:110}"
   fi
 done
+[[ "$readable_proc" -gt 0 ]] || {
+  echo "session-state: no process command line in /proc was readable — cannot report clean" >&2
+  exit 2
+}
 
 # A sleep whose parent is gone is orphaned and exits on its own; one with a
 # live parent is a loop somebody is still waiting on.
+if ! process_rows=$(ps -eo pid=,ppid=,comm= 2>&1); then
+  echo "session-state: ps rejected the sleep scan: $process_rows" >&2
+  exit 2
+fi
 while read -r pid ppid rest; do
   [[ -z "${pid:-}" ]] && continue
   [[ "$ppid" == "1" ]] && continue
   note "sleep     $pid (parent $ppid still alive — a wait loop is running)"
-done < <(ps -eo pid,ppid,comm --no-headers 2>/dev/null | awk '$3=="sleep"')
+done < <(awk '$3=="sleep"' <<<"$process_rows")
 
 # --- git state ------------------------------------------------------------
+if ! worktrees=$(git worktree list 2>&1); then
+  echo "session-state: git worktree list failed: $worktrees" >&2
+  exit 2
+fi
 while read -r line; do
+  [[ -n "$line" ]] || continue
   [[ "$line" == "$ROOT "* ]] && continue
   note "worktree  ${line}"
-done < <(git worktree list 2>/dev/null)
+done <<<"$worktrees"
 
+if ! stashes=$(git stash list 2>&1); then
+  echo "session-state: git stash list failed: $stashes" >&2
+  exit 2
+fi
 while read -r line; do
+  [[ -n "$line" ]] || continue
   note "stash     ${line}"
-done < <(git stash list 2>/dev/null)
+done <<<"$stashes"
 
+if ! status=$(git status --short 2>&1); then
+  echo "session-state: git status failed: $status" >&2
+  exit 2
+fi
 while read -r line; do
+  [[ -n "$line" ]] || continue
   note "file      ${line}"
-done < <(git status --short 2>/dev/null)
+done <<<"$status"
 
 if [[ "$found" -eq 0 ]]; then
   echo "session-state: clean — no repo processes, no wait loops, no extra worktrees,"
