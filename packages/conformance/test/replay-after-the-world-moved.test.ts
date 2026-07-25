@@ -367,6 +367,14 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
       },
     ])
 
+    // The state is already inconsistent -- that is what makes it a
+    // counterexample -- so the question is not whether violations exist but
+    // whether the emit CHANGES them. A wrong wake shows up here twice: it
+    // adds a waiting row under a pending run, and it deletes the rows that
+    // prove the state was bad. Comparing before to after catches both, and
+    // needs no list of which violations this fixture happens to create.
+    const before = await engineInvariantViolations(f.raw)
+
     await f.store.emitEvent(Q, 'go', '{"x":1}')
 
     const [after] = await query(f.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
@@ -374,10 +382,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     ])
     expect(after?.state).toBe('sleeping')
     expect(after?.event_payload).toBeNull()
-    // And the emit must not have left the database in a state its own
-    // invariants reject -- the failure mode here is not just a wrong wake, it
-    // is a wrong wake that erases the row proving it was wrong.
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    expect(await engineInvariantViolations(f.raw)).toEqual(before)
     f.close()
   })
 

@@ -1388,6 +1388,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // it uncorrelated leaves the waits index driving and makes the step match
     // a primary-key probe. Measured both ways.
     //
+    // Splitting it that way costs one rule, and it is load-bearing: THE
+    // EXISTS IS THE WHOLE DECISION AND THE IN IS ONLY AN ACCESS PATH, so
+    // every condition on the IN must also appear on the EXISTS. Otherwise
+    // the two are answered by DIFFERENT ROWS and the pair accepts what
+    // neither row would: a row in this queue at the wrong step satisfied the
+    // IN while a row in another queue at the right step satisfied the
+    // EXISTS, and the run woke on a registration that did not exist. The
+    // queue comparison below is what pays that rule; it is redundant with
+    // the IN for any single row, which is precisely the point.
+    //
     // A NULL wake_step matches ANY step of the event. Waits and events
     // predate the wake_step column and its migration backfills nothing, so a
     // run parked by the older code carries wake_event with no step — and
@@ -1412,6 +1422,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                         WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')
          AND EXISTS (SELECT 1 FROM waits s
                      WHERE s.run_id = runs.run_id AND s.event_name = ?
+                       AND s.queue = runs.queue
                        AND s.status = 'waiting'
                        AND (runs.wake_step IS NULL OR s.step_name = runs.wake_step)
                        AND s.timeout_at_ms IS runs.available_at_ms)
