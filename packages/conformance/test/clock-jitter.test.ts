@@ -16,9 +16,9 @@ import { engineInvariantViolations } from '../src/invariants.js'
  * batches — must change nothing at all.
  *
  * So this runs each scenario twice. Once normally. Once with the engine's
- * clock advanced by a different amount before every single statement, so no
- * two statements in a batch ever see the same instant. The resulting database
- * must be byte-identical apart from the recorded instants themselves.
+ * clock advanced by a different amount before every later statement, then
+ * restored before the next operation. The complete operation trace and every
+ * protocol table — including recorded instants — must be byte-identical.
  *
  * This is the shape of oracle that finds bugs nobody thought of: it needs no
  * expected value, only two runs that must agree. The previous defence against
@@ -30,11 +30,14 @@ const Q = 'q'
 const NOW = 1_000_000
 
 /**
- * Advances `fake_now_ms` by a fixed step before each statement of a batch, by
- * splitting the batch into single-statement batches with a clock bump
- * between. Atomicity is lost — which is exactly why this is a test-only
- * executor and why the assertion is on the FINAL state of scenarios that run
- * to completion, not on any intermediate.
+ * Advances `fake_now_ms` before each statement after the first, by splitting
+ * the batch into single-statement batches. The original value is restored in
+ * `finally`, so the next engine operation starts at the same logical instant
+ * as the control. Correct code is therefore exactly comparable, timestamps
+ * included; only an illegal later-statement clock read can observe the jitter.
+ *
+ * Atomicity is lost — which is exactly why this is a test-only executor and
+ * why the assertion is on completed scenario traces and final state.
  */
 class JitteringExecutor implements SqlExecutor {
   constructor(
@@ -50,19 +53,37 @@ class JitteringExecutor implements SqlExecutor {
     if (mode === 'read' || label.startsWith('admin:') || label.startsWith('migrate')) {
       return this.real.batch(label, statements, mode)
     }
+    const [clock] = await this.real.batch(
+      'jitter:clock',
+      [{ sql: `SELECT value FROM meta WHERE key = 'fake_now_ms'`, args: [] }],
+      'read',
+    )
+    const base = Number(clock?.rows[0]?.value)
+    if (!Number.isSafeInteger(base)) throw new Error(`jitter clock is not an integer: ${base}`)
+
     const out: SqlResult[] = []
-    for (const s of statements) {
-      const [r] = await this.real.batch(label, [s], 'write')
-      out.push(r ?? { rows: [], rowsAffected: 0 })
+    try {
+      for (const [index, statement] of statements.entries()) {
+        if (index > 0) {
+          await this.real.batch('admin:set-fake-now', [
+            {
+              sql: `UPDATE meta SET value = ? WHERE key = 'fake_now_ms'`,
+              args: [String(base + this.stepMs * index)],
+            },
+          ])
+        }
+        const [result] = await this.real.batch(label, [statement], 'write')
+        out.push(result ?? { rows: [], rowsAffected: 0 })
+      }
+      return out
+    } finally {
       await this.real.batch('admin:set-fake-now', [
         {
-          sql: `UPDATE meta SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)
-                WHERE key = 'fake_now_ms'`,
-          args: [this.stepMs],
+          sql: `UPDATE meta SET value = ? WHERE key = 'fake_now_ms'`,
+          args: [String(base)],
         },
       ])
     }
-    return out
   }
 }
 
@@ -91,13 +112,44 @@ const retryAvailabilityFromSecondClock: StatementMutator = (label, statements) =
   return mutated
 }
 
+const SNAPSHOT_TABLES = [
+  ['tasks', 'task_id'],
+  ['runs', 'run_id'],
+  ['checkpoints', 'task_id, checkpoint_name'],
+  ['events', 'queue, event_name'],
+  ['waits', 'run_id, step_name'],
+  ['drivers', 'queue, driver_id'],
+  ['meta', 'key'],
+] as const
+
+async function snapshot(raw: LibsqlExecutor) {
+  const results = await raw.batch(
+    'clock-jitter:snapshot',
+    SNAPSHOT_TABLES.map(([table, order]) => ({
+      sql: `SELECT * FROM ${table} ORDER BY ${order}`,
+      args: [],
+    })),
+    'read',
+  )
+  return Object.fromEntries(
+    SNAPSHOT_TABLES.map(([table], index) => [table, results[index]?.rows ?? []]),
+  )
+}
+
+const SCENARIOS = ['retry', 'events', 'suspend', 'cancel'] as const
+type Scenario = (typeof SCENARIOS)[number]
+
 /** One deterministic pass over the engine; `jitterMs` 0 means no jitter. */
 async function run(
   jitterMs: number,
-  scenario: string,
+  scenario: Scenario,
   mutate?: StatementMutator,
-): Promise<string[]> {
-  const { raw, admin } = await openTestDb({ nowMs: NOW })
+): Promise<{
+  trace: { operation: string; result: unknown }[]
+  snapshot: Awaited<ReturnType<typeof snapshot>>
+  violations: string[]
+}> {
+  const { raw } = await openTestDb({ nowMs: NOW })
   // SEPARATE counters. Sharing one made `token()` return the same string for
   // two consecutive batches whenever no id was minted between them — and the
   // whole provenance scheme is exactly as strong as seed uniqueness, so two
@@ -111,39 +163,63 @@ async function run(
     uuidv7: () => `id-${++ids}`,
     token: () => `tok-${++seeds}`,
   })
+  const trace: { operation: string; result: unknown }[] = []
+  const record = (operation: string, result: unknown = 'ok') => {
+    trace.push({ operation, result: result === undefined ? null : result })
+  }
 
   if (scenario === 'retry') {
     const s = await store.spawn(Q, 'job', '{}', { maxAttempts: 3 })
-    const [r] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('spawn', s)
+    const claimed = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('claim:w1', claimed)
+    const [r] = claimed
     if (r) {
-      await store.activate(Q, r.runId, r.claimToken, r.claimGen)
+      record('activate:w1', await store.activate(Q, r.runId, r.claimToken, r.claimGen))
       await store.fail(Q, r.runId, r.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+      record('fail')
     }
-    const [r2] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    const retried = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    record('claim:w2', retried)
+    const [r2] = retried
     if (r2) {
-      await store.activate(Q, r2.runId, r2.claimToken, r2.claimGen)
+      record('activate:w2', await store.activate(Q, r2.runId, r2.claimToken, r2.claimGen))
       await store.complete(Q, r2.runId, r2.claimToken, '{"ok":1}')
+      record('complete')
     }
-    void s
   } else if (scenario === 'events') {
     const s = await store.spawn(Q, 'job', '{}')
-    const [r] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('spawn', s)
+    const claimed = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('claim:w1', claimed)
+    const [r] = claimed
     if (r) {
-      await store.activate(Q, r.runId, r.claimToken, r.claimGen)
-      await store.awaitEvent(Q, s.taskId, r.runId, r.claimToken, '$await:go', 'go', 30)
+      record('activate:w1', await store.activate(Q, r.runId, r.claimToken, r.claimGen))
+      record(
+        'await',
+        await store.awaitEvent(Q, s.taskId, r.runId, r.claimToken, '$await:go', 'go', 30),
+      )
     }
     await store.emitEvent(Q, 'go', '{"v":1}')
-    const [r2] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    record('emit')
+    const woken = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    record('claim:w2', woken)
+    const [r2] = woken
     if (r2) {
-      await store.activate(Q, r2.runId, r2.claimToken, r2.claimGen)
+      record('activate:w2', await store.activate(Q, r2.runId, r2.claimToken, r2.claimGen))
       await store.complete(Q, r2.runId, r2.claimToken, '{"ok":1}')
+      record('complete')
     }
   } else if (scenario === 'suspend') {
     const s = await store.spawn(Q, 'job', '{}')
-    const [r] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('spawn', s)
+    const claimed = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('claim:w1', claimed)
+    const [r] = claimed
     if (r) {
-      await store.activate(Q, r.runId, r.claimToken, r.claimGen)
+      record('activate:w1', await store.activate(Q, r.runId, r.claimToken, r.claimGen))
       await store.setCheckpoint(Q, s.taskId, r.runId, r.claimToken, 'step', '{"a":1}', 60)
+      record('checkpoint')
       await store.suspendRun(
         Q,
         r.runId,
@@ -154,37 +230,50 @@ async function run(
           stateJson: '{}',
         },
       )
+      record('suspend')
     }
-    const [r2] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
-    if (r2) await store.activate(Q, r2.runId, r2.claimToken, r2.claimGen)
+    const resumed = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    record('claim:w2', resumed)
+    const [r2] = resumed
+    if (r2) {
+      record('activate:w2', await store.activate(Q, r2.runId, r2.claimToken, r2.claimGen))
+    }
   } else if (scenario === 'cancel') {
     const s = await store.spawn(Q, 'job', '{}')
-    const [r] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (r) await store.activate(Q, r.runId, r.claimToken, r.claimGen)
-    await store.cancelTask(Q, s.taskId)
+    record('spawn', s)
+    const claimed = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('claim:w1', claimed)
+    const [r] = claimed
+    if (r) {
+      record('activate:w1', await store.activate(Q, r.runId, r.claimToken, r.claimGen))
+    }
+    record('cancel', await store.cancelTask(Q, s.taskId))
   }
 
   const violations = await engineInvariantViolations(raw)
+  const finalState = await snapshot(raw)
   raw.close()
-  return violations
+  return { trace, snapshot: finalState, violations }
 }
 
-describe('moving the clock between statements breaks no invariant', () => {
+describe('moving the clock between statements changes neither progress nor state', () => {
   it('distinguishes a retry stranded by a second database-clock read', async () => {
     const control = await run(997, 'retry')
     const broken = await run(997, 'retry', retryAvailabilityFromSecondClock)
+    expect(control.violations).toEqual([])
+    expect(broken.violations).toEqual([])
     expect(broken).not.toEqual(control)
   })
 
-  for (const scenario of ['retry', 'events', 'suspend', 'cancel']) {
-    it(`${scenario}: clean under per-statement clock jitter`, async () => {
+  for (const scenario of SCENARIOS) {
+    it(`${scenario}: jitter and control are byte-equivalent`, async () => {
       // Deliberately large, uneven and prime, so no two statements of a batch
       // land on a shared boundary by luck.
-      expect(await run(997, scenario)).toEqual([])
-    })
-
-    it(`${scenario}: clean without jitter (the control)`, async () => {
-      expect(await run(0, scenario)).toEqual([])
+      const jittered = await run(997, scenario)
+      const control = await run(0, scenario)
+      expect(jittered.violations).toEqual([])
+      expect(control.violations).toEqual([])
+      expect(jittered).toEqual(control)
     })
   }
 })
