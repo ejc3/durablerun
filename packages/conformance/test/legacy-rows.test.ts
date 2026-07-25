@@ -1,4 +1,4 @@
-import { LibsqlSchedulerStore, MIGRATIONS } from '@durablerun/store-libsql'
+import { LibsqlExecutor, LibsqlSchedulerStore, MIGRATIONS } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
@@ -29,17 +29,57 @@ import { engineInvariantViolations } from '../src/invariants.js'
 const Q = 'q'
 const NOW = 1_000_000
 
+type Migration = { version: number; statements: readonly string[] }
+
+async function schemaColumns(db: LibsqlExecutor): Promise<Map<string, Set<string>>> {
+  const [result] = await db.batch(
+    'legacy-schema-surface',
+    [
+      {
+        sql: `SELECT m.name AS table_name, p.name AS column_name
+              FROM sqlite_schema AS m
+              JOIN pragma_table_info(m.name) AS p
+              WHERE m.type = 'table'
+                AND m.name NOT LIKE 'sqlite_%'
+              ORDER BY m.name, p.cid`,
+        args: [],
+      },
+    ],
+    'read',
+  )
+  const columns = new Map<string, Set<string>>()
+  for (const row of result?.rows ?? []) {
+    const table = String(row.table_name)
+    const column = String(row.column_name)
+    const tableColumns = columns.get(table) ?? new Set<string>()
+    tableColumns.add(column)
+    columns.set(table, tableColumns)
+  }
+  return columns
+}
+
 /** Every column added by a migration to a table an earlier one created. */
-function columnsAddedAfterTheirTable(
-  migrations = MIGRATIONS,
-): { table: string; column: string; version: number }[] {
+async function columnsAddedAfterTheirTable(
+  migrations: readonly Migration[] = MIGRATIONS,
+): Promise<{ table: string; column: string; version: number }[]> {
+  const db = LibsqlExecutor.open(':memory:')
   const out: { table: string; column: string; version: number }[] = []
-  for (const m of migrations) {
-    for (const s of m.statements) {
-      const match = /^ALTER TABLE (\w+) ADD COLUMN (\w+)/.exec(s.trim())
-      if (match?.[1] && match[2])
-        out.push({ table: match[1], column: match[2], version: m.version })
+  try {
+    for (const migration of migrations) {
+      const before = await schemaColumns(db)
+      await db.batch(
+        `legacy-schema-v${migration.version}`,
+        migration.statements.map((sql) => ({ sql, args: [] })),
+      )
+      const after = await schemaColumns(db)
+      for (const [table, oldColumns] of before) {
+        for (const column of after.get(table) ?? []) {
+          if (!oldColumns.has(column)) out.push({ table, column, version: migration.version })
+        }
+      }
     }
+  } finally {
+    db.close()
   }
   return out
 }
@@ -57,7 +97,7 @@ async function fixture() {
   }
 }
 
-const ADDED = columnsAddedAfterTheirTable()
+const ADDED = await columnsAddedAfterTheirTable()
 
 async function ambiguousLegacyWait(timeoutSeconds: number | null) {
   const f = await fixture()
@@ -93,9 +133,9 @@ async function ambiguousLegacyWait(timeoutSeconds: number | null) {
 }
 
 describe('rows written before a column existed', () => {
-  it('discovers added columns from SQL formatting it did not anticipate', () => {
+  it('discovers added columns from SQL formatting it did not anticipate', async () => {
     expect(
-      columnsAddedAfterTheirTable([
+      await columnsAddedAfterTheirTable([
         { version: 1, statements: [`CREATE TABLE runs (run_id TEXT)`] },
         { version: 2, statements: [`alter table runs\n  add column wake_kind TEXT`] },
       ]),
