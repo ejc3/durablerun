@@ -1,11 +1,19 @@
 import { type Client, createClient } from '@libsql/client'
 import {
+  SchemaMismatchError,
   type SqlBatchMode,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
   StoreUnavailableError,
 } from '@durablerun/core'
+
+/**
+ * SQLite's wording for "this build and this database disagree about the
+ * shape of the data". All three are deterministic: the same statement will
+ * fail the same way forever, so retrying is always wrong.
+ */
+const SCHEMA_FAULT = /no such (?:column|table)|has no column named|duplicate column name/i
 
 /**
  * SqlExecutor over @libsql/client. `batch(…, 'write')` is atomic — implicit
@@ -80,6 +88,18 @@ export class LibsqlExecutor implements SqlExecutor {
         mode,
       )
     } catch (error) {
+      // A schema mismatch is PERMANENT, so it gets its own type: consumers
+      // treat StoreUnavailableError as transient and recover through the
+      // lease, which for a missing column means retrying a deterministic
+      // failure until the run's infrastructure budget is gone. Splitting it
+      // out here covers every statement of every batch, including paths no
+      // startup check would run.
+      if (SCHEMA_FAULT.test(String(error))) {
+        throw new SchemaMismatchError(
+          `batch(${_label}) hit a schema this build does not expect — the database is probably not migrated: ${String(error)}`,
+          { cause: error },
+        )
+      }
       // Typed so consumers can classify INFRASTRUCTURE failure by type —
       // a store outage must never be mistaken for a user failure.
       throw new StoreUnavailableError(`batch(${_label}) failed: ${String(error)}`, {

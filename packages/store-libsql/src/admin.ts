@@ -1,5 +1,5 @@
-import type { SqlExecutor, StoreAdmin } from '@durablerun/core'
-import { MIGRATIONS, type Migration } from './schema.js'
+import { SchemaMismatchError, type SqlExecutor, type StoreAdmin } from '@durablerun/core'
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS, type Migration } from './schema.js'
 import { NOW_MS } from './time.js'
 
 export class LibsqlStoreAdmin implements StoreAdmin {
@@ -38,6 +38,21 @@ export class LibsqlStoreAdmin implements StoreAdmin {
         if ((await this.schemaVersion()) >= migration.version) continue
         throw error
       }
+    }
+    // The post-condition, asserted rather than assumed. Each version bump is
+    // an UPDATE guarded on the previous value, in the same batch as the DDL —
+    // exactly the "a losing statement still writes" shape rule 1 forbids in
+    // engine SQL, and it was unchecked here. When the guard matches nothing
+    // the DDL still commits, so the database ends up physically migrated
+    // while recording the old version; the next process then re-applies the
+    // DDL and dies on a duplicate column, on every restart, while the process
+    // that caused it reported success. Checking the end state covers that and
+    // every other cause without having to enumerate them.
+    const version = await this.schemaVersion()
+    if (version < CURRENT_SCHEMA_VERSION) {
+      throw new SchemaMismatchError(
+        `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
+      )
     }
   }
 

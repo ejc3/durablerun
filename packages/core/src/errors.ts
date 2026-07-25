@@ -46,6 +46,24 @@ export class StoreUnavailableError extends Error {
   override readonly name = 'StoreUnavailableError'
 }
 
+/**
+ * The database's schema is not the one this build expects — a missing table
+ * or column. DELIBERATELY NOT a StoreUnavailableError: it is permanent, and
+ * waiting does not repair it.
+ *
+ * That distinction is the whole point of the type. Consumers classify
+ * infrastructure trouble by type and respond by aborting the pass and
+ * recovering through the lease, which for a schema mismatch means retrying a
+ * deterministic failure until the run's infrastructure budget is gone — the
+ * task then dies reporting exhausted infrastructure and the real cause (an
+ * un-migrated database, most often mid-deploy) is recorded nowhere. Naming
+ * the fault separately makes that outcome unreachable rather than merely
+ * unlikely.
+ */
+export class SchemaMismatchError extends Error {
+  override readonly name = 'SchemaMismatchError'
+}
+
 /** Worker-thrown: permanent failure, skip retries (maps to Absurd FatalError). */
 export class FatalTaskError extends Error {
   override readonly name = 'FatalTaskError'
