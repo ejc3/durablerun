@@ -134,16 +134,41 @@ these three things; nothing else in the system does I/O, time, or randomness.
   type-only to a structural guarantee); and canonicalize-and-classify a
   handler result at the source so a non-serializable result is a permanent
   user failure, not a silent completion with NULL.
-- **PR3.6 batch-fence migration** (from postmortems/pr11-store-batch-classes.md):
-  route spawn/claim/activate/awaitEvent/emitEvent through FencedBatch
-  (extended for fan-out, discriminator, and idempotent-insert shapes) so
-  "one stamp, one NOW, follow-ons keyed on the winning write" is structural
-  and the batch-lint debt set empties; add a per-statement clock-jitter test
-  executor (so the two-NOWs class manifests instead of hiding under fake-now)
-  and a generated corrupt-pre-state ("poison") fault surface that drives every
-  write label against each invariant-forbidden pre-state and asserts no
-  amplification. scripts/batch-lint.py + scripts/clock-lint.py (in verify now)
-  hold the line until then.
+- **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
+  carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
+  stamps are per STATEMENT, and all thirteen store operations go through
+  FencedBatch; the batch-lint debt set is empty and deleted. Three review
+  rounds found twenty-five defects — see
+  postmortems/pr3.6-fence-provenance.md. It carries these deferrals:
+  - **A follow-on's target SET is still not proved to derive from stamped
+    rows.** The fence proves the batch stamped a row; `rows: 'one'` bounds
+    the single-target case, and emit's fan-outs are necessarily many-row with
+    no bound. The rung-1 answer is a typed target-expression API where the
+    primitive generates the join, which fights pluggability because join
+    shapes differ per dialect. Class B is now writable only by disconnecting
+    a fence you were forced to type — not impossible.
+  - **A data-level provenance audit**: assert that every inserted or changed
+    row carries a well-formed `<seed>:<statement>` stamp, over paths that
+    never touch the primitive. Measured too slow for the deep fuzz leg
+    (a full scan per batch); belongs in conformance and the fault matrix
+    first, sampled in the volume legs.
+  - **A per-statement clock-jitter test executor.** Now a DIFFERENTIAL proof
+    rather than a bug hunt: with the clock banned outside a compare-and-set,
+    jittering each statement's clock must produce zero behavioural change.
+  - **A generated corrupt-pre-state ("poison") fault surface** driving every
+    write label against each invariant-forbidden pre-state.
+  - **A simulation assertion that a batch seed is never issued twice.** The
+    whole scheme is exactly as strong as `IdSource.token()` uniqueness, and
+    the harness deliberately hands out colliding ids.
+  - **Postgres/MySQL work this design implies**: `FOR UPDATE SKIP LOCKED` for
+    `casMany` (a win rule is not a concurrency semantics), a `lock()`
+    statement kind for rule 2's lock prelude, and a normalization contract
+    stating matched-not-changed row-count semantics, since MySQL cannot
+    derive the winner from row counts alone.
+  - **The rolling-deploy deferral disarms the start deadline** —
+    pre-existing, identical on main, and modelled nowhere in
+    `specs/Scheduler.tla`. The spec-first rule applies: model it, TLC it,
+    then fix it.
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its

@@ -1,57 +1,230 @@
-# Postmortem: fence provenance — six batch statements that write without proof they won (PR #11 / PR3.6)
+# Postmortem: write provenance — twenty-five ways a batch statement acted without proof (PR3.6)
 
 The engine executes each store operation as one atomic batch of SQL
 statements. Later statements in a batch see the effects of earlier ones, and
 the design depends on that: a batch's first statement does the guarded
-compare-and-swap, and the rest are supposed to fire only when that swap won.
-The rule (DESIGN.md section 3.4, rule 1) is that a later statement must key on
-state *this batch just wrote*, never on state that could already have been
-there. A seventh adversarial review round found six places where a later
-statement keys on state that can pre-exist. Each one lets a stale, duplicated,
-id-colliding or externally corrupted caller push the database into a state the
-engine's own invariants forbid. Verdict of the round: do not merge.
+compare-and-set, and the rest are supposed to fire only when it won. The rule
+(DESIGN.md §3.4 rule 1) is that a later statement must key on state *this
+batch just wrote*, never on state that could already have been there.
+
+Three independent review rounds against this branch found twenty-five defects.
+Six were later statements firing on state that could pre-exist. Seven were in
+the checkers and gates this same PR had just built — three of which could not
+fail at all. Twelve more came from a re-review, including two the rewrite had
+introduced. The verdict of the first round was "do not merge"; the second
+round's was "snapshot `3ff14bf` is not correct".
+
+The common shape is one sentence: **the engine had nowhere to write down who
+made a write, so every operation borrowed a column that already meant
+something else** — `runs.claimed_by` (a worker's lease) and
+`tasks.failure_reason` (a user-visible string). A borrowed column can be
+written by something other than the batch reading it, so a statement keyed on
+one fires for a stale or duplicated caller. That is not a coding mistake to be
+avoided; it is the direct consequence of having no correct place to record the
+fact. The fix is migration v4: two columns, `fence_stamp` and `fence_at_ms`,
+on every table a compare-and-set targets.
 
 ## Severity
 
-<!-- filled in with the fix round -->
+Every one of the six provenance defects is silent. None throws, none logs, and
+each leaves the database in a state the engine's own invariants forbid while
+every subsequent read looks ordinary.
+
+Worst first: **a task reported permanently failed while a run for it is still
+queued and will execute.** The caller sees a failure that never happened; the
+work then runs anyway under a task nobody is watching. Next: **a task that was
+never started is never cancelled**, because a duplicate activation that was
+correctly refused still cleared the deadline the cancellation depended on —
+the one mechanism that bounds a stuck task, disarmed by a delivery the engine
+had already rejected. Then: **a workflow that should time out parks forever**,
+because an await inherited a stale wait row's absent deadline. Then **a caller
+polling a run id that does not exist**, forever, indistinguishable from a run
+that has not started. Then **corrupt state amplified into a healthy task**,
+which rule 6 forbids outright.
+
+Three of the seven gate defects are their own severity: a checker that cannot
+fail is worse than no checker, because it is believed. One of them — the
+attestation gate — **refused to attest the very branch that introduced it**,
+so the only ways forward were to mangle good documents or to bypass branch
+protection. A gate that can only be satisfied by defeating it teaches people
+to defeat it.
 
 ## Findings
 
+Rounds: **P** = provenance review, **G** = gate/simplify review, **R** =
+re-review after the rewrite.
+
 | # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
 |---|--------|--------|----------------------------------|------------------|-------------------------|
-| 1 | Replaying the claim-timeout sweep batch at the infra-retry cap terminalizes the task while the successor run the first pass created is still pending | A task is reported permanently failed while a run for it is still queued and will execute — work runs under a task nobody is watching | The generated fault matrix: it already injects a duplicate at exactly this batch label | The matrix varies the FAULT but not the PRE-STATE. Its single canonical workload never reaches 19 infra retries, so the cap boundary where the bug lives is never visited | Boundary-state dimension crossed with the existing label x fault grid (rung 2, generated) |
-| 2 | When a failing run's minted successor id collides with its own id, the stamped parent is mistaken for the successor | The task ends failed with no failure reason recorded, so the caller cannot see why | Seeded id collision is an established test seam here, and there is case law for a successor-collision bug in `fail` | The existing collision case pinned a different symptom. Nothing generalizes "a stamp identifies a BATCH, not a ROW" — so every discriminator that asks "does row X carry my stamp" is unguarded when this batch stamped more than one row | A stamped-row discriminator must also pin the row's distinguishing role, enforced by the batch primitive (rung 1) |
-| 3 | An activate carrying a stale generation correctly fails its compare-and-swap and returns null, but its task follow-on still matches and clears the task's armed cancellation deadline | A task that was never started never gets cancelled: its start deadline is silently disarmed and the sweep has nothing left to fire on | The batch primitive, which exists to make this shape unwritable | `activate` is one of five operations that hand-roll their batch instead of using the primitive, because the primitive cannot express an operation whose compare-and-swap must PRESERVE the row's existing owner token and so has nowhere to write a batch stamp | Route the operation through the primitive (rung 1) |
-| 4 | spawn reports the run id it minted even when it never inserted it | The caller polls a run id that does not exist and never will; the task looks stuck forever | The batch primitive | Same root cause: spawn hand-rolls its batch, because the tasks table has no column to write a batch stamp into, so the run insert cannot key on "our task insert won" | Route the operation through the primitive (rung 1) |
-| 5 | awaitEvent's wait registration silently does nothing when a wait already exists for the same run, step and event; the park then borrows that stale row and inherits ITS timeout | An old untimed wait plus a new 30-second await parks the run forever — a workflow that should time out never wakes | The batch primitive | Same root cause: awaitEvent hand-rolls its batch and hand-mints its own stamp, a verbatim reimplementation of the primitive's stamp, but the wait row itself carries no stamp so registration cannot be distinguished from a conflict | Route the operation through the primitive (rung 1) |
-| 6 | emitEvent reads task ids straight out of the waits table instead of from the runs it actually woke | A corrupt wait row naming an unrelated healthy task flips that task to pending while its own run keeps running — corrupt state amplified into a healthy task, which rule 6 forbids outright | The batch primitive | Same root cause: emitEvent hand-rolls its batch, because its follow-ons are a fan-out over every waiter and the primitive only knew how to key on a single stamped row | A fan-out shape whose targets must derive from the batch's own post-state (rung 1) |
+| 1 | P: replaying the claim-timeout sweep at the infra-retry cap terminalizes the task while the successor the first pass created is still pending | A task is reported permanently failed while a run for it is queued and will execute — work runs under a task nobody is watching | The generated fault matrix, which already injects a duplicate at exactly this batch label | The matrix varies the FAULT but not the PRE-STATE. Its canonical workload never reaches 19 infra retries, so the cap boundary where the bug lives is never visited | Boundary-state dimension crossed with the existing label x fault grid (rung 2, generated) |
+| 2 | P: when a failing run's minted successor id collides with its own, the stamped parent is mistaken for the successor | The task ends failed with no failure reason recorded, so the caller cannot see why | Seeded id collision is an established seam here, with case law for a successor collision in `fail` | The existing case pinned a different symptom. Nothing generalized "a stamp names a BATCH, not a ROW", so every discriminator asking "does row X carry my stamp" was unguarded whenever the batch stamped more than one row | Per-STATEMENT stamps, generated by the primitive (rung 1) |
+| 3 | P: an activate carrying a stale generation correctly fails its compare-and-set and returns null, but its task follow-on still matches and clears the task's armed cancellation deadline | A task that was never started is never cancelled: its start deadline is silently disarmed and the sweep has nothing left to fire on | The batch primitive, which exists to make this shape unwritable | `activate` hand-rolled its batch, because the primitive could not express an operation whose compare-and-set must PRESERVE the row's owner token and so had nowhere to write a stamp | A provenance column, so the stamp stops competing with the lease (rung 1) |
+| 4 | P: spawn reports the run id it minted even when it never inserted it | The caller polls a run id that does not exist and never will; the task looks stuck forever | The batch primitive | Same root cause: `tasks` had no column to write a stamp into, so the run insert could not key on "our task insert won" | Route through the primitive; `SpawnResult.runId` typed nullable (rung 1) |
+| 5 | P: awaitEvent's wait registration silently does nothing when a wait already exists for the same run, step and event; the park then borrows that stale row and inherits ITS timeout | An old untimed wait plus a new 30-second await parks the run forever — a workflow that should time out never wakes | The batch primitive | Same root cause: `waits` carried no stamp, so registration could not be distinguished from a conflict. The operation hand-minted its own stamp — a verbatim reimplementation of the primitive | Route through the primitive; the park keys on the wait THIS batch inserted (rung 1) |
+| 6 | P: emitEvent reads task ids from the waits table instead of from the runs it woke | A corrupt wait row naming an unrelated healthy task flips it to pending while its own run keeps running — corrupt state amplified, which rule 6 forbids | The batch primitive | Same root cause: its follow-ons fan out over every waiter, and the primitive only knew how to key on a single stamped row | Fan-out driven by the batch's own woken rows (rung 1) |
+| 7 | G: the attestation gate refused to attest its own branch — it demanded every added `postmortems/*.md` be a full postmortem, and the branch adds design notes | Merge blocked; the only ways forward were mangling good documents or bypassing branch protection | Nothing — the gate was one commit old | A gate is code, and this one had never been run against a realistic branch | Identify a postmortem the way the template defines one, by its heading (rung 2) |
+| 8 | G: the same gate named 2 of about 12 template placeholders | A verbatim copy of the template attests as a filled-in postmortem | Nothing | The placeholder list was hand-written beside the template instead of derived from it | Derive every requirement from TEMPLATE.md itself (rung 2) |
+| 9 | G: `batch-lint` read only quoted-literal labels | A multi-statement write with two raw clock reads passed batch-lint, the spec ledger and the label inventory simultaneously — and a real computed label had been shipping unseen | Nothing | The checker skipped silently what it could not parse | Total harvest: every call site must resolve or be declared (rung 2) |
+| 10 | G: `clock-lint` was case-sensitive while SQL is not | `UNIXEPOCH()` and `now()` both passed; `now()` is the canonical Postgres spelling | Nothing | Never run against the spellings it claims to cover | Case-insensitive, call-shaped, with self-test fixtures (rung 2) |
+| 11 | G: the successor insert re-fired on an exact replay | Threw a unique-constraint error; the driver awaits the sweep bare, so one duplicated item discarded an entire tick | The fault matrix's duplicate injection | It injected at a different label first, and the race resolved before the boundary was reached | Replay guard on the statement's own provenance (rung 1) |
+| 12 | G: `ctx.emitEvent`'s payload bypassed the user boundary | `JSON.stringify(obj.missing)` type-checks and returns undefined; the driver rejected the bind, the store wrapped it as an outage, and the handler body re-ran 20 times before the task died with no user-visible reason | The user-boundary lint | It covered names and durations. A serialized VALUE was a third kind of user input with no validator to bypass | `userJsonValue`, plus a structural undefined-bind check at the executor (rung 1) |
+| 13 | G: no lint in the repo had a test proving it can fail | Two checkers shipped broken in the PR that introduced them | Nothing | The bug in each was in what the pattern did NOT match, which reading source is worst at | `scripts/lint-selftest.py`: fixtures each checker must reject, plus ones it must accept (rung 2) |
+| 14 | R: a replay after its successor has been claimed no longer recognises the successor | Insert re-fires and dies on the unique (task_id, attempt) index, discarding a tick; where the insert is refused first, the terminal arm fails a task whose retry is running under a live worker | The duplicate-injection tests | They replay a batch back to back, so every row still looks as the batch left it. A stamp proves CURRENT provenance, and claiming a run re-stamps it | Successor identity keyed on ownership, which does not decay (rung 1); a test file for replays after the world moved on (rung 3) |
+| 15 | R: emitEvent wakes a run that is not parked on the event | A run asleep on a durable timer, plus a leftover wait row naming it, resumes up to its whole remaining sleep early — and the wait row that proved the mismatch is deleted in the same batch, so nothing afterwards looks wrong | Rule 6 coverage | Finding 6's fix corrected which TASK was woken and left which RUN untouched | Require `wake_event`/`wake_step` to match the wait (rung 1) |
+| 16 | R: `clock-lint` accepts any number of `${NOW_MS}` across separate statements | The class-A bug itself passes the checker built to prevent it: a run due at one instant and its wait expiring at another lets a claim deliver an early timeout while leaving the wait registered | `clock-lint` | It bans raw clock FUNCTIONS; the sanctioned expression used twice is the actual bug | Clock reads counted per statement in `batch-lint`, which parses batch shapes (rung 2) |
+| 17 | R: `review-attest.sh` accepts its own source as both review artifacts | A green `adversarial-review` status with no review at all | Nothing | Substring matching on marker strings the script itself contains | Reject any git-tracked file as an artifact; require the terminal marker as a whole line and no error at the end (rung 2) |
+| 18 | R: six template placeholder lines begin with a dash, so grep parsed them as options and exited 2 — read as "placeholder absent" | A postmortem left verbatim from the template passes on exactly those six lines | Finding 8's fix | It derived the placeholders correctly and then passed them to grep unsafely. A checker that fails OPEN is worse than none | Pass every pattern with an explicit -e (rung 2) |
+| 19 | R: a declared count of eight findings was satisfied by a postmortem documenting one | The SEV rule met in form and skipped in substance | Nothing | The check was "at least one row" | Sum rows across added postmortems; must cover the declared count (rung 2) |
+| 20 | R: spawn could create a run under the wrong pre-existing task when a task-id collision and an idempotency conflict coincided | The caller receives the wrong task; a later claim executes a different task's name and parameters | Nothing | The targeted `ON CONFLICT` covered only the idempotency index | Fixed by the rewrite: the insert guards on its own primary key, so a colliding id is an ordinary lost compare-and-set |
+| 21 | R: the successor discriminator returned true for a foreign run at a colliding id | The task is stranded — pending, with no live run of its own, while an unrelated run executes | Case law existed for the loud-failure direction | The discriminator checked id, stamp and state but never OWNERSHIP | Fixed by the rewrite: the ownership predicate distinguishes mine from foreign |
+| 22 | R: the retry cap tested `attempts + 1 < max_attempts` while the counter derived `attempt - infra_retries` | A counter drifted one ahead — reachable from the historical blind-increment bug, and inside the accounting band — makes the task fail permanently one attempt early | The accounting invariant | Its band legitimately admits both values; the two spellings disagree only off the healthy path | One definition of the user ordinal at both sites (rung 1) |
+| 23 | R: `UserName.parse` assumed a string | A non-string throws a plain TypeError, which the worker treats as an ordinary user failure and RETRIES — one deterministic bad call runs `maxAttempts` times, repeating whatever the handler did before it | The user-boundary lint | It governs which validator is called, not what the validator accepts | Type check inside the validator, classified as a permanent failure (rung 1) |
+| 24 | R: the blind-counter check matched only `x = x + <digit>` | `x = x + ?`, `x = t.x + 1`, `x = (x + 1)`, `x = 1 + x`, `x = x - 1` all double-count a failure on replay; the retry budget is spent twice. It also rejected a string literal merely containing the words | The checker itself | Written from one example | Every spelling, tested in both directions, against the write clause with literals blanked (rung 2) |
+| 25 | R: `requirePositiveInt` accepted `MAX_SAFE_INTEGER` | A successor written at an ordinal SQLite stores and JavaScript cannot represent; every later claim decoding it throws and the task sits pending with no worker able to take it | The numeric port contract (rule 7) | It bounded durations and epochs, not counts, and a count bounds a run ordinal | `MAX_COUNT` at the port (rung 1) |
 
 ## Evidence
 
-- Red tests: commit `c2f199e` — six tests, run and seen failing against
-  `9654002`. They live in
-  `packages/conformance/test/fence-provenance-regressions.test.ts`. Finding 1
-  is caught by the engine's own invariant library once a driver presents the
-  state to it: the failure message is
-  `terminal-task-with-live-run: T/successor-1`.
-- Fixes: <!-- filled in with the fix round -->
-- Finder: an independent adversarial review of the branch head, whose verdict
-  was: "Reviewed head `9e6eaff`. Eight concrete correctness bugs remain. ...
-  The full clock sweep found no remaining 'two `NOW`s that must agree' bug. No
+- Red tests, each run and seen failing before its fix:
+  - `c2f199e` — six provenance tests against `9654002`.
+  - `c1ce4f2` — the fault matrix's starting-state axis.
+  - `957628c` — two schema-version tests.
+  - the replay-after-the-world-moved tests (findings 14, 15), which failed
+    with `UNIQUE constraint failed: runs.task_id, runs.attempt` and with a
+    timer sleep woken about a thousand seconds early.
+  - the port and primitive tests for findings 23, 24 and 25.
+- Fixes: the migration and eight-op retrofit; then activate, spawn,
+  awaitEvent/emitEvent and claim in turn; then the ownership fix and the
+  checker rewrites. Gate after fix: `pnpm verify` green — 563 tests across 58
+  files, including 236 fault-matrix cells, 32 fuzz shards, the replay
+  equivalence harness and the multi-process chaos legs; all eight checkers
+  clean; the self-test rejects 34 bad inputs and accepts 4 good ones.
+- Finders. The provenance round: *"Eight concrete correctness bugs remain. ...
+  The full clock sweep found no remaining 'two NOWs that must agree' bug. No
   retained class finding exists in `claim`, `heartbeat`, `complete`,
   `reschedule`, `suspendRun`, `cancelTask`, or `setCheckpoint`. **Verdict: DO
-  NOT MERGE.**"
-- Two of the eight reported bugs were the blind counter bumps already fixed in
-  `9654002`, where the batch primitive's new guard rejected the shape outright.
-  One further reported bug did not reproduce: a losing spawn does not attach a
-  run to a pre-existing task, because the run insert selects the task by the
-  caller's own task id, which does not exist when the insert lost. That
-  assertion is kept as a guard inside the spawn test.
+  NOT MERGE.**"* The re-review: *"Review result: snapshot `3ff14bf` is not
+  correct. I found 7 runtime correctness defects and 5 enforcement defects
+  beyond the four regressions already recorded."*
+- Claims that did NOT reproduce were tested and dropped rather than encoded:
+  a losing spawn does not attach a run to a pre-existing task (the run insert
+  selects by the caller's own task id, which does not exist when the insert
+  lost) — kept as a guard inside the spawn test; and a symmetric max-attempt
+  replay in `fail`, probed empirically and found clean (`attempts=1`, no
+  invariant violations). One reported claim about the accounting formulas was
+  checked and confirmed correct: *"On valid accounting state, both formulas
+  are arithmetically correct ... The normal max-attempt and infra-cap edges
+  are not off by one."*
+- Two proposals were rejected as **measured unsound**, not on taste. An
+  always-on "a losing batch writes nothing" postcondition was run against
+  `reschedule` under duplicate injection: pass 1 `[cas=1, task-mirror=1]`,
+  pass 2 `[cas=0, task-mirror=1]` — a replayed batch carries the same stamps,
+  so its follow-on legitimately re-matches its own row, and the postcondition
+  would throw on every duplicate cell of the fault matrix. A proposed
+  spec-ledger cross-check would have failed the build on two correct entries.
 
 ## Root cause
 
-<!-- filled in with the fix round -->
+Every layer that should have caught these was aimed at the layer below it,
+and each defect lived in the gap.
+
+The batch primitive made "a follow-on must reference the stamp" structural,
+and five operations could not use it — not through neglect, but because the
+primitive had nowhere to put a stamp for an operation that must preserve the
+row's existing owner. Those five are exactly where findings 3, 4, 5 and 6
+live. The primitive's own check was `sql.includes(STAMP)`, which a statement
+that merely READ the stamp satisfied, and the primitive had no test of its own
+at all: every check in it was believed because the engine on top of it passed.
+That is the wrong direction of evidence — the engine passing shows the checks
+accept correct SQL and says nothing about whether they reject anything.
+
+The generated fault matrix varied the fault and the label but not the starting
+state, so boundaries — the infra cap, the relaunch cap, the attempt cap —
+were never visited. Its duplicate injection replays a batch back to back, so
+every row still looks exactly as the batch left it; findings 14 and 15 need
+the world to move on in between, which nothing generated.
+
+The checkers were written, reviewed, wired into the gate and believed without
+a single test proving any of them can fail. The bug in each was in what its
+pattern did NOT match, and absence is what reading source is worst at.
+
+Underneath all of it: the engine could not record who made a write, so the
+question "did my batch do this?" was answered with proxies. Every proxy is
+approximately right and wrong in a specific case, and this PR is a catalogue
+of those cases.
+
+One further lesson has its own shape. Finding 17's obvious fix was **exactly
+backwards**: requiring the `tokens used` marker near the END of a codex log
+would have rejected the completed round and attested the one killed by a
+content filter, because a finished round keeps printing its verdict afterwards
+while an aborted one stops right there. That was caught only by running the
+check against both real logs. A checker reasoned about is a checker untested.
 
 ## Mechanisms
 
-<!-- filled in with the fix round -->
+Built in this PR:
+
+- **Migration v4 and rule 8** — `fence_stamp`/`fence_at_ms` on every
+  compare-and-set target. The table list is the contract's (core's
+  `FENCED_TABLES`), and each dialect generates its own DDL from it, so a
+  compare-and-set against a table with nowhere to record provenance does not
+  compile. (rung 1)
+- **Per-statement stamps** — `<seed>:<statement name>`, so no row can answer
+  for another. The primitive GENERATES the fence value, making `fence('typo')`
+  and a fence on a not-yet-added statement construction errors. (rung 1)
+- **The clock ban outside a compare-and-set** — follow-ons derive instants
+  from `fence_at_ms`, so class A has no legal instance left to hide in. This
+  is satisfiable with zero exemptions only because `fence_at_ms` exists;
+  `suspend`'s marker would otherwise be a standing exception. (rung 1)
+- **Real construction checks** — a compare-and-set must WRITE provenance into
+  its declared table; a follow-on must FILTER on a fence, positively, in the
+  WHERE side; an upsert must re-stamp its conflict branch; a token inside a
+  string literal is refused. 40 unit tests, each pairing a shape that must be
+  refused with the nearest one that must still be accepted. (rung 1)
+- **Ownership predicates for successor identity** — a stamp proves current
+  provenance, not authorship, and any later transition overwrites it. (rung 1)
+- **A boundary-state axis on the fault matrix** — label x fault x starting
+  state, 236 cells. (rung 2, generated)
+- **A replay-after-the-world-moved test file** — replays with real operations
+  in between, the interleaving the immediate-duplicate injection cannot
+  produce. (rung 3)
+- **`batch-lint` checks shapes, not labels** — statement counts, read mode,
+  and clock reads per statement, recursing into nested directories. A label is
+  a claim about shape, and the claim is now checked. (rung 2)
+- **`lint-selftest` takes an inventory** — every checker in `scripts/` must
+  have at least one input it must reject. Adding that requirement immediately
+  found four checkers with none. (rung 2)
+- **Schema faults are permanent, not transient** — a missing column raises its
+  own error type rather than being retried until the infrastructure budget is
+  gone; `migrate()` asserts its own post-condition. (rung 1)
+- **Separate random streams for ids and tokens** — so a test predicting a
+  minted id does not break when unrelated code takes a token. (rung 3)
+
+Deferred (recorded in BUILD.md):
+
+- **The fence proves a batch stamped a row; it does not prove a follow-on's
+  target SET derives from stamped rows.** `rows: 'one'` bounds the
+  single-target case; emit's fan-outs are necessarily many-row and have no
+  bound. The rung-1 answer is a typed target-expression API where the
+  primitive generates the join, which fights pluggability because join shapes
+  differ per dialect. Class B moves from *writable by default* to *writable
+  only by disconnecting a fence you were forced to type*. Reading this as
+  "class B is now impossible" is reading it wrong.
+- **A data-level provenance audit** — that every changed row carries a
+  well-formed stamp, checkable over paths that never touch the primitive.
+  Measured too slow for the deep fuzz leg; belongs in conformance and the
+  fault matrix first.
+- **Postgres double-claim** — `casMany` guarantees a win rule, not a
+  concurrency semantics; store-pg needs `FOR UPDATE SKIP LOCKED` and a
+  conformance scenario before it is done.
+- **Rule 2's Postgres/MySQL lock prelude** — the primitive has no statement
+  kind for acquiring a lock, and every non-tail statement must carry a fence.
+  Needed only when store-pg lands.
+- **MySQL cannot derive the winner from row counts alone** — no targeted
+  `ON CONFLICT`; the normalization contract must state matched-not-changed
+  semantics.
+- **The scheme is exactly as strong as `IdSource.token()` uniqueness**, and
+  the harness deliberately hands out colliding ids. A simulation assertion
+  that a seed is never issued twice is still missing.
+- **The rolling-deploy deferral disarms the start deadline** — pre-existing,
+  identical on main, and modelled nowhere in `specs/Scheduler.tla`. The
+  spec-first rule applies: model it before fixing it.
