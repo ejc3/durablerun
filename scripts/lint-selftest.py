@@ -376,6 +376,23 @@ export class S {
             """
 export class S {
   async probe(q: string) {
+    await this.db.batch('heartbeat', [
+      { sql: `UPDATE runs SET note = ']})' WHERE id = ?`, args: [q] },
+      { sql: `UPDATE tasks SET state = 'running'`, args: [] },
+    ])
+  }
+}
+"""
+        ),
+        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "a bracket inside SQL must not truncate the batch shape",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
+  async probe(q: string) {
     await this.db.batch('sweep:scan', [{ sql: `UPDATE runs SET a = 1`, args: [] }])
   }
 }
@@ -443,6 +460,18 @@ export class S {
         store("const SQL = `SELECT unixepoch('subsec')`\n", name="nested/deep/probe.ts"),
         "raw wall-clock function in store SQL",
         "a nested file must not be invisible to the clock checker",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT 1\n  * NOW()`\n"),
+        "raw wall-clock function in store SQL",
+        "a SQL multiplication line is not a block-comment continuation",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT NOW()`\n", name="generated/time.ts"),
+        "raw wall-clock function in store SQL",
+        "only the package's exact top-level time.ts is exempt",
     ),
     (
         "fragment-lint.py",
@@ -893,6 +922,26 @@ GIT_BAD_CASES = [
 
 BAD_INVOCATIONS = [
     (
+        "batch-lint.py",
+        store(
+            "await this.db.batch('brand-new-write', "
+            "[{ sql: `UPDATE tasks SET a = 1`, args: [] }])\n"
+        ),
+        ("--not-a-root",),
+        "unknown option '--not-a-root'",
+        "a dash-prefixed argument must not turn into an empty root",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            "await this.db.batch('brand-new-write', "
+            "[{ sql: `UPDATE tasks SET a = 1`, args: [] }])\n"
+        ),
+        ("{root}/missing",),
+        "root does not exist",
+        "a nonexistent root must not grade an empty source set",
+    ),
+    (
         "gate-lint.py",
         base_runner_fixture(reject_from="python"),
         ("--run-base", "{root}/head", "{root}/base"),
@@ -939,6 +988,21 @@ GOOD_CASES = [
         "clock-lint.py",
         store("const SQL = `UPDATE runs SET x = 1 WHERE id = 'expire-lease-now'`\n"),
         "an identifier ending in 'now' is not a clock call",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `/*\n  NOW()\n*/\nSELECT 1`\n"),
+        "a database clock name inside a multiline block comment",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT 1 -- NOW()`\n"),
+        "a database clock name inside a SQL line comment",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT 'NOW()' AS label`\n"),
+        "a database clock name inside a SQL string literal",
     ),
 ]
 
