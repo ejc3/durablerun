@@ -94,29 +94,37 @@ MUTATIONS = [
         "a disjunctive correlation lets unstamped rows into a generated selection",
     ),
     (
-        "generated-update-provenance",
+        "generated-update-provenance-assignment",
         "packages/core/src/fenced-batch.ts",
         "    const provenance = `,\\n         fence_stamp = ${STAMP},\n"
         "         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f\n"
-        "                        WHERE ${src}f.fence_stamp = ${fence})`\n"
-        "    return this.add({\n"
-        "      name,\n"
-        "      kind: 'followOn',\n"
-        "      target: spec.target,",
+        "                        WHERE ${src}f.fence_stamp = ${fence})`",
         "    const provenance = `,\\n         fence_stamp = fence_stamp,\n"
         "         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f\n"
-        "                        WHERE ${src}f.fence_stamp = ${fence})`\n"
-        "    return this.add({\n"
-        "      name,\n"
-        "      kind: 'followOn',\n"
-        "      target: null,",
+        "                        WHERE ${src}f.fence_stamp = ${fence})`",
         "a generated UPDATE can leave stale provenance on every row it writes",
+    ),
+    (
+        "generated-update-fence-source",
+        "packages/core/src/fenced-batch.ts",
+        "      target: spec.target,\n"
+        "      sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}",
+        "      target: null,\n"
+        "      sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}",
+        "a generated UPDATE is no longer available as a fence source",
     ),
     (
         "seal-intermediate-fence",
         "packages/core/src/fenced-batch.ts",
-        "    return this.derived(name, {\n      ...spec,",
-        "    if (name) return this\n    return this.derived(name, {\n      ...spec,",
+        "    if (source.fence.sealedBy !== null) {",
+        "    if (false && source.fence.sealedBy !== null) {",
+        "a consumer can depend on an intermediate fence after it was sealed",
+    ),
+    (
+        "seal-lifecycle-transition",
+        "packages/core/src/fenced-batch.ts",
+        "    source.sealedBy = name\n    return this",
+        "    void source // MUTATION\n    return this",
         "an exact replay can reuse an intermediate fence left by its first execution",
     ),
     (
