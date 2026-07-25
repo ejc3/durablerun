@@ -2,10 +2,10 @@ import type { SqlExecutor } from '@durablerun/core'
 import { type Client, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  CURRENT_SCHEMA_VERSION,
   LibsqlExecutor,
   LibsqlSchedulerStore,
   LibsqlStoreAdmin,
-  MIGRATIONS,
   NEXT_WAKE_SQL,
   SWEEP_SCAN_CANCELS_SQL,
   SWEEP_SCAN_EXPIRED_SQL,
@@ -47,8 +47,7 @@ beforeEach(async () => {
   db = LibsqlExecutor.open(':memory:')
   await new LibsqlStoreAdmin(db).migrate()
   raw = createClient({ url: ':memory:' })
-  await raw.execute(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
-  for (const m of MIGRATIONS) for (const s of m.statements) await raw.execute(s)
+  await new LibsqlStoreAdmin(new LibsqlExecutor(raw)).migrate()
 })
 
 afterEach(() => {
@@ -62,7 +61,7 @@ it('builds the write-plan schema through the production migration contract', asy
   )
   expect(version.rows.map((row) => String(row.value))).toEqual([
     '1',
-    String(MIGRATIONS.at(-1)?.version),
+    String(CURRENT_SCHEMA_VERSION),
   ])
 })
 
