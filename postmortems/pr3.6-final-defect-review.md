@@ -113,6 +113,7 @@ shown instead, followed by the adjacent property that remains outside it.
 | `successorOwned(id, task, attempt)` plus unique `(task_id, attempt)` | 1 for historical-attempt identity | Replacing `s.attempt = ${attempt}` with the arity-preserving tautology `${attempt} IS NOT NULL` made both historical-collision cases fail with “promise resolved 'undefined' instead of rejecting” and “promise resolved '[]' instead of rejecting.” No passing counterexample exists inside the stated identity property: the schema also rejects two runs of one task at the intended attempt. A caller supplying the wrong intended attempt remains outside the primitive. |
 | `registeredWaitStep(run)` before wait consumption, plus the legacy nullable-column surface | 1 for a surviving registration; 2 overall | The temporary case `UPDATE runs SET wake_step = NULL; DELETE FROM waits; advance 30000; claim` passed with `wake === undefined` (`1 passed, 28 skipped`). Once both durable witnesses are already gone, no decoder can recover the historical step. The repaired claim path prevents itself from creating that shape; it cannot repair a database that arrived in it. |
 | Mandatory stamps on generated `derived` updates | 1 inside the typed generator | Removing generated provenance makes the mutation suite red, and a caller can no longer construct a generated update without the required stamp policy. The executable bypass `f.raw.batch('raw-bypass', [{ sql: "UPDATE tasks SET state = 'cancelled' ..." }])` still reported `{"rowsAffected":1,"state":"cancelled","fenceStamp":null,"fenceAtMs":null}`. Direct `SqlExecutor` SQL does not cross this type boundary; the store's batch checker is the syntactic control for that adjacent path. |
+| Raw `followOn()` reach screens and their paired attack | 2, syntactic | The new deletion mutation originally survived, then the paired test made it fail when a top-level OR bypassed the fence while still accepting an OR nested inside a fenced conjunct. The temporary counterexample `WHERE CASE WHEN run_id = ? THEN 1 ELSE fence_stamp = $FENCE:win$ END` still compiled (`1 passed, 47 skipped`): the equality is present and positive but does not dominate the write. Generated `derived()` selection, not this scanner, is the structural closure. |
 | `seal()` after the last fence consumer | 2 | A temporary `IdSource` returning `same-token` compiled two same-millisecond emits byte-for-byte identically. After restoring the wait between them, the second event CAS wrote zero while its four follow-ons each wrote one: `{"secondRowsAffected":[0,1,1,1,1],"runStamp":"same-token:wake-finished","runAtMs":1000000,"waitsAfter":0,"invariantViolations":[]}`. The mechanism orders one compiled batch; it cannot compensate for a source that violates token uniqueness. |
 | Contract-owned `PRESERVED_FENCE_INSTANTS` and `fenceSetAt('events')` | 1 for the permitted stored instant | Construction with `fence_at_ms = events.payload`, with ordinary `FENCE_SET`, with arithmetic after the preserved assignment, or with a duplicate `fence_at_ms` is rejected with “must preserve events.emitted_at_ms”; `fenceSetAt('runs')` is rejected with “no contract-preserved fence instant.” There is no arbitrary-column spelling inside this API. A new legitimate immutable fact requires an explicit contract enumeration change. |
 | Complete clock-jitter trace and protocol-table differential | 2 | A temporary jitter-only `INSERT INTO clock_audit` passed all five clock-jitter tests because `clock_audit` was outside `SNAPSHOT_TABLES`. The committed oracle covers its enumerated engine scenarios and protocol tables, not arbitrary future tables or external side effects. |
@@ -122,16 +123,16 @@ shown instead, followed by the adjacent property that remains outside it.
 | One `testIdSource(namespace)` returned by `openTestDb` and shared by routine stores | 1 inside that source instance | The temporary code `const a = testIdSource('same'); const b = testIdSource('same'); expect(a.token()).not.toBe(b.token())` failed with “expected 'same-token-000001' not to be 'same-token-000001'.” The fixture owns one source per database; the helper is deliberately not a global namespace registry. |
 | Source-branch review-provenance disclosure lint | 2 for repository truthfulness | Deleting the disclosure, its lint, and both rule configurations on the same source branch removes the entire local control. No repository-local probe can make that edit fail independently of code the edit can also remove; the required externally administered policy in `BUILD.md` is the missing rung-1 boundary. |
 
-The temporary legacy, clock, wake, raw/seal, and two-source cases were inserted
-one at a time and run with focused Vitest commands. Their exact results were
-respectively `1 passed, 28 skipped`, `5 passed`, `4 passed`, `2 passed`, and
-the quoted one-test failure above. The arity-preserving successor mutation
-made exactly its two focused cases fail with the quoted promise results.
-After every probe was removed, the committed construction, source, and
-delayed-replay suites ran together as 67 passing tests. The active
-configuration probes ran through `python3 scripts/lint-selftest.py`, which
-reported `64 bad inputs and 3 bad invocations rejected, 6 good inputs
-accepted`.
+The temporary legacy, clock, wake, raw/seal, CASE-reach, and two-source cases
+were inserted one at a time and run with focused Vitest commands. Their exact
+results were respectively `1 passed, 28 skipped`, `5 passed`, `4 passed`,
+`2 passed`, `1 passed, 47 skipped`, and the quoted one-test failure above.
+The arity-preserving successor mutation made exactly its two focused cases
+fail with the quoted promise results. After every probe was removed, the
+committed construction, source, and delayed-replay suites ran together as 67
+passing tests. The active configuration probes ran through
+`python3 scripts/lint-selftest.py`, which reported `64 bad inputs and 3 bad
+invocations rejected, 6 good inputs accepted`.
 
 The review and gate parsers are deliberately described as rung 2. They check
 syntax whose subject is syntax: whether an active local rule or reachable
@@ -154,7 +155,16 @@ preserved-instant seam was replaced with the typed, dialect-neutral
 enumeration and exact assignment-count rejections; and the successor mutation
 was made arity-preserving before it was rerun. Documentation drift found in
 that same branch-diff audit was corrected, but it is not counted as a fourth
-runtime or mechanism defect.
+fix-induced defect.
+
+The same audit found a pre-existing mechanism overclaim rather than a defect
+introduced by these repairs: `hasTopLevelOr` had neither the rejection test nor
+the mutation its review rule said maintained it. Red commit `ca2ae3b` made the
+new deletion mutation report “top-level-or-reach: SURVIVED — nothing failed.”
+Green commit `1cf8259` added the paired top-level rejection and nested
+alternation acceptance; the same mutation was then caught. This is recorded
+separately from both the original nine-finding ledger and the three
+fix-induced defects.
 
 ## Evidence
 
@@ -185,6 +195,9 @@ runtime or mechanism defect.
 - Finding 9: red `c490536` produced two
   “review-bot-lint.py ACCEPTED a bad input” failures for false base-branch
   provenance claims; green `37f7cb9`.
+- The remediation audit's additional mechanism gap: red `ca2ae3b` survived
+  with “top-level-or-reach: SURVIVED — nothing failed”; green `1cf8259`
+  made the mutation report “every mutation was caught.”
 - The finding artifact's verdict was: “I do not think the branch is correct. I
   found three engine defects and several verification defects.”
 - Finding 4 did not reproduce on the reviewed worktree. Base commit `4196b6e`
@@ -194,7 +207,14 @@ runtime or mechanism defect.
   pass. No compensating change was made.
 - Focused regression suites, both package typechecks, all checker self-tests,
   and the six-check actual-base exercise were green after their respective
-  fixes. Final full-gate evidence is reported with the remediation commit.
+  fixes. The final exact `pnpm verify` made lint, all ten checkers, formatting,
+  and typecheck green; its test leg passed 621 tests and failed only the 11
+  cases in four files that this sandbox forbids from spawning Python, binding
+  localhost, or starting child hosts (`EPERM`). Excluding exactly those four
+  environment-dependent files made all 621 runnable tests green. The exact
+  `pnpm verify:fuzz` wrapper could not connect to the sandbox's systemd bus;
+  its underlying `FUZZ_SEEDS=2000 FUZZ_STEPS=100` conformance run, excluding
+  only the same forbidden label-inventory spawn, passed all 417 tests.
 
 ## Root cause
 
@@ -229,6 +249,9 @@ Built in this PR:
 - A typed `derived` update that cannot omit its stamp, generated wake-task
   provenance, and explicit fence consumption with `seal` (rung 1 inside a
   constructed `FencedBatch`), attacked by delayed compiled replay (rung 2).
+- A deletion mutation and paired reject/nearest-accept case maintain the
+  common top-level-OR reach guard; its CASE-expression false negative is
+  documented rather than presented as semantic dominance (rung 2).
 - A dialect-neutral `PRESERVED_FENCE_INSTANTS` contract whose only member maps
   events to immutable `emitted_at_ms`, exposed through typed
   `fenceSetAt('events')` with exact assignment validation (rung 1), attacked
@@ -265,8 +288,10 @@ uniqueness. The clock differential can miss writes to an unlisted future table
 and external side effects outside its captured trace. The wake surface can
 miss a corrupted payload whose wake decision remains correct. Both Python
 configuration checkers can miss semantics their restricted parsers do not
-model, and neither can prove a hosted service executed anything. Finally,
-until the BUILD follow-up is administered, a pull request can remove every
+model, and neither can prove a hosted service executed anything. Raw
+`followOn()` SQL can make a textual positive fence conditional through a CASE
+expression even though the generated `derived()` path cannot. Finally, until
+the BUILD follow-up is administered, a pull request can remove every
 hosted-review disclosure and rule that this round added.
 
 Those are bounded residuals, not claims of completeness. They identify where
