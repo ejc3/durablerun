@@ -942,6 +942,27 @@ ENV_BAD_CASES = [
 
 BAD_INVOCATIONS = [
     (
+        "review-attest.sh",
+        {
+            "postmortem.md": """# Postmortem: fixture
+
+## Findings
+
+| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
+|---|--------|--------|----------------------------------|------------------|-------------------------|
+| 1 | one | impact | layer | reason | mechanism |
+| 2 | two | impact | layer | reason | mechanism |
+
+## Detection ledger
+
+- External review: 2
+""",
+        },
+        ("--check-postmortem", "{root}/postmortem.md"),
+        "no parsable detection ledger rows",
+        "a prose ledger must not let a postmortem's finding count pass unaccounted",
+    ),
+    (
         "batch-lint.py",
         store(
             "await this.db.batch('brand-new-write', "

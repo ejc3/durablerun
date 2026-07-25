@@ -33,7 +33,51 @@
 # "forgot under momentum" (which happened twice) to "deliberately attested
 # falsely", a different and auditable class.
 set -euo pipefail
-usage() { echo "usage: review-attest.sh <pr-number> <codex-log> <workflow-journal|-> " >&2; exit 2; }
+usage() {
+  echo "usage: review-attest.sh <pr-number> <codex-log> <workflow-journal|->" >&2
+  echo "       review-attest.sh --check-postmortem <path>" >&2
+  exit 2
+}
+
+check_postmortem_tables() {
+  local path="$1" content="$2" rows ledger sum
+  rows=$(grep -cE -e '^\| [0-9]' <<<"$content" || true)
+  [[ "$rows" -gt 0 ]] || {
+    echo "SEV rule: postmortem $path has an empty findings table" >&2
+    return 1
+  }
+
+  # The detection ledger must account for every finding. It is the headline
+  # number of the whole document -- what fraction our own machinery caught --
+  # and it is a hand-kept tally beside a hand-kept table, so the two drift.
+  # They did: a round took the table from 38 rows to 44 and left the ledger
+  # summing to 43, with one finding attributed to no detector at all. An
+  # unattributed finding is exactly the one that flatters the rate.
+  ledger=$(awk '/^## Detection ledger/{f=1;next} /^## /{f=0} f' <<<"$content" \
+    | grep -E '^\|' | grep -vE '^\|[-: ]+\|' | tail -n +2 \
+    | sed -E 's/\*\*//g; s/^\|[^|]*\|[[:space:]]*([0-9 +]+)[[:space:]]*\|.*/\1/' \
+    | tr -d ' ' | paste -sd+ | sed 's/++*/+/g' || true)
+  if [[ -n "$ledger" ]]; then
+    sum=$((ledger))
+    if [[ "$sum" -ne "$rows" ]]; then
+      echo "SEV rule: postmortem $path has $rows findings but its detection ledger" >&2
+      echo "  accounts for $sum ($ledger). Every finding was found by something;" >&2
+      echo "  a row the ledger omits is one that counts for nobody." >&2
+      return 1
+    fi
+  fi
+  printf '%s\n' "$rows"
+}
+
+if [[ "${1:-}" == "--check-postmortem" ]]; then
+  [[ $# -eq 2 ]] || usage
+  [[ -f "$2" ]] || { echo "no postmortem: $2" >&2; exit 1; }
+  CONTENT=$(<"$2")
+  ROWS=$(check_postmortem_tables "$2" "$CONTENT")
+  echo "SEV rule satisfied: $ROWS findings accounted for in $2"
+  exit 0
+fi
+
 [[ $# -ge 2 ]] || usage
 PR="$1"; CODEX_LOG="$2"; JOURNAL="${3:--}"
 
@@ -106,30 +150,8 @@ if [[ "$DECLARED" -gt 0 ]]; then
     # An author's own deferral marker is an unfinished postmortem too.
     grep -qE -e '<!--[[:space:]]*(TODO|filled in)' <<<"$CONTENT" && {
       echo "SEV rule: postmortem $f still carries an unfilled-section marker" >&2; exit 1; }
-    ROWS=$(grep -cE -e '^\| [0-9]' <<<"$CONTENT" || true)
-    [[ "$ROWS" -gt 0 ]] || {
-      echo "SEV rule: postmortem $f has an empty findings table" >&2; exit 1; }
+    ROWS=$(check_postmortem_tables "$f" "$CONTENT")
     TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
-
-    # The detection ledger must account for every finding. It is the headline
-    # number of the whole document -- what fraction our own machinery caught --
-    # and it is a hand-kept tally beside a hand-kept table, so the two drift.
-    # They did: a round took the table from 38 rows to 44 and left the ledger
-    # summing to 43, with one finding attributed to no detector at all. An
-    # unattributed finding is exactly the one that flatters the rate.
-    LEDGER=$(awk '/^## Detection ledger/{f=1;next} /^## /{f=0} f' <<<"$CONTENT" \
-      | grep -E '^\|' | grep -vE '^\|[-: ]+\|' | tail -n +2 \
-      | sed -E 's/\*\*//g; s/^\|[^|]*\|[[:space:]]*([0-9 +]+)[[:space:]]*\|.*/\1/' \
-      | tr -d ' ' | paste -sd+ | sed 's/++*/+/g')
-    if [[ -n "$LEDGER" ]]; then
-      SUM=$((LEDGER))
-      if [[ "$SUM" -ne "$ROWS" ]]; then
-        echo "SEV rule: postmortem $f has $ROWS findings but its detection ledger" >&2
-        echo "  accounts for $SUM ($LEDGER). Every finding was found by something;" >&2
-        echo "  a row the ledger omits is one that counts for nobody." >&2
-        exit 1
-      fi
-    fi
   done <<<"$ADDED"
 
   if [[ -z "$PM_FILES" ]]; then
