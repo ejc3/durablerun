@@ -35,7 +35,10 @@ function withCas(b: FencedBatch = batch()): FencedBatch {
 
 class FakeDb implements SqlExecutor {
   calls: { label: string; statements: SqlStatement[]; mode: SqlBatchMode }[] = []
-  constructor(private readonly counts: number[] = []) {}
+  constructor(
+    private readonly counts: number[] = [],
+    private readonly resultLimit?: number,
+  ) {}
   batch(
     label: string,
     statements: readonly SqlStatement[],
@@ -43,7 +46,9 @@ class FakeDb implements SqlExecutor {
   ): Promise<SqlResult[]> {
     this.calls.push({ label, statements: [...statements], mode })
     return Promise.resolve(
-      statements.map((_, i) => ({ rows: [], rowsAffected: this.counts[i] ?? 0 })),
+      statements
+        .slice(0, this.resultLimit)
+        .map((_, i) => ({ rows: [], rowsAffected: this.counts[i] ?? 0 })),
     )
   }
 }
@@ -434,6 +439,22 @@ describe('bookkeeping checks', () => {
     ).toThrow(/blindly/)
   })
 
+  it('rejects a blind counter bump after a comment containing WHERE', () => {
+    const b = withCas()
+    expect(() =>
+      b.followOn(
+        'x',
+        'tasks',
+        `UPDATE tasks SET
+           -- the WHERE below is keyed on the fence
+           attempts = attempts + 1, fence_stamp = ${STAMP}, fence_at_ms = 1
+         WHERE task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
+        [],
+        'one',
+      ),
+    ).toThrow(/blindly/)
+  })
+
   it('catches the counter bump however it is spelled', () => {
     // The first version of this check only matched `x = x + <digit>`. Every
     // shape below is the same non-idempotent write and slipped past it; each
@@ -616,6 +637,12 @@ describe('run() reports the outcome', () => {
 
   it('reports no winner when the CAS matched nothing', async () => {
     expect(await withCas().run(new FakeDb([0]))).toMatchObject({ won: null, count: 0 })
+  })
+
+  it('rejects an executor result array shorter than the statement array', async () => {
+    await expect(withCas().run(new FakeDb([], 0))).rejects.toThrow(
+      /returned 0 results for 1 statement/,
+    )
   })
 
   it('throws when two mutually exclusive CASes both won', async () => {
