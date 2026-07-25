@@ -40,6 +40,13 @@ MUTATIONS = [
         "a follow-on may run with no fence at all",
     ),
     (
+        "top-level-or-reach",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isCas && s.open === undefined && hasTopLevelOr(sql)) {",
+        "    if (false && !isCas && s.open === undefined && hasTopLevelOr(sql)) {",
+        "a top-level OR lets a follow-on write rows that did not satisfy its fence",
+    ),
+    (
         "clock-ban-in-followon",
         "packages/core/src/fenced-batch.ts",
         "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
