@@ -386,6 +386,51 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     f.close()
   })
 
+  it('keeps the registration of a waiter it did not wake', async () => {
+    // The cleanup deletes every waiting row for the event, whether or not its
+    // run was woken. Those two sets are kept in step by nothing but the shape
+    // of the two WHERE clauses, and the delete's is the weaker one -- so every
+    // condition ever added to the wake predicate silently converts some run
+    // from "not woken" into "not woken, and its registration destroyed". The
+    // event row is immutable, so re-emitting returns the existing event and
+    // delivers nothing: an untimed await in that position strands forever.
+    //
+    // Every legitimate way a run stops waiting already reaps its rows --
+    // complete, fail, the sweeps and cancel all delete a run's waits -- so a
+    // row this emit declines to honour is either repairable or evidence of
+    // corruption, and it is worth exactly as much in either case. Deleting it
+    // is the one option that makes it worth nothing.
+    const f = await fixture()
+    const a = await f.store.spawn(Q, 'job', '{}')
+    const [ra] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!ra) throw new Error('expected a claim')
+    await f.store.activate(Q, ra.runId, ra.claimToken, ra.claimGen)
+    await f.store.awaitEvent(Q, a.taskId, ra.runId, ra.claimToken, '$await:go', 'go', null)
+
+    const b = await f.store.spawn(Q, 'job', '{}')
+    const [rb] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+    if (!rb) throw new Error('expected a claim')
+    await f.store.activate(Q, rb.runId, rb.claimToken, rb.claimGen)
+    await f.store.awaitEvent(Q, b.taskId, rb.runId, rb.claimToken, '$await:go', 'go', null)
+    // B's park no longer agrees with its registration, so this emit will not
+    // honour it. Its wait row is untouched and still describes a real await.
+    await f.raw.batch('t', [
+      { sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`, args: [NOW + 1000, rb.runId] },
+    ])
+
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
+
+    const woken = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [ra.runId])
+    expect(woken[0]?.state).toBe('pending')
+    // A was woken, so its registration is spent and must be gone.
+    expect(await query(f.raw, `SELECT 1 FROM waits WHERE run_id = ?`, [ra.runId])).toEqual([])
+    // B was not, so its registration is all that is left of the request.
+    expect(await query(f.raw, `SELECT step_name FROM waits WHERE run_id = ?`, [rb.runId])).toEqual([
+      { step_name: '$await:go' },
+    ])
+    f.close()
+  })
+
   it('still wakes a run parked before wake_step existed', async () => {
     // Waits and events predate the wake_step column; the migration that added
     // it backfills nothing. A run parked by the older code is sleeping with
