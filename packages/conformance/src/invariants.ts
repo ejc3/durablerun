@@ -53,6 +53,25 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
       sql: `SELECT task_id AS v FROM tasks WHERE attempts > max_attempts`,
     },
     {
+      // The accounting identity the engine's counters are DERIVED from, and
+      // therefore the thing that must not drift. A run's `attempt` is the
+      // ordinal that counts every successor; `attempts` counts the ones a
+      // user failure caused and `infra_retries` the ones infrastructure
+      // caused, so together they equal the top ordinal minus one while a
+      // successor is waiting, and exactly the top ordinal once a failure went
+      // terminal and consumed the last run without replacing it. Anything
+      // outside that band means a counter was written from something other
+      // than the run it belongs to — which is precisely how a blind
+      // increment, a double-applied batch, or a mismatched subquery shows up.
+      name: 'attempt-accounting-drift',
+      sql: `SELECT t.task_id AS v
+            FROM tasks t
+            JOIN (SELECT task_id, MAX(attempt) AS top FROM runs GROUP BY task_id) r
+              ON r.task_id = t.task_id
+            WHERE t.attempts + t.infra_retries > r.top
+               OR t.attempts + t.infra_retries < r.top - 1`,
+    },
+    {
       // Checkpoint referential integrity: a checkpoint's owner run must
       // belong to the checkpoint's task and queue (fence-scope class: args
       // bound into a fence narrower than the argument surface).
