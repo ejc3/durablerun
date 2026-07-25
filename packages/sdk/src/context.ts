@@ -250,7 +250,14 @@ export class ReplayContext implements TaskContext {
       this.run.runId,
       this.run.claimToken,
       key,
-      name,
+      // parsed.value, not `name` — emitEvent already sends the parsed form,
+      // and the two must be the same string or a wait registers under one
+      // spelling while the emit fires the other and never matches it. They
+      // are identical today because parse only validates; the moment it
+      // normalizes anything, the raw path becomes a silent lost wakeup. The
+      // validated value is the canonical one, so nothing downstream should
+      // read the raw one again.
+      parsed.value,
       opts?.timeoutSeconds ?? null,
     )
     if (outcome.emitted) {

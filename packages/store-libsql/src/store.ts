@@ -898,6 +898,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // ONE SQL shape for both dispositions (a label is a crash-injection
     // address; the CASE keeps 'reschedule' one shape). 'preserve' is the
     // §3.8.2 deferral path: an undispatchable claim consumes nothing.
+    //
+    // The task must be ELIGIBLE, not merely live — the same predicate
+    // suspendRun uses, which is what its comment always claimed ("reschedule's
+    // exact transition plus the marker") while the two guards had quietly
+    // diverged. A suspension makes the run schedulable again, and the claim
+    // path already refuses to launch a task whose cancellation deadline is
+    // due; letting the run re-park itself would put it straight back into the
+    // queue that path is keeping it out of. Refusing surfaces AB002, so the
+    // worker stops now instead of being cancelled a moment later.
     const b = new FencedBatch('reschedule', this.ids.token(), { now: NOW_MS })
     b.cas(
       'suspend',
@@ -912,7 +921,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,
       [
         wakeArg,
         wakeArg,

@@ -202,3 +202,57 @@ describe('awaitEvent review regressions', () => {
     f.close()
   })
 })
+
+describe('suspending a task past its cancellation deadline', () => {
+  /**
+   * `reschedule` and `suspendRun` are one transition — suspendRun's own
+   * comment says so — and their eligibility guards had diverged: suspendRun
+   * required the task ELIGIBLE (live and not past a due cancellation
+   * deadline) while reschedule required only live. Nothing in the suite
+   * depended on the looser one, and it is the wrong half of the pair: a
+   * suspension makes the run schedulable again, and the claim path already
+   * refuses to launch a task whose deadline is due, so re-parking put the run
+   * straight back into the queue that path is keeping it out of.
+   */
+  it('is refused by both suspension paths alike', async () => {
+    const f = await fixture('cancel-deadline')
+    const spawned = await f.store.spawn(Q, 'job', '{}', {
+      cancellation: { maxDelaySeconds: 10 },
+    })
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 600, limit: 1 })
+    if (!run) throw new Error('expected a claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    // Re-arm a deadline and move past it (activate disarms max-delay on start).
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+        args: [NOW + 1, spawned.taskId],
+      },
+    ])
+    await f.admin.setFakeNowEpochMs(NOW + 5_000)
+
+    await expect(
+      f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1 }),
+    ).rejects.toThrow(LeaseLostError)
+    await expect(
+      f.store.suspendRun(
+        Q,
+        run.runId,
+        run.claimToken,
+        { inSeconds: 1 },
+        {
+          key: '$sleep',
+          stateJson: '{}',
+        },
+      ),
+    ).rejects.toThrow(LeaseLostError)
+
+    const [after] = await f.raw.batch(
+      't',
+      [{ sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] }],
+      'read',
+    )
+    expect(after?.rows[0]?.state).toBe('running') // neither path moved it
+    f.close()
+  })
+})
