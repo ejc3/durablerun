@@ -1400,12 +1400,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     //
     // A NULL wake_step matches ANY step of the event. Waits and events
     // predate the wake_step column and its migration backfills nothing, so a
-    // run parked by the older code carries wake_event with no step — and
-    // `s.step_name = NULL` is never true, so the run would not be woken while
-    // the delete below removed its wait anyway. The event is immutable and
-    // the wait is gone, so re-emitting cannot recover it: an untimed await
-    // would strand forever, on any upgraded database and on any rolling
+    // run parked by the older code carries wake_event with no step, and
+    // `s.step_name = NULL` is never true. Without this arm such a run is
+    // never woken by any emit — on any upgraded database, and on any rolling
     // deploy where an older process parks a run after a newer one migrated.
+    //
+    // It used to be worse than unwoken: the cleanup deleted its wait anyway,
+    // and the event row is immutable, so an untimed await stranded with
+    // nothing left describing it. The cleanup now follows the wake, so a run
+    // this predicate declines keeps its registration and shows up under
+    // `wait-for-fired-event`. That makes the concession here a matter of
+    // waking the run rather than of not destroying it — still worth making,
+    // and no longer the only thing standing between a migrated database and
+    // permanent loss.
     b.followOn(
       'wake-runs',
       'runs',
