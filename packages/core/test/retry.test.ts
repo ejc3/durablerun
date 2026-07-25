@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { decideRetry, retryDelaySeconds } from '../src/retry.js'
+import { requirePositiveInt } from '../src/validate.js'
 
 describe('retryDelaySeconds', () => {
   it('fixed strategy returns base delay regardless of attempt', () => {
@@ -45,5 +46,18 @@ describe('decideRetry', () => {
 
   it('rejects nonsensical attempt numbers', () => {
     expect(() => decideRetry({ kind: 'none' }, 0, 3)).toThrow(RangeError)
+  })
+})
+
+describe('attempt counts stay inside the range JavaScript can represent', () => {
+  it('refuses a maxAttempts that would push a run ordinal past MAX_SAFE_INTEGER', () => {
+    // The run ordinal counts every successor, so max_attempts bounds it. An
+    // accepted MAX_SAFE_INTEGER lets a successor be written at an ordinal
+    // SQLite stores happily and JavaScript cannot represent, after which
+    // every claim decoding that run throws and the task is stuck pending
+    // forever with no worker able to take it.
+    expect(() => requirePositiveInt('maxAttempts', Number.MAX_SAFE_INTEGER)).toThrow(RangeError)
+    expect(() => requirePositiveInt('maxAttempts', 1_000_001)).toThrow(RangeError)
+    expect(requirePositiveInt('maxAttempts', 1_000_000)).toBe(1_000_000)
   })
 })

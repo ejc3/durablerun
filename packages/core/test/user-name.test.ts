@@ -25,6 +25,18 @@ describe('UserName.parse rejects non-round-tripping names', () => {
     expect(() => UserName.parse('event name', 'go\uDC00')).toThrow(FatalTaskError)
   })
 
+  it('rejects a value that is not a string at all', () => {
+    // JavaScript callers, decoded JSON, and `any` all reach here. Calling
+    // .includes() on a non-string throws a plain TypeError, which the worker
+    // classifies as an ordinary user failure and RETRIES — so one
+    // deterministic bad call is re-run up to maxAttempts, repeating whatever
+    // the handler did before it each time. Deterministic bad input must be
+    // permanent, which is what FatalTaskError means here.
+    for (const bad of [undefined, null, 42, {}, ['a'], Symbol('s')]) {
+      expect(() => UserName.parse('step name', bad as unknown as string)).toThrow(FatalTaskError)
+    }
+  })
+
   it('accepts ordinary names, including non-ASCII that round-trips', () => {
     expect(UserName.parse('event name', 'order.shipped').value).toBe('order.shipped')
     expect(UserName.parse('event name', 'näme').value).toBe('näme')

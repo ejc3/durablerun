@@ -281,6 +281,62 @@ describe('bookkeeping checks', () => {
     ).toThrow(/blindly/)
   })
 
+  it('catches the counter bump however it is spelled', () => {
+    // The first version of this check only matched `x = x + <digit>`. Every
+    // shape below is the same non-idempotent write and slipped past it; each
+    // double-counts one user failure on an exact replay, so the retry budget
+    // is spent twice and the task can fail permanently an attempt early.
+    const shapes = [
+      `attempts = attempts + ?`,
+      `attempts = tasks.attempts + 1`,
+      `attempts = (attempts + 1)`,
+      `attempts = 1 + attempts`,
+      `attempts = attempts - 1`,
+      `"attempts" = "attempts" + 1`,
+    ]
+    for (const set of shapes) {
+      const b = withCas()
+      expect(
+        () =>
+          b.followOn(
+            'x',
+            'tasks',
+            `UPDATE tasks SET ${set}, fence_stamp = ${STAMP}, fence_at_ms = 1
+             WHERE task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
+            [],
+            'one',
+          ),
+        set,
+      ).toThrow(/blindly/)
+    }
+  })
+
+  it('does not mistake a derived value for a counter bump', () => {
+    // Every one of these is idempotent: the value comes from somewhere other
+    // than the column being written.
+    const shapes = [
+      `available_at_ms = f.fence_at_ms + 5000`,
+      `attempts = (SELECT f.attempt - tasks.infra_retries FROM runs f WHERE f.run_id = 'r')`,
+      `state = 'pending'`,
+      `failure_reason = '{"note":"attempts = attempts + 1"}'`,
+    ]
+    for (const set of shapes) {
+      const b = withCas()
+      expect(
+        () =>
+          b.followOn(
+            'x',
+            'tasks',
+            `UPDATE tasks SET ${set}, fence_stamp = ${STAMP}, fence_at_ms = 1
+             WHERE task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
+            [],
+            'one',
+          ),
+        set,
+      ).not.toThrow()
+    }
+  })
+
   it('allows a CAS to bump a counter, because its guard consumes the pre-state', () => {
     // claim really does `claim_gen = claim_gen + 1`. Replaying it is safe: the
     // CAS's own guard no longer matches, so the bump cannot happen twice. A
