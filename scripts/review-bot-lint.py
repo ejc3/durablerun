@@ -157,7 +157,21 @@ def main() -> int:
                         f"It will grade an empty set and report clean forever."
                     )
 
-    # 5. The README is the human index; drift there is how a rule becomes
+    # 5. CodeRabbit rejects a custom-check name of 50 characters or more, and
+    #    rejects the WHOLE file when it does — falling back to default review
+    #    with the rules silently unused. It reports this in a pull-request
+    #    comment, which is the worst place for it: the configuration looks
+    #    installed, the bot posts, and none of the rules are running. It cost
+    #    exactly one real review round to find, so it is a rule now.
+    for name in re.findall(r'^      - name: "([^"]+)"$', cr_text, re.M):
+        if len(name) >= 50:
+            problems.append(
+                f'.coderabbit.yaml check name is {len(name)} characters, and CodeRabbit '
+                f'refuses the whole file at 50 or more: {name!r}. The file then falls back '
+                f'to defaults and every rule here is silently unused.'
+            )
+
+    # 6. The README is the human index; drift there is how a rule becomes
     #    invisible to the person deciding whether one already covers a class.
     readme = RULES_DIR / "README.md"
     if readme.exists():

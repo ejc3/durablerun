@@ -324,6 +324,14 @@ export class S {
     ),
     (
         "review-bot-lint.py",
+        {**corpus(WHOLE_RULE),
+         ".coderabbit.yaml": corpus(WHOLE_RULE)[".coderabbit.yaml"]
+         + '  pre_merge_checks:\n    custom_checks:\n      - name: "'
+         + "x" * 60 + '"\n'},
+        "a custom-check name CodeRabbit refuses, which voids the whole config file",
+    ),
+    (
+        "review-bot-lint.py",
         corpus(WHOLE_RULE, status_check=False),
         "Greptile posting no status check, so its findings cannot gate anything",
     ),
