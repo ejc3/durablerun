@@ -32,6 +32,10 @@ and every lint found **zero** (`postmortems/pr3.6-fence-provenance.md`). A proba
 reviewer is the last net, never the mechanism; a finding under this rule must terminate in
 something a machine runs.
 
+<!-- review-bot-synopsis:start -->
+Flag a correctness fix that defends only the instance with no mechanism at any rung (no type/structure change, no lint, no generated case or axis, no invariant, no class-altitude test file, no TLA guard, and no BUILD.md sub-bullet under a live entry naming the missing one), a prevention that is only prose (a comment asserting two sites agree with nothing enforcing it, a comment naming a mechanism that resolves to nothing in the tree, a CLAUDE.md or pr-gate line as the diff's sole response to a defect), a text-deciding check whose same diff claims the runtime property ("unwritable", "inexpressible", "by construction", "rung 1") without exhibiting a false negative, a new guard/invariant/surface with no attack at all (no MUTATIONS entry, rejection test, BAD_CASES entry, constructed corruption, or differential control) including a mutation that changes bind arity or a surface varying only one side of a correlation, a positive plan pin over SQL hand-copied from src, or an added postmortem whose Mechanism-audit table skips a mechanism the diff adds. Pass for text bans whose subject is the text (clock-lint, determinism-lint, fragment-lint, batch-lint, the executor's error-string classifier), checks that state their own residual and where it is closed (hasPositiveFence, gate-lint, review-bot-lint), guards attacked by rejection tests rather than probe mutations, full observable-state differentials whose invariant-clean mutation changes a trace or protocol table (clock-jitter), deliberate counter-example or differently-shaped second representations (query-plans' degraded shape, the wake-witness oracle), pr-gate case-law prose, deferrals under live BUILD.md entries with reasons, mechanisms measured unsound and rejected with the measurement, extensions of an existing class layer, refuted claims kept as guard tests, and diffs with no defect behind them or defects the author's own machinery caught.
+<!-- review-bot-synopsis:end -->
+
 Report a failure when the changed code introduces or materially expands any of these:
 
 - **A defect is removed and only the instance is defended.** The diff narrows a guard,
@@ -104,9 +108,11 @@ Allowed cases (do NOT flag these):
 - **A syntactic check that states its own residual and where it is closed.** `hasPositiveFence`
   in `packages/core/src/fenced-batch.ts`: "the check verified the fence's PRESENCE and the
   property needed is the fence's REACH … it converts a proxy with four demonstrated false
-  negatives into one with none". `scripts/gate-lint.py`: "What this CANNOT do, stated plainly …
-  it runs from inside the branch it is checking, so a change that deletes a checker AND its
-  entry here passes. That hole is closed in CI by running the BASE branch's copy".
+  negatives into one with none". `scripts/gate-lint.py` uses a restricted, fail-closed shell
+  grammar to inventory reachable checker commands; in CI its `--run-base` path semantically
+  enumerates the base package's verify script, stages the head tree with the base's complete
+  `scripts/` directory, and refuses a zero-check run. Its residual is the semantics of a
+  base-owned checker that executes and returns zero, not whether a textual path appeared.
   `scripts/lint-selftest.py`'s filename filter, backstopped by gate-lint's check 3.
   `scripts/review-bot-lint.py`: "What it deliberately does NOT do is judge the rules." Flag the
   overclaim, never the technique.
@@ -115,11 +121,11 @@ Allowed cases (do NOT flag these):
   `packages/core/test/fenced-batch.test.ts` — 'rejects a fence that appears ONLY in the SET
   clause' beside 'accepts a statement carrying both a positive and a negative fence'. A per-guard
   probe entry is not this repo's convention; deleting the guard turns those tests red.
-- **An invariant proven non-vacuous differentially.** `one-batch-two-instants` has no
-  constructed corrupt row in `invariant-checkers.test.ts`;
-  `packages/conformance/test/clock-jitter.test.ts` runs each scenario with and without
-  per-statement clock jitter, and the mutation proving the pair discriminates is recorded with
-  its output ("tok-7 saw 1021934 and 1022931").
+- **A dynamic mechanism with its own discriminating control.** The delayed compiled-emit
+  regression drives `one-batch-two-instants` red by reusing one seed at two database instants.
+  Separately, `clock-jitter.test.ts` injects a later-clock retry that leaves both invariant
+  arrays empty and proves its full progress-trace and table-state differential still rejects
+  the run. Neither mechanism borrows the other's oracle.
 - **Deliberate second representations.** `packages/store-libsql/test/query-plans.test.ts`,
   'degrades to a full scan if the waiter subquery is correlated' — a hand-written copy asserted
   to be WRONG, "kept as the counter-example so the assertion above is known to be discriminating

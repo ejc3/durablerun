@@ -32,6 +32,10 @@ emitted, so deleting `AND wake_event = ?` kept it green (43). The detection ledg
 round is the headline: 236 fault-matrix cells, 32 fuzz shards, a 111.8M-state TLC model, an
 invariant library and eight linters found **0 of 44** defects.
 
+<!-- review-bot-synopsis:start -->
+Flag a new or changed checker, guard, invariant, oracle, generated surface or probe mutation whose diff adds no input it must REJECT — a checker with one bad fixture where it claims several rules or matches an alternation (no per-rule, per-alternative `BAD_CASES` entry in scripts/lint-selftest.py, corruption case in invariant-checkers.test.ts, or `expect(() => …).toThrow` in fenced-batch.test.ts), a harvest that silently records nothing for input it cannot parse or a check that fails open on a nonzero exit, a pattern widened or tightened with no case the old one accepted, a mutation whose replacement changes binds or types instead of behaviour (counting binds after interpolation) or a diff that makes an existing `find` stale, an accept-only assertion, a rejection discarded by `.catch()`/`try{}catch{}` where every post-call assertion also holds when the call throws, an un-awaited `.rejects`, a two-condition guard one test satisfies either way, an invariant whose rows the same diff's statement erases, an oracle retyped as "structurally the same" instead of recovered from the shipped path, a generator holding one side of a correlation constant, or a knob that drives coverage to zero without refusing. Pass for code that merely CALLS an existing checker (`engineInvariantViolations(...)).toEqual([])` in the driver and conformance behaviour tests), differential oracles over generated surfaces (`disagreements(cases)).toEqual([])`), the accept half of a stated pair and `GOOD_CASES`, counter-examples kept beside a discriminating pin, fault-injection workloads that swallow every call because the oracle runs afterwards (`go()` in fault-matrix.ts), arrange-phase catches and preconditions, catches that record and are asserted, mutation replacements whose interpolated bind arity is unchanged, non-matching branches that fail closed, reasoned `EXEMPT`/`NOT_IN_GATE`/`MULTI_CLOCK`/`TOKEN_FENCED`/`DYNAMIC`/`MATRIX_EXEMPT_LABELS` declarations, conditional skips with both branches fixtured, and the weak half of a stated two-part floor.
+<!-- review-bot-synopsis:end -->
+
 Report a failure when the changed code introduces or materially expands any of these:
 
 - **A new checker with a rejection case per checker instead of per RULE and per
@@ -68,8 +72,7 @@ Report a failure when the changed code introduces or materially expands any of t
   it does.** In `scripts/mutation-probe.py`, a `replace` the compiler or the argument-count
   check rejects: the probe prints `ok … caught` and the guard was never exercised.
   `emit-wake-step-correlation` is `1 = 1` for exactly this reason. Count binds AFTER
-  interpolation, not `?` characters in the patch text — `successor-ownership` reads 2 -> 1
-  by character count and is correct (see Allowed). Also flag a diff that edits the exact
+  interpolation, not only `?` characters in the patch text. Also flag a diff that edits the exact
   text an existing `find` string matches without updating that entry: the probe then reports
   `stale pattern` and the guard has quietly stopped being probed. Deleting guards is how
   three unmaintained ones were found, including the follow-on half of the provenance check
@@ -141,10 +144,12 @@ Allowed cases (do NOT flag these):
   `fence-provenance-regressions.test.ts` uses `.catch(e => { rejection = e })` then
   `expect(rejection).toBeNull()`; `expectLeaseLoss` in `packages/conformance/src/fuzz.ts`
   rethrows anything that is not `LeaseLostError`. Flag a catch that discards or narrows.
-- **`successor-ownership` in `scripts/mutation-probe.py`.** Its `find` contains two `?`
-  characters and its `replace` one, so a character count reads as an arity change. It is not:
-  `fenced('runs', BY_RUN, …)` interpolates `BY_RUN = \`f.run_id = ?\``, and the trailing
-  `AND ? IS NOT NULL` pads to the same two binds. Count binds after interpolation.
+- **A mutation whose replacement has the same interpolated bind arity.**
+  `successor-ownership` replaces the shared ownership predicate with the
+  one-bind tautology `? IS NOT NULL`, so the statement still reaches the
+  ownership behavior instead of dying in argument validation.
+  `successor-attempt-identity` changes the shared predicate without changing
+  its placeholder count.
 - **A non-matching branch that fails closed.** `scripts/batch-lint.py`'s `else:` appends a
   violation and then `continue`s — that IS the total-harvest fix, not the hole. So is
   `next((ln … ), "")` in `scripts/spec-ledger.py`: an empty line carries zero tags, so the

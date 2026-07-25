@@ -36,6 +36,10 @@ half is now derived (`review-attest.sh` sums the ledger and refuses a mismatch);
 are still pure review, which is why every finding here should name the derivation that would have
 made the sentence unwritable-if-wrong.
 
+<!-- review-bot-synopsis:start -->
+Flag behaviour changes (batch guards, port signatures/error types, schema, retry arithmetic, wire forms) with no DESIGN.md hunk anywhere in the branch diff where a specific spec sentence can be quoted as falsified or missing, comments the diff makes false or orphans, comments asserting two sites are the same while the diff spells them separately (two different shared fragments still counts) with no drift test, exact counts of this repo's own artifacts (tests, guards, checkers, findings, gate membership) contradicted by the same PR or by another count of the same set, added postmortems whose narrative rate or attributions disagree with their detection ledger, and deferrals that never land as a sub-bullet under a live BUILD.md PR entry. Pass for spec/DESIGN edits landing in another commit of the same branch, fixes that make code obey a rule DESIGN.md already states, test-only diffs and oracles that deliberately restate a rule, past-tense history naming the mechanism that now holds, DESIGN.md narrating its own drafts, measured DBMS facts with sample sizes, approximate or ranged counts ("200+", "9–11"), category-level gate summaries still true, numbers inside earlier rounds' postmortems, unannotated deferral sub-bullets under live PR entries, `ABANDONED:` notes and prose about deferral under DONE entries, a live entry owning another document's list (SIMPLIFY-BACKLOG.md), "deferral" as engine vocabulary (§3.8.2 dispatch deferral, deferred start), and refactors preserving every statement's semantics.
+<!-- review-bot-synopsis:end -->
+
 Report a failure when the changed code introduces or leaves standing any of these:
 
 - **A behaviour change with no DESIGN.md hunk anywhere in the branch diff, and a spec sentence you

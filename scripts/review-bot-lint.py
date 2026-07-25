@@ -15,8 +15,9 @@ This project has been here before in miniature. `spec-ledger.py` exists
 because a batch label could be shipped and never enter the ledger;
 `gate-lint.py` exists because a checker could be written, fixtured, and never
 invoked. This is the same total-harvest rule applied to the reviewers: every
-rule file is referenced by both configs, every reference resolves to a file,
-and every scope matches something that exists.
+rule file has one canonical marked synopsis, both configs carry that exact
+synopsis in one active error rule, every reference resolves to a file, and
+every scope matches something that exists.
 
 What it deliberately does NOT do is judge the rules. Whether a rule is any
 good is settled by whether its findings survive, and that shows up in the
@@ -37,6 +38,10 @@ ROOT = Path(_args[0]).resolve() if _args else Path(__file__).resolve().parent.pa
 RULES_DIR = ROOT / ".github" / "review-bot-rules"
 CODERABBIT = ROOT / ".coderabbit.yaml"
 GREPTILE = ROOT / ".greptile" / "config.json"
+SYNOPSIS_START = "<!-- review-bot-synopsis:start -->"
+SYNOPSIS_END = "<!-- review-bot-synopsis:end -->"
+GLOBAL_START = "<!-- review-bot-global:start -->"
+GLOBAL_END = "<!-- review-bot-global:end -->"
 
 # Sections every rule must carry. The Allowed list is not optional and not a
 # formality: a rule that flags correct code gets switched off, and a switched-
@@ -54,6 +59,269 @@ def rule_id(stem: str) -> str:
     return f"durablerun-{stem}"
 
 
+def check_name(stem: str) -> str:
+    return f"durablerun: {stem}"
+
+
+def coderabbit_body(rel: str, synopsis: str) -> str:
+    return (
+        f"Fail when the diff introduces or materially widens any failure shape in `{rel}`. "
+        f"{synopsis} Pass for the cases listed in that file Allowed section, for test-only "
+        "scaffolding that does not make production behaviour worse, and for existing debt "
+        "the diff does not worsen."
+    )
+
+
+def rule_synopsis(text: str, rel: str) -> tuple[str, list[str]]:
+    """Read the config-facing rule body from its Markdown source."""
+    if text.count(SYNOPSIS_START) != 1 or text.count(SYNOPSIS_END) != 1:
+        return "", [
+            f"{rel} must contain exactly one {SYNOPSIS_START!r} and one "
+            f"{SYNOPSIS_END!r} marker."
+        ]
+    start = text.index(SYNOPSIS_START) + len(SYNOPSIS_START)
+    end = text.index(SYNOPSIS_END)
+    if end <= start:
+        return "", [f"{rel} has its active-review synopsis markers out of order."]
+    body = text[start:end].strip()
+    if not body:
+        return "", [f"{rel} has an empty active-review synopsis."]
+    if not body.startswith("Flag ") or body.count("Pass for ") != 1:
+        return body, [
+            f"{rel}'s active-review synopsis must state both a 'Flag' rejection arm "
+            "and a 'Pass for' allowance arm."
+        ]
+    return body, []
+
+
+def marked_body(text: str, start_marker: str, end_marker: str, rel: str) -> tuple[str, list[str]]:
+    """Read one canonical literal body from a pair of unique markers."""
+    if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+        return "", [
+            f"{rel} must contain exactly one {start_marker!r} and one {end_marker!r} marker."
+        ]
+    start = text.index(start_marker) + len(start_marker)
+    end = text.index(end_marker)
+    if end <= start:
+        return "", [f"{rel} has its {start_marker!r} markers out of order."]
+    body = text[start:end].strip()
+    if not body:
+        return "", [f"{rel} has an empty body between {start_marker!r} markers."]
+    return body, []
+
+
+def yaml_scalar(raw: str) -> str:
+    """Decode the scalar spellings used by CodeRabbit's generated check list."""
+    raw = raw.strip()
+    if raw.startswith('"'):
+        value = json.loads(raw)
+        if not isinstance(value, str):
+            raise ValueError("expected a string")
+        return value
+    if raw.startswith("'") and raw.endswith("'"):
+        return raw[1:-1].replace("''", "'")
+    return raw.split(" #", 1)[0].strip()
+
+
+def coderabbit_path_instructions(text: str) -> tuple[list[dict[str, str]], list[str]]:
+    """Harvest the one generated `reviews.path_instructions` list.
+
+    The list is fully owned here. Accepting arbitrary extra path entries would
+    let one active instruction countermand the canonical error checks while
+    every checked body remained intact.
+    """
+    lines = text.splitlines()
+    errors: list[str] = []
+
+    def significant(line: str) -> bool:
+        return bool(line.strip()) and not line.lstrip().startswith("#")
+
+    def end_of_block(start: int, indent: int, limit: int) -> int:
+        for i in range(start + 1, limit):
+            line = lines[i]
+            if significant(line) and len(line) - len(line.lstrip()) <= indent:
+                return i
+        return limit
+
+    reviews = [i for i, line in enumerate(lines) if re.fullmatch(r"reviews:\s*", line)]
+    if len(reviews) != 1:
+        return [], [f".coderabbit.yaml has {len(reviews)} top-level reviews sections; expected one."]
+
+    reviews_end = end_of_block(reviews[0], 0, len(lines))
+    sections = [
+        i
+        for i in range(reviews[0] + 1, reviews_end)
+        if re.fullmatch(r"  path_instructions:\s*", lines[i])
+    ]
+    if len(sections) != 1:
+        return [], [
+            ".coderabbit.yaml has no unique reviews.path_instructions list, so active "
+            "path review semantics are ambiguous."
+        ]
+
+    section_end = end_of_block(sections[0], 2, reviews_end)
+    raw_entries: list[tuple[int, str]] = []
+    for i in range(sections[0] + 1, section_end):
+        match = re.fullmatch(r"    - path:\s*(.*?)\s*", lines[i])
+        if match:
+            raw_entries.append((i, match.group(1)))
+        elif re.match(r"^    - ", lines[i]):
+            errors.append(
+                f".coderabbit.yaml line {i + 1} is a path instruction without a literal path."
+            )
+
+    entries: list[dict[str, str]] = []
+    for position, (start, raw_path) in enumerate(raw_entries):
+        end = raw_entries[position + 1][0] if position + 1 < len(raw_entries) else section_end
+        try:
+            path = yaml_scalar(raw_path)
+        except (ValueError, json.JSONDecodeError) as exc:
+            errors.append(
+                f".coderabbit.yaml line {start + 1} has an invalid path scalar: {exc}."
+            )
+            continue
+
+        headers = [
+            i
+            for i in range(start + 1, end)
+            if re.fullmatch(r"      instructions:\s*\|\s*", lines[i])
+        ]
+        if len(headers) != 1:
+            errors.append(
+                f".coderabbit.yaml path {path!r} has {len(headers)} literal instruction "
+                "bodies; expected one."
+            )
+
+        body = ""
+        if len(headers) == 1:
+            body_lines: list[str] = []
+            for line in lines[headers[0] + 1 : end]:
+                if significant(line) and len(line) - len(line.lstrip()) <= 6:
+                    break
+                body_lines.append(line[8:] if line.startswith("        ") else line.strip())
+            body = "\n".join(body_lines).strip()
+        entries.append({"path": path, "instructions": body})
+
+    return entries, errors
+
+
+def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]]:
+    """Harvest only active `reviews.pre_merge_checks.custom_checks` entries.
+
+    A full YAML dependency would make the checker unavailable in the minimal
+    Python environment used by the gate. This parser is intentionally narrow
+    and fails closed when the one generated shape this repository owns drifts.
+    Text elsewhere in the file, including path instructions and comments,
+    cannot enter the result.
+    """
+    lines = text.splitlines()
+    errors: list[str] = []
+
+    def significant(line: str) -> bool:
+        return bool(line.strip()) and not line.lstrip().startswith("#")
+
+    def end_of_block(start: int, indent: int, limit: int) -> int:
+        for i in range(start + 1, limit):
+            line = lines[i]
+            if significant(line) and len(line) - len(line.lstrip()) <= indent:
+                return i
+        return limit
+
+    reviews = [i for i, line in enumerate(lines) if re.fullmatch(r"reviews:\s*", line)]
+    if len(reviews) != 1:
+        return [], [f".coderabbit.yaml has {len(reviews)} top-level reviews sections; expected one."]
+
+    reviews_end = end_of_block(reviews[0], 0, len(lines))
+    pre_merge = [
+        i
+        for i in range(reviews[0] + 1, reviews_end)
+        if re.fullmatch(r"  pre_merge_checks:\s*", lines[i])
+    ]
+    if len(pre_merge) != 1:
+        return [], [
+            ".coderabbit.yaml has no unique reviews.pre_merge_checks section, so no custom "
+            "rule can gate a review."
+        ]
+
+    pre_merge_end = end_of_block(pre_merge[0], 2, reviews_end)
+    custom = [
+        i
+        for i in range(pre_merge[0] + 1, pre_merge_end)
+        if re.fullmatch(r"    custom_checks:\s*", lines[i])
+    ]
+    if len(custom) != 1:
+        return [], [
+            ".coderabbit.yaml has no unique reviews.pre_merge_checks.custom_checks list."
+        ]
+
+    custom_end = end_of_block(custom[0], 4, pre_merge_end)
+    entries: list[tuple[int, str]] = []
+    for i in range(custom[0] + 1, custom_end):
+        match = re.fullmatch(r"      - name:\s*(.*?)\s*", lines[i])
+        if match:
+            entries.append((i, match.group(1)))
+        elif re.match(r"^      - ", lines[i]):
+            errors.append(
+                f".coderabbit.yaml line {i + 1} is a custom check without a literal name."
+            )
+
+    checks: list[dict[str, str]] = []
+    for position, (start, raw_name) in enumerate(entries):
+        end = entries[position + 1][0] if position + 1 < len(entries) else custom_end
+        try:
+            name = yaml_scalar(raw_name)
+        except (ValueError, json.JSONDecodeError) as exc:
+            errors.append(f".coderabbit.yaml line {start + 1} has an invalid check name: {exc}.")
+            continue
+
+        raw_modes = [
+            match.group(1)
+            for line in lines[start + 1 : end]
+            if (match := re.fullmatch(r"        mode:\s*(.*?)\s*", line))
+        ]
+        modes: list[str] = []
+        for raw_mode in raw_modes:
+            try:
+                modes.append(yaml_scalar(raw_mode))
+            except (ValueError, json.JSONDecodeError) as exc:
+                errors.append(
+                    f".coderabbit.yaml check {name!r} has an invalid mode scalar: {exc}."
+                )
+        instruction_headers = [
+            i
+            for i in range(start + 1, end)
+            if re.fullmatch(r"        instructions:\s*\|\s*", lines[i])
+        ]
+        if len(modes) != 1:
+            errors.append(
+                f".coderabbit.yaml check {name!r} has {len(modes)} mode fields; expected one."
+            )
+        if len(instruction_headers) != 1:
+            errors.append(
+                f".coderabbit.yaml check {name!r} has {len(instruction_headers)} literal "
+                "instruction bodies; expected one."
+            )
+
+        body = ""
+        if len(instruction_headers) == 1:
+            body_lines: list[str] = []
+            for line in lines[instruction_headers[0] + 1 : end]:
+                if significant(line) and len(line) - len(line.lstrip()) <= 8:
+                    break
+                body_lines.append(line[10:] if line.startswith("          ") else line.strip())
+            body = "\n".join(body_lines).strip()
+
+        checks.append(
+            {
+                "name": name,
+                "mode": modes[0] if len(modes) == 1 else "",
+                "instructions": body,
+            }
+        )
+
+    return checks, errors
+
+
 def tracked(root: Path) -> list[str]:
     out = subprocess.run(
         ["git", "-C", str(root), "ls-files"], capture_output=True, text=True, check=False
@@ -65,40 +333,92 @@ def main() -> int:
     problems: list[str] = []
 
     if not RULES_DIR.is_dir():
-        print(f"review-bot-lint: no {RULES_DIR.relative_to(ROOT)} — nothing to check")
-        return 0
+        problems.append(
+            f"{RULES_DIR.relative_to(ROOT)} is missing. Without the corpus, every rule check "
+            "below would be vacuous."
+        )
 
-    files = sorted(p for p in RULES_DIR.glob("*.md") if p.name != "README.md")
+    files = (
+        sorted(p for p in RULES_DIR.glob("*.md") if p.name != "README.md")
+        if RULES_DIR.is_dir()
+        else []
+    )
     stems = {p.stem for p in files}
 
     if not files:
         problems.append(
-            f"{RULES_DIR.relative_to(ROOT)} exists but holds no rules. An empty corpus makes "
-            f"every check below vacuous."
+            f"{RULES_DIR.relative_to(ROOT)} holds no rules. An empty corpus makes every check "
+            "below vacuous."
         )
 
-    # 1. Each rule file has the sections that make it applicable to a diff.
+    # 1. Each rule file has the sections that make it applicable to a diff,
+    #    plus the compact synopsis both hosted configurations must apply.
+    synopses: dict[str, str] = {}
     for p in files:
         body = p.read_text()
+        rel = str(p.relative_to(ROOT))
         for marker, what in REQUIRED:
             if marker not in body:
                 problems.append(
-                    f"{p.relative_to(ROOT)} has no {what!r} section (looked for {marker!r}). "
+                    f"{rel} has no {what!r} section (looked for {marker!r}). "
                     f"A rule missing it is prose, and a reviewer will apply it as taste."
                 )
         if "\n- " not in body.split("Report a failure when", 1)[-1][:4000]:
             problems.append(
-                f"{p.relative_to(ROOT)} lists no failure shapes as bullets. A shape a reviewer "
+                f"{rel} lists no failure shapes as bullets. A shape a reviewer "
                 f"cannot decide from a diff generates noise that buries real findings."
             )
+        synopsis, synopsis_problems = rule_synopsis(body, rel)
+        problems.extend(synopsis_problems)
+        if synopsis:
+            synopses[p.stem] = synopsis
 
-    # 2. Both hosted reviewers must actually reference every rule. A rule
-    #    neither config mentions is one no reviewer will ever apply.
+    readme = RULES_DIR / "README.md"
+    readme_text = readme.read_text() if readme.exists() else ""
+    global_instructions = ""
+    if readme_text:
+        global_instructions, global_problems = marked_body(
+            readme_text,
+            GLOBAL_START,
+            GLOBAL_END,
+            str(readme.relative_to(ROOT)),
+        )
+        problems.extend(global_problems)
+
+    # 2. Both hosted reviewers must carry one ACTIVE body for every rule. A
+    #    filename appearing in path instructions or an id with an empty body
+    #    is only a textual reference; neither can fail a review.
     cr_text = CODERABBIT.read_text() if CODERABBIT.exists() else ""
+    cr_checks: list[dict[str, str]] = []
+    cr_paths: list[dict[str, str]] = []
     if not cr_text:
         problems.append(".coderabbit.yaml is missing — CodeRabbit would review with no rules at all.")
+    else:
+        cr_paths, cr_path_errors = coderabbit_path_instructions(cr_text)
+        problems.extend(cr_path_errors)
+        cr_checks, cr_errors = coderabbit_custom_checks(cr_text)
+        problems.extend(cr_errors)
 
-    gp_ids: set[str] = set()
+    if len(cr_paths) != 1:
+        problems.append(
+            f".coderabbit.yaml has {len(cr_paths)} active path instructions; expected exactly "
+            "the one corpus-owned global instruction."
+        )
+    elif cr_paths[0]["path"] != "**/*":
+        problems.append(
+            f".coderabbit.yaml global path instruction uses {cr_paths[0]['path']!r}, not '**/*'."
+        )
+    elif global_instructions and cr_paths[0]["instructions"] != global_instructions:
+        problems.append(
+            ".coderabbit.yaml global path instruction is not the canonical marked body "
+            f"from {readme.relative_to(ROOT)}."
+        )
+
+    cr_by_name: dict[str, list[dict[str, str]]] = {}
+    for check in cr_checks:
+        cr_by_name.setdefault(check["name"], []).append(check)
+
+    gp_rules: dict[str, list[dict[str, object]]] = {}
     gp_scopes: dict[str, list[str]] = {}
     if GREPTILE.exists():
         try:
@@ -106,9 +426,26 @@ def main() -> int:
         except json.JSONDecodeError as e:
             problems.append(f".greptile/config.json does not parse: {e}")
             cfg = {}
-        for entry in cfg.get("rules", []):
-            gp_ids.add(entry.get("id", ""))
-            gp_scopes[entry.get("id", "")] = entry.get("scope", [])
+        entries = cfg.get("rules", [])
+        if not isinstance(entries, list):
+            problems.append('.greptile/config.json "rules" is not a list.')
+            entries = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                problems.append(
+                    f".greptile/config.json rule {index} is not an object and cannot be active."
+                )
+                continue
+            rid = entry.get("id")
+            if not isinstance(rid, str) or not rid:
+                problems.append(f".greptile/config.json rule {index} has no string id.")
+                continue
+            gp_rules.setdefault(rid, []).append(entry)
+            scope = entry.get("scope", [])
+            if not isinstance(scope, list) or not all(isinstance(g, str) for g in scope):
+                problems.append(f".greptile/config.json rule {rid!r} has a non-string scope.")
+            else:
+                gp_scopes[rid] = scope
         if cfg.get("statusCheck") is not True:
             problems.append(
                 '.greptile/config.json does not set "statusCheck": true, so Greptile posts no '
@@ -119,19 +456,61 @@ def main() -> int:
 
     for p in files:
         rel = f".github/review-bot-rules/{p.name}"
-        if rel not in cr_text:
+        synopsis = synopses.get(p.stem, "")
+        named_checks = cr_by_name.get(check_name(p.stem), [])
+        if len(named_checks) != 1:
             problems.append(
-                f"{rel} is not referenced by .coderabbit.yaml, so CodeRabbit never applies it."
+                f"{rel} has {len(named_checks)} active CodeRabbit checks named "
+                f"{check_name(p.stem)!r}; expected exactly one."
             )
-        if rule_id(p.stem) not in gp_ids:
+        else:
+            check = named_checks[0]
+            if check["mode"] != "error":
+                problems.append(
+                    f"CodeRabbit check {check['name']!r} uses mode {check['mode']!r}, not 'error'."
+                )
+            if not check["instructions"]:
+                problems.append(f"CodeRabbit check {check['name']!r} has an empty instruction body.")
+            elif rel not in check["instructions"]:
+                problems.append(
+                    f"CodeRabbit check {check['name']!r} does not link its corpus file {rel}."
+                )
+            elif synopsis and check["instructions"] != coderabbit_body(rel, synopsis):
+                problems.append(
+                    f"CodeRabbit check {check['name']!r} is not the canonical active-review "
+                    f"synopsis from {rel} in the required error-check wrapper."
+                )
+
+        named_rules = gp_rules.get(rule_id(p.stem), [])
+        if len(named_rules) != 1:
             problems.append(
-                f"{rel} has no rule with id {rule_id(p.stem)!r} in .greptile/config.json, so "
-                f"Greptile never applies it."
+                f"{rel} has {len(named_rules)} Greptile rules with id {rule_id(p.stem)!r}; "
+                "expected exactly one."
             )
+        else:
+            body = named_rules[0].get("rule")
+            if not isinstance(body, str) or not body.strip():
+                problems.append(f"Greptile rule {rule_id(p.stem)!r} has an empty rule body.")
+            elif synopsis and body.strip() != synopsis:
+                problems.append(
+                    f"Greptile rule {rule_id(p.stem)!r} is not the canonical active-review "
+                    f"synopsis from {rel}."
+                )
+            elif len(named_checks) == 1 and body.strip() not in named_checks[0]["instructions"]:
+                problems.append(
+                    f"Greptile rule {rule_id(p.stem)!r} is not present verbatim in the "
+                    "corresponding active CodeRabbit instructions; the two rule bodies drifted."
+                )
 
     # 3. And the reverse: a config naming a rule that does not exist points the
     #    reviewer at nothing, silently.
-    for rid in sorted(gp_ids):
+    expected_checks = {check_name(stem) for stem in stems}
+    for name in sorted(cr_by_name):
+        if name not in expected_checks:
+            problems.append(
+                f".coderabbit.yaml declares active check {name!r}, but no rule filename derives it."
+            )
+    for rid in sorted(gp_rules):
         stem = rid.removeprefix("durablerun-")
         if stem not in stems:
             problems.append(
@@ -163,7 +542,7 @@ def main() -> int:
     #    comment, which is the worst place for it: the configuration looks
     #    installed, the bot posts, and none of the rules are running. It cost
     #    exactly one real review round to find, so it is a rule now.
-    for name in re.findall(r'^      - name: "([^"]+)"$', cr_text, re.M):
+    for name in (check["name"] for check in cr_checks):
         if len(name) >= 50:
             problems.append(
                 f'.coderabbit.yaml check name is {len(name)} characters, and CodeRabbit '
@@ -173,9 +552,10 @@ def main() -> int:
 
     # 6. The README is the human index; drift there is how a rule becomes
     #    invisible to the person deciding whether one already covers a class.
-    readme = RULES_DIR / "README.md"
-    if readme.exists():
-        text = readme.read_text()
+    if not readme.exists():
+        problems.append(f"{readme.relative_to(ROOT)} is missing, so the corpus has no human index.")
+    else:
+        text = readme_text
         for p in files:
             if p.name not in text:
                 problems.append(f"{p.name} is not listed in {readme.relative_to(ROOT)}.")
@@ -192,8 +572,9 @@ def main() -> int:
         return 1
 
     print(
-        f"review-bot-lint: clean — {len(files)} rules, each referenced by CodeRabbit and Greptile, "
-        f"every scope matching tracked files"
+        f"review-bot-lint: clean — {len(files)} rules, each active in CodeRabbit and Greptile, "
+        "with corpus-derived matching bodies, one canonical global path instruction, "
+        "and every scope matching tracked files"
     )
     return 0
 

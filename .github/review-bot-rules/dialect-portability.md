@@ -42,6 +42,10 @@ dialect's spelling — and nothing in this repo executes the other two, so the
 error stays invisible until Phase 4, when the fix is a rewrite of a primitive
 rather than a patch to a store.
 
+<!-- review-bot-synopsis:start -->
+Flag dialect-only SQL or backend-behaviour assumptions added above the store layer (packages/{core,sdk,driver,harness,conformance}/src — `||` concat, instr, typeof, `x IS NOT y`, clock calls, upsert/RETURNING/FOR UPDATE, NULL-orderable sorts, rowsAffected-decided winners), cross-dialect constants defined inside a store-* package instead of core/contract.ts, checkers that match SQL case-sensitively or with one dialect's vocabulary or glob packages/store-libsql instead of packages/store-*, a per-dialect spelling entering DESIGN.md §3.4 or specs/*.tla without the required property stated and checked for all three dialects, conformance code that branches/skips on a dialect or puts a shared-schema §3.4 scenario in a single-dialect test file instead of conformance/src/suite.ts, and new protocol facts recorded only in TypeScript. Pass for store-* eligibility fragments and DDL state lists (fragments.ts, schema.ts — mandated by §3.4 and fragment-lint), case-sensitive matching against repo-generated tokens ($NOW$, $STAMP$, FENCE_SET, fence_stamp), sorts already guarded IS NOT NULL or built from a non-nullable CASE, portable SQL skeletons and shared-schema raw SQL in core and the conformance suite (FencedBatch.derived, suite.ts, fault-matrix.ts), dialect SQL inside packages/store-*, a dialect named in prose as rationale for a stricter portable check, port contracts that name and normalize divergence, bin/ composition roots and test/ per-dialect fixtures and store-internal tests, pre-existing debt in a touched file (report once, not per line), and facts already deferred under BUILD.md's PR4.1.
+<!-- review-bot-synopsis:end -->
+
 Report a failure when the changed code introduces, or extends into a new
 construct class, any of these:
 

@@ -27,6 +27,10 @@ quantity that agree on the healthy path and disagree exactly where a bug already
 failing a task permanently one attempt early. Both were fixed by deleting one spelling, not by
 making the two agree.
 
+<!-- review-bot-synopsis:start -->
+Flag a second copy of something that already has a definition — a query plan EXPLAINed against SQL typed into the test instead of the imported or executor-recorded shipped statement, a copy justified by "structurally the same"/"mirrors"/"kept in sync" with nothing in the diff that fails on divergence, a contract constant or fragment or attempt-ordinal formula respelled (even arithmetically equivalently) where a single definition is importable, a hand-maintained list of labels/checkers/columns/placeholders with no reconciliation against its source, one value handed to two sinks raw on one path and validated-or-canonical on the other, and two branches applying different conditions to the same column set. Pass for negative controls asserting the degraded plan, deliberately independent oracles (wake-witness-surface, conformance invariants), copies that report their own staleness (mutation-probe MUTATIONS), classification lists whose harvest is total (fault-matrix MATRIX_*, batch-lint READS/TOKEN_FENCED/MULTI_CLOCK, gate-lint NOT_IN_GATE, lint-selftest EXEMPT), per-dialect SQL and schema.ts DDL, raw fixture SQL that reads or builds engine state in tests, contract literals asserted (not constructed) in the conformance suite, error messages echoing raw user input, and per-query row decoders.
+<!-- review-bot-synopsis:end -->
+
 Report a failure when the changed code introduces or materially expands any of these:
 
 - **A query plan pinned against SQL written in the test file.** A string handed to `EXPLAIN` /
@@ -45,7 +49,8 @@ Report a failure when the changed code introduces or materially expands any of t
 - **A contract value or derived quantity respelled where a single definition is importable.**
   `RELAUNCH_CAP`, `INFRA_RETRY_CAP`, `INFRA_BACKOFF_SECONDS`, `RELAUNCH_BACKOFF_*`, `REASON_*`,
   `FENCED_TABLES` (`packages/core/src/contract.ts`); `LIVE`, `QUEUED`, `eligibleTask`, `cancelDue`,
-  `successor`, `fenced`/`fencedAt`/`fenceFrom` (`packages/store-libsql/src/fragments.ts`);
+  `successorOwned` (the immutable run/task/attempt identity), `fenced`/`fencedAt`/`fenceFrom`
+  (`packages/store-libsql/src/fragments.ts`);
   `USER_ATTEMPTS_FROM`, `INFRA_RETRIES_FROM`, `CHECKPOINT_LWW`, `CLAIMED_RUN_COLUMNS`
   (`store.ts:64-134`); the user-visible attempt ordinal, whose one TS definition is
   `ReplayContext.attempt = run.attempt - run.infraRetries` (`packages/sdk/src/context.ts:95`, read
