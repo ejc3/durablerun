@@ -294,7 +294,11 @@ export class FencedBatch {
       kind: 'followOn',
       target: spec.stamp ?? null,
       sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}\n       WHERE ${selection}${narrow}`,
-      args: [...(spec.setArgs ?? []), ...w, ...w, ...(spec.narrowArgs ?? [])],
+      // The correlation is bound ONCE PER OCCURRENCE, and it occurs twice only
+      // when the provenance subquery is emitted. Doubling it unconditionally
+      // was wrong for a statement that does not stamp, and the arg-count check
+      // caught it immediately — which is the argument for that check existing.
+      args: [...(spec.setArgs ?? []), ...(spec.stamp ? w : []), ...w, ...(spec.narrowArgs ?? [])],
       rows: spec.rows,
       max: null,
       generated: true,

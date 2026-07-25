@@ -401,19 +401,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                                   AND r.fence_stamp = ${b.fence('claim')}`
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
-    b.followOn(
-      'task-book',
-      'tasks',
-      `UPDATE tasks SET
-         state = 'running',
+    b.derived('task-book', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'claim',
+      where: `f.queue = ? AND f.state = 'running'`,
+      whereArgs: [queue],
+      set: `state = 'running',
          last_attempt_run = (SELECT f.run_id FROM runs f
                              WHERE f.task_id = tasks.task_id
-                               AND f.fence_stamp = ${b.fence('claim')}),
-         ${fenceFrom('runs', 'f.task_id = tasks.task_id', b.fence('claim'))}
-       WHERE state IN ${LIVE} AND task_id IN (${claimedByThisBatch})`,
-      [queue],
-      { many: 'one task per claimed run' },
-    )
+                               AND f.fence_stamp = ${b.fence('claim')})`,
+      narrow: `state IN ${LIVE}`,
+      rows: { many: 'one task per claimed run' },
+    })
     // A timed-out waiter's claim consumes its wait row, so a later emit cannot
     // resurrect a timed-out wait (§3.4 rule 2, timeout branch). Both halves
     // changed. It used to select rows by the caller's token, which a DUPLICATE
@@ -500,11 +503,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // deadline silently disarmed by a delivery that had already been refused,
     // and was then never cancelled.
     const activated = fencedAt('runs', BY_RUN, b.fence('activate'))
-    b.followOn(
-      'task-start',
-      'tasks',
-      `UPDATE tasks SET
-         first_started_at_ms = COALESCE(first_started_at_ms, ${activated}),
+    b.derived('task-start', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'activate',
+      where: 'f.run_id = ?',
+      whereArgs: [runId],
+      set: `first_started_at_ms = COALESCE(first_started_at_ms, ${activated}),
          cancel_at_ms = CASE
            WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
              -- ROUND, not a bare CAST. The port validates this duration with
@@ -516,14 +524,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
              CAST(ROUND(COALESCE(first_started_at_ms, ${activated})
                + json_extract(cancellation, '$.maxDurationSeconds') * 1000) AS INTEGER)
            ELSE NULL
-         END,
-         ${fenceFrom('runs', BY_RUN, b.fence('activate'))}
-       WHERE state IN ${LIVE}
-         AND task_id = (SELECT f.task_id FROM runs f
-                        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('activate')})`,
-      [runId, runId, runId, runId],
-      'one',
-    )
+         END`,
+      setArgs: [runId, runId],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
     // Full payload for the winning worker. Fenced, so it can only return the
     // row THIS delivery activated — the post-state alone cannot tell "I won"
     // from "a previous delivery of the same claim won", since both leave
@@ -1351,6 +1356,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     )
     const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
     const emitted = fencedAt('events', thisEvent, b.fence('event'))
+    // THE ONE FOLLOW-ON THAT CANNOT BE GENERATED, and the reason is worth
+    // stating rather than hiding. Every other follow-on selects its rows from
+    // a table THIS batch stamped, so the primitive can build the selection
+    // from the fence and the caller cannot widen it. This one selects from
+    // `waits` — rows some earlier await registered, which this batch never
+    // touched — and uses the event's fence only as a gate. That is a genuine
+    // exception, not an oversight, so it keeps the hand-written WHERE and the
+    // text checks that guard it. One documented escape is a better shape than
+    // a scanner defending every statement, which is the trade `openTail`
+    // already makes for reads.
+    //
     // Waiters wake with the STORED payload, never the one this call carried:
     // on a re-emit they must agree with the event row. The waits index is the
     // access path; the event's stamp is the fence.
@@ -1419,18 +1435,25 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // one belonging to run A but naming healthy task B — flipped B to pending
     // while B's own run kept running: corrupt state amplified into a task
     // that was never waiting at all.
-    b.followOn(
-      'wake-tasks',
-      'tasks',
-      `UPDATE tasks SET state = 'pending',
-         ${fenceFrom('events', `f.queue = tasks.queue AND f.event_name = ?`, b.fence('event'))}
-       WHERE state IN ${LIVE}
-         AND task_id IN (SELECT r.task_id FROM waits w JOIN runs r ON r.run_id = w.run_id
-                         WHERE w.queue = ? AND w.event_name = ?
-                           AND r.fence_stamp = ${b.fence('wake-runs')})`,
-      [eventName, queue, eventName],
-      { many: 'one task per woken run' },
-    )
+    b.derived('wake-tasks', {
+      target: 'tasks',
+      // The provenance instant comes from the EVENT, not from the runs this
+      // selects: every woken run carries the emit's instant anyway, and the
+      // event row is the one this batch created.
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'wake-runs',
+      // The queue narrows the source to an index rather than scanning runs;
+      // `state = 'pending'` is what wake-runs just set on exactly these rows.
+      where: `f.queue = ? AND f.state = 'pending'`,
+      whereArgs: [queue],
+      set: `state = 'pending',
+         ${fenceFrom('events', `f.queue = tasks.queue AND f.event_name = ?`, b.fence('event'))}`,
+      setArgs: [eventName],
+      narrow: `state IN ${LIVE}`,
+      rows: { many: 'one task per woken run' },
+    })
     // DELETE, not a status flip: the wake fields on the run carry the
     // delivery, and retained rows would leak forever (cancel deletes waits
     // the same way).
@@ -1518,46 +1541,40 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // holds no lease; it used to receive a second, hand-rolled stamp, which
     // was this primitive reimplemented by hand.
     const thisWait = `f.run_id = ? AND f.step_name = ?`
-    b.followOn(
-      'park',
-      'runs',
-      `UPDATE runs SET
-         state = 'sleeping',
+    b.derived('park', {
+      target: 'runs',
+      stamp: 'runs',
+      key: 'run_id',
+      from: 'waits',
+      column: 'run_id',
+      fence: 'register',
+      where: `f.run_id = ? AND f.step_name = ? AND f.status = 'waiting'`,
+      whereArgs: [runId, stepName],
+      set: `state = 'sleeping',
          available_at_ms = (SELECT f.timeout_at_ms FROM waits f
                             WHERE ${thisWait} AND f.fence_stamp = ${b.fence('register')}),
          wake_event = ?, event_payload = NULL, wake_step = ?,
-         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
-         ${fenceFrom('waits', thisWait, b.fence('register'))}
-       WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
-         AND state = 'running'
-         AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
-         AND ${fenced('waits', `${thisWait} AND f.status = 'waiting'`, b.fence('register'))}`,
-      [
-        runId,
-        stepName,
-        eventName,
-        stepName,
-        runId,
-        stepName,
-        runId,
-        queue,
-        taskId,
-        claimToken,
-        runId,
-        stepName,
-      ],
-      'one',
-    )
-    b.followOn(
-      'task-mirror',
-      'tasks',
-      `UPDATE tasks SET state = 'sleeping', ${fenceFrom('runs', BY_RUN, b.fence('park'))}
-       WHERE task_id = ? AND state IN ${LIVE}
-         AND ${fenced('runs', `${BY_RUN} AND f.state = 'sleeping'`, b.fence('park'))}`,
-      [runId, taskId, runId],
-      'one',
-    )
+         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL`,
+      setArgs: [runId, stepName, eventName, stepName],
+      narrow: `queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
+            AND EXISTS (SELECT 1 FROM tasks t
+                        WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+      narrowArgs: [queue, taskId, claimToken],
+      rows: 'one',
+    })
+    b.derived('task-mirror', {
+      target: 'tasks',
+      stamp: 'tasks',
+      key: 'task_id',
+      from: 'runs',
+      column: 'task_id',
+      fence: 'park',
+      where: `f.run_id = ? AND f.state = 'sleeping'`,
+      whereArgs: [runId],
+      set: `state = 'sleeping'`,
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
     // The event row belongs to whichever batch emitted it, so this read is
     // fenced on the LIVE claim token instead: a zombie falls through to the
     // register discriminator and gets the lease error, never a success signal.
