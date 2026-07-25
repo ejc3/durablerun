@@ -514,9 +514,20 @@ are load-bearing):
    payload is the TimeoutError path, and that claim batch deletes the wait row
    so a later emit cannot resurrect a timed-out wait.
 3. **Engine time is database time.** All absolute timestamps are computed in SQL
-   (`unixepoch('subsec')` / `NOW(6)` / `clock_timestamp()`); clients pass only
+   (`unixepoch('subsec')` / `NOW(6)` / `statement_timestamp()`); clients pass only
    relative durations. User-supplied absolutes (`sleepUntil`) are the only
    exception.
+   **The clock expression must be at least statement-stable**: every occurrence
+   within one statement — including inside a scalar subquery — must yield the
+   same value. Measured: SQLite `unixepoch('subsec')` is (4000/4000 identical);
+   MySQL `NOW(6)` is (it is the statement's start time), and `SYSDATE()` is NOT;
+   Postgres `statement_timestamp()` and `now()` are, and `clock_timestamp()` is
+   NOT — it re-reads the wall clock per call, so a single statement using it
+   twice can write two different instants. An earlier draft of this rule named
+   `clock_timestamp()`, which would have made rule 8 unsatisfiable on Postgres.
+   Stability does NOT extend across statements: the same expression in two
+   statements of one batch differs about 2% of the time on local SQLite (94 of
+   4000 measured) and far more over a network, which is what rule 8 exists for.
 4. **Claim is a fenced batch, not a lone statement.** The claim must also update
    tasks, delete expired waits, and return run⋈task data; follow-on statements
    key strictly on the fresh `claimed_by = :claim_token` (unique per tick), never
@@ -559,6 +570,34 @@ are load-bearing):
    breaks the integer epoch-ms contract. Durations stored in JSON
    (`cancellation.maxDurationSeconds`) are validated at spawn and their SQL
    products CAST to INTEGER at use.
+8. **Write provenance is a column, never a borrowed one.** Every table a CAS
+   targets — `tasks`, `runs`, `waits`, `events` (the contract list, `core`'s
+   `FENCED_TABLES`) — carries `fence_stamp TEXT` and `fence_at_ms INTEGER`.
+   A batch mints one seed; each stamp-writing statement writes
+   `<seed>:<statement name>`, together with the ONE instant that statement
+   read, into `fence_at_ms`. Every later statement in the batch filters on
+   that stamp and derives every instant it needs from `fence_at_ms`. Rule 1
+   says a follow-on keys on the post-transition state *plus the batch's own
+   stamp*; this rule says where the stamp LIVES, and it exists because the
+   answer used to be "some column that already meant something else" —
+   `runs.claimed_by` (the worker's lease) and `tasks.failure_reason` (a
+   user-visible string). A borrowed column can be written by something other
+   than this batch, so a follow-on keyed on it fires for a stale or
+   duplicated caller; that is not a coding mistake to be avoided but the
+   direct consequence of having nowhere correct to write.
+   Two consequences are contract, not implementation detail:
+   *(a)* the stamp names a STATEMENT, not just a batch. One stamp per batch
+   aliases across its statements, and a follow-on asking "does the row at
+   this id carry my batch's stamp" can then be answered by a *different* row
+   the same batch stamped — which is how a failing run whose successor id
+   collided with its own impersonated that successor.
+   *(b)* a follow-on may not read the clock at all. It has `fence_at_ms`, so
+   the class of bug where two statements of one batch disagree about "now"
+   has no remaining legal instance to hide in.
+   The columns are nullable, unindexed, and never a lookup key — a stamp is
+   only ever a filter, and every fenced statement is anchored by a primary key
+   or an existing index. Rows written before the provenance migration read
+   NULL, and NULL never equals a stamp, so no fence can match one.
 
 **Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
 `setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
