@@ -144,6 +144,35 @@ the evidence attached to the PR:
   on the prevention ladder;
 - what was built now vs deferred (deferrals recorded in BUILD.md).
 
+**The four questions that make it a postmortem and not a changelog.** A
+per-finding catalogue is the easy half and answers nothing about whether the
+machinery is improving; these are aggregate and they are hostile on purpose:
+
+1. **The detection ledger.** What fraction of the defects did OUR machinery
+   find, versus an outside reviewer? That ratio is the headline number.
+   Fixes are the cheap part and a review round is not a repeatable process,
+   so a rate that is not improving round over round means the mechanisms
+   being added are not the ones that matter.
+2. **Recurrence.** Is any finding another instance of a class an earlier
+   round already instituted a mechanism against? If so that mechanism did
+   not work, and saying exactly why is worth more than every fix in the
+   round. A class that recurs is evidence its mechanism is a PROXY for the
+   property rather than the property.
+3. **The false negative of every mechanism.** For each one claimed, exhibit
+   the code that still has the bug and still passes it — written and run,
+   not imagined. A mechanism whose false negative cannot be written has not
+   had its boundary understood. This is the check that stops a point fix
+   from wearing the word "mechanism", and it is where a syntactic proxy
+   ("the text contains a fence token") is forced to admit it is not the
+   semantic property ("the fence gates the write").
+4. **Fix-induced defects.** How many findings were caused by the fixes for
+   earlier findings in the same round? A repair is a change, and the
+   understanding behind it is about the shape the code had before.
+
+The template carries these as required sections, and the attestation script
+derives what it demands FROM the template — so tightening the template
+tightens the gate, with no second list to keep in sync.
+
 Enforced, not remembered: `scripts/review-attest.sh` refuses to produce the
 required `adversarial-review` status unless the PR body declares
 `review-findings: <count>` — mandatory, so a round can never silently claim
