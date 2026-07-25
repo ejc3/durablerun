@@ -237,7 +237,15 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('expected a claim')
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:go#2', 'go', null)
+    await f.store.awaitEvent(
+      Q,
+      spawned.taskId,
+      run.runId,
+      run.claimToken,
+      '$await:go#2',
+      'go',
+      null,
+    )
     // A leftover from the FIRST call site, at a different step.
     await f.raw.batch('t', [
       {
@@ -246,7 +254,10 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
         args: [run.runId, Q, spawned.taskId, NOW - 1],
       },
       // Remove the run's OWN wait, leaving only the other step's.
-      { sql: `DELETE FROM waits WHERE run_id = ? AND step_name = '$await:go#2'`, args: [run.runId] },
+      {
+        sql: `DELETE FROM waits WHERE run_id = ? AND step_name = '$await:go#2'`,
+        args: [run.runId],
+      },
     ])
 
     await f.store.emitEvent(Q, 'go', '{"x":1}')
