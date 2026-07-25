@@ -1,4 +1,9 @@
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin, MIGRATIONS } from '@durablerun/store-libsql'
+import {
+  LibsqlExecutor,
+  LibsqlSchedulerStore,
+  LibsqlStoreAdmin,
+  MIGRATIONS,
+} from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 
@@ -34,7 +39,8 @@ function columnsAddedAfterTheirTable(): { table: string; column: string; version
   for (const m of MIGRATIONS) {
     for (const s of m.statements) {
       const match = /^ALTER TABLE (\w+) ADD COLUMN (\w+)/.exec(s.trim())
-      if (match?.[1] && match[2]) out.push({ table: match[1], column: match[2], version: m.version })
+      if (match?.[1] && match[2])
+        out.push({ table: match[1], column: match[2], version: m.version })
     }
   }
   return out
@@ -70,12 +76,18 @@ describe('rows written before a column existed', () => {
       const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
       if (!run) throw new Error('expected a claim')
       await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-      await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:go', 'go', null)
+      await f.store.awaitEvent(
+        Q,
+        spawned.taskId,
+        run.runId,
+        run.claimToken,
+        '$await:go',
+        'go',
+        null,
+      )
 
       // Exactly what a row written by the older schema looks like.
-      await f.raw.batch('legacy', [
-        { sql: `UPDATE ${table} SET ${column} = NULL`, args: [] },
-      ])
+      await f.raw.batch('legacy', [{ sql: `UPDATE ${table} SET ${column} = NULL`, args: [] }])
 
       await f.store.emitEvent(Q, 'go', '{"x":1}')
 
@@ -91,11 +103,11 @@ describe('rows written before a column existed', () => {
         [{ sql: `SELECT COUNT(*) AS n FROM waits WHERE run_id = ?`, args: [run.runId] }],
         'read',
       )
-      const stranded =
-        after?.rows[0]?.state === 'sleeping' && Number(waits?.rows[0]?.n) === 0
-      expect(stranded, `${table}.${column} NULL leaves the run asleep with no wait to wake it`).toBe(
-        false,
-      )
+      const stranded = after?.rows[0]?.state === 'sleeping' && Number(waits?.rows[0]?.n) === 0
+      expect(
+        stranded,
+        `${table}.${column} NULL leaves the run asleep with no wait to wake it`,
+      ).toBe(false)
       expect(await engineInvariantViolations(f.raw)).toEqual([])
       f.close()
     })
