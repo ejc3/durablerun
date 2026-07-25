@@ -196,6 +196,13 @@ MUTATIONS = [
         "a claimed pre-v3 timed wait loses the only copy of its exact step",
     ),
     (
+        "test-token-source-monotonic",
+        "packages/store-libsql/src/testing.ts",
+        "    token: () => `${namespace}-token-${serial(++tokens)}`,",
+        "    token: () => `${namespace}-token-${serial(tokens || ++tokens)}`,",
+        "routine fixtures reuse their first provenance seed on every later batch",
+    ),
+    (
         "schema-fault-is-permanent",
         "packages/store-libsql/src/executor.ts",
         "      if (SCHEMA_FAULT.test(String(error))) {",

@@ -302,13 +302,17 @@ tick():
      Batch fencing (§3.4 rule 1): the FIRST statement is the guarded CAS
      transition; later statements key on the post-transition state plus the
      batch's own stamp — never on the pre-condition the CAS just consumed.
-  2. claim: ONE fenced batch stamped with a fresh per-tick claim_token:
+  2. claim: ONE fenced batch with two distinct identities. The caller's
+     per-tick claim_token is the durable lease and retry receipt; the batch
+     also mints a fresh per-invocation provenance seed:
      UPDATE runs SET state='running', claimed_by=:token,
        claim_gen = claim_gen + 1, claim_expires_at=…
        WHERE run_id IN (SELECT … due, ORDER BY available_at LIMIT K)
        RETURNING run_id, task_id, attempt, claim_gen;
-     follow-on statements (task updates, expired-wait deletes, task-data join)
-     keyed strictly on claimed_by = :token.
+     mutating follow-ons (task updates and expired-wait deletes) key on the
+     claim CAS's statement stamp and post-state. The task-data receipt read
+     alone keys on claimed_by = :token so a same-token retry can return the
+     prior invocation's selection.
   3. launch: fire-and-forget one worker invocation per claimed run, payload
      {runId, attempt, claim_token, claim_gen} (HMAC-signed). The worker acks
      immediately and executes inside its OWN invocation — the tick never
@@ -347,11 +351,12 @@ Notes:
   not at-least-once**: Vercel never retries a failed or missed cron invocation,
   so budget a few cron periods of worst-case latency, not one. (QStash is the leg
   with real at-least-once semantics: retries + DLQ.)
-- Duplicate/concurrent ticks: harmless. Claims are fenced by fresh per-tick
-  claim tokens; re-arms dedupe per (shard, time); sweep batches re-check their
-  fences per statement. Herds are bounded by the K/K_s batch caps plus poll
-  jitter — deliberately NOT by a tick-singleton lease, which would break the
-  invariant that every trigger causes a look.
+- Duplicate/concurrent ticks: harmless. A fresh per-tick claim token owns the
+  durable lease and retry receipt, while a fresh FencedBatch seed fences each
+  invocation's mutations; re-arms dedupe per (shard, time); sweep batches
+  re-check their fences per statement. Herds are bounded by the K/K_s batch
+  caps plus poll jitter — deliberately NOT by a tick-singleton lease, which
+  would break the invariant that every trigger causes a look.
 - With zero work: a resident driver's idle tick is two indexed reads returning
   nothing (~0 rows scanned) and zero writes; in serverless mode no pings arrive,
   no alarm is armed, and the cron tick exits the same way. Either way the idle
@@ -405,14 +410,15 @@ One invocation executes one claimed run to its next suspension point:
   throttled, so shard-DB write rate stays transitions + throttled heartbeats. A
   zero-row `heartbeat` is the AB002 equivalent (lease gone): abort the handler
   immediately.
-- On completion/failure: `complete_run` / `fail_run` — fenced batches
-  (`claimed_by=:token AND state='running'` on every statement, so a zombie whose
-  lease was swept cannot complete a run someone else now owns). Retry *policy*
-  lives client-side (same jsonb strategy) but all absolute timestamps are
-  computed in SQL (`unixepoch('subsec')` arithmetic) with clients passing only
-  relative durations — instance clock skew must never move engine time (Absurd's
-  `current_time()` discipline, ported; a nullable fake-now in the shard-meta row
-  recreates its test affordance).
+- On completion/failure: `complete_run` / `fail_run` — the leading CAS checks
+  `claimed_by=:token AND state='running'`, so a zombie whose lease was swept
+  cannot win; every mutating follow-on keys on that CAS's per-invocation
+  statement stamp and post-state. Retry *policy* lives client-side (same jsonb
+  strategy) but all absolute timestamps are computed in SQL
+  (`unixepoch('subsec')` arithmetic) with clients passing only relative
+  durations — instance clock skew must never move engine time (Absurd's
+  `current_time()` discipline, ported; a nullable fake-now in the shard-meta
+  row recreates its test affordance).
 - **After every suspension or terminal transition that leaves future work —
   sleep, await-with-timeout, retry scheduled, voluntary exit — the worker
   unconditionally pings the driver** (or arms an alarm for its wake time). Not
@@ -498,8 +504,9 @@ are load-bearing):
    NOT re-check the pre-condition the first statement just consumed. The
    pattern: the FIRST statement is the guarded CAS transition
    (`… WHERE run_id=:r AND state='running' AND claimed_by=:token`), and every
-   later statement keys on the post-transition state plus the batch's own
-   stamp (`… WHERE run_id=:r AND state='failed' AND claimed_by=:token`). A
+   later mutation keys on the post-transition state plus the winning
+   statement's per-invocation provenance stamp
+   (`… WHERE run_id=:r AND state='failed' AND fence_stamp=:seed:cas`). A
    stale actor's whole batch then matches zero rows on statement one and zero
    rows on every follow-on. Where a partial effect would still be corrupt, add
    an abort-sentinel statement that deliberately errors (CHECK violation) when
@@ -560,16 +567,18 @@ are load-bearing):
    Stability does NOT extend across statements: the same expression in two
    statements of one batch differs about 2% of the time on local SQLite (94 of
    4000 measured) and far more over a network, which is what rule 8 exists for.
-4. **Claim is a fenced batch, not a lone statement.** The claim must also update
-   tasks, delete expired waits, and return run⋈task data; follow-on statements
-   key strictly on the fresh `claimed_by = :claim_token` (unique per tick), never
-   on a re-computed candidate set. Two additional predicates are contract:
-   a same-token RETRY is an idempotent receipt — it claims nothing new and
-   returns the original selection (guarded by "no running rows already carry
-   this token"), so a lost response cannot multiply the claim bound; and the
-   candidate set excludes tasks whose cancellation deadline is already due —
-   a sweep budget too small to cancel everything this pass must not leak
-   due-to-cancel tasks into launches.
+4. **Claim is a fenced batch, not a lone statement.** It has two identities:
+   `claimed_by = :claim_token` is the durable lease and idempotent receipt,
+   while the FencedBatch invocation seed gives the claim CAS its fresh
+   per-statement provenance stamp. Mutating follow-ons update tasks and delete
+   expired waits strictly through the claim CAS stamp, never through the
+   durable token or a re-computed candidate set. The final receipt read alone
+   keys on `claimed_by = :claim_token`: a same-token retry claims nothing new
+   and returns the original selection (guarded by "no running rows already
+   carry this token"), so a lost response cannot multiply the claim bound.
+   The candidate set also excludes tasks whose cancellation deadline is
+   already due — a sweep budget too small to cancel everything this pass must
+   not leak due-to-cancel tasks into launches.
 5. **Checkpoint writes are lease-fenced in both placements.** Inline: the upsert
    joins the run-row guard (`claimed_by=:token AND state='running'`) — same DB,
    free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease

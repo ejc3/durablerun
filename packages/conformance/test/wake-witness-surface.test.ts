@@ -193,18 +193,16 @@ const NO_LIVE_TASK_GUARD = mutateWake(
 )
 
 async function open(mutate?: StatementMutator) {
-  const { raw, admin } = await openTestDb({ nowMs: NOW })
-  let n = 0
-  let seeds = 0
+  const { raw, ids } = await openTestDb({
+    nowMs: NOW,
+    idNamespace: 'wake-witness',
+  })
   const db: SqlExecutor = mutate
     ? {
         batch: (label, statements, mode) => raw.batch(label, mutate(label, statements), mode),
       }
     : raw
-  const store = new LibsqlSchedulerStore(db, {
-    uuidv7: () => `id-${++n}`,
-    token: () => `tok-${++seeds}`,
-  })
+  const store = new LibsqlSchedulerStore(db, ids)
   return { raw, store, close: () => raw.close() }
 }
 

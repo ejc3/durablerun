@@ -43,20 +43,14 @@ function columnsAddedAfterTheirTable(): { table: string; column: string; version
 }
 
 async function fixture() {
-  const { raw, admin } = await openTestDb({ nowMs: NOW })
-  // Separate counters: a shared one returns the same token for two
-  // consecutive batches whenever no id is minted between them, and two
-  // batches sharing a seed is the one corruption the provenance scheme
-  // cannot survive. The one-batch-two-instants invariant catches it.
-  let ids = 0
-  let seeds = 0
+  const { raw, admin, ids } = await openTestDb({
+    nowMs: NOW,
+    idNamespace: 'legacy-rows',
+  })
   return {
     raw,
     admin,
-    store: new LibsqlSchedulerStore(raw, {
-      uuidv7: () => `id-${++ids}`,
-      token: () => `tok-${++seeds}`,
-    }),
+    store: new LibsqlSchedulerStore(raw, ids),
     close: () => raw.close(),
   }
 }

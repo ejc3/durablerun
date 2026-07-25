@@ -28,7 +28,7 @@ failing a task permanently one attempt early. Both were fixed by deleting one sp
 making the two agree.
 
 <!-- review-bot-synopsis:start -->
-Flag a second copy of something that already has a definition — a query plan EXPLAINed against SQL typed into the test instead of the imported or executor-recorded shipped statement, a copy justified by "structurally the same"/"mirrors"/"kept in sync" with nothing in the diff that fails on divergence, a contract constant or fragment or attempt-ordinal formula respelled (even arithmetically equivalently) where a single definition is importable, a hand-maintained list of labels/checkers/columns/placeholders with no reconciliation against its source, one value handed to two sinks raw on one path and validated-or-canonical on the other, and two branches applying different conditions to the same column set. Pass for negative controls asserting the degraded plan, deliberately independent oracles (wake-witness-surface, conformance invariants), copies that report their own staleness (mutation-probe MUTATIONS), classification lists whose harvest is total (fault-matrix MATRIX_*, batch-lint READS/TOKEN_FENCED/MULTI_CLOCK, gate-lint NOT_IN_GATE, lint-selftest EXEMPT), per-dialect SQL and schema.ts DDL, raw fixture SQL that reads or builds engine state in tests, contract literals asserted (not constructed) in the conformance suite, error messages echoing raw user input, and per-query row decoders.
+Flag a second copy of something that already has a definition — a query plan EXPLAINed against SQL typed into the test instead of the imported or executor-recorded shipped statement, a copy justified by "structurally the same"/"mirrors"/"kept in sync" with nothing in the diff that fails on divergence, a contract constant or fragment or attempt-ordinal formula respelled (even arithmetically equivalently) where a single definition is importable, a hand-maintained list of labels/checkers/columns/placeholders with no reconciliation against its source, one value handed to two sinks raw on one path and validated-or-canonical on the other, a routine libSQL fixture constructing or ignoring a second `IdSource` instead of sharing `openTestDb().ids`, and two branches applying different conditions to the same column set. Pass for negative controls asserting the degraded plan, deliberately independent oracles (wake-witness-surface, conformance invariants), copies that report their own staleness (mutation-probe MUTATIONS), classification lists whose harvest is total (fault-matrix MATRIX_*, batch-lint READS/TOKEN_FENCED/MULTI_CLOCK, gate-lint NOT_IN_GATE, lint-selftest EXEMPT), per-dialect SQL and schema.ts DDL, raw fixture SQL that reads or builds engine state in tests, deliberately colliding or scripted `IdSource`s when the collision or sequence is the assertion, contract literals asserted (not constructed) in the conformance suite, error messages echoing raw user input, and per-query row decoders.
 <!-- review-bot-synopsis:end -->
 
 Report a failure when the changed code introduces or materially expands any of these:
@@ -69,6 +69,10 @@ Report a failure when the changed code introduces or materially expands any of t
   on the executing pass and the serialize-then-parse value on replay (`ctx.step` returns
   `JSON.parse(stateJson)` on *both*, `context.ts:168-173` — a change that returns `raw` instead is
   this finding).
+- **A routine libSQL fixture with a second provenance issuer.** `openTestDb()` returns the one
+  monotonic `ids` source for that database. Constructing a constant-token source beside it, or
+  ignoring it and giving another routine store its own source, reintroduces two issuance domains
+  whose stamps can alias without either source noticing.
 - **Two interpretations of one column set.** Two branches or two call sites that apply *different
   conditions* to the same columns — one requiring a field, another defaulting or falling back when
   it is absent. PR #11 finding C was exactly this: one path required `wake_step` alongside
@@ -115,6 +119,10 @@ Allowed cases (do NOT flag these):
   claims to be what production runs. `legacy-rows.test.ts:32-44` even *derives* its column list from
   `MIGRATIONS`, which is the shape to praise; and `generated-selection.test.ts:10-16` explains why
   asserting on generated SQL *text* would be the wrong direction.
+- **A deliberately colliding or scripted `IdSource` whose sequence is the assertion.** Collision
+  regressions and replay tests may inject a repeated ID or token when the test names that sequence
+  and asserts its consequence. The routine source rule applies to shared fixture setup, not to an
+  adversarial value constructed as the test input.
 - **A contract value written literally in an assertion about observable output.**
   `packages/conformance/src/suite.ts:302` asserts `failure_reason: '{"name":"$ClaimTimeout"}'`
   rather than importing `REASON_CLAIM_TIMEOUT` — the conformance suite is the language-neutral

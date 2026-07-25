@@ -149,20 +149,13 @@ async function run(
   snapshot: Awaited<ReturnType<typeof snapshot>>
   violations: string[]
 }> {
-  const { raw } = await openTestDb({ nowMs: NOW })
-  // SEPARATE counters. Sharing one made `token()` return the same string for
-  // two consecutive batches whenever no id was minted between them — and the
-  // whole provenance scheme is exactly as strong as seed uniqueness, so two
-  // batches sharing a seed is precisely the corruption it cannot survive.
-  // The invariant below caught it on its first run.
-  let ids = 0
-  let seeds = 0
+  const { raw, ids } = await openTestDb({
+    nowMs: NOW,
+    idNamespace: `clock-${scenario}`,
+  })
   const clocked: SqlExecutor = jitterMs === 0 ? raw : new JitteringExecutor(raw, jitterMs)
   const db = mutate ? mutating(clocked, mutate) : clocked
-  const store = new LibsqlSchedulerStore(db, {
-    uuidv7: () => `id-${++ids}`,
-    token: () => `tok-${++seeds}`,
-  })
+  const store = new LibsqlSchedulerStore(db, ids)
   const trace: { operation: string; result: unknown }[] = []
   const record = (operation: string, result: unknown = 'ok') => {
     trace.push({ operation, result: result === undefined ? null : result })

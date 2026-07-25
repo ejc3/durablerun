@@ -12,12 +12,8 @@ const NOW = 1_000_000
  * these unreachable through the API) and drives the real awaitEvent.
  */
 async function fixture(seed: string) {
-  const { raw, admin } = await openTestDb({ nowMs: NOW })
-  // Deterministic id source is irrelevant here; awaitEvent mints no ids.
-  const store = new LibsqlSchedulerStore(raw, {
-    uuidv7: () => `id-${seed}`,
-    token: () => `tok-${seed}`,
-  })
+  const { raw, admin, ids } = await openTestDb({ nowMs: NOW, idNamespace: seed })
+  const store = new LibsqlSchedulerStore(raw, ids)
   return { raw, admin, store, close: () => raw.close() }
 }
 

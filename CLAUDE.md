@@ -28,7 +28,8 @@ lightweight tick drivers that launch workers on demand.
 2. awaitEvent/emitEvent must be atomic AND mutually exclusive per dialect
    (SQLite: one batch; PG/MySQL: row-lock transaction).
 3. Engine time is database time; clients pass relative durations only.
-4. Claim is a fenced batch keyed on the per-tick claim token.
+4. Claim has a durable lease/receipt claim token, while mutating batch
+   follow-ons key on the claim CAS's per-invocation statement stamp.
 5. Checkpoint writes are lease-fenced in both placements.
 
 Activation is a per-claim generation CAS (`activated_gen < claim_gen`), never

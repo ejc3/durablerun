@@ -154,9 +154,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (`one-batch-two-instants`, `provenance-pair-broken`) which hold for any write
   path, including ones that never touch the primitive; the per-statement
   clock-jitter executor, which makes the second-clock-read class observable at
-  all (under a frozen fake clock it is invisible, proven by mutation); and the
-  seed-uniqueness assertion, delivered for free by the same invariant — it
-  found two fixtures reusing a batch seed on its first run. Remaining:
+  all (under a frozen fake clock it is invisible, proven by mutation); and a
+  canonical monotone source for routine test IDs and provenance tokens. The
+  invariant found two fixtures whose reused seeds survived at different
+  instants, but it is not an issuance-uniqueness assertion: same-instant reuse,
+  zero-row borrowing of old evidence, and reuse after overwrite require the
+  source-level mechanism. Remaining:
   - **A bound on many-row follow-ons.** `{ many: reason }` costs a sentence and
     bounds nothing, so amplification is unlimited wherever the target set is
     wider than intended. The generated selection now makes the bound derivable

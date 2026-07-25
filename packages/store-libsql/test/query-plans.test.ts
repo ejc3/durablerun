@@ -1,5 +1,5 @@
-import { type Client, createClient } from '@libsql/client'
 import type { SqlExecutor } from '@durablerun/core'
+import { type Client, createClient } from '@libsql/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   LibsqlExecutor,
@@ -10,6 +10,7 @@ import {
   SWEEP_SCAN_CANCELS_SQL,
   SWEEP_SCAN_EXPIRED_SQL,
 } from '../src/index.js'
+import { testIdSource } from '../src/testing.js'
 
 /**
  * Query-plan pinning (prevention suite, per the standing rule): the
@@ -152,11 +153,7 @@ describe('the emit fan-out, which is a WRITE', () => {
         return db.batch(label, statements, mode)
       },
     }
-    let n = 0
-    const store = new LibsqlSchedulerStore(recorder, {
-      uuidv7: () => `id-${++n}`,
-      token: () => `tok-${n}`,
-    })
+    const store = new LibsqlSchedulerStore(recorder, testIdSource('query-plan'))
     await store.emitEvent('q', 'e', '{}')
     // Sealing consumes the delivery statement's intermediate fence with a
     // second runs UPDATE. Select the one statement that writes the payload,

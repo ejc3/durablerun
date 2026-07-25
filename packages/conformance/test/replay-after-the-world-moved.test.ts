@@ -21,13 +21,10 @@ const Q = 'q'
 const NOW = 1_000_000
 
 async function fixture() {
-  const { raw, admin } = await openTestDb({ nowMs: NOW })
-  // Separate counters — see legacy-rows.test.ts: a shared counter hands
-  // two consecutive batches the same seed, which the provenance scheme
-  // cannot survive and the one-batch-two-instants invariant catches.
-  let n = 0
-  let seeds = 0
-  const ids = { uuidv7: () => `id-${++n}`, token: () => `tok-${++seeds}` }
+  const { raw, admin, ids } = await openTestDb({
+    nowMs: NOW,
+    idNamespace: 'world-moved',
+  })
   return {
     raw,
     admin,

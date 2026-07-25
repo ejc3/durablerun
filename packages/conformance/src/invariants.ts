@@ -213,19 +213,6 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
     {
       // TypeOK twin, generation/counter arm.
       /**
-       * Rule 8, as data: every row a single batch stamped carries the SAME
-       * instant. A batch reads the clock once, in its compare-and-set, and
-       * every later statement derives from the `fence_at_ms` that recorded.
-       * Two rows sharing a seed and disagreeing about when it happened means
-       * some statement read the clock a second time.
-       *
-       * This is the executable twin of a rule that was previously enforced
-       * only by looking for a token in SQL text — a check four different
-       * spellings walked past, and which cannot see a raw clock read at all.
-       * Here the evidence is in the database, so it holds for any path,
-       * including ones that never touch the primitive.
-       */
-      /**
        * The provenance pair is written together or not at all, and always in
        * the shape the primitive generates. A stamp without an instant means
        * some statement wrote half the pair — a fresh claim of authorship
@@ -250,6 +237,18 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
                OR (s IS NOT NULL AND length(s) - instr(s, ':') < 1)`,
     },
     {
+      /**
+       * Rule 8, as surviving data: rows sharing a seed must carry the same
+       * instant. A disagreement proves either a second clock read inside one
+       * batch or one seed reused across different instants.
+       *
+       * This is a cross-instant consistency alarm, not an issuance ledger. It
+       * cannot see reuse at the same frozen millisecond, a zero-row CAS that
+       * borrows older stamped rows, or reuse after the earlier evidence was
+       * overwritten. Routine test fixtures prevent those cases by construction
+       * with `testIdSource`; production IdSource implementations own the same
+       * unique-token contract.
+       */
       name: 'one-batch-two-instants',
       sql: `WITH stamped AS (
               SELECT fence_stamp AS s, fence_at_ms AS at FROM tasks  WHERE fence_stamp IS NOT NULL

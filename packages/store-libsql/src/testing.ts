@@ -1,5 +1,28 @@
+import type { IdSource } from '@durablerun/core'
 import { LibsqlStoreAdmin } from './admin.js'
 import { LibsqlExecutor } from './executor.js'
+
+/**
+ * A deterministic source for routine database tests.
+ *
+ * IDs and tokens have independent monotone counters: an operation that mints
+ * no UUID still receives a fresh provenance token. Zero padding preserves the
+ * ordering contract of UUIDv7 stand-ins once a fixture reaches two digits.
+ */
+export function testIdSource(namespace = 'test'): IdSource {
+  if (!/^[a-zA-Z0-9_-]+$/.test(namespace)) {
+    throw new Error(
+      `test id namespace must contain only letters, digits, underscores, or hyphens: ${namespace}`,
+    )
+  }
+  let ids = 0
+  let tokens = 0
+  const serial = (value: number) => String(value).padStart(6, '0')
+  return {
+    uuidv7: () => `${namespace}-id-${serial(++ids)}`,
+    token: () => `${namespace}-token-${serial(++tokens)}`,
+  }
+}
 
 /**
  * An in-memory database migrated to the current schema, with the engine
@@ -8,10 +31,12 @@ import { LibsqlExecutor } from './executor.js'
  * Four lines, and every test file that wanted a database wrote its own copy
  * of them — twenty-two of them, across five packages. That is not a tidiness
  * complaint: the copies DRIFTED, and one of the ways they drifted caused a
- * real failure. A fixture that handed consecutive batches the same id seed
- * gave two batches the same provenance stamp, which the scheme cannot
- * survive; the `one-batch-two-instants` invariant caught it, and the
- * surviving comment in replay-after-the-world-moved.test.ts is the scar.
+ * real failure. A fixture that handed consecutive batches the same token
+ * seed let a no-op batch borrow an older batch's fence. The helper now returns
+ * one source alongside each database, and the converted routine fixture
+ * stores share it. `one-batch-two-instants` remains a cross-instant
+ * consistency alarm; it cannot prove token issuance was unique at one instant
+ * or after evidence was overwritten.
  *
  * It lives in this package rather than in `conformance` because the
  * dependency runs that way: `conformance` devDepends on `store-libsql`, so a
@@ -19,14 +44,16 @@ import { LibsqlExecutor } from './executor.js'
  * store's own tests. Exported under `@durablerun/store-libsql/testing` so it
  * stays out of the package's main barrel.
  */
-export async function openTestDb(opts: { nowMs?: number } = {}): Promise<{
+export async function openTestDb(opts: { nowMs?: number; idNamespace?: string } = {}): Promise<{
   raw: LibsqlExecutor
   admin: LibsqlStoreAdmin
+  ids: IdSource
   close: () => void
 }> {
   const raw = LibsqlExecutor.open(':memory:')
   const admin = new LibsqlStoreAdmin(raw)
+  const ids = testIdSource(opts.idNamespace)
   await admin.migrate()
   if (opts.nowMs !== undefined) await admin.setFakeNowEpochMs(opts.nowMs)
-  return { raw, admin, close: () => raw.close() }
+  return { raw, admin, ids, close: () => raw.close() }
 }
