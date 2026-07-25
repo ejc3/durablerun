@@ -175,6 +175,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     wider than intended. The generated selection now makes the bound derivable
     — a follow-on cannot touch more distinct keys than its source stamped — so
     this is a runtime assertion, not a design problem.
+  - **Typed source-to-target key pairing in `FencedBatch.derived()`.** The
+    generator still accepts `key: 'run_id'` with `column: 'task_id'`; that
+    compiles, passes every fence check, and selects nothing. Derive both names
+    from a contract-owned table relation, or reject the mismatch at
+    construction and in the dialect-neutral conformance surface, so a caller
+    cannot independently spell two halves of one join.
+  - **Attributable mutation catches in `scripts/mutation-probe.py`.** A
+    mutation that changes bind arity can be reported as caught by compilation
+    without exercising the guard it claims to delete. Give every entry an
+    expected behavioral verdict (or an explicit construction verdict) and
+    make the probe reject wrong-path failures; the probe itself is the checker
+    that must distinguish a behavioral catch from an incidental compile
+    failure.
   - **A generated corrupt-pre-state ("poison") fault surface** driving every
     write label against each invariant-forbidden pre-state.
   - **emitEvent's `wake-runs` is the one follow-on that cannot be generated**,
