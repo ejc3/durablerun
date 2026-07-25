@@ -1,4 +1,71 @@
-import type { SqlExecutor } from '@durablerun/core'
+import type { SqlExecutor, SqlRow } from '@durablerun/core'
+
+type Check =
+  | { name: string; sql: string; evaluate?: never }
+  | {
+      name?: never
+      sql: string
+      evaluate(rows: readonly SqlRow[]): string[]
+    }
+
+const PROVENANCE_EVIDENCE = `
+  SELECT 'tasks' AS source, task_id AS key1, NULL AS key2,
+         fence_stamp, fence_at_ms FROM tasks
+  UNION ALL
+  SELECT 'runs', run_id, NULL, fence_stamp, fence_at_ms FROM runs
+  UNION ALL
+  SELECT 'waits', run_id, step_name, fence_stamp, fence_at_ms FROM waits
+  UNION ALL
+  SELECT 'events', queue, event_name, fence_stamp, fence_at_ms FROM events`
+
+function provenanceViolations(rows: readonly SqlRow[]): string[] {
+  const violations: string[] = []
+  const instantsBySeed = new Map<string, Set<string>>()
+
+  for (const row of rows) {
+    const location = [row.source, row.key1, row.key2]
+      .filter((part) => part !== null && part !== undefined)
+      .map(String)
+      .join('/')
+    const stamp = row.fence_stamp
+    const instant = row.fence_at_ms
+    const hasStamp = stamp !== null && stamp !== undefined
+    const hasInstant = instant !== null && instant !== undefined
+    const separator = typeof stamp === 'string' ? stamp.lastIndexOf(':') : -1
+    const malformedStamp =
+      hasStamp && (typeof stamp !== 'string' || separator <= 0 || separator === stamp.length - 1)
+
+    /**
+     * The provenance pair is written together or not at all, and always in
+     * the shape the primitive generates. This data-level audit sees every row
+     * regardless of whether its writer went through FencedBatch.
+     */
+    if (hasStamp !== hasInstant || malformedStamp) {
+      violations.push(`provenance-pair-broken: ${location}`)
+      continue
+    }
+    if (!hasStamp || !hasInstant || typeof stamp !== 'string') continue
+
+    /**
+     * Rule 8, as surviving data: rows sharing one opaque seed must carry one
+     * instant. The statement name is the final colon-delimited segment; the
+     * seed itself may contain colons.
+     */
+    const seed = stamp.slice(0, separator)
+    const instants = instantsBySeed.get(seed) ?? new Set<string>()
+    instants.add(String(instant))
+    instantsBySeed.set(seed, instants)
+  }
+
+  for (const [seed, instants] of instantsBySeed) {
+    if (instants.size < 2) continue
+    const ordered = [...instants].sort(
+      (left, right) => Number(left) - Number(right) || left.localeCompare(right),
+    )
+    violations.push(`one-batch-two-instants: ${seed} saw ${ordered[0]} and ${ordered.at(-1)}`)
+  }
+  return violations
+}
 
 /**
  * The TLA+ invariants as executable SQL checkers (prevention, per the
@@ -8,7 +75,7 @@ import type { SqlExecutor } from '@durablerun/core'
  * Run after every sim quiescence and any time a scenario finishes.
  */
 export async function engineInvariantViolations(raw: SqlExecutor): Promise<string[]> {
-  const checks: { name: string; sql: string }[] = [
+  const checks: Check[] = [
     {
       // TerminalTaskQuiescent: a terminal task has no live runs.
       name: 'terminal-task-with-live-run',
@@ -211,62 +278,19 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
             WHERE typeof(updated_at_ms) NOT IN ('integer','null')`,
     },
     {
+      /**
+       * One dialect-neutral evidence projection feeds both provenance
+       * properties. Parsing and grouping live in TypeScript so the contract
+       * does not depend on SQLite's instr/substr functions or concatenation
+       * coercions. This remains a cross-instant consistency alarm rather than
+       * an issuance ledger: same-instant reuse and overwritten evidence need
+       * the source-level unique-token mechanism.
+       */
+      sql: PROVENANCE_EVIDENCE,
+      evaluate: provenanceViolations,
+    },
+    {
       // TypeOK twin, generation/counter arm.
-      /**
-       * The provenance pair is written together or not at all, and always in
-       * the shape the primitive generates. A stamp without an instant means
-       * some statement wrote half the pair — a fresh claim of authorship
-       * beside a stale or absent record of when — and a malformed stamp means
-       * a row was written by something that is not the primitive at all.
-       *
-       * This is the data-level half of the audit: a construction check can
-       * only see code that goes through `FencedBatch`, and this sees every
-       * row however it got there.
-       */
-      name: 'provenance-pair-broken',
-      sql: `WITH stamped AS (
-              SELECT 'tasks'  AS t, task_id  AS id, fence_stamp AS s, fence_at_ms AS at FROM tasks
-              UNION ALL SELECT 'runs',   run_id,  fence_stamp, fence_at_ms FROM runs
-              UNION ALL SELECT 'waits',  run_id,  fence_stamp, fence_at_ms FROM waits
-              UNION ALL SELECT 'events', event_name, fence_stamp, fence_at_ms FROM events
-            )
-            SELECT t || '/' || id AS v FROM stamped
-            WHERE (s IS NOT NULL AND at IS NULL)
-               OR (s IS NULL AND at IS NOT NULL)
-               OR (s IS NOT NULL AND instr(s, ':') <= 1)
-               OR (s IS NOT NULL AND length(s) - instr(s, ':') < 1)`,
-    },
-    {
-      /**
-       * Rule 8, as surviving data: rows sharing a seed must carry the same
-       * instant. A disagreement proves either a second clock read inside one
-       * batch or one seed reused across different instants.
-       *
-       * This is a cross-instant consistency alarm, not an issuance ledger. It
-       * cannot see reuse at the same frozen millisecond, a zero-row CAS that
-       * borrows older stamped rows, or reuse after the earlier evidence was
-       * overwritten. Routine test fixtures prevent those cases by construction
-       * with `testIdSource`; production IdSource implementations own the same
-       * unique-token contract.
-       */
-      name: 'one-batch-two-instants',
-      sql: `WITH stamped AS (
-              SELECT fence_stamp AS s, fence_at_ms AS at FROM tasks  WHERE fence_stamp IS NOT NULL
-              UNION ALL
-              SELECT fence_stamp, fence_at_ms      FROM runs   WHERE fence_stamp IS NOT NULL
-              UNION ALL
-              SELECT fence_stamp, fence_at_ms      FROM waits  WHERE fence_stamp IS NOT NULL
-              UNION ALL
-              SELECT fence_stamp, fence_at_ms      FROM events WHERE fence_stamp IS NOT NULL
-            ),
-            seeded AS (
-              SELECT substr(s, 1, instr(s, ':') - 1) AS seed, at FROM stamped
-              WHERE instr(s, ':') > 0
-            )
-            SELECT seed || ' saw ' || MIN(at) || ' and ' || MAX(at) AS v
-            FROM seeded GROUP BY seed HAVING MIN(at) <> MAX(at)`,
-    },
-    {
       name: 'generation-or-counter-corrupt',
       sql: `SELECT run_id AS v FROM runs
             WHERE activated_gen > claim_gen OR claim_gen < 0 OR relaunch_count < 0
@@ -281,8 +305,11 @@ export async function engineInvariantViolations(raw: SqlExecutor): Promise<strin
   )
   const violations: string[] = []
   checks.forEach((check, i) => {
-    for (const row of results[i]?.rows ?? []) {
-      violations.push(`${check.name}: ${String(row.v)}`)
+    const rows = results[i]?.rows ?? []
+    if (check.evaluate) {
+      violations.push(...check.evaluate(rows))
+    } else {
+      for (const row of rows) violations.push(`${check.name}: ${String(row.v)}`)
     }
   })
   return violations
