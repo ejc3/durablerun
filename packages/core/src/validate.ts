@@ -158,9 +158,9 @@ export function userDurationToMs(
  * no user-visible reason. Deterministic bad input must never loop through
  * lease recovery.
  *
- * Parsing, not just type-checking, is deliberate: this is the one place that
- * can promise the rest of the engine a value is really JSON, and a string
- * that is not JSON fails identically far away and much later.
+ * Parse and reserialize, rather than only checking, deliberately gives every
+ * value crossing this boundary one wire representation. Otherwise equivalent
+ * spellings such as `{ "a": 1 }` and `{"a":1}` become distinct durable data.
  */
 export function userJsonValue(what: string, json: string): string {
   if (typeof json !== 'string') {
@@ -169,11 +169,10 @@ export function userJsonValue(what: string, json: string): string {
     )
   }
   try {
-    JSON.parse(json)
+    return JSON.stringify(JSON.parse(json))
   } catch (error) {
     throw new FatalTaskError(`${what} is not valid JSON: ${String(error)}`)
   }
-  return json
 }
 
 /** requireEpochMs, classified for the task boundary. */
