@@ -359,6 +359,23 @@ export class S {
         store(
             """
 export class S {
+  async probe() {
+    await this.db /* receiver trivia */ . batch /* call trivia */ (
+      'brand-new-write',
+      [{ sql: `UPDATE tasks SET a = 1`, args: [] }],
+    )
+  }
+}
+"""
+        ),
+        "raw this.db.batch('brand-new-write') is unclassified",
+        "comments and spacing between call tokens must not hide a real batch",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
   async probe(q: string) {
     await this.db.batch('heartbeat', [
       { sql: `UPDATE runs SET a = 1 WHERE id = ?`, args: [q] },
@@ -391,6 +408,23 @@ export class S {
     (
         "batch-lint.py",
         store(
+            r"""
+export class S {
+  async probe(q: string) {
+    await this.db.batch('heartbeat', [
+      { sql: 'x', args: [/\]\}\]\)/.test(q)] },
+      { sql: 'y', args: [] },
+    ])
+  }
+}
+"""
+        ),
+        "'heartbeat' is declared a SINGLE write but carries 2 statements",
+        "delimiter-looking regex tokens must not hide a later statement",
+    ),
+    (
+        "batch-lint.py",
+        store(
             """
 export class S {
   async probe(q: string) {
@@ -418,6 +452,24 @@ export class S {
         ),
         "'get-checkpoints' reads the clock in 2 places across 2 statements",
         "two statements of one batch reading the clock is the class-A bug itself",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
+  async probe() {
+    const statements = [
+      { sql: `SELECT ${NOW_MS} AS first_clock`, args: [] },
+      { sql: `SELECT ${NOW_MS} AS second_clock`, args: [] },
+    ]
+    await this.db.batch('get-checkpoints', statements, 'read')
+  }
+}
+"""
+        ),
+        "statement list shape is opaque",
+        "an indirect statement array must not turn into zero audited statements",
     ),
     (
         "batch-lint.py",
@@ -473,6 +525,18 @@ export class S {
         store("const SQL = `SELECT NOW()`\n", name="generated/time.ts"),
         "raw wall-clock function in store SQL",
         "only the package's exact top-level time.ts is exempt",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = 'SELECT NOW()'\n"),
+        "raw wall-clock function in store SQL",
+        "ordinary TypeScript string delimiters must not hide executable SQL",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT ${'NOW()'} AS at`\n"),
+        "raw wall-clock function in store SQL",
+        "a literal SQL fragment inside a template interpolation remains executable",
     ),
     (
         "fragment-lint.py",
@@ -1005,6 +1069,20 @@ BAD_INVOCATIONS = [
         "a nonexistent root must not grade an empty source set",
     ),
     (
+        "batch-lint.py",
+        {"packages/.keep": ""},
+        ("{root}",),
+        "no store TypeScript sources",
+        "an empty packages directory must not make the batch audit vacuous",
+    ),
+    (
+        "clock-lint.py",
+        {"packages/.keep": ""},
+        ("{root}",),
+        "no store TypeScript sources",
+        "an empty packages directory must not make the clock audit vacuous",
+    ),
+    (
         "gate-lint.py",
         base_runner_fixture(reject_from="python"),
         ("--run-base", "{root}/head", "{root}/base"),
@@ -1035,6 +1113,34 @@ BAD_INVOCATIONS = [
 # violation. Every entry below is a false positive a checker actually produced.
 GOOD_CASES = [
     ("batch-lint.py", CLEAN_STORE, "a classified read batch"),
+    (
+        "batch-lint.py",
+        store(
+            r"""
+export class S {
+  async ok(q: string) {
+    await this.db.batch(
+      'heartbeat',
+      [{ sql: `UPDATE runs SET a = 1`, args: [/sql:/.test(q), q.length / 2] }],
+    )
+  }
+}
+"""
+        ),
+        "regex contents do not become object keys and division remains code",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            r"""
+// this.db.batch('brand-new-write', [])
+const quoted = "this.db.batch('brand-new-write', [])"
+const templated = `this.db.batch('brand-new-write', [])`
+const pattern = /this\.db\.batch\(/
+"""
+        ),
+        "comments, strings, templates, and regexes do not manufacture batch calls",
+    ),
     ("review-bot-lint.py", corpus(WHOLE_RULE), "a complete rule referenced by both bots"),
     (
         "gate-lint.py",
@@ -1066,6 +1172,11 @@ GOOD_CASES = [
         "clock-lint.py",
         store("const SQL = `SELECT 'NOW()' AS label`\n"),
         "a database clock name inside a SQL string literal",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = \"SELECT 'NOW()' AS label\"\n"),
+        "a SQL data literal stays non-executable inside an ordinary TypeScript string",
     ),
 ]
 
