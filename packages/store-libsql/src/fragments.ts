@@ -16,6 +16,29 @@ import { NOW_MS } from './time.js'
 /** Non-terminal states — tasks and runs still in play. */
 export const LIVE = `('pending','running','sleeping')`
 
+/**
+ * The states a freshly created successor run can be in: waiting for its turn,
+ * never yet claimed. Distinguishing a successor from the run it replaces by
+ * ROLE and not only by id is load-bearing — see `successorWritten` below.
+ */
+export const QUEUED = `('pending','sleeping')`
+
+/**
+ * Proof that THIS batch created the successor run it minted an id for.
+ *
+ * A stamp names a BATCH, not a row. Asking only "does a run with the
+ * successor's id carry this batch's stamp" is therefore answerable by any
+ * other row the same batch stamped — and the batch always stamps the run it
+ * is failing. When the minted successor id collided with the failing run's
+ * id, that failing run answered yes: the retry path fired even though no
+ * successor existed, and the terminal path, the only writer of the task's
+ * failure reason, was skipped. Pinning the successor's role as well as its
+ * id makes the failing run unable to impersonate it.
+ */
+export const successorWritten = (idParam: string): string =>
+  `EXISTS (SELECT 1 FROM runs s
+           WHERE s.run_id = ${idParam} AND s.claimed_by = $STAMP$ AND s.state IN ${QUEUED})`
+
 /** A materialized cancellation deadline that has already passed. */
 export const cancelDue = (col: string): string => `${col} IS NOT NULL AND ${col} <= ${NOW_MS}`
 

@@ -29,7 +29,7 @@ import {
   type SweptRun,
   type TaskResult,
 } from '@durablerun/core'
-import { cancelDue, eligibleTask, LIVE } from './fragments.js'
+import { cancelDue, eligibleTask, LIVE, successorWritten } from './fragments.js'
 import { NOW_MS } from './time.js'
 
 const DEFAULT_RETRY: RetryStrategy = {
@@ -616,19 +616,26 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 r.wake_event, r.event_payload, r.wake_step, r.run_db, ${NOW_MS}, ${STAMP}
          FROM runs r JOIN tasks t ON t.task_id = r.task_id
          WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
-           AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}`,
-        [successorId, item.attempt + 1, item.runId],
+           AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}
+           AND NOT EXISTS (SELECT 1 FROM runs e WHERE e.run_id = ? AND e.claimed_by = ${STAMP})`,
+        [successorId, item.attempt + 1, item.runId, successorId],
       )
       // At the cap (pre-increment): terminal. Stamp-fenced, so the reviewed
       // losing-sweeper interleaving matches zero rows structurally.
+      // Terminal ONLY when this batch actually failed to place a successor.
+      // Keying on the cap alone made an exact replay terminalize the task
+      // over the successor the first pass had just created: the replay's
+      // insert is correctly refused because the cap is now reached, and the
+      // task went terminal with a live run under it (rule 6).
       .followOn(
         'task-terminal',
         `UPDATE tasks SET state = 'failed', failure_reason = '${REASON_INFRA_CAP}'
          WHERE task_id = ? AND state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
            AND EXISTS (
              SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
-           )`,
-        [item.taskId, item.runId],
+           )
+           AND NOT ${successorWritten('?')}`,
+        [item.taskId, item.runId, successorId],
       )
       // Bookkeeping keyed on the stamp AND our successor existing. The
       // counter DERIVES from the successor's own attempt ordinal rather than
@@ -644,7 +651,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            AND EXISTS (
              SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
            )
-           AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
+           AND ${successorWritten('?')}`,
         [successorId, successorId, item.taskId, item.runId, successorId],
       )
       // The dead run's waits die with it (the reviewed orphan-waits leak).
@@ -946,8 +953,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                   r.wake_event, r.event_payload, r.wake_step, r.run_db, ${NOW_MS}, ${STAMP}
            FROM runs r JOIN tasks t ON t.task_id = r.task_id
            WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
-             AND t.state IN ${LIVE} AND t.attempts + 1 < t.max_attempts`,
-          [successorId, retryDelayMs, retryDelayMs, runId],
+             AND t.state IN ${LIVE} AND t.attempts + 1 < t.max_attempts
+             AND NOT EXISTS (SELECT 1 FROM runs e WHERE e.run_id = ? AND e.claimed_by = ${STAMP})`,
+          [successorId, retryDelayMs, retryDelayMs, runId, successorId],
         )
         // attempts DERIVES from the failing run's own ordinal (the documented
         // user ordinal: run.attempt counts every successor, infra_retries the
@@ -961,7 +969,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
              last_attempt_run = ?
            WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
              AND state IN ${LIVE}
-             AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
+             AND ${successorWritten('?')}`,
           [runId, successorId, successorId, runId, successorId],
         )
         // Cap refused (or task no longer live): terminal, same as no-retry.
@@ -972,7 +980,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
              state = 'failed', failure_reason = ?
            WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
              AND state IN ${LIVE}
-             AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
+             AND NOT ${successorWritten('?')}`,
           [runId, failureJson, runId, successorId],
         )
     } else {

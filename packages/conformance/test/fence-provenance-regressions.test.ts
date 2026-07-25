@@ -1,4 +1,4 @@
-import type { SqlExecutor } from '@durablerun/core'
+import { LeaseLostError, type SqlExecutor } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
@@ -174,6 +174,86 @@ describe('fence provenance', () => {
     })
     await world.run()
 
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('a replayed claim-timeout sweep below the cap does not reject', async () => {
+    // The successor insert is guarded on the dead run being failed and
+    // carrying this batch's stamp — the state THIS batch's own compare-and-
+    // swap just produced. Replaying the same compiled batch re-satisfies that
+    // guard with the first pass's own write, so the insert runs a second time
+    // with the same successor id and the same attempt ordinal and violates the
+    // unique index. The batch is atomic so nothing is corrupted, but the CALL
+    // rejects — and the driver awaits sweep bare at the top of a tick, so one
+    // duplicated sweep item throws away the whole tick: no claims, no
+    // launches, no next-wake calculation.
+    //
+    // The at-cap case (further down) hides this: there the second insert is
+    // correctly refused because the cap has been reached.
+    const f = await fixture(['successor-1'], ['sweep-stamp'])
+    await insertTask(f.raw, { id: 'T', state: 'running', infraRetries: 0 })
+    await insertRun(f.raw, {
+      id: 'R',
+      taskId: 'T',
+      attempt: 1,
+      state: 'running',
+      claimedBy: 'worker',
+      claimGen: 1,
+      activatedGen: 1,
+      claimExpiresAtMs: NOW - 1,
+    })
+
+    const world = new SimWorld(f.raw, 'sweep-below-cap-replay')
+    world.injectDuplicate({ label: 'sweep:claim-timeout' })
+    let rejection: unknown = null
+    world.actor('sweeper', async (db) => {
+      await f
+        .storeOver(db)
+        .sweep(Q, 10)
+        .catch((e) => {
+          rejection = e
+        })
+    })
+    await world.run()
+
+    expect(rejection).toBeNull()
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('a replayed retrying failure does not reject', async () => {
+    // The same shape in `fail`: the retry successor is guarded on the failing
+    // run carrying this batch's stamp, which the batch itself wrote, so an
+    // exact replay inserts the same successor id at the same attempt ordinal
+    // a second time and the call rejects.
+    const f = await fixture(['successor-1'], ['fail-stamp'])
+    await insertTask(f.raw, { id: 'T', state: 'running', attempts: 0, maxAttempts: 5 })
+    await insertRun(f.raw, {
+      id: 'R',
+      taskId: 'T',
+      attempt: 1,
+      state: 'running',
+      claimedBy: 'worker',
+      claimExpiresAtMs: NOW + 60_000,
+    })
+
+    const world = new SimWorld(f.raw, 'fail-retry-replay')
+    world.injectDuplicate({ label: 'fail' })
+    let rejection: unknown = null
+    world.actor('worker', async (db) => {
+      await f
+        .storeOver(db)
+        .fail(Q, 'R', 'worker', '{"name":"Boom"}', { delaySeconds: 0 })
+        // Losing the fence on the duplicate is the documented contract; a
+        // constraint violation from the store is not.
+        .catch((e) => {
+          if (!(e instanceof LeaseLostError)) rejection = e
+        })
+    })
+    await world.run()
+
+    expect(rejection).toBeNull()
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
