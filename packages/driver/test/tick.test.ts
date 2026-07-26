@@ -391,7 +391,11 @@ describe('tick() codex review regressions', () => {
     const confused = new FakeLauncher(async (inv) => {
       const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
       if (!run) throw new Error('activation lost')
-      return LaunchOutcome.ended({ runId: 'some-other-run', kind: 'crashed' })
+      return LaunchOutcome.ended({
+        runId: 'some-other-run',
+        claimToken: inv.claimToken,
+        kind: 'crashed',
+      })
     })
     await tick({ store: f.store, launcher: confused, ids: f.ids }, OPTS)
     // A signal about a different run says nothing about THIS run's lease:

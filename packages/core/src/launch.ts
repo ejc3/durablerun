@@ -1,4 +1,4 @@
-import type { Ending, SchedulerStore } from './ports.js'
+import type { Ending, LaunchIdentity, SchedulerStore } from './ports.js'
 
 /**
  * The result of asking a Launcher to start a worker — deliberately OPAQUE.
@@ -44,11 +44,11 @@ export class LaunchOutcome {
    * Returns the classification for the caller's counters:
    * - 'accepted'      — nothing written; the worker owns the run now.
    * - 'ended'         — an ending was observed (or a report that named a
-   *                     DIFFERENT run was ignored — it says nothing about
-   *                     this launch).
+   *                     DIFFERENT run or claim was ignored — it says nothing
+   *                     about this launch).
    * - 'launch-failed' — the launch is not coming.
    *
-   * Every non-accepted outcome that identifies this run gets the SAME
+   * Every non-accepted outcome that identifies this exact claim gets the SAME
    * advisory write: expire the lease now, so the next sweep classifies by
    * activation state. The fence inside expireLeaseNow IS the verification
    * — it no-ops when the worker truly completed/failed/rescheduled — and
@@ -58,7 +58,7 @@ export class LaunchOutcome {
   static async reconcile(
     store: SchedulerStore,
     queue: string,
-    run: { runId: string; claimToken: string },
+    run: LaunchIdentity,
     value: unknown,
   ): Promise<'accepted' | 'ended' | 'launch-failed'> {
     const outcome =
@@ -66,7 +66,12 @@ export class LaunchOutcome {
         ? value
         : LaunchOutcome.launchFailed(new Error('malformed launch outcome'))
     if (outcome.kind === 'accepted') return 'accepted'
-    if (outcome.kind === 'ended' && outcome.ending?.runId !== run.runId) return 'ended'
+    if (outcome.kind === 'ended') {
+      const ending = outcome.ending
+      if (ending === null || ending.runId !== run.runId || ending.claimToken !== run.claimToken) {
+        return 'ended'
+      }
+    }
     try {
       await store.expireLeaseNow(queue, run.runId, run.claimToken)
     } catch {

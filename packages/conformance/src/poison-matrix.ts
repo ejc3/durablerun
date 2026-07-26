@@ -651,21 +651,29 @@ class RecordingExecutor implements SqlExecutor {
 }
 
 const SNAPSHOT_TABLES = [
-  ['tasks', 'task_id'],
-  ['runs', 'run_id'],
-  ['checkpoints', 'task_id, checkpoint_name'],
-  ['events', 'queue, event_name'],
-  ['waits', 'run_id, step_name'],
-  ['drivers', 'queue, driver_id'],
+  ['tasks', 'task_id', ['task_id', 'queue']],
+  ['runs', 'run_id', ['run_id', 'queue', 'task_id', 'attempt']],
+  [
+    'checkpoints',
+    'task_id, checkpoint_name',
+    ['task_id', 'checkpoint_name', 'queue', 'owner_run_id', 'owner_attempt'],
+  ],
+  ['events', 'queue, event_name', ['queue', 'event_name']],
+  ['waits', 'run_id, step_name', ['run_id', 'step_name', 'queue', 'task_id', 'event_name']],
+  ['drivers', 'queue, driver_id', ['queue', 'driver_id']],
 ] as const
 
 type SnapshotTable = (typeof SNAPSHOT_TABLES)[number][0]
 type ProtocolSnapshot = Record<SnapshotTable, readonly SqlRow[]>
+const RELATIONSHIP_COLUMNS = {} as Record<SnapshotTable, readonly string[]>
+for (const [table, , columns] of SNAPSHOT_TABLES) {
+  RELATIONSHIP_COLUMNS[table] = columns
+}
 
 async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
   const results = await raw.batch(
     'poison:snapshot',
-    SNAPSHOT_TABLES.map(([table, order]) => sql(`SELECT * FROM ${table} ORDER BY ${order}`)),
+    SNAPSHOT_TABLES.map(([table, orderBy]) => sql(`SELECT * FROM ${table} ORDER BY ${orderBy}`)),
     'read',
   )
   if (results.length !== SNAPSHOT_TABLES.length) {
@@ -673,19 +681,25 @@ async function snapshot(raw: SqlExecutor): Promise<ProtocolSnapshot> {
       `poison snapshot result count mismatch: expected ${SNAPSHOT_TABLES.length}, got ${results.length}`,
     )
   }
-  for (let index = 0; index < SNAPSHOT_TABLES.length; index += 1) {
-    if (!Array.isArray(results[index]?.rows)) {
+  const protocol = {} as ProtocolSnapshot
+  for (const [index, [table, , requiredColumns]] of SNAPSHOT_TABLES.entries()) {
+    const rows = results[index]?.rows
+    if (!Array.isArray(rows)) {
       throw new Error(`poison snapshot result ${index} has no rows array`)
     }
+    for (const [rowIndex, row] of rows.entries()) {
+      const missing = requiredColumns.filter(
+        (column) => !Object.prototype.hasOwnProperty.call(row, column),
+      )
+      if (missing.length > 0) {
+        throw new Error(
+          `poison snapshot ${table} row ${rowIndex} is missing required column ${missing.join(',')}`,
+        )
+      }
+    }
+    protocol[table] = rows
   }
-  return {
-    tasks: results[0]?.rows as SqlRow[],
-    runs: results[1]?.rows as SqlRow[],
-    checkpoints: results[2]?.rows as SqlRow[],
-    events: results[3]?.rows as SqlRow[],
-    waits: results[4]?.rows as SqlRow[],
-    drivers: results[5]?.rows as SqlRow[],
-  }
+  return protocol
 }
 
 async function seedBase(f: StoreFixture): Promise<void> {
@@ -1040,15 +1054,6 @@ interface InvocationOutcome {
   target: 'poison' | 'healthy'
   result?: unknown
   error?: unknown
-}
-
-const RELATIONSHIP_COLUMNS: Record<SnapshotTable, readonly string[]> = {
-  tasks: ['task_id', 'queue'],
-  runs: ['run_id', 'queue', 'task_id', 'attempt'],
-  checkpoints: ['task_id', 'checkpoint_name', 'queue', 'owner_run_id', 'owner_attempt'],
-  events: ['queue', 'event_name'],
-  waits: ['run_id', 'step_name', 'queue', 'task_id', 'event_name'],
-  drivers: ['queue', 'driver_id'],
 }
 
 function freezeAuthority(before: ProtocolSnapshot): FrozenAuthority {

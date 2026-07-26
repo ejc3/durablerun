@@ -157,12 +157,15 @@ export interface StoreAdmin {
   nowEpochMs(): Promise<number>
 }
 
-export interface LaunchInvocation {
+export interface LaunchIdentity {
+  runId: string
+  claimToken: string
+}
+
+export interface LaunchInvocation extends LaunchIdentity {
   /** Stands in for the shard id until multi-shard lands (§3.7). */
   queue: string
-  runId: string
   attempt: number
-  claimToken: string
   claimGen: number
   /**
    * The lease deadline stamped at claim — lets the worker plan voluntary
@@ -181,14 +184,12 @@ export interface Launcher {
   launch(invocation: LaunchInvocation): Promise<LaunchOutcome>
 }
 
-export interface Ending {
-  runId: string
-  claimToken?: string
-  /**
-   * Required when claimToken is absent: §3.9's tokenless reconciliation is
-   * only safe after verifying no heartbeat landed since this instant.
-   */
-  endedAtEpochMs?: number
+/**
+ * Inline launcher ending. The claim token is mandatory because runId alone
+ * survives across claims. Tokenless feed reconciliation needs a future atomic
+ * heartbeat-cutoff store operation and is not representable at this boundary.
+ */
+export interface Ending extends LaunchIdentity {
   kind: 'completed' | 'failed' | 'crashed' | 'timeout' | 'unknown'
 }
 

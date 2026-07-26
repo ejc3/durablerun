@@ -1146,6 +1146,7 @@ BAD_INVOCATIONS = [
         "ignore-file",
         "ignore-full-name",
         "ignore-marker",
+        "match-marker-substring",
         "accept-suite-error",
         "accept-incoherent-report",
         "accept-malformed-report",

@@ -1,4 +1,9 @@
-import { SchemaMismatchError, type SqlExecutor, type StoreAdmin } from '@durablerun/core'
+import {
+  SchemaMismatchError,
+  type SqlExecutor,
+  type SqlResult,
+  type StoreAdmin,
+} from '@durablerun/core'
 import { CURRENT_SCHEMA_VERSION, MIGRATIONS, type Migration } from './schema.js'
 import { NOW_MS } from './time.js'
 
@@ -49,7 +54,7 @@ export class LibsqlStoreAdmin implements StoreAdmin {
     // that caused it reported success. Checking the end state covers that and
     // every other cause without having to enumerate them.
     const version = await this.schemaVersion()
-    if (version < CURRENT_SCHEMA_VERSION) {
+    if (version !== CURRENT_SCHEMA_VERSION) {
       throw new SchemaMismatchError(
         `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
       )
@@ -57,14 +62,13 @@ export class LibsqlStoreAdmin implements StoreAdmin {
   }
 
   async schemaVersion(): Promise<number> {
+    let results: SqlResult[]
     try {
-      const [result] = await this.db.batch(
+      results = await this.db.batch(
         'migrate:version',
         [{ sql: `SELECT value FROM meta WHERE key = 'schema_version'`, args: [] }],
         'read',
       )
-      const row = result?.rows[0]
-      return row ? Number(row.value) : 0
     } catch (error) {
       // Only a genuinely fresh database reads as version 0; a transient
       // network/auth error must not masquerade as one (it would re-apply
@@ -72,6 +76,19 @@ export class LibsqlStoreAdmin implements StoreAdmin {
       if (String(error).includes('no such table')) return 0
       throw error
     }
+    const row = results[0]?.rows[0]
+    if (!row) return 0
+    const stored = row.value
+    if (typeof stored !== 'string' || !/^(0|[1-9][0-9]*)$/.test(stored)) {
+      throw new SchemaMismatchError(
+        `schema_version must be a canonical nonnegative integer, got ${JSON.stringify(stored)}`,
+      )
+    }
+    const version = Number(stored)
+    if (!Number.isSafeInteger(version)) {
+      throw new SchemaMismatchError(`schema_version is outside the safe integer range: ${stored}`)
+    }
+    return version
   }
 
   async setFakeNowEpochMs(epochMs: number | null): Promise<void> {

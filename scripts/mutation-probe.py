@@ -340,6 +340,13 @@ MUTATION_SPECS = [
         "activation launches a claimed run after its task acquires a competing live run",
     ),
     (
+        "ending-claim-identity",
+        "packages/core/src/launch.ts",
+        "ending === null || ending.runId !== run.runId || ending.claimToken !== run.claimToken",
+        "ending === null || ending.runId !== run.runId || false",
+        "an ending from an older claim expires the current worker's lease",
+    ),
+    (
         "test-token-source-monotonic",
         "packages/store-libsql/src/testing.ts",
         "    token: () => `${namespace}-token-${serial(++tokens)}`,",
@@ -548,6 +555,12 @@ VERDICTS = {
         "packages/conformance/test/regressions.test.ts",
         "transition-layer review regressions (second round) activate refuses a claim whose task acquired another live run",
         "mutation-verdict:behavior:activate-requires-sole-live-run",
+    ),
+    "ending-claim-identity": ExpectedVerdict(
+        "behavior",
+        "packages/driver/test/tick.test.ts",
+        "tick() codex review regressions an ending for an older claim of the same run is ignored",
+        "mutation-verdict:behavior:ending-claim-identity",
     ),
     "test-token-source-monotonic": ExpectedVerdict(
         "behavior",
@@ -803,11 +816,21 @@ def run_suite() -> SuiteResult:
 VerdictOutcome = Literal["caught", "survived", "wrong-path"]
 
 
+def message_has_exact_marker(marker: str, message: str) -> bool:
+    """Match the emitted diagnostic, never a later stack/source excerpt."""
+    first_line = message.splitlines()[0].strip() if message else ""
+    return (
+        first_line == marker
+        or first_line == f"Error: {marker}"
+        or first_line.startswith(f"AssertionError: {marker}:")
+    )
+
+
 def assertion_matches(expected: ExpectedVerdict, actual: FailedAssertion) -> bool:
     return (
         actual.file == expected.file
         and actual.full_name == expected.full_name
-        and any(expected.marker in message for message in actual.messages)
+        and any(message_has_exact_marker(expected.marker, message) for message in actual.messages)
     )
 
 
@@ -845,6 +868,7 @@ SELF_TEST_FAULTS = (
     "ignore-file",
     "ignore-full-name",
     "ignore-marker",
+    "match-marker-substring",
     "accept-suite-error",
     "accept-incoherent-report",
     "accept-malformed-report",
@@ -934,14 +958,21 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     if fault == "ignore-file":
         matcher = lambda want, got: (
             got.full_name == want.full_name
-            and any(want.marker in message for message in got.messages)
+            and any(message_has_exact_marker(want.marker, message) for message in got.messages)
         )
     elif fault == "ignore-full-name":
         matcher = lambda want, got: (
-            got.file == want.file and any(want.marker in message for message in got.messages)
+            got.file == want.file
+            and any(message_has_exact_marker(want.marker, message) for message in got.messages)
         )
     elif fault == "ignore-marker":
         matcher = lambda want, got: got.file == want.file and got.full_name == want.full_name
+    elif fault == "match-marker-substring":
+        matcher = lambda want, got: (
+            got.file == want.file
+            and got.full_name == want.full_name
+            and any(want.marker in message for message in got.messages)
+        )
     elif fault == "accept-suite-error":
         options["accept_suite_error"] = True
     elif fault == "accept-incoherent-report":
