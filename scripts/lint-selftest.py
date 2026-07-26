@@ -1736,6 +1736,7 @@ def run(
     args: tuple[str, ...] | None = None,
     git_state: str = "tracked",
     environment: dict[str, str] | None = None,
+    forbidden_artifact: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `lint` against a throwaway tree that looks like the repo.
 
@@ -1786,7 +1787,7 @@ def run(
             if args is None
             else [arg.replace("{root}", str(root)) for arg in args]
         )
-        return subprocess.run(
+        result = subprocess.run(
             [*runner, str(copied), *lint_args],
             capture_output=True,
             text=True,
@@ -1799,6 +1800,15 @@ def run(
                 },
             },
         )
+        if forbidden_artifact is not None and (root / forbidden_artifact).exists():
+            return subprocess.CompletedProcess(
+                args=result.args,
+                returncode=1,
+                stdout=result.stdout,
+                stderr=result.stderr
+                + f"\ncreated forbidden artifact: {forbidden_artifact}\n",
+            )
+        return result
 
 
 failures = []
@@ -1905,6 +1915,19 @@ for lint, files, args, why in GOOD_INVOCATIONS:
             f"{lint} REJECTED a good invocation — {why}\n"
             f"    {(result.stdout + result.stderr).strip()[:200]}"
         )
+
+no_bytecode = run(
+    "mutation-probe.py",
+    {},
+    ("--classifier-self-test",),
+    forbidden_artifact="scripts/__pycache__",
+)
+if no_bytecode.returncode != 0:
+    failures.append(
+        "mutation-probe.py dirtied its clean fixture while importing shared tooling — "
+        "a mutation audit then refuses its own bytecode artifact\n"
+        f"    {(no_bytecode.stdout + no_bytecode.stderr).strip()[-200:]}"
+    )
 
 for f in failures:
     print(f"lint-selftest: {f}")
