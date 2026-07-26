@@ -1,3 +1,4 @@
+import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import {
   MATRIX_PRE_STATES,
@@ -60,19 +61,6 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
       }
     }
   })
-}
-
-async function attributeExpectedFailure<T>(
-  marker: string,
-  expectedError: RegExp,
-  action: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await action()
-  } catch (error) {
-    if (expectedError.test(String(error))) throw new Error(marker)
-    throw error
-  }
 }
 
 function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFactory): void {

@@ -1,9 +1,9 @@
 import type { SqlExecutor } from '@durablerun/core'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
-import { attributeExpectedFailure, requireExpectedFailure } from './mutation-verdict.js'
 
 /**
  * Replays where TIME PASSED between the original batch and the replay.

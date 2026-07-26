@@ -1,3 +1,9 @@
+export type ExpectedError = RegExp | ((error: unknown) => boolean)
+
+function matches(expected: ExpectedError, error: unknown): boolean {
+  return expected instanceof RegExp ? expected.test(String(error)) : expected(error)
+}
+
 /**
  * Attribute a mutant only when an operation that normally succeeds reaches
  * the expected failure. Any other exception propagates unchanged and the
@@ -5,13 +11,13 @@
  */
 export async function attributeExpectedFailure<T>(
   marker: string,
-  expectedError: RegExp,
+  expectedError: ExpectedError,
   action: () => Promise<T>,
 ): Promise<T> {
   try {
     return await action()
   } catch (error) {
-    if (expectedError.test(String(error))) throw new Error(marker)
+    if (matches(expectedError, error)) throw new Error(marker)
     throw error
   }
 }
@@ -23,13 +29,13 @@ export async function attributeExpectedFailure<T>(
  */
 export async function requireExpectedFailure(
   marker: string,
-  expectedError: RegExp,
+  expectedError: ExpectedError,
   action: () => Promise<unknown>,
 ): Promise<void> {
   try {
     await action()
   } catch (error) {
-    if (expectedError.test(String(error))) return
+    if (matches(expectedError, error)) return
     throw error
   }
   throw new Error(marker)

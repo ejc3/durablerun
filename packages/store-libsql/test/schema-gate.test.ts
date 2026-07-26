@@ -1,4 +1,5 @@
 import { SchemaMismatchError, type SqlExecutor, StoreUnavailableError } from '@durablerun/core'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -69,10 +70,17 @@ describe('a database older than the binary', () => {
       `ALTER TABLE runs ADD COLUMN task_id TEXT`,
     ]
     for (const sql of cases) {
-      await expect(
-        db.batch('probe', [{ sql, args: [] }], 'read'),
-        `mutation-verdict:behavior:schema-fault-is-permanent: ${sql}`,
-      ).rejects.toBeInstanceOf(SchemaMismatchError)
+      const marker = `mutation-verdict:behavior:schema-fault-is-permanent: ${sql}`
+      await requireExpectedFailure(
+        marker,
+        (error) => error instanceof SchemaMismatchError,
+        () =>
+          attributeExpectedFailure(
+            marker,
+            (error) => error instanceof StoreUnavailableError,
+            () => db.batch('probe', [{ sql, args: [] }], 'read'),
+          ),
+      )
     }
   })
 
@@ -128,10 +136,11 @@ describe('migrate reports success only when the schema is current', () => {
     }
     const missingPostcondition = new LibsqlStoreAdmin(versionBumpMiss)
 
-    await expect(
-      missingPostcondition.migrate(),
+    await requireExpectedFailure(
       'mutation-verdict:behavior:migration-postcondition-old-version',
-    ).rejects.toBeInstanceOf(SchemaMismatchError)
+      (error) => error instanceof SchemaMismatchError,
+      () => missingPostcondition.migrate(),
+    )
     expect(changed).toBe(1)
 
     const [version, columns] = await db.batch(
@@ -238,10 +247,7 @@ describe('migrate reports success only when the schema is current', () => {
       },
     ])
 
-    await expect(
-      admin.migrate(),
-      'mutation-verdict:behavior:schema-version-must-be-current',
-    ).rejects.toBeInstanceOf(SchemaMismatchError)
+    await expect(admin.migrate()).rejects.toBeInstanceOf(SchemaMismatchError)
   })
 
   it('is unaffected on a healthy database', async () => {

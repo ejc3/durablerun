@@ -1,10 +1,10 @@
 import { type IdSource, LeaseLostError, type SqlExecutor } from '@durablerun/core'
+import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { SimWorld } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
-import { attributeExpectedFailure } from './mutation-verdict.js'
 
 const Q = 'q'
 

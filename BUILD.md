@@ -188,17 +188,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     scalar right-hand sides only and cannot name provenance columns through
     duplicate/quoted assignments or mutate public primary identity such as
     `runs.run_id`.
-  - **Attributable mutation catches.** All 37 live mutations carry an exact
-    behavioral or construction verdict: test file, full test name, and marker.
+  - **Attributable mutation catches.** The first closeout's 37 live mutations
+    each carry an exact behavioral or construction verdict: test file, full
+    test name, and marker.
     The marker must be the structured failure diagnostic's first line: bare,
     `Error: <marker>`, or `AssertionError: <marker>: …`; an arbitrary substring
     in rendered source context is not evidence.
     Structured Vitest output makes a green survivor, bind/compile error,
     different failing assertion, malformed report, suite error, or
     process/report disagreement a wrong-path result rather than credit. The
-    verifier runs a 17-case classifier self-test, with seven injected
-    false-positive faults maintained by `lint-selftest.py`; both baseline and
-    per-mutation suites route themselves through `scripts/confine.sh`.
+    verifier runs a 17-case classifier self-test and seven promise-marker
+    source cases, with seven injected false-positive faults maintained by
+    `lint-selftest.py`; both baseline and per-mutation suites route themselves
+    through `scripts/confine.sh`.
     The first full clean-tree audit ran all 34 mutations: 28 were attributable
     and six were `wrong-path`. Those six exposed two construction failures
     mislabeled as behavior, a split plan verdict plus a mutation with semantic
@@ -206,8 +208,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     custom messages on unexpected resolve/reject. Exact-call construction
     wrappers, one marked plan vector with a behavior-preserving mutation, a
     split A/B wake witness, and explicit require/attribute failure helpers made
-    the final audit, including the exact inline-ending identity and typed
-    schema-absence and version-row mutations, **37 of 37 attributable**.
+    that audit, including the exact inline-ending identity and typed
+    schema-absence and version-row mutations, **37 of 37 attributable**. The
+    registry later expanded to 50. Its closing audit found one new
+    postcondition test outside the original helper's package still entrusted
+    an inverse promise marker to Vitest. One `@durablerun/core/testing`
+    definition now owns both promise-verdict helpers and the verify gate
+    rejects direct `.rejects`/`.resolves` custom-message verdicts across the
+    repository.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 54 atomic witnesses covering all 57
     invariant condition IDs: 918 generated cells, plus two inventory cases.

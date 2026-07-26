@@ -825,9 +825,9 @@ not depend on careful reading:
   or any other wrong path receives no credit. A marker matches only the
   structured failure diagnostic's first line: bare, `Error: <marker>`, or
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
-  source is not evidence. The verify gate runs 17 classifier cases and seven
-  injected false-positive faults over all 37 live mutations. The parser
-  requires all nine aggregate counters to be
+  source is not evidence. The verify gate runs 17 classifier cases, seven
+  promise-marker source cases, and seven injected false-positive faults over
+  all 50 live mutations. The parser requires all nine aggregate counters to be
   nonnegative integers and internally consistent within their reporter
   domains. Test counters match test rows; each file status matches its own
   assertion/message rows; suite counters are not equated with file counts
@@ -837,13 +837,20 @@ not depend on careful reading:
   28 of 34 mutations as attributable and six as wrong-path; after exact-call
   construction wrappers, a single marked plan vector with a
   behavior-preserving mutation, a discriminating A/B wake witness, and
-  explicit require/attribute failure helpers, the final audit classified all
-  **37 of 37 as attributable**. Verdict altitude follows the earliest
+  explicit require/attribute failure helpers, that round's final audit
+  classified all **37 of 37 as attributable**. The registry later grew to 50;
+  its closing audit caught a promise verdict added outside the helper's
+  original package that still relied on Vitest's lossy custom message. The two
+  helpers now have one package-neutral definition under
+  `@durablerun/core/testing`, their three outcome arms have direct tests, and
+  the verify gate refuses a mutation marker passed directly to a Vitest
+  `.rejects` or `.resolves` custom message. Verdict altitude follows the
+  earliest
   load-bearing boundary, not the downstream scenario story; a construction
   wrapper encloses the exact call and exact error. Behavioral mutations
   preserve unrelated semantics, every multi-part verdict has one marked
-  vector, and inverse promise outcomes use helpers that emit the marker
-  directly rather than relying on framework custom-message propagation.
+  vector, and inverse promise outcomes use the shared helpers to emit the
+  marker directly rather than relying on framework custom-message propagation.
 - *Duplicate-delivery in the model*: the spec models a retried request per
   labeled action, and the ledger tags each label's duplicate semantics
   ([cas-fenced] / [receipt] / [read] / [setup]), machine-checked — so a
