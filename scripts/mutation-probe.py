@@ -2815,7 +2815,17 @@ def orchestration_self_test(fault: str | None = None) -> int:
     transport_failures = (
         (
             "worker signal",
-            "import os,signal; os.kill(os.getpid(), signal.SIGKILL)",
+            (
+                "import json,os,pathlib,signal,sys; "
+                "path=sys.argv[sys.argv.index('--outputFile')+1]; "
+                "pathlib.Path(path).write_text(json.dumps({"
+                "'success':True,"
+                "'numTotalTestSuites':0,'numPassedTestSuites':0,"
+                "'numFailedTestSuites':0,'numPendingTestSuites':0,"
+                "'numTotalTests':0,'numPassedTests':0,'numFailedTests':0,"
+                "'numPendingTests':0,'numTodoTests':0,'testResults':[]})); "
+                "os.kill(os.getpid(), signal.SIGKILL)"
+            ),
             "report-worker-crash-as-domain",
         ),
         (
