@@ -1,4 +1,8 @@
-import { SchemaMismatchError, StoreUnavailableError } from '@durablerun/core'
+import {
+  SchemaMismatchError,
+  type SqlExecutor,
+  StoreUnavailableError,
+} from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -139,6 +143,17 @@ describe('migrate reports success only when the schema is current', () => {
     ])
 
     await expect(admin.schemaVersion()).rejects.toBeInstanceOf(SchemaMismatchError)
+  })
+
+  it('does not classify unrelated executor failures by message substring', async () => {
+    const outage = new StoreUnavailableError('proxy said no such table while disconnecting')
+    const deceptive: SqlExecutor = {
+      batch: async () => {
+        throw outage
+      },
+    }
+
+    await expect(new LibsqlStoreAdmin(deceptive).schemaVersion()).rejects.toBe(outage)
   })
 
   it('fails when the recorded version is newer than this binary', async () => {
