@@ -3617,7 +3617,9 @@ def worker_environment(
         environment.pop(name, None)
     environment["TMPDIR"] = str(plan.temporary)
     environment["CI"] = "1"
-    if not allow_host_sized_tokio:
+    if allow_host_sized_tokio:
+        environment.pop("TOKIO_WORKER_THREADS", None)
+    else:
         environment["TOKIO_WORKER_THREADS"] = "1"
     return environment
 
