@@ -1473,8 +1473,18 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             (1,),
         ),
         (
+            "optional generic expect call",
+            "await expect?.<Result>(action(), 'mutation-verdict:behavior:x').rejects.toThrow()",
+            (1,),
+        ),
+        (
             "parenthesized expect call",
             "await (expect)(action(), 'mutation-verdict:behavior:x').rejects.toThrow()",
+            (1,),
+        ),
+        (
+            "nested parenthesized expect call",
+            "await ((expect))(action(), 'mutation-verdict:behavior:x').rejects.toThrow()",
             (1,),
         ),
         (
@@ -1486,6 +1496,16 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "generic nested action without message",
             "await expect(call<A, B>()).rejects.toThrow()",
             (),
+        ),
+        (
+            "optional generic nested action without message",
+            "await expect(call?.<A, B>()).rejects.toThrow()",
+            (),
+        ),
+        (
+            "relational expression before a custom message",
+            "await expect(a < b, c > (d) ? 'lost' : 'other').rejects.toThrow()",
+            (1,),
         ),
         (
             "marker through a variable",
@@ -1566,6 +1586,18 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "same-named object method",
             "await fake.requireExpectedFailure("
+            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /x/, action)",
+            frozenset(),
+        ),
+        (
+            "same-named private method",
+            "await this.#requireExpectedFailure("
+            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /x/, action)",
+            frozenset(),
+        ),
+        (
+            "same-named constructor",
+            "new requireExpectedFailure("
             "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /x/, action)",
             frozenset(),
         ),
