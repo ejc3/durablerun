@@ -33,6 +33,16 @@ import tempfile
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
+CONFINE_SECTION_BODY = """Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
+through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
+the live protective memory, swap, CPU, and task limits. A runaway must die
+inside that scope rather than taking the box down. `verify:fuzz`,
+`verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired."""
+TRANSPORT_BLOCK = """<!-- mutation-suite-transport-contract:start -->
+Suite transport has one representation: `parse_report` and `run_suite` raise
+`SuiteInfrastructureError`; only a structurally valid `SuiteResult` reaches
+verdict classification.
+<!-- mutation-suite-transport-contract:end -->"""
 
 
 def tree(root: Path, files: dict[str, str]) -> Path:
@@ -84,6 +94,16 @@ def gate(
 
     files = {
         "package.json": json.dumps({"scripts": {"verify": verify}}),
+        "AGENTS.md": (
+            "## Standing rule: confine heavy local runs\n\n"
+            f"{CONFINE_SECTION_BODY}\n\n"
+            "## Fixture continuation\n"
+        ),
+        "BUILD.md": (
+            "  - **Attributable mutation catches.**\n"
+            + "".join(f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines())
+            + "  - **Fixture continuation.**\n"
+        ),
         ".github/workflows/ci.yml": ci,
         "scripts/lint-selftest.py": (
             "BAD_CASES = [\n"
@@ -107,6 +127,14 @@ def gate(
         )
     for name in extra_scripts:
         files[f"scripts/{name}"] = "# a checker\n"
+    for name in (
+        "confine.sh",
+        "tla.sh",
+        "review-attest.sh",
+        "session-state.sh",
+        "source_lex.py",
+    ):
+        files[f"scripts/{name}"] = "# declared non-gate process support\n"
     return files
 
 
@@ -119,16 +147,16 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
     package = json.loads(files["package.json"])
     package["name"] = "durablerun"
     files["package.json"] = json.dumps(package)
-    files["AGENTS.md"] = agents
-    files["BUILD.md"] = build
-    for name in (
-        "confine.sh",
-        "tla.sh",
-        "review-attest.sh",
-        "session-state.sh",
-        "source_lex.py",
-    ):
-        files[f"scripts/{name}"] = "# declared non-gate process support\n"
+    files["AGENTS.md"] = (
+        "## Standing rule: confine heavy local runs\n\n"
+        f"{agents.strip()}\n\n"
+        "## Fixture continuation\n"
+    )
+    files["BUILD.md"] = (
+        "  - **Attributable mutation catches.**\n"
+        + "".join(f"    {line}\n" for line in build.strip().splitlines())
+        + "  - **Fixture continuation.**\n"
+    )
     return files
 
 
@@ -828,21 +856,15 @@ export class S {
                 "Heavy runs use scripts/confine.sh with MemoryMax 16G and "
                 "CPUQuota 3200%.\n"
             ),
-            (
-                "Missing, malformed, or signaled Vitest output is infrastructure "
-                "failure.\n"
-            ),
+            TRANSPORT_BLOCK,
         ),
-        "AGENTS.md duplicates confinement limits numerically",
+        "AGENTS.md confinement section must defer all quantitative policy",
         "copied resource numbers drift from the executable confinement policy",
     ),
     (
         "gate-lint.py",
         process_docs(
-            (
-                "`scripts/confine.sh` is the single definition of the live protective "
-                "memory, swap, CPU, and task limits.\n"
-            ),
+            CONFINE_SECTION_BODY,
             (
                 "A malformed report, suite error, or disagreement is a wrong-path "
                 "result. Missing or signaled output is infrastructure failure.\n"
@@ -856,14 +878,8 @@ export class S {
         {
             rel: body
             for rel, body in process_docs(
-                (
-                    "`scripts/confine.sh` is the single definition of the live "
-                    "protective memory, swap, CPU, and task limits.\n"
-                ),
-                (
-                    "Missing, malformed, or signaled Vitest output is infrastructure "
-                    "failure.\n"
-                ),
+                CONFINE_SECTION_BODY,
+                TRANSPORT_BLOCK,
             ).items()
             if rel != "AGENTS.md"
         },
@@ -875,14 +891,8 @@ export class S {
         {
             rel: body
             for rel, body in process_docs(
-                (
-                    "`scripts/confine.sh` is the single definition of the live "
-                    "protective memory, swap, CPU, and task limits.\n"
-                ),
-                (
-                    "Missing, malformed, or signaled Vitest output is infrastructure "
-                    "failure.\n"
-                ),
+                CONFINE_SECTION_BODY,
+                TRANSPORT_BLOCK,
             ).items()
             if rel != "BUILD.md"
         },
@@ -894,14 +904,8 @@ export class S {
         {
             rel: body
             for rel, body in process_docs(
-                (
-                    "`scripts/confine.sh` is the single definition of the live "
-                    "protective memory, swap, CPU, and task limits.\n"
-                ),
-                (
-                    "Missing, malformed, or signaled Vitest output is infrastructure "
-                    "failure.\n"
-                ),
+                CONFINE_SECTION_BODY,
+                TRANSPORT_BLOCK,
             ).items()
             if rel != "scripts/confine.sh"
         },
@@ -911,15 +915,9 @@ export class S {
     (
         "gate-lint.py",
         process_docs(
-            (
-                "`scripts/confine.sh` is the single definition of the live protective "
-                "memory, swap, CPU, and task limits. The cap is sixteen gibibytes "
-                "and thirty-two cores.\n"
-            ),
-            (
-                "Missing, malformed, or signaled Vitest output is infrastructure "
-                "failure.\n"
-            ),
+            CONFINE_SECTION_BODY
+            + " The cap is sixteen gibibytes and thirty-two cores.",
+            TRANSPORT_BLOCK,
         ),
         "AGENTS.md confinement section must defer all quantitative policy",
         "spelling numeric limits as words must not bypass the single-definition rule",
@@ -1697,41 +1695,6 @@ BAD_INVOCATIONS = [
         "accept-incoherent-report",
         "accept-malformed-report",
     )
-] + [
-    (
-        "mutation-probe.py",
-        {},
-        (
-            "--orchestration-self-test",
-            "--orchestration-self-test-fault",
-            fault,
-        ),
-        f"orchestration self-test caught injected fault {fault}",
-        f"the parallel coordinator must reject its {fault} false-positive path",
-    )
-    for fault in (
-        "drop-assignment",
-        "duplicate-assignment",
-        "accept-wrong-head",
-        "accept-missing-result",
-        "accept-duplicate-result",
-        "accept-extra-result",
-        "accept-process-report-disagreement",
-        "accept-outside-cleanup",
-        "accept-unconfined-scope",
-        "accept-unowned-worker",
-        "skip-baseline-barrier",
-        "accept-external-workspace-link",
-        "accept-malformed-result-types",
-        "interrupt-cleanup",
-        "leave-descendant-running",
-        "publish-success-after-infra",
-        "report-worker-crash-as-domain",
-        "accept-oversized-finite-scope",
-        "accept-oversized-cpu-scope",
-        "classify-missing-report-as-domain",
-        "classify-malformed-report-as-domain",
-    )
 ]
 
 # Inputs each lint must ACCEPT. A checker that rejects everything passes every
@@ -1812,14 +1775,8 @@ const pattern = /this\.db\.batch\(/
     (
         "gate-lint.py",
         process_docs(
-            (
-                "`scripts/confine.sh` is the single definition of the live protective "
-                "memory, swap, CPU, and task limits.\n"
-            ),
-            (
-                "Missing, malformed, or signaled Vitest output is infrastructure "
-                "failure.\n"
-            ),
+            CONFINE_SECTION_BODY,
+            TRANSPORT_BLOCK,
         ),
         "process contracts refer to their executable single definitions",
     ),

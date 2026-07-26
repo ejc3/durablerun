@@ -80,7 +80,6 @@ class SuiteResult:
     assertions: tuple[FailedAssertion, ...]
     suite_errors: tuple[str, ...]
     diagnostic: str
-    transport_error: str | None = None
 
     @property
     def green(self) -> bool:
@@ -89,12 +88,23 @@ class SuiteResult:
             and self.report_ok
             and not self.assertions
             and not self.suite_errors
-            and self.transport_error is None
         )
 
 
 class SuiteInfrastructureError(RuntimeError):
     pass
+
+
+def reject_suite_transport(
+    message: str,
+    fallback: SuiteResult,
+    *,
+    return_as_domain: bool,
+) -> SuiteResult:
+    """The weakness is reachable only from the generated false-positive surface."""
+    if return_as_domain:
+        return fallback
+    raise SuiteInfrastructureError(message)
 
 
 @dataclass(frozen=True)
@@ -953,29 +963,41 @@ def relative_test_file(value: object) -> str:
         return path.as_posix()
 
 
-def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
+def parse_report(
+    text: str,
+    process_ok: bool,
+    diagnostic: str,
+    *,
+    return_transport_as_domain: bool = False,
+) -> SuiteResult:
     """Turn Vitest's JSON reporter into only the evidence attribution needs."""
     try:
         report = json.loads(text)
     except (json.JSONDecodeError, TypeError) as error:
         message = f"missing or malformed Vitest JSON report: {error}"
-        return SuiteResult(
-            process_ok,
-            False,
-            (),
-            (message,),
-            diagnostic,
+        return reject_suite_transport(
             message,
+            SuiteResult(
+                process_ok,
+                False,
+                (),
+                (message,),
+                diagnostic,
+            ),
+            return_as_domain=return_transport_as_domain,
         )
     if not isinstance(report, dict) or not isinstance(report.get("success"), bool):
         message = "Vitest JSON report has no boolean success verdict"
-        return SuiteResult(
-            process_ok,
-            False,
-            (),
-            (message,),
-            diagnostic,
+        return reject_suite_transport(
             message,
+            SuiteResult(
+                process_ok,
+                False,
+                (),
+                (message,),
+                diagnostic,
+            ),
+            return_as_domain=return_transport_as_domain,
         )
 
     suite_errors: list[str] = []
@@ -1023,13 +1045,16 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
     results = report.get("testResults")
     if not isinstance(results, list):
         message = "Vitest JSON report has no testResults array"
-        return SuiteResult(
-            process_ok,
-            bool(report["success"]),
-            (),
-            (*suite_errors, message),
-            diagnostic,
+        return reject_suite_transport(
             message,
+            SuiteResult(
+                process_ok,
+                bool(report["success"]),
+                (),
+                (*suite_errors, message),
+                diagnostic,
+            ),
+            return_as_domain=return_transport_as_domain,
         )
     for result in results:
         if not isinstance(result, dict):
@@ -1128,14 +1153,20 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
             invalid_report(
                 "Vitest JSON report success contradicts its failure counters"
             )
-    return SuiteResult(
+    parsed = SuiteResult(
         process_ok,
         bool(report["success"]),
         tuple(assertions),
         tuple(suite_errors),
         diagnostic,
-        report_errors[0] if report_errors else None,
     )
+    if report_errors:
+        return reject_suite_transport(
+            report_errors[0],
+            parsed,
+            return_as_domain=return_transport_as_domain,
+        )
+    return parsed
 
 
 def diagnostic_tail(path: Path, limit: int = 16_384) -> str:
@@ -1152,6 +1183,7 @@ def run_suite(
     scope: ConfinedScope,
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
+    return_transport_as_domain: bool = False,
 ) -> SuiteResult:
     if (
         workspace.root != ROOT.resolve()
@@ -1177,39 +1209,31 @@ def run_suite(
         diagnostic = diagnostic_tail(log)
         if not report.exists():
             message = "Vitest did not write its JSON report"
-            return SuiteResult(
-                result.returncode == 0,
-                False,
-                (),
-                (message,),
-                diagnostic,
+            return reject_suite_transport(
                 message,
+                SuiteResult(
+                    result.returncode == 0,
+                    False,
+                    (),
+                    (message,),
+                    diagnostic,
+                ),
+                return_as_domain=return_transport_as_domain,
             )
         parsed = parse_report(
             report.read_text(),
             result.returncode == 0,
             diagnostic,
+            return_transport_as_domain=return_transport_as_domain,
         )
         if result.returncode >= 0:
             return parsed
         message = f"Vitest terminated by signal {-result.returncode}"
-        return SuiteResult(
-            parsed.process_ok,
-            parsed.report_ok,
-            parsed.assertions,
-            parsed.suite_errors,
-            parsed.diagnostic,
+        return reject_suite_transport(
             message,
+            parsed,
+            return_as_domain=return_transport_as_domain,
         )
-
-
-def require_suite_transport(
-    result: SuiteResult,
-    *,
-    accept_failure_as_domain: bool = False,
-) -> None:
-    if result.transport_error is not None and not accept_failure_as_domain:
-        raise RuntimeError(f"mutation suite transport failure: {result.transport_error}")
 
 
 VerdictOutcome = Literal["caught", "survived", "wrong-path"]
@@ -1350,6 +1374,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             ),
             False,
             "",
+            return_transport_as_domain=True,
         )
 
     matcher = assertion_matches
@@ -1459,13 +1484,23 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
         (
             "malformed report",
-            parse_report("{", False, ""),
+            parse_report(
+                "{",
+                False,
+                "",
+                return_transport_as_domain=True,
+            ),
             expected,
             "wrong-path",
         ),
         (
             "success verdict with no test results",
-            parse_report('{"success": true}', True, ""),
+            parse_report(
+                '{"success": true}',
+                True,
+                "",
+                return_transport_as_domain=True,
+            ),
             expected,
             "wrong-path",
         ),
@@ -2904,9 +2939,35 @@ def orchestration_self_test(fault: str | None = None) -> int:
             file=sys.stderr,
         )
         return 0
+    for injected_fault in ORCHESTRATION_SELF_TEST_FAULTS:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--orchestration-self-test",
+                "--orchestration-self-test-fault",
+                injected_fault,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        marker = (
+            "mutation-probe orchestration self-test caught injected fault "
+            f"{injected_fault}"
+        )
+        if result.returncode != 1 or marker not in (result.stdout + result.stderr):
+            print(
+                "mutation-probe orchestration self-test: declared fault "
+                f"{injected_fault!r} was not caught through its CLI path",
+                file=sys.stderr,
+            )
+            return 1
     print(
-        "mutation-probe orchestration self-test: deterministic shards; exact "
-        "head, result inventory, process verdict, and cleanup ownership"
+        "mutation-probe orchestration self-test: "
+        f"{len(ORCHESTRATION_SELF_TEST_FAULTS)} declared injected faults exercised "
+        "from canonical inventory; deterministic shards; exact head, result "
+        "inventory, process verdict, and cleanup ownership"
     )
     return 0
 
@@ -3024,7 +3085,6 @@ def execute_mutation(
             workspace=workspace,
             authority=authority,
         )
-        require_suite_transport(result)
         outcome = classify_verdict(result, mutation.verdict)
         if outcome == "caught":
             detail = (
@@ -3105,7 +3165,6 @@ def worker_phase(
             workspace=workspace,
             authority=authority,
         )
-        require_suite_transport(baseline)
         payload = {
             "version": REPORT_VERSION,
             "phase": "baseline",

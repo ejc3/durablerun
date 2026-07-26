@@ -56,7 +56,7 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    SEV rule FIRST — a mandatory `review-findings: <count>` line in the PR
    body, and for a nonzero count an added, filled-in postmortem (Part 6);
    the abandonment trailer never skips that gate.
-7. **`python3 scripts/mutation-probe.py` clean** — when the PR adds or
+7. **`pnpm verify:mutations` clean** — when the PR adds or
    changes a guard. The command self-confines once, captures the clean
    committed head, and uses isolated detached worktrees (`--jobs auto` by
    default). It deletes each guard in turn and requires the exact attributable

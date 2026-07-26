@@ -833,7 +833,7 @@ not depend on careful reading:
   non-owned cleanup targets, plus unconfined execution, an unowned worker,
   a skipped baseline barrier, an external workspace link, malformed identity
   types, an interruptible cleanup, an orphaned descendant, oversized finite
-  memory and CPU ceilings, missing/signaled suite transport, and false
+  memory and CPU ceilings, missing/malformed/signaled suite transport, and false
   infrastructure-success classifications. The parser requires all nine
   aggregate counters to be nonnegative integers and internally consistent
   within their reporter domains. Test counters match test rows; each file

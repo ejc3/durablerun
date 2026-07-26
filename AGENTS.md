@@ -57,10 +57,10 @@ when it lands. Enforcement is structural, not aspirational:
 ## Standing rule: confine heavy local runs
 
 Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
-through `scripts/confine.sh` (cgroup scope: MemoryMax 16G default, swap off,
-CPUQuota 3200%). A runaway gets OOM-killed inside its scope instead of
-taking the box down; memory was the killer the one time it happened.
-`verify:fuzz`, `verify:fuzz:deep`, and `verify:tla` are pre-wired.
+through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
+the live protective memory, swap, CPU, and task limits. A runaway must die
+inside that scope rather than taking the box down. `verify:fuzz`,
+`verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired.
 
 ## Standing rule: spec first for new protocols
 

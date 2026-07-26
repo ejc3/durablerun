@@ -194,23 +194,27 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The marker must be the structured failure diagnostic's first line: bare,
     `Error: <marker>`, or `AssertionError: <marker>: …`; an arbitrary substring
     in rendered source context is not evidence.
-    Structured Vitest output makes a green survivor, bind/compile error,
-    different failing assertion, malformed report, suite error, or
-    process/report disagreement a wrong-path result rather than credit. The
-    verifier runs a 17-case classifier self-test, nineteen promise-message
+    Structured valid Vitest output makes a green survivor, bind/compile error,
+    different failing assertion, suite error, or process/report disagreement a
+    wrong-path result rather than credit.
+    <!-- mutation-suite-transport-contract:start -->
+    Suite transport has one representation: `parse_report` and `run_suite` raise
+    `SuiteInfrastructureError`; only a structurally valid `SuiteResult` reaches
+    verdict classification.
+    <!-- mutation-suite-transport-contract:end -->
+    The verifier runs a 17-case classifier self-test, nineteen promise-message
     source cases, and ten canonical helper-descriptor cases, with seven
-    injected classifier faults maintained by `lint-selftest.py`. The parallel
-    coordinator has its own twenty injected faults for shard coverage, exact
-    head, exact result inventory, process/report agreement, protective memory
-    and CPU ceilings, transport failures, and cleanup ownership. Full audits
-    use deterministic shards in detached exact-head worktrees, build
-    worker-local frozen pnpm link farms, require an all-green baseline barrier,
-    and reconcile structured results in registry order. One outer
-    `scripts/confine.sh` scope contains the coordinator and every raw worker
-    suite; the coordinator proves the live cgroup preserves 25% of host memory
-    and the host CPU reserve, while per-worker Vitest concurrency divides that
-    aggregate CPU budget. A missing or signaled Vitest report is infrastructure
-    failure, never a completed mutation verdict. The source checkout never
+    injected classifier faults maintained by `lint-selftest.py`.
+    The parallel coordinator has its own generated injected faults for shard
+    coverage, exact head, exact result inventory, process/report agreement,
+    protective memory and CPU ceilings, missing/malformed/signaled transport,
+    and cleanup ownership. Full audits use deterministic shards in detached
+    exact-head worktrees, build worker-local frozen pnpm link farms, require an
+    all-green baseline barrier, and reconcile structured results in registry
+    order. One outer `scripts/confine.sh` scope contains the coordinator and
+    every raw worker suite; the coordinator proves the live cgroup preserves
+    25% of host memory and the host CPU reserve, while per-worker Vitest
+    concurrency divides that aggregate CPU budget. The source checkout never
     contains a mutant.
     The first full clean-tree audit ran all 34 mutations: 28 were attributable
     and six were `wrong-path`. Those six exposed two construction failures

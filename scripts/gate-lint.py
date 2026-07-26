@@ -424,44 +424,94 @@ def nightly_workflow_problems(path: Path) -> list[str]:
     return problems
 
 
+CONFINE_HEADING = "## Standing rule: confine heavy local runs"
+CONFINE_SECTION_BODY = """Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
+through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
+the live protective memory, swap, CPU, and task limits. A runaway must die
+inside that scope rather than taking the box down. `verify:fuzz`,
+`verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired."""
+TRANSPORT_BLOCK = """<!-- mutation-suite-transport-contract:start -->
+Suite transport has one representation: `parse_report` and `run_suite` raise
+`SuiteInfrastructureError`; only a structurally valid `SuiteResult` reaches
+verdict classification.
+<!-- mutation-suite-transport-contract:end -->"""
+
+
+def level_two_section(text: str, heading: str) -> str | None:
+    lines = text.splitlines()
+    starts = [index for index, line in enumerate(lines) if line == heading]
+    if len(starts) != 1:
+        return None
+    end = next(
+        (
+            index
+            for index in range(starts[0] + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[starts[0] + 1 : end]).strip()
+
+
+def attributable_mutation_section(text: str) -> str | None:
+    lines = text.splitlines()
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith("- **Attributable mutation catches.**")
+    ]
+    if len(starts) != 1:
+        return None
+    end = next(
+        (
+            index
+            for index in range(starts[0] + 1, len(lines))
+            if re.fullmatch(r"\s{2}- \*\*.+\*\*.*", lines[index])
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[starts[0] + 1 : end])
+
+
 def process_contract_problems(root: Path) -> list[str]:
-    """Keep process docs pointed at their executable single definitions."""
-    agents_path = root / "AGENTS.md"
-    build_path = root / "BUILD.md"
-    confine_path = root / "scripts" / "confine.sh"
-    if not (agents_path.is_file() and build_path.is_file() and confine_path.is_file()):
-        return []
-
-    problems: list[str] = []
-    agents = agents_path.read_text()
-    confine_reference = (
-        "`scripts/confine.sh` is the single definition of the live protective "
-        "memory, swap, CPU, and task limits"
+    """Keep durablerun process docs structurally bound to executable owners."""
+    sources = (
+        ("AGENTS.md", root / "AGENTS.md"),
+        ("BUILD.md", root / "BUILD.md"),
+        ("scripts/confine.sh", root / "scripts" / "confine.sh"),
     )
-    if confine_reference not in agents:
+    problems = [
+        f"durablerun process contract source {name} is missing."
+        for name, path in sources
+        if not path.is_file()
+    ]
+    if problems:
+        return problems
+
+    agents = (root / "AGENTS.md").read_text()
+    if level_two_section(agents, CONFINE_HEADING) != CONFINE_SECTION_BODY:
         problems.append(
-            "AGENTS.md must name scripts/confine.sh as the single definition "
-            "of live protective resource limits."
-        )
-    if re.search(r"\b(?:MemoryMax|CPUQuota)\s+\d", agents):
-        problems.append(
-            "AGENTS.md duplicates confinement limits numerically; the executable "
-            "scripts/confine.sh policy is the single definition."
+            "AGENTS.md confinement section must defer all quantitative policy "
+            "to scripts/confine.sh."
         )
 
-    build = build_path.read_text()
-    transport_contract = (
-        "Missing, malformed, or signaled Vitest output is infrastructure failure"
+    build = (root / "BUILD.md").read_text()
+    mutation_section = attributable_mutation_section(build)
+    normalized_build = "\n".join(line.strip() for line in build.splitlines())
+    normalized_section = (
+        "\n".join(line.strip() for line in mutation_section.splitlines())
+        if mutation_section is not None
+        else ""
     )
-    if transport_contract not in build:
-        problems.append(
-            "BUILD.md must classify missing, malformed, and signaled Vitest "
-            "output together as infrastructure failure."
-        )
-    if re.search(r"malformed report.{0,120}wrong-path", build, re.S):
+    if (
+        mutation_section is None
+        or normalized_section.count(TRANSPORT_BLOCK) != 1
+        or normalized_build.count(TRANSPORT_BLOCK) != 1
+    ):
         problems.append(
             "BUILD.md misclassifies malformed suite transport as a domain "
-            "wrong-path verdict."
+            "wrong-path verdict; its attributable-mutation section must own "
+            "the exact transport contract block."
         )
     return problems
 
