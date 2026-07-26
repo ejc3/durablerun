@@ -2581,11 +2581,16 @@ ENV_BAD_CASES = [
         "session-state.sh",
         {
             "README.md": "a process-enumeration fixture\n",
-            "fail-ps.sh": "ps() { return 7; }\n",
+            "fail-python.sh": (
+                "python3() {\n"
+                "  printf '%s\\n' 'session-state: injected process graph failure' >&2\n"
+                "  return 7\n"
+                "}\n"
+            ),
         },
-        {"BASH_ENV": "{root}/fail-ps.sh"},
-        "ps rejected the sleep scan",
-        "a failed process-table query must not become an empty sleep inventory",
+        {"BASH_ENV": "{root}/fail-python.sh"},
+        "session-state: injected process graph failure",
+        "a failed process-graph scan must not become an empty ownership inventory",
     ),
 ]
 
