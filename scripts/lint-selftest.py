@@ -393,13 +393,21 @@ def hidden_process_contract(document: str, container: str) -> dict[str, str]:
     return files
 
 
+def hidden_process_bad_case_payload(
+    case: HiddenProcessCase,
+) -> tuple[dict[str, str], str, str]:
+    return (
+        hidden_process_contract(case.document, case.container),
+        case.gate_problem,
+        case.description,
+    )
+
+
 def hidden_process_bad_cases() -> list[tuple[str, dict[str, str], str, str]]:
     return [
         (
             "gate-lint.py",
-            hidden_process_contract(case.document, case.container),
-            case.gate_problem,
-            case.description,
+            *hidden_process_bad_case_payload(case),
         )
         for case in hidden_process_cases()
     ]
@@ -1478,7 +1486,13 @@ export class S {
         "package.json must route verify:mutations exactly to mutation-probe.py",
         "printing the runner name is not execution of the documented audit command",
     ),
-    *hidden_process_bad_cases(),
+] + [
+    (
+        "gate-lint.py",
+        *hidden_process_bad_case_payload(case),
+    )
+    for case in hidden_process_cases()
+] + [
     (
         "gate-lint.py",
         nested_build_contract("fence"),
