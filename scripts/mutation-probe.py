@@ -15,16 +15,27 @@ suite once per mutation, so it is a deliberate audit, not a gate. Its cheap
 verdict-classifier self-test is part of `pnpm verify`; it edits nothing and
 does not require a clean tree.
 
-Usage: mutation-probe.py [-k substring]
+Usage: mutation-probe.py [-k substring] [--jobs auto|N]
        mutation-probe.py --self-test
        mutation-probe.py --classifier-self-test [--self-test-fault FAULT]
+       mutation-probe.py --orchestration-self-test
+                         [--orchestration-self-test-fault FAULT]
 """
+from __future__ import annotations
+
 import argparse
+import fcntl
+import hashlib
 import json
+import os
 import re
+import secrets
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -69,6 +80,7 @@ class SuiteResult:
     assertions: tuple[FailedAssertion, ...]
     suite_errors: tuple[str, ...]
     diagnostic: str
+    transport_error: str | None = None
 
     @property
     def green(self) -> bool:
@@ -77,6 +89,7 @@ class SuiteResult:
             and self.report_ok
             and not self.assertions
             and not self.suite_errors
+            and self.transport_error is None
         )
 
 
@@ -906,10 +919,11 @@ if set(spec_names) != set(VERDICTS):
 MUTATIONS = [Mutation(*spec, VERDICTS[spec[0]]) for spec in MUTATION_SPECS]
 
 # The suite, minus the legs whose cost dwarfs their value here: the fuzz shards
-# and the real-process chaos tests each add minutes per mutation.
+# and the real-process chaos tests each add minutes per mutation. The real
+# audit re-execs its COORDINATOR through confine.sh once; every raw suite below
+# is therefore a descendant of the same aggregate cgroup. Wrapping each suite
+# separately would multiply the advertised memory ceiling by the worker count.
 TEST_CMD = [
-    "bash",
-    "scripts/confine.sh",
     "pnpm",
     "exec",
     "vitest",
@@ -919,6 +933,10 @@ TEST_CMD = [
     "--exclude",
     "packages/driver/test/chaos-process.test.ts",
 ]
+CONFINEMENT_ENV = "DURABLERUN_MUTATION_SCOPE"
+REPORT_VERSION = 1
+MAX_AUTO_JOBS = 16
+MIN_CORES_PER_AUTO_JOB = 8
 
 
 def relative_test_file(value: object) -> str:
@@ -936,23 +954,33 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
     try:
         report = json.loads(text)
     except (json.JSONDecodeError, TypeError) as error:
+        message = f"missing or malformed Vitest JSON report: {error}"
         return SuiteResult(
             process_ok,
             False,
             (),
-            (f"missing or malformed Vitest JSON report: {error}",),
+            (message,),
             diagnostic,
+            message,
         )
     if not isinstance(report, dict) or not isinstance(report.get("success"), bool):
+        message = "Vitest JSON report has no boolean success verdict"
         return SuiteResult(
             process_ok,
             False,
             (),
-            ("Vitest JSON report has no boolean success verdict",),
+            (message,),
             diagnostic,
+            message,
         )
 
     suite_errors: list[str] = []
+    report_errors: list[str] = []
+
+    def invalid_report(message: str) -> None:
+        suite_errors.append(message)
+        report_errors.append(message)
+
     counter_names = (
         "numTotalTestSuites",
         "numPassedTestSuites",
@@ -968,9 +996,7 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
     for name in counter_names:
         value = report.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            suite_errors.append(
-                f"Vitest JSON report has no nonnegative integer {name}"
-            )
+            invalid_report(f"Vitest JSON report has no nonnegative integer {name}")
         else:
             counters[name] = value
     if len(counters) == len(counter_names):
@@ -979,63 +1005,65 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
             + counters["numFailedTestSuites"]
             + counters["numPendingTestSuites"]
         ):
-            suite_errors.append("Vitest JSON report has contradictory suite counters")
+            invalid_report("Vitest JSON report has contradictory suite counters")
         if counters["numTotalTests"] != (
             counters["numPassedTests"]
             + counters["numFailedTests"]
             + counters["numPendingTests"]
             + counters["numTodoTests"]
         ):
-            suite_errors.append("Vitest JSON report has contradictory test counters")
+            invalid_report("Vitest JSON report has contradictory test counters")
 
     assertions: list[FailedAssertion] = []
     observed_tests = {"passed": 0, "failed": 0, "pending": 0, "todo": 0}
     results = report.get("testResults")
     if not isinstance(results, list):
+        message = "Vitest JSON report has no testResults array"
         return SuiteResult(
             process_ok,
             bool(report["success"]),
             (),
-            ("Vitest JSON report has no testResults array",),
+            (*suite_errors, message),
             diagnostic,
+            message,
         )
     for result in results:
         if not isinstance(result, dict):
-            suite_errors.append("Vitest JSON report contains a non-object test result")
+            invalid_report("Vitest JSON report contains a non-object test result")
             continue
         name = result.get("name")
         if not isinstance(name, str):
-            suite_errors.append("Vitest JSON test result has no string name")
+            invalid_report("Vitest JSON test result has no string name")
             name = "(unknown file)"
         file = relative_test_file(name)
         file_status = result.get("status")
         if file_status not in ("passed", "failed"):
-            suite_errors.append(f"{file}: invalid or missing file status")
+            invalid_report(f"{file}: invalid or missing file status")
         message = result.get("message")
         if not isinstance(message, str):
-            suite_errors.append(f"{file}: missing string message")
+            invalid_report(f"{file}: missing string message")
             message = ""
         elif message:
             suite_errors.append(f"{file}: {message}")
         rows = result.get("assertionResults")
         if not isinstance(rows, list):
-            suite_errors.append(f"{file}: missing assertionResults")
+            invalid_report(f"{file}: missing assertionResults")
             continue
         failed_in_file = False
         for assertion in rows:
             if not isinstance(assertion, dict):
-                suite_errors.append(f"{file}: contains a non-object assertion result")
+                invalid_report(f"{file}: contains a non-object assertion result")
                 continue
             status = assertion.get("status")
             if not isinstance(status, str):
-                suite_errors.append(f"{file}: assertion has invalid or missing status")
+                invalid_report(f"{file}: assertion has invalid or missing status")
                 continue
             if status in ("skipped", "disabled"):
                 observed_tests["pending"] += 1
             elif status in observed_tests:
                 observed_tests[status] += 1
             else:
-                suite_errors.append(f"{file}: assertion has invalid or missing status")
+                invalid_report(f"{file}: assertion has invalid or missing status")
                 continue
             if status != "failed":
                 continue
@@ -1043,13 +1071,13 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
             messages = assertion.get("failureMessages")
             full_name = assertion.get("fullName")
             if not isinstance(full_name, str):
-                suite_errors.append(f"{file}: failed assertion has no string fullName")
+                invalid_report(f"{file}: failed assertion has no string fullName")
                 full_name = ""
             if messages is not None and (
                 not isinstance(messages, list)
                 or any(not isinstance(item, str) for item in messages)
             ):
-                suite_errors.append(
+                invalid_report(
                     f"{file}: failed assertion has invalid failureMessages"
                 )
                 messages = []
@@ -1062,11 +1090,11 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
             )
         if file_status == "failed":
             if not failed_in_file and not message:
-                suite_errors.append(
+                invalid_report(
                     f"{file}: failed file has no failed assertion or file error"
                 )
         elif failed_in_file or message:
-            suite_errors.append(
+            invalid_report(
                 f"{file}: passed file contains a failed assertion or file error"
             )
 
@@ -1080,7 +1108,7 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
         }
         for name, observed in observed_by_counter.items():
             if counters[name] != observed:
-                suite_errors.append(
+                invalid_report(
                     f"Vitest JSON report {name}={counters[name]} "
                     f"does not match {observed} assertion results"
                 )
@@ -1089,11 +1117,11 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
             and counters["numFailedTests"] == 0
         )
         if results and bool(report["success"]) != expected_success:
-            suite_errors.append(
+            invalid_report(
                 "Vitest JSON report success contradicts its failure counters"
             )
         elif bool(report["success"]) and not expected_success:
-            suite_errors.append(
+            invalid_report(
                 "Vitest JSON report success contradicts its failure counters"
             )
     return SuiteResult(
@@ -1102,28 +1130,82 @@ def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
         tuple(assertions),
         tuple(suite_errors),
         diagnostic,
+        report_errors[0] if report_errors else None,
     )
 
 
-def run_suite() -> SuiteResult:
+def diagnostic_tail(path: Path, limit: int = 16_384) -> str:
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - limit))
+        return stream.read().decode(errors="replace").strip()
+
+
+def run_suite(
+    max_workers: int,
+    *,
+    scope: ConfinedScope,
+    workspace: IsolatedWorkspace,
+    authority: WorkerAuthority,
+) -> SuiteResult:
+    if (
+        workspace.root != ROOT.resolve()
+        or authority.worker_root != ROOT.resolve()
+        or scope.memory_max <= 0
+        or scope.cpu_quota <= 0
+    ):
+        raise RuntimeError("mutation suite lacks its runtime safety capabilities")
     with tempfile.TemporaryDirectory(prefix="durablerun-mutation-report-") as temporary:
         report = Path(temporary) / "vitest.json"
-        result = subprocess.run(
-            [*TEST_CMD, "--reporter=json", "--outputFile", str(report)],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        diagnostic = (result.stdout + result.stderr).strip()
+        log = Path(temporary) / "vitest.log"
+        command = [*TEST_CMD]
+        if max_workers is not None:
+            command.extend(("--maxWorkers", str(max_workers)))
+        command.extend(("--reporter=json", "--outputFile", str(report)))
+        with log.open("wb") as output:
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+            )
+        diagnostic = diagnostic_tail(log)
         if not report.exists():
+            message = "Vitest did not write its JSON report"
             return SuiteResult(
                 result.returncode == 0,
                 False,
                 (),
-                ("Vitest did not write its JSON report",),
+                (message,),
                 diagnostic,
+                message,
             )
-        return parse_report(report.read_text(), result.returncode == 0, diagnostic)
+        parsed = parse_report(
+            report.read_text(),
+            result.returncode == 0,
+            diagnostic,
+        )
+        if result.returncode >= 0:
+            return parsed
+        message = f"Vitest terminated by signal {-result.returncode}"
+        return SuiteResult(
+            parsed.process_ok,
+            parsed.report_ok,
+            parsed.assertions,
+            parsed.suite_errors,
+            parsed.diagnostic,
+            message,
+        )
+
+
+def require_suite_transport(
+    result: SuiteResult,
+    *,
+    accept_failure_as_domain: bool = False,
+) -> None:
+    if result.transport_error is not None and not accept_failure_as_domain:
+        raise RuntimeError(f"mutation suite transport failure: {result.transport_error}")
 
 
 VerdictOutcome = Literal["caught", "survived", "wrong-path"]
@@ -1629,8 +1711,20 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         if got != wanted:
             failures.append(f"verdict-descriptor {label}: expected {wanted}, got {got}")
     if check_live_inventory:
-        if TEST_CMD[:2] != ["bash", "scripts/confine.sh"]:
-            failures.append("full mutation suites are not routed through scripts/confine.sh")
+        if TEST_CMD[:3] != ["pnpm", "exec", "vitest"]:
+            failures.append("worker suites do not execute Vitest directly")
+        confined = confinement_command([])
+        if confined[:4] != [
+            "bash",
+            "scripts/confine.sh",
+            "env",
+            f"{CONFINEMENT_ENV}=1",
+        ]:
+            failures.append(
+                "the full mutation coordinator is not routed once through confine.sh"
+            )
+        if "scripts/confine.sh" in TEST_CMD:
+            failures.append("worker suites create nested confinement scopes")
         for mutation in MUTATIONS:
             source = (ROOT / mutation.file).read_text()
             occurrences = source.count(mutation.find)
@@ -1709,173 +1803,2231 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     return 0
 
 
-def assert_clean() -> None:
+MutationRunOutcome = Literal["caught", "survived", "wrong-path", "stale"]
+
+
+@dataclass(frozen=True)
+class ExpectedMutationResult:
+    ordinal: int
+    name: str
+    expected: str
+    original_sha256: str
+    mutated_sha256: str
+
+
+@dataclass(frozen=True)
+class WorkerPlan:
+    worker_id: int
+    path: Path
+    temporary: Path
+    baseline_report: Path
+    mutation_report: Path
+    install_log: Path
+    baseline_log: Path
+    mutation_log: Path
+    expected: tuple[ExpectedMutationResult, ...]
+
+
+@dataclass(frozen=True)
+class ConfinedScope:
+    cgroup: str
+    memory_max: int
+    cpu_quota: int
+
+
+@dataclass(frozen=True)
+class IsolatedWorkspace:
+    root: Path
+
+
+@dataclass(frozen=True)
+class WorkerAuthority:
+    run_root: Path
+    worker_root: Path
+    worker_id: int
+    head: str
+    nonce: str
+
+
+@dataclass(frozen=True)
+class BaselineBarrier:
+    head: str
+    worker_ids: tuple[int, ...]
+    digest: str
+
+
+ORCHESTRATION_SELF_TEST_FAULTS = (
+    "drop-assignment",
+    "duplicate-assignment",
+    "accept-wrong-head",
+    "accept-missing-result",
+    "accept-duplicate-result",
+    "accept-extra-result",
+    "accept-process-report-disagreement",
+    "accept-outside-cleanup",
+    "accept-unconfined-scope",
+    "accept-unowned-worker",
+    "skip-baseline-barrier",
+    "accept-external-workspace-link",
+    "accept-malformed-result-types",
+    "interrupt-cleanup",
+    "leave-descendant-running",
+    "publish-success-after-infra",
+    "report-worker-crash-as-domain",
+    "accept-oversized-finite-scope",
+    "accept-oversized-cpu-scope",
+    "classify-missing-report-as-domain",
+)
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def expected_verdict(mutation: Mutation) -> str:
+    return (
+        f"{mutation.verdict.kind} {mutation.verdict.file} > "
+        f"{mutation.verdict.full_name} containing {mutation.verdict.marker!r}"
+    )
+
+
+def mutation_registry_digest() -> str:
+    payload = [
+        {
+            "name": mutation.name,
+            "file": mutation.file,
+            "find": mutation.find,
+            "replace": mutation.replace,
+            "breaks": mutation.breaks,
+            "verdict": {
+                "kind": mutation.verdict.kind,
+                "file": mutation.verdict.file,
+                "full_name": mutation.verdict.full_name,
+                "marker": mutation.verdict.marker,
+                "marker_file": mutation.verdict.marker_file,
+            },
+        }
+        for mutation in MUTATIONS
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def expected_result(
+    ordinal: int, mutation: Mutation, *, root: Path
+) -> ExpectedMutationResult:
+    original = (root / mutation.file).read_text()
+    mutated = original.replace(mutation.find, mutation.replace, 1)
+    return ExpectedMutationResult(
+        ordinal,
+        mutation.name,
+        expected_verdict(mutation),
+        sha256_text(original),
+        sha256_text(mutated),
+    )
+
+
+def partition_expected(
+    expected: list[ExpectedMutationResult],
+    jobs: int,
+    *,
+    fault: str | None = None,
+) -> list[list[ExpectedMutationResult]]:
+    if jobs < 1 or jobs > len(expected):
+        raise ValueError(f"jobs must be between 1 and {len(expected)}")
+    shards = [[] for _ in range(jobs)]
+    for index, item in enumerate(expected):
+        shards[index % jobs].append(item)
+    if fault == "drop-assignment":
+        shards[0] = shards[0][1:]
+    elif fault == "duplicate-assignment":
+        shards[-1].append(expected[0])
+    return shards
+
+
+def validate_shards(
+    shards: list[list[ExpectedMutationResult]],
+    expected: list[ExpectedMutationResult],
+) -> None:
+    if not shards or any(not shard for shard in shards):
+        raise ValueError("every worker shard must be nonempty")
+    for worker_id, shard in enumerate(shards):
+        wanted = expected[worker_id :: len(shards)]
+        if shard != wanted:
+            raise ValueError(
+                f"worker {worker_id} assignment is not its deterministic registry slice"
+            )
+    assigned = [item.name for shard in shards for item in shard]
+    wanted_names = [item.name for item in expected]
+    duplicate = sorted({name for name in assigned if assigned.count(name) > 1})
+    missing = sorted(set(wanted_names) - set(assigned))
+    extra = sorted(set(assigned) - set(wanted_names))
+    if duplicate or missing or extra:
+        raise ValueError(
+            "shard inventory mismatch: "
+            f"duplicate={duplicate}, missing={missing}, extra={extra}"
+        )
+
+
+def mutation_result_row(
+    expected: ExpectedMutationResult,
+    outcome: MutationRunOutcome,
+    detail: str,
+) -> dict[str, object]:
+    return {
+        "ordinal": expected.ordinal,
+        "name": expected.name,
+        "outcome": outcome,
+        "detail": detail,
+        "expected": expected.expected,
+        "original_sha256": expected.original_sha256,
+        "mutated_sha256": expected.mutated_sha256,
+    }
+
+
+def mutation_report_payload(
+    *,
+    head: str,
+    worker_id: int,
+    assigned: list[ExpectedMutationResult],
+    results: list[dict[str, object]],
+    complete: bool,
+) -> dict[str, object]:
+    return {
+        "version": REPORT_VERSION,
+        "phase": "mutations",
+        "head": head,
+        "registry_digest": mutation_registry_digest(),
+        "worker_id": worker_id,
+        "assigned": [item.name for item in assigned],
+        "complete": complete,
+        "results": results,
+    }
+
+
+def validate_mutation_report(
+    payload: object,
+    *,
+    head: str,
+    worker_id: int,
+    expected: list[ExpectedMutationResult],
+    process_returncode: int,
+    accept_wrong_head: bool = False,
+    accept_missing_result: bool = False,
+    accept_duplicate_result: bool = False,
+    accept_extra_result: bool = False,
+    accept_process_disagreement: bool = False,
+    accept_malformed_types: bool = False,
+) -> list[dict[str, object]]:
+    if not isinstance(payload, dict):
+        raise ValueError("worker mutation report is not an object")
+    required = {
+        "version",
+        "phase",
+        "head",
+        "registry_digest",
+        "worker_id",
+        "assigned",
+        "complete",
+        "results",
+    }
+    if set(payload) != required:
+        raise ValueError("worker mutation report has an invalid field inventory")
+    if (
+        (
+            type(payload["version"]) is not int
+            or payload["version"] != REPORT_VERSION
+            or not isinstance(payload["phase"], str)
+            or payload["phase"] != "mutations"
+        )
+        and not accept_malformed_types
+    ):
+        raise ValueError("worker mutation report has an invalid schema or phase")
+    if not accept_wrong_head and payload["head"] != head:
+        raise ValueError("worker mutation report names the wrong commit")
+    if payload["registry_digest"] != mutation_registry_digest():
+        raise ValueError("worker mutation report names the wrong mutation registry")
+    if (
+        (type(payload["worker_id"]) is not int or payload["worker_id"] != worker_id)
+        and not accept_malformed_types
+    ):
+        raise ValueError("worker mutation report names the wrong worker")
+    if payload["assigned"] != [item.name for item in expected]:
+        raise ValueError("worker mutation report names the wrong shard")
+    if payload["complete"] is not True:
+        raise ValueError("worker mutation report is incomplete")
+    rows = payload["results"]
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("worker mutation results are not an object array")
+
+    expected_by_name = {item.name: item for item in expected}
+    names = [row.get("name") for row in rows]
+    duplicates = sorted(
+        {
+            name
+            for name in names
+            if isinstance(name, str) and names.count(name) > 1
+        }
+    )
+    missing = sorted(set(expected_by_name) - {name for name in names if isinstance(name, str)})
+    extra = sorted(
+        {
+            name if isinstance(name, str) else repr(name)
+            for name in names
+            if not isinstance(name, str) or name not in expected_by_name
+        }
+    )
+    if duplicates and not accept_duplicate_result:
+        raise ValueError(f"worker mutation report duplicates results: {duplicates}")
+    if missing and not accept_missing_result:
+        raise ValueError(f"worker mutation report omits results: {missing}")
+    if extra and not accept_extra_result:
+        raise ValueError(f"worker mutation report adds results: {extra}")
+
+    row_fields = {
+        "ordinal",
+        "name",
+        "outcome",
+        "detail",
+        "expected",
+        "original_sha256",
+        "mutated_sha256",
+    }
+    seen: set[str] = set()
+    for row in rows:
+        if set(row) != row_fields:
+            raise ValueError("worker mutation result has an invalid field inventory")
+        name = row["name"]
+        if not isinstance(name, str):
+            if accept_extra_result:
+                continue
+            raise ValueError("worker mutation result has a non-string name")
+        item = expected_by_name.get(name)
+        if item is None:
+            if accept_extra_result:
+                continue
+            raise ValueError(f"worker mutation result is unknown: {name}")
+        if name in seen:
+            if accept_duplicate_result:
+                continue
+            raise ValueError(f"worker mutation result is duplicated: {name}")
+        seen.add(name)
+        if (
+            (
+                type(row["ordinal"]) is not int
+                or row["ordinal"] != item.ordinal
+            )
+            and not accept_malformed_types
+        ) or (
+            (
+                row["expected"] != item.expected
+                or row["original_sha256"] != item.original_sha256
+                or row["mutated_sha256"] != item.mutated_sha256
+            )
+        ):
+            raise ValueError(f"worker mutation result metadata differs for {name}")
+        if (
+            not isinstance(row["expected"], str)
+            or not isinstance(row["original_sha256"], str)
+            or not isinstance(row["mutated_sha256"], str)
+        ):
+            raise ValueError(f"worker mutation result metadata has invalid types for {name}")
+        if row["outcome"] not in ("caught", "survived", "wrong-path", "stale"):
+            raise ValueError(f"worker mutation result has an invalid outcome for {name}")
+        if not isinstance(row["detail"], str):
+            raise ValueError(f"worker mutation result has a non-string detail for {name}")
+
+    known_rows = [
+        row for row in rows if isinstance(row.get("name"), str) and row["name"] in expected_by_name
+    ]
+    wanted_order = [item.name for item in expected if item.name in seen]
+    observed_order = []
+    for row in known_rows:
+        name = str(row["name"])
+        if name not in observed_order:
+            observed_order.append(name)
+    if observed_order != wanted_order:
+        raise ValueError("worker mutation results are not in shard order")
+    expected_returncode = (
+        0
+        if len(seen) == len(expected) and all(row["outcome"] == "caught" for row in known_rows)
+        else 1
+    )
+    if not accept_process_disagreement and process_returncode != expected_returncode:
+        raise ValueError(
+            "worker process/report disagreement: "
+            f"exit={process_returncode}, report expects {expected_returncode}"
+        )
+    return rows
+
+
+def validate_baseline_report(
+    payload: object,
+    *,
+    head: str,
+    worker_id: int,
+    assigned: list[ExpectedMutationResult],
+    process_returncode: int,
+    accept_malformed_types: bool = False,
+) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("worker baseline report is not an object")
+    required = {
+        "version",
+        "phase",
+        "head",
+        "registry_digest",
+        "worker_id",
+        "assigned",
+        "complete",
+        "green",
+        "diagnostic",
+    }
+    if set(payload) != required:
+        raise ValueError("worker baseline report has an invalid field inventory")
+    malformed_identity = (
+        type(payload["version"]) is not int
+        or type(payload["worker_id"]) is not int
+    )
+    if (
+        (malformed_identity and not accept_malformed_types)
+        or payload["version"] != REPORT_VERSION
+        or payload["phase"] != "baseline"
+        or payload["head"] != head
+        or payload["registry_digest"] != mutation_registry_digest()
+        or payload["worker_id"] != worker_id
+        or payload["assigned"] != [item.name for item in assigned]
+        or payload["complete"] is not True
+        or not isinstance(payload["green"], bool)
+        or not isinstance(payload["diagnostic"], str)
+    ):
+        raise ValueError("worker baseline report does not match its assignment")
+    expected_returncode = 0 if payload["green"] else 2
+    if process_returncode != expected_returncode:
+        raise ValueError(
+            "worker baseline process/report disagreement: "
+            f"exit={process_returncode}, report expects {expected_returncode}"
+        )
+    if not payload["green"]:
+        raise ValueError(f"worker baseline is red: {payload['diagnostic'][:500]}")
+
+
+def validate_owned_worktree_path(
+    run_root: Path,
+    path: Path,
+    *,
+    allow_outside: bool = False,
+) -> None:
+    resolved_root = run_root.resolve()
+    resolved_path = path.resolve()
+    owned = (
+        resolved_path.parent == resolved_root
+        and re.fullmatch(r"worker-\d{2}", resolved_path.name) is not None
+    )
+    if not owned and not allow_outside:
+        raise ValueError(f"refusing cleanup outside owned run root: {path}")
+
+
+def protected_cpu_cores(total_cores: int) -> int:
+    if total_cores < 1:
+        raise ValueError("mutation audit cannot identify a positive host CPU count")
+    if total_cores > 8:
+        return total_cores - 4
+    if total_cores > 4:
+        return total_cores // 2 + 2
+    return total_cores
+
+
+def host_cpu_count() -> int:
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+def host_memory_bytes() -> int:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        match = re.fullmatch(r"MemTotal:\s+(\d+)\s+kB", line)
+        if match:
+            return int(match.group(1)) * 1024
+    raise ValueError("mutation audit cannot identify host memory capacity")
+
+
+def validate_scope_limits(
+    memory_max: str,
+    swap_max: str,
+    cpu_max: str,
+    *,
+    host_memory: int,
+    host_cpus: int,
+    accept_unconfined: bool = False,
+    accept_oversized_memory: bool = False,
+    accept_oversized_cpu: bool = False,
+) -> tuple[int, int]:
+    try:
+        memory = int(memory_max)
+        swap = int(swap_max)
+        quota_text, period_text = cpu_max.split()
+        quota = int(quota_text)
+        period = int(period_text)
+    except (ValueError, TypeError) as error:
+        if accept_unconfined:
+            return (1, 1)
+        raise ValueError("mutation audit is not inside finite cgroup limits") from error
+    if memory <= 0 or swap != 0 or quota <= 0 or period <= 0:
+        if accept_unconfined:
+            return (max(1, memory), max(1, quota))
+        raise ValueError(
+            "mutation audit cgroup must have finite positive memory/CPU and zero swap"
+        )
+    if host_memory < 1:
+        raise ValueError("mutation audit cannot identify positive host memory")
+    memory_ceiling = host_memory * 3 // 4
+    if memory > memory_ceiling and not accept_oversized_memory:
+        raise ValueError(
+            "mutation audit cgroup memory limit exceeds 75% of host memory"
+        )
+    cpu_ceiling = protected_cpu_cores(host_cpus) * period
+    if quota > cpu_ceiling and not accept_oversized_cpu:
+        raise ValueError(
+            "mutation audit cgroup CPU limit does not preserve the host reserve"
+        )
+    return memory, quota
+
+
+def prove_confined_scope(*, accept_unconfined: bool = False) -> ConfinedScope:
+    cgroup = next(
+        (
+            line.removeprefix("0::")
+            for line in Path("/proc/self/cgroup").read_text().splitlines()
+            if line.startswith("0::")
+        ),
+        "",
+    )
+    if not cgroup.startswith("/"):
+        raise ValueError("mutation audit cannot identify its cgroup-v2 scope")
+    cgroup_root = Path("/sys/fs/cgroup")
+    scope = (cgroup_root / cgroup.lstrip("/")).resolve()
+    try:
+        scope.relative_to(cgroup_root)
+        memory_text = (scope / "memory.max").read_text().strip()
+        swap_text = (scope / "memory.swap.max").read_text().strip()
+        cpu_text = (scope / "cpu.max").read_text().strip()
+    except (OSError, ValueError) as error:
+        raise ValueError(f"mutation audit cannot inspect cgroup {cgroup}") from error
+    memory, quota = validate_scope_limits(
+        memory_text,
+        swap_text,
+        cpu_text,
+        host_memory=host_memory_bytes(),
+        host_cpus=host_cpu_count(),
+        accept_unconfined=accept_unconfined,
+    )
+    return ConfinedScope(cgroup, memory, quota)
+
+
+def prove_workspace_links(
+    root: Path,
+    *,
+    accept_external: bool = False,
+) -> IsolatedWorkspace:
+    candidates = sorted(root.glob("packages/*/node_modules/@durablerun/*"))
+    if not candidates:
+        raise ValueError(f"{root}: isolated install created no workspace links")
+    resolved_root = root.resolve()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(resolved_root)
+        except (FileNotFoundError, ValueError) as error:
+            if accept_external:
+                continue
+            raise ValueError(
+                f"{candidate}: workspace dependency escapes or is broken ({error})"
+            ) from error
+    return IsolatedWorkspace(resolved_root)
+
+
+def prove_worker_authority(
+    *,
+    worker_root: Path,
+    run_root: Path,
+    report_path: Path,
+    head: str,
+    worker_id: int,
+    nonce: str,
+    phase: str,
+    baseline_barrier: str | None,
+    mutation_names: list[str],
+    accept_unowned: bool = False,
+) -> WorkerAuthority:
+    if accept_unowned:
+        return WorkerAuthority(
+            run_root.resolve(),
+            worker_root.resolve(),
+            worker_id,
+            head,
+            nonce,
+        )
+    validate_owned_worktree_path(run_root, worker_root)
+    expected_report = run_root / f"{phase}-{worker_id:02}.json"
+    if report_path.resolve() != expected_report.resolve():
+        raise ValueError("worker result path is not coordinator-owned")
+    if not (worker_root / ".git").is_file():
+        raise ValueError("worker root is not a linked Git worktree")
+    manifest_path = run_root / "manifest.json"
+    payload = read_json(manifest_path)
+    if not isinstance(payload, dict):
+        raise ValueError("worker ownership manifest is not an object")
+    required = {
+        "version",
+        "kind",
+        "pid",
+        "source_root",
+        "head",
+        "nonce",
+        "state",
+        "baseline_barrier",
+        "worktrees",
+        "shards",
+    }
+    if set(payload) != required:
+        raise ValueError("worker ownership manifest has an invalid field inventory")
+    worktrees = payload["worktrees"]
+    shards = payload["shards"]
+    if (
+        type(payload["version"]) is not int
+        or payload["version"] != REPORT_VERSION
+        or payload["kind"] != "durablerun-mutation-worktrees"
+        or type(payload["pid"]) is not int
+        or payload["head"] != head
+        or payload["nonce"] != nonce
+        or payload["state"] != phase
+        or payload["baseline_barrier"] != baseline_barrier
+        or not isinstance(worktrees, list)
+        or not isinstance(shards, list)
+        or worker_id < 0
+        or worker_id >= len(worktrees)
+        or worker_id >= len(shards)
+        or worktrees[worker_id] != str(worker_root)
+        or shards[worker_id] != mutation_names
+        or Path(str(payload["source_root"])).resolve() == worker_root.resolve()
+    ):
+        raise ValueError("worker ownership manifest does not authorize this process")
+    return WorkerAuthority(
+        run_root.resolve(),
+        worker_root.resolve(),
+        worker_id,
+        head,
+        nonce,
+    )
+
+
+def validate_baseline_barrier(
+    barrier: BaselineBarrier | None,
+    *,
+    head: str,
+    worker_ids: tuple[int, ...],
+    accept_missing: bool = False,
+) -> None:
+    valid = (
+        isinstance(barrier, BaselineBarrier)
+        and barrier.head == head
+        and barrier.worker_ids == worker_ids
+        and re.fullmatch(r"[0-9a-f]{64}", barrier.digest) is not None
+    )
+    if not valid and not accept_missing:
+        raise ValueError("mutation phase has no complete exact-head baseline barrier")
+
+
+def orchestration_self_test(fault: str | None = None) -> int:
+    """Generated false-positive surface for the parallel coordinator."""
+    expected = [
+        ExpectedMutationResult(
+            ordinal,
+            f"mutation-{ordinal}",
+            f"expected-{ordinal}",
+            f"{ordinal:064x}",
+            f"{ordinal + 1:064x}",
+        )
+        for ordinal in range(7)
+    ]
+    failures: list[str] = []
+    try:
+        shards = partition_expected(
+            expected,
+            3,
+            fault=fault if fault in ("drop-assignment", "duplicate-assignment") else None,
+        )
+        validate_shards(shards, expected)
+    except ValueError as error:
+        failures.append(f"shard coverage: {error}")
+
+    assigned = expected[:3]
+    good_rows = [mutation_result_row(item, "caught", "attributable") for item in assigned]
+    good = mutation_report_payload(
+        head="a" * 40,
+        worker_id=2,
+        assigned=assigned,
+        results=good_rows,
+        complete=True,
+    )
+    try:
+        validate_mutation_report(
+            good,
+            head="a" * 40,
+            worker_id=2,
+            expected=assigned,
+            process_returncode=0,
+        )
+    except ValueError as error:
+        failures.append(f"valid report rejected: {error}")
+
+    def expect_rejected(
+        label: str,
+        payload: dict[str, object],
+        *,
+        returncode: int = 0,
+        **weakness: bool,
+    ) -> None:
+        try:
+            validate_mutation_report(
+                payload,
+                head="a" * 40,
+                worker_id=2,
+                expected=assigned,
+                process_returncode=returncode,
+                **weakness,
+            )
+        except ValueError:
+            return
+        failures.append(f"{label}: invalid report was accepted")
+
+    wrong_head = json.loads(json.dumps(good))
+    wrong_head["head"] = "b" * 40
+    expect_rejected(
+        "wrong head",
+        wrong_head,
+        accept_wrong_head=fault == "accept-wrong-head",
+    )
+    missing = json.loads(json.dumps(good))
+    missing["results"] = missing["results"][:-1]
+    expect_rejected(
+        "missing result",
+        missing,
+        returncode=1,
+        accept_missing_result=fault == "accept-missing-result",
+    )
+    duplicate = json.loads(json.dumps(good))
+    duplicate["results"].append(dict(duplicate["results"][0]))
+    expect_rejected(
+        "duplicate result",
+        duplicate,
+        accept_duplicate_result=fault == "accept-duplicate-result",
+    )
+    extra = json.loads(json.dumps(good))
+    extra["results"].append(
+        {
+            "ordinal": 99,
+            "name": "foreign",
+            "outcome": "caught",
+            "detail": "foreign",
+            "expected": "foreign",
+            "original_sha256": "c" * 64,
+            "mutated_sha256": "d" * 64,
+        }
+    )
+    expect_rejected(
+        "extra result",
+        extra,
+        accept_extra_result=fault == "accept-extra-result",
+    )
+    expect_rejected(
+        "process/report disagreement",
+        good,
+        returncode=1,
+        accept_process_disagreement=fault
+        == "accept-process-report-disagreement",
+    )
+    malformed_types = json.loads(json.dumps(good))
+    malformed_types["version"] = True
+    malformed_types["worker_id"] = 2.0
+    malformed_types["results"][0]["ordinal"] = False
+    expect_rejected(
+        "malformed identity types",
+        malformed_types,
+        accept_malformed_types=fault == "accept-malformed-result-types",
+    )
+    malformed_baseline = {
+        "version": True,
+        "phase": "baseline",
+        "head": "a" * 40,
+        "registry_digest": mutation_registry_digest(),
+        "worker_id": 2.0,
+        "assigned": [item.name for item in assigned],
+        "complete": True,
+        "green": True,
+        "diagnostic": "",
+    }
+    try:
+        validate_baseline_report(
+            malformed_baseline,
+            head="a" * 40,
+            worker_id=2,
+            assigned=assigned,
+            process_returncode=0,
+            accept_malformed_types=fault == "accept-malformed-result-types",
+        )
+    except ValueError:
+        pass
+    else:
+        failures.append("malformed baseline identity types were accepted")
+
+    with tempfile.TemporaryDirectory(prefix="durablerun-orchestration-selftest-") as tmp:
+        temporary = Path(tmp)
+        run_root = temporary / "run"
+        run_root.mkdir()
+        outside = run_root.parent / "not-owned" / "worker-00"
+        try:
+            validate_owned_worktree_path(
+                run_root,
+                outside,
+                allow_outside=fault == "accept-outside-cleanup",
+            )
+        except ValueError:
+            pass
+        else:
+            failures.append("outside cleanup: non-owned worktree was accepted")
+
+        worker_root = run_root / "worker-00"
+        worker_root.mkdir()
+        (worker_root / ".git").write_text("gitdir: fixture\n")
+        source_root = temporary / "source"
+        source_root.mkdir()
+        (source_root / ".git").mkdir()
+        authority_manifest = {
+            "version": REPORT_VERSION,
+            "kind": "durablerun-mutation-worktrees",
+            "pid": os.getpid(),
+            "source_root": str(source_root),
+            "head": "a" * 40,
+            "nonce": "fixture-nonce",
+            "state": "baseline",
+            "baseline_barrier": None,
+            "worktrees": [str(worker_root)],
+            "shards": [["mutation-0"]],
+        }
+        atomic_json(run_root / "manifest.json", authority_manifest)
+        try:
+            prove_worker_authority(
+                worker_root=worker_root,
+                run_root=run_root,
+                report_path=run_root / "baseline-00.json",
+                head="a" * 40,
+                worker_id=0,
+                nonce="fixture-nonce",
+                phase="baseline",
+                baseline_barrier=None,
+                mutation_names=["mutation-0"],
+            )
+        except ValueError as error:
+            failures.append(f"valid worker authority rejected: {error}")
+        try:
+            prove_worker_authority(
+                worker_root=source_root,
+                run_root=run_root,
+                report_path=temporary / "arbitrary.json",
+                head="a" * 40,
+                worker_id=0,
+                nonce="forged",
+                phase="baseline",
+                baseline_barrier=None,
+                mutation_names=["mutation-0"],
+                accept_unowned=fault == "accept-unowned-worker",
+            )
+        except ValueError:
+            pass
+        else:
+            failures.append("unowned worker: primary-style checkout was authorized")
+
+        workspace = temporary / "workspace"
+        inside_target = workspace / "packages" / "core"
+        inside_target.mkdir(parents=True)
+        link_parent = (
+            workspace
+            / "packages"
+            / "example"
+            / "node_modules"
+            / "@durablerun"
+        )
+        link_parent.mkdir(parents=True)
+        (link_parent / "core").symlink_to(inside_target, target_is_directory=True)
+        try:
+            prove_workspace_links(workspace)
+        except ValueError as error:
+            failures.append(f"valid isolated workspace rejected: {error}")
+        external_target = temporary / "external-package"
+        external_target.mkdir()
+        (link_parent / "external").symlink_to(
+            external_target,
+            target_is_directory=True,
+        )
+        try:
+            prove_workspace_links(
+                workspace,
+                accept_external=fault == "accept-external-workspace-link",
+            )
+        except ValueError:
+            pass
+        else:
+            failures.append("workspace isolation: external package link was accepted")
+
+        barrier = BaselineBarrier("a" * 40, (0, 1), "b" * 64)
+        try:
+            validate_baseline_barrier(
+                barrier,
+                head="a" * 40,
+                worker_ids=(0, 1),
+            )
+        except ValueError as error:
+            failures.append(f"valid baseline barrier rejected: {error}")
+        try:
+            validate_baseline_barrier(
+                None,
+                head="a" * 40,
+                worker_ids=(0, 1),
+                accept_missing=fault == "skip-baseline-barrier",
+            )
+        except ValueError:
+            pass
+        else:
+            failures.append("baseline barrier: mutation phase accepted no barrier")
+
+        if fault in (None, "leave-descendant-running"):
+            descendant_log = temporary / "descendant.log"
+            child_code = (
+                "import subprocess,sys; "
+                "child=subprocess.Popen([sys.executable,'-c',"
+                "'import time; time.sleep(30)']); "
+                "print(child.pid, flush=True); raise SystemExit(2)"
+            )
+            launch = ProcessLaunch(
+                "descendant-self-test",
+                (sys.executable, "-c", child_code),
+                temporary,
+                descendant_log,
+                os.environ.copy(),
+            )
+            try:
+                run_launches(
+                    [launch],
+                    allowed_returncodes=frozenset((0,)),
+                    omit_exited_groups=fault == "leave-descendant-running",
+                )
+            except RuntimeError:
+                pass
+            child_pid = int(descendant_log.read_text().splitlines()[0])
+            deadline = time.monotonic() + 2
+            while process_id_is_live(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if process_id_is_live(child_pid):
+                failures.append("process cleanup: exited leader left a live descendant")
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    try:
+        validate_scope_limits(
+            "750",
+            "0",
+            "600000 100000",
+            host_memory=1000,
+            host_cpus=8,
+        )
+    except ValueError as error:
+        failures.append(f"confinement: valid protective limits rejected: {error}")
+
+    invalid_scopes = (
+        (
+            "unlimited cgroup values",
+            ("max", "max", "max 100000"),
+            {
+                "accept_unconfined": fault == "accept-unconfined-scope",
+            },
+        ),
+        (
+            "oversized finite memory limit",
+            ("751", "0", "600000 100000"),
+            {
+                "accept_oversized_memory": fault
+                == "accept-oversized-finite-scope",
+            },
+        ),
+        (
+            "oversized finite CPU limit",
+            ("750", "0", "600001 100000"),
+            {
+                "accept_oversized_cpu": fault == "accept-oversized-cpu-scope",
+            },
+        ),
+    )
+    for label, values, weakness in invalid_scopes:
+        try:
+            validate_scope_limits(
+                *values,
+                host_memory=1000,
+                host_cpus=8,
+                **weakness,
+            )
+        except ValueError:
+            pass
+        else:
+            failures.append(f"confinement: {label} were accepted")
+
+    previous = {signal.SIGTERM: signal.getsignal(signal.SIGTERM)}
+    shield = CleanupSignalShield(
+        previous,
+        raise_instead=fault == "interrupt-cleanup",
+    )
+    try:
+        with shield:
+            shield.defer(signal.SIGTERM, None)
+    except AuditSignal:
+        failures.append("cleanup signal: a repeat signal interrupted cleanup")
+    if fault != "interrupt-cleanup" and shield.deferred_signum != signal.SIGTERM:
+        failures.append("cleanup signal: signal was not deferred")
+
+    caught_row = [mutation_result_row(assigned[0], "caught", "attributable")]
+    if may_publish_success(
+        2,
+        caught_row,
+        publish_after_infrastructure=fault == "publish-success-after-infra",
+    ):
+        failures.append("final verdict: infrastructure failure published success")
+    if not may_publish_success(0, caught_row):
+        failures.append("final verdict: complete success was rejected")
+    transport_failures = (
+        (
+            "worker signal",
+            SuiteResult(
+                False,
+                False,
+                (),
+                (),
+                "",
+                "Vitest terminated by signal 9",
+            ),
+            fault == "report-worker-crash-as-domain",
+        ),
+        (
+            "missing report",
+            SuiteResult(
+                False,
+                False,
+                (),
+                ("Vitest did not write its JSON report",),
+                "",
+                "Vitest did not write its JSON report",
+            ),
+            fault == "classify-missing-report-as-domain",
+        ),
+    )
+    for label, result, weakness in transport_failures:
+        try:
+            require_suite_transport(
+                result,
+                accept_failure_as_domain=weakness,
+            )
+        except RuntimeError:
+            pass
+        else:
+            failures.append(f"worker failure: {label} became a domain verdict")
+
+    if failures:
+        if fault is not None:
+            print(
+                "mutation-probe orchestration self-test caught injected fault "
+                f"{fault}: {failures[0]}",
+                file=sys.stderr,
+            )
+        else:
+            for failure in failures:
+                print(
+                    f"mutation-probe orchestration self-test: {failure}",
+                    file=sys.stderr,
+                )
+        return 1
+    if fault is not None:
+        print(
+            "mutation-probe orchestration self-test MISSED injected fault "
+            f"{fault}",
+            file=sys.stderr,
+        )
+        return 0
+    print(
+        "mutation-probe orchestration self-test: deterministic shards; exact "
+        "head, result inventory, process verdict, and cleanup ownership"
+    )
+    return 0
+
+
+def git_result(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        environment.pop(name, None)
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
+def git_output(root: Path, *args: str) -> str:
+    result = git_result(root, *args)
+    if result.returncode != 0:
+        diagnostic = (result.stdout + result.stderr).strip()
+        raise RuntimeError(f"git {' '.join(args)} failed: {diagnostic[:500]}")
+    return result.stdout.strip()
+
+
+def assert_clean(root: Path = ROOT) -> None:
     """Refuse to start with uncommitted changes, and say why.
 
-    This probe edits sources and restores them in a `finally`. A `finally`
-    does not run when the process is KILLED — and this one was, mid-run, by
-    the OOM killer while running the suite for the eleventh time. It left a
-    mutated `store.ts` behind: a fence quietly removed from `complete`, in a
-    working tree that looked like ordinary in-progress work.
-
-    That is the worst possible artefact for a tool whose whole job is
-    introducing plausible-looking defects, so the guard is placement rather
-    than care: starting from a clean tree means anything this leaves behind
-    is visible in `git status` as the only change, and `git checkout --` is
-    always the right recovery.
+    The coordinator never mutates this tree: it captures the commit and gives
+    each shard its own detached worktree. Clean input is still required so the
+    exact commit completely describes the code whose evidence is published.
     """
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True
-    ).stdout.strip()
+    result = git_result(root, "status", "--porcelain")
+    if result.returncode != 0:
+        diagnostic = (result.stdout + result.stderr).strip()
+        print(
+            f"mutation-probe: cannot prove the tree is clean: {diagnostic[:500]}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    dirty = result.stdout.strip()
     if dirty:
         print(
             "mutation-probe: refusing to run with a dirty tree.\n"
-            "  This tool edits sources and restores them afterwards; if it is killed\n"
-            "  mid-run the restore does not happen, and a mutation left in a tree that\n"
-            "  already had changes is indistinguishable from your own work.\n"
-            "  Commit or stash first. If a previous run WAS killed, the leftover is\n"
-            "  below and `git checkout -- <file>` is the fix:\n"
+            "  The committed HEAD must completely describe the code under audit.\n"
+            "  Commit or stash first; the coordinator will mutate detached temporary\n"
+            "  worktrees only. Current changes:\n"
             f"{dirty}",
             file=sys.stderr,
         )
         raise SystemExit(2)
 
 
-def restore(path: Path, mutated: str, original: str) -> None:
-    """Put the file back, but only over the text this probe actually wrote.
+def atomic_json(path: Path, payload: object) -> None:
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
 
-    The dirty-tree guard covers starting on top of someone's work. It does
-    nothing about work that arrives DURING a run, and a run is minutes long:
-    an edit landing mid-mutation is silently reverted when the `finally` puts
-    the pre-run copy back. That happened -- an uncommitted change to
-    `store.ts` disappeared under a restore holding a snapshot taken before it
-    existed, and it looked like the edit had never been applied.
 
-    Which is this repo's own rule, arriving from the other side: a writer may
-    only overwrite state it wrote, and it establishes that by comparing what
-    is there against what it left. So compare, and if the file has moved on,
-    keep that version beside it and say so rather than deciding the probe's
-    snapshot wins.
-    """
-    if path.read_text() == mutated:
-        path.write_text(original)
-        return
-    kept = path.with_suffix(f"{path.suffix}.probe-conflict")
-    kept.write_text(path.read_text())
-    path.write_text(original)
-    print(
-        f"\n  !! {path.name} changed while the probe held it.\n"
-        f"     That version is saved at {kept.relative_to(ROOT)}; the file itself is back\n"
-        f"     to the pre-run state. Editing sources while this runs cannot work — the\n"
-        f"     probe rewrites them between every mutation.",
-        file=sys.stderr,
+def read_json(path: Path) -> object:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read structured worker result {path}: {error}") from error
+
+
+def suite_failure_detail(result: SuiteResult) -> str:
+    observed = [
+        f"{failure.file} > {failure.full_name}: "
+        f"{next(iter(failure.messages), '(no failure message)')[:180]}"
+        for failure in result.assertions[:3]
+    ]
+    observed.extend(error[:180] for error in result.suite_errors[:3])
+    if not observed and result.diagnostic:
+        observed.append(result.diagnostic[:180])
+    return "; ".join(observed) if observed else "(no structured failure)"
+
+
+def execute_mutation(
+    mutation: Mutation,
+    expected: ExpectedMutationResult,
+    *,
+    max_workers: int,
+    scope: ConfinedScope,
+    workspace: IsolatedWorkspace,
+    authority: WorkerAuthority,
+) -> dict[str, object]:
+    path = ROOT / mutation.file
+    original = path.read_text()
+    if sha256_text(original) != expected.original_sha256:
+        raise RuntimeError(f"{mutation.name}: worker source differs from its captured hash")
+    occurrences = original.count(mutation.find)
+    if occurrences != 1:
+        return mutation_result_row(
+            expected,
+            "stale",
+            f"pattern occurs {occurrences} times in {mutation.file}; expected exactly one",
+        )
+    mutated = original.replace(mutation.find, mutation.replace, 1)
+    if sha256_text(mutated) != expected.mutated_sha256:
+        raise RuntimeError(f"{mutation.name}: worker mutation differs from its captured hash")
+
+    wrote_mutation = False
+    try:
+        path.write_text(mutated)
+        wrote_mutation = True
+        changed = git_output(ROOT, "diff", "--name-only", "--").splitlines()
+        if changed != [mutation.file]:
+            raise RuntimeError(
+                f"{mutation.name}: worker diff is {changed}, expected only {mutation.file}"
+            )
+        result = run_suite(
+            max_workers,
+            scope=scope,
+            workspace=workspace,
+            authority=authority,
+        )
+        require_suite_transport(result)
+        outcome = classify_verdict(result, mutation.verdict)
+        if outcome == "caught":
+            detail = (
+                f"{mutation.verdict.kind} verdict {mutation.verdict.full_name}"
+            )
+        elif outcome == "survived":
+            detail = mutation.breaks
+        else:
+            detail = suite_failure_detail(result)
+        return mutation_result_row(expected, outcome, detail)
+    finally:
+        if wrote_mutation:
+            current = path.read_text()
+            if current != mutated:
+                raise RuntimeError(
+                    f"{mutation.name}: isolated worker source changed concurrently"
+                )
+            path.write_text(original)
+            assert_clean(ROOT)
+
+
+def worker_phase(
+    *,
+    phase: str,
+    report_path: Path,
+    head: str,
+    worker_id: int,
+    mutation_names: list[str],
+    max_workers: int,
+    run_root: Path,
+    nonce: str,
+    baseline_barrier: str | None,
+) -> int:
+    if os.environ.get(CONFINEMENT_ENV) != "1":
+        print("mutation-probe worker refuses to run outside its coordinator scope", file=sys.stderr)
+        return 2
+    scope = prove_confined_scope()
+    authority = prove_worker_authority(
+        worker_root=ROOT,
+        run_root=run_root,
+        report_path=report_path,
+        head=head,
+        worker_id=worker_id,
+        nonce=nonce,
+        phase=phase,
+        baseline_barrier=baseline_barrier,
+        mutation_names=mutation_names,
     )
+    actual_head = git_output(ROOT, "rev-parse", "HEAD^{commit}")
+    if actual_head != head:
+        print(
+            f"mutation-probe worker {worker_id}: expected {head}, found {actual_head}",
+            file=sys.stderr,
+        )
+        return 2
+    assert_clean(ROOT)
+    workspace = prove_workspace_links(ROOT)
+    by_name = {mutation.name: (ordinal, mutation) for ordinal, mutation in enumerate(MUTATIONS)}
+    if (
+        len(mutation_names) != len(set(mutation_names))
+        or any(name not in by_name for name in mutation_names)
+        or mutation_names
+        != sorted(mutation_names, key=lambda name: by_name[name][0])
+    ):
+        print(
+            f"mutation-probe worker {worker_id}: invalid mutation assignment",
+            file=sys.stderr,
+        )
+        return 2
+    assigned = [
+        expected_result(by_name[name][0], by_name[name][1], root=ROOT)
+        for name in mutation_names
+    ]
+    if phase == "baseline":
+        baseline = run_suite(
+            max_workers,
+            scope=scope,
+            workspace=workspace,
+            authority=authority,
+        )
+        require_suite_transport(baseline)
+        payload = {
+            "version": REPORT_VERSION,
+            "phase": "baseline",
+            "head": head,
+            "registry_digest": mutation_registry_digest(),
+            "worker_id": worker_id,
+            "assigned": mutation_names,
+            "complete": True,
+            "green": baseline.green,
+            "diagnostic": suite_failure_detail(baseline) if not baseline.green else "",
+        }
+        atomic_json(report_path, payload)
+        return 0 if baseline.green else 2
+    if phase != "mutations":
+        print(f"mutation-probe worker {worker_id}: unknown phase {phase}", file=sys.stderr)
+        return 2
+
+    rows: list[dict[str, object]] = []
+    atomic_json(
+        report_path,
+        mutation_report_payload(
+            head=head,
+            worker_id=worker_id,
+            assigned=assigned,
+            results=rows,
+            complete=False,
+        ),
+    )
+    for item in assigned:
+        mutation = by_name[item.name][1]
+        row = execute_mutation(
+            mutation,
+            item,
+            max_workers=max_workers,
+            scope=scope,
+            workspace=workspace,
+            authority=authority,
+        )
+        rows.append(row)
+        atomic_json(
+            report_path,
+            mutation_report_payload(
+                head=head,
+                worker_id=worker_id,
+                assigned=assigned,
+                results=rows,
+                complete=False,
+            ),
+        )
+    atomic_json(
+        report_path,
+        mutation_report_payload(
+            head=head,
+            worker_id=worker_id,
+            assigned=assigned,
+            results=rows,
+            complete=True,
+        ),
+    )
+    return 0 if all(row["outcome"] == "caught" for row in rows) else 1
+
+
+def usable_cores() -> int:
+    quota = os.environ.get("CONFINE_CPU", "")
+    match = re.fullmatch(r"(\d+)%", quota)
+    if match:
+        return max(1, int(match.group(1)) // 100)
+    return protected_cpu_cores(host_cpu_count())
+
+
+def choose_jobs(value: str, selected: int) -> int:
+    available = usable_cores()
+    if value == "auto":
+        return min(
+            selected,
+            MAX_AUTO_JOBS,
+            max(1, available // MIN_CORES_PER_AUTO_JOB),
+        )
+    try:
+        jobs = int(value)
+    except ValueError as error:
+        raise ValueError("--jobs must be 'auto' or a positive integer") from error
+    if jobs < 1:
+        raise ValueError("--jobs must be 'auto' or a positive integer")
+    if jobs > available:
+        raise ValueError(
+            f"--jobs {jobs} exceeds the aggregate CPU budget of {available} cores"
+        )
+    return min(jobs, selected)
+
+
+def worker_infrastructure_returncode() -> int:
+    return 2
+
+
+def may_publish_success(
+    result_code: int,
+    rows: list[dict[str, object]],
+    *,
+    publish_after_infrastructure: bool = False,
+) -> bool:
+    return (
+        (result_code == 0 or publish_after_infrastructure)
+        and bool(rows)
+        and all(row.get("outcome") == "caught" for row in rows)
+    )
+
+
+def confinement_command(arguments: list[str]) -> list[str]:
+    return [
+        "bash",
+        "scripts/confine.sh",
+        "env",
+        f"{CONFINEMENT_ENV}=1",
+        sys.executable,
+        "scripts/mutation-probe.py",
+        *arguments,
+    ]
+
+
+def reexec_confined() -> None:
+    if os.environ.get(CONFINEMENT_ENV) == "1":
+        return
+    environment = os.environ.copy()
+    environment[CONFINEMENT_ENV] = "1"
+    command = confinement_command(sys.argv[1:])
+    os.chdir(ROOT)
+    os.execvpe(command[0], command, environment)
+
+
+@dataclass(frozen=True)
+class ProcessLaunch:
+    label: str
+    command: tuple[str, ...]
+    cwd: Path
+    log: Path
+    environment: dict[str, str]
+
+
+def process_id_is_live(process_id: int) -> bool:
+    try:
+        fields = Path(f"/proc/{process_id}/stat").read_text().split()
+    except OSError:
+        return False
+    return len(fields) > 2 and fields[2] != "Z"
+
+
+def process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def terminate_process_groups(
+    processes: list[subprocess.Popen[bytes]],
+    *,
+    omit_exited_groups: bool = False,
+) -> None:
+    groups = [
+        process.pid
+        for process in processes
+        if not omit_exited_groups or process.poll() is None
+    ]
+    for process_group in groups:
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 5
+    live_groups = [group for group in groups if process_group_exists(group)]
+    while live_groups and time.monotonic() < deadline:
+        live_groups = [
+            group for group in live_groups if process_group_exists(group)
+        ]
+        if live_groups:
+            time.sleep(0.1)
+    for process_group in live_groups:
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    kill_deadline = time.monotonic() + 2
+    while live_groups and time.monotonic() < kill_deadline:
+        live_groups = [
+            group for group in live_groups if process_group_exists(group)
+        ]
+        if live_groups:
+            time.sleep(0.05)
+    for process in processes:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    if live_groups:
+        raise RuntimeError(
+            f"cannot reap descendant process groups after SIGKILL: {live_groups}"
+        )
+
+
+def run_launches(
+    launches: list[ProcessLaunch],
+    *,
+    allowed_returncodes: frozenset[int],
+    omit_exited_groups: bool = False,
+) -> dict[str, int]:
+    processes: dict[str, subprocess.Popen[bytes]] = {}
+    handles: dict[str, object] = {}
+    completed: dict[str, int] = {}
+    try:
+        for launch in launches:
+            launch.log.parent.mkdir(parents=True, exist_ok=True)
+            handle = launch.log.open("wb")
+            handles[launch.label] = handle
+            try:
+                process = subprocess.Popen(
+                    launch.command,
+                    cwd=launch.cwd,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    env=launch.environment,
+                    start_new_session=True,
+                )
+            except BaseException:
+                handle.close()
+                raise
+            processes[launch.label] = process
+            print(f"  start {launch.label}", flush=True)
+
+        pending = dict(processes)
+        while pending:
+            for label, process in list(pending.items()):
+                returncode = process.poll()
+                if returncode is None:
+                    continue
+                completed[label] = returncode
+                del pending[label]
+                print(f"  done  {label} (exit {returncode})", flush=True)
+                if returncode not in allowed_returncodes:
+                    terminate_process_groups(
+                        list(processes.values()),
+                        omit_exited_groups=omit_exited_groups,
+                    )
+                    launch = next(item for item in launches if item.label == label)
+                    detail = diagnostic_tail(launch.log)
+                    raise RuntimeError(
+                        f"{label} failed with exit {returncode}: {detail[:500]}"
+                    )
+            if pending:
+                time.sleep(0.1)
+        live_groups = [
+            process.pid
+            for process in processes.values()
+            if process_group_exists(process.pid)
+        ]
+        if live_groups:
+            terminate_process_groups(list(processes.values()))
+            raise RuntimeError(
+                f"launchers exited with live descendant groups: {live_groups}"
+            )
+        return completed
+    except BaseException:
+        terminate_process_groups(
+            list(processes.values()),
+            omit_exited_groups=omit_exited_groups,
+        )
+        raise
+    finally:
+        for handle in handles.values():
+            handle.close()
+
+
+def worker_environment(plan: WorkerPlan) -> dict[str, str]:
+    plan.temporary.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        environment.pop(name, None)
+    environment["TMPDIR"] = str(plan.temporary)
+    environment["CI"] = "1"
+    return environment
+
+
+def worker_launch(
+    plan: WorkerPlan,
+    *,
+    phase: str,
+    head: str,
+    max_workers: int,
+    run_root: Path,
+    nonce: str,
+    baseline_barrier: BaselineBarrier | None,
+) -> ProcessLaunch:
+    if phase == "mutations":
+        if (
+            not isinstance(baseline_barrier, BaselineBarrier)
+            or baseline_barrier.head != head
+            or plan.worker_id not in baseline_barrier.worker_ids
+        ):
+            raise ValueError("mutation worker launch lacks its baseline barrier")
+    barrier_digest = (
+        baseline_barrier.digest if baseline_barrier is not None else None
+    )
+    report = plan.baseline_report if phase == "baseline" else plan.mutation_report
+    log = plan.baseline_log if phase == "baseline" else plan.mutation_log
+    command = [
+        sys.executable,
+        "-u",
+        str(plan.path / "scripts" / "mutation-probe.py"),
+        "--worker-phase",
+        phase,
+        "--worker-result",
+        str(report),
+        "--worker-head",
+        head,
+        "--worker-id",
+        str(plan.worker_id),
+        "--max-workers",
+        str(max_workers),
+        "--worker-run-root",
+        str(run_root),
+        "--worker-nonce",
+        nonce,
+    ]
+    if barrier_digest is not None:
+        command.extend(("--worker-baseline-barrier", barrier_digest))
+    for item in plan.expected:
+        command.extend(("--worker-mutation", item.name))
+    return ProcessLaunch(
+        f"{phase} worker-{plan.worker_id:02}",
+        tuple(command),
+        plan.path,
+        log,
+        worker_environment(plan),
+    )
+
+
+def write_run_manifest(
+    path: Path,
+    *,
+    source_root: Path,
+    head: str,
+    plans: list[WorkerPlan],
+    state: str,
+    nonce: str,
+    baseline_barrier: BaselineBarrier | None,
+) -> None:
+    atomic_json(
+        path,
+        {
+            "version": REPORT_VERSION,
+            "kind": "durablerun-mutation-worktrees",
+            "pid": os.getpid(),
+            "source_root": str(source_root.resolve()),
+            "head": head,
+            "nonce": nonce,
+            "state": state,
+            "baseline_barrier": (
+                baseline_barrier.digest if baseline_barrier is not None else None
+            ),
+            "worktrees": [str(plan.path) for plan in plans],
+            "shards": [
+                [item.name for item in plan.expected]
+                for plan in plans
+            ],
+        },
+    )
+
+
+def establish_baseline_barrier(
+    plans: list[WorkerPlan],
+    process_codes: dict[str, int],
+    *,
+    head: str,
+) -> BaselineBarrier:
+    reports: list[object] = []
+    for plan in plans:
+        payload = read_json(plan.baseline_report)
+        validate_baseline_report(
+            payload,
+            head=head,
+            worker_id=plan.worker_id,
+            assigned=list(plan.expected),
+            process_returncode=process_codes[
+                f"baseline worker-{plan.worker_id:02}"
+            ],
+        )
+        reports.append(payload)
+    digest = hashlib.sha256(
+        json.dumps(reports, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    barrier = BaselineBarrier(
+        head,
+        tuple(plan.worker_id for plan in plans),
+        digest,
+    )
+    validate_baseline_barrier(
+        barrier,
+        head=head,
+        worker_ids=tuple(plan.worker_id for plan in plans),
+    )
+    return barrier
+
+
+def registered_worktrees() -> set[Path]:
+    paths: set[Path] = set()
+    for line in git_output(ROOT, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            paths.add(Path(line.removeprefix("worktree ")).resolve())
+    return paths
+
+
+def cleanup_worktrees(
+    run_root: Path,
+    manifest_path: Path,
+    plans: list[WorkerPlan],
+) -> bool:
+    failures: list[str] = []
+    try:
+        manifest = read_json(manifest_path)
+    except ValueError as error:
+        print(f"mutation-probe cleanup: {error}", file=sys.stderr)
+        return False
+    expected_paths = [str(plan.path) for plan in plans]
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("kind") != "durablerun-mutation-worktrees"
+        or manifest.get("state") != "cleanup"
+        or manifest.get("source_root") != str(ROOT.resolve())
+        or manifest.get("worktrees") != expected_paths
+    ):
+        print(
+            "mutation-probe cleanup: ownership manifest does not match the "
+            "recorded source root and worktrees",
+            file=sys.stderr,
+        )
+        return False
+    registered = registered_worktrees()
+    for plan in reversed(plans):
+        try:
+            validate_owned_worktree_path(run_root, plan.path)
+        except ValueError as error:
+            failures.append(str(error))
+            continue
+        if plan.path.resolve() not in registered and not plan.path.exists():
+            continue
+        result = git_result(ROOT, "worktree", "remove", "--force", str(plan.path))
+        if result.returncode != 0:
+            diagnostic = (result.stdout + result.stderr).strip()
+            failures.append(
+                f"cannot remove {plan.path}: {diagnostic[:500]}; recover with "
+                f"`git worktree remove --force {plan.path}`"
+            )
+    if failures:
+        for failure in failures:
+            print(f"mutation-probe cleanup: {failure}", file=sys.stderr)
+        print(
+            f"mutation-probe cleanup left its ownership manifest at {manifest_path}",
+            file=sys.stderr,
+        )
+        return False
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    resolved = run_root.resolve()
+    if (
+        resolved.parent != temporary_root
+        or not resolved.name.startswith("durablerun-mutation-worktrees-")
+        or not manifest_path.exists()
+    ):
+        print(
+            f"mutation-probe cleanup refuses unexpected run root {run_root}",
+            file=sys.stderr,
+        )
+        return False
+    shutil.rmtree(resolved)
+    return True
+
+
+class AuditSignal(Exception):
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(f"received signal {signum}")
+
+
+class CleanupSignalShield:
+    def __init__(
+        self,
+        previous: dict[int, object],
+        *,
+        raise_instead: bool = False,
+    ):
+        self.previous = previous
+        self.raise_instead = raise_instead
+        self.deferred_signum: int | None = None
+
+    def defer(self, signum: int, _frame: object) -> None:
+        if self.raise_instead:
+            raise AuditSignal(signum)
+        if self.deferred_signum is None:
+            self.deferred_signum = signum
+
+    def __enter__(self) -> CleanupSignalShield:
+        for signum in self.previous:
+            signal.signal(signum, self.defer)
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        for signum, previous in self.previous.items():
+            signal.signal(signum, previous)
+
+
+def coordinate_audit(filter_text: str, jobs_value: str) -> int:
+    prove_confined_scope()
+    assert_clean(ROOT)
+    head = git_output(ROOT, "rev-parse", "HEAD^{commit}")
+    selected_mutations = [
+        (ordinal, mutation)
+        for ordinal, mutation in enumerate(MUTATIONS)
+        if filter_text in mutation.name
+    ]
+    if not selected_mutations:
+        print(
+            f"mutation-probe: -k {filter_text!r} selected no mutations",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        jobs = choose_jobs(jobs_value, len(selected_mutations))
+    except ValueError as error:
+        print(f"mutation-probe: {error}", file=sys.stderr)
+        return 2
+    expected = [
+        expected_result(ordinal, mutation, root=ROOT)
+        for ordinal, mutation in selected_mutations
+    ]
+    shards = partition_expected(expected, jobs)
+    validate_shards(shards, expected)
+    max_workers = max(1, usable_cores() // jobs)
+
+    common_dir_text = git_output(ROOT, "rev-parse", "--git-common-dir")
+    common_dir = Path(common_dir_text)
+    if not common_dir.is_absolute():
+        common_dir = (ROOT / common_dir).resolve()
+    lock_path = common_dir / "durablerun-mutation.lock"
+    lock = lock_path.open("a+")
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                f"mutation-probe: another audit owns {lock_path}",
+                file=sys.stderr,
+            )
+            return 2
+        lock.seek(0)
+        lock.truncate()
+        lock.write(f"pid={os.getpid()} head={head}\n")
+        lock.flush()
+        assert_clean(ROOT)
+        if git_output(ROOT, "rev-parse", "HEAD^{commit}") != head:
+            print("mutation-probe: HEAD moved while acquiring the audit lock", file=sys.stderr)
+            return 2
+
+        run_root = Path(
+            tempfile.mkdtemp(prefix="durablerun-mutation-worktrees-")
+        ).resolve()
+        manifest_path = run_root / "manifest.json"
+        nonce = secrets.token_hex(16)
+        baseline_barrier: BaselineBarrier | None = None
+        plans = [
+            WorkerPlan(
+                worker_id,
+                run_root / f"worker-{worker_id:02}",
+                run_root / f"tmp-{worker_id:02}",
+                run_root / f"baseline-{worker_id:02}.json",
+                run_root / f"mutations-{worker_id:02}.json",
+                run_root / f"install-{worker_id:02}.log",
+                run_root / f"baseline-{worker_id:02}.log",
+                run_root / f"mutations-{worker_id:02}.log",
+                tuple(shard),
+            )
+            for worker_id, shard in enumerate(shards)
+        ]
+        write_run_manifest(
+            manifest_path,
+            source_root=ROOT,
+            head=head,
+            plans=plans,
+            state="setup",
+            nonce=nonce,
+            baseline_barrier=None,
+        )
+        print(
+            f"mutation audit: head={head} mutations={len(expected)} jobs={jobs} "
+            f"vitest-workers/job={max_workers}",
+            flush=True,
+        )
+        print(f"mutation audit run root: {run_root}", flush=True)
+
+        result_code = 2
+        rows: list[dict[str, object]] = []
+        interrupted: AuditSignal | None = None
+        previous_handlers = {
+            signum: signal.getsignal(signum)
+            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        }
+
+        def handle_signal(signum: int, _frame: object) -> None:
+            raise AuditSignal(signum)
+
+        for signum in previous_handlers:
+            signal.signal(signum, handle_signal)
+        cleanup_ok = False
+        try:
+            for plan in plans:
+                result = git_result(
+                    ROOT,
+                    "worktree",
+                    "add",
+                    "--detach",
+                    "--quiet",
+                    str(plan.path),
+                    head,
+                )
+                if result.returncode != 0:
+                    diagnostic = (result.stdout + result.stderr).strip()
+                    raise RuntimeError(
+                        f"cannot create {plan.path}: {diagnostic[:500]}"
+                    )
+                if git_output(plan.path, "rev-parse", "HEAD^{commit}") != head:
+                    raise RuntimeError(f"{plan.path}: detached worktree has the wrong head")
+                assert_clean(plan.path)
+
+            write_run_manifest(
+                manifest_path,
+                source_root=ROOT,
+                head=head,
+                plans=plans,
+                state="install",
+                nonce=nonce,
+                baseline_barrier=None,
+            )
+            install_launches = [
+                ProcessLaunch(
+                    f"install worker-{plan.worker_id:02}",
+                    ("pnpm", "install", "--offline", "--frozen-lockfile"),
+                    plan.path,
+                    plan.install_log,
+                    worker_environment(plan),
+                )
+                for plan in plans
+            ]
+            run_launches(
+                install_launches,
+                allowed_returncodes=frozenset((0,)),
+            )
+            for plan in plans:
+                prove_workspace_links(plan.path)
+                assert_clean(plan.path)
+
+            write_run_manifest(
+                manifest_path,
+                source_root=ROOT,
+                head=head,
+                plans=plans,
+                state="baseline",
+                nonce=nonce,
+                baseline_barrier=None,
+            )
+            baseline_launches = [
+                worker_launch(
+                    plan,
+                    phase="baseline",
+                    head=head,
+                    max_workers=max_workers,
+                    run_root=run_root,
+                    nonce=nonce,
+                    baseline_barrier=None,
+                )
+                for plan in plans
+            ]
+            baseline_codes = run_launches(
+                baseline_launches,
+                allowed_returncodes=frozenset((0,)),
+            )
+            baseline_barrier = establish_baseline_barrier(
+                plans,
+                baseline_codes,
+                head=head,
+            )
+            print("all worker baselines green", flush=True)
+
+            validate_baseline_barrier(
+                baseline_barrier,
+                head=head,
+                worker_ids=tuple(plan.worker_id for plan in plans),
+            )
+            write_run_manifest(
+                manifest_path,
+                source_root=ROOT,
+                head=head,
+                plans=plans,
+                state="mutations",
+                nonce=nonce,
+                baseline_barrier=baseline_barrier,
+            )
+            mutation_launches = [
+                worker_launch(
+                    plan,
+                    phase="mutations",
+                    head=head,
+                    max_workers=max_workers,
+                    run_root=run_root,
+                    nonce=nonce,
+                    baseline_barrier=baseline_barrier,
+                )
+                for plan in plans
+            ]
+            mutation_codes = run_launches(
+                mutation_launches,
+                allowed_returncodes=frozenset((0, 1)),
+            )
+            for plan in plans:
+                rows.extend(
+                    validate_mutation_report(
+                        read_json(plan.mutation_report),
+                        head=head,
+                        worker_id=plan.worker_id,
+                        expected=list(plan.expected),
+                        process_returncode=mutation_codes[
+                            f"mutations worker-{plan.worker_id:02}"
+                        ],
+                    )
+                )
+            by_ordinal = {int(row["ordinal"]): row for row in rows}
+            if set(by_ordinal) != {item.ordinal for item in expected}:
+                raise RuntimeError("aggregate result ordinals do not match the selection")
+            rows = [by_ordinal[item.ordinal] for item in expected]
+            result_code = (
+                0 if all(row["outcome"] == "caught" for row in rows) else 1
+            )
+        except AuditSignal as error:
+            interrupted = error
+            result_code = 128 + error.signum
+            print(f"mutation-probe: interrupted by signal {error.signum}", file=sys.stderr)
+        except (OSError, RuntimeError, ValueError) as error:
+            result_code = 2
+            print(f"mutation-probe infrastructure failure: {error}", file=sys.stderr)
+        finally:
+            shield = CleanupSignalShield(previous_handlers)
+            with shield:
+                try:
+                    write_run_manifest(
+                        manifest_path,
+                        source_root=ROOT,
+                        head=head,
+                        plans=plans,
+                        state="cleanup",
+                        nonce=nonce,
+                        baseline_barrier=baseline_barrier,
+                    )
+                except OSError as error:
+                    print(
+                        f"mutation-probe cleanup cannot update {manifest_path}: {error}",
+                        file=sys.stderr,
+                    )
+                try:
+                    cleanup_ok = cleanup_worktrees(run_root, manifest_path, plans)
+                except (OSError, RuntimeError, ValueError) as error:
+                    cleanup_ok = False
+                    print(
+                        f"mutation-probe cleanup infrastructure failure: {error}",
+                        file=sys.stderr,
+                    )
+            if shield.deferred_signum is not None and interrupted is None:
+                interrupted = AuditSignal(shield.deferred_signum)
+                result_code = 128 + shield.deferred_signum
+                print(
+                    f"mutation-probe: deferred signal {shield.deferred_signum} "
+                    "until cleanup completed",
+                    file=sys.stderr,
+                )
+
+        if not cleanup_ok:
+            return 2
+        current_head = git_output(ROOT, "rev-parse", "HEAD^{commit}")
+        current_status = git_output(ROOT, "status", "--porcelain")
+        if current_head != head or current_status:
+            print(
+                "mutation-probe: source checkout changed during the audit; "
+                f"results remain evidence for {head}, but cannot attest the current tree",
+                file=sys.stderr,
+            )
+            return 2
+        if interrupted is not None:
+            return result_code
+        if result_code == 2:
+            return 2
+        for row in rows:
+            if row["outcome"] == "caught":
+                print(f"  ok {row['name']}: {row['detail']}")
+            else:
+                print(
+                    f"  !! {row['name']}: {str(row['outcome']).upper()} — "
+                    f"{row['detail']}"
+                )
+        print()
+        failures = [row for row in rows if row["outcome"] != "caught"]
+        if failures:
+            print(
+                f"{len(failures)} mutation(s) were not caught by their attributable verdict:"
+            )
+            for row in failures:
+                print(f"  - {row['name']}: {row['detail']}")
+            return 1
+        if not may_publish_success(result_code, rows):
+            print(
+                "mutation-probe: refusing a success verdict without complete "
+                "caught results and a zero audit status",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"every mutation was caught by its attributable verdict at {head}"
+        )
+        return result_code
+    finally:
+        lock.close()
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only mutations whose name contains this")
     ap.add_argument(
+        "--jobs",
+        default="auto",
+        metavar="auto|N",
+        help="isolated worktree workers (default: auto)",
+    )
+    ap.add_argument(
         "--self-test",
         action="store_true",
-        help="test verdict attribution and audit every live mutation pattern and marker",
+        help="test verdict attribution, orchestration, and every live mutation marker",
     )
     ap.add_argument(
         "--classifier-self-test",
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    ap.add_argument(
+        "--orchestration-self-test",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--self-test-fault", choices=SELF_TEST_FAULTS, help=argparse.SUPPRESS)
+    ap.add_argument(
+        "--orchestration-self-test-fault",
+        choices=ORCHESTRATION_SELF_TEST_FAULTS,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument("--worker-phase", choices=("baseline", "mutations"), help=argparse.SUPPRESS)
+    ap.add_argument("--worker-result", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--worker-head", help=argparse.SUPPRESS)
+    ap.add_argument("--worker-id", type=int, help=argparse.SUPPRESS)
+    ap.add_argument("--worker-mutation", action="append", default=[], help=argparse.SUPPRESS)
+    ap.add_argument("--max-workers", type=int, help=argparse.SUPPRESS)
+    ap.add_argument("--worker-run-root", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--worker-nonce", help=argparse.SUPPRESS)
+    ap.add_argument("--worker-baseline-barrier", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
-    if args.self_test and args.classifier_self_test:
-        ap.error("--self-test and --classifier-self-test are mutually exclusive")
-    if args.self_test or args.classifier_self_test:
-        if args.k:
-            ap.error("self-tests cannot be combined with -k")
-        return self_test(
+    self_test_modes = (
+        args.self_test,
+        args.classifier_self_test,
+        args.orchestration_self_test,
+    )
+    if sum(bool(mode) for mode in self_test_modes) > 1:
+        ap.error("self-test modes are mutually exclusive")
+    if any(self_test_modes):
+        if args.k or args.jobs != "auto" or args.worker_phase is not None:
+            ap.error("self-tests cannot be combined with audit or worker options")
+        if args.orchestration_self_test:
+            if args.self_test_fault is not None:
+                ap.error("--self-test-fault requires --classifier-self-test")
+            return orchestration_self_test(args.orchestration_self_test_fault)
+        if args.orchestration_self_test_fault is not None:
+            ap.error(
+                "--orchestration-self-test-fault requires --orchestration-self-test"
+            )
+        classifier_result = self_test(
             args.self_test_fault,
             check_live_inventory=args.self_test,
         )
+        if args.self_test:
+            orchestration_result = orchestration_self_test()
+            return classifier_result or orchestration_result
+        return classifier_result
     if args.self_test_fault is not None:
         ap.error("--self-test-fault requires --classifier-self-test")
+    if args.orchestration_self_test_fault is not None:
+        ap.error("--orchestration-self-test-fault requires --orchestration-self-test")
 
-    assert_clean()
-    baseline = run_suite()
-    if not baseline.green:
-        detail = [*baseline.suite_errors, baseline.diagnostic]
-        shown = next((item for item in detail if item), "(no diagnostic)")
-        print(
-            f"baseline is RED or its report is invalid — fix the suite before probing it\n  {shown[:500]}",
-            file=sys.stderr,
+    if args.worker_phase is not None:
+        required_worker = (
+            args.worker_result,
+            args.worker_head,
+            args.worker_id,
+            args.max_workers,
+            args.worker_run_root,
+            args.worker_nonce,
         )
-        return 2
-    print("baseline green\n")
-
-    failures = []
-    selected = [mutation for mutation in MUTATIONS if args.k in mutation.name]
-    if not selected:
-        print(f"mutation-probe: -k {args.k!r} selected no mutations", file=sys.stderr)
-        return 2
-    for mutation in selected:
-        if args.k and args.k not in mutation.name:
-            continue
-        path = ROOT / mutation.file
-        original = path.read_text()
-        if mutation.find not in original:
-            print(
-                f"  ?? {mutation.name}: pattern not found in {mutation.file} — the mutation is stale"
-            )
-            failures.append((mutation.name, "stale pattern"))
-            continue
-        mutated = original.replace(mutation.find, mutation.replace, 1)
+        if any(value is None for value in required_worker):
+            ap.error("worker mode requires its complete coordinator assignment")
+        if args.max_workers < 1 or args.worker_id < 0:
+            ap.error("worker mode requires positive worker limits and identity")
+        if (args.worker_phase == "mutations") != (
+            args.worker_baseline_barrier is not None
+        ):
+            ap.error("only mutation workers require a baseline barrier")
+        if args.k or args.jobs != "auto":
+            ap.error("worker mode cannot be combined with audit selection options")
         try:
-            path.write_text(mutated)
-            result = run_suite()
-            outcome = classify_verdict(result, mutation.verdict)
-            if outcome == "survived":
-                print(
-                    f"  !! {mutation.name}: SURVIVED — nothing failed. {mutation.breaks}"
-                )
-                failures.append((mutation.name, mutation.breaks))
-            elif outcome == "caught":
-                print(
-                    f"  ok {mutation.name}: {mutation.verdict.kind} verdict "
-                    f"{mutation.verdict.full_name}"
-                )
-            else:
-                observed = [
-                    f"{failure.file} > {failure.full_name}: "
-                    f"{next(iter(failure.messages), '(no failure message)')[:180]}"
-                    for failure in result.assertions[:3]
-                ]
-                observed.extend(error[:180] for error in result.suite_errors[:3])
-                if not observed and result.diagnostic:
-                    observed.append(result.diagnostic[:180])
-                detail = "; ".join(observed) if observed else "(no structured failure)"
-                expected = (
-                    f"{mutation.verdict.kind} {mutation.verdict.file} > "
-                    f"{mutation.verdict.full_name} containing {mutation.verdict.marker!r}"
-                )
-                print(
-                    f"  !! {mutation.name}: WRONG-PATH failure\n"
-                    f"     expected: {expected}\n"
-                    f"     observed: {detail}"
-                )
-                failures.append((mutation.name, "failed for the wrong reason"))
-        finally:
-            restore(path, mutated, original)
-
-    print()
-    if failures:
-        print(
-            f"{len(failures)} mutation(s) were not caught by their attributable verdict:"
+            return worker_phase(
+                phase=args.worker_phase,
+                report_path=args.worker_result,
+                head=args.worker_head,
+                worker_id=args.worker_id,
+                mutation_names=args.worker_mutation,
+                max_workers=args.max_workers,
+                run_root=args.worker_run_root,
+                nonce=args.worker_nonce,
+                baseline_barrier=args.worker_baseline_barrier,
+            )
+        except SystemExit as error:
+            return int(error.code) if isinstance(error.code, int) else 2
+        except Exception as error:
+            print(f"mutation-probe worker infrastructure failure: {error}", file=sys.stderr)
+            return worker_infrastructure_returncode()
+    if any(
+        value is not None
+        for value in (
+            args.worker_result,
+            args.worker_head,
+            args.worker_id,
+            args.max_workers,
+            args.worker_run_root,
+            args.worker_nonce,
+            args.worker_baseline_barrier,
         )
-        for name, why in failures:
-            print(f"  - {name}: {why}")
-        return 1
-    print("every mutation was caught by its attributable verdict")
-    return 0
+    ) or args.worker_mutation:
+        ap.error("worker options require --worker-phase")
+
+    reexec_confined()
+    try:
+        return coordinate_audit(args.k, args.jobs)
+    except SystemExit as error:
+        return int(error.code) if isinstance(error.code, int) else 2
+    except Exception as error:
+        print(f"mutation-probe infrastructure failure: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

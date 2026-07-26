@@ -57,12 +57,19 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    body, and for a nonzero count an added, filled-in postmortem (Part 6);
    the abandonment trailer never skips that gate.
 7. **`python3 scripts/mutation-probe.py` clean** — when the PR adds or
-   changes a guard. It deletes each one in turn and requires the suite to
-   fail; a survivor is a guard nothing is maintaining, and the next
-   refactor can drop it with the build still green. A STALE pattern is
-   also a failure: a guard rewritten out from under its mutation has
-   quietly stopped being probed. Do not skip this because the suite is
-   green — green is what it is testing the meaning of.
+   changes a guard. The command self-confines once, captures the clean
+   committed head, and uses isolated detached worktrees (`--jobs auto` by
+   default). It deletes each guard in turn and requires the exact attributable
+   verdict to fail. A survivor is a guard nothing is maintaining, and the next
+   refactor can drop it with the build still green. A STALE pattern, incomplete
+   worker, wrong-head/missing/duplicate/extra result, cleanup leak, or
+   process/report disagreement also fails the audit. The live aggregate cgroup
+   must preserve 25% of host memory and the host CPU reserve; merely finite
+   limits are not confinement. A missing, malformed, or signaled Vitest report
+   is infrastructure failure, never a completed wrong-path mutation. Do not
+   skip this because the suite is green — green is what it is testing the
+   meaning of. The final success line must name the current head, and the next
+   session-state check must show no mutation worktrees left behind.
 8. **`bash scripts/session-state.sh` clean** — before reporting a round
    finished. It enumerates what is still alive from ground truth: processes
    whose command line names this repo, wait loops (a `sleep` with a live

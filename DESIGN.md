@@ -827,15 +827,36 @@ not depend on careful reading:
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
   source is not evidence. The verify gate runs 17 classifier cases, nineteen
   promise-message source cases, ten canonical helper-descriptor cases, and
-  seven injected false-positive faults over all 50 live mutations. The parser
-  requires all nine aggregate counters to be nonnegative integers and
-  internally consistent within their reporter domains. Test counters match
-  test rows; each file status matches its own
-  assertion/message rows; suite counters are not equated with file counts
-  because the reporter does not expose that topology. Every status is
-  type-checked before classification. Baseline and per-mutation suites invoke
-  `scripts/confine.sh` internally. The first full clean-tree audit classified
-  28 of 34 mutations as attributable and six as wrong-path; after exact-call
+  seven injected classifier faults over all 50 live mutations. A separate
+  generated coordinator surface injects shard omission and overlap, wrong
+  heads, missing/duplicate/extra results, process/report disagreement, and
+  non-owned cleanup targets, plus unconfined execution, an unowned worker,
+  a skipped baseline barrier, an external workspace link, malformed identity
+  types, an interruptible cleanup, an orphaned descendant, oversized finite
+  memory and CPU ceilings, missing/signaled suite transport, and false
+  infrastructure-success classifications. The parser requires all nine
+  aggregate counters to be nonnegative integers and internally consistent
+  within their reporter domains. Test counters match test rows; each file
+  status matches its own assertion/message rows; suite counters are not
+  equated with file counts because the reporter does not expose that topology.
+  Every status is type-checked before classification. A full audit binds itself
+  to one clean committed head, assigns every selected registry entry exactly
+  once in deterministic order, and runs each shard in a detached worktree at
+  that exact head. Every worktree gets an isolated frozen pnpm link farm whose
+  workspace packages resolve inside that worktree; sharing the source
+  checkout's `node_modules` could silently test unmutated code. All worker
+  baselines must pass before any mutation begins. The aggregate rejects a
+  wrong head or registry, missing/duplicate/extra/malformed result, incomplete
+  worker, or process/report disagreement. A missing, malformed, or signaled
+  Vitest report is transport failure and cannot become a domain verdict. The
+  coordinator and all raw Vitest children share one `scripts/confine.sh`
+  scope, with Vitest workers divided across shards; the live scope must cap
+  memory at no more than 75% of host memory, disable swap, and preserve the
+  host CPU reserve. Per-suite scopes are prohibited because their independent
+  memory ceilings would multiply. The source checkout is never mutated, and
+  cleanup may remove only manifest-owned worktrees. The first full clean-tree
+  audit classified 28 of 34 mutations as attributable and six as wrong-path;
+  after exact-call
   construction wrappers, a single marked plan vector with a
   behavior-preserving mutation, a discriminating A/B wake witness, and
   explicit require/attribute failure helpers, that round's final audit
