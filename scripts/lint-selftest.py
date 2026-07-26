@@ -1572,6 +1572,15 @@ export class S {
     (
         "fragment-lint.py",
         store(
+            'const SQL = `SELECT 1 FROM tasks WHERE "cancel_at_ms" <= 5`\n',
+            name="probe.ts",
+        ),
+        "cancellation-deadline comparison outside fragments.ts",
+        "portable SQL double quotes identify a column, so the SQL literal view must not erase the guarded field",
+    ),
+    (
+        "fragment-lint.py",
+        store(
             "const SQL = `SELECT 1 FROM tasks WHERE cancel_at_ms\n  <= 5`\n",
             name="probe.ts",
         ),
@@ -1795,12 +1804,60 @@ export class S {
         {
             "BUILD.md": (
                 "# plan\n\n"
+                "- **PR9.9 current work** — planned.\n"
+                "  - **Owned mechanism** — implement it here.\n"
+            ),
+            "postmortems/fixture-proposal.md": (
+                "# Historical implementation plan\n\n"
+                "## Current status\n\n"
+                "The typed target API is still deferred.\n"
+            ),
+        },
+        "historical plan does not declare BUILD.md as its sole current status owner",
+        "document role must come from structure rather than a filename ending in -plan.md",
+    ),
+    (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 current work** — planned.\n"
+                "  - **Owned mechanism** — implement it here.\n"
+            ),
+            "postmortems/fixture-plan.md": (
+                "# Historical implementation plan\n\n"
+                "> **Historical decision record.** Status is frozen at decision time; "
+                "`BUILD.md` is the sole current status owner.\n\n"
+                "## Current status\n\n"
+                "The typed target API is still deferred.\n"
+            ),
+        },
+        "historical plan claims current delivery status",
+        "a canonical banner is an assertion, not proof, when the same document still publishes a current-status section",
+    ),
+    (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
                 "- **PR9.9 compiler work** — planned.\n"
                 "  Spiked at scratchpad/compiler-spike: the prototype worked.\n"
             ),
         },
         "BUILD.md points at transient scratchpad state",
         "the canonical live plan cannot cite an uncommitted scratchpad as auditable evidence",
+    ),
+    (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 compiler work** (candidate, spiked not started).\n"
+                "  The implementation will be proved by checked-in tests.\n"
+            ),
+        },
+        "BUILD.md claims an unauditable spike",
+        "removing the scratchpad pathname must not leave its unsupported delivery claim behind",
     ),
     (
         "spec-ledger.py",
@@ -1865,6 +1922,92 @@ export class S {
         },
         "batch call shape is opaque",
         "an indirect executor call must fail closed rather than vanish from the ledger and fault matrix",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/probe.ts": (
+                "await this.db.batch('cancel-task', [{ sql: `SELECT 1`, args: [] }])\n"
+                "await this.db.batch('sweep:cancel', [{ sql: `SELECT 1`, args: [] }])\n"
+                "await (this.db).batch('brand-new-label', "
+                "[{ sql: `SELECT 1`, args: [] }])\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "parenthesizing the database receiver must not erase a batch from the language-neutral label inventory",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/probe.ts": (
+                "await this.db.batch('cancel-task', [{ sql: `SELECT 1`, args: [] }])\n"
+                "await this.db.batch('sweep:cancel', [{ sql: `SELECT 1`, args: [] }])\n"
+                "const { batch: execute } = this.db\n"
+                "await execute('brand-new-label', [{ sql: `SELECT 1`, args: [] }])\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "renamed destructuring of the executor must fail closed instead of hiding a batch",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/probe.ts": (
+                "await this.db.batch('cancel-task', [{ sql: `SELECT 1`, args: [] }])\n"
+                "await this.db.batch('sweep:cancel', [{ sql: `SELECT 1`, args: [] }])\n"
+                "const db: StoreDatabase = this.db\n"
+                "await db.batch('brand-new-label', [{ sql: `SELECT 1`, args: [] }])\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "a type annotation on a database alias must not make the aliased executor invisible",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/store.ts": (
+                "async function cancel(label: 'cancel-task' | 'sweep:cancel') {\n"
+                "  return new FencedBatch(label, token(), {})\n"
+                "}\n"
+                "async function probe(label: 'brand-new-label') {\n"
+                "  return new FencedBatch(label, token(), {})\n"
+                "}\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "opaque label classification is not unique to one binding",
+        "a path-and-variable-name allowlist must not classify a second unrelated dynamic batch as the cancel transition",
     ),
     (
         "gate-lint.py",
@@ -2899,6 +3042,20 @@ BAD_INVOCATIONS = [
     (
         "review-attest.sh",
         {
+            "out-of-order.jsonl": (
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+                '{"type":"review-plan","reviewers":["whole-system"]}\n'
+                '{"type":"review-head","head":"fixture-head"}\n'
+                '{"type":"review-complete","reviewers":["whole-system"]}\n'
+            ),
+        },
+        ("--check-journal", "{root}/out-of-order.jsonl", "fixture-head"),
+        "review journal records are out of lifecycle order",
+        "matching inventories do not prove that the head was bound and the review planned before results appeared",
+    ),
+    (
+        "review-attest.sh",
+        {
             "body.md": "review-findings: 0\nreviews-abandoned:   \n",
         },
         ("--check-pr-body", "{root}/body.md"),
@@ -2940,6 +3097,15 @@ BAD_INVOCATIONS = [
         ("--check-pr-body", "{root}/body.md"),
         "review-findings must be a canonical whole line",
         "trailing prose must not be silently discarded while parsing the incident count",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "body.md": "review-findings: 00037\n",
+        },
+        ("--check-pr-body", "{root}/body.md"),
+        "review-findings must use canonical decimal notation",
+        "leading zeroes create a second textual representation of the incident count",
     ),
     (
         "gate-lint.py",
