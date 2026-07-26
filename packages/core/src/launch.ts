@@ -28,18 +28,19 @@ const AUTHENTIC_LAUNCH_OUTCOMES = new WeakMap<object, LaunchPayload>()
 export class LaunchOutcome {
   /**
    * Authentication lives outside the instance shape. `instanceof` alone is
-   * forgeable with Object.create(LaunchOutcome.prototype), and a private
+    * forgeable with Object.create(LaunchOutcome.prototype), and a private
    * TypeScript field is still an ordinary runtime property. Only this module's
-   * constructor can enroll an object in the registry.
+   * factory can enroll an object in the registry. The runtime constructor
+   * always throws: TypeScript privacy is erased and Reflect.construct can call
+   * a merely-private constructor.
    */
-  private constructor(payload: LaunchPayload) {
-    AUTHENTIC_LAUNCH_OUTCOMES.set(this, Object.freeze(payload))
-    Object.freeze(this)
+  private constructor() {
+    throw new TypeError('LaunchOutcome must be created by a static factory')
   }
 
   /** The transport took the launch (fire-and-forget ack). */
   static accepted(): LaunchOutcome {
-    return new LaunchOutcome({ kind: 'accepted' })
+    return authenticateLaunchOutcome({ kind: 'accepted' })
   }
 
   /** A sync (bounded-slot resident) launcher observed the worker end. */
@@ -51,10 +52,10 @@ export class LaunchOutcome {
       // would race a newer worker. Other malformed payloads are failed
       // launches, because they provide no trustworthy evidence at all.
       return snapshot.status === 'tokenless'
-        ? new LaunchOutcome({ kind: 'unidentified-ending' })
+        ? authenticateLaunchOutcome({ kind: 'unidentified-ending' })
         : LaunchOutcome.launchFailed()
     }
-    return new LaunchOutcome({
+    return authenticateLaunchOutcome({
       kind: 'ended',
       ending: Object.freeze(snapshot.ending),
     })
@@ -62,7 +63,7 @@ export class LaunchOutcome {
 
   /** The launch never left the building. */
   static launchFailed(): LaunchOutcome {
-    return new LaunchOutcome(INVALID_LAUNCH)
+    return authenticateLaunchOutcome(INVALID_LAUNCH)
   }
 
   /**
@@ -109,6 +110,17 @@ export class LaunchOutcome {
     }
     return payload.kind
   }
+}
+
+/**
+ * The sole enrollment primitive. Constructing without running the public
+ * constructor keeps runtime callers from invoking the enrollment path through
+ * Reflect while preserving an opaque, frozen class instance for launchers.
+ */
+function authenticateLaunchOutcome(payload: LaunchPayload): LaunchOutcome {
+  const outcome = Object.create(LaunchOutcome.prototype) as LaunchOutcome
+  AUTHENTIC_LAUNCH_OUTCOMES.set(outcome, Object.freeze(payload))
+  return Object.freeze(outcome)
 }
 
 const ENDING_KINDS = new Set<Ending['kind']>([
