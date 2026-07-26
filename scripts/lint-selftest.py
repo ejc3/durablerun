@@ -98,41 +98,13 @@ PROCESS_FIXTURE_CONTROLS = (
 
 @dataclass(frozen=True)
 class ProcessFixtureIsolationFault:
+    fault_id: str
     document: str
     container: str
     before: str
     after: str
     expected_problems: tuple[str, ...]
     expects_ambiguous_target: bool = False
-
-
-PROCESS_FIXTURE_REQUIRED_FAULTS = (
-    "agents-confine-heading-missing",
-    "agents-confine-heading-duplicate",
-    "agents-confine-body-missing",
-    "agents-confine-body-duplicate",
-    "agents-overview-heading-missing",
-    "agents-overview-heading-duplicate",
-    "agents-continuation-heading-missing",
-    "agents-continuation-heading-duplicate",
-    "agents-div-boundary",
-    "agents-section-boundary",
-    "build-start-marker-missing",
-    "build-start-marker-duplicate",
-    "build-end-marker-missing",
-    "build-end-marker-duplicate",
-    "build-continuation-heading-missing",
-    "build-continuation-heading-duplicate",
-    "build-fence-transport-body",
-    "build-invalid-fence-close-transport-body",
-    "build-comment-transport-body",
-    "build-pre-transport-body",
-    "build-div-transport-body",
-    "build-section-transport-body",
-    "ambiguous-process-fixture-mutation-target",
-    "drop-hidden-process-bad-case",
-    "unenrolled-process-fixture-control",
-)
 
 
 def tree(root: Path, files: dict[str, str]) -> Path:
@@ -264,17 +236,143 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class FencePlacement:
+    pass
+
+
+@dataclass(frozen=True)
+class InvalidFencePlacement:
+    pass
+
+
+@dataclass(frozen=True)
+class HtmlCommentPlacement:
+    pass
+
+
+@dataclass(frozen=True)
+class PrePlacement:
+    pass
+
+
+@dataclass(frozen=True)
+class BlankDelimitedHtmlPlacement:
+    tag: str
+
+    def __post_init__(self) -> None:
+        if self.tag not in {"div", "section"}:
+            raise ValueError(f"unsupported blank-delimited HTML tag {self.tag!r}")
+
+
+@dataclass(frozen=True)
+class IndentedCodePlacement:
+    pass
+
+
+HiddenProcessPlacement = (
+    FencePlacement
+    | InvalidFencePlacement
+    | HtmlCommentPlacement
+    | PrePlacement
+    | BlankDelimitedHtmlPlacement
+    | IndentedCodePlacement
+)
+
+
+def render_hidden_process_placement(
+    placement: HiddenProcessPlacement,
+    canonical_body: str,
+) -> str:
+    match placement:
+        case FencePlacement():
+            return f"```md\n{canonical_body}\n```\n\n"
+        case InvalidFencePlacement():
+            return f"```md\n    ```\n{canonical_body}\n```\n\n"
+        case HtmlCommentPlacement():
+            return f"<!--\n{canonical_body}\n-->\n\n"
+        case PrePlacement():
+            return f"<pre>\n{canonical_body}\n</pre>\n\n"
+        case BlankDelimitedHtmlPlacement(tag):
+            return f"<{tag}>\n{canonical_body}\n</{tag}>\n\n"
+        case IndentedCodePlacement():
+            return (
+                "".join(
+                    f"    {line}\n" for line in canonical_body.splitlines()
+                )
+                + "\n"
+            )
+    raise TypeError(f"unknown hidden process placement: {placement!r}")
+
+
+def hidden_process_container(placement: HiddenProcessPlacement) -> str:
+    match placement:
+        case FencePlacement():
+            return "fence"
+        case InvalidFencePlacement():
+            return "invalid-fence-close"
+        case HtmlCommentPlacement():
+            return "comment"
+        case PrePlacement():
+            return "pre"
+        case BlankDelimitedHtmlPlacement(tag):
+            return tag
+        case IndentedCodePlacement():
+            return "indented-code"
+    raise TypeError(f"unknown hidden process placement: {placement!r}")
+
+
+def hidden_process_preserves_body(
+    placement: HiddenProcessPlacement,
+) -> bool:
+    match placement:
+        case IndentedCodePlacement():
+            return False
+        case (
+            FencePlacement()
+            | InvalidFencePlacement()
+            | HtmlCommentPlacement()
+            | PrePlacement()
+            | BlankDelimitedHtmlPlacement()
+        ):
+            return True
+    raise TypeError(f"unknown hidden process placement: {placement!r}")
+
+
+@dataclass(frozen=True)
 class HiddenProcessCase:
     document: str
-    container: str
-    wrapper: str
-    preserves_transport_body: bool
+    placement: HiddenProcessPlacement
     gate_problem: str
     description: str
 
+    @property
+    def container(self) -> str:
+        return hidden_process_container(self.placement)
+
+
+@dataclass(frozen=True)
+class HiddenProcessObligation:
+    required_text: str
+    fault: ProcessFixtureIsolationFault
+
+
+def hidden_process_canonical_body(document: str) -> str:
+    if document == "AGENTS.md":
+        return f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}"
+    if document == "BUILD.md":
+        return TRANSPORT_BLOCK
+    raise ValueError(f"unknown process fixture document: {document}")
+
+
+def hidden_process_following_control(document: str) -> str:
+    if document == "AGENTS.md":
+        return OVERVIEW_HEADING
+    if document == "BUILD.md":
+        return "## Fixture continuation"
+    raise ValueError(f"unknown process fixture document: {document}")
+
 
 def hidden_process_cases() -> tuple[HiddenProcessCase, ...]:
-    agents_body = f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
     agents_problem = (
         "AGENTS.md confinement section must defer all quantitative policy"
     )
@@ -282,106 +380,79 @@ def hidden_process_cases() -> tuple[HiddenProcessCase, ...]:
     return (
         HiddenProcessCase(
             "AGENTS.md",
-            "fence",
-            f"```md\n{agents_body}```\n",
-            False,
+            FencePlacement(),
             agents_problem,
             "a fenced Markdown example is not an operative standing rule",
         ),
         HiddenProcessCase(
             "AGENTS.md",
-            "comment",
-            f"<!--\n{agents_body}-->\n",
-            False,
+            HtmlCommentPlacement(),
             agents_problem,
             "a confinement section inside an HTML comment is not operative documentation",
         ),
         HiddenProcessCase(
             "BUILD.md",
-            "fence",
-            f"```md\n{TRANSPORT_BLOCK}\n```\n\n",
-            True,
+            FencePlacement(),
             build_problem,
             "a fenced transport block is an example rather than the plan's contract",
         ),
         HiddenProcessCase(
             "BUILD.md",
-            "comment",
-            f"<!--\n{TRANSPORT_BLOCK}\n-->\n\n",
-            True,
+            HtmlCommentPlacement(),
             build_problem,
             "nested comment markers cannot move the transport contract from its prefix",
         ),
         HiddenProcessCase(
             "AGENTS.md",
-            "invalid-fence-close",
-            f"```md\n    ```\n{agents_body}```\n",
-            False,
+            InvalidFencePlacement(),
             agents_problem,
             "a four-space pseudo-close does not end a top-level Markdown fence",
         ),
         HiddenProcessCase(
             "BUILD.md",
-            "invalid-fence-close",
-            f"```md\n    ```\n{TRANSPORT_BLOCK}\n```\n\n",
-            True,
+            InvalidFencePlacement(),
             build_problem,
             "a pseudo-close four spaces beyond its list container does not end a fence",
         ),
         HiddenProcessCase(
             "BUILD.md",
-            "indented-code",
-            "".join(f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines())
-            + "\n",
-            False,
+            IndentedCodePlacement(),
             build_problem,
             "list-relative indented code is not an operative transport contract",
         ),
         HiddenProcessCase(
             "AGENTS.md",
-            "pre",
-            f"<pre>\n{agents_body}</pre>\n",
-            False,
+            PrePlacement(),
             agents_problem,
             "Markdown inside a raw pre block is not an operative standing rule",
         ),
         HiddenProcessCase(
             "BUILD.md",
-            "pre",
-            f"<pre>\n{TRANSPORT_BLOCK}\n</pre>\n\n",
-            True,
+            PrePlacement(),
             build_problem,
             "Markdown inside a raw pre block is not an operative transport contract",
         ),
         HiddenProcessCase(
             "AGENTS.md",
-            "div",
-            f"<div>\n{agents_body}</div>\n\n",
-            False,
+            BlankDelimitedHtmlPlacement("div"),
             agents_problem,
             "Markdown inside a generic raw HTML block is not an operative standing rule",
         ),
         HiddenProcessCase(
             "BUILD.md",
-            "div",
-            f"<div>\n{TRANSPORT_BLOCK}\n</div>\n\n",
-            True,
+            BlankDelimitedHtmlPlacement("div"),
             build_problem,
             "generic raw HTML cannot own the operative transport contract",
         ),
         HiddenProcessCase(
             "AGENTS.md",
-            "section",
-            f"<section>\n{agents_body}</section>\n\n",
-            False,
+            BlankDelimitedHtmlPlacement("section"),
             agents_problem,
             "Markdown inside a raw section is not an operative standing rule",
         ),
         HiddenProcessCase(
             "BUILD.md",
-            "section",
-            f"<section>\n{TRANSPORT_BLOCK}\n</section>\n\n",
-            False,
+            BlankDelimitedHtmlPlacement("section"),
             build_problem,
             "a raw section cannot own the operative transport contract",
         ),
@@ -398,14 +469,11 @@ def hidden_process_contract(document: str, container: str) -> dict[str, str]:
     if len(matching) != 1:
         raise ValueError(f"unknown hidden process case: {document}/{container}")
     case = matching[0]
-    block = (
-        f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
-        if document == "AGENTS.md"
-        else f"{TRANSPORT_BLOCK}\n\n"
-    )
+    canonical_body = hidden_process_canonical_body(document)
+    block = f"{canonical_body}\n\n"
     files[document] = files[document].replace(
         block,
-        case.wrapper,
+        render_hidden_process_placement(case.placement, canonical_body),
         1,
     )
     return files
@@ -487,14 +555,51 @@ def process_fixture_inventory_problem(
     )
 
 
+def process_fixture_fault_index(
+    faults: tuple[ProcessFixtureIsolationFault, ...],
+) -> dict[str, ProcessFixtureIsolationFault]:
+    index: dict[str, ProcessFixtureIsolationFault] = {}
+    for fault in faults:
+        if fault.fault_id in index:
+            raise ValueError(
+                f"duplicate process fixture fault id {fault.fault_id}"
+            )
+        index[fault.fault_id] = fault
+    return index
+
+
+def validate_process_fixture_controls(
+    controls: tuple[ProcessFixtureControl, ...],
+) -> None:
+    identities: set[tuple[str, str]] = set()
+    for control in controls:
+        identity = (control.document, control.key)
+        if identity in identities:
+            raise ValueError(
+                "duplicate process fixture control identity "
+                f"{control.document}/{control.key}"
+            )
+        identities.add(identity)
+
+
+def process_fixture_control_fault_ids(
+    control: ProcessFixtureControl,
+) -> tuple[str, str]:
+    return (
+        f"{control.key}-missing",
+        f"{control.key}-duplicate",
+    )
+
+
 def process_fixture_control_faults(
     controls: tuple[ProcessFixtureControl, ...] = PROCESS_FIXTURE_CONTROLS,
-    *,
-    omit_last_control: bool = False,
-) -> dict[str, ProcessFixtureIsolationFault]:
-    faults: dict[str, ProcessFixtureIsolationFault] = {}
-    enrolled = controls[:-1] if omit_last_control else controls
-    for control in enrolled:
+) -> tuple[ProcessFixtureIsolationFault, ...]:
+    validate_process_fixture_controls(controls)
+    faults: list[ProcessFixtureIsolationFault] = []
+    for control in controls:
+        missing_fault_id, duplicate_fault_id = (
+            process_fixture_control_fault_ids(control)
+        )
         inventory_problem = process_fixture_inventory_problem(
             control.document,
             "fence",
@@ -505,12 +610,15 @@ def process_fixture_control_faults(
             missing_problems.append(
                 "BUILD fence fixture corrupts the canonical transport body"
             )
-        faults[f"{control.key}-missing"] = ProcessFixtureIsolationFault(
-            control.document,
-            "fence",
-            control.marker,
-            f"[removed {control.key}]",
-            tuple(missing_problems),
+        faults.append(
+            ProcessFixtureIsolationFault(
+                missing_fault_id,
+                control.document,
+                "fence",
+                control.marker,
+                f"[removed {control.key}]",
+                tuple(missing_problems),
+            )
         )
 
         if control.key in ("build-start-marker", "build-end-marker"):
@@ -521,58 +629,98 @@ def process_fixture_control_faults(
         else:
             duplicate_before = control.marker
             duplicate_after = f"{control.marker}\n{control.marker}"
-        faults[f"{control.key}-duplicate"] = ProcessFixtureIsolationFault(
-            control.document,
-            "fence",
-            duplicate_before,
-            duplicate_after,
-            (inventory_problem,),
+        faults.append(
+            ProcessFixtureIsolationFault(
+                duplicate_fault_id,
+                control.document,
+                "fence",
+                duplicate_before,
+                duplicate_after,
+                (inventory_problem,),
+            )
         )
-    return faults
+    result = tuple(faults)
+    process_fixture_fault_index(result)
+    return result
 
 
-def process_fixture_isolation_faults() -> dict[
-    str, ProcessFixtureIsolationFault
+def hidden_process_case_obligations(
+    case: HiddenProcessCase,
+) -> tuple[HiddenProcessObligation, ...]:
+    obligations: list[HiddenProcessObligation] = []
+    if case.document == "BUILD.md" and hidden_process_preserves_body(
+        case.placement
+    ):
+        obligations.append(
+            HiddenProcessObligation(
+                TRANSPORT_BLOCK,
+                ProcessFixtureIsolationFault(
+                    f"build-{case.container}-transport-body",
+                    "BUILD.md",
+                    case.container,
+                    "`parse_report` and `run_suite` raise",
+                    "`parse_report` or `run_suite` raise",
+                    (
+                        f"BUILD {case.container} fixture corrupts "
+                        "the canonical transport body",
+                    ),
+                ),
+            )
+        )
+    if isinstance(case.placement, BlankDelimitedHtmlPlacement):
+        following_control = hidden_process_following_control(case.document)
+        document_name = case.document.removesuffix(".md")
+        control_name = following_control.removeprefix("## ")
+        closing = f"</{case.placement.tag}>"
+        boundary = f"{closing}\n\n{following_control}"
+        obligations.append(
+            HiddenProcessObligation(
+                boundary,
+                ProcessFixtureIsolationFault(
+                    f"{document_name.lower()}-{case.container}-boundary",
+                    case.document,
+                    case.container,
+                    boundary,
+                    f"{closing}\n{following_control}",
+                    (
+                        f"{document_name} {case.container} fixture fails to "
+                        f"terminate raw HTML before the {control_name} control",
+                    ),
+                ),
+            )
+        )
+    return tuple(obligations)
+
+
+def process_fixture_isolation_faults() -> tuple[
+    ProcessFixtureIsolationFault, ...
 ]:
-    faults = process_fixture_control_faults()
+    faults = list(process_fixture_control_faults())
     for case in hidden_process_cases():
-        if case.document != "BUILD.md" or not case.preserves_transport_body:
-            continue
-        fault_name = f"build-{case.container}-transport-body"
-        faults[fault_name] = ProcessFixtureIsolationFault(
-            "BUILD.md",
-            case.container,
-            "`parse_report` and `run_suite` raise",
-            "`parse_report` or `run_suite` raise",
-            (
-                f"BUILD {case.container} fixture corrupts "
-                "the canonical transport body",
-            ),
+        faults.extend(
+            obligation.fault
+            for obligation in hidden_process_case_obligations(case)
         )
-    faults["agents-div-boundary"] = ProcessFixtureIsolationFault(
-        "AGENTS.md",
-        "div",
-        f"</div>\n\n{OVERVIEW_HEADING}",
-        f"</div>\n{OVERVIEW_HEADING}",
-        (
-            "AGENTS div fixture fails to terminate raw HTML "
-            "before the Overview control",
-        ),
+    faults.append(
+        ProcessFixtureIsolationFault(
+            "ambiguous-process-fixture-mutation-target",
+            "AGENTS.md",
+            "fence",
+            "\n",
+            "\n",
+            (),
+            expects_ambiguous_target=True,
+        )
     )
-    faults[
-        "ambiguous-process-fixture-mutation-target"
-    ] = ProcessFixtureIsolationFault(
-        "AGENTS.md",
-        "fence",
-        "\n",
-        "\n",
-        (),
-        expects_ambiguous_target=True,
-    )
-    return faults
+    result = tuple(faults)
+    process_fixture_fault_index(result)
+    return result
 
 
 PROCESS_FIXTURE_ISOLATION_FAULTS = process_fixture_isolation_faults()
+PROCESS_FIXTURE_ISOLATION_FAULT_INDEX = process_fixture_fault_index(
+    PROCESS_FIXTURE_ISOLATION_FAULTS
+)
 
 
 def inject_process_fixture_fault(
@@ -583,7 +731,7 @@ def inject_process_fixture_fault(
 ) -> str:
     if injected_fault is None:
         return body
-    fault = PROCESS_FIXTURE_ISOLATION_FAULTS[injected_fault]
+    fault = PROCESS_FIXTURE_ISOLATION_FAULT_INDEX[injected_fault]
     if (document, container) != (fault.document, fault.container):
         return body
     if body.count(fault.before) != 1:
@@ -600,7 +748,7 @@ def process_fixture_isolation_problems(
     """Reject process-contract negatives that also corrupt unrelated controls."""
     if (
         injected_fault is not None
-        and injected_fault not in PROCESS_FIXTURE_ISOLATION_FAULTS
+        and injected_fault not in PROCESS_FIXTURE_ISOLATION_FAULT_INDEX
     ):
         raise ValueError(f"unknown process fixture isolation fault: {injected_fault}")
 
@@ -627,24 +775,9 @@ def process_fixture_isolation_problems(
                         control.marker,
                     )
                 )
-        if (
-            case.document == "AGENTS.md"
-            and case.container == "div"
-            and f"</div>\n\n{OVERVIEW_HEADING}" not in document
-        ):
-            problems.append(
-                "AGENTS div fixture fails to terminate raw HTML "
-                "before the Overview control"
-            )
-        if (
-            case.document == "BUILD.md"
-            and case.preserves_transport_body
-            and document.count(TRANSPORT_BLOCK) != 1
-        ):
-            problems.append(
-                f"BUILD {case.container} fixture corrupts "
-                "the canonical transport body"
-            )
+        for obligation in hidden_process_case_obligations(case):
+            if document.count(obligation.required_text) != 1:
+                problems.extend(obligation.fault.expected_problems)
     return problems
 
 
@@ -666,9 +799,9 @@ def hidden_process_enrollment_problems(
     canonical = hidden_process_bad_cases()
 
     return [
-        hidden_process_enrollment_problem(case, 0)
+        hidden_process_enrollment_problem(case, enrolled.count(bad_case))
         for case, bad_case in zip(hidden_process_cases(), canonical, strict=True)
-        if bad_case not in enrolled
+        if enrolled.count(bad_case) != 1
     ]
 
 
@@ -697,6 +830,92 @@ def hidden_process_enrollment_surface_problems(
     if exercised != expected_exercised:
         problems.append(
             "hidden process enrollment self-test exercised "
+            f"{exercised} of {expected_exercised} cardinality faults"
+        )
+    return problems
+
+
+def hidden_process_case_fault_ids(
+    case: HiddenProcessCase,
+) -> tuple[str, ...]:
+    fault_ids: list[str] = []
+    if case.document == "BUILD.md" and not isinstance(
+        case.placement,
+        IndentedCodePlacement,
+    ):
+        fault_ids.append(f"build-{case.container}-transport-body")
+    if isinstance(case.placement, BlankDelimitedHtmlPlacement):
+        document_name = case.document.removesuffix(".md").lower()
+        fault_ids.append(f"{document_name}-{case.container}-boundary")
+    return tuple(fault_ids)
+
+
+def hidden_process_obligation_enrollment_problem(
+    case: HiddenProcessCase,
+    fault_id: str,
+    observed_count: int,
+) -> str:
+    return (
+        f"hidden process obligation {case.document}/{case.container}/{fault_id} "
+        f"must be generated exactly once; observed {observed_count}"
+    )
+
+
+def hidden_process_obligation_enrollment_problems(
+    faults: tuple[ProcessFixtureIsolationFault, ...],
+) -> list[str]:
+    fault_ids = [fault.fault_id for fault in faults]
+    return [
+        hidden_process_obligation_enrollment_problem(
+            case,
+            fault_id,
+            fault_ids.count(fault_id),
+        )
+        for case in hidden_process_cases()
+        for fault_id in hidden_process_case_fault_ids(case)
+        if fault_ids.count(fault_id) != 1
+    ]
+
+
+def hidden_process_obligation_surface_problems() -> list[str]:
+    """Mutate every structurally required case obligation at cardinality 0 and 2."""
+    canonical = PROCESS_FIXTURE_ISOLATION_FAULTS
+    problems = hidden_process_obligation_enrollment_problems(canonical)
+    exercised = 0
+    expected_exercised = 0
+    for case in hidden_process_cases():
+        for fault_id in hidden_process_case_fault_ids(case):
+            expected_exercised += 2
+            matching = [
+                fault for fault in canonical if fault.fault_id == fault_id
+            ]
+            if len(matching) != 1:
+                continue
+            missing = tuple(
+                fault for fault in canonical if fault.fault_id != fault_id
+            )
+            duplicate = (*canonical, matching[0])
+            for observed_count, mutated in ((0, missing), (2, duplicate)):
+                exercised += 1
+                expected = [
+                    hidden_process_obligation_enrollment_problem(
+                        case,
+                        fault_id,
+                        observed_count,
+                    )
+                ]
+                observed = hidden_process_obligation_enrollment_problems(
+                    mutated
+                )
+                if observed != expected:
+                    problems.append(
+                        "hidden process obligation self-test attributed "
+                        f"{fault_id} count {observed_count} incorrectly: "
+                        f"expected {expected!r}, observed {observed!r}"
+                    )
+    if exercised != expected_exercised:
+        problems.append(
+            "hidden process obligation self-test exercised "
             f"{exercised} of {expected_exercised} cardinality faults"
         )
     return problems
@@ -740,28 +959,77 @@ def process_fixture_control_collision_problems() -> list[str]:
     return problems
 
 
+def process_fixture_control_enrollment_problem(
+    fault_id: str,
+    observed_count: int,
+) -> str:
+    return (
+        f"process fixture control fault {fault_id} must be generated exactly "
+        f"once; observed {observed_count}"
+    )
+
+
 def process_fixture_control_enrollment_problems(
-    *,
-    omit_generated_faults: bool = False,
+    controls: tuple[ProcessFixtureControl, ...],
+    faults: tuple[ProcessFixtureIsolationFault, ...],
 ) -> list[str]:
-    """Prove that adding a control automatically adds both fault polarities."""
-    probe = ProcessFixtureControl(
-        "agents-probe-control",
-        "AGENTS.md",
-        "## Probe control",
-    )
-    generated = process_fixture_control_faults(
-        (*PROCESS_FIXTURE_CONTROLS, probe),
-        omit_last_control=omit_generated_faults,
-    )
-    required = {
-        "agents-probe-control-missing",
-        "agents-probe-control-duplicate",
-    }
+    fault_ids = [fault.fault_id for fault in faults]
     return [
-        f"process fixture control generator omits {fault}"
-        for fault in sorted(required - set(generated))
+        process_fixture_control_enrollment_problem(
+            fault_id,
+            fault_ids.count(fault_id),
+        )
+        for control in controls
+        for fault_id in process_fixture_control_fault_ids(control)
+        if fault_ids.count(fault_id) != 1
     ]
+
+
+def process_fixture_control_enrollment_surface_problems() -> list[str]:
+    """Mutate every generated control fault in both cardinality directions."""
+    canonical = process_fixture_control_faults()
+    problems = process_fixture_control_enrollment_problems(
+        PROCESS_FIXTURE_CONTROLS,
+        canonical,
+    )
+    exercised = 0
+    for control in PROCESS_FIXTURE_CONTROLS:
+        for fault_id in process_fixture_control_fault_ids(control):
+            matching = [
+                fault for fault in canonical if fault.fault_id == fault_id
+            ]
+            if len(matching) != 1:
+                continue
+            missing = tuple(
+                fault for fault in canonical if fault.fault_id != fault_id
+            )
+            duplicate = (*canonical, matching[0])
+            for observed_count, mutated in ((0, missing), (2, duplicate)):
+                exercised += 1
+                expected = [
+                    process_fixture_control_enrollment_problem(
+                        fault_id,
+                        observed_count,
+                    )
+                ]
+                observed = process_fixture_control_enrollment_problems(
+                    PROCESS_FIXTURE_CONTROLS,
+                    mutated,
+                )
+                if observed != expected:
+                    problems.append(
+                        "process fixture control enrollment self-test "
+                        f"attributed {fault_id} count {observed_count} "
+                        f"incorrectly: expected {expected!r}, "
+                        f"observed {observed!r}"
+                    )
+    expected_exercised = 4 * len(PROCESS_FIXTURE_CONTROLS)
+    if exercised != expected_exercised:
+        problems.append(
+            "process fixture control enrollment self-test exercised "
+            f"{exercised} of {expected_exercised} cardinality faults"
+        )
+    return problems
 
 
 def under(prefix: str, files: dict[str, str]) -> dict[str, str]:
@@ -2689,19 +2957,11 @@ failures = []
 failures.extend(process_fixture_isolation_problems())
 failures.extend(hidden_process_enrollment_problems(BAD_CASES))
 failures.extend(hidden_process_enrollment_surface_problems(BAD_CASES))
+failures.extend(hidden_process_obligation_surface_problems())
 failures.extend(process_fixture_control_collision_problems())
-failures.extend(process_fixture_control_enrollment_problems())
-covered_process_fixture_faults = set(PROCESS_FIXTURE_ISOLATION_FAULTS) | {
-    "drop-hidden-process-bad-case",
-    "unenrolled-process-fixture-control",
-}
-for missing_fault in sorted(
-    set(PROCESS_FIXTURE_REQUIRED_FAULTS) - covered_process_fixture_faults
-):
-    failures.append(
-        f"process fixture isolation surface lacks required fault {missing_fault}"
-    )
-for injected_fault, fault in PROCESS_FIXTURE_ISOLATION_FAULTS.items():
+failures.extend(process_fixture_control_enrollment_surface_problems())
+for fault in PROCESS_FIXTURE_ISOLATION_FAULTS:
+    injected_fault = fault.fault_id
     try:
         observed_problems = process_fixture_isolation_problems(
             injected_fault=injected_fault
@@ -2724,12 +2984,6 @@ for injected_fault, fault in PROCESS_FIXTURE_ISOLATION_FAULTS.items():
             f"{injected_fault} incorrectly: expected {fault.expected_problems!r}, "
             f"observed {observed_problems!r}"
         )
-if not process_fixture_control_enrollment_problems(
-    omit_generated_faults=True
-):
-    failures.append(
-        "process fixture isolation self-test missed a newly added control"
-    )
 
 orchestration_inventory = subprocess.run(
     [
