@@ -262,6 +262,54 @@ def raw_agent_contract(opening: str, closing: str = "") -> dict[str, str]:
     return files
 
 
+def process_fixture_isolation_problems() -> list[str]:
+    """Reject process-contract negatives that also corrupt unrelated controls."""
+    problems: list[str] = []
+    expected_agents_inventory = (
+        (CONFINE_HEADING, 1),
+        (CONFINE_SECTION_BODY, 1),
+        (OVERVIEW_HEADING, 1),
+        ("## Fixture continuation", 1),
+    )
+    for container in ("fence", "invalid-fence-close", "comment", "pre", "div"):
+        agents = hidden_process_contract("AGENTS.md", container)["AGENTS.md"]
+        for marker, expected in expected_agents_inventory:
+            if agents.count(marker) != expected:
+                problems.append(
+                    f"AGENTS {container} fixture corrupts unrelated inventory {marker!r}"
+                )
+    agents_div = hidden_process_contract("AGENTS.md", "div")["AGENTS.md"]
+    if f"</div>\n\n{OVERVIEW_HEADING}" not in agents_div:
+        problems.append(
+            "AGENTS div fixture fails to terminate raw HTML before the Overview control"
+        )
+
+    expected_build_inventory = (
+        ("<!-- mutation-suite-transport-contract:start -->", 1),
+        ("<!-- mutation-suite-transport-contract:end -->", 1),
+        ("## Fixture continuation", 1),
+    )
+    for container in (
+        "fence",
+        "invalid-fence-close",
+        "comment",
+        "indented-code",
+        "pre",
+        "div",
+    ):
+        build = hidden_process_contract("BUILD.md", container)["BUILD.md"]
+        for marker, expected in expected_build_inventory:
+            if build.count(marker) != expected:
+                problems.append(
+                    f"BUILD {container} fixture corrupts unrelated inventory {marker!r}"
+                )
+        if container != "indented-code" and build.count(TRANSPORT_BLOCK) != 1:
+            problems.append(
+                f"BUILD {container} fixture corrupts the canonical transport body"
+            )
+    return problems
+
+
 def under(prefix: str, files: dict[str, str]) -> dict[str, str]:
     return {f"{prefix}/{rel}": body for rel, body in files.items()}
 
@@ -2243,6 +2291,7 @@ def run(
 
 
 failures = []
+failures.extend(process_fixture_isolation_problems())
 
 orchestration_inventory = subprocess.run(
     [
