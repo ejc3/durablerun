@@ -1916,6 +1916,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "accept-oversized-finite-scope",
     "accept-oversized-cpu-scope",
     "classify-missing-report-as-domain",
+    "leave-zombie-group",
     "classify-malformed-report-as-domain",
     "classify-structural-report-as-domain",
     "accept-wrong-registry",
@@ -2799,7 +2800,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 except ProcessLookupError:
                     pass
 
-        if fault is None:
+        if fault in (None, "leave-zombie-group"):
             zombie = subprocess.Popen(
                 (sys.executable, "-c", "raise SystemExit(0)"),
                 cwd=temporary,
@@ -2818,11 +2819,19 @@ def orchestration_self_test(fault: str | None = None) -> int:
             if state != "Z":
                 failures.append("process cleanup: could not construct a zombie leader")
             else:
+                cleanup_started = time.monotonic()
                 try:
-                    terminate_process_groups([zombie])
+                    terminate_process_groups(
+                        [zombie],
+                        reap_exited_leaders=fault != "leave-zombie-group",
+                    )
                 except RuntimeError:
                     failures.append(
                         "process cleanup: a zombie leader impersonated a live group"
+                    )
+                if time.monotonic() - cleanup_started > 1:
+                    failures.append(
+                        "process cleanup: a zombie leader delayed group cleanup"
                     )
             zombie.wait()
 
@@ -3390,6 +3399,7 @@ def terminate_process_groups(
     processes: list[subprocess.Popen[bytes]],
     *,
     omit_exited_groups: bool = False,
+    reap_exited_leaders: bool = True,
 ) -> None:
     groups = [
         process.pid
@@ -3401,12 +3411,16 @@ def terminate_process_groups(
             os.killpg(process_group, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    def live_process_groups() -> list[int]:
+        if reap_exited_leaders:
+            for process in processes:
+                process.poll()
+        return [group for group in groups if process_group_exists(group)]
+
     deadline = time.monotonic() + 5
-    live_groups = [group for group in groups if process_group_exists(group)]
+    live_groups = live_process_groups()
     while live_groups and time.monotonic() < deadline:
-        live_groups = [
-            group for group in live_groups if process_group_exists(group)
-        ]
+        live_groups = live_process_groups()
         if live_groups:
             time.sleep(0.1)
     for process_group in live_groups:
@@ -3416,9 +3430,7 @@ def terminate_process_groups(
             pass
     kill_deadline = time.monotonic() + 2
     while live_groups and time.monotonic() < kill_deadline:
-        live_groups = [
-            group for group in live_groups if process_group_exists(group)
-        ]
+        live_groups = live_process_groups()
         if live_groups:
             time.sleep(0.05)
     for process in processes:
@@ -3426,6 +3438,7 @@ def terminate_process_groups(
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
+    live_groups = live_process_groups()
     if live_groups:
         raise RuntimeError(
             f"cannot reap descendant process groups after SIGKILL: {live_groups}"
