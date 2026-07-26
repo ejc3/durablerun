@@ -178,12 +178,10 @@ describe('migrate reports success only when the schema is current', () => {
     ]
     for (const { name, results } of cases) {
       const malformed: SqlExecutor = { batch: async () => results }
-      const observed = await new LibsqlStoreAdmin(malformed)
-        .schemaVersion()
-        .then(
-          (value) => ({ kind: 'resolved' as const, value }),
-          (error: unknown) => ({ kind: 'rejected' as const, error }),
-        )
+      const observed = await new LibsqlStoreAdmin(malformed).schemaVersion().then(
+        (value) => ({ kind: 'resolved' as const, value }),
+        (error: unknown) => ({ kind: 'rejected' as const, error }),
+      )
       if (observed.kind === 'resolved') {
         throw new Error('mutation-verdict:behavior:schema-version-row-required')
       }

@@ -103,9 +103,9 @@ export async function tick(
           claimGen: run.claimGen,
           deadlineHintEpochMs: run.claimExpiresAtEpochMs,
         })
-      } catch (error) {
+      } catch {
         // A throwing transport is indistinguishable from a lost launch.
-        raw = LaunchOutcome.launchFailed(error)
+        raw = LaunchOutcome.launchFailed()
       }
       // ALL outcome semantics live in the reconciler (core/launch.ts):
       // parsing, identity checks, and the single advisory-expiry door.

@@ -96,7 +96,7 @@ describe('tick()', () => {
   it('launch-failed expires the lease advisorily: the NEXT tick reopens it without waiting out the lease', async () => {
     const f = await fx('tick-launch-failed')
     await f.store.spawn(Q, 'job', '{}')
-    const failing = new FakeLauncher(() => LaunchOutcome.launchFailed(new Error('conn refused')))
+    const failing = new FakeLauncher(() => LaunchOutcome.launchFailed())
     const first = await tick({ store: f.store, launcher: failing, ids: f.ids }, OPTS)
     expect(first).toMatchObject({ claimed: 1, launched: 0, launchFailed: 1 })
     // The advisory expiry SURFACES in next-wake: the caller is told to look
@@ -324,7 +324,7 @@ describe('tick() review regressions', () => {
         return Reflect.get(target, prop, receiver)
       },
     })
-    const launcher = new FakeLauncher(() => LaunchOutcome.launchFailed(new Error('no')))
+    const launcher = new FakeLauncher(() => LaunchOutcome.launchFailed())
     const result = await tick({ store: flaky, launcher, ids: f.ids }, OPTS)
     expect(result.launchFailed).toBe(2)
     expect(result.nextWakeAtEpochMs).not.toBeNull()

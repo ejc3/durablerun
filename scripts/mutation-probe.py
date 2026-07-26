@@ -342,8 +342,8 @@ MUTATION_SPECS = [
     (
         "ending-claim-identity",
         "packages/core/src/launch.ts",
-        "ending === null || ending.runId !== run.runId || ending.claimToken !== run.claimToken",
-        "ending === null || ending.runId !== run.runId || false",
+        "ending.runId !== run.runId || ending.claimToken !== run.claimToken",
+        "ending.runId !== run.runId || false",
         "an ending from an older claim expires the current worker's lease",
     ),
     (
@@ -366,6 +366,15 @@ MUTATION_SPECS = [
         "      if (error instanceof SchemaNotInitializedError) return 0",
         "      if (String(error).includes('no such table')) return 0",
         "an unrelated executor failure is interpreted as a fresh database",
+    ),
+    (
+        "schema-version-row-required",
+        "packages/store-libsql/src/admin.ts",
+        "      throw new SchemaMismatchError(\n"
+        "        `schema-version read must return exactly one result with one row, got ${results.length} results and ${result?.rows.length ?? 0} rows`,\n"
+        "      )",
+        "      return 0",
+        "missing or duplicated version results are interpreted as a fresh database",
     ),
     (
         "spawn-primary-key-guard",
@@ -586,6 +595,12 @@ VERDICTS = {
         "packages/store-libsql/test/schema-gate.test.ts",
         "migrate reports success only when the schema is current does not classify unrelated executor failures by message substring",
         "mutation-verdict:behavior:schema-absence-is-typed",
+    ),
+    "schema-version-row-required": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema-gate.test.ts",
+        "migrate reports success only when the schema is current requires exactly one schema-version result row",
+        "mutation-verdict:behavior:schema-version-row-required",
     ),
     "spawn-primary-key-guard": ExpectedVerdict(
         "behavior",

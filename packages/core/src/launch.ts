@@ -1,4 +1,10 @@
-import type { Ending, LaunchIdentity, SchedulerStore } from './ports.js'
+import type { Ending, SchedulerStore } from './ports.js'
+import type { LaunchIdentity } from './types.js'
+
+type LaunchPayload =
+  | { readonly kind: 'accepted' }
+  | { readonly kind: 'ended'; readonly ending: Ending }
+  | { readonly kind: 'launch-failed' }
 
 /**
  * The result of asking a Launcher to start a worker — deliberately OPAQUE.
@@ -16,24 +22,21 @@ import type { Ending, LaunchIdentity, SchedulerStore } from './ports.js'
  * Launcher implementations construct outcomes via the static factories.
  */
 export class LaunchOutcome {
-  private constructor(
-    private readonly kind: 'accepted' | 'ended' | 'launch-failed',
-    private readonly ending: Ending | null,
-  ) {}
+  private constructor(private readonly payload: LaunchPayload) {}
 
   /** The transport took the launch (fire-and-forget ack). */
   static accepted(): LaunchOutcome {
-    return new LaunchOutcome('accepted', null)
+    return new LaunchOutcome({ kind: 'accepted' })
   }
 
   /** A sync (bounded-slot resident) launcher observed the worker end. */
   static ended(ending: Ending): LaunchOutcome {
-    return new LaunchOutcome('ended', ending)
+    return new LaunchOutcome({ kind: 'ended', ending })
   }
 
   /** The launch never left the building. */
-  static launchFailed(_error: unknown): LaunchOutcome {
-    return new LaunchOutcome('launch-failed', null)
+  static launchFailed(): LaunchOutcome {
+    return new LaunchOutcome({ kind: 'launch-failed' })
   }
 
   /**
@@ -61,14 +64,12 @@ export class LaunchOutcome {
     run: LaunchIdentity,
     value: unknown,
   ): Promise<'accepted' | 'ended' | 'launch-failed'> {
-    const outcome =
-      value instanceof LaunchOutcome
-        ? value
-        : LaunchOutcome.launchFailed(new Error('malformed launch outcome'))
-    if (outcome.kind === 'accepted') return 'accepted'
-    if (outcome.kind === 'ended') {
-      const ending = outcome.ending
-      if (ending === null || ending.runId !== run.runId || ending.claimToken !== run.claimToken) {
+    const outcome = value instanceof LaunchOutcome ? value : LaunchOutcome.launchFailed()
+    const payload = outcome.payload
+    if (payload.kind === 'accepted') return 'accepted'
+    if (payload.kind === 'ended') {
+      const { ending } = payload
+      if (ending.runId !== run.runId || ending.claimToken !== run.claimToken) {
         return 'ended'
       }
     }
@@ -77,6 +78,6 @@ export class LaunchOutcome {
     } catch {
       // advisory: acceleration lost, correctness unaffected
     }
-    return outcome.kind
+    return payload.kind
   }
 }

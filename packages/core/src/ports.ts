@@ -2,6 +2,7 @@ import type { LaunchOutcome } from './launch.js'
 import type {
   Checkpoint,
   ClaimedRun,
+  LaunchIdentity,
   LeaseState,
   SpawnOptions,
   SpawnResult,
@@ -155,11 +156,6 @@ export interface StoreAdmin {
   /** Engine time override (shard-meta fake_now); null restores real time. */
   setFakeNowEpochMs(epochMs: number | null): Promise<void>
   nowEpochMs(): Promise<number>
-}
-
-export interface LaunchIdentity {
-  runId: string
-  claimToken: string
 }
 
 export interface LaunchInvocation extends LaunchIdentity {

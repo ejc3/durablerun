@@ -91,18 +91,9 @@ def coderabbit_body(rel: str, synopsis: str) -> str:
 
 def rule_synopsis(text: str, rel: str) -> tuple[str, list[str]]:
     """Read the config-facing rule body from its Markdown source."""
-    if text.count(SYNOPSIS_START) != 1 or text.count(SYNOPSIS_END) != 1:
-        return "", [
-            f"{rel} must contain exactly one {SYNOPSIS_START!r} and one "
-            f"{SYNOPSIS_END!r} marker."
-        ]
-    start = text.index(SYNOPSIS_START) + len(SYNOPSIS_START)
-    end = text.index(SYNOPSIS_END)
-    if end <= start:
-        return "", [f"{rel} has its active-review synopsis markers out of order."]
-    body = text[start:end].strip()
-    if not body:
-        return "", [f"{rel} has an empty active-review synopsis."]
+    body, errors = marked_body(text, SYNOPSIS_START, SYNOPSIS_END, rel)
+    if errors:
+        return body, errors
     if not body.startswith("Flag ") or body.count("Pass for ") != 1:
         return body, [
             f"{rel}'s active-review synopsis must state both a 'Flag' rejection arm "
@@ -161,6 +152,18 @@ def yaml_scalar(raw: str) -> str:
     return raw.split(" #", 1)[0].strip()
 
 
+def significant_yaml_line(line: str) -> bool:
+    return bool(line.strip()) and not line.lstrip().startswith("#")
+
+
+def yaml_block_end(lines: list[str], start: int, indent: int, limit: int) -> int:
+    for index in range(start + 1, limit):
+        line = lines[index]
+        if significant_yaml_line(line) and len(line) - len(line.lstrip()) <= indent:
+            return index
+    return limit
+
+
 def coderabbit_path_instructions(text: str) -> tuple[list[dict[str, str]], list[str]]:
     """Harvest the one generated `reviews.path_instructions` list.
 
@@ -171,21 +174,11 @@ def coderabbit_path_instructions(text: str) -> tuple[list[dict[str, str]], list[
     lines = text.splitlines()
     errors: list[str] = []
 
-    def significant(line: str) -> bool:
-        return bool(line.strip()) and not line.lstrip().startswith("#")
-
-    def end_of_block(start: int, indent: int, limit: int) -> int:
-        for i in range(start + 1, limit):
-            line = lines[i]
-            if significant(line) and len(line) - len(line.lstrip()) <= indent:
-                return i
-        return limit
-
     reviews = [i for i, line in enumerate(lines) if re.fullmatch(r"reviews:\s*", line)]
     if len(reviews) != 1:
         return [], [f".coderabbit.yaml has {len(reviews)} top-level reviews sections; expected one."]
 
-    reviews_end = end_of_block(reviews[0], 0, len(lines))
+    reviews_end = yaml_block_end(lines, reviews[0], 0, len(lines))
     sections = [
         i
         for i in range(reviews[0] + 1, reviews_end)
@@ -197,7 +190,7 @@ def coderabbit_path_instructions(text: str) -> tuple[list[dict[str, str]], list[
             "path review semantics are ambiguous."
         ]
 
-    section_end = end_of_block(sections[0], 2, reviews_end)
+    section_end = yaml_block_end(lines, sections[0], 2, reviews_end)
     raw_entries: list[tuple[int, str]] = []
     for i in range(sections[0] + 1, section_end):
         match = re.fullmatch(r"    - path:\s*(.*?)\s*", lines[i])
@@ -234,7 +227,7 @@ def coderabbit_path_instructions(text: str) -> tuple[list[dict[str, str]], list[
         if len(headers) == 1:
             body_lines: list[str] = []
             for line in lines[headers[0] + 1 : end]:
-                if significant(line) and len(line) - len(line.lstrip()) <= 6:
+                if significant_yaml_line(line) and len(line) - len(line.lstrip()) <= 6:
                     break
                 body_lines.append(line[8:] if line.startswith("        ") else line.strip())
             body = "\n".join(body_lines).strip()
@@ -255,21 +248,11 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
     lines = text.splitlines()
     errors: list[str] = []
 
-    def significant(line: str) -> bool:
-        return bool(line.strip()) and not line.lstrip().startswith("#")
-
-    def end_of_block(start: int, indent: int, limit: int) -> int:
-        for i in range(start + 1, limit):
-            line = lines[i]
-            if significant(line) and len(line) - len(line.lstrip()) <= indent:
-                return i
-        return limit
-
     reviews = [i for i, line in enumerate(lines) if re.fullmatch(r"reviews:\s*", line)]
     if len(reviews) != 1:
         return [], [f".coderabbit.yaml has {len(reviews)} top-level reviews sections; expected one."]
 
-    reviews_end = end_of_block(reviews[0], 0, len(lines))
+    reviews_end = yaml_block_end(lines, reviews[0], 0, len(lines))
     pre_merge = [
         i
         for i in range(reviews[0] + 1, reviews_end)
@@ -281,7 +264,7 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
             "rule can gate a review."
         ]
 
-    pre_merge_end = end_of_block(pre_merge[0], 2, reviews_end)
+    pre_merge_end = yaml_block_end(lines, pre_merge[0], 2, reviews_end)
     custom = [
         i
         for i in range(pre_merge[0] + 1, pre_merge_end)
@@ -292,7 +275,7 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
             ".coderabbit.yaml has no unique reviews.pre_merge_checks.custom_checks list."
         ]
 
-    custom_end = end_of_block(custom[0], 4, pre_merge_end)
+    custom_end = yaml_block_end(lines, custom[0], 4, pre_merge_end)
     entries: list[tuple[int, str]] = []
     for i in range(custom[0] + 1, custom_end):
         match = re.fullmatch(r"      - name:\s*(.*?)\s*", lines[i])
@@ -344,7 +327,7 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
         if len(instruction_headers) == 1:
             body_lines: list[str] = []
             for line in lines[instruction_headers[0] + 1 : end]:
-                if significant(line) and len(line) - len(line.lstrip()) <= 8:
+                if significant_yaml_line(line) and len(line) - len(line.lstrip()) <= 8:
                     break
                 body_lines.append(line[10:] if line.startswith("          ") else line.strip())
             body = "\n".join(body_lines).strip()

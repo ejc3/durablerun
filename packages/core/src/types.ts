@@ -57,8 +57,12 @@ export interface SpawnResult {
  * fence every subsequent write (DESIGN.md §3.2): activation is a CAS on
  * `activated_gen < claim_gen`, never a one-shot flag.
  */
-export interface ClaimedRun {
+export interface LaunchIdentity {
   runId: string
+  claimToken: string
+}
+
+export interface ClaimedRun extends LaunchIdentity {
   taskId: string
   taskName: string
   /**
@@ -71,7 +75,6 @@ export interface ClaimedRun {
   /** Task-lifetime count of infra (`$ClaimTimeout`) successors. */
   infraRetries: number
   claimGen: number
-  claimToken: string
   /** Lease deadline as stamped by the claim — the worker's chaining budget. */
   claimExpiresAtEpochMs: number
   /** The lease length this claim was granted (worker heartbeat cadence). */

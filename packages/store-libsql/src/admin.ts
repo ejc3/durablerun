@@ -82,8 +82,13 @@ export class LibsqlStoreAdmin implements StoreAdmin {
       if (error instanceof SchemaNotInitializedError) return 0
       throw error
     }
-    const row = results[0]?.rows[0]
-    if (!row) return 0
+    const result = results.length === 1 ? results[0] : undefined
+    const row = result?.rows.length === 1 ? result.rows[0] : undefined
+    if (!row) {
+      throw new SchemaMismatchError(
+        `schema-version read must return exactly one result with one row, got ${results.length} results and ${result?.rows.length ?? 0} rows`,
+      )
+    }
     const stored = row.value
     if (typeof stored !== 'string' || !/^(0|[1-9][0-9]*)$/.test(stored)) {
       throw new SchemaMismatchError(
