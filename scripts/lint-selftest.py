@@ -1690,6 +1690,12 @@ GOOD_INVOCATIONS = [
         "the cheap attribution self-test neither mutates sources nor requires a clean tree",
     ),
     (
+        "mutation-probe.py",
+        {},
+        ("--orchestration-self-test",),
+        "parallel mutation orchestration can prove its shard and result protocol cheaply",
+    ),
+    (
         "review-attest.sh",
         {
             "completed.log": (
