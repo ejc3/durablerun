@@ -267,7 +267,6 @@ def process_fixture_isolation_problems(
     drop_overview_control: bool = False,
 ) -> list[str]:
     """Reject process-contract negatives that also corrupt unrelated controls."""
-    del drop_overview_control
     problems: list[str] = []
     expected_agents_inventory = (
         (CONFINE_HEADING, 1),
@@ -277,6 +276,8 @@ def process_fixture_isolation_problems(
     )
     for container in ("fence", "invalid-fence-close", "comment", "pre", "div"):
         agents = hidden_process_contract("AGENTS.md", container)["AGENTS.md"]
+        if drop_overview_control and container == "fence":
+            agents = agents.replace(OVERVIEW_HEADING, "## Removed overview", 1)
         for marker, expected in expected_agents_inventory:
             if agents.count(marker) != expected:
                 problems.append(
