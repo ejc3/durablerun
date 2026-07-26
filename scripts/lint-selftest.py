@@ -990,6 +990,28 @@ export class S {
         replaced(
             corpus(WHOLE_RULE),
             ".coderabbit.yaml",
+            "        mode: error\n",
+            '        mode: error\n        "statusCheck": true\n',
+        ),
+        "has unrecognized custom-check field syntax",
+        "a quoted unsupported field cannot fall outside the custom-check allowlist",
+    ),
+    (
+        "review-bot-lint.py",
+        replaced(
+            corpus(WHOLE_RULE),
+            ".coderabbit.yaml",
+            "        mode: error\n",
+            "        mode: error\n        <<: *custom-check-defaults\n",
+        ),
+        "has unrecognized custom-check field syntax",
+        "a YAML merge cannot inject custom-check fields outside the owned literal shape",
+    ),
+    (
+        "review-bot-lint.py",
+        replaced(
+            corpus(WHOLE_RULE),
+            ".coderabbit.yaml",
             "  request_changes_workflow: true\n",
             "  request_changes_workflow: false\n",
         ),
