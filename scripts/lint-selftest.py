@@ -93,7 +93,14 @@ def gate(
         ci += "  verify:\n"
 
     files = {
-        "package.json": json.dumps({"scripts": {"verify": verify}}),
+        "package.json": json.dumps(
+            {
+                "scripts": {
+                    "verify": verify,
+                    "verify:mutations": "python3 scripts/mutation-probe.py",
+                }
+            }
+        ),
         "AGENTS.md": (
             "## Standing rule: confine heavy local runs\n\n"
             f"{CONFINE_SECTION_BODY}\n\n"
@@ -947,7 +954,21 @@ export class S {
     ),
     (
         "gate-lint.py",
-        process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK),
+        {
+            **process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK),
+            "package.json": json.dumps(
+                {
+                    "name": "durablerun",
+                    "scripts": {
+                        "verify": (
+                            "python3 scripts/a-lint.py && "
+                            "python3 scripts/b-lint.py && "
+                            "python3 scripts/lint-selftest.py"
+                        ),
+                    },
+                }
+            ),
+        },
         "package.json must route verify:mutations exactly to mutation-probe.py",
         "deleting the documented mutation-audit command must fail the process contract",
     ),

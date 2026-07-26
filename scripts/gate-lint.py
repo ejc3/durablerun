@@ -435,10 +435,53 @@ Suite transport has one representation: `parse_report` and `run_suite` raise
 `SuiteInfrastructureError`; only a structurally valid `SuiteResult` reaches
 verdict classification.
 <!-- mutation-suite-transport-contract:end -->"""
+TRANSPORT_MARKERS = frozenset(
+    (
+        "<!-- mutation-suite-transport-contract:start -->",
+        "<!-- mutation-suite-transport-contract:end -->",
+    )
+)
+
+
+def operative_markdown_lines(text: str) -> list[str]:
+    """Remove fenced examples and enclosing HTML comments before parsing."""
+    active: list[str] = []
+    fence: tuple[str, int] | None = None
+    in_comment = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if fence is not None:
+            marker, width = fence
+            close = re.fullmatch(
+                rf"[ \t]*{re.escape(marker)}{{{width},}}[ \t]*",
+                line,
+            )
+            if close:
+                fence = None
+            continue
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+
+        opening = re.match(r"^[ \t]*(`{3,}|~{3,})(.*)$", line)
+        if opening:
+            run = opening.group(1)
+            fence = (run[0], len(run))
+            continue
+        if stripped in TRANSPORT_MARKERS:
+            active.append(line)
+            continue
+        if "<!--" in line:
+            if "-->" not in line.split("<!--", 1)[1]:
+                in_comment = True
+            continue
+        active.append(line)
+    return active
 
 
 def level_two_section(text: str, heading: str) -> str | None:
-    lines = text.splitlines()
+    lines = operative_markdown_lines(text)
     starts = [index for index, line in enumerate(lines) if line == heading]
     if len(starts) != 1:
         return None
@@ -454,7 +497,7 @@ def level_two_section(text: str, heading: str) -> str | None:
 
 
 def attributable_mutation_section(text: str) -> str | None:
-    lines = text.splitlines()
+    lines = operative_markdown_lines(text)
     starts = [
         index
         for index, line in enumerate(lines)
@@ -478,6 +521,7 @@ def process_contract_problems(root: Path) -> list[str]:
     sources = (
         ("AGENTS.md", root / "AGENTS.md"),
         ("BUILD.md", root / "BUILD.md"),
+        ("package.json", root / "package.json"),
         ("scripts/confine.sh", root / "scripts" / "confine.sh"),
     )
     problems = [
@@ -488,6 +532,16 @@ def process_contract_problems(root: Path) -> list[str]:
     if problems:
         return problems
 
+    try:
+        package = json.loads((root / "package.json").read_text())
+        mutation_command = package["scripts"]["verify:mutations"]
+    except (KeyError, OSError, TypeError, json.JSONDecodeError):
+        mutation_command = None
+    if mutation_command != "python3 scripts/mutation-probe.py":
+        problems.append(
+            "package.json must route verify:mutations exactly to mutation-probe.py."
+        )
+
     agents = (root / "AGENTS.md").read_text()
     if level_two_section(agents, CONFINE_HEADING) != CONFINE_SECTION_BODY:
         problems.append(
@@ -497,7 +551,9 @@ def process_contract_problems(root: Path) -> list[str]:
 
     build = (root / "BUILD.md").read_text()
     mutation_section = attributable_mutation_section(build)
-    normalized_build = "\n".join(line.strip() for line in build.splitlines())
+    normalized_build = "\n".join(
+        line.strip() for line in operative_markdown_lines(build)
+    )
     normalized_section = (
         "\n".join(line.strip() for line in mutation_section.splitlines())
         if mutation_section is not None

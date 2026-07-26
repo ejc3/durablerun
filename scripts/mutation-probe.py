@@ -2061,6 +2061,8 @@ def validate_mutation_report(
     accept_extra_result: bool = False,
     accept_process_disagreement: bool = False,
     accept_malformed_types: bool = False,
+    accept_wrong_registry: bool = False,
+    accept_incomplete: bool = False,
 ) -> list[dict[str, object]]:
     if not isinstance(payload, dict):
         raise ValueError("worker mutation report is not an object")
@@ -2088,7 +2090,10 @@ def validate_mutation_report(
         raise ValueError("worker mutation report has an invalid schema or phase")
     if not accept_wrong_head and payload["head"] != head:
         raise ValueError("worker mutation report names the wrong commit")
-    if payload["registry_digest"] != mutation_registry_digest():
+    if (
+        payload["registry_digest"] != mutation_registry_digest()
+        and not accept_wrong_registry
+    ):
         raise ValueError("worker mutation report names the wrong mutation registry")
     if (
         (type(payload["worker_id"]) is not int or payload["worker_id"] != worker_id)
@@ -2097,7 +2102,7 @@ def validate_mutation_report(
         raise ValueError("worker mutation report names the wrong worker")
     if payload["assigned"] != [item.name for item in expected]:
         raise ValueError("worker mutation report names the wrong shard")
-    if payload["complete"] is not True:
+    if payload["complete"] is not True and not accept_incomplete:
         raise ValueError("worker mutation report is incomplete")
     rows = payload["results"]
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
@@ -2553,6 +2558,20 @@ def orchestration_self_test(fault: str | None = None) -> int:
         wrong_head,
         accept_wrong_head=fault == "accept-wrong-head",
     )
+    wrong_registry = json.loads(json.dumps(good))
+    wrong_registry["registry_digest"] = "f" * 64
+    expect_rejected(
+        "wrong registry",
+        wrong_registry,
+        accept_wrong_registry=fault == "accept-wrong-registry",
+    )
+    incomplete = json.loads(json.dumps(good))
+    incomplete["complete"] = False
+    expect_rejected(
+        "incomplete worker",
+        incomplete,
+        accept_incomplete=fault == "accept-incomplete-worker",
+    )
     missing = json.loads(json.dumps(good))
     missing["results"] = missing["results"][:-1]
     expect_rejected(
@@ -2880,6 +2899,21 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 "raise SystemExit(1)"
             ),
             "classify-malformed-report-as-domain",
+        ),
+        (
+            "structurally incoherent report",
+            (
+                "import json,pathlib,sys; "
+                "path=sys.argv[sys.argv.index('--outputFile')+1]; "
+                "pathlib.Path(path).write_text(json.dumps({"
+                "'success':False,"
+                "'numTotalTestSuites':0,'numPassedTestSuites':0,"
+                "'numFailedTestSuites':0,'numPendingTestSuites':0,"
+                "'numTotalTests':1,'numPassedTests':0,'numFailedTests':0,"
+                "'numPendingTests':0,'numTodoTests':0,'testResults':[]})); "
+                "raise SystemExit(1)"
+            ),
+            "classify-structural-report-as-domain",
         ),
     )
     fixture_scope = ConfinedScope("self-test", 1, 1)
