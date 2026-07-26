@@ -1012,6 +1012,17 @@ export class S {
         replaced(
             corpus(WHOLE_RULE),
             ".coderabbit.yaml",
+            "        mode: error\n",
+            '        mode: error\n         "statusCheck": true\n',
+        ),
+        "has unrecognized custom-check indentation",
+        "an invalid nine-space field cannot sit between the owned field and body shapes",
+    ),
+    (
+        "review-bot-lint.py",
+        replaced(
+            corpus(WHOLE_RULE),
+            ".coderabbit.yaml",
             "  request_changes_workflow: true\n",
             "  request_changes_workflow: false\n",
         ),
