@@ -51,85 +51,61 @@ structurally valid `SuiteResult` reaches verdict classification.
 
 
 @dataclass(frozen=True)
+class ProcessFixtureControl:
+    key: str
+    document: str
+    marker: str
+
+
+PROCESS_FIXTURE_CONTROLS = (
+    ProcessFixtureControl(
+        "agents-confine-heading",
+        "AGENTS.md",
+        CONFINE_HEADING,
+    ),
+    ProcessFixtureControl(
+        "agents-confine-body",
+        "AGENTS.md",
+        CONFINE_SECTION_BODY,
+    ),
+    ProcessFixtureControl(
+        "agents-overview-heading",
+        "AGENTS.md",
+        OVERVIEW_HEADING,
+    ),
+    ProcessFixtureControl(
+        "agents-continuation-heading",
+        "AGENTS.md",
+        "## Fixture continuation",
+    ),
+    ProcessFixtureControl(
+        "build-start-marker",
+        "BUILD.md",
+        "<!-- mutation-suite-transport-contract:start -->",
+    ),
+    ProcessFixtureControl(
+        "build-end-marker",
+        "BUILD.md",
+        "<!-- mutation-suite-transport-contract:end -->",
+    ),
+    ProcessFixtureControl(
+        "build-continuation-heading",
+        "BUILD.md",
+        "## Fixture continuation",
+    ),
+)
+
+
+@dataclass(frozen=True)
 class ProcessFixtureIsolationFault:
     document: str
     container: str
     before: str
     after: str
-    expected_problem: str
+    expected_problems: tuple[str, ...]
+    expects_ambiguous_target: bool = False
 
 
-PROCESS_FIXTURE_ISOLATION_FAULTS = {
-    "agents-confine-heading": ProcessFixtureIsolationFault(
-        "AGENTS.md",
-        "fence",
-        CONFINE_HEADING,
-        "## Removed confinement heading",
-        f"AGENTS fence fixture corrupts unrelated inventory {CONFINE_HEADING!r}",
-    ),
-    "agents-confine-body": ProcessFixtureIsolationFault(
-        "AGENTS.md",
-        "fence",
-        "A runaway must die",
-        "A runaway may live",
-        f"AGENTS fence fixture corrupts unrelated inventory {CONFINE_SECTION_BODY!r}",
-    ),
-    "agents-overview-heading": ProcessFixtureIsolationFault(
-        "AGENTS.md",
-        "fence",
-        OVERVIEW_HEADING,
-        "## Removed overview heading",
-        f"AGENTS fence fixture corrupts unrelated inventory {OVERVIEW_HEADING!r}",
-    ),
-    "agents-continuation-heading": ProcessFixtureIsolationFault(
-        "AGENTS.md",
-        "fence",
-        "## Fixture continuation",
-        "## Removed fixture continuation",
-        "AGENTS fence fixture corrupts unrelated inventory "
-        "'## Fixture continuation'",
-    ),
-    "agents-div-boundary": ProcessFixtureIsolationFault(
-        "AGENTS.md",
-        "div",
-        f"</div>\n\n{OVERVIEW_HEADING}",
-        f"</div>\n{OVERVIEW_HEADING}",
-        "AGENTS div fixture fails to terminate raw HTML before the Overview control",
-    ),
-    "build-transport-body": ProcessFixtureIsolationFault(
-        "BUILD.md",
-        "fence",
-        "`parse_report` and `run_suite` raise",
-        "`parse_report` or `run_suite` raise",
-        "BUILD fence fixture corrupts the canonical transport body",
-    ),
-    "build-extra-start-marker": ProcessFixtureIsolationFault(
-        "BUILD.md",
-        "fence",
-        "\n\n## Fixture continuation",
-        "\n\n<!-- mutation-suite-transport-contract:start -->"
-        "\n\n## Fixture continuation",
-        "BUILD fence fixture corrupts unrelated inventory "
-        "'<!-- mutation-suite-transport-contract:start -->'",
-    ),
-    "build-extra-end-marker": ProcessFixtureIsolationFault(
-        "BUILD.md",
-        "fence",
-        "\n\n## Fixture continuation",
-        "\n\n<!-- mutation-suite-transport-contract:end -->"
-        "\n\n## Fixture continuation",
-        "BUILD fence fixture corrupts unrelated inventory "
-        "'<!-- mutation-suite-transport-contract:end -->'",
-    ),
-    "build-continuation-heading": ProcessFixtureIsolationFault(
-        "BUILD.md",
-        "fence",
-        "## Fixture continuation",
-        "## Removed fixture continuation",
-        "BUILD fence fixture corrupts unrelated inventory "
-        "'## Fixture continuation'",
-    ),
-}
 PROCESS_FIXTURE_REQUIRED_FAULTS = (
     "agents-confine-heading-missing",
     "agents-confine-heading-duplicate",
@@ -285,53 +261,148 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
     return files
 
 
-def hidden_agent_process_wrappers(body: str) -> dict[str, str]:
-    return {
-        "fence": f"```md\n{body}```\n",
-        "invalid-fence-close": f"```md\n    ```\n{body}```\n",
-        "comment": f"<!--\n{body}-->\n",
-        "pre": f"<pre>\n{body}</pre>\n",
-        "div": f"<div>\n{body}</div>\n\n",
-    }
+@dataclass(frozen=True)
+class HiddenProcessCase:
+    document: str
+    container: str
+    wrapper: str
+    preserves_transport_body: bool
+    gate_problem: str
+    description: str
 
 
-def hidden_build_process_wrappers() -> dict[str, tuple[str, bool]]:
-    return {
-        "fence": (f"```md\n{TRANSPORT_BLOCK}\n```\n\n", True),
-        "invalid-fence-close": (
+def hidden_process_cases() -> tuple[HiddenProcessCase, ...]:
+    agents_body = f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
+    agents_problem = (
+        "AGENTS.md confinement section must defer all quantitative policy"
+    )
+    build_problem = "BUILD.md misclassifies malformed suite transport"
+    return (
+        HiddenProcessCase(
+            "AGENTS.md",
+            "fence",
+            f"```md\n{agents_body}```\n",
+            False,
+            agents_problem,
+            "a fenced Markdown example is not an operative standing rule",
+        ),
+        HiddenProcessCase(
+            "AGENTS.md",
+            "comment",
+            f"<!--\n{agents_body}-->\n",
+            False,
+            agents_problem,
+            "a confinement section inside an HTML comment is not operative documentation",
+        ),
+        HiddenProcessCase(
+            "BUILD.md",
+            "fence",
+            f"```md\n{TRANSPORT_BLOCK}\n```\n\n",
+            True,
+            build_problem,
+            "a fenced transport block is an example rather than the plan's contract",
+        ),
+        HiddenProcessCase(
+            "BUILD.md",
+            "comment",
+            f"<!--\n{TRANSPORT_BLOCK}\n-->\n\n",
+            True,
+            build_problem,
+            "nested comment markers cannot move the transport contract from its prefix",
+        ),
+        HiddenProcessCase(
+            "AGENTS.md",
+            "invalid-fence-close",
+            f"```md\n    ```\n{agents_body}```\n",
+            False,
+            agents_problem,
+            "a four-space pseudo-close does not end a top-level Markdown fence",
+        ),
+        HiddenProcessCase(
+            "BUILD.md",
+            "invalid-fence-close",
             f"```md\n    ```\n{TRANSPORT_BLOCK}\n```\n\n",
             True,
+            build_problem,
+            "a pseudo-close four spaces beyond its list container does not end a fence",
         ),
-        "comment": (f"<!--\n{TRANSPORT_BLOCK}\n-->\n\n", True),
-        "indented-code": (
+        HiddenProcessCase(
+            "BUILD.md",
+            "indented-code",
             "".join(f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines())
             + "\n",
             False,
+            build_problem,
+            "list-relative indented code is not an operative transport contract",
         ),
-        "pre": (f"<pre>\n{TRANSPORT_BLOCK}\n</pre>\n\n", True),
-        "div": (f"<div>\n{TRANSPORT_BLOCK}\n</div>\n\n", True),
-    }
+        HiddenProcessCase(
+            "AGENTS.md",
+            "pre",
+            f"<pre>\n{agents_body}</pre>\n",
+            False,
+            agents_problem,
+            "Markdown inside a raw pre block is not an operative standing rule",
+        ),
+        HiddenProcessCase(
+            "BUILD.md",
+            "pre",
+            f"<pre>\n{TRANSPORT_BLOCK}\n</pre>\n\n",
+            True,
+            build_problem,
+            "Markdown inside a raw pre block is not an operative transport contract",
+        ),
+        HiddenProcessCase(
+            "AGENTS.md",
+            "div",
+            f"<div>\n{agents_body}</div>\n\n",
+            False,
+            agents_problem,
+            "Markdown inside a generic raw HTML block is not an operative standing rule",
+        ),
+        HiddenProcessCase(
+            "BUILD.md",
+            "div",
+            f"<div>\n{TRANSPORT_BLOCK}\n</div>\n\n",
+            True,
+            build_problem,
+            "generic raw HTML cannot own the operative transport contract",
+        ),
+    )
 
 
 def hidden_process_contract(document: str, container: str) -> dict[str, str]:
     files = process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK)
-    if document == "AGENTS.md":
-        body = f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
-        files[document] = files[document].replace(
-            body,
-            hidden_agent_process_wrappers(body)[container],
-            1,
-        )
-        return files
-
-    block = f"{TRANSPORT_BLOCK}\n\n"
-    wrapper, _ = hidden_build_process_wrappers()[container]
+    matching = [
+        case
+        for case in hidden_process_cases()
+        if (case.document, case.container) == (document, container)
+    ]
+    if len(matching) != 1:
+        raise ValueError(f"unknown hidden process case: {document}/{container}")
+    case = matching[0]
+    block = (
+        f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
+        if document == "AGENTS.md"
+        else f"{TRANSPORT_BLOCK}\n\n"
+    )
     files[document] = files[document].replace(
         block,
-        wrapper,
+        case.wrapper,
         1,
     )
     return files
+
+
+def hidden_process_bad_cases() -> list[tuple[str, dict[str, str], str, str]]:
+    return [
+        (
+            "gate-lint.py",
+            hidden_process_contract(case.document, case.container),
+            case.gate_problem,
+            case.description,
+        )
+        for case in hidden_process_cases()
+    ]
 
 
 def nested_build_contract(container: str) -> dict[str, str]:
@@ -379,6 +450,105 @@ def raw_agent_contract(opening: str, closing: str = "") -> dict[str, str]:
     return files
 
 
+def process_fixture_inventory_problem(
+    document: str,
+    container: str,
+    marker: str,
+) -> str:
+    return (
+        f"{document.removesuffix('.md')} {container} fixture corrupts "
+        f"unrelated inventory {marker!r}"
+    )
+
+
+def process_fixture_control_faults(
+    controls: tuple[ProcessFixtureControl, ...] = PROCESS_FIXTURE_CONTROLS,
+    *,
+    omit_last_control: bool = False,
+) -> dict[str, ProcessFixtureIsolationFault]:
+    faults: dict[str, ProcessFixtureIsolationFault] = {}
+    enrolled = controls[:-1] if omit_last_control else controls
+    for control in enrolled:
+        inventory_problem = process_fixture_inventory_problem(
+            control.document,
+            "fence",
+            control.marker,
+        )
+        missing_problems = [inventory_problem]
+        if control.key in ("build-start-marker", "build-end-marker"):
+            missing_problems.append(
+                "BUILD fence fixture corrupts the canonical transport body"
+            )
+        faults[f"{control.key}-missing"] = ProcessFixtureIsolationFault(
+            control.document,
+            "fence",
+            control.marker,
+            f"[removed {control.key}]",
+            tuple(missing_problems),
+        )
+
+        if control.key in ("build-start-marker", "build-end-marker"):
+            duplicate_before = "\n\n## Fixture continuation"
+            duplicate_after = (
+                f"\n\n{control.marker}\n\n## Fixture continuation"
+            )
+        else:
+            duplicate_before = control.marker
+            duplicate_after = f"{control.marker}\n{control.marker}"
+        faults[f"{control.key}-duplicate"] = ProcessFixtureIsolationFault(
+            control.document,
+            "fence",
+            duplicate_before,
+            duplicate_after,
+            (inventory_problem,),
+        )
+    return faults
+
+
+def process_fixture_isolation_faults() -> dict[
+    str, ProcessFixtureIsolationFault
+]:
+    faults = process_fixture_control_faults()
+    for case in hidden_process_cases():
+        if case.document != "BUILD.md" or not case.preserves_transport_body:
+            continue
+        fault_name = f"build-{case.container}-transport-body"
+        faults[fault_name] = ProcessFixtureIsolationFault(
+            "BUILD.md",
+            case.container,
+            "`parse_report` and `run_suite` raise",
+            "`parse_report` or `run_suite` raise",
+            (
+                f"BUILD {case.container} fixture corrupts "
+                "the canonical transport body",
+            ),
+        )
+    faults["agents-div-boundary"] = ProcessFixtureIsolationFault(
+        "AGENTS.md",
+        "div",
+        f"</div>\n\n{OVERVIEW_HEADING}",
+        f"</div>\n{OVERVIEW_HEADING}",
+        (
+            "AGENTS div fixture fails to terminate raw HTML "
+            "before the Overview control",
+        ),
+    )
+    faults[
+        "ambiguous-process-fixture-mutation-target"
+    ] = ProcessFixtureIsolationFault(
+        "AGENTS.md",
+        "fence",
+        "\n",
+        "\n",
+        (),
+        expects_ambiguous_target=True,
+    )
+    return faults
+
+
+PROCESS_FIXTURE_ISOLATION_FAULTS = process_fixture_isolation_faults()
+
+
 def inject_process_fixture_fault(
     document: str,
     container: str,
@@ -409,57 +579,90 @@ def process_fixture_isolation_problems(
         raise ValueError(f"unknown process fixture isolation fault: {injected_fault}")
 
     problems: list[str] = []
-    expected_agents_inventory = (
-        (CONFINE_HEADING, 1),
-        (CONFINE_SECTION_BODY, 1),
-        (OVERVIEW_HEADING, 1),
-        ("## Fixture continuation", 1),
-    )
-    agents_contract_body = f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
-    for container in hidden_agent_process_wrappers(agents_contract_body):
-        agents = hidden_process_contract("AGENTS.md", container)["AGENTS.md"]
-        agents = inject_process_fixture_fault(
-            "AGENTS.md",
-            container,
-            agents,
+    for case in hidden_process_cases():
+        document = hidden_process_contract(
+            case.document,
+            case.container,
+        )[case.document]
+        document = inject_process_fixture_fault(
+            case.document,
+            case.container,
+            document,
             injected_fault,
         )
-        for marker, expected in expected_agents_inventory:
-            if agents.count(marker) != expected:
+        for control in PROCESS_FIXTURE_CONTROLS:
+            if control.document != case.document:
+                continue
+            if document.count(control.marker) != 1:
                 problems.append(
-                    f"AGENTS {container} fixture corrupts unrelated inventory {marker!r}"
+                    process_fixture_inventory_problem(
+                        case.document,
+                        case.container,
+                        control.marker,
+                    )
                 )
-        if container == "div" and f"</div>\n\n{OVERVIEW_HEADING}" not in agents:
+        if (
+            case.document == "AGENTS.md"
+            and case.container == "div"
+            and f"</div>\n\n{OVERVIEW_HEADING}" not in document
+        ):
             problems.append(
                 "AGENTS div fixture fails to terminate raw HTML "
                 "before the Overview control"
             )
-
-    expected_build_inventory = (
-        ("<!-- mutation-suite-transport-contract:start -->", 1),
-        ("<!-- mutation-suite-transport-contract:end -->", 1),
-        ("## Fixture continuation", 1),
-    )
-    for container, (_, preserves_transport_body) in (
-        hidden_build_process_wrappers().items()
-    ):
-        build = hidden_process_contract("BUILD.md", container)["BUILD.md"]
-        build = inject_process_fixture_fault(
-            "BUILD.md",
-            container,
-            build,
-            injected_fault,
-        )
-        for marker, expected in expected_build_inventory:
-            if build.count(marker) != expected:
-                problems.append(
-                    f"BUILD {container} fixture corrupts unrelated inventory {marker!r}"
-                )
-        if preserves_transport_body and build.count(TRANSPORT_BLOCK) != 1:
+        if (
+            case.document == "BUILD.md"
+            and case.preserves_transport_body
+            and document.count(TRANSPORT_BLOCK) != 1
+        ):
             problems.append(
-                f"BUILD {container} fixture corrupts the canonical transport body"
+                f"BUILD {case.container} fixture corrupts "
+                "the canonical transport body"
             )
     return problems
+
+
+def hidden_process_enrollment_problems(
+    bad_cases: list[tuple[str, dict[str, str], str, str]],
+    *,
+    drop_first: bool = False,
+) -> list[str]:
+    """Require every canonical hidden-process case to reach the executable corpus."""
+    enrolled = list(bad_cases)
+    canonical = hidden_process_bad_cases()
+    if drop_first:
+        enrolled.remove(canonical[0])
+
+    return [
+        f"hidden process case {case.document}/{case.container} is not enrolled "
+        "in BAD_CASES"
+        for case, bad_case in zip(hidden_process_cases(), canonical, strict=True)
+        if bad_case not in enrolled
+    ]
+
+
+def process_fixture_control_enrollment_problems(
+    *,
+    omit_generated_faults: bool = False,
+) -> list[str]:
+    """Prove that adding a control automatically adds both fault polarities."""
+    probe = ProcessFixtureControl(
+        "agents-probe-control",
+        "AGENTS.md",
+        "## Probe control",
+    )
+    generated = process_fixture_control_faults(
+        (*PROCESS_FIXTURE_CONTROLS, probe),
+        omit_last_control=omit_generated_faults,
+    )
+    required = {
+        "agents-probe-control-missing",
+        "agents-probe-control-duplicate",
+    }
+    return [
+        f"process fixture control generator omits {fault}"
+        for fault in sorted(required - set(generated))
+    ]
 
 
 def under(prefix: str, files: dict[str, str]) -> dict[str, str]:
@@ -1275,72 +1478,7 @@ export class S {
         "package.json must route verify:mutations exactly to mutation-probe.py",
         "printing the runner name is not execution of the documented audit command",
     ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("AGENTS.md", "fence"),
-        "AGENTS.md confinement section must defer all quantitative policy",
-        "a fenced Markdown example is not an operative standing rule",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("AGENTS.md", "comment"),
-        "AGENTS.md confinement section must defer all quantitative policy",
-        "a confinement section inside an HTML comment is not operative documentation",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("BUILD.md", "fence"),
-        "BUILD.md misclassifies malformed suite transport",
-        "a fenced transport block is an example rather than the plan's contract",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("BUILD.md", "comment"),
-        "BUILD.md misclassifies malformed suite transport",
-        "nested comment markers cannot move the transport contract from its prefix",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("AGENTS.md", "invalid-fence-close"),
-        "AGENTS.md confinement section must defer all quantitative policy",
-        "a four-space pseudo-close does not end a top-level Markdown fence",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("BUILD.md", "invalid-fence-close"),
-        "BUILD.md misclassifies malformed suite transport",
-        "a pseudo-close four spaces beyond its list container does not end a fence",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("BUILD.md", "indented-code"),
-        "BUILD.md misclassifies malformed suite transport",
-        "list-relative indented code is not an operative transport contract",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("AGENTS.md", "pre"),
-        "AGENTS.md confinement section must defer all quantitative policy",
-        "Markdown inside a raw pre block is not an operative standing rule",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("BUILD.md", "pre"),
-        "BUILD.md misclassifies malformed suite transport",
-        "Markdown inside a raw pre block is not an operative transport contract",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("AGENTS.md", "div"),
-        "AGENTS.md confinement section must defer all quantitative policy",
-        "Markdown inside a generic raw HTML block is not an operative standing rule",
-    ),
-    (
-        "gate-lint.py",
-        hidden_process_contract("BUILD.md", "div"),
-        "BUILD.md misclassifies malformed suite transport",
-        "generic raw HTML cannot own the operative transport contract",
-    ),
+    *hidden_process_bad_cases(),
     (
         "gate-lint.py",
         nested_build_contract("fence"),
@@ -2444,22 +2582,51 @@ def run(
 
 failures = []
 failures.extend(process_fixture_isolation_problems())
+failures.extend(hidden_process_enrollment_problems(BAD_CASES))
+failures.extend(process_fixture_control_enrollment_problems())
+covered_process_fixture_faults = set(PROCESS_FIXTURE_ISOLATION_FAULTS) | {
+    "drop-hidden-process-bad-case",
+    "unenrolled-process-fixture-control",
+}
 for missing_fault in sorted(
-    set(PROCESS_FIXTURE_REQUIRED_FAULTS) - set(PROCESS_FIXTURE_ISOLATION_FAULTS)
+    set(PROCESS_FIXTURE_REQUIRED_FAULTS) - covered_process_fixture_faults
 ):
     failures.append(
         f"process fixture isolation surface lacks required fault {missing_fault}"
     )
 for injected_fault, fault in PROCESS_FIXTURE_ISOLATION_FAULTS.items():
-    observed_problems = process_fixture_isolation_problems(
-        injected_fault=injected_fault
-    )
-    if observed_problems != [fault.expected_problem]:
+    try:
+        observed_problems = process_fixture_isolation_problems(
+            injected_fault=injected_fault
+        )
+    except AssertionError:
+        if not fault.expects_ambiguous_target:
+            failures.append(
+                "process fixture isolation self-test rejected the mutation "
+                f"target for {injected_fault} as ambiguous"
+            )
+        continue
+    if fault.expects_ambiguous_target:
+        failures.append(
+            "process fixture isolation self-test accepted the ambiguous "
+            f"mutation target for {injected_fault}"
+        )
+    elif tuple(observed_problems) != fault.expected_problems:
         failures.append(
             "process fixture isolation self-test attributed injected fault "
-            f"{injected_fault} incorrectly: expected {[fault.expected_problem]!r}, "
+            f"{injected_fault} incorrectly: expected {fault.expected_problems!r}, "
             f"observed {observed_problems!r}"
         )
+if not hidden_process_enrollment_problems(BAD_CASES, drop_first=True):
+    failures.append(
+        "process fixture isolation self-test missed a BAD_CASES enrollment loss"
+    )
+if not process_fixture_control_enrollment_problems(
+    omit_generated_faults=True
+):
+    failures.append(
+        "process fixture isolation self-test missed a newly added control"
+    )
 
 orchestration_inventory = subprocess.run(
     [
