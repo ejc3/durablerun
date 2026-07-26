@@ -130,6 +130,31 @@ PROCESS_FIXTURE_ISOLATION_FAULTS = {
         "'## Fixture continuation'",
     ),
 }
+PROCESS_FIXTURE_REQUIRED_FAULTS = (
+    "agents-confine-heading-missing",
+    "agents-confine-heading-duplicate",
+    "agents-confine-body-missing",
+    "agents-confine-body-duplicate",
+    "agents-overview-heading-missing",
+    "agents-overview-heading-duplicate",
+    "agents-continuation-heading-missing",
+    "agents-continuation-heading-duplicate",
+    "agents-div-boundary",
+    "build-start-marker-missing",
+    "build-start-marker-duplicate",
+    "build-end-marker-missing",
+    "build-end-marker-duplicate",
+    "build-continuation-heading-missing",
+    "build-continuation-heading-duplicate",
+    "build-fence-transport-body",
+    "build-invalid-fence-close-transport-body",
+    "build-comment-transport-body",
+    "build-pre-transport-body",
+    "build-div-transport-body",
+    "ambiguous-process-fixture-mutation-target",
+    "drop-hidden-process-bad-case",
+    "unenrolled-process-fixture-control",
+)
 
 
 def tree(root: Path, files: dict[str, str]) -> Path:
@@ -2419,6 +2444,12 @@ def run(
 
 failures = []
 failures.extend(process_fixture_isolation_problems())
+for missing_fault in sorted(
+    set(PROCESS_FIXTURE_REQUIRED_FAULTS) - set(PROCESS_FIXTURE_ISOLATION_FAULTS)
+):
+    failures.append(
+        f"process fixture isolation surface lacks required fault {missing_fault}"
+    )
 for injected_fault, fault in PROCESS_FIXTURE_ISOLATION_FAULTS.items():
     observed_problems = process_fixture_isolation_problems(
         injected_fault=injected_fault
