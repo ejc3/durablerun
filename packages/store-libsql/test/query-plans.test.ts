@@ -189,9 +189,14 @@ describe('the emit fan-out, which is a WRITE', () => {
   it('is driven by the waits index, not by a scan of runs', async () => {
     const st = await shippedWakeStatement()
     const p = await writePlan(st.sql, st.args as (string | number)[])
-    expect(p, 'mutation-verdict:behavior:emit-index-driver').toContain('waits_event')
-    expect(p).toContain('SEARCH runs USING PRIMARY KEY')
-    expect(p).not.toContain('SCAN runs')
+    expect(
+      [
+        p.includes('waits_event'),
+        p.includes('SEARCH runs USING PRIMARY KEY'),
+        !p.includes('SCAN runs'),
+      ],
+      'mutation-verdict:behavior:emit-index-driver',
+    ).toEqual([true, true, true])
   })
 
   it('degrades to a full scan if the waiter subquery is correlated', async () => {

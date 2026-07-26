@@ -237,14 +237,15 @@ MUTATION_SPECS = [
         "an older emit replayed after a fresh emit moves its seed to a second instant",
     ),
     (
-        # Not correctness: the emit's access path. Removing the driver leaves
-        # the same rows written by a full scan of the largest table in the
-        # engine, which only a plan pinned to the SHIPPED statement can see.
+        # Not correctness: the emit's access path. Correlating the driver is
+        # logically redundant with its outer IN but makes SQLite scan the
+        # largest table in the engine. Only a plan pinned to the SHIPPED
+        # statement can see that regression.
         "emit-index-driver",
         "packages/store-libsql/src/store.ts",
-        "         AND run_id IN (SELECT w.run_id FROM waits w\n"
         "                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')",
-        "         AND ? IS NOT NULL AND ? IS NOT NULL",
+        "                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting'\n"
+        "                          AND w.run_id = runs.run_id)",
         "every emit scans the runs table instead of seeking the waits index",
     ),
     (
@@ -471,10 +472,10 @@ VERDICTS = {
         "mutation-verdict:behavior:emit-wake-one-witness",
     ),
     "emit-replay-preserves-event-instant": ExpectedVerdict(
-        "behavior",
+        "construction",
         "packages/conformance/test/replay-after-the-world-moved.test.ts",
         "a replay after the world moved on does not reuse one emit provenance seed at a later instant",
-        "mutation-verdict:behavior:emit-replay-preserves-event-instant",
+        "mutation-verdict:construction:emit-replay-preserves-event-instant",
     ),
     "emit-index-driver": ExpectedVerdict(
         "behavior",
@@ -483,10 +484,10 @@ VERDICTS = {
         "mutation-verdict:behavior:emit-index-driver",
     ),
     "emit-cleanup-follows-the-wake": ExpectedVerdict(
-        "behavior",
+        "construction",
         "packages/conformance/test/replay-after-the-world-moved.test.ts",
         "emitEvent only wakes runs that are parked on that event keeps the registration of a waiter it did not wake",
-        "mutation-verdict:behavior:emit-cleanup-follows-the-wake",
+        "mutation-verdict:construction:emit-cleanup-follows-the-wake",
     ),
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",

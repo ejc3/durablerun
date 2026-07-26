@@ -796,8 +796,17 @@ not depend on careful reading:
   assertion/message rows; suite counters are not equated with file counts
   because the reporter does not expose that topology. Every status is
   type-checked before classification. Baseline and per-mutation suites invoke
-  `scripts/confine.sh` internally; the source-mutating audit remains the
-  clean-tree pre-push proof.
+  `scripts/confine.sh` internally. The first full clean-tree audit classified
+  28 of 34 mutations as attributable and six as wrong-path; after exact-call
+  construction wrappers, a single marked plan vector with a
+  behavior-preserving mutation, a discriminating A/B wake witness, and
+  explicit require/attribute failure helpers, the final audit classified all
+  **34 of 34 as attributable**. Verdict altitude follows the earliest
+  load-bearing boundary, not the downstream scenario story; a construction
+  wrapper encloses the exact call and exact error. Behavioral mutations
+  preserve unrelated semantics, every multi-part verdict has one marked
+  vector, and inverse promise outcomes use helpers that emit the marker
+  directly rather than relying on framework custom-message propagation.
 - *Duplicate-delivery in the model*: the spec models a retried request per
   labeled action, and the ledger tags each label's duplicate semantics
   ([cas-fenced] / [receipt] / [read] / [setup]), machine-checked — so a

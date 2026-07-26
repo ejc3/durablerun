@@ -3,7 +3,7 @@ import { Rng, SimWorld, seededIdSource } from '@durablerun/harness'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
-import { attributeBehaviorFailure } from './mutation-verdict.js'
+import { attributeExpectedFailure } from './mutation-verdict.js'
 
 const Q = 'q'
 
@@ -274,7 +274,7 @@ describe('transition-layer review regressions (second round)', () => {
       },
     ])
 
-    const result = await attributeBehaviorFailure(
+    const result = await attributeExpectedFailure(
       'mutation-verdict:behavior:spawn-primary-key-guard',
       /UNIQUE constraint failed: tasks\.task_id/,
       () => f.store.spawn(Q, 'job', '{}'), // no idempotency key

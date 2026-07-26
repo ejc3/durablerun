@@ -10,6 +10,7 @@ import {
   unknownCoveredConditionIds,
 } from '../src/poison-matrix.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
+import { attributeExpectedFailure } from './mutation-verdict.js'
 
 describe('poison matrix (write label x invariant-forbidden pre-state, generated)', () => {
   it('covers every invariant and keeps the atomic witness inventory pinned', () => {
@@ -34,10 +35,17 @@ describe('poison matrix (write label x invariant-forbidden pre-state, generated)
           label === 'claim' && witness.id === 'cardinality/two-live-runs'
             ? 'mutation-verdict:behavior:claim-requires-sole-live-run'
             : undefined
-        await expect(
-          runPoisonMatrixCase(makeLibsqlFixture, label, witness),
-          verdict,
-        ).resolves.toMatchObject({
+        const run = () => runPoisonMatrixCase(makeLibsqlFixture, label, witness)
+        if (verdict) {
+          const result = await attributeExpectedFailure(
+            verdict,
+            /^Error: claim\/cardinality\/two-live-runs: .*poisoned live run .* changed without quiescing/,
+            run,
+          )
+          expect(result).toMatchObject({ label, witness: witness.id })
+          return
+        }
+        await expect(run()).resolves.toMatchObject({
           label,
           witness: witness.id,
         })

@@ -6,6 +6,10 @@ mutation verdicts, and a generated corrupt-pre-state fault surface. The new
 poison surface found three production store defects before review. Adversarial
 review found thirty-four gaps in the mechanisms themselves, while
 `pnpm verify` caught one integration defect in the new classifier self-test.
+The first full clean-tree mutation audit then self-caught six attribution
+defects: 28 of 34 mutations reached their exact verdict and six reached a
+wrong path.
+
 The reviewed snapshots were not safe to land: they could leave obsolete waits
 behind, delete a foreign wait through corrupt denormalized ownership, rewrite
 generated provenance or public row identity, certify amplification through
@@ -57,9 +61,17 @@ state could therefore double-launch one task or fail differently by dialect.
 The first claim repair still left an issued launch usable if the second live
 run appeared before activation, so the worker could begin executing precisely
 the task state that claim and receipt had learned to refuse.
+
 The next re-review found that the claim guard's placement was still a proxy:
 an earlier corrupt row was selected by `LIMIT 1` and only then rejected, so a
 later healthy task received no claim and could be starved on every tick.
+
+The six audit findings did not add production transitions, but they invalidated
+six advertised proofs. Construction rejections were mislabeled as behavioral
+evidence, plan and wake tests were not independently discriminating, and
+Vitest's custom messages disappeared on unexpected promise outcomes. A mutation
+surface that reports the right defect through the wrong assertion is not an
+attributable prevention mechanism.
 
 ## Findings
 
@@ -103,6 +115,12 @@ later healthy task received no claim and could be starved on every tick.
 | 36 | Activation did not require the claimed run to remain its task's sole live run; the generated `activate × two-pending-runs` witness was vacuous because its target had never been claimed | After spawn→claim(T), injecting a pending live sibling still let activate return the original payload and set `activated_gen = 1`, so an already-issued worker could execute a task whose corrupt cardinality every later claim/receipt refused | Activation eligibility, poison temporal reachability, and lifecycle conformance | The first sole-live repair named claim and receipt but omitted the issued claim's activation door; the generated witness placed corruption before claim rather than between claim and activation | Activation composes canonical `soleLiveRun('runs')`; a targeted post-claim/pre-activate regression and exact `activate-requires-sole-live-run` mutation pin the temporal placement (rungs 1 and 2) |
 | 37 | The sole-live filter sat outside each pending/sleeping candidate subquery's `ORDER BY … LIMIT` | An earlier due corrupt task consumed `limit: 1`, was rejected only afterward, and permanently starved a later healthy task even though claim returned no work | Claim selection construction, bounded-progress conformance, and the real query-plan surface | A late outer predicate looked equivalent for safety but did not define which rows were allowed to spend the budget; duplicated candidate legs made placement drift expressible, while hand-written plan stand-ins did not prove the shipped CAS | One `candidateEligibility` composition (eligible task + sole live run + wait unambiguity) appears inside both ordered legs before each limit; the existing exact mutation removes that shared predicate once; shared conformance pins progress and libSQL records/pins the shipped CAS's two `runs_poll` legs plus indexed sibling probes (rung 1 for the single representation, rung 2 for placement and behavior) |
 | 38 | Finding 34's counter-coherence repair equated `numFailedTestSuites === 0` with zero failed files | A legitimate top-level failed assertion could have one failed test and failed file but zero failed nested suites, causing the mutation classifier to deny valid behavioral credit | Mutation report parser and reporter-semantics self-test | Vitest suite counters describe nested suites, not files; the repair overfit two unrelated aggregate domains because the fixture shape happened to align them | Suite counters retain their own internal arithmetic, while file status is checked against that file's assertion/message rows and exact test counters; the sixteenth classifier case pins the valid topology (rung 2) |
+| 39 | `emit-replay-preserves-event-instant` expected a behavioral replay failure, but the mutant was structurally rejected during the initial emit | The audit reported wrong-path and the advertised replay verdict described a path that never ran, obscuring the stronger construction guarantee | Mutation verdict registry and exact-call wrapper | The verdict followed the downstream scenario story rather than the earliest load-bearing boundary the mutation crossed | The verdict is construction; `attributeExpectedFailure` wraps only the initial emit and translates only the exact emitted-instant preservation error to its marker (rung 2 attribution over the rung-1 builder guard) |
+| 40 | `emit-index-driver` marked only the first of three plan assertions, while its mutation also changed semantics | An incidental assertion or behavioral change could kill a performance mutant without proving the shipped statement retained the intended access path | Mutation design and libSQL query-plan verdict | Three separate assertions split one verdict, and the counterexample was not behavior-preserving | One marked vector atomically asserts waits-index use, runs primary-key seeks, and no runs scan; the mutation adds logically redundant `run_id` correlation so only the plan changes (rung 2) |
+| 41 | `emit-cleanup-follows-the-wake` expected a behavioral cleanup failure, but changing its fence to `event` was rejected by derived relation/source validation | The audit reported wrong-path and failed to credit the structural mechanism that made the invalid cleanup unconstructable | FencedBatch construction verdict and exact-call wrapper | The expected user-visible cleanup scenario sat below a builder boundary that rejected the mutant first | The verdict is construction and the exact emit call is wrapped for only the derived relation/source mismatch; the healthy behavioral assertions remain independent (rung 2 attribution over the rung-1 relation guard) |
+| 42 | The dedicated `emit-wake-event-correlation` fixture was not discriminating; the pairwise wake surface killed the mutation under another marker | Coverage existed, but the mutation's claimed regression did not prove its own event-correlation property and received only wrong-path evidence | Wake-event regression and exact mutation verdict | The original rows let another wake condition decide the outcome, so a broader generated test—not the named regression—caught the change | The regression splits the legitimate A registration from the disjoint B driver row and carries its own exact marker, making removal of the run-event correlation change that assertion (rung 2) |
+| 43 | Vitest omitted a custom message when the successor-attempt rejection assertion unexpectedly resolved | The intended behavior mutation reached its target, but the audit saw an unmarked framework assertion and classified it wrong-path | Promise-verdict test helper | The test relied on Vitest forwarding a custom message through the inverse promise outcome | `requireExpectedFailure` accepts only the exact healthy rejection, throws the exact marker on unexpected success, and propagates unrelated rejection (rung 2) |
+| 44 | Vitest omitted a custom message when the claim sole-live resolution assertion rejected | The intended poison mutation reached its target, but its raw rejection lacked the attributable marker | Promise-verdict test helper and poison regression | A `.resolves` custom message was treated as an exact failure channel even though Vitest did not preserve it on rejection | `attributeExpectedFailure` converts only the exact claim/cardinality poison error to the marker and propagates every unrelated rejection (rung 2) |
 
 ## Detection ledger
 
@@ -110,17 +128,18 @@ later healthy task received no claim and could be starved on every tick.
 |----------|----------|-------|
 | Generated poison matrix on its first corrupt-state run (findings 1–3) | 3 | **yes** |
 | `pnpm verify` through `lint-selftest` (finding 14) | 1 | **yes** |
+| Full clean-tree mutation audit (findings 39–44) | 6 | **yes** |
 | Initial adversarial implementation review (findings 4–13) | 10 | no |
 | Late adversarial mechanism reviews (findings 15–38) | 24 | no |
 | Existing conformance, fuzz, TLC, invariant, mutation, and lint gates before this round | 0 | — |
 
-Self-catch rate: **4 of 38, or 11%**. The final PR3.6 residual round was **0 of
+Self-catch rate: **10 of 44, or 23%**. The final PR3.6 residual round was **0 of
 51, or 0%**; the preceding PR3.6 provenance round was **7 of 44, or 16%**.
-The poison surface and gate are real movement from the immediately preceding
-zero, but this round remains below the earlier 16% and review still found
-thirty-four of thirty-eight defects—**89%**. Most of those were defects in the
-new prevention machinery, so the headline is still dependence on outside
-review rather than a self-sustaining verification system.
+The poison surface, verify gate, and full mutation audit are real movement:
+this round exceeds the earlier 16% self-catch rate. Review still found
+thirty-four of forty-four defects—**77%**—so outside review remains the majority
+detector, but the final clean-tree gate itself now exposed six flaws that would
+previously have required another reviewer.
 
 ## Recurrence
 
@@ -213,6 +232,15 @@ Sixteen classifier cases, six injected faults, separated classifier/live-
 inventory modes, type-safe report-consistency checks, and internal confinement
 attack those paths.
 
+Findings 39–44 are the next altitude of the same attribution class. A perfect
+report parser cannot recover evidence a test never emits. Findings 39 and 41
+named a downstream behavioral story although construction was the first
+load-bearing boundary. Findings 40 and 42 treated “some assertion kills this
+mutation” as equivalent to the mutation's exact plan or wake verdict. Findings
+43 and 44 trusted framework custom-message propagation for inverse promise
+outcomes. The full audit—not the inventory or classifier self-test—was the
+first mechanism that executed every mutation far enough to expose all six.
+
 Finding 31 is the recurring undocumented-exception class. A narrow atomic emit
 waiver may be correct, but code alone cannot own a protocol exception. DESIGN
 now names its exact condition and structured identity; widening it is therefore
@@ -226,7 +254,8 @@ a spec change rather than an unremarked test edit.
 | Structural `source-keys` selection | 1 inside generated follow-ons | No generated follow-on can widen its distinct logical keys beyond the stamped source selection. The hand-written `wake-runs` statement still uses `{ many: reason }`; a stale wait shaped to satisfy its textual predicate remains the explicit PR3.8 false negative. |
 | Non-mergeable self-source materialization | 1 for the generated SQL shape | No direct target-table subquery can be emitted for a registered self relation. A future dialect can still reject another otherwise portable construct; real-dialect conformance, not this shape, owns that boundary. |
 | Closed per-table generated assignments and shared stamp-name grammar | 1 inside the generated builder | No generated caller can spell a left-hand side outside the contract or emit a stamp suffix outside the shared grammar. Hand-written `followOn()` and direct executor SQL remain adjacent raw surfaces; PR3.9's SQL AST and the poison oracle own them. |
-| Exact mutation verdict attribution, 16 classifier cases, typed report consistency, and internal confinement | 2 | A different causal defect can still make the exact expected test throw the exact expected marker, and a structurally consistent forged report can still lie that Vitest ran the intended code. Suite arithmetic is validated internally but cannot be mapped to file counts without reporter topology. The wrapper also proves only that `scripts/confine.sh` was invoked, not that the cgroup implementation enforces the intended limits. |
+| Exact mutation verdict attribution, 16 classifier cases, 34/34 clean-tree audit, typed report consistency, and internal confinement | 2 | A different causal defect can still make the exact expected test throw the exact expected marker, and the audit attacks only the current 34 registered mutations. A structurally consistent forged report can still lie that Vitest ran the intended code; suite arithmetic cannot be mapped to file counts without reporter topology. The wrapper also proves only that `scripts/confine.sh` was invoked, not that the cgroup implementation enforces the intended limits. |
+| Exact-call construction wrappers, one marked plan vector, split A/B wake witness, and explicit promise-failure helpers | 2 | An unrelated defect can still produce the same exact construction or poison regex. The plan vector proves only its three declared access-path properties, and the A/B fixture proves only the declared event-correlation topology; a new plan or row axis needs its own mutation and witness. |
 | Per-call six-table durable-delta progress floor | 2 | A store call can write and restore the same row before its after-snapshot, or produce an external side effect outside the six tables; both are invisible. Unlike the retired SQL/row-count proxies, CTE DML, SELECT rows, and no-op DML are decided by the durable state property itself. |
 | Structured row keys, finding identities, and frozen before-state authority | 1 for representation; 2 for oracle coverage | Two tuples cannot collide merely because components contain separators. A relationship column omitted from the explicit authority schema, or a new table absent from the six-table snapshot, can still change without this oracle noticing. |
 | Canonical exact-integer comparison and condition-specific numeric severity | 1 for number/bigint identity; 2 for severity | A newly added numeric condition that falls through to the default severity still treats every surviving instance as severity one. Its exact metric needs a meta-test like the deadline-delta and provenance-span attacks. |
@@ -240,8 +269,9 @@ a spec change rather than an unremarked test edit.
 
 ## Fix-induced defects
 
-**Eighteen findings were induced by repairs earlier in this round: 13, 15, 16,
-18, 22, 23, 25, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, and 38.** The portability repair
+**Twenty-four findings were induced by repairs earlier in this round: 13, 15,
+16, 18, 22, 23, 25, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+42, 43, and 44.** The portability repair
 initially accepted ISO strings and unrestricted projections, then compared
 canonical integers by JavaScript representation. Authority and
 finding-identity repairs first flattened tuples. The progress repair moved from
@@ -260,6 +290,10 @@ creating the second red path inside finding 35. Even that expanded repair
 described only claim and receipt, leaving activation of an already-issued claim
 as finding 36's third door. Its candidate guard also sat at a semantically late
 outer boundary until finding 37 moved the shared property before both limits.
+The attribution surface then mislabeled two structural kills, split a plan
+verdict, gave one mutation semantic collateral, retained a nondiscriminating
+fixture, and delegated two exact markers to framework behavior. The full audit
+found those six defects in the new verdict machinery itself.
 
 That count is not discounted because the defects lived briefly or only in test
 machinery. Each repair was a new change and was re-reviewed as new code. The
@@ -268,9 +302,9 @@ than evidence that the first repairs were safe.
 
 ## Evidence
 
-- Red and fix commits are intentionally pending: the requested implementation
-  remains uncommitted. When it lands, preserve the observed red/green split
-  rather than combining these working-tree changes.
+- The audit's six wrong-path results are preserved in a separate red commit.
+  Their attribution fixes and the final 34-of-34 audit evidence land in the
+  paired green commit.
 - The first generated poison run produced four red cells. Three reproduced
   findings 1–3. The fourth was an `expire-lease-now` oracle-boundary case, not
   a fourth store defect: the advisory call had no eligible target, so progress
@@ -327,13 +361,27 @@ than evidence that the first repairs were safe.
   legitimate report with one failed test/file and zero failed nested suites.
   Removing the suite-to-file equivalence made it green while retaining internal
   suite arithmetic, exact test counters, and file-to-assertion/message checks.
+- The first clean-tree source-mutating audit ran all 34 entries and reported
+  **28 attributable, six wrong-path**. Findings 39 and 41 were the two
+  construction rejections; moving `attributeExpectedFailure` to the exact emit
+  call and matching only each builder error gave them exact construction
+  verdicts.
+- Finding 40's three plan checks became one marked vector, and its mutation now
+  adds a logically redundant `run_id` correlation so it changes the access path
+  without changing the selected rows. Finding 42's wake fixture now separates
+  the legitimate A registration from the disjoint B driver row and fails under
+  its own event-correlation marker.
+- Findings 43 and 44 reproduced Vitest's missing custom message on unexpected
+  resolve and rejection. `requireExpectedFailure` now turns only unexpected
+  success into the successor marker; `attributeExpectedFailure` turns only the
+  exact claim/cardinality poison error into the sole-live marker. Both propagate
+  unrelated errors.
 - Current executable inventories are 50 invariant condition IDs, 47 poison
   witnesses crossed with 17 labels (799 generated cells and 801 poison cases
   including two inventory tests), fifteen poison/invariant meta-tests, and
   sixteen classifier cases over 34 live mutations plus six injected faults.
-  The full source-mutating audit requires a clean tree, cannot run over these
-  intentional uncommitted changes, and remains a pre-push obligation after the
-  red/fix commits exist.
+  After the six attribution fixes, the full audit completed **34 of 34
+  attributable**, with no wrong-path result or survivor.
 - Finder verdict: “The residual mechanisms still admitted post-commit proxy
   checks, source-table/key mismatches, colliding row and finding identities,
   vacuous or metadata-only poison progress, after-state authority laundering,
@@ -374,7 +422,10 @@ poisoned subject, a generated pre-state approximated a required temporal
 schedule, an outer eligibility filter approximated pre-limit selection, and
 SQLite's arbitrary multi-row scalar choice approximated a portable singleton.
 One reporter aggregate domain also approximated another domain's hidden
-topology.
+topology. Finally, a scenario's downstream story approximated its earliest
+failure boundary, “some assertion killed the mutant” approximated the exact
+verdict, and a framework custom message approximated a reliable promise-failure
+channel.
 
 The common repair is to move proof toward the source: the contract owns both
 ends of a relation; source-table provenance travels with the fence; the target
@@ -384,12 +435,15 @@ precision loss; legal assignment targets and stamp names come from closed
 contracts; condition IDs name atomic evaluator arms; progress is a durable
 per-call state delta; and mutation credit requires a globally coherent report
 and the exact assertion path, with types checked before classification and only
-reporter-defined relationships compared. Claim candidates, receipts, and activation
-structurally require one live run; due and post-claim/pre-activate regressions
-prove those guards on the corrupt subject, while the single candidate
-composition places eligibility before both bounded legs. Where a structural
-representation is possible it is used. Where only an oracle is possible, that
-oracle receives its own generated false-positive surface.
+reporter-defined relationships compared. Exact-call wrappers name the first
+load-bearing failure, plan properties share one marked vector, mutation subjects
+preserve unrelated behavior, and promise helpers emit markers themselves.
+Claim candidates, receipts, and activation structurally require one live run;
+due and post-claim/pre-activate regressions prove those guards on the corrupt
+subject, while the single candidate composition places eligibility before both
+bounded legs. Where a structural representation is possible it is used. Where
+only an oracle is possible, that oracle receives its own generated
+false-positive surface.
 
 ## Mechanisms
 
@@ -415,7 +469,10 @@ Built in this PR:
 - Thirty-four exact mutation verdicts parsed from structured Vitest output, a
   sixteen-case classifier, typed nine-counter/file/assertion consistency checks,
   six injected false-positive faults, separate classifier/live-inventory
-  modes, and internally confined baseline/mutant suites (rung 2).
+  modes, internally confined baseline/mutant suites, exact-call construction
+  wrappers, one marked emit-plan vector, a split A/B event witness, and explicit
+  require/attribute promise helpers. The full clean-tree audit is 34 of 34
+  attributable (rung 2).
 - One portable invariant evaluator with 50 typed condition IDs under 23 display
   names, structured finding identities, exact safe-number/bigint comparison,
   and fail-closed five-result projection shape (rungs 1 and 3).
@@ -451,10 +508,12 @@ Deferred (recorded in BUILD.md):
 
 A defect omitted from both the invariant evaluator and its 50-condition
 inventory can still ship; a surviving enum literal under an otherwise covered
-condition is the concrete example and PR3.10 owns it. A mutation can also
-receive the expected file/name/marker because the same test failed there for a
-different causal defect. Attribution makes wrong-path failures much harder to
-credit, not logically impossible.
+condition is the concrete example and PR3.10 owns it. The 34-of-34 audit covers
+the registered subjects, not mutations the inventory never declared. A
+mutation can also receive the expected file/name/marker—or the same exact
+construction/poison regex—because a different causal defect failed there.
+Attribution makes wrong-path failures much harder to credit, not logically
+impossible.
 
 The poison oracle compares per-call durable snapshots, so a write that escapes
 authority and is restored within one call, or an external side effect not
@@ -466,8 +525,8 @@ cardinality; they do not replace the separate ownership, queue, and state
 witnesses. The pre-limit construction covers the current pending/sleeping
 candidate legs, but a future leg still needs structural enrollment and a real
 dialect optimizer still needs its own plan suite. The atomic
-emit waiver cannot distinguish another defect that creates
-the exact same condition on another wait under the poisoned run. Finally, `wake-runs`
-still proves current registration by correlated fields rather than immutable
+emit waiver cannot distinguish another defect that creates the exact same
+condition on another wait under the poisoned run. Finally, `wake-runs` still
+proves current registration by correlated fields rather than immutable
 identity. PR3.8 is the sole remaining raw wake follow-on and the structural
 answer to that specific residual.

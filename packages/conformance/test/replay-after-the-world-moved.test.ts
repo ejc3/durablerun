@@ -3,7 +3,7 @@ import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-lib
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
-import { attributeBehaviorFailure } from './mutation-verdict.js'
+import { attributeExpectedFailure, requireExpectedFailure } from './mutation-verdict.js'
 
 /**
  * Replays where TIME PASSED between the original batch and the replay.
@@ -85,7 +85,11 @@ describe('a replay after the world moved on', () => {
     await store.activate(Q, run.runId, run.claimToken, run.claimGen)
     const step = '$await:go'
     await store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, step, 'go', null)
-    await store.emitEvent(Q, 'go', '{"x":1}')
+    await attributeExpectedFailure(
+      'mutation-verdict:construction:emit-replay-preserves-event-instant',
+      /cas 'event' must preserve events\.emitted_at_ms while re-stamping/,
+      () => store.emitEvent(Q, 'go', '{"x":1}'),
+    )
     return { f, rec, spawned, run, step }
   }
 
@@ -123,7 +127,7 @@ describe('a replay after the world moved on', () => {
     const [claimed] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
     expect(claimed?.runId).toBe(successorId)
 
-    await attributeBehaviorFailure(
+    await attributeExpectedFailure(
       'mutation-verdict:behavior:successor-ownership',
       /UNIQUE constraint failed: (?:runs\.run_id|runs\.task_id, runs\.attempt)/,
       () => rec.replay('fail'),
@@ -171,10 +175,7 @@ describe('a replay after the world moved on', () => {
 
     await rec.replay('emit-event')
 
-    expect(
-      await engineInvariantViolations(f.raw),
-      'mutation-verdict:behavior:emit-replay-preserves-event-instant',
-    ).toEqual([])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
 
@@ -304,11 +305,11 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
   })
 
   it('does not deliver event B to a run parked on event A', async () => {
-    // The run is legitimately parked, so the timer-sleep case does not cover
-    // this: it is awaiting 'A', and a stale waiting row for 'B' names it at
-    // the same step. Delivering B here hands user code a payload for an event
-    // it never asked for, and resumes it at a step whose await has not
-    // completed. Only the wake_event match rules it out.
+    // The run is legitimately parked on A and retains that exact registration.
+    // A second corrupt row names it for B at another step. Without the
+    // wake_event match, B's row answers the index-driver probe while A's row
+    // answers the full registered-wait witness: two individually valid facts
+    // combine into a delivery the run never requested.
     const f = await fixture()
     const spawned = await f.store.spawn(Q, 'job', '{}')
     const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
@@ -316,15 +317,13 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:A', 'A', null)
 
-    // The run's own wait is gone and a row for a DIFFERENT event occupies its
-    // step — corrupt state, which rule 6 says must not be amplified. Only the
-    // wake_event match rules it out; the step match cannot, because the step
-    // is exactly the one the run is parked at.
+    // Keep the legitimate A registration and add the disjoint B candidate.
+    // The wake must require the emitted event to be the one the run is parked
+    // on, rather than allowing separate rows to satisfy separate probes.
     await f.raw.batch('t', [
-      { sql: `DELETE FROM waits WHERE run_id = ?`, args: [run.runId] },
       {
         sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
-              VALUES (?, '$await:A', ?, ?, 'B', 'waiting', ?)`,
+              VALUES (?, '$await:B', ?, ?, 'B', 'waiting', ?)`,
         args: [run.runId, Q, spawned.taskId, NOW],
       },
     ])
@@ -538,7 +537,11 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
       { sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`, args: [NOW + 1000, rb.runId] },
     ])
 
-    await f.store.emitEvent(Q, 'go', '{"x":1}')
+    await attributeExpectedFailure(
+      'mutation-verdict:construction:emit-cleanup-follows-the-wake',
+      /derived\('waits-gone'\).*reads 'runs'.*fence 'event' stamps 'events'/,
+      () => f.store.emitEvent(Q, 'go', '{"x":1}'),
+    )
 
     const woken = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [ra.runId])
     expect(woken[0]?.state).toBe('pending')
@@ -760,12 +763,14 @@ describe('a successor id that collides with a historical run of the same task', 
     const { f, spawned, historical, current } = await runningRetry()
     const colliding = collidingStore(f.raw, historical.runId)
 
-    await expect(
-      colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
-        delaySeconds: 0,
-      }),
+    await requireExpectedFailure(
       'mutation-verdict:behavior:successor-attempt-identity',
-    ).rejects.toThrow()
+      /UNIQUE constraint failed: (?:runs\.run_id|runs\.task_id, runs\.attempt)/,
+      () =>
+        colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
+          delaySeconds: 0,
+        }),
+    )
 
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
     expect(task?.state).toBe('running')

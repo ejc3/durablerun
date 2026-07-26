@@ -156,6 +156,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.7 close the provenance residual** — DONE. It began after the final
   PR3.6 residual review recorded 0 of 51 defects found by our machinery; the
   preceding provenance round had recorded 7 of 44 (16%).
+  PR3.7 closes at 10 of 44 findings self-caught (23%) and 34 review-caught
+  (77%); the full mutation audit contributed the final six self-catches.
   Landed: the typed target expression (the primitive generates each
   overwriting follow-on's row selection from the fence whenever its source is
   a table this batch stamped, and `narrow` can only shrink it; `wake-runs` is
@@ -194,6 +196,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     verifier runs a 16-case classifier self-test, with six injected
     false-positive faults maintained by `lint-selftest.py`; both baseline and
     per-mutation suites route themselves through `scripts/confine.sh`.
+    The first full clean-tree audit ran all 34 mutations: 28 were attributable
+    and six were `wrong-path`. Those six exposed two construction failures
+    mislabeled as behavior, a split plan verdict plus a mutation with semantic
+    collateral, a nondiscriminating wake-event fixture, and Vitest dropping
+    custom messages on unexpected resolve/reject. Exact-call construction
+    wrappers, one marked plan vector with a behavior-preserving mutation, a
+    split A/B wake witness, and explicit require/attribute failure helpers made
+    the final audit **34 of 34 attributable**.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 47 atomic witnesses covering all 50
     invariant condition IDs: 799 generated cells, plus two inventory cases.
@@ -204,13 +214,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     tables and permits insertions only through explicit full ownership tuples.
     Progress requires both a semantic healthy win and a durable six-table
     snapshot delta attributable to each store call; CTE DML counts because it
-    changes state,
-    while a SELECT returning rows and a no-op DML statement cannot impersonate
-    progress. The multiple-live-run claim witness is due when invoked, so the
-    exact candidate-CAS mutation proves the corrupt subject reaches claim; a
-    second exact mutation attacks the same-token receipt after a sibling is
-    injected. A post-claim/pre-activate regression injects that sibling after a
-    legitimate claim, and a third exact mutation proves activation refuses it.
+    changes state, while a SELECT returning rows and a no-op DML statement
+    cannot impersonate progress. The multiple-live-run claim witness is due
+    when invoked, so the exact candidate-CAS mutation proves the corrupt
+    subject reaches claim; a second exact mutation attacks the same-token
+    receipt after a sibling is injected. A post-claim/pre-activate regression
+    injects that sibling after a legitimate claim, and a third exact mutation
+    proves activation refuses it.
     All three doors compose the canonical `soleLiveRun` fragment and refuse
     every task with multiple live runs. Claim's one `candidateEligibility`
     composition combines live-task, sole-live-run, and wait-unambiguity guards
