@@ -601,6 +601,15 @@ export class S {
         "a direct fake-now read is a second spelling of the database clock",
     ),
     (
+        "clock-lint.py",
+        {
+            "packages/store-fixture/src/store.ts": "export const harmless = 1\n",
+            "packages/store-fixture/src/nested/clock.sql": "SELECT CURRENT_DATE AS today\n",
+        },
+        "raw wall-clock function in store SQL",
+        "a nested shared SQL file must be audited alongside TypeScript SQL templates",
+    ),
+    (
         "fragment-lint.py",
         store(
             "const SQL = `SELECT 1 FROM runs WHERE state IN ('pending','running')`\n",
@@ -1060,6 +1069,28 @@ export class S {
         ".greptile/rules.md lists deleted-rule.md, which no longer exists",
         "a dangling Greptile index entry must not survive its rule file",
     ),
+    (
+        "gate-lint.py",
+        {
+            **gate(
+                "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+                "&& python3 scripts/lint-selftest.py",
+                ("a-lint.py", "b-lint.py"),
+            ),
+            ".github/workflows/nightly.yml": (
+                "name: nightly\n"
+                "on: workflow_dispatch\n"
+                "jobs:\n"
+                "  proof:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@v4\n"
+                "      - run: pnpm verify\n"
+            ),
+        },
+        "nightly checkout must disable persisted credentials",
+        "a scheduled verification checkout must not retain a write-capable token",
+    ),
 ] + [
     (
         "clock-lint.py",
@@ -1271,14 +1302,51 @@ BAD_INVOCATIONS = [
         "review-attest.sh",
         {
             "aborted.log": (
+                "review-head: fixture-head\n"
                 "review analysis completed\n"
                 "tokens used\n"
                 "stream error: unexpected status 429 Too Many Requests\n"
             ),
         },
-        ("--check-codex-log", "{root}/aborted.log"),
+        ("--check-codex-log", "{root}/aborted.log", "fixture-head"),
         "codex log ENDS IN AN ERROR",
         "a non-prefixed stream error after the marker is an aborted review",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "missing-head.log": (
+                "review analysis completed\n"
+                "tokens used\n"
+                "review verdict: no findings\n"
+            ),
+        },
+        ("--check-codex-log", "{root}/missing-head.log", "fixture-head"),
+        "codex log is not bound to a review head",
+        "a completed-looking artifact without the reviewed commit cannot attest another head",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "wrong-head.log": (
+                "review-head: stale-head\n"
+                "review analysis completed\n"
+                "tokens used\n"
+                "review verdict: no findings\n"
+            ),
+        },
+        ("--check-codex-log", "{root}/wrong-head.log", "fixture-head"),
+        "codex log reviewed stale-head, expected fixture-head",
+        "an artifact for an older commit must not attest the current head",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "body.md": "review-findings: 0\nreviews-abandoned:   \n",
+        },
+        ("--check-pr-body", "{root}/body.md"),
+        "reviews-abandoned requires a non-empty reason",
+        "an empty abandonment trailer must not publish a successful review status",
     ),
     (
         "gate-lint.py",
@@ -1439,12 +1507,13 @@ GOOD_INVOCATIONS = [
         "review-attest.sh",
         {
             "completed.log": (
+                "review-head: fixture-head\n"
                 "review analysis completed\n"
                 "tokens used\n"
                 "review verdict: no findings\n"
             ),
         },
-        ("--check-codex-log", "{root}/completed.log"),
+        ("--check-codex-log", "{root}/completed.log", "fixture-head"),
         "a completed review may print its verdict after the token marker",
     ),
     (
@@ -1546,6 +1615,15 @@ def run(
 
 
 failures = []
+
+# The migration debt hook is itself a bypass: adding a label to the same
+# editable set makes an unfenced batch "classified" without proving any shape.
+# The rung-1 property is that no such category exists at all.
+if "FENCED_DEBT" in (SCRIPTS / "batch-lint.py").read_text():
+    failures.append(
+        "batch-lint.py still exposes editable FENCED_DEBT; an unfenced write "
+        "can re-enter the classified inventory without a structural reason"
+    )
 
 
 def refusal_problem(
