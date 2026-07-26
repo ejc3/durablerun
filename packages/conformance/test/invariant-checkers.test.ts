@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { engineInvariantViolations } from '../src/invariants.js'
+import { engineInvariantFindings, engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 /**
@@ -209,6 +209,71 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
+  it('keeps atomic condition IDs while deduplicating the legacy public violation', async () => {
+    const f = await seeded('atomic-and-public')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('other-task', 'both', 'other-q', '{}', 'r1', 1, ?)`,
+        args: [NOW],
+      },
+    ])
+    expect(
+      (await engineInvariantFindings(f.raw))
+        .filter((finding) => finding.name === 'checkpoint-cross-task')
+        .map((finding) => finding.conditionId),
+    ).toEqual(['checkpoint/queue-mismatch', 'checkpoint/task-mismatch'])
+    expect(
+      (await engineInvariantViolations(f.raw)).filter(
+        (violation) => violation === 'checkpoint-cross-task: other-task/both',
+      ),
+    ).toHaveLength(1)
+    f.close()
+  })
+
+  it('keeps structured finding identities when rendered subjects collide', async () => {
+    const f = await seeded('structured-subject')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('a/b', 'c', 'q', '{}', 'r1', 1, ?)`,
+        args: [NOW],
+      },
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('a', 'b/c', 'q', '{}', 'r1', 1, ?)`,
+        args: [NOW],
+      },
+    ])
+    const collisions = (await engineInvariantFindings(f.raw)).filter(
+      (finding) =>
+        finding.conditionId === 'checkpoint/task-mismatch' && finding.subject === 'a/b/c',
+    )
+    expect(collisions).toHaveLength(2)
+    expect(new Set(collisions.map((finding) => JSON.stringify(finding.subjectIdentity))).size).toBe(
+      2,
+    )
+    f.close()
+  })
+
+  for (const column of ['available_at_ms', 'lease_ms'] as const) {
+    it(`rejects an ISO datetime string in numeric ${column}`, async () => {
+      const f = await seeded(`temporal-string-${column}`)
+      await f.raw.batch('corrupt', [
+        {
+          sql: `UPDATE runs SET ${column} = '2026-07-26T12:34:56.789Z'
+                WHERE run_id = 'r1'`,
+          args: [],
+        },
+      ])
+      expect(await engineInvariantViolations(f.raw)).toContain('temporal-storage-class: runs/r1')
+      f.close()
+    })
+  }
+
   for (const [title, stamp, instant] of [
     ['a stamp without an instant', 'seed:statement', null],
     ['an instant without a stamp', null, NOW],
@@ -228,6 +293,34 @@ describe('invariant checkers fire on constructed corruption', () => {
       f.close()
     })
   }
+
+  it('flags a provenance instant stored outside the integer epoch-ms representation', async () => {
+    const f = await seeded('provenance-instant-type')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks
+              SET fence_stamp = 'seed:statement', fence_at_ms = 'not-an-instant'
+              WHERE task_id = 't1'`,
+        args: [],
+      },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
+    f.close()
+  })
+
+  it('flags a provenance statement name outside the builder grammar', async () => {
+    const f = await seeded('provenance-statement-name')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks
+              SET fence_stamp = 'seed:not a generated name', fence_at_ms = ?
+              WHERE task_id = 't1'`,
+        args: [NOW],
+      },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
+    f.close()
+  })
 
   it('treats the final stamp segment as the statement name', async () => {
     const f = await seeded('opaque-seed-same')

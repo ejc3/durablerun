@@ -153,8 +153,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   (PR3.7, PR3.2, PR4.1). A deferral parked under a DONE heading is a silent
   drop, because DONE is the section a reader skips.
 
-- **PR3.7 close the provenance residual** — MOSTLY DONE in PR3.6 after the
-  detection ledger showed the automated machinery had found 0 of 38 defects.
+- **PR3.7 close the provenance residual** — DONE. It began after the final
+  PR3.6 residual review recorded 0 of 51 defects found by our machinery; the
+  preceding provenance round had recorded 7 of 44 (16%).
   Landed: the typed target expression (the primitive generates each
   overwriting follow-on's row selection from the fence whenever its source is
   a table this batch stamped, and `narrow` can only shrink it; `wake-runs` is
@@ -169,39 +170,94 @@ these three things; nothing else in the system does I/O, time, or randomness.
   invariant found two fixtures whose reused seeds survived at different
   instants, but it is not an issuance-uniqueness assertion: same-instant reuse,
   zero-row borrowing of old evidence, and reuse after overwrite require the
-  source-level mechanism. Remaining:
-  - **A bound on many-row follow-ons.** `{ many: reason }` costs a sentence and
-    bounds nothing, so amplification is unlimited wherever the target set is
-    wider than intended. The generated selection now makes the bound derivable
-    — a follow-on cannot touch more distinct keys than its source stamped — so
-    this is a runtime assertion, not a design problem.
-  - **Typed source-to-target key pairing in `FencedBatch.derived()`.** The
-    generator still accepts `key: 'run_id'` with `column: 'task_id'`; that
-    compiles, passes every fence check, and selects nothing. Derive both names
-    from a contract-owned table relation, or reject the mismatch at
-    construction and in the dialect-neutral conformance surface, so a caller
-    cannot independently spell two halves of one join.
-  - **Attributable mutation catches in `scripts/mutation-probe.py`.** A
-    mutation that changes bind arity can be reported as caught by compilation
-    without exercising the guard it claims to delete. Give every entry an
-    expected behavioral verdict (or an explicit construction verdict) and
-    make the probe reject wrong-path failures; the probe itself is the checker
-    that must distinguish a behavioral catch from an incidental compile
-    failure.
-  - **A generated corrupt-pre-state ("poison") fault surface** driving every
-    write label against each invariant-forbidden pre-state.
-  - **emitEvent's `wake-runs` is the one follow-on that cannot be generated**,
-    because it selects from `waits` — rows an earlier await registered, which
-    the batch never stamped — and uses the event fence only as a gate. It keeps
-    the hand-written WHERE and the text checks that guard it, documented in
-    place. Closing it needs a second escape shape, not more scanning. It is now
-    the ONLY such statement: the cleanup that used to select waits by event
-    name is generated from the runs the emit woke. What guards it meanwhile is
-    a generated surface (`wake-witness-surface.test.ts`) comparing the engine
-    against a row-at-a-time statement of what a legitimate registration is,
-    across every corruption of a wait row in ones and pairs, both timeout
-    arms, both task-liveness arms, and every shape of park — 6,912 cases.
-    The gap that remains after all of it is owned by PR3.8.
+  source-level mechanism.
+  The residuals and the machinery required to close them landed here:
+  - **Many-row bounds and typed key pairing are one structural property.**
+    `FencedBatch.derived()` now accepts one of five frozen contract relations,
+    not independently spellable table and key halves; construction proves the
+    named fence stamped that relation's source table, and `seal()` accepts only
+    an exact self-table/self-key relation. `rows: 'source-keys'` then means the
+    distinct target keys are generated as a subset of the stamped source keys.
+    It is not a post-commit count alarm: several physical waits may legitimately
+    share one run key, and an alarm after commit cannot prevent amplification.
+    Self-source updates use a non-mergeable `DISTINCT` derived table so the
+    shared generated shape is legal on MySQL too. Generated UPDATE assignment
+    left-hand sides also come from a closed per-table contract: callers supply
+    scalar right-hand sides only and cannot name provenance columns through
+    duplicate/quoted assignments or mutate public primary identity such as
+    `runs.run_id`.
+  - **Attributable mutation catches.** All 34 live mutations carry an exact
+    behavioral or construction verdict: test file, full test name, and marker.
+    Structured Vitest output makes a green survivor, bind/compile error,
+    different failing assertion, malformed report, suite error, or
+    process/report disagreement a wrong-path result rather than credit. The
+    verifier runs a 16-case classifier self-test, with six injected
+    false-positive faults maintained by `lint-selftest.py`; both baseline and
+    per-mutation suites route themselves through `scripts/confine.sh`.
+  - **A generated corrupt-pre-state ("poison") fault surface.** The 17
+    classified write labels cross 47 atomic witnesses covering all 50
+    invariant condition IDs: 799 generated cells, plus two inventory cases.
+    Every injectable witness invokes its label; a strict dialect may instead
+    return `structurally-rejected`, the stronger proof that the forbidden
+    pre-state is unwritable. Each invoked cell freezes structured tuple keys
+    for a protected before-population across all six protocol/bookkeeping
+    tables and permits insertions only through explicit full ownership tuples.
+    Progress requires both a semantic healthy win and a durable six-table
+    snapshot delta attributable to each store call; CTE DML counts because it
+    changes state,
+    while a SELECT returning rows and a no-op DML statement cannot impersonate
+    progress. The multiple-live-run claim witness is due when invoked, so the
+    exact candidate-CAS mutation proves the corrupt subject reaches claim; a
+    second exact mutation attacks the same-token receipt after a sibling is
+    injected. A post-claim/pre-activate regression injects that sibling after a
+    legitimate claim, and a third exact mutation proves activation refuses it.
+    All three doors compose the canonical `soleLiveRun` fragment and refuse
+    every task with multiple live runs. Claim's one `candidateEligibility`
+    composition combines live-task, sole-live-run, and wait-unambiguity guards
+    inside both pending and sleeping ordered legs before their limits, so a
+    corrupt earlier row cannot spend the claim budget and starve healthy work.
+    Shared conformance pins the bounded-progress behavior; libSQL query-plan
+    coverage records the shipped CAS and pins both index-backed legs and their
+    sibling probes. The task-book projection uses a singleton aggregate so a
+    guard regression has one portable outcome rather than SQLite silently
+    choosing a row that PostgreSQL/MySQL reject.
+    Fifteen adversarial oracle meta-tests maintain exact result vectors,
+    authority, progress, canonical number/bigint equality, structured finding
+    identity, and numeric worsening—including deadline deltas and
+    provenance-instant spans. Emit's atomic firing exception is one condition
+    ID on the exact structured poisoned-run component, never a display-name
+    waiver. The surface found three store bugs
+    before review: both suspension APIs left an obsolete event registration
+    behind when replacing it with a timer, and cancellation trusted the
+    denormalized `waits.task_id` instead of deleting through the runs its own
+    CAS had cancelled. The fixes share one suspension cleanup chokepoint and
+    make cancelled run IDs the authority.
+  - **Portable, atomic invariant evidence.** The invariant library has one
+    typed inventory of 50 semantic conditions under 23 display names, evaluates
+    explicit dialect-neutral table projections in TypeScript, and rejects a
+    short, long, or malformed executor result vector instead of treating a
+    missing table as empty. Row and finding identity are structured tuples,
+    never delimiter-joined display strings. Exact integers returned as safe
+    numbers or bigint compare canonically; strings remain storage corruption,
+    including provenance instants. A shared statement-name grammar is used by
+    both the builder and persisted-stamp evaluator. The fixture-level
+    `injectStorageCorruption` seam returns `injected` on permissive stores or
+    `structurally-rejected` on strict native types, so all dialects run the
+    identical witness inventory without encoding SQLite's dynamic typing.
+
+  The sole structural exception is **emitEvent's `wake-runs`**, the one
+  follow-on that cannot be generated, because it selects from `waits` — rows an
+  earlier await registered, which the batch never stamped — and uses the event
+  fence only as a gate. It keeps the hand-written WHERE and the text checks that
+  guard it, documented in place. Closing it needs a second escape shape, not
+  more scanning. It is now the ONLY such statement: the cleanup that used to
+  select waits by event name is generated from the runs the emit woke. What
+  guards it meanwhile is a generated surface
+  (`wake-witness-surface.test.ts`) comparing the engine against a row-at-a-time
+  statement of what a legitimate registration is, across every corruption of a
+  wait row in ones and pairs, both timeout arms, both task-liveness arms, and
+  every shape of park — 6,912 cases.
+  The gap that remains after all of it is owned by PR3.8.
 
 - **PR3.8 active-wait identity** (SPEC-FIRST). Everything above makes a wait row
   hard to misuse; none of it lets one PROVE it is current. Emit infers that
@@ -255,8 +311,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   types: this makes it MORE language-neutral, not less. `.compile()` yields the
   exact per-dialect SQL, so the contract artifact becomes a generated corpus of
   every labelled statement in every dialect, derived rather than hand-kept.
-  Its own PR: it rewrites the SQL of thirteen operations, and this branch has
-  already produced eight fix-induced defects.
+  Its own PR: it rewrites the SQL of thirteen operations, and the provenance
+  branches have repeatedly produced fix-induced defects.
+
+- **PR3.10 condition-mutation ratchet**. PR3.7's 50 condition IDs make every
+  currently declared boolean/null/type arm independently witnessable; they do
+  not prove the declaration itself is complete. One condition can still group
+  semantic alternatives — for example the `failed` and `cancelled` members of
+  a terminal-state set — and a witness for one member does not kill deletion
+  of the other. Generate one red mutation per claimed branch and enum literal,
+  and require every mutation to resolve to that condition's attributable
+  verdict. Condition-ID coverage without this attack is still a proxy for the
+  property.
 
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation

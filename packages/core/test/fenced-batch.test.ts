@@ -4,13 +4,13 @@ import {
   FENCE_SET,
   FENCE_VALS,
   FencedBatch,
-  fenceSetAt,
   NOW,
+  STAMP,
   type SqlBatchMode,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
-  STAMP,
+  fenceSetAt,
 } from '../src/index.js'
 
 /**
@@ -31,6 +31,34 @@ function batch(label = 'b'): FencedBatch {
 /** A CAS that satisfies every check, so tests can isolate one at a time. */
 function withCas(b: FencedBatch = batch()): FencedBatch {
   return b.cas('win', 'runs', `UPDATE runs SET state = 'x', ${FENCE_SET} WHERE run_id = ?`, ['r'])
+}
+
+/**
+ * Emit a mutation verdict only when the intended construction rejection is
+ * absent. An unrelated construction error is re-thrown without the marker.
+ */
+function missingConstructionGuard(marker: string, expected: RegExp, action: () => void): void {
+  try {
+    action()
+  } catch (error) {
+    expect(String(error)).toMatch(expected)
+    return
+  }
+  throw new Error(marker)
+}
+
+/** Normal construction succeeds; only the mutant's exact rejection is attributed. */
+function unexpectedConstructionGuard(
+  marker: string,
+  mutantError: RegExp,
+  action: () => void,
+): void {
+  try {
+    action()
+  } catch (error) {
+    if (mutantError.test(String(error))) throw new Error(marker)
+    throw error
+  }
 }
 
 class FakeDb implements SqlExecutor {
@@ -105,16 +133,19 @@ describe('a CAS must write its own provenance', () => {
     // batch touched them last, so the next batch to fence on that value acts
     // on rows it did not write.
     const b = withCas()
-    expect(() =>
-      b.followOn(
-        'x',
-        'tasks',
-        `UPDATE tasks SET state = 'pending'
+    missingConstructionGuard(
+      'mutation-verdict:construction:followon-provenance-check',
+      /does not stamp it/,
+      () =>
+        b.followOn(
+          'x',
+          'tasks',
+          `UPDATE tasks SET state = 'pending'
          WHERE task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
-        [],
-        'one',
-      ),
-    ).toThrow(/does not stamp it/)
+          [],
+          'one',
+        ),
+    )
   })
 
   it('rejects a follow-on INSERT into a fenced table that omits the columns', () => {
@@ -191,10 +222,9 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     for (const [token, message] of cases) {
       const b = withCas()
       b.followOn('plain', `DELETE FROM waits WHERE fence_stamp = ${b.fence('win')}`, [], 'one')
-      expect(
-        () => b.followOn('x', `DELETE FROM waits WHERE fence_stamp = ${token}`, [], 'one'),
-        token,
-      ).toThrow(message)
+      missingConstructionGuard('mutation-verdict:construction:raw-fence-token-check', message, () =>
+        b.followOn('x', `DELETE FROM waits WHERE fence_stamp = ${token}`, [], 'one'),
+      )
     }
   })
 
@@ -212,11 +242,85 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     expect(() => b.fence('mirror')).not.toThrow()
   })
 
+  it('accepts a generated UPDATE as a fence source', () => {
+    const b = withCas()
+    b.derived('mirror', {
+      relation: 'runs-to-tasks',
+      fence: 'win',
+      set: { state: `'pending'` },
+      rows: 'one',
+    })
+    unexpectedConstructionGuard(
+      'mutation-verdict:construction:generated-update-fence-source',
+      /writes no stamp/,
+      () => b.fence('mirror'),
+    )
+  })
+
+  it('does not let a generated UPDATE caller overwrite generated provenance', () => {
+    const b = withCas()
+    missingConstructionGuard(
+      'mutation-verdict:construction:generated-set-provenance',
+      /caller set controls provenance/,
+      () =>
+        b.derived('mirror', {
+          relation: 'runs-to-tasks',
+          fence: 'win',
+          set: { state: `'pending'`, '[fence_stamp]': `'forged'` } as never,
+          rows: 'one',
+        }),
+    )
+
+    expect(() =>
+      withCas().derived('rhs-escape', {
+        relation: 'runs-to-tasks',
+        fence: 'win',
+        set: { state: `'pending', [fence_stamp] = 'forged'` },
+        rows: 'one',
+      }),
+    ).toThrow(/escapes its generated assignment/)
+
+    expect(() =>
+      withCas().derived('mysql-comment-escape', {
+        relation: 'runs-to-tasks',
+        fence: 'win',
+        set: { state: `'pending' # provenance would be commented out` },
+        rows: 'one',
+      }),
+    ).toThrow(/contains a SQL comment/)
+  })
+
+  it('keeps primary identity out of the public generated assignment surface', () => {
+    const withTaskCas = () =>
+      batch().cas('win', 'tasks', `UPDATE tasks SET state = 'x', ${FENCE_SET} WHERE task_id = ?`, [
+        't',
+      ])
+    const typecheckPrimaryKey = () =>
+      withTaskCas().derived('does-not-compile', {
+        relation: 'tasks-to-runs',
+        fence: 'win',
+        set: {
+          // @ts-expect-error identity is private to exact self-relation sealing
+          run_id: `'replacement'`,
+        },
+        rows: 'one',
+      })
+    void typecheckPrimaryKey
+
+    expect(() =>
+      withTaskCas().derived('forged-primary-key', {
+        relation: 'tasks-to-runs',
+        fence: 'win',
+        set: { run_id: `'replacement'` } as never,
+        rows: 'one',
+      }),
+    ).toThrow(/column 'run_id' is not writable/)
+  })
+
   it('seals an intermediate fence with a fresh stamp at the source instant', async () => {
     const b = withCas()
     b.seal('finished', {
-      target: 'runs',
-      key: 'run_id',
+      relation: 'runs-to-runs',
       fence: 'win',
       where: 'f.run_id = ?',
       whereArgs: ['r'],
@@ -234,48 +338,159 @@ describe('fence() names a statement, and the primitive supplies the value', () =
   it('rejects a later consumer of a sealed intermediate fence', () => {
     const b = withCas()
     b.seal('finished', {
-      target: 'runs',
-      key: 'run_id',
+      relation: 'runs-to-runs',
       fence: 'win',
       rows: 'one',
     })
 
+    missingConstructionGuard(
+      'mutation-verdict:construction:sealed-source-reuse',
+      /fence 'win' was already sealed/,
+      () =>
+        b.derived('too-late', {
+          relation: 'runs-to-tasks',
+          fence: 'win',
+          set: { state: `'pending'` },
+          rows: 'one',
+        }),
+    )
+  })
+
+  it('rejects a forged relation id at runtime and at the type boundary', () => {
+    const b = withCas()
     expect(() =>
-      b.derived('too-late', {
-        target: 'tasks',
-        key: 'task_id',
-        from: 'runs',
-        column: 'task_id',
+      b.derived('wrong-pair', {
+        relation: 'runs.task_id-to-runs.run_id' as never,
         fence: 'win',
-        set: `state = 'pending'`,
+        set: { state: `'pending'` },
         rows: 'one',
       }),
-    ).toThrow(/fence 'win' was already sealed/)
+    ).toThrow(/unknown fence relation/)
+
+    const typecheckInvalidRelation = () =>
+      b.derived('does-not-compile', {
+        // @ts-expect-error source and target identifiers come from this closed union
+        relation: 'runs.task_id-to-runs.run_id',
+        fence: 'win',
+        set: { state: `'pending'` },
+        rows: 'one',
+      })
+    void typecheckInvalidRelation
+  })
+
+  it('rejects a relation that reads from a table other than the fence source', () => {
+    const b = withCas()
+    missingConstructionGuard(
+      'mutation-verdict:construction:derived-source-table',
+      /reads 'waits', but fence 'win' stamps 'runs'/,
+      () =>
+        b.derived('wrong-source', {
+          relation: 'waits-to-runs',
+          fence: 'win',
+          set: { state: `'pending'` },
+          rows: 'one',
+        }),
+    )
+
+    b.derived('mirror', {
+      relation: 'runs-to-tasks',
+      fence: 'win',
+      set: { state: `'pending'` },
+      rows: 'one',
+    })
+    expect(() =>
+      b.derived('wrong-follow-on-source', {
+        relation: 'runs-to-waits',
+        fence: 'mirror',
+        rows: 'one',
+      }),
+    ).toThrow(/reads 'runs', but fence 'mirror' stamps 'tasks'/)
+  })
+
+  it('restricts sealing to relations that preserve both source table and key', () => {
+    const b = withCas()
+    const typecheckNonSelfRelation = () =>
+      b.seal('does-not-compile', {
+        // @ts-expect-error a seal must overwrite the exact source relation
+        relation: 'runs-to-tasks',
+        fence: 'win',
+        rows: 'one',
+      })
+    void typecheckNonSelfRelation
+
+    const forged = withCas()
+    const forgedRuntime = forged as unknown as {
+      relation: () => {
+        target: 'runs'
+        key: 'task_id'
+        from: 'runs'
+        column: 'run_id'
+      }
+    }
+    forgedRuntime.relation = () => ({
+      target: 'runs',
+      key: 'task_id',
+      from: 'runs',
+      column: 'run_id',
+    })
+    missingConstructionGuard(
+      'mutation-verdict:construction:seal-source-key',
+      /does not target its own source key/,
+      () =>
+        forged.seal('wrong-key', {
+          relation: 'runs-to-runs',
+          fence: 'win',
+          rows: 'one',
+        }),
+    )
+  })
+
+  it('materializes self-source reads so MySQL may update the source table', async () => {
+    const b = withCas()
+    b.seal('finished', {
+      relation: 'runs-to-runs',
+      fence: 'win',
+      rows: 'one',
+    })
+
+    const db = new FakeDb()
+    await b.run(db)
+    const update = db.calls[0]?.statements[1]?.sql ?? ''
+    expect(update, 'mutation-verdict:construction:self-source-selection').toMatch(
+      /IN \(SELECT source_key FROM \(\s*SELECT DISTINCT f\.run_id AS source_key FROM runs f/,
+    )
+    expect(update, 'mutation-verdict:construction:self-source-instant').toMatch(
+      /SELECT MIN\(source_fence_at_ms\) FROM \(\s*SELECT DISTINCT f\.fence_at_ms AS source_fence_at_ms FROM runs f/,
+    )
+    expect(update).toContain(') AS fenced_source')
+    expect(update).toContain(') AS fenced_source_instant')
   })
 
   it('reduces a many-row provenance source to one portable scalar', async () => {
     const b = withCas()
     b.derived('spread', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'win',
-      set: `state = 'pending'`,
-      rows: { many: 'one task per stamped run' },
+      set: { state: `'pending'` },
+      rows: 'source-keys',
     })
 
     const db = new FakeDb([1, 2])
     await b.run(db)
-    expect(db.calls[0]?.statements[1]?.sql).toContain('SELECT MIN(f.fence_at_ms)')
+    const update = db.calls[0]?.statements.find((statement) =>
+      statement.sql.startsWith('UPDATE tasks'),
+    )
+    expect(update?.sql).toContain('SELECT MIN(f.fence_at_ms)')
   })
 })
 
 describe('a follow-on must filter on a fence, positively, in the WHERE side', () => {
   it('rejects a follow-on with no fence at all', () => {
-    expect(() =>
-      withCas().followOn('x', `DELETE FROM waits WHERE run_id = ?`, ['r'], 'one'),
-    ).toThrow(/no positive fence/)
+    missingConstructionGuard(
+      'mutation-verdict:construction:positive-fence-required',
+      /no positive fence/,
+      () => withCas().followOn('x', `DELETE FROM waits WHERE run_id = ?`, ['r'], 'one'),
+    )
   })
 
   it('rejects a fence that appears ONLY in the SET clause', () => {
@@ -326,15 +541,18 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
 
   it('rejects a top-level OR but accepts alternation inside a fenced conjunct', () => {
     const exposed = withCas()
-    expect(() =>
-      exposed.followOn(
-        'x',
-        `DELETE FROM waits
+    missingConstructionGuard(
+      'mutation-verdict:construction:top-level-or-reach',
+      /OR at the top level/,
+      () =>
+        exposed.followOn(
+          'x',
+          `DELETE FROM waits
          WHERE fence_stamp = ${exposed.fence('win')} OR run_id = ?`,
-        ['r'],
-        'one',
-      ),
-    ).toThrow(/OR at the top level/)
+          ['r'],
+          'one',
+        ),
+    )
 
     const nested = withCas()
     expect(() =>
@@ -379,14 +597,17 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
 describe('only a CAS may read the clock', () => {
   it('rejects $NOW$ in a follow-on', () => {
     const b = withCas()
-    expect(() =>
-      b.followOn(
-        'x',
-        `UPDATE runs SET available_at_ms = ${NOW} WHERE fence_stamp = ${b.fence('win')}`,
-        [],
-        'one',
-      ),
-    ).toThrow(/reads the clock/)
+    missingConstructionGuard(
+      'mutation-verdict:construction:clock-ban-in-followon',
+      /reads the clock/,
+      () =>
+        b.followOn(
+          'x',
+          `UPDATE runs SET available_at_ms = ${NOW} WHERE fence_stamp = ${b.fence('win')}`,
+          [],
+          'one',
+        ),
+    )
   })
 
   it('rejects $NOW$ in a comparison, not just an assignment', () => {

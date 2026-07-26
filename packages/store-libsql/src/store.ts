@@ -2,22 +2,16 @@ import {
   type Buggify,
   type Checkpoint,
   type ClaimedRun,
-  durationToMs,
   FENCE_COLS,
   FENCE_SET,
   FENCE_VALS,
   FencedBatch,
-  fenceSetAt,
   INFRA_BACKOFF_SECONDS,
   INFRA_RETRY_CAP,
-  LeaseLostError,
-  NOW,
-  requireEpochMs,
-  requirePositiveInt,
   type IdSource,
+  LeaseLostError,
   type LeaseState,
-  neverBuggify,
-  normalizeRetryStrategy,
+  NOW,
   REASON_CANCELLED,
   REASON_CLAIM_TIMEOUT,
   REASON_INFRA_CAP,
@@ -26,23 +20,30 @@ import {
   RELAUNCH_BACKOFF_MAX_SECONDS,
   RELAUNCH_CAP,
   type RetryStrategy,
+  STAMP,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
   type SqlExecutor,
   type SqlRow,
-  STAMP,
   type SweptRun,
   type TaskResult,
+  durationToMs,
+  fenceSetAt,
+  neverBuggify,
+  normalizeRetryStrategy,
+  requireEpochMs,
+  requirePositiveInt,
 } from '@durablerun/core'
 import {
+  LIVE,
   cancelDue,
   eligibleTask,
   fenceFrom,
   fenced,
   fencedAt,
-  LIVE,
   registeredWait,
+  soleLiveRun,
   successorOwned,
 } from './fragments.js'
 import { NOW_MS } from './time.js'
@@ -94,15 +95,14 @@ const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
  */
 function taskMirrorsRun(b: FencedBatch, runId: string, after: string): void {
   b.derived('task-mirror', {
-    target: 'tasks',
-    key: 'task_id',
-    from: 'runs',
-    column: 'task_id',
+    relation: 'runs-to-tasks',
     fence: after,
     where: 'f.run_id = ?',
     whereArgs: [runId],
-    set: `state = (SELECT f.state FROM runs f
-                   WHERE f.run_id = ? AND f.fence_stamp = ${b.fence(after)})`,
+    set: {
+      state: `(SELECT f.state FROM runs f
+               WHERE f.run_id = ? AND f.fence_stamp = ${b.fence(after)})`,
+    },
     setArgs: [runId],
     narrow: `state IN ${LIVE}`,
     rows: 'one',
@@ -117,15 +117,22 @@ function taskMirrorsRun(b: FencedBatch, runId: string, after: string): void {
  */
 function waitsGone(b: FencedBatch, runId: string, after: string): void {
   b.derived('waits-gone', {
-    target: 'waits',
-    key: 'run_id',
-    from: 'runs',
-    column: 'run_id',
+    relation: 'runs-to-waits',
     fence: after,
     where: 'f.run_id = ?',
     whereArgs: [runId],
-    rows: { many: 'a run may hold several waits' },
+    rows: 'source-keys',
   })
+}
+
+/**
+ * The two suspension APIs share one post-transition shape. Keeping the task
+ * mirror and wait reaping inseparable prevents a timer/deferral path from
+ * clearing the run's wake fields while leaving an older registration alive.
+ */
+function finishSuspension(b: FencedBatch, runId: string): void {
+  taskMirrorsRun(b, runId, 'suspend')
+  waitsGone(b, runId, 'suspend')
 }
 
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
@@ -337,17 +344,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // must drain via the successor-tick chain, never assume a full batch.
     const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
     const claimedWait = registeredWait('runs')
-    const candidateWait = registeredWait('cr')
+    const candidateWait = registeredWait('r')
+    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering
+    // the merged shortlist lets an earlier corrupt/ineligible run consume the
+    // whole budget and permanently starve later healthy work.
+    const candidateEligibility = `${eligibleTask('t', NOW)}
+               AND ${soleLiveRun('r')}
+               AND (r.wake_step IS NOT NULL OR ${candidateWait.unambiguous})`
     const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS })
     // Due runs of live tasks → running, holding the caller's lease token AND
     // this batch's provenance. The two are now different things, which is the
     // point: the token survives the batch by contract (the worker keeps
     // working), so it cannot tell one delivery of a claim from another. The
-    // candidate subselect is unchanged — a bounded per-state UNION so each leg
-    // is an ordered covering-index scan of at most K rows rather than a temp
-    // b-tree over the backlog, a shape the query-plan suite pins. The
-    // generation bump is safe here because the CAS's own guard consumes the
-    // pre-state.
+    // candidate subselect remains a bounded per-state UNION: after eligibility
+    // each leg is an ordered index scan of at most K rows rather than a temp
+    // b-tree over the backlog, a shape the query-plan suite pins. The generation
+    // bump is safe here because the CAS's own guard consumes the pre-state.
     b.casMany(
       'claim',
       'runs',
@@ -365,22 +377,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          SELECT c.run_id FROM (
            SELECT * FROM (
              SELECT r.run_id, r.available_at_ms FROM runs r
+             JOIN tasks t ON t.task_id = r.task_id
              WHERE r.queue = ? AND r.state = 'pending'
                AND r.available_at_ms IS NOT NULL AND r.available_at_ms <= ${NOW}
+               AND ${candidateEligibility}
              ORDER BY r.available_at_ms, r.run_id LIMIT ?
            )
            UNION ALL
            SELECT * FROM (
              SELECT r.run_id, r.available_at_ms FROM runs r
+             JOIN tasks t ON t.task_id = r.task_id
              WHERE r.queue = ? AND r.state = 'sleeping'
                AND r.available_at_ms IS NOT NULL AND r.available_at_ms <= ${NOW}
+               AND ${candidateEligibility}
              ORDER BY r.available_at_ms, r.run_id LIMIT ?
            )
          ) c
-         JOIN runs cr ON cr.run_id = c.run_id
-         JOIN tasks t ON t.task_id = cr.task_id
-         WHERE ${eligibleTask('t', NOW)}
-           AND (cr.wake_step IS NOT NULL OR ${candidateWait.unambiguous})
          ORDER BY c.available_at_ms, c.run_id
          LIMIT ?
        )
@@ -404,19 +416,23 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
     b.derived('task-book', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'claim',
       where: `f.queue = ? AND f.state = 'running'`,
       whereArgs: [queue],
-      set: `state = 'running',
-         last_attempt_run = (SELECT f.run_id FROM runs f
-                             WHERE f.task_id = tasks.task_id
-                               AND f.fence_stamp = ${b.fence('claim')})`,
+      set: {
+        state: `'running'`,
+        // The eligibility guard makes this exactly one. Keep the expression
+        // scalar even under a guard regression so every dialect exposes that
+        // regression as the same poisoned-state change instead of SQLite
+        // choosing a row while PostgreSQL/MySQL abort the batch.
+        last_attempt_run: `(SELECT MIN(f.run_id) FROM runs f
+                            WHERE f.task_id = tasks.task_id
+                              AND f.fence_stamp = ${b.fence('claim')}
+                            HAVING COUNT(*) = 1)`,
+      },
       narrow: `state IN ${LIVE}`,
-      rows: { many: 'one task per claimed run' },
+      rows: 'source-keys',
     })
     // A timed-out waiter's claim consumes its wait row, so a later emit cannot
     // resurrect a timed-out wait (§3.4 rule 2, timeout branch). Both halves
@@ -428,16 +444,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // this batch stamped, and compares against the instant that batch
     // recorded.
     b.derived('waits-timeout', {
-      target: 'waits',
-      key: 'run_id',
-      from: 'runs',
-      column: 'run_id',
+      relation: 'runs-to-waits',
       fence: 'claim',
       where: `f.queue = ? AND f.state = 'running'`,
       whereArgs: [queue],
       narrow: `status = 'waiting' AND timeout_at_ms IS NOT NULL
             AND timeout_at_ms <= ${fencedAt('runs', `f.run_id = waits.run_id`, b.fence('claim'))}`,
-      rows: { many: 'a run may hold several timed waits' },
+      rows: 'source-keys',
     })
     // Deliberately keyed on the LEASE token, not this batch's stamp: §3.4
     // rule 4 makes a same-token claim an idempotent receipt that returns the
@@ -451,6 +464,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        FROM runs r JOIN tasks t ON t.task_id = r.task_id
        WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
          AND t.state IN ${LIVE}
+         AND ${soleLiveRun('r')}
        ORDER BY r.run_id`,
       [queue, claimToken],
     )
@@ -485,6 +499,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND claim_gen = ? AND activated_gen < ?
+         AND ${soleLiveRun('runs')}
          AND EXISTS (
            SELECT 1 FROM tasks t
            WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}
@@ -505,26 +520,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // and was then never cancelled.
     const activated = fencedAt('runs', BY_RUN, b.fence('activate'))
     b.derived('task-start', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'activate',
       where: 'f.run_id = ?',
       whereArgs: [runId],
-      set: `first_started_at_ms = COALESCE(first_started_at_ms, ${activated}),
-         cancel_at_ms = CASE
-           WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
-             -- ROUND, not a bare CAST. The port validates this duration with
-             -- durationToMs, which promises rounding to the nearest
-             -- millisecond, and then the raw SECONDS are what get stored; CAST
-             -- truncates, so the two disagree below a millisecond. At 0.0005
-             -- seconds the port says 1ms and the CAST said 0, making the
-             -- deadline the start instant and cancelling the task on the spot.
-             CAST(ROUND(COALESCE(first_started_at_ms, ${activated})
-               + json_extract(cancellation, '$.maxDurationSeconds') * 1000) AS INTEGER)
-           ELSE NULL
-         END`,
+      set: {
+        first_started_at_ms: `COALESCE(first_started_at_ms, ${activated})`,
+        // ROUND, not a bare CAST. The port validates this duration with
+        // durationToMs, which promises rounding to the nearest millisecond;
+        // CAST truncates, so the two disagree below a millisecond.
+        cancel_at_ms: `CASE
+          WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
+            CAST(ROUND(COALESCE(first_started_at_ms, ${activated})
+              + json_extract(cancellation, '$.maxDurationSeconds') * 1000) AS INTEGER)
+          ELSE NULL
+        END`,
+      },
       setArgs: [runId, runId],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
@@ -692,26 +703,20 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // from the TLA SweepLostLaunch action). Each arm names the CAS it
     // follows, so neither can fire for the other's outcome.
     b.derived('task-pending', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'reopen',
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: `state = 'pending'`,
+      set: { state: `'pending'` },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })
     b.derived('task-fail', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'cap',
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: `state = 'failed', failure_reason = ?`,
+      set: { state: `'failed'`, failure_reason: '?' },
       setArgs: [REASON_RELAUNCH_CAP],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
@@ -779,14 +784,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // exact replay terminalize the task over the successor the first pass had
     // just created (rule 6).
     b.derived('task-terminal', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'fail',
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
-      set: `state = 'failed', failure_reason = ?`,
+      set: { state: `'failed'`, failure_reason: '?' },
       setArgs: [REASON_INFRA_CAP],
       narrow: `state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
             AND NOT ${successorOwned('?', 'tasks.task_id', '?')}`,
@@ -799,15 +801,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // 1 - user attempts. Applying this twice is the same as applying it once,
     // so an exact replay cannot double-count.
     b.derived('bookkeeping', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'successor',
       where: 'f.run_id = ?',
       whereArgs: [successorId],
-      set: `infra_retries = ${INFRA_RETRIES_FROM('?', b.fence('successor'))},
-         state = 'pending', last_attempt_run = ?`,
+      set: {
+        infra_retries: INFRA_RETRIES_FROM('?', b.fence('successor')),
+        state: `'pending'`,
+        last_attempt_run: '?',
+      },
       setArgs: [successorId, successorId],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
@@ -916,26 +918,23 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [REASON_CANCELLED, taskId, queue],
     )
     b.derived('runs', {
-      target: 'runs',
-      key: 'task_id',
-      from: 'tasks',
-      column: 'task_id',
+      relation: 'tasks-to-runs',
       fence: 'cancel',
       where: 'f.task_id = ?',
       whereArgs: [taskId],
-      set: `state = 'cancelled', claimed_by = NULL, claim_expires_at_ms = NULL`,
+      set: { state: `'cancelled'`, claimed_by: 'NULL', claim_expires_at_ms: 'NULL' },
       narrow: `state IN ${LIVE}`,
-      rows: { many: 'a cancelled task kills every run it still has' },
+      rows: 'source-keys',
     })
     b.derived('waits', {
-      target: 'waits',
-      key: 'task_id',
-      from: 'tasks',
-      column: 'task_id',
-      fence: 'cancel',
-      where: 'f.task_id = ?',
+      // Wait ownership comes from the runs this transition actually
+      // cancelled, never from waits.task_id: that denormalized mirror may be
+      // corrupt, while waits.run_id is the authoritative relationship.
+      relation: 'runs-to-waits',
+      fence: 'runs',
+      where: `f.task_id = ? AND f.state = 'cancelled'`,
       whereArgs: [taskId],
-      rows: { many: 'a task may hold several waits' },
+      rows: 'source-keys',
     })
     const { won } = await b.run(this.db)
     return won === 'cancel'
@@ -998,8 +997,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         claimToken,
       ],
     )
-    // The task mirrors the run's suspension state (LIVE-guarded: rule 6).
-    taskMirrorsRun(b, runId, 'suspend')
+    // A timer/deferral replaces any event wait attached to this run. Drive the
+    // mirror and cleanup from the run this CAS actually suspended: a corrupt
+    // pre-existing wait must not survive with the wake fields just cleared.
+    finishSuspension(b, runId)
     const { won } = await b.run(this.db)
     if (won !== 'suspend') throw new LeaseLostError(`reschedule ${runId}`)
   }
@@ -1052,7 +1053,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [checkpoint.key, checkpoint.stateJson, runId],
       'one',
     )
-    taskMirrorsRun(b, runId, 'suspend')
+    finishSuspension(b, runId)
     const { won } = await b.run(this.db)
     if (won !== 'suspend') throw new LeaseLostError(`suspendRun ${runId}`)
   }
@@ -1075,14 +1076,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [resultJson, runId, queue, claimToken],
     )
     b.derived('task', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'complete',
       where: 'f.run_id = ?',
       whereArgs: [runId],
-      set: `state = 'completed', completed_payload = ?, cancel_at_ms = NULL`,
+      set: { state: `'completed'`, completed_payload: '?', cancel_at_ms: 'NULL' },
       setArgs: [resultJson],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
@@ -1149,32 +1147,31 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // infrastructure ones), so applying this twice equals applying it
       // once — an exact replay cannot double-count.
       b.derived('task-retrying', {
-        target: 'tasks',
-        key: 'task_id',
-        from: 'runs',
-        column: 'task_id',
+        relation: 'runs-to-tasks',
         fence: 'successor',
         where: 'f.run_id = ?',
         whereArgs: [successorId],
-        set: `attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
-           state = (SELECT f.state FROM runs f
-                    WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('successor')}),
-           last_attempt_run = ?`,
+        set: {
+          attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
+          state: `(SELECT f.state FROM runs f
+                   WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('successor')})`,
+          last_attempt_run: '?',
+        },
         setArgs: [runId, successorId, successorId],
         narrow: `state IN ${LIVE}`,
         rows: 'one',
       })
       // Cap refused (or task no longer live): terminal, same as no-retry.
       b.derived('task-terminal', {
-        target: 'tasks',
-        key: 'task_id',
-        from: 'runs',
-        column: 'task_id',
+        relation: 'runs-to-tasks',
         fence: 'fail',
         where: 'f.run_id = ?',
         whereArgs: [runId],
-        set: `attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
-           state = 'failed', failure_reason = ?`,
+        set: {
+          attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
+          state: `'failed'`,
+          failure_reason: '?',
+        },
         setArgs: [runId, failureJson],
         narrow: `state IN ${LIVE}
             AND NOT ${successorOwned(
@@ -1187,15 +1184,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       })
     } else {
       b.derived('task', {
-        target: 'tasks',
-        key: 'task_id',
-        from: 'runs',
-        column: 'task_id',
+        relation: 'runs-to-tasks',
         fence: 'fail',
         where: 'f.run_id = ?',
         whereArgs: [runId],
-        set: `attempts = ${USER_ATTEMPTS_FROM('?', b.fence('fail'))},
-           state = 'failed', failure_reason = ?`,
+        set: {
+          attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
+          state: `'failed'`,
+          failure_reason: '?',
+        },
         setArgs: [runId, failureJson],
         narrow: `state IN ${LIVE}`,
         rows: 'one',
@@ -1431,21 +1428,18 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // while B's own run kept running: corrupt state amplified into a task
     // that was never waiting at all.
     b.derived('wake-tasks', {
-      target: 'tasks',
+      relation: 'runs-to-tasks',
       // UPDATE provenance is generated from the runs this statement follows.
       // Every woken run carries the event's instant, so this is the same value
       // without a caller-controlled stamping escape.
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
       fence: 'wake-runs',
       // The queue narrows the source to an index rather than scanning runs;
       // `state = 'pending'` is what wake-runs just set on exactly these rows.
       where: `f.queue = ? AND f.state = 'pending'`,
       whereArgs: [queue],
-      set: `state = 'pending'`,
+      set: { state: `'pending'` },
       narrow: `state IN ${LIVE}`,
-      rows: { many: 'one task per woken run' },
+      rows: 'source-keys',
     })
     // DELETE, not a status flip: the wake fields on the run carry the
     // delivery, and retained rows would leak forever (cancel deletes waits
@@ -1466,10 +1460,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // `wake-runs` just stamped, so the primitive builds the selection and
     // `wake-runs` is left as the only hand-written escape.
     b.derived('waits-gone', {
-      target: 'waits',
-      key: 'run_id',
-      from: 'runs',
-      column: 'run_id',
+      relation: 'runs-to-waits',
       fence: 'wake-runs',
       // Same reason as wake-tasks: the queue narrows the source to an index,
       // and `state = 'pending'` is what wake-runs just set on these rows.
@@ -1477,19 +1468,18 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       whereArgs: [queue],
       narrow: `event_name = ? AND status = 'waiting'`,
       narrowArgs: [eventName],
-      rows: { many: 'the registration each woken run just spent' },
+      rows: 'source-keys',
     })
     // `wake-runs` is an intermediate capability, not durable state. Once both
     // dependents have consumed it, overwrite that statement stamp at the same
     // instant. A delayed delivery of these exact compiled statements can no
     // longer treat the first execution's wake as work performed by the replay.
     b.seal('wake-finished', {
-      target: 'runs',
-      key: 'run_id',
+      relation: 'runs-to-runs',
       fence: 'wake-runs',
       where: `f.queue = ? AND f.state = 'pending'`,
       whereArgs: [queue],
-      rows: { many: 'every woken run has spent its intermediate wake fence' },
+      rows: 'source-keys',
     })
     await b.run(this.db)
   }
@@ -1569,18 +1559,21 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // was this primitive reimplemented by hand.
     const thisWait = `f.run_id = ? AND f.step_name = ?`
     b.derived('park', {
-      target: 'runs',
-      key: 'run_id',
-      from: 'waits',
-      column: 'run_id',
+      relation: 'waits-to-runs',
       fence: 'register',
       where: `f.run_id = ? AND f.step_name = ? AND f.status = 'waiting'`,
       whereArgs: [runId, stepName],
-      set: `state = 'sleeping',
-         available_at_ms = (SELECT f.timeout_at_ms FROM waits f
-                            WHERE ${thisWait} AND f.fence_stamp = ${b.fence('register')}),
-         wake_event = ?, event_payload = NULL, wake_step = ?,
-         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL`,
+      set: {
+        state: `'sleeping'`,
+        available_at_ms: `(SELECT f.timeout_at_ms FROM waits f
+                           WHERE ${thisWait} AND f.fence_stamp = ${b.fence('register')})`,
+        wake_event: '?',
+        event_payload: 'NULL',
+        wake_step: '?',
+        claimed_by: 'NULL',
+        claim_expires_at_ms: 'NULL',
+        heartbeat_at_ms: 'NULL',
+      },
       setArgs: [runId, stepName, eventName, stepName],
       narrow: `queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
             AND EXISTS (SELECT 1 FROM tasks t
@@ -1589,14 +1582,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     b.derived('task-mirror', {
-      target: 'tasks',
-      key: 'task_id',
-      from: 'runs',
-      column: 'task_id',
+      relation: 'runs-to-tasks',
       fence: 'park',
       where: `f.run_id = ? AND f.state = 'sleeping'`,
       whereArgs: [runId],
-      set: `state = 'sleeping'`,
+      set: { state: `'sleeping'` },
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })

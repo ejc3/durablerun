@@ -1134,6 +1134,22 @@ BAD_INVOCATIONS = [
         "base `pnpm verify` reaches zero script checkers",
         "a base gate containing zero checker invocations is accepted as meaningful",
     ),
+] + [
+    (
+        "mutation-probe.py",
+        {},
+        ("--classifier-self-test", "--self-test-fault", fault),
+        f"self-test caught injected fault {fault}",
+        f"the verdict classifier must reject its {fault} false-positive path",
+    )
+    for fault in (
+        "ignore-file",
+        "ignore-full-name",
+        "ignore-marker",
+        "accept-suite-error",
+        "accept-incoherent-report",
+        "accept-malformed-report",
+    )
 ]
 
 # Inputs each lint must ACCEPT. A checker that rejects everything passes every
@@ -1233,6 +1249,12 @@ const pattern = /this\.db\.batch\(/
 ]
 
 GOOD_INVOCATIONS = [
+    (
+        "mutation-probe.py",
+        {},
+        ("--classifier-self-test",),
+        "the cheap attribution self-test neither mutates sources nor requires a clean tree",
+    ),
     (
         "review-attest.sh",
         {

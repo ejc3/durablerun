@@ -1,6 +1,46 @@
 import type { Buggify, SchedulerStore, SqlExecutor, StoreAdmin } from '@durablerun/core'
 
 /**
+ * A deliberately invalid storage representation used by the generated poison
+ * surface. A permissive backend may inject it; a strict native type may reject
+ * it structurally. Keeping this descriptor above every dialect fixture avoids
+ * baking SQLite's dynamic typing into the shared scenarios.
+ */
+export type StorageCorruption =
+  | {
+      table: 'tasks'
+      taskId: string
+      column: 'enqueue_at_ms' | 'cancel_at_ms' | 'fence_at_ms'
+      invalidRepresentation: 'non-integer'
+    }
+  | {
+      table: 'runs'
+      runId: string
+      column:
+        | 'available_at_ms'
+        | 'claim_expires_at_ms'
+        | 'heartbeat_at_ms'
+        | 'created_at_ms'
+        | 'lease_ms'
+      invalidRepresentation: 'non-integer'
+    }
+  | {
+      table: 'checkpoints'
+      taskId: string
+      checkpointName: string
+      column: 'updated_at_ms'
+      invalidRepresentation: 'non-integer'
+    }
+  | {
+      table: 'tasks'
+      taskId: string
+      column: 'fence_stamp'
+      invalidRepresentation: 'non-text'
+    }
+
+export type StorageCorruptionDisposition = 'injected' | 'structurally-rejected'
+
+/**
  * The pluggability contract (repo CLAUDE.md law): a dialect is DONE when its
  * factory passes the identical suite — scheduler plane today, run-bookkeeping
  * (RunStateStore) when it lands. store-libsql implements this now;
@@ -14,6 +54,12 @@ export interface StoreFixture {
   admin: StoreAdmin
   /** The real executor — for raw shared-schema assertions and SimWorld. */
   raw: SqlExecutor
+  /**
+   * Ask the dialect fixture to construct an invalid native storage value.
+   * Strict schemas report structural rejection; permissive schemas inject it
+   * so the portable invariant evaluator must detect it.
+   */
+  injectStorageCorruption(corruption: StorageCorruption): Promise<StorageCorruptionDisposition>
   /**
    * A store over a substitute executor (a SimWorld actor wrapper) sharing
    * this fixture's database and id stream — how sims run N concurrent

@@ -133,3 +133,17 @@ export const cancelNotDue = (col: string, at: string): string =>
  */
 export const eligibleTask = (t: string, at: string): string =>
   `${t}.state IN ${LIVE} AND ${cancelNotDue(`${t}.cancel_at_ms`, at)}`
+
+/**
+ * A claim candidate is the task's only live run.
+ *
+ * Multiple live runs are storage corruption, not extra claimable work. If a
+ * claim advances both, one task can be launched twice and its run-to-task
+ * follow-on has two competing sources. Refusing every sibling-bearing
+ * candidate keeps the corrupt task inert at the first forward-progress door.
+ */
+export const soleLiveRun = (run: string): string =>
+  `NOT EXISTS (SELECT 1 FROM runs sibling
+               WHERE sibling.task_id = ${run}.task_id
+                 AND sibling.state IN ${LIVE}
+                 AND sibling.run_id <> ${run}.run_id)`

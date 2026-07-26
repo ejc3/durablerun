@@ -1,8 +1,9 @@
 import { LeaseLostError, type SqlExecutor } from '@durablerun/core'
-import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
+import { Rng, SimWorld, seededIdSource } from '@durablerun/harness'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
+import { attributeBehaviorFailure } from './mutation-verdict.js'
 
 const Q = 'q'
 
@@ -273,8 +274,12 @@ describe('transition-layer review regressions (second round)', () => {
       },
     ])
 
-    const result = await f.store.spawn(Q, 'job', '{}') // no idempotency key
-    expect(result.created).toBe(false)
+    const result = await attributeBehaviorFailure(
+      'mutation-verdict:behavior:spawn-primary-key-guard',
+      /UNIQUE constraint failed: tasks\.task_id/,
+      () => f.store.spawn(Q, 'job', '{}'), // no idempotency key
+    )
+    expect(result).toMatchObject({ created: false })
 
     // The pre-existing task is untouched: no run was attached to it, and its
     // name is still its own.
@@ -311,6 +316,55 @@ describe('transition-layer review regressions (second round)', () => {
     ])
     expect(task?.rows[0]?.state).toBe('completed') // not revived
     expect(again).toHaveLength(0) // no terminal run handed back
+    f.close()
+  })
+
+  it('a same-token claim receipt refuses a task with multiple live runs', async () => {
+    const f = await makeLibsqlFixture('multiple-live-claim-receipt')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO runs
+                (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+              VALUES ('corrupt-sibling', ?, ?, 2, 'pending', 1060000, 1000000)`,
+        args: [Q, spawned.taskId],
+      },
+    ])
+
+    const receipt = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    expect(receipt, 'mutation-verdict:behavior:claim-receipt-requires-sole-live-run').toHaveLength(
+      0,
+    )
+    f.close()
+  })
+
+  it('activate refuses a claim whose task acquired another live run', async () => {
+    const f = await makeLibsqlFixture('multiple-live-activate')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO runs
+                (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+              VALUES ('corrupt-sibling', ?, ?, 2, 'pending', 1060000, 1000000)`,
+        args: [Q, spawned.taskId],
+      },
+    ])
+
+    const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    expect(activated, 'mutation-verdict:behavior:activate-requires-sole-live-run').toBeNull()
+    const [row] = await f.raw.batch('t', [
+      {
+        sql: `SELECT activated_gen, started_at_ms FROM runs WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+    expect(row?.rows[0]).toMatchObject({ activated_gen: 0, started_at_ms: null })
     f.close()
   })
 

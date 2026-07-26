@@ -66,22 +66,31 @@ it('builds the write-plan schema through the production migration contract', asy
 })
 
 describe('claim candidate legs', () => {
-  const leg = (state: string) => `
-    SELECT r.run_id, r.available_at_ms FROM runs r
-    WHERE r.queue = ? AND r.state = '${state}'
-      AND r.available_at_ms IS NOT NULL AND r.available_at_ms <= ?
-    ORDER BY r.available_at_ms, r.run_id LIMIT ?`
+  async function shippedClaimStatement(): Promise<{ sql: string; args: unknown[] }> {
+    const seen: { sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, mode) => {
+        for (const st of statements) seen.push({ sql: st.sql, args: [...st.args] })
+        return db.batch(label, statements, mode)
+      },
+    }
+    const store = new LibsqlSchedulerStore(recorder, testIdSource('claim-query-plan'))
+    await store.claim('q', 'worker', { leaseSeconds: 60, limit: 10 })
+    const updates = seen.filter(
+      (st) => /^\s*UPDATE runs\b/.test(st.sql) && st.sql.includes('claim_gen = claim_gen + 1'),
+    )
+    expect(updates).toHaveLength(1)
+    const only = updates[0]
+    if (!only) throw new Error('unreachable')
+    return only
+  }
 
-  it('the pending leg walks runs_poll in index order — no backlog sort', async () => {
-    const p = await plan(leg('pending'), ['q', 0, 10])
-    expect(p).toContain('runs_poll')
-    expect(p).not.toContain('TEMP B-TREE')
-  })
-
-  it('the sleeping leg walks runs_poll in index order — no backlog sort', async () => {
-    const p = await plan(leg('sleeping'), ['q', 0, 10])
-    expect(p).toContain('runs_poll')
-    expect(p).not.toContain('TEMP B-TREE')
+  it('the shipped claim seeks eligible candidates before its per-leg limits', async () => {
+    const st = await shippedClaimStatement()
+    const p = await writePlan(st.sql, st.args as (string | number)[])
+    expect(p.match(/runs_poll/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(p).toContain('runs_task_attempt')
+    expect(p).not.toContain('SCAN sibling')
   })
 })
 
@@ -180,7 +189,7 @@ describe('the emit fan-out, which is a WRITE', () => {
   it('is driven by the waits index, not by a scan of runs', async () => {
     const st = await shippedWakeStatement()
     const p = await writePlan(st.sql, st.args as (string | number)[])
-    expect(p).toContain('waits_event')
+    expect(p, 'mutation-verdict:behavior:emit-index-driver').toContain('waits_event')
     expect(p).toContain('SEARCH runs USING PRIMARY KEY')
     expect(p).not.toContain('SCAN runs')
   })

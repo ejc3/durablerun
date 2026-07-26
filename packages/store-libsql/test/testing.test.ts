@@ -4,7 +4,10 @@ import { openTestDb, testIdSource } from '../src/testing.js'
 describe('the routine test id source', () => {
   it('keeps ids ordered and tokens unique when calls are interleaved', () => {
     const ids = testIdSource('fixture')
-    expect([ids.token(), ids.uuidv7(), ids.uuidv7(), ids.token()]).toEqual([
+    expect(
+      [ids.token(), ids.uuidv7(), ids.uuidv7(), ids.token()],
+      'mutation-verdict:behavior:test-token-source-monotonic',
+    ).toEqual([
       'fixture-token-000001',
       'fixture-id-000001',
       'fixture-id-000002',

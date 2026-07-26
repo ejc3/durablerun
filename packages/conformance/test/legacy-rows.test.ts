@@ -223,7 +223,11 @@ describe('rows written before a column existed', () => {
       await f.admin.setFakeNowEpochMs(NOW + 30_000)
       const [woken] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
 
-      expect(woken?.wake).toEqual({ event: 'go', step, timedOut: true })
+      expect(woken?.wake, 'mutation-verdict:behavior:legacy-wait-step-backfill').toEqual({
+        event: 'go',
+        step,
+        timedOut: true,
+      })
       const [waits] = await f.raw.batch(
         't',
         [{ sql: `SELECT COUNT(*) AS n FROM waits WHERE run_id = ?`, args: [run.runId] }],
@@ -241,7 +245,10 @@ describe('ambiguous legacy wait registrations', () => {
     const f = await ambiguousLegacyWait(30)
     await f.admin.setFakeNowEpochMs(NOW + 30_000)
 
-    expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toEqual([])
+    expect(
+      await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 }),
+      'mutation-verdict:behavior:legacy-wait-claim-cardinality',
+    ).toEqual([])
 
     const [run] = await f.raw.batch(
       't',
@@ -273,7 +280,10 @@ describe('ambiguous legacy wait registrations', () => {
       [{ sql: `SELECT state, wake_step FROM runs WHERE run_id = ?`, args: [f.run.runId] }],
       'read',
     )
-    expect(run?.rows[0]).toMatchObject({ state: 'sleeping', wake_step: null })
+    expect(run?.rows[0], 'mutation-verdict:behavior:legacy-wait-step-unique-scalar').toMatchObject({
+      state: 'sleeping',
+      wake_step: null,
+    })
     const [waits] = await f.raw.batch(
       't',
       [

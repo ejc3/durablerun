@@ -10,21 +10,75 @@ Each MUTATION below deletes one guard that a review round paid for. A guard
 whose removal nothing notices is a guard that is not being maintained -- the
 next refactor can drop it and the build stays green.
 
-Not part of `pnpm verify`: it edits sources and runs the suite once per
-mutation, so it is a deliberate audit, not a gate. Run it after adding a
-mechanism, and record survivors as coverage gaps.
+The full audit is not part of `pnpm verify`: it edits sources and runs the
+suite once per mutation, so it is a deliberate audit, not a gate. Its cheap
+verdict-classifier self-test is part of `pnpm verify`; it edits nothing and
+does not require a clean tree.
 
 Usage: mutation-probe.py [-k substring]
+       mutation-probe.py --self-test
+       mutation-probe.py --classifier-self-test [--self-test-fault FAULT]
 """
 import argparse
+import json
 import subprocess
 import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 
+
+VerdictKind = Literal["behavior", "construction"]
+
+
+@dataclass(frozen=True)
+class ExpectedVerdict:
+    kind: VerdictKind
+    file: str
+    full_name: str
+    marker: str
+
+
+@dataclass(frozen=True)
+class Mutation:
+    name: str
+    file: str
+    find: str
+    replace: str
+    breaks: str
+    verdict: ExpectedVerdict
+
+
+@dataclass(frozen=True)
+class FailedAssertion:
+    file: str
+    full_name: str
+    messages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SuiteResult:
+    process_ok: bool
+    report_ok: bool
+    assertions: tuple[FailedAssertion, ...]
+    suite_errors: tuple[str, ...]
+    diagnostic: str
+
+    @property
+    def green(self) -> bool:
+        return (
+            self.process_ok
+            and self.report_ok
+            and not self.assertions
+            and not self.suite_errors
+        )
+
+
 # (name, file, find, replace, what removing it should break)
-MUTATIONS = [
+MUTATION_SPECS = [
     (
         "followon-provenance-check",
         "packages/core/src/fenced-batch.ts",
@@ -56,30 +110,32 @@ MUTATIONS = [
     (
         "raw-fence-token-check",
         "packages/core/src/fenced-batch.ts",
-        "    for (const match of sql.matchAll(/\\$FENCE:([a-zA-Z0-9_-]+)\\$/g)) {",
-        "    for (const match of [] as RegExpMatchArray[]) {",
+        "      new RegExp(`\\\\$FENCE:(${FENCE_STATEMENT_NAME_SOURCE})\\\\$`, 'g'),",
+        "      new RegExp('(?!)', 'g'),",
         "a hand-written fence token naming nothing compiles to a dead filter",
     ),
     (
         # Replaces the two per-call-site fence mutations. Those statements no
         # longer CONTAIN a fence a caller could remove — the primitive builds
         # the selection — so the mutation moves to the generator, where one
-        # entry now covers all twenty-two generated follow-ons instead of two
+        # entry now covers every generated follow-on instead of two
         # covering two. That the old mutations went stale rather than passing
         # is the probe reporting the refactor accurately.
         "generated-selection-fence",
         "packages/core/src/fenced-batch.ts",
-        "    const selection = `${spec.key} IN (SELECT f.${spec.column} FROM ${spec.from} f\n"
-        "                       WHERE ${src}f.fence_stamp = ${fence})`",
-        "    const selection = `${spec.key} IN (SELECT f.${spec.column} FROM ${spec.from} f\n"
-        "                       WHERE ${src}1 = 1)`",
+        "        : `SELECT f.${column} FROM ${from} f\n"
+        "                       WHERE ${src}f.fence_stamp = ${fence}`",
+        "        : `SELECT f.${column} FROM ${from} f\n"
+        "                       WHERE ${src}f.fence_stamp = ${fence} OR 1 = 1`",
         "every generated follow-on acts on rows this batch never wrote",
     ),
     (
         "generated-narrow-widens",
         "packages/core/src/fenced-batch.ts",
         "    const narrow = spec.narrow ? `\\n         AND (${spec.narrow})` : ''",
-        "    const narrow = spec.narrow ? `\\n         OR (${spec.narrow})` : ''",
+        "    const narrow = spec.narrow\n"
+        "      ? `\\n         AND (((${spec.narrow}) IS NOT NULL) OR 1 = 1)`\n"
+        "      : ''",
         "a narrowing clause that WIDENS the set instead of shrinking it",
     ),
     (
@@ -97,21 +153,55 @@ MUTATIONS = [
         "generated-update-provenance-assignment",
         "packages/core/src/fenced-batch.ts",
         "    const provenance = `,\\n         fence_stamp = ${STAMP},\n"
-        "         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f\n"
-        "                        WHERE ${src}f.fence_stamp = ${fence})`",
-        "    const provenance = `,\\n         fence_stamp = fence_stamp,\n"
-        "         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f\n"
-        "                        WHERE ${src}f.fence_stamp = ${fence})`",
+        "         fence_at_ms = (${sourceInstant})`",
+        "    const provenance = `,\\n         fence_stamp = ${STAMP},\n"
+        "         fence_stamp = fence_stamp,\n"
+        "         fence_at_ms = (${sourceInstant})`",
         "a generated UPDATE can leave stale provenance on every row it writes",
+    ),
+    (
+        "generated-set-provenance-guard",
+        "packages/core/src/fenced-batch.ts",
+        "      if (!allowedColumns.has(column)) {",
+        "      if (false && !allowedColumns.has(column)) {",
+        "a generated UPDATE caller can compete with the primitive's provenance assignment",
     ),
     (
         "generated-update-fence-source",
         "packages/core/src/fenced-batch.ts",
-        "      target: spec.target,\n"
-        "      sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}",
+        "      target,\n"
+        "      sql: `UPDATE ${target} SET ${setSql}${provenance}",
         "      target: null,\n"
-        "      sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}",
+        "      sql: `UPDATE ${target} SET ${setSql}${provenance}",
         "a generated UPDATE is no longer available as a fence source",
+    ),
+    (
+        "derived-source-table",
+        "packages/core/src/fenced-batch.ts",
+        "    if (source.target !== from) {",
+        "    if (false && source.target !== from) {",
+        "a relation can read its fence stamp from a table the source statement never stamped",
+    ),
+    (
+        "seal-source-key",
+        "packages/core/src/fenced-batch.ts",
+        "    if (relation.from !== relation.target || relation.key !== relation.column) {",
+        "    if (relation.from !== relation.target) {",
+        "a seal can overwrite a different logical key in its source table",
+    ),
+    (
+        "self-source-selection-materialized",
+        "packages/core/src/fenced-batch.ts",
+        "    const sourceKeys =\n      target === from",
+        "    const sourceKeys =\n      false && target === from",
+        "a self-source UPDATE uses a MySQL-forbidden direct read of its target",
+    ),
+    (
+        "self-source-instant-materialized",
+        "packages/core/src/fenced-batch.ts",
+        "    const sourceInstant =\n      target === from",
+        "    const sourceInstant =\n      false && target === from",
+        "a self-source UPDATE reads its provenance instant directly from its MySQL target",
     ),
     (
         "seal-intermediate-fence",
@@ -226,6 +316,29 @@ MUTATIONS = [
         "claim consumes a legacy run whose active wait cannot be identified",
     ),
     (
+        "claim-requires-sole-live-run",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${soleLiveRun('r')}\n",
+        "               AND 1 = 1\n",
+        "claim advances two competing live runs for one task",
+    ),
+    (
+        "claim-receipt-requires-sole-live-run",
+        "packages/store-libsql/src/store.ts",
+        "         AND t.state IN ${LIVE}\n"
+        "         AND ${soleLiveRun('r')}\n",
+        "         AND t.state IN ${LIVE}\n"
+        "         AND 1 = 1\n",
+        "a same-token receipt hands a run from a task with competing live owners back to launch",
+    ),
+    (
+        "activate-requires-sole-live-run",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${soleLiveRun('runs')}\n",
+        "         AND 1 = 1\n",
+        "activation launches a claimed run after its task acquires a competing live run",
+    ),
+    (
         "test-token-source-monotonic",
         "packages/store-libsql/src/testing.ts",
         "    token: () => `${namespace}-token-${serial(++tokens)}`,",
@@ -248,18 +361,739 @@ MUTATIONS = [
     ),
 ]
 
+VERDICTS = {
+    "followon-provenance-check": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "a CAS must write its own provenance rejects a follow-on that writes a fenced table without stamping it",
+        "mutation-verdict:construction:followon-provenance-check",
+    ),
+    "positive-fence-required": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "a follow-on must filter on a fence, positively, in the WHERE side rejects a follow-on with no fence at all",
+        "mutation-verdict:construction:positive-fence-required",
+    ),
+    "top-level-or-reach": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "a follow-on must filter on a fence, positively, in the WHERE side rejects a top-level OR but accepts alternation inside a fenced conjunct",
+        "mutation-verdict:construction:top-level-or-reach",
+    ),
+    "clock-ban-in-followon": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "only a CAS may read the clock rejects $NOW$ in a follow-on",
+        "mutation-verdict:construction:clock-ban-in-followon",
+    ),
+    "raw-fence-token-check": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value applies the same rules to a fence token written by hand",
+        "mutation-verdict:construction:raw-fence-token-check",
+    ),
+    "generated-selection-fence": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/generated-selection.test.ts",
+        "a generated selection restricts to rows this batch stamped holds when the caller correlation is a disjunction",
+        "mutation-verdict:behavior:generated-selection-scope",
+    ),
+    "generated-narrow-widens": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/generated-selection.test.ts",
+        "a generated selection restricts to rows this batch stamped never lets narrow widen the target set",
+        "mutation-verdict:behavior:generated-narrow-widens",
+    ),
+    "generated-where-parens": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/generated-selection.test.ts",
+        "a generated selection restricts to rows this batch stamped holds when the caller correlation is a disjunction",
+        "mutation-verdict:behavior:generated-selection-scope",
+    ),
+    "generated-update-provenance-assignment": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/generated-selection.test.ts",
+        "a generated selection restricts to rows this batch stamped still writes provenance derived from the stamped source",
+        "mutation-verdict:behavior:generated-update-provenance-assignment",
+    ),
+    "generated-set-provenance-guard": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value does not let a generated UPDATE caller overwrite generated provenance",
+        "mutation-verdict:construction:generated-set-provenance",
+    ),
+    "generated-update-fence-source": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value accepts a generated UPDATE as a fence source",
+        "mutation-verdict:construction:generated-update-fence-source",
+    ),
+    "derived-source-table": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value rejects a relation that reads from a table other than the fence source",
+        "mutation-verdict:construction:derived-source-table",
+    ),
+    "seal-source-key": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value restricts sealing to relations that preserve both source table and key",
+        "mutation-verdict:construction:seal-source-key",
+    ),
+    "self-source-selection-materialized": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value materializes self-source reads so MySQL may update the source table",
+        "mutation-verdict:construction:self-source-selection",
+    ),
+    "self-source-instant-materialized": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value materializes self-source reads so MySQL may update the source table",
+        "mutation-verdict:construction:self-source-instant",
+    ),
+    "seal-intermediate-fence": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value rejects a later consumer of a sealed intermediate fence",
+        "mutation-verdict:construction:sealed-source-reuse",
+    ),
+    "seal-lifecycle-transition": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value rejects a later consumer of a sealed intermediate fence",
+        "mutation-verdict:construction:sealed-source-reuse",
+    ),
+    "emit-wake-one-witness": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/wake-witness-surface.test.ts",
+        "a wake needs ONE row that justifies it decides every park against every PAIR of corruptions",
+        "mutation-verdict:behavior:emit-wake-one-witness",
+    ),
+    "emit-replay-preserves-event-instant": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "a replay after the world moved on does not reuse one emit provenance seed at a later instant",
+        "mutation-verdict:behavior:emit-replay-preserves-event-instant",
+    ),
+    "emit-index-driver": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/query-plans.test.ts",
+        "the emit fan-out, which is a WRITE is driven by the waits index, not by a scan of runs",
+        "mutation-verdict:behavior:emit-index-driver",
+    ),
+    "emit-cleanup-follows-the-wake": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "emitEvent only wakes runs that are parked on that event keeps the registration of a waiter it did not wake",
+        "mutation-verdict:behavior:emit-cleanup-follows-the-wake",
+    ),
+    "emit-wake-event-correlation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "emitEvent only wakes runs that are parked on that event does not deliver event B to a run parked on event A",
+        "mutation-verdict:behavior:emit-wake-event-correlation",
+    ),
+    "emit-wake-step-correlation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "emitEvent only wakes runs that are parked on that event does not let one await step consume another step of the same event",
+        "mutation-verdict:behavior:emit-wake-step-correlation",
+    ),
+    "successor-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "a replay after the world moved on does not terminalize a task whose successor has since been claimed",
+        "mutation-verdict:behavior:successor-ownership",
+    ),
+    "successor-attempt-identity": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "a successor id that collides with a historical run of the same task rejects a worker failure instead of committing a half-transition",
+        "mutation-verdict:behavior:successor-attempt-identity",
+    ),
+    "legacy-wait-step-backfill": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/legacy-rows.test.ts",
+        "rows written before a column existed a timed wake still decodes when runs.wake_step is NULL (pre-v3)",
+        "mutation-verdict:behavior:legacy-wait-step-backfill",
+    ),
+    "legacy-wait-step-unique-scalar": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/legacy-rows.test.ts",
+        "ambiguous legacy wait registrations does not choose an event wait step when several registrations match",
+        "mutation-verdict:behavior:legacy-wait-step-unique-scalar",
+    ),
+    "legacy-wait-claim-cardinality": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/legacy-rows.test.ts",
+        "ambiguous legacy wait registrations does not choose a timed wait step when several registrations match",
+        "mutation-verdict:behavior:legacy-wait-claim-cardinality",
+    ),
+    "claim-requires-sole-live-run": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-matrix.test.ts",
+        "poison matrix (write label x invariant-forbidden pre-state, generated) claim does not amplify cardinality/two-live-runs",
+        "mutation-verdict:behavior:claim-requires-sole-live-run",
+    ),
+    "claim-receipt-requires-sole-live-run": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/regressions.test.ts",
+        "transition-layer review regressions (second round) a same-token claim receipt refuses a task with multiple live runs",
+        "mutation-verdict:behavior:claim-receipt-requires-sole-live-run",
+    ),
+    "activate-requires-sole-live-run": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/regressions.test.ts",
+        "transition-layer review regressions (second round) activate refuses a claim whose task acquired another live run",
+        "mutation-verdict:behavior:activate-requires-sole-live-run",
+    ),
+    "test-token-source-monotonic": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/testing.test.ts",
+        "the routine test id source keeps ids ordered and tokens unique when calls are interleaved",
+        "mutation-verdict:behavior:test-token-source-monotonic",
+    ),
+    "schema-fault-is-permanent": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema-gate.test.ts",
+        "a database older than the binary classifies every SQLite schema-shape error as a permanent fault",
+        "mutation-verdict:behavior:schema-fault-is-permanent",
+    ),
+    "spawn-primary-key-guard": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/regressions.test.ts",
+        "transition-layer review regressions (second round) spawn loses rather than crashing when only the task id collides",
+        "mutation-verdict:behavior:spawn-primary-key-guard",
+    ),
+}
+
+spec_names = [spec[0] for spec in MUTATION_SPECS]
+if len(spec_names) != len(set(spec_names)):
+    raise RuntimeError("mutation-probe has duplicate mutation names")
+if set(spec_names) != set(VERDICTS):
+    missing = sorted(set(spec_names) - set(VERDICTS))
+    stale = sorted(set(VERDICTS) - set(spec_names))
+    raise RuntimeError(f"mutation verdict inventory mismatch: missing={missing}, stale={stale}")
+
+MUTATIONS = [Mutation(*spec, VERDICTS[spec[0]]) for spec in MUTATION_SPECS]
+
 # The suite, minus the legs whose cost dwarfs their value here: the fuzz shards
 # and the real-process chaos tests each add minutes per mutation.
 TEST_CMD = [
-    "pnpm", "exec", "vitest", "run",
-    "--exclude", "packages/conformance/test/fuzz-*",
-    "--exclude", "packages/driver/test/chaos-process.test.ts",
+    "bash",
+    "scripts/confine.sh",
+    "pnpm",
+    "exec",
+    "vitest",
+    "run",
+    "--exclude",
+    "packages/conformance/test/fuzz-*",
+    "--exclude",
+    "packages/driver/test/chaos-process.test.ts",
 ]
 
 
-def run_suite() -> tuple[bool, str]:
-    r = subprocess.run(TEST_CMD, cwd=ROOT, capture_output=True, text=True)
-    return r.returncode == 0, r.stdout
+def relative_test_file(value: object) -> str:
+    path = Path(str(value))
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def parse_report(text: str, process_ok: bool, diagnostic: str) -> SuiteResult:
+    """Turn Vitest's JSON reporter into only the evidence attribution needs."""
+    try:
+        report = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as error:
+        return SuiteResult(
+            process_ok,
+            False,
+            (),
+            (f"missing or malformed Vitest JSON report: {error}",),
+            diagnostic,
+        )
+    if not isinstance(report, dict) or not isinstance(report.get("success"), bool):
+        return SuiteResult(
+            process_ok,
+            False,
+            (),
+            ("Vitest JSON report has no boolean success verdict",),
+            diagnostic,
+        )
+
+    suite_errors: list[str] = []
+    counter_names = (
+        "numTotalTestSuites",
+        "numPassedTestSuites",
+        "numFailedTestSuites",
+        "numPendingTestSuites",
+        "numTotalTests",
+        "numPassedTests",
+        "numFailedTests",
+        "numPendingTests",
+        "numTodoTests",
+    )
+    counters: dict[str, int] = {}
+    for name in counter_names:
+        value = report.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            suite_errors.append(
+                f"Vitest JSON report has no nonnegative integer {name}"
+            )
+        else:
+            counters[name] = value
+    if len(counters) == len(counter_names):
+        if counters["numTotalTestSuites"] != (
+            counters["numPassedTestSuites"]
+            + counters["numFailedTestSuites"]
+            + counters["numPendingTestSuites"]
+        ):
+            suite_errors.append("Vitest JSON report has contradictory suite counters")
+        if counters["numTotalTests"] != (
+            counters["numPassedTests"]
+            + counters["numFailedTests"]
+            + counters["numPendingTests"]
+            + counters["numTodoTests"]
+        ):
+            suite_errors.append("Vitest JSON report has contradictory test counters")
+
+    assertions: list[FailedAssertion] = []
+    observed_tests = {"passed": 0, "failed": 0, "pending": 0, "todo": 0}
+    results = report.get("testResults")
+    if not isinstance(results, list):
+        return SuiteResult(
+            process_ok,
+            bool(report["success"]),
+            (),
+            ("Vitest JSON report has no testResults array",),
+            diagnostic,
+        )
+    for result in results:
+        if not isinstance(result, dict):
+            suite_errors.append("Vitest JSON report contains a non-object test result")
+            continue
+        name = result.get("name")
+        if not isinstance(name, str):
+            suite_errors.append("Vitest JSON test result has no string name")
+            name = "(unknown file)"
+        file = relative_test_file(name)
+        file_status = result.get("status")
+        if file_status not in ("passed", "failed"):
+            suite_errors.append(f"{file}: invalid or missing file status")
+        message = result.get("message")
+        if not isinstance(message, str):
+            suite_errors.append(f"{file}: missing string message")
+            message = ""
+        elif message:
+            suite_errors.append(f"{file}: {message}")
+        rows = result.get("assertionResults")
+        if not isinstance(rows, list):
+            suite_errors.append(f"{file}: missing assertionResults")
+            continue
+        failed_in_file = False
+        for assertion in rows:
+            if not isinstance(assertion, dict):
+                suite_errors.append(f"{file}: contains a non-object assertion result")
+                continue
+            status = assertion.get("status")
+            if not isinstance(status, str):
+                suite_errors.append(f"{file}: assertion has invalid or missing status")
+                continue
+            if status in ("skipped", "disabled"):
+                observed_tests["pending"] += 1
+            elif status in observed_tests:
+                observed_tests[status] += 1
+            else:
+                suite_errors.append(f"{file}: assertion has invalid or missing status")
+                continue
+            if status != "failed":
+                continue
+            failed_in_file = True
+            messages = assertion.get("failureMessages")
+            full_name = assertion.get("fullName")
+            if not isinstance(full_name, str):
+                suite_errors.append(f"{file}: failed assertion has no string fullName")
+                full_name = ""
+            if messages is not None and (
+                not isinstance(messages, list)
+                or any(not isinstance(item, str) for item in messages)
+            ):
+                suite_errors.append(
+                    f"{file}: failed assertion has invalid failureMessages"
+                )
+                messages = []
+            assertions.append(
+                FailedAssertion(
+                    file,
+                    full_name,
+                    tuple(messages) if isinstance(messages, list) else (),
+                )
+            )
+        if file_status == "failed":
+            if not failed_in_file and not message:
+                suite_errors.append(
+                    f"{file}: failed file has no failed assertion or file error"
+                )
+        elif failed_in_file or message:
+            suite_errors.append(
+                f"{file}: passed file contains a failed assertion or file error"
+            )
+
+    if len(counters) == len(counter_names):
+        observed_by_counter = {
+            "numTotalTests": sum(observed_tests.values()),
+            "numPassedTests": observed_tests["passed"],
+            "numFailedTests": observed_tests["failed"],
+            "numPendingTests": observed_tests["pending"],
+            "numTodoTests": observed_tests["todo"],
+        }
+        for name, observed in observed_by_counter.items():
+            if counters[name] != observed:
+                suite_errors.append(
+                    f"Vitest JSON report {name}={counters[name]} "
+                    f"does not match {observed} assertion results"
+                )
+        expected_success = (
+            counters["numFailedTestSuites"] == 0
+            and counters["numFailedTests"] == 0
+        )
+        if results and bool(report["success"]) != expected_success:
+            suite_errors.append(
+                "Vitest JSON report success contradicts its failure counters"
+            )
+        elif bool(report["success"]) and not expected_success:
+            suite_errors.append(
+                "Vitest JSON report success contradicts its failure counters"
+            )
+    return SuiteResult(
+        process_ok,
+        bool(report["success"]),
+        tuple(assertions),
+        tuple(suite_errors),
+        diagnostic,
+    )
+
+
+def run_suite() -> SuiteResult:
+    with tempfile.TemporaryDirectory(prefix="durablerun-mutation-report-") as temporary:
+        report = Path(temporary) / "vitest.json"
+        result = subprocess.run(
+            [*TEST_CMD, "--reporter=json", "--outputFile", str(report)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        diagnostic = (result.stdout + result.stderr).strip()
+        if not report.exists():
+            return SuiteResult(
+                result.returncode == 0,
+                False,
+                (),
+                ("Vitest did not write its JSON report",),
+                diagnostic,
+            )
+        return parse_report(report.read_text(), result.returncode == 0, diagnostic)
+
+
+VerdictOutcome = Literal["caught", "survived", "wrong-path"]
+
+
+def assertion_matches(expected: ExpectedVerdict, actual: FailedAssertion) -> bool:
+    return (
+        actual.file == expected.file
+        and actual.full_name == expected.full_name
+        and any(expected.marker in message for message in actual.messages)
+    )
+
+
+def classify_verdict(
+    result: SuiteResult,
+    expected: ExpectedVerdict,
+    matcher=assertion_matches,
+    *,
+    accept_suite_error: bool = False,
+    accept_incoherent: bool = False,
+    accept_malformed: bool = False,
+) -> VerdictOutcome:
+    if result.green:
+        return "survived"
+    # A real Vitest failure has both a nonzero process exit and success=false.
+    # A signal, broken reporter, or contradictory result is infrastructure, not
+    # evidence that the intended guard was exercised.
+    if not accept_incoherent and (result.process_ok or result.report_ok):
+        return "wrong-path"
+    malformed = any(
+        "missing or malformed" in error or "did not write" in error for error in result.suite_errors
+    )
+    if result.suite_errors:
+        if malformed and accept_malformed:
+            return "caught"
+        if accept_suite_error and any(expected.marker in error for error in result.suite_errors):
+            return "caught"
+        return "wrong-path"
+    if any(matcher(expected, assertion) for assertion in result.assertions):
+        return "caught"
+    return "wrong-path"
+
+
+SELF_TEST_FAULTS = (
+    "ignore-file",
+    "ignore-full-name",
+    "ignore-marker",
+    "accept-suite-error",
+    "accept-incoherent-report",
+    "accept-malformed-report",
+)
+
+
+def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
+    """Generated false-positive surface for the verdict classifier itself."""
+    expected = ExpectedVerdict(
+        "behavior",
+        "packages/example/test/protocol.test.ts",
+        "protocol guard rejects the forbidden transition",
+        "mutation-verdict:behavior:probe",
+    )
+    construction = ExpectedVerdict(
+        "construction",
+        "packages/example/test/builder.test.ts",
+        "builder rejects an unprovable follow-on",
+        "mutation-verdict:construction:probe",
+    )
+
+    def failed(
+        verdict: ExpectedVerdict = expected,
+        *,
+        file: str | None = None,
+        name: str | None = None,
+        message: str | None = None,
+    ) -> SuiteResult:
+        return SuiteResult(
+            False,
+            False,
+            (
+                FailedAssertion(
+                    file or verdict.file,
+                    name or verdict.full_name,
+                    (message or verdict.marker,),
+                ),
+            ),
+            (),
+            "",
+        )
+
+    def reported_failure(
+        *,
+        assertion_status: object = "failed",
+        file_status: object = "failed",
+        passed_suites: int = 0,
+        failed_suites: int = 1,
+        passed_tests: int = 0,
+        failed_tests: int = 1,
+    ) -> SuiteResult:
+        return parse_report(
+            json.dumps(
+                {
+                    "success": False,
+                    "numTotalTestSuites": passed_suites + failed_suites,
+                    "numPassedTestSuites": passed_suites,
+                    "numFailedTestSuites": failed_suites,
+                    "numPendingTestSuites": 0,
+                    "numTotalTests": passed_tests + failed_tests,
+                    "numPassedTests": passed_tests,
+                    "numFailedTests": failed_tests,
+                    "numPendingTests": 0,
+                    "numTodoTests": 0,
+                    "testResults": [
+                        {
+                            "name": str(ROOT / expected.file),
+                            "status": file_status,
+                            "message": "",
+                            "assertionResults": [
+                                {
+                                    "status": assertion_status,
+                                    "fullName": expected.full_name,
+                                    "failureMessages": [expected.marker],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            False,
+            "",
+        )
+
+    matcher = assertion_matches
+    options: dict[str, bool] = {}
+    if fault == "ignore-file":
+        matcher = lambda want, got: (
+            got.full_name == want.full_name
+            and any(want.marker in message for message in got.messages)
+        )
+    elif fault == "ignore-full-name":
+        matcher = lambda want, got: (
+            got.file == want.file and any(want.marker in message for message in got.messages)
+        )
+    elif fault == "ignore-marker":
+        matcher = lambda want, got: got.file == want.file and got.full_name == want.full_name
+    elif fault == "accept-suite-error":
+        options["accept_suite_error"] = True
+    elif fault == "accept-incoherent-report":
+        options["accept_incoherent"] = True
+    elif fault == "accept-malformed-report":
+        options["accept_malformed"] = True
+    elif fault is not None:
+        print(f"mutation-probe self-test: unknown injected fault {fault}", file=sys.stderr)
+        return 2
+
+    cases = (
+        ("matching behavioral assertion", failed(), expected, "caught"),
+        (
+            "matching construction assertion",
+            failed(construction),
+            construction,
+            "caught",
+        ),
+        (
+            "matching top-level assertion without a failed nested suite",
+            reported_failure(failed_suites=0),
+            expected,
+            "caught",
+        ),
+        ("green mutant", SuiteResult(True, True, (), (), ""), expected, "survived"),
+        (
+            "marker from another file",
+            failed(file="packages/other/test/protocol.test.ts"),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "marker from another assertion",
+            failed(name="protocol guard failed during setup"),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "same test stopped at bind-arity compilation",
+            failed(message="FencedBatch[emit-event] 'wake-runs' binds 9 of 8 explicit args"),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "construction marker cannot answer for behavior",
+            failed(message=construction.marker),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "marker only in a file-level compile error",
+            SuiteResult(False, False, (), (expected.marker,), ""),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "matching assertion alongside a suite error",
+            SuiteResult(
+                False,
+                False,
+                failed().assertions,
+                ("unrelated file-level suite failure",),
+                "",
+            ),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "incoherent process and report verdicts",
+            SuiteResult(True, False, failed().assertions, (), ""),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "malformed report",
+            parse_report("{", False, ""),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "success verdict with no test results",
+            parse_report('{"success": true}', True, ""),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "success verdict alongside a failed assertion",
+            SuiteResult(True, True, failed().assertions, (), ""),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "failed assertion denied by file status and aggregate counters",
+            reported_failure(
+                file_status="passed",
+                passed_suites=1,
+                failed_suites=0,
+                passed_tests=1,
+                failed_tests=0,
+            ),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "malformed assertion status",
+            reported_failure(assertion_status=[]),
+            expected,
+            "wrong-path",
+        ),
+    )
+
+    failures = []
+    if check_live_inventory:
+        if TEST_CMD[:2] != ["bash", "scripts/confine.sh"]:
+            failures.append("full mutation suites are not routed through scripts/confine.sh")
+        for mutation in MUTATIONS:
+            source = (ROOT / mutation.file).read_text()
+            occurrences = source.count(mutation.find)
+            if occurrences != 1:
+                failures.append(
+                    f"{mutation.name}: mutation pattern occurs {occurrences} times; expected exactly one"
+                )
+            verdict_source = (ROOT / mutation.verdict.file).read_text()
+            if mutation.verdict.marker not in verdict_source:
+                failures.append(
+                    f"{mutation.name}: verdict marker {mutation.verdict.marker!r} is absent from "
+                    f"{mutation.verdict.file}"
+                )
+    for label, result, verdict, wanted in cases:
+        got = classify_verdict(result, verdict, matcher, **options)
+        if got != wanted:
+            failures.append(f"{label}: expected {wanted}, got {got}")
+    if failures:
+        if fault is not None:
+            print(
+                f"mutation-probe self-test caught injected fault {fault}: {failures[0]}",
+                file=sys.stderr,
+            )
+        else:
+            for failure in failures:
+                print(f"mutation-probe self-test: {failure}", file=sys.stderr)
+        return 1
+    if fault is not None:
+        print(
+            f"mutation-probe self-test MISSED injected fault {fault}",
+            file=sys.stderr,
+        )
+        return 0
+    print(
+        f"mutation-probe self-test: {len(cases)} attribution cases, "
+        f"{len(MUTATIONS)} live mutations"
+    )
+    return 0
 
 
 def assert_clean() -> None:
@@ -328,46 +1162,106 @@ def restore(path: Path, mutated: str, original: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="only mutations whose name contains this")
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="test verdict attribution and audit every live mutation pattern and marker",
+    )
+    ap.add_argument(
+        "--classifier-self-test",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument("--self-test-fault", choices=SELF_TEST_FAULTS, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    if args.self_test and args.classifier_self_test:
+        ap.error("--self-test and --classifier-self-test are mutually exclusive")
+    if args.self_test or args.classifier_self_test:
+        if args.k:
+            ap.error("self-tests cannot be combined with -k")
+        return self_test(
+            args.self_test_fault,
+            check_live_inventory=args.self_test,
+        )
+    if args.self_test_fault is not None:
+        ap.error("--self-test-fault requires --classifier-self-test")
+
     assert_clean()
-    green, _ = run_suite()
-    if not green:
-        print("baseline is RED — fix the suite before probing it", file=sys.stderr)
+    baseline = run_suite()
+    if not baseline.green:
+        detail = [*baseline.suite_errors, baseline.diagnostic]
+        shown = next((item for item in detail if item), "(no diagnostic)")
+        print(
+            f"baseline is RED or its report is invalid — fix the suite before probing it\n  {shown[:500]}",
+            file=sys.stderr,
+        )
         return 2
     print("baseline green\n")
 
-    survivors = []
-    for name, rel, find, replace, breaks in MUTATIONS:
-        if args.k and args.k not in name:
+    failures = []
+    selected = [mutation for mutation in MUTATIONS if args.k in mutation.name]
+    if not selected:
+        print(f"mutation-probe: -k {args.k!r} selected no mutations", file=sys.stderr)
+        return 2
+    for mutation in selected:
+        if args.k and args.k not in mutation.name:
             continue
-        path = ROOT / rel
+        path = ROOT / mutation.file
         original = path.read_text()
-        if find not in original:
-            print(f"  ?? {name}: pattern not found in {rel} — the mutation is stale")
-            survivors.append((name, "stale pattern"))
+        if mutation.find not in original:
+            print(
+                f"  ?? {mutation.name}: pattern not found in {mutation.file} — the mutation is stale"
+            )
+            failures.append((mutation.name, "stale pattern"))
             continue
-        mutated = original.replace(find, replace, 1)
+        mutated = original.replace(mutation.find, mutation.replace, 1)
         try:
             path.write_text(mutated)
-            caught, out = run_suite()
-            if caught:
-                print(f"  !! {name}: SURVIVED — nothing failed. {breaks}")
-                survivors.append((name, breaks))
+            result = run_suite()
+            outcome = classify_verdict(result, mutation.verdict)
+            if outcome == "survived":
+                print(
+                    f"  !! {mutation.name}: SURVIVED — nothing failed. {mutation.breaks}"
+                )
+                failures.append((mutation.name, mutation.breaks))
+            elif outcome == "caught":
+                print(
+                    f"  ok {mutation.name}: {mutation.verdict.kind} verdict "
+                    f"{mutation.verdict.full_name}"
+                )
             else:
-                failed = [l for l in out.splitlines() if l.strip().startswith("FAIL")]
-                first = failed[0].strip()[:90] if failed else "(suite failed)"
-                print(f"  ok {name}: caught by {first}")
+                observed = [
+                    f"{failure.file} > {failure.full_name}: "
+                    f"{next(iter(failure.messages), '(no failure message)')[:180]}"
+                    for failure in result.assertions[:3]
+                ]
+                observed.extend(error[:180] for error in result.suite_errors[:3])
+                if not observed and result.diagnostic:
+                    observed.append(result.diagnostic[:180])
+                detail = "; ".join(observed) if observed else "(no structured failure)"
+                expected = (
+                    f"{mutation.verdict.kind} {mutation.verdict.file} > "
+                    f"{mutation.verdict.full_name} containing {mutation.verdict.marker!r}"
+                )
+                print(
+                    f"  !! {mutation.name}: WRONG-PATH failure\n"
+                    f"     expected: {expected}\n"
+                    f"     observed: {detail}"
+                )
+                failures.append((mutation.name, "failed for the wrong reason"))
         finally:
             restore(path, mutated, original)
 
     print()
-    if survivors:
-        print(f"{len(survivors)} mutation(s) survived — each is a guard nothing is maintaining:")
-        for name, why in survivors:
+    if failures:
+        print(
+            f"{len(failures)} mutation(s) were not caught by their attributable verdict:"
+        )
+        for name, why in failures:
             print(f"  - {name}: {why}")
         return 1
-    print("every mutation was caught")
+    print("every mutation was caught by its attributable verdict")
     return 0
 
 

@@ -69,9 +69,10 @@ describe('a database older than the binary', () => {
       `ALTER TABLE runs ADD COLUMN task_id TEXT`,
     ]
     for (const sql of cases) {
-      await expect(db.batch('probe', [{ sql, args: [] }], 'read'), sql).rejects.toBeInstanceOf(
-        SchemaMismatchError,
-      )
+      await expect(
+        db.batch('probe', [{ sql, args: [] }], 'read'),
+        `mutation-verdict:behavior:schema-fault-is-permanent: ${sql}`,
+      ).rejects.toBeInstanceOf(SchemaMismatchError)
     }
   })
 

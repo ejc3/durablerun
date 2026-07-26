@@ -353,7 +353,10 @@ describe('a wake needs ONE row that justifies it', () => {
     // shape that produced the defect: the row with the right step was wrong
     // about the queue, and the row with the right queue was wrong about the
     // step.
-    expect(await disagreements(pairCases)).toEqual([])
+    expect(
+      await disagreements(pairCases),
+      'mutation-verdict:behavior:emit-wake-one-witness',
+    ).toEqual([])
   }, 15_000)
 
   it('rejects a wake predicate that accepts only NULL timeout pairs', async () => {

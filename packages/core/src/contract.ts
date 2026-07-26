@@ -56,6 +56,107 @@ export const REASON_CANCELLED = '{"name":"$Cancelled"}'
 export const FENCED_TABLES = ['tasks', 'runs', 'waits', 'events'] as const
 export type FenceTable = (typeof FENCED_TABLES)[number]
 
+/** One grammar for statement names embedded in persisted provenance stamps. */
+export const FENCE_STATEMENT_NAME_SOURCE = String.raw`[a-zA-Z0-9_-]+`
+const FENCE_STATEMENT_NAME = new RegExp(`^${FENCE_STATEMENT_NAME_SOURCE}$`)
+
+export function isFenceStatementName(value: string): boolean {
+  return FENCE_STATEMENT_NAME.test(value)
+}
+
+/**
+ * The logical-key relations a generated follow-on may traverse.
+ *
+ * Both sides live in this one contract entry deliberately. Letting a caller
+ * spell `target.key` and `source.column` independently admits statements such
+ * as `runs.run_id IN (SELECT runs.task_id ...)`: valid SQL, fully fenced, and
+ * silently incapable of matching the row the transition means to update.
+ *
+ * The values are frozen as well as readonly so a JavaScript caller cannot
+ * mutate the relation behind the TypeScript boundary at runtime.
+ */
+export const FENCE_RELATIONS = Object.freeze({
+  'runs-to-tasks': Object.freeze({
+    target: 'tasks',
+    key: 'task_id',
+    from: 'runs',
+    column: 'task_id',
+  }),
+  'runs-to-waits': Object.freeze({
+    target: 'waits',
+    key: 'run_id',
+    from: 'runs',
+    column: 'run_id',
+  }),
+  'tasks-to-runs': Object.freeze({
+    target: 'runs',
+    key: 'task_id',
+    from: 'tasks',
+    column: 'task_id',
+  }),
+  'waits-to-runs': Object.freeze({
+    target: 'runs',
+    key: 'run_id',
+    from: 'waits',
+    column: 'run_id',
+  }),
+  'runs-to-runs': Object.freeze({
+    target: 'runs',
+    key: 'run_id',
+    from: 'runs',
+    column: 'run_id',
+  }),
+} as const)
+
+export type FenceRelation = keyof typeof FENCE_RELATIONS
+
+/** Relations on which sealing overwrites the source row itself. */
+export type SelfFenceRelation = {
+  [R in FenceRelation]: (typeof FENCE_RELATIONS)[R]['from'] extends (typeof FENCE_RELATIONS)[R]['target']
+    ? (typeof FENCE_RELATIONS)[R]['target'] extends (typeof FENCE_RELATIONS)[R]['from']
+      ? (typeof FENCE_RELATIONS)[R]['key'] extends (typeof FENCE_RELATIONS)[R]['column']
+        ? (typeof FENCE_RELATIONS)[R]['column'] extends (typeof FENCE_RELATIONS)[R]['key']
+          ? R
+          : never
+        : never
+      : never
+    : never
+}[FenceRelation]
+
+/**
+ * Assignment targets accepted by generated follow-ons. The primitive writes
+ * the left-hand side from this closed contract and callers supply only scalar
+ * expressions, so provenance columns cannot be named through dialect quoting
+ * tricks or duplicate assignments.
+ */
+export const DERIVED_WRITABLE_COLUMNS = Object.freeze({
+  tasks: Object.freeze([
+    'state',
+    'last_attempt_run',
+    'first_started_at_ms',
+    'cancel_at_ms',
+    'failure_reason',
+    'infra_retries',
+    'completed_payload',
+    'attempts',
+  ] as const),
+  runs: Object.freeze([
+    'state',
+    'claimed_by',
+    'claim_expires_at_ms',
+    'available_at_ms',
+    'wake_event',
+    'event_payload',
+    'wake_step',
+    'heartbeat_at_ms',
+  ] as const),
+  waits: Object.freeze([] as const),
+  events: Object.freeze([] as const),
+} as const satisfies Record<FenceTable, readonly string[]>)
+
+export type DerivedWritableColumn<T extends FenceTable> =
+  (typeof DERIVED_WRITABLE_COLUMNS)[T][number]
+
 /**
  * Conflict updates for first-write-wins facts re-stamp provenance without
  * moving the fact's original instant. This enumeration is shared by every

@@ -102,6 +102,29 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.claim(Q, 't1', { leaseSeconds: 60, limit: 2 })).toHaveLength(2)
         expect(await f.store.claim(Q, 't2', { leaseSeconds: 60, limit: 10 })).toHaveLength(3)
       })
+
+      it('applies sole-live eligibility before the claim limit', async () => {
+        const corrupt = await f.store.spawn(Q, 'corrupt', '{}')
+        await f.raw.batch('t', [
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+                  VALUES ('corrupt-second', ?, ?, 2, 'pending', 1000000, 1000000)`,
+            args: [Q, corrupt.taskId],
+          },
+        ])
+        const corruptBefore = await snapshot(f, corrupt.taskId)
+
+        await f.admin.setFakeNowEpochMs(1_000_001)
+        const healthy = await f.store.spawn(Q, 'healthy', '{}')
+        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
+
+        expect(
+          claimed.map((run) => run.taskId),
+          'mutation-verdict:behavior:claim-eligibility-before-limit',
+        ).toEqual([healthy.taskId])
+        expect(await snapshot(f, corrupt.taskId)).toEqual(corruptBefore)
+      })
     })
 
     describe('activate', () => {

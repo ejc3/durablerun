@@ -3,6 +3,7 @@ import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-lib
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
+import { attributeBehaviorFailure } from './mutation-verdict.js'
 
 /**
  * Replays where TIME PASSED between the original batch and the replay.
@@ -122,12 +123,16 @@ describe('a replay after the world moved on', () => {
     const [claimed] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
     expect(claimed?.runId).toBe(successorId)
 
-    await rec.replay('fail')
+    await attributeBehaviorFailure(
+      'mutation-verdict:behavior:successor-ownership',
+      /UNIQUE constraint failed: (?:runs\.run_id|runs\.task_id, runs\.attempt)/,
+      () => rec.replay('fail'),
+    )
 
     const [task] = await query(f.raw, `SELECT state, failure_reason FROM tasks WHERE task_id = ?`, [
       spawned.taskId,
     ])
-    expect(task?.state).toBe('running') // NOT failed — its successor is live
+    expect(task?.state, 'mutation-verdict:behavior:successor-ownership').toBe('running') // NOT failed — its successor is live
     const [after] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [successorId])
     expect(after?.state).toBe('running')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
@@ -166,7 +171,10 @@ describe('a replay after the world moved on', () => {
 
     await rec.replay('emit-event')
 
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    expect(
+      await engineInvariantViolations(f.raw),
+      'mutation-verdict:behavior:emit-replay-preserves-event-instant',
+    ).toEqual([])
     f.close()
   })
 
@@ -204,6 +212,58 @@ describe('a replay after the world moved on', () => {
     expect(Number(restored?.n)).toBe(1)
     f.close()
   })
+
+  for (const suspension of ['reschedule', 'suspend'] as const) {
+    it(`does not let a delayed ${suspension} replay delete a later wait`, async () => {
+      const f = await fixture()
+      const rec = recorder(f.raw)
+      const store = f.storeOver(rec.db)
+      const spawned = await store.spawn(Q, 'job', '{}')
+      const [first] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!first) throw new Error('expected the first claim')
+      await store.activate(Q, first.runId, first.claimToken, first.claimGen)
+
+      if (suspension === 'reschedule') {
+        await store.reschedule(Q, first.runId, first.claimToken, { inSeconds: 1 })
+      } else {
+        await store.suspendRun(
+          Q,
+          first.runId,
+          first.claimToken,
+          { inSeconds: 1 },
+          { key: '$sleep:new-wait', stateJson: '{}' },
+        )
+      }
+
+      // A later claim and park overwrite the old suspension stamp. Replaying
+      // the exact old batch must therefore lose its CAS and its wait cleanup;
+      // otherwise a delayed request can erase a registration created after it.
+      await f.admin.setFakeNowEpochMs(NOW + 2_000)
+      const [later] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+      if (!later) throw new Error('expected the later claim')
+      await store.activate(Q, later.runId, later.claimToken, later.claimGen)
+      await store.awaitEvent(
+        Q,
+        spawned.taskId,
+        later.runId,
+        later.claimToken,
+        '$await:later',
+        'later',
+        null,
+      )
+
+      await rec.replay(suspension)
+
+      expect(
+        await query(
+          f.raw,
+          `SELECT event_name FROM waits WHERE run_id = ? AND step_name = '$await:later'`,
+          [later.runId],
+        ),
+      ).toEqual([{ event_name: 'later' }])
+      f.close()
+    })
+  }
 })
 
 describe('emitEvent only wakes runs that are parked on that event', () => {
@@ -276,7 +336,10 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
       `SELECT state, wake_event, event_payload FROM runs WHERE run_id = ?`,
       [run.runId],
     )
-    expect({ state: after?.state, wake: after?.wake_event }).toEqual({
+    expect(
+      { state: after?.state, wake: after?.wake_event },
+      'mutation-verdict:behavior:emit-wake-event-correlation',
+    ).toEqual({
       state: 'sleeping',
       wake: 'A',
     })
@@ -323,7 +386,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     const [after] = await query(f.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
       run.runId,
     ])
-    expect(after?.state).toBe('sleeping') // its own await never registered this
+    expect(after?.state, 'mutation-verdict:behavior:emit-wake-step-correlation').toBe('sleeping') // its own await never registered this
     expect(after?.event_payload).toBeNull()
     f.close()
   })
@@ -480,7 +543,10 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     const woken = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [ra.runId])
     expect(woken[0]?.state).toBe('pending')
     // A was woken, so its registration is spent and must be gone.
-    expect(await query(f.raw, `SELECT 1 FROM waits WHERE run_id = ?`, [ra.runId])).toEqual([])
+    expect(
+      await query(f.raw, `SELECT 1 FROM waits WHERE run_id = ?`, [ra.runId]),
+      'mutation-verdict:behavior:emit-cleanup-follows-the-wake',
+    ).toEqual([])
     // B was not, so its registration is all that is left of the request.
     expect(await query(f.raw, `SELECT step_name FROM waits WHERE run_id = ?`, [rb.runId])).toEqual([
       { step_name: '$await:go' },
@@ -698,6 +764,7 @@ describe('a successor id that collides with a historical run of the same task', 
       colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
         delaySeconds: 0,
       }),
+      'mutation-verdict:behavior:successor-attempt-identity',
     ).rejects.toThrow()
 
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])

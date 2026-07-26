@@ -1,4 +1,15 @@
-import { PRESERVED_FENCE_INSTANTS, type FenceTable, type PreservedFenceTable } from './contract.js'
+import {
+  DERIVED_WRITABLE_COLUMNS,
+  type DerivedWritableColumn,
+  FENCE_RELATIONS,
+  FENCE_STATEMENT_NAME_SOURCE,
+  type FenceRelation,
+  type FenceTable,
+  PRESERVED_FENCE_INSTANTS,
+  type PreservedFenceTable,
+  type SelfFenceRelation,
+  isFenceStatementName,
+} from './contract.js'
 import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from './primitives.js'
 
 /**
@@ -74,27 +85,38 @@ function preservedFenceSet(target: FenceTable, column: string): string {
  */
 export type RowBound = 'one' | { many: string }
 
-interface DerivedSelection {
-  key: string
-  from: FenceTable
-  column: string
+interface DerivedSelection<R extends FenceRelation = FenceRelation> {
+  relation: R
   fence: string
   where?: string
   whereArgs?: SqlStatement['args']
   narrow?: string
   narrowArgs?: SqlStatement['args']
-  rows: RowBound
+  rows: 'one' | 'source-keys'
 }
 
-type DerivedSpec =
-  | (DerivedSelection & {
-      target: string
+type RelationTarget<R extends FenceRelation> = (typeof FENCE_RELATIONS)[R]['target']
+type DerivedSet<R extends FenceRelation> = Partial<
+  Record<DerivedWritableColumn<RelationTarget<R>>, string>
+>
+
+type DerivedSpec<R extends FenceRelation = FenceRelation> =
+  | (DerivedSelection<R> & {
       set?: undefined
       setArgs?: never
     })
-  | (DerivedSelection & {
-      target: FenceTable
-      set: string
+  | (DerivedSelection<R> & {
+      set: DerivedSet<R>
+      setArgs?: SqlStatement['args']
+    })
+
+type InternalDerivedSpec<R extends FenceRelation> =
+  | (DerivedSelection<R> & {
+      set?: undefined
+      setArgs?: never
+    })
+  | (DerivedSelection<R> & {
+      set: Readonly<Partial<Record<string, string>>>
       setArgs?: SqlStatement['args']
     })
 
@@ -106,7 +128,7 @@ interface Named {
   args: SqlStatement['args']
   kind: Kind
   /** Present while this statement's stamp may still be consumed. */
-  fence: { sealedBy: string | null } | null
+  fence: { target: FenceTable; sealedBy: string | null } | null
   rows: RowBound | null
   max: number | null
 }
@@ -136,9 +158,6 @@ const BLIND_COUNTER = new RegExp(
   ].join(''),
   'i',
 )
-
-/** Statement names are spliced into a bound value and into a token. */
-const NAME_OK = /^[a-zA-Z0-9_-]+$/
 
 export interface FencedResult {
   /** The name of the CAS that won, or null if none did. */
@@ -219,7 +238,10 @@ export class FencedBatch {
    * do. Enforcing here rather than in `fence()` makes the two spellings
    * equivalent instead of making one of them a hole.
    */
-  private requireFenceSource(name: string, at: string): { sealedBy: string | null } {
+  private requireFenceSource(
+    name: string,
+    at: string,
+  ): { target: FenceTable; sealedBy: string | null } {
     const source = this.statements.find((s) => s.name === name)
     if (!source) {
       throw new Error(
@@ -290,24 +312,68 @@ export class FencedBatch {
    * `narrow` is ANDed and parenthesised, so it can only ever SHRINK the set —
    * there is no way to write an alternative that widens it.
    *
-   * `where`'s arguments are supplied once and bound twice, because the
+   * A `'source-keys'` row declaration is a structural bound, not a post-commit
+   * row-count alarm. The target key is selected from the paired source key in
+   * the closed `FENCE_RELATIONS` ledger, and this method verifies that the fence
+   * actually stamps that source table. Therefore the distinct target keys are
+   * a subset of the stamped source keys by construction. Several physical rows
+   * may share one logical key (for example, several waits for one run).
+   *
+   * For an UPDATE, `where`'s arguments are supplied once and bound twice, because the
    * correlation appears in both the provenance subquery and the row selection.
    * Callers were duplicating them by hand, which is its own quiet hazard.
    *
-   * The presence of `set` selects UPDATE rather than DELETE. Every UPDATE
-   * target is a FenceTable and the primitive always generates its provenance;
-   * there is no optional flag with which a caller can bypass the write check.
+   * The presence of `set` selects UPDATE rather than DELETE. Assignment
+   * targets come from the closed per-table contract; callers supply only
+   * scalar right-hand sides. Every UPDATE target is a FenceTable and the
+   * primitive always generates its provenance.
    */
-  derived(name: string, spec: DerivedSpec): this {
+  derived<R extends FenceRelation>(name: string, spec: DerivedSpec<R>): this {
+    return this.derivedInternal(name, spec, null)
+  }
+
+  private derivedInternal<R extends FenceRelation>(
+    name: string,
+    spec: InternalDerivedSpec<R>,
+    sealedSelfKey: string | null,
+  ): this {
+    const relation = this.relation(spec.relation, `derived('${name}')`)
+    const { target, key, from, column } = relation
+    const source = this.requireFenceSource(spec.fence, `derived('${name}')`)
+    if (source.target !== from) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') relation '${spec.relation}' reads '${from}', but fence '${spec.fence}' stamps '${source.target}'`,
+      )
+    }
+    const assignments =
+      spec.set === undefined ? [] : (Object.entries(spec.set) as Array<[string, string]>)
+    const allowedColumns = new Set<string>(DERIVED_WRITABLE_COLUMNS[target])
+    if (sealedSelfKey !== null) allowedColumns.add(sealedSelfKey)
+    for (const [column, expression] of assignments) {
+      if (!allowedColumns.has(column)) {
+        const reason = /fence_(?:stamp|at_ms)/i.test(column)
+          ? 'caller set controls provenance'
+          : `column '${column}' is not writable for ${target}`
+        throw new Error(`FencedBatch[${this.label}] derived('${name}') ${reason}`)
+      }
+      assertSetExpression(`FencedBatch[${this.label}] derived('${name}')`, column, expression)
+    }
     // Parenthesised for the same reason `narrow` is: AND binds tighter than
     // OR, so an unbracketed `a OR b` would compile to `a OR (b AND fence)`
     // and let every row matching `a` into the selection unstamped. The
     // caller's text lands in a boolean position, so the primitive brackets
     // it rather than trusting it to be conjunctive.
     const src = spec.where ? `(${spec.where}) AND ` : ''
-    const fence = this.fence(spec.fence)
-    const selection = `${spec.key} IN (SELECT f.${spec.column} FROM ${spec.from} f
-                       WHERE ${src}f.fence_stamp = ${fence})`
+    const fence = `$FENCE:${spec.fence}$`
+    const sourceKeys =
+      target === from
+        ? `SELECT source_key FROM (
+                         SELECT DISTINCT f.${column} AS source_key FROM ${from} f
+                          WHERE ${src}f.fence_stamp = ${fence}
+                       ) AS fenced_source`
+        : `SELECT f.${column} FROM ${from} f
+                       WHERE ${src}f.fence_stamp = ${fence}`
+    const selection = `${key} IN (${sourceKeys})`
     const narrow = spec.narrow ? `\n         AND (${spec.narrow})` : ''
     const w = spec.whereArgs ?? []
 
@@ -316,30 +382,50 @@ export class FencedBatch {
         name,
         kind: 'followOn',
         target: null,
-        sql: `DELETE FROM ${spec.target}\n       WHERE ${selection}${narrow}`,
+        sql: `DELETE FROM ${target}\n       WHERE ${selection}${narrow}`,
         args: [...w, ...(spec.narrowArgs ?? [])],
-        rows: spec.rows,
+        rows: spec.rows === 'one' ? 'one' : { many: 'generated source-key bound' },
         max: null,
       })
     }
+    if (assignments.length === 0) {
+      throw new Error(`FencedBatch[${this.label}] derived('${name}') UPDATE set cannot be empty`)
+    }
+    const setSql = assignments
+      .map(([column, expression]) => `${column} = ${expression}`)
+      .join(',\n         ')
     // A many-row source still carries one statement instant. Reduce it to one
     // SQL scalar explicitly: SQLite otherwise picks an arbitrary row while
     // PostgreSQL and MySQL reject the same subquery for returning several.
+    const sourceInstant =
+      target === from
+        ? `SELECT MIN(source_fence_at_ms) FROM (
+                          SELECT DISTINCT f.fence_at_ms AS source_fence_at_ms FROM ${from} f
+                           WHERE ${src}f.fence_stamp = ${fence}
+                        ) AS fenced_source_instant`
+        : `SELECT MIN(f.fence_at_ms) FROM ${from} f
+                        WHERE ${src}f.fence_stamp = ${fence}`
     const provenance = `,\n         fence_stamp = ${STAMP},
-         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM ${spec.from} f
-                        WHERE ${src}f.fence_stamp = ${fence})`
+         fence_at_ms = (${sourceInstant})`
     return this.add({
       name,
       kind: 'followOn',
-      target: spec.target,
-      sql: `UPDATE ${spec.target} SET ${spec.set}${provenance}\n       WHERE ${selection}${narrow}`,
+      target,
+      sql: `UPDATE ${target} SET ${setSql}${provenance}\n       WHERE ${selection}${narrow}`,
       // UPDATE always emits provenance, so the correlation occurs once in its
       // instant subquery and once in its row selection. DELETE has no stamp to
       // write and returned through the branch above.
       args: [...(spec.setArgs ?? []), ...w, ...w, ...(spec.narrowArgs ?? [])],
-      rows: spec.rows,
+      rows: spec.rows === 'one' ? 'one' : { many: 'generated source-key bound' },
       max: null,
     })
+  }
+
+  private relation(name: FenceRelation, at: string): (typeof FENCE_RELATIONS)[FenceRelation] {
+    if (!Object.prototype.hasOwnProperty.call(FENCE_RELATIONS, name)) {
+      throw new Error(`FencedBatch[${this.label}] ${at} names unknown fence relation '${name}'`)
+    }
+    return FENCE_RELATIONS[name]
   }
 
   /**
@@ -352,15 +438,25 @@ export class FencedBatch {
    */
   seal(
     name: string,
-    spec: Omit<DerivedSelection, 'from' | 'column'> & { target: FenceTable },
+    spec: Omit<DerivedSelection<SelfFenceRelation>, 'relation'> & {
+      relation: SelfFenceRelation
+    },
   ): this {
     const source = this.requireFenceSource(spec.fence, `seal('${name}')`)
-    this.derived(name, {
-      ...spec,
-      from: spec.target,
-      column: spec.key,
-      set: `${spec.key} = ${spec.key}`,
-    })
+    const relation = this.relation(spec.relation, `seal('${name}')`)
+    if (relation.from !== relation.target || relation.key !== relation.column) {
+      throw new Error(
+        `FencedBatch[${this.label}] seal('${name}') relation '${spec.relation}' does not target its own source key`,
+      )
+    }
+    this.derivedInternal(
+      name,
+      {
+        ...spec,
+        set: { [relation.key]: relation.key },
+      },
+      relation.key,
+    )
     source.sealedBy = name
     return this
   }
@@ -412,20 +508,22 @@ export class FencedBatch {
   }): this {
     const { name, sql, kind, target } = s
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
-    if (!NAME_OK.test(name)) {
-      throw new Error(`${at}: name must match ${NAME_OK.source}`)
+    if (!isFenceStatementName(name)) {
+      throw new Error(`${at}: name must match ^${FENCE_STATEMENT_NAME_SOURCE}$`)
     }
     if (this.statements.some((x) => x.name === name)) {
       throw new Error(`FencedBatch[${this.label}] duplicate statement name '${name}'`)
     }
 
     // Every fence token in the text, however it got there.
-    for (const match of sql.matchAll(/\$FENCE:([a-zA-Z0-9_-]+)\$/g)) {
+    for (const match of sql.matchAll(
+      new RegExp(`\\$FENCE:(${FENCE_STATEMENT_NAME_SOURCE})\\$`, 'g'),
+    )) {
       this.requireFenceSource(match[1] as string, `the fence token ${match[0]}`)
     }
 
     const isCas = kind === 'cas' || kind === 'casMany'
-    const fence = isCas || target !== null ? { sealedBy: null } : null
+    const fence = target === null ? null : { target, sealedBy: null }
     const bare = blankComments(sql)
     const head = beforeTopLevelWhere(bare)
 
@@ -557,7 +655,10 @@ export class FencedBatch {
    * and consumes no argument slot; the other three each bind one value.
    */
   private compile(s: Named): SqlStatement {
-    const tokens = /\?|\$STAMP\$|\$NOW\$|\$FENCE:[a-zA-Z0-9_-]+\$/g
+    const tokens = new RegExp(
+      `\\?|\\$STAMP\\$|\\$NOW\\$|\\$FENCE:${FENCE_STATEMENT_NAME_SOURCE}\\$`,
+      'g',
+    )
     let out = ''
     let last = 0
     let argIndex = 0
@@ -679,6 +780,38 @@ function beforeTopLevelWhere(sql: string): string {
   return at < 0 ? sql : sql.slice(0, at)
 }
 
+/** A caller supplies one scalar RHS; assignment structure stays generated. */
+function assertSetExpression(at: string, column: string, expression: string): void {
+  const structural = blankLiterals(expression)
+  if (/--|\/\*|#/.test(structural)) {
+    throw new Error(`${at} set expression for '${column}' contains a SQL comment`)
+  }
+  let depth = 0
+  for (let i = 0; i < expression.length; i++) {
+    const ch = expression[i]
+    if (ch === "'") {
+      const end = skipString(expression, i)
+      if (end >= expression.length) {
+        throw new Error(`${at} set expression for '${column}' has an unterminated string`)
+      }
+      i = end
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') {
+      depth--
+      if (depth < 0) {
+        throw new Error(`${at} set expression for '${column}' has an unmatched ')'`)
+      }
+    } else if ((ch === ',' && depth === 0) || ch === ';') {
+      throw new Error(`${at} set expression for '${column}' escapes its generated assignment`)
+    }
+  }
+  if (depth !== 0) {
+    throw new Error(`${at} set expression for '${column}' has unbalanced parentheses`)
+  }
+}
+
 function topLevelWhere(sql: string): number {
   let depth = 0
   for (let i = 0; i < sql.length; i++) {
@@ -710,7 +843,9 @@ function hasPositiveFence(sql: string): boolean {
   const start = topLevelWhere(sql)
   if (start < 0) return false
   const negated = negatedSpans(sql)
-  for (const match of sql.matchAll(/fence_stamp\s*=\s*\$FENCE:[a-zA-Z0-9_-]+\$/g)) {
+  for (const match of sql.matchAll(
+    new RegExp(`fence_stamp\\s*=\\s*\\$FENCE:${FENCE_STATEMENT_NAME_SOURCE}\\$`, 'g'),
+  )) {
     const at = match.index ?? 0
     if (at < start) continue
     if (negated.some(([from, to]) => at >= from && at < to)) continue

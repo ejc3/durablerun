@@ -374,10 +374,13 @@ One invocation executes one claimed run to its next suspension point:
   carries it; activation is
   `UPDATE runs SET activated_gen = :claim_gen, claim_expires_at = <re-extended>
   WHERE run_id=:r AND claimed_by=:token AND claim_gen=:claim_gen AND
-  activated_gen < :claim_gen`. Zero rows = a duplicate delivery already
-  activated this claim, the claim was superseded, or the lease was swept: exit
-  immediately. Activation re-extends the lease, so a launch that sat in the
-  channel for most of the lease doesn't start life nearly expired; and
+  activated_gen < :claim_gen AND <soleLiveRun(runs)>`. The final fragment
+  refuses activation if another live run now belongs to the task, including
+  corruption introduced after claim. Zero rows = a duplicate delivery already
+  activated this claim, the claim was superseded, the lease was swept, or the
+  task no longer has one live run: exit immediately. Activation re-extends the
+  lease, so a launch that sat in the channel for most of the lease doesn't
+  start life nearly expired; and
   `activated_gen < claim_gen` at sweep time is exactly what identifies a lost
   launch (§3.1 step 1).
 - Loads visible checkpoints (`c_` rows for the task, committed, owner attempt ≤
@@ -532,6 +535,12 @@ are load-bearing):
    sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
    payload is the TimeoutError path, and that claim batch deletes the wait row
    so a later emit cannot resurrect a timed-out wait.
+   A timer suspension replaces an event registration: `reschedule` and
+   `suspendRun` delete every wait belonging to the run their suspension CAS
+   stamped, in the same batch. Cancellation likewise deletes waits through
+   the `run_id`s of the runs its follow-on actually cancelled, never through
+   the denormalized `waits.task_id`; a corrupt mirror cannot redirect
+   ownership.
    **A wake needs ONE wait row that justifies it, and the cleanup follows the
    wake.** Emit selects waiters from `waits`, a table its batch never wrote,
    so it is the one place the fence cannot decide which rows may be written
@@ -572,13 +581,32 @@ are load-bearing):
    while the FencedBatch invocation seed gives the claim CAS its fresh
    per-statement provenance stamp. Mutating follow-ons update tasks and delete
    expired waits strictly through the claim CAS stamp, never through the
-   durable token or a re-computed candidate set. The final receipt read alone
-   keys on `claimed_by = :claim_token`: a same-token retry claims nothing new
-   and returns the original selection (guarded by "no running rows already
-   carry this token"), so a lost response cannot multiply the claim bound.
+   durable token or a re-computed candidate set. The final receipt read uses
+   `claimed_by = :claim_token` as its durable identity rather than the CAS
+   stamp: a same-token retry claims nothing new and returns the original
+   selection (guarded by "no running rows already carry this token"), so a
+   lost response cannot multiply the claim bound.
    The candidate set also excludes tasks whose cancellation deadline is
    already due — a sweep budget too small to cancel everything this pass must
-   not leak due-to-cancel tasks into launches.
+   not leak due-to-cancel tasks into launches. All claim eligibility—live task,
+   sole live run, and unambiguous carried wait—must be applied inside BOTH the
+   pending and sleeping ordered candidate legs before each `LIMIT`. A late
+   outer join or filter is not equivalent: an earlier corrupt row can consume
+   the bounded budget before being refused and permanently starve later
+   healthy work. Every newly claimed or
+   receipt-returned run must also be the task's sole live run: the canonical
+   `soleLiveRun(run)` eligibility fragment gates both the candidate CAS and the
+   final `picked` receipt tail. It rejects every run with another live sibling,
+   so a corrupt multiple-live-run task is refused rather than double-launched,
+   including when corruption appears between a successful claim and its
+   same-token retry. The activation CAS is the third door and composes the same
+   fragment: a live sibling appearing after claim but before activation
+   invalidates the issued launch. The task-book follow-on derives
+   `last_attempt_run` with
+   `MIN(f.run_id) … HAVING COUNT(*) = 1`; even if the sole-live guard
+   regresses, every dialect observes the same non-singleton
+   outcome rather than SQLite choosing an arbitrary scalar row while
+   PostgreSQL/MySQL reject it.
 5. **Checkpoint writes are lease-fenced in both placements.** Inline: the upsert
    joins the run-row guard (`claimed_by=:token AND state='running'`) — same DB,
    free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease
@@ -631,7 +659,10 @@ are load-bearing):
    aliases across its statements, and a follow-on asking "does the row at
    this id carry my batch's stamp" can then be answered by a *different* row
    the same batch stamped — which is how a failing run whose successor id
-   collided with its own impersonated that successor.
+   collided with its own impersonated that successor. Statement names obey
+   the one contract grammar `[a-zA-Z0-9_-]+`; the builder and the persisted
+   provenance evaluator import that same definition, so an invalid suffix
+   cannot be accepted by one representation and emitted by the other.
    *(b)* a follow-on may not read the clock at all. It has `fence_at_ms`, so
    the class of bug where two statements of one batch disagree about "now"
    has no remaining legal instance to hide in.
@@ -648,7 +679,26 @@ are load-bearing):
    conflict arm re-stamps `fence_stamp` while copying
    `events.emitted_at_ms`; `$NOW$` and every other column are illegal there.
    Adding another exception requires extending that enumeration and its
-   rejection tests.
+   rejection tests. Its ordinary assignments are generated from a closed
+   per-table list of left-hand sides; callers provide scalar right-hand sides
+   only. Provenance columns and public primary identity are absent, so quoted
+   identifiers, duplicate assignments, and `runs.run_id` cannot compete with
+   the primitive's writes.
+   *(d)* generated follow-ons traverse one of the contract's closed logical-key
+   relations: `runs.task_id → tasks.task_id`, `runs.run_id → waits.run_id`,
+   `tasks.task_id → runs.task_id`, `waits.run_id → runs.run_id`, or the exact
+   self relation `runs.run_id → runs.run_id`. Callers name the relation; they
+   cannot spell either key independently. Construction also requires the
+   named fence to have stamped the relation's source table, and sealing
+   requires both source table and logical key to be identical. A
+   `rows: 'source-keys'` follow-on is therefore bounded structurally: its
+   distinct target keys are a subset of the stamped source keys, while several
+   physical target rows may share one key. This is a construction property,
+   not a count query checked after commit. Self-source reads are wrapped in a
+   non-mergeable `DISTINCT` derived table so the identical generated shape is
+   legal for MySQL updates as well as SQLite and Postgres. Raw
+   `{ many: reason }` remains only for emit's `wake-runs` pending the active
+   wait identity in PR3.8.
    The columns are nullable, unindexed, and never a lookup key — a stamp is
    only ever a filter, and every fenced statement is anchored by a primary key
    or an existing index. Rows written before the provenance migration read
@@ -673,11 +723,15 @@ that makes its bug class unwritable or machine-caught, so compliance does
 not depend on careful reading:
 
 - *Eligibility fragments* (`store-*/src/fragments.ts`): what "live",
-  "cancellation due", and "eligible to proceed" mean is spelled once per
-  dialect; every door composes the fragments, and a lint in the verify
-  gate fails any store source containing an eligibility comparison or raw
-  state list elsewhere. A door cannot carry a stale copy of a predicate it
-  cannot spell.
+  "cancellation due", "sole live run", and "eligible to proceed" mean is
+  spelled once per dialect; every door composes the fragments, and a lint in
+  the verify gate fails any store source containing an eligibility comparison
+  or raw state list elsewhere. A door cannot carry a stale copy of a predicate
+  it cannot spell. Claim has one `candidateEligibility` composition—live task,
+  sole live run, and unambiguous wait—inserted into both state legs before
+  their per-leg limits. Shared conformance pins bounded progress; the libSQL
+  query-plan suite records the shipped CAS rather than a hand-written stand-in
+  and pins its indexed scans and sibling probes.
 - *Opaque launch outcomes* (`core/launch.ts`): a launcher's report has no
   readable fields; the only affordance is `LaunchOutcome.reconcile`, which
   owns parsing, identity checking, and the single advisory-expiry door.
@@ -689,6 +743,61 @@ not depend on careful reading:
   crash-before, crash-after, and duplicated-request faults automatically,
   with invariants, the claim QUANTITY bound, and a post-fault progress
   probe asserted. Fault coverage is enumerated, never curated.
+- *The invariant condition inventory and poison matrix*
+  (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
+  one dialect-neutral five-table read batch whose result cardinality is
+  exact and every slot/column is validated; a missing or malformed result is
+  an error, never an empty table. Dialect adapters expose exact integers as
+  safe numbers or bigint, which the evaluator compares canonically without a
+  lossy Number conversion. Invalid native representations enter through the
+  fixture's `injectStorageCorruption` seam: a permissive store returns
+  `injected`, while a strict schema returns `structurally-rejected`, and both
+  are valid outcomes of the identical shared witness. TypeScript evaluates
+  one of 50 typed condition IDs for every semantic arm. The poison surface
+  crosses the 17 classified write labels with 47 atomic corrupt-state
+  witnesses covering that exact condition inventory: 799 generated cells,
+  plus two inventory cases. Every injectable witness invokes its label; a
+  strict dialect may instead return `structurally-rejected` before invocation,
+  the stronger result that the forbidden pre-state is unwritable. Each invoked
+  cell freezes structured tuple keys for a protected pre-operation population
+  across every protocol/bookkeeping table, permits new rows only through
+  explicit complete ownership tuples, and rejects writes outside before-state
+  authority, new violations, live-run amplification, and worsening hidden
+  behind the same condition and structured subject. Severity is exact numeric evidence,
+  including absolute wait-deadline divergence and the span of instants under
+  one provenance seed.
+  A label proves progress only when a semantically healthy transition wins
+  and its individual store call produces a durable delta in the exact
+  six-table snapshot. State change, not SQL spelling or returned row count, is
+  the property: dialect DML beginning with a CTE counts, while SELECT rows and
+  no-op DML do not. The `cardinality/two-live-runs` claim witness is already
+  due, and exact behavioral mutations remove the sole-live guard from the
+  candidate CAS and receipt tail, so that generated cell cannot be satisfied
+  solely by an unrelated healthy delta or a stale same-token receipt. A
+  separate post-claim/pre-activate regression and exact mutation attack the
+  activation door; the generated `activate × two-pending-runs` cell alone
+  cannot prove that temporal placement because its target is not claimed.
+  Emit's one atomic exception is keyed to condition
+  `wait/fired-event` and the exact structured poisoned-run component; display
+  names cannot widen it. Counting names, delimiter-joining keys or findings,
+  observing that a label was called, or deriving authority from the
+  after-state are prohibited proxies. Fifteen adversarial oracle meta-tests
+  attack these distinctions.
+- *Attributable mutation verdicts* (`scripts/mutation-probe.py`): every
+  mutation names the exact behavioral or construction assertion that must
+  kill it — test file, full test name, and marker in its failure. Compilation
+  or bind failure, a different assertion, any suite-level error, malformed or
+  internally contradictory structured output, process/report disagreement,
+  or any other wrong path receives no credit. The verify gate runs 16
+  classifier cases and six injected false-positive faults over all 34 live
+  mutations. The parser requires all nine aggregate counters to be
+  nonnegative integers and internally consistent within their reporter
+  domains. Test counters match test rows; each file status matches its own
+  assertion/message rows; suite counters are not equated with file counts
+  because the reporter does not expose that topology. Every status is
+  type-checked before classification. Baseline and per-mutation suites invoke
+  `scripts/confine.sh` internally; the source-mutating audit remains the
+  clean-tree pre-push proof.
 - *Duplicate-delivery in the model*: the spec models a retried request per
   labeled action, and the ledger tags each label's duplicate semantics
   ([cas-fenced] / [receipt] / [read] / [setup]), machine-checked — so a
