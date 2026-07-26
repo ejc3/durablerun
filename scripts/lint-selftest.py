@@ -160,6 +160,29 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
     return files
 
 
+def hidden_process_contract(document: str, container: str) -> dict[str, str]:
+    files = process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK)
+    if document == "AGENTS.md":
+        body = files[document]
+        files[document] = (
+            f"```md\n{body}```\n"
+            if container == "fence"
+            else f"<!--\n{body}-->\n"
+        )
+        return files
+
+    indented_block = "".join(
+        f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines()
+    )
+    hidden = (
+        f"    ```md\n{indented_block}    ```\n"
+        if container == "fence"
+        else f"    <!--\n{indented_block}    -->\n"
+    )
+    files[document] = files[document].replace(indented_block, hidden)
+    return files
+
+
 def under(prefix: str, files: dict[str, str]) -> dict[str, str]:
     return {f"{prefix}/{rel}": body for rel, body in files.items()}
 
@@ -948,6 +971,30 @@ export class S {
         },
         "package.json must route verify:mutations exactly to mutation-probe.py",
         "printing the runner name is not execution of the documented audit command",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("AGENTS.md", "fence"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a fenced Markdown example is not an operative standing rule",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("AGENTS.md", "comment"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a confinement section inside an HTML comment is not operative documentation",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("BUILD.md", "fence"),
+        "BUILD.md misclassifies malformed suite transport",
+        "a fenced transport block is an example rather than the plan's contract",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("BUILD.md", "comment"),
+        "BUILD.md misclassifies malformed suite transport",
+        "a transport block inside an HTML comment cannot own classification",
     ),
     (
         "gate-lint.py",
