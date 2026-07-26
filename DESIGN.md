@@ -714,7 +714,10 @@ are load-bearing):
    `SchemaNotInitializedError`; admin catches that type, never rendered text.
    Validation of a returned row happens outside the read-error catch, so stored
    text—even text identical to a missing-table diagnostic—or an unrelated
-   executor failure cannot enter the fresh-database path.
+   executor failure cannot enter the fresh-database path. Once metadata exists,
+   the version read returns exactly one result containing exactly one row;
+   zero, missing, or duplicated result/row shapes are schema mismatches, never
+   version zero.
 
 **Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
 `setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
@@ -808,7 +811,7 @@ not depend on careful reading:
   structured failure diagnostic's first line: bare, `Error: <marker>`, or
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
   source is not evidence. The verify gate runs 17 classifier cases and seven
-  injected false-positive faults over all 36 live mutations. The parser
+  injected false-positive faults over all 37 live mutations. The parser
   requires all nine aggregate counters to be
   nonnegative integers and internally consistent within their reporter
   domains. Test counters match test rows; each file status matches its own
@@ -820,7 +823,7 @@ not depend on careful reading:
   construction wrappers, a single marked plan vector with a
   behavior-preserving mutation, a discriminating A/B wake witness, and
   explicit require/attribute failure helpers, the final audit classified all
-  **36 of 36 as attributable**. Verdict altitude follows the earliest
+  **37 of 37 as attributable**. Verdict altitude follows the earliest
   load-bearing boundary, not the downstream scenario story; a construction
   wrapper encloses the exact call and exact error. Behavioral mutations
   preserve unrelated semantics, every multi-part verdict has one marked

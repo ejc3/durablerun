@@ -156,7 +156,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.7 close the provenance residual** — DONE. It began after the final
   PR3.6 residual review recorded 0 of 51 defects found by our machinery; the
   preceding provenance round had recorded 7 of 44 (16%).
-  PR3.7 closes at 10 of 50 findings self-caught (20%) and 40 review-caught
+  PR3.7 closes at 10 of 51 findings self-caught (20%) and 41 review-caught
   (80%); the full mutation audit contributed the final six self-catches.
   Landed: the typed target expression (the primitive generates each
   overwriting follow-on's row selection from the fence whenever its source is
@@ -188,7 +188,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     scalar right-hand sides only and cannot name provenance columns through
     duplicate/quoted assignments or mutate public primary identity such as
     `runs.run_id`.
-  - **Attributable mutation catches.** All 36 live mutations carry an exact
+  - **Attributable mutation catches.** All 37 live mutations carry an exact
     behavioral or construction verdict: test file, full test name, and marker.
     The marker must be the structured failure diagnostic's first line: bare,
     `Error: <marker>`, or `AssertionError: <marker>: …`; an arbitrary substring
@@ -207,7 +207,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     wrappers, one marked plan vector with a behavior-preserving mutation, a
     split A/B wake witness, and explicit require/attribute failure helpers made
     the final audit, including the exact inline-ending identity and typed
-    schema-absence mutations, **36 of 36 attributable**.
+    schema-absence and version-row mutations, **37 of 37 attributable**.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 47 atomic witnesses covering all 50
     invariant condition IDs: 799 generated cells, plus two inventory cases.
@@ -270,7 +270,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `SchemaNotInitializedError`, for the canonical singleton version read and
     the native missing-`meta` error; admin catches that type rather than
     rendered text, so neither a stored value nor an unrelated executor failure
-    can impersonate a fresh database. Inline `Ending` values have the exact
+    can impersonate a fresh database. Once metadata exists, its read must return
+    exactly one result containing exactly one version row; zero, missing, or
+    duplicated results are schema mismatches, never version zero. Inline
+    `Ending` values have the exact
     launch identity `(runId, claimToken)` at the type boundary, and
     reconciliation makes no write for a different run, a stale token, or
     hostile tokenless input.
@@ -278,10 +281,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     heartbeat-cutoff check and expiry need one new atomic, spec-first store
     operation.
 
-  Final evidence: the clean-tree mutation audit was **36/36 attributable**;
+  Final evidence: the clean-tree mutation audit was **37/37 attributable**;
   classifier maintenance covered 17 cases and seven injected faults; the
   poison oracle carried 16 meta-tests; the focused review-regression run passed
-  48 tests; and `pnpm verify` passed 67 files / 1,501 tests.
+  56 tests; and `pnpm verify` passed 67 files / 1,503 tests.
 
   The sole structural exception is **emitEvent's `wake-runs`**, the one
   follow-on that cannot be generated, because it selects from `waits` — rows an
