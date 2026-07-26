@@ -752,7 +752,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,
          failure_reason = ?, ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
-         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`,
+         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}
+         AND ${storedInteger('runs.attempt')}`,
       [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],
     )
     // Successor under the infra cap, carrying the run-DB pointer and any
@@ -1039,6 +1040,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND ${storedInteger('runs.attempt')}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,
       [wakeArg, wakeArg, runId, queue, claimToken],

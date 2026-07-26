@@ -895,10 +895,12 @@ function hasTopLevelOr(sql: string): boolean {
 }
 
 /**
- * `[from, to)` ranges under a unary NOT. Covers parenthesized operands with
- * or without separating whitespace (`NOT (…)`, `NOT(…)`, `NOT EXISTS (…)`)
- * and bare predicates (`NOT fence_stamp = …`). A fence equality inside one
- * of these ranges proves absence, not authority, and cannot gate a write.
+ * `[from, to)` ranges whose truth is inverted by NOT. Covers parenthesized
+ * operands with or without separating whitespace (`NOT (…)`, `NOT(…)`,
+ * `NOT EXISTS (…)`), bare predicates (`NOT fence_stamp = …`), and the
+ * right-hand side of `IS NOT`. In `IS NOT NULL AND fence = …`, the span ends
+ * before the peer AND, so the positive fence remains usable. A fence equality
+ * inside one of these ranges does not prove authority and cannot gate a write.
  */
 function negatedSpans(sql: string): [number, number][] {
   const spans: [number, number][] = []
@@ -910,10 +912,6 @@ function negatedSpans(sql: string): [number, number][] {
       continue
     }
     if (!matchesWord(sql, i, 'NOT')) continue
-    // `IS NOT NULL` / `IS NOT DISTINCT FROM` use NOT as part of the binary
-    // IS predicate; it does not negate everything that follows.
-    if (previousWordIs(sql, i, 'IS')) continue
-
     let operand = skipWhitespace(sql, i + 3)
     if (matchesWord(sql, operand, 'EXISTS')) {
       operand = skipWhitespace(sql, operand + 'EXISTS'.length)
@@ -928,14 +926,6 @@ function negatedSpans(sql: string): [number, number][] {
     }
   }
   return spans
-}
-
-function previousWordIs(sql: string, before: number, word: string): boolean {
-  let end = before
-  while (end > 0 && /\s/.test(sql[end - 1] ?? '')) end--
-  let start = end
-  while (start > 0 && /[\w$]/.test(sql[start - 1] ?? '')) start--
-  return sql.slice(start, end).toUpperCase() === word
 }
 
 function skipWhitespace(sql: string, at: number): number {

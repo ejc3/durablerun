@@ -720,15 +720,25 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           invalidRepresentation: 'non-integer',
         })
         if (disposition === 'injected') {
-          await expect(
-            f.store.suspendRun(
+          const observed = await f.store
+            .suspendRun(
               Q,
               run.runId,
               run.claimToken,
               { inSeconds: 1 },
               { key: 'poison-attempt', stateJson: '{}' },
-            ),
-          ).rejects.toThrow(LeaseLostError)
+            )
+            .then(
+              () => ({ kind: 'resolved' as const }),
+              (error: unknown) => ({ kind: 'rejected' as const, error }),
+            )
+          expect(
+            observed.kind,
+            'mutation-verdict:behavior:suspend-rejects-noninteger-attempt',
+          ).toBe('rejected')
+          if (observed.kind === 'rejected') {
+            expect(observed.error).toBeInstanceOf(LeaseLostError)
+          }
         }
 
         const [storedRun, checkpoints] = await f.raw.batch(

@@ -19,13 +19,6 @@ import {
 } from './poison-matrix.js'
 import { schedulerConformance, wakeWitnessConformance } from './suite.js'
 
-export const STORE_CONFORMANCE_SURFACE_IDS = Object.freeze([
-  'scheduler',
-  'fault-matrix',
-  'poison-matrix',
-  'wake-witness',
-] as const)
-
 const FAULT_SEEDS = [1, 2] as const
 
 function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
@@ -126,14 +119,24 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
   })
 }
 
+const STORE_CONFORMANCE_SURFACES = Object.freeze([
+  { id: 'scheduler', run: schedulerConformance },
+  { id: 'fault-matrix', run: faultMatrixConformance },
+  { id: 'poison-matrix', run: poisonMatrixConformance },
+  { id: 'wake-witness', run: wakeWitnessConformance },
+] as const)
+
+export const STORE_CONFORMANCE_SURFACE_IDS = Object.freeze(
+  STORE_CONFORMANCE_SURFACES.map(({ id }) => id),
+)
+
 /**
  * The one enrollment door for a dialect. Adding a store fixture necessarily
  * runs every shared behavioral surface; individual backends cannot silently
  * opt out of the expensive fault, poison, or wake dimensions.
  */
 export function storeConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
-  schedulerConformance(dialect, makeFixture)
-  faultMatrixConformance(dialect, makeFixture)
-  poisonMatrixConformance(dialect, makeFixture)
-  wakeWitnessConformance(dialect, makeFixture)
+  for (const { run } of STORE_CONFORMANCE_SURFACES) {
+    run(dialect, makeFixture)
+  }
 }

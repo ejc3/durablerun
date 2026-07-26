@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import * as conformance from '../src/index.js'
 import { describe, expect, it } from 'vitest'
+import * as conformance from '../src/index.js'
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 const SURFACES = ['scheduler', 'fault-matrix', 'poison-matrix', 'wake-witness']

@@ -63,9 +63,15 @@ CLOCKS = re.compile(
     r"|\b(?:datetime|date|time)\s*\(\s*'now'",
     re.IGNORECASE,
 )
+META_KEY = r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?key"
+FAKE_NOW = r"'fake_now_ms'"
+FAKE_NOW_PREDICATE = (
+    rf"(?:\b{META_KEY}\s*=\s*{FAKE_NOW}"
+    rf"|{FAKE_NOW}\s*=\s*\b{META_KEY}"
+    rf"|\b{META_KEY}\s+(?!NOT\b)IN\s*\([^;)]*{FAKE_NOW})"
+)
 FAKE_NOW_READ = re.compile(
-    r"\bSELECT\b[^;]*\b(?:FROM|JOIN)\s+meta\b[^;]*"
-    r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?key\s*=\s*'fake_now_ms'",
+    rf"\bSELECT\b(?=[^;]*\b(?:FROM|JOIN)\s+meta\b)[^;]*{FAKE_NOW_PREDICATE}",
     re.IGNORECASE,
 )
 violations = 0

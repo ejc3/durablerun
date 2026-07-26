@@ -372,8 +372,8 @@ def has_base_runner(ci: Path) -> tuple[bool, list[str]]:
 
 def nightly_workflow_problems(path: Path) -> list[str]:
     """Refuse write-capable credentials in the long-running nightly jobs."""
-    if not path.exists():
-        return []
+    if not path.is_file():
+        return [".github/workflows/nightly.yml is missing."]
     lines = path.read_text().splitlines()
     problems: list[str] = []
 

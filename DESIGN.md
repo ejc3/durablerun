@@ -618,6 +618,10 @@ are load-bearing):
    `ON CONFLICT DO UPDATE … WHERE excluded.owner_attempt >= owner_attempt` —
    a lower-attempt writer under a still-valid lease is silently dropped (its
    lease still extends); replay determinism, not error, is the goal.
+   Any CAS whose follow-ons copy or derive an owner/ordinal from the stored
+   run attempt first requires that attempt to have the dialect's native integer
+   representation. A corrupt value refuses the whole suspend or sweep batch;
+   it may not park without its checkpoint or be coerced into a successor.
 6. **Terminal tasks are inert (TerminalStability, executable form).** No
    transition may mutate a terminal task's state, and none may create or
    revive a live run under a terminal task — even from externally corrupted

@@ -95,6 +95,13 @@ MUTATION_SPECS = [
         "a follow-on may run with no fence at all",
     ),
     (
+        "positive-fence-is-not",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!matchesWord(sql, i, 'NOT')) continue",
+        "    if (!matchesWord(sql, i, 'NOT') || /\\bIS\\s*$/i.test(sql.slice(0, i))) continue",
+        "a fence inside the right-hand side of IS NOT is mistaken for positive authority",
+    ),
+    (
         "top-level-or-reach",
         "packages/core/src/fenced-batch.ts",
         "    if (!isCas && s.open === undefined && hasTopLevelOr(bare)) {",
@@ -373,20 +380,51 @@ MUTATION_SPECS = [
         "matrix-claim-timeout-edge-progress",
         "packages/store-libsql/src/store.ts",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND ${storedInteger('runs.attempt')}`",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
         "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND run_id <> 'edge-run'`",
+        "         AND run_id <> 'edge-run'\n"
+        "         AND ${storedInteger('runs.attempt')}`",
         "the generated fault cell fires its label while the seeded claim-timeout edge never crosses",
+    ),
+    (
+        "sweep-rejects-noninteger-attempt",
+        "packages/store-libsql/src/store.ts",
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND ${storedInteger('runs.attempt')}`",
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "a corrupt attempt is coerced into a successor ordinal and resets infrastructure accounting",
+    ),
+    (
+        "suspend-rejects-noninteger-attempt",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedInteger('runs.attempt')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,\n"
+        "      [wakeArg, wakeArg, runId, queue, claimToken],",
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,\n"
+        "      [wakeArg, wakeArg, runId, queue, claimToken],",
+        "suspend parks a run while its required checkpoint marker is refused",
+    ),
+    (
+        "shared-conformance-runner-registry",
+        "packages/conformance/src/store-conformance.ts",
+        "  { id: 'poison-matrix', run: poisonMatrixConformance },\n",
+        "",
+        "a dialect silently drops an entire shared conformance surface",
     ),
     (
         "sweep-claim-timeout-generation",
         "packages/store-libsql/src/store.ts",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND ${storedInteger('runs.attempt')}`",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
         "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND (run_id <> 'edge-run' OR claim_gen = 1)`",
+        "         AND (run_id <> 'edge-run' OR claim_gen = 1)\n"
+        "         AND ${storedInteger('runs.attempt')}`",
         "the claim-timeout edge only works at generation one",
     ),
     (
@@ -405,10 +443,12 @@ MUTATION_SPECS = [
         "provenance-sweep-progress",
         "packages/store-libsql/src/store.ts",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND ${storedInteger('runs.attempt')}`",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
         "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND run_id <> 'prov-sweep-run'`",
+        "         AND run_id <> 'prov-sweep-run'\n"
+        "         AND ${storedInteger('runs.attempt')}`",
         "the replay regression accepts a sweep that never performs the transition it owes",
     ),
     (
@@ -488,6 +528,12 @@ VERDICTS = {
         "packages/core/test/fenced-batch.test.ts",
         "a follow-on must filter on a fence, positively, in the WHERE side rejects a follow-on with no fence at all",
         "mutation-verdict:construction:positive-fence-required",
+    ),
+    "positive-fence-is-not": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "a follow-on must filter on a fence, positively, in the WHERE side rejects a fence in the negated right-hand side of IS NOT",
+        "mutation-verdict:construction:positive-fence-is-not",
     ),
     "top-level-or-reach": ExpectedVerdict(
         "construction",
@@ -691,6 +737,26 @@ VERDICTS = {
         "fault matrix [libsql] (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
         "packages/conformance/src/store-conformance.ts",
+    ),
+    "sweep-rejects-noninteger-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification refuses a corrupt stored attempt without partially sweeping the expired claim",
+        "mutation-verdict:behavior:sweep-rejects-noninteger-attempt",
+        "packages/conformance/src/suite.ts",
+    ),
+    "suspend-rejects-noninteger-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule suspendRun rejects a non-integer stored attempt atomically",
+        "mutation-verdict:behavior:suspend-rejects-noninteger-attempt",
+        "packages/conformance/src/suite.ts",
+    ),
+    "shared-conformance-runner-registry": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/enrollment.test.ts",
+        "shared conformance enrollment is one indivisible door couples the surface inventory and umbrella dispatch in one registry",
+        "mutation-verdict:construction:shared-conformance-runner-registry",
     ),
     "sweep-claim-timeout-generation": ExpectedVerdict(
         "behavior",

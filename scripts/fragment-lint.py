@@ -38,7 +38,14 @@ RULES = [
 
 violations = 0
 for path in source_paths:
-    if path.name in EXEMPT:
+    relative = path.relative_to(root)
+    if (
+        path.name in EXEMPT
+        and len(relative.parts) == 4
+        and relative.parts[0] == "packages"
+        and relative.parts[1].startswith("store-")
+        and relative.parts[2] == "src"
+    ):
         continue
     for lineno, line in enumerate(path.read_text().splitlines(), 1):
         for pattern, message in RULES:
