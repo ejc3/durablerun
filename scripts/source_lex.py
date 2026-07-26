@@ -55,6 +55,15 @@ class BatchLabel:
     value: str
 
 
+@dataclass(frozen=True)
+class _TsToken:
+    """One executable TypeScript token in the position-preserving source."""
+
+    value: str
+    start: int
+    end: int
+
+
 _EXPRESSION_PREFIX_WORDS = frozenset(
     {
         "await",
@@ -341,26 +350,6 @@ def split_top_level(
     return parts
 
 
-_RAW_BATCH_REFERENCE = re.compile(r"\bthis\s*\.\s*db\s*\.\s*batch\b")
-_OPTIONAL_RAW_BATCH_REFERENCE = re.compile(
-    r"\bthis\s*\.\s*db\s*\?\s*\.\s*batch\b"
-)
-_COMPUTED_DB_REFERENCE = re.compile(r"\bthis\s*\.\s*db\s*\[")
-_DESTRUCTURED_BATCH_REFERENCE = re.compile(
-    r"\{\s*batch\s*\}\s*=\s*this\s*\.\s*db\b"
-)
-_ALIASED_DB_REFERENCE = re.compile(
-    r"\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*"
-    r"\s*=\s*this\s*\.\s*db\b"
-)
-_ALIASED_FENCED_BATCH = re.compile(
-    r"(?:\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*"
-    r"\s*=\s*FencedBatch\b"
-    r"|\bFencedBatch\s+as\s+[A-Za-z_$][A-Za-z0-9_$]*)"
-)
-_FENCED_BATCH_CONSTRUCTION = re.compile(
-    r"\bnew\s+(?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)?FencedBatch\s*\("
-)
 _STATIC_BATCH_LABEL = re.compile(
     r"\s*(['\"])([A-Za-z0-9:_-]+)\1\s*",
     re.DOTALL,
@@ -369,6 +358,115 @@ _TEMPLATE_BATCH_LABEL = re.compile(
     r"\s*`([A-Za-z0-9:_-]*)\$\{[^{}]+\}`\s*",
     re.DOTALL,
 )
+
+
+def _typescript_tokens(structure: str) -> tuple[_TsToken, ...]:
+    """Tokenize executable structure without reinterpreting erased literals.
+
+    This is intentionally a closed surface, not another collection of regular
+    expressions for known aliases. Identifiers and punctuation retain their
+    exact source positions; comments, strings, template text, and regexes were
+    already erased by ``typescript_structure``.
+    """
+    tokens: list[_TsToken] = []
+    index = 0
+    while index < len(structure):
+        char = structure[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char.isalpha() or char in "_$":
+            end = index + 1
+            while end < len(structure) and (
+                structure[end].isalnum() or structure[end] in "_$"
+            ):
+                end += 1
+            tokens.append(_TsToken(structure[index:end], index, end))
+            index = end
+            continue
+        if char.isdigit():
+            end = index + 1
+            while end < len(structure) and (
+                structure[end].isalnum() or structure[end] in "._"
+            ):
+                end += 1
+            tokens.append(_TsToken(structure[index:end], index, end))
+            index = end
+            continue
+        tokens.append(_TsToken(char, index, index + 1))
+        index += 1
+    return tuple(tokens)
+
+
+def _import_token_indexes(tokens: tuple[_TsToken, ...]) -> frozenset[int]:
+    """Return token indexes belonging to static ES import declarations."""
+    imported: set[int] = set()
+    for index, token in enumerate(tokens):
+        if token.value != "import":
+            continue
+        cursor = index + 1
+        while cursor < len(tokens) and tokens[cursor].value != "from":
+            if tokens[cursor].value == "import":
+                break
+            imported.add(cursor)
+            cursor += 1
+    return frozenset(imported)
+
+
+def _fenced_batch_surface(
+    source: str,
+    structure: str,
+    tokens: tuple[_TsToken, ...],
+) -> tuple[list[BatchCall], frozenset[str]]:
+    """Harvest canonical constructors and the names allowed to execute them."""
+    imported = _import_token_indexes(tokens)
+    calls: list[BatchCall] = []
+    executors: set[str] = set()
+
+    for index, token in enumerate(tokens):
+        if token.value != "FencedBatch":
+            continue
+        previous = tokens[index - 1].value if index else ""
+        following = tokens[index + 1].value if index + 1 < len(tokens) else ""
+
+        if index in imported:
+            if previous == "as" or following == "as":
+                raise ValueError(
+                    "batch call shape is opaque: "
+                    "indirect FencedBatch reference is opaque"
+                )
+            continue
+
+        if previous == "new" and following == "(":
+            calls.append(
+                _batch_call(
+                    source,
+                    structure,
+                    "fenced",
+                    tokens[index + 1].start,
+                )
+            )
+            if index >= 3 and tokens[index - 2].value == "=":
+                candidate = tokens[index - 3].value
+                if candidate and (candidate[0].isalpha() or candidate[0] in "_$"):
+                    executors.add(candidate)
+            continue
+
+        # A direct type annotation is the only non-construction reference
+        # admitted by the closed surface. It lets shared helpers accept and
+        # execute an already-labelled FencedBatch without creating an alias to
+        # the constructor itself.
+        if previous == ":" and index >= 2:
+            candidate = tokens[index - 2].value
+            if candidate and (candidate[0].isalpha() or candidate[0] in "_$"):
+                executors.add(candidate)
+            continue
+
+        raise ValueError(
+            "batch call shape is opaque: indirect FencedBatch reference is opaque"
+        )
+
+    return calls, frozenset(executors)
 
 
 def _batch_call(
@@ -403,51 +501,69 @@ def batch_calls(
     source: str,
     structure: str | None = None,
 ) -> tuple[BatchCall, ...]:
-    """Harvest every supported store batch door and reject indirect aliases.
+    """Harvest the two canonical store batch doors and reject every alias.
 
-    The returned call boundaries are the one inventory consumed by the raw
-    batch shape checker and the protocol-label ledger. A reference to the raw
-    executor method that is not immediately called fails closed: otherwise an
-    alias can make the same batch disappear from both mechanisms.
+    Raw batches are exactly ``this.db.batch(...)``. Fenced batches are exactly
+    ``new FencedBatch(...)`` and execute through a directly constructed or
+    directly typed FencedBatch's ``run(this.db)``. Every other use of ``this``
+    as a value, every optional/computed receiver, and every other ``this.db``
+    placement fails closed. This is a token-level grammar for the property,
+    not a list of alias spellings that happened to be found by review.
     """
     visible = structure if structure is not None else typescript_structure(source)
-    indirect = (
-        _OPTIONAL_RAW_BATCH_REFERENCE.search(visible)
-        or _COMPUTED_DB_REFERENCE.search(visible)
-        or _DESTRUCTURED_BATCH_REFERENCE.search(visible)
-        or _ALIASED_DB_REFERENCE.search(visible)
+    tokens = _typescript_tokens(visible)
+    calls, fenced_executors = _fenced_batch_surface(
+        source,
+        visible,
+        tokens,
     )
-    if indirect is not None:
+
+    for index, token in enumerate(tokens):
+        if token.value != "this":
+            continue
+        following = tokens[index + 1].value if index + 1 < len(tokens) else ""
+        if following != ".":
+            raise ValueError(
+                "batch call shape is opaque: indirect this reference is opaque"
+            )
+        if index + 2 >= len(tokens) or tokens[index + 2].value != "db":
+            continue
+
+        after_db = index + 3
+        if (
+            after_db + 2 < len(tokens)
+            and tokens[after_db].value == "."
+            and tokens[after_db + 1].value == "batch"
+            and tokens[after_db + 2].value == "("
+        ):
+            calls.append(
+                _batch_call(
+                    source,
+                    visible,
+                    "raw",
+                    tokens[after_db + 2].start,
+                )
+            )
+            continue
+
+        # FencedBatch.run is the only place the executor may cross this
+        # boundary without immediately invoking its labelled raw batch door.
+        if (
+            index >= 4
+            and after_db < len(tokens)
+            and tokens[index - 1].value == "("
+            and tokens[index - 2].value == "run"
+            and tokens[index - 3].value == "."
+            and tokens[index - 4].value in fenced_executors
+            and tokens[after_db].value == ")"
+        ):
+            continue
+
         raise ValueError(
             "batch call shape is opaque: "
             "indirect this.db.batch reference is opaque"
         )
-    if _ALIASED_FENCED_BATCH.search(visible) is not None:
-        raise ValueError(
-            "batch call shape is opaque: indirect FencedBatch reference is opaque"
-        )
 
-    calls: list[BatchCall] = []
-    for match in _RAW_BATCH_REFERENCE.finditer(visible):
-        open_paren = match.end()
-        while open_paren < len(visible) and visible[open_paren].isspace():
-            open_paren += 1
-        if open_paren >= len(visible) or visible[open_paren] != "(":
-            raise ValueError(
-                "batch call shape is opaque: "
-                "indirect this.db.batch reference is opaque"
-            )
-        calls.append(_batch_call(source, visible, "raw", open_paren))
-
-    for match in _FENCED_BATCH_CONSTRUCTION.finditer(visible):
-        calls.append(
-            _batch_call(
-                source,
-                visible,
-                "fenced",
-                match.end() - 1,
-            )
-        )
     return tuple(sorted(calls, key=lambda call: call.open_paren))
 
 
@@ -482,6 +598,10 @@ def _sql_executable_text(
     text: str,
     preserve_literals: frozenset[str],
 ) -> str:
+    # The portable contract treats single quotes as data and double quotes as
+    # identifiers (SQLite and PostgreSQL both execute `"cancel_at_ms"` as the
+    # column). Erasing both quote styles made a quoted eligibility field
+    # disappear from every SQL checker.
     chars = list(text)
     index = 0
     while index < len(text):
@@ -497,11 +617,18 @@ def _sql_executable_text(
             _blank(chars, index, end)
             index = end
             continue
-        if text[index] in {"'", '"'}:
-            end = _sql_quote_end(text, index, text[index])
+        if text[index] == "'":
+            end = _sql_quote_end(text, index, "'")
             literal = text[index + 1 : max(index + 1, end - 1)].casefold()
             if literal not in preserve_literals:
                 _blank(chars, index, end)
+            index = end
+            continue
+        if text[index] == '"':
+            end = _sql_quote_end(text, index, '"')
+            chars[index] = " "
+            if end <= len(text) and end > index + 1 and text[end - 1] == '"':
+                chars[end - 1] = " "
             index = end
             continue
         index += 1

@@ -17,11 +17,12 @@ Only work-item bullets count. Prose inside an entry frequently discusses
 deferral (including this file's own rationale in BUILD.md), and a checker that
 fires on text ABOUT the rule is the kind that gets weakened until it is quiet.
 
-Historical ``postmortems/*-plan.md`` files are decision records, not a second
-delivery ledger. They carry one exact, top-of-file banner declaring that their
-status is frozen and BUILD.md alone owns current status. BUILD.md in turn may
-not cite ``scratchpad/`` paths: those are intentionally transient and cannot
-serve as auditable plan evidence.
+Every Markdown document under ``postmortems/`` declares its role structurally:
+the template is reserved, postmortems begin ``# Postmortem:``, and every other
+document carries one exact top-of-file historical-decision banner. Historical
+records may not publish a current-status heading. BUILD.md in turn may not cite
+``scratchpad/`` paths or unretained spike results: transient state cannot serve
+as auditable plan evidence.
 
 Run by `pnpm verify`.
 """
@@ -41,6 +42,11 @@ HISTORICAL_PLAN_BANNER = (
     "> **Historical decision record.** Status is frozen at decision time; "
     "`BUILD.md` is the sole current status owner."
 )
+POSTMORTEM_TITLE = re.compile(r"^# Postmortem:")
+CURRENT_STATUS_HEADING = re.compile(
+    r"^#{1,6}\s+Current(?:\s+delivery)?\s+status\b",
+    re.IGNORECASE,
+)
 
 # Work that is announced rather than described as shipped.
 DEFERRED = re.compile(
@@ -53,6 +59,7 @@ EXCUSED = re.compile(r"\bABANDONED:", re.IGNORECASE)
 ENTRY = re.compile(r"^[-*] \*\*(PR[\d.]+)\b")
 BULLET = re.compile(r"^(?P<indent>\s*)[-*]\s+")
 SCRATCHPAD_PATH = re.compile(r"(?<![\w.-])scratchpad/", re.IGNORECASE)
+UNAUDITABLE_SPIKE = re.compile(r"\bspiked\b", re.IGNORECASE)
 
 violations: list[str] = []
 owner: tuple[str, bool] | None = None
@@ -95,16 +102,46 @@ for line_number, line in enumerate(build_lines, start=1):
             "  BUILD.md is the auditable delivery ledger; replace transient\n"
             "  scratchpad evidence with a checked-in artifact or acceptance criterion."
         )
+    if UNAUDITABLE_SPIKE.search(line):
+        violations.append(
+            "BUILD.md claims an unauditable spike:\n"
+            f"    line {line_number}: {line.strip()[:110]}\n"
+            "  BUILD.md is the current delivery ledger. State a checked-in\n"
+            "  acceptance criterion or artifact, not an unretained spike result."
+        )
 
 postmortems = ROOT / "postmortems"
-for plan in sorted(postmortems.glob("*-plan.md")):
-    lines = plan.read_text().splitlines()
-    if len(lines) < 3 or lines[2] != HISTORICAL_PLAN_BANNER:
+for document in sorted(postmortems.rglob("*.md")):
+    if document == postmortems / "TEMPLATE.md":
+        continue
+    lines = document.read_text().splitlines()
+    if lines and POSTMORTEM_TITLE.match(lines[0]):
+        continue
+    if (
+        len(lines) < 3
+        or lines[2] != HISTORICAL_PLAN_BANNER
+        or lines.count(HISTORICAL_PLAN_BANNER) != 1
+    ):
         violations.append(
-            f"{plan.relative_to(ROOT)}: historical plan does not declare BUILD.md "
+            f"{document.relative_to(ROOT)}: historical plan does not declare BUILD.md "
             "as its sole current status owner:\n"
-            f"  Put this canonical banner immediately below the title:\n"
+            "  Every non-postmortem document in postmortems/ is a historical\n"
+            "  decision record. Put this canonical role banner immediately below\n"
+            "  the title:\n"
             f"    {HISTORICAL_PLAN_BANNER}"
+        )
+        continue
+    current_heading = next(
+        (line for line in lines if CURRENT_STATUS_HEADING.match(line)),
+        None,
+    )
+    if current_heading is not None:
+        violations.append(
+            f"{document.relative_to(ROOT)}: historical plan claims current "
+            "delivery status:\n"
+            f"    {current_heading}\n"
+            "  Historical records may describe decision-time status only; "
+            "BUILD.md owns the current ledger."
         )
 
 for v in violations:

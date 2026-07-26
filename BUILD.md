@@ -361,7 +361,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   limit is written down: it can only find a wrong DECISION about rows it
   constructs, never a wrong payload, and never a row shape nobody thought of.
 
-- **PR3.9 compile the SQL instead of scanning it** (candidate, spiked not started).
+- **PR3.9 compile the SQL instead of scanning it** (candidate, not started).
   Every recurring defect in this engine's history is the same shape: a checker
   that matches one way of WRITING a condition and misses an equivalent one.
   `NOT EXISTS (` was recognised and `NOT (EXISTS (` was not; `x = x + 1` was and

@@ -31,13 +31,10 @@ try:
 except ValueError as error:
     sys.exit(str(error))
 
-# Variable labels are a closed, reason-bearing surface. Template migration
-# labels are setup trace addresses rather than protocol actions; their SQL
-# shape is independently fenced and checked by batch-lint.
-DYNAMIC = {"cancel-task", "sweep:cancel"}
-OPAQUE_LABELS = {
-    ("packages/store-libsql/src/store.ts", "fenced", "label"): DYNAMIC,
-}
+# Template migration labels are setup trace addresses rather than protocol
+# actions; their SQL shape is independently fenced and checked by batch-lint.
+# Every protocol label is otherwise a literal at its FencedBatch construction
+# site, so the executable call and this inventory have one representation.
 SETUP_LABEL_FAMILIES = {
     (
         "packages/store-libsql/src/admin.ts",
@@ -47,38 +44,43 @@ SETUP_LABEL_FAMILIES = {
 }
 
 labels: set[str] = set()
-all_source = ""
 for path in source_paths:
     rel = path.relative_to(root).as_posix()
     source = path.read_text()
-    all_source += source
     try:
         calls = batch_calls(source)
     except ValueError as error:
         sys.exit(f"{rel}: {error}")
-    for call in calls:
-        parsed = batch_label(source, call)
+    parsed_calls = [(call, batch_label(source, call)) for call in calls]
+    opaque_identities = [
+        (call.kind, parsed.value)
+        for call, parsed in parsed_calls
+        if parsed.kind == "opaque"
+    ]
+    duplicate_opaque = next(
+        (
+            identity
+            for identity in opaque_identities
+            if opaque_identities.count(identity) > 1
+        ),
+        None,
+    )
+    if duplicate_opaque is not None:
+        sys.exit(
+            f"{rel}: opaque label classification is not unique to one binding: "
+            f"{duplicate_opaque[0]} label {duplicate_opaque[1]!r}"
+        )
+    for call, parsed in parsed_calls:
         if parsed.kind == "static":
             labels.add(parsed.value)
             continue
         identity = (rel, call.kind, parsed.value)
-        dynamic = OPAQUE_LABELS.get(identity)
-        if dynamic is not None:
-            labels.update(dynamic)
-            continue
         if parsed.kind == "template" and identity in SETUP_LABEL_FAMILIES:
             continue
         sys.exit(
             f"{rel}: batch call shape is opaque: "
             f"cannot resolve {call.kind} label {parsed.value!r}"
         )
-
-# The declared variable values must remain present in their defining source;
-# otherwise an old classification could answer for a newly opaque call.
-for label in DYNAMIC:
-    if f"'{label}'" not in all_source:
-        sys.exit(f"spec-ledger: declared dynamic label '{label}' not found in source")
-labels |= DYNAMIC
 
 if labels_only:
     print(json.dumps(sorted(labels)))

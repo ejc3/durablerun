@@ -185,6 +185,16 @@ check_journal() {
     echo "review journal terminal completion record must be last." >&2
     return 1
   fi
+  if ! jq -e -s '
+      length >= 4
+      and .[0].type == "review-head"
+      and .[1].type == "review-plan"
+      and .[-1].type == "review-complete"
+      and all(.[2:-1][]; .type == "result")
+    ' "$path" >/dev/null; then
+    echo "review journal records are out of lifecycle order." >&2
+    return 1
+  fi
 }
 
 review_findings_count() {
@@ -197,6 +207,10 @@ review_findings_count() {
   line=$(grep -E '^review-findings:' <<<"$body")
   if ! grep -qE '^review-findings:[[:space:]]*[0-9]+[[:space:]]*$' <<<"$line"; then
     echo "review-findings must be a canonical whole line." >&2
+    return 1
+  fi
+  if ! grep -qE '^review-findings:[[:space:]]*(0|[1-9][0-9]*)[[:space:]]*$' <<<"$line"; then
+    echo "review-findings must use canonical decimal notation." >&2
     return 1
   fi
   sed -nE 's/^review-findings:[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' <<<"$line"

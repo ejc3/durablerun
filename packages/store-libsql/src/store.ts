@@ -669,7 +669,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       SWEEP_PIPELINE_WIDTH,
       (item): Promise<SweptRun | null> => {
         if (item.kind === 'cancel') {
-          return this.cancelTransition('sweep:cancel', queue, item.taskId, true).then((won) =>
+          const batch = new FencedBatch('sweep:cancel', this.ids.token(), { now: NOW_MS })
+          return this.cancelTransition(batch, queue, item.taskId, true).then((won) =>
             won ? { kind: 'cancelled', taskId: item.taskId, runId: item.runId } : null,
           )
         }
@@ -915,7 +916,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
-    return this.cancelTransition('cancel-task', queue, taskId, false)
+    const batch = new FencedBatch('cancel-task', this.ids.token(), { now: NOW_MS })
+    return this.cancelTransition(batch, queue, taskId, false)
   }
 
   /**
@@ -929,12 +931,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * put a JSON parse on the fence path. Both are gone.
    */
   private async cancelTransition(
-    label: 'cancel-task' | 'sweep:cancel',
+    b: FencedBatch,
     queue: string,
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
-    const b = new FencedBatch(label, this.ids.token(), { now: NOW_MS })
     const deadlineGuard = deadlineOnly ? `AND ${cancelDue('cancel_at_ms', NOW)}` : ''
     b.cas(
       'cancel',
