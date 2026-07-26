@@ -155,6 +155,21 @@ describe('migrate reports success only when the schema is current', () => {
     expect(columns?.rows.some((row) => row.name === 'fence_stamp')).toBe(true)
   })
 
+  it('does not accept another schema mismatch as the missed-version postcondition', async () => {
+    const unrelated = new SchemaMismatchError('an earlier schema decoder failed')
+    const observed = await requireExpectedFailure(
+      'mutation-verdict:behavior:migration-postcondition-old-version',
+      (error) => error instanceof SchemaMismatchError,
+      async () => {
+        throw unrelated
+      },
+    ).then(
+      () => 'accepted',
+      (error: unknown) => error,
+    )
+    expect(observed).toBe(unrelated)
+  })
+
   it('fails when the recorded version is not an integer', async () => {
     await migrateTo(0)
     await db.batch('corrupt', [

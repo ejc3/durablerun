@@ -1423,6 +1423,28 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             (1,),
         ),
         (
+            "marker through a variable",
+            "const verdict = 'mutation-verdict:behavior:x'\n"
+            "await expect(action(), verdict).rejects.toThrow()",
+            (2,),
+        ),
+        (
+            "unmarked custom message",
+            "await expect(action(), 'this message is still lossy').rejects.toThrow()",
+            (1,),
+        ),
+        (
+            "executable template interpolation",
+            "const verdict = 'mutation-verdict:behavior:x'\n"
+            "const rendered = `${expect(action(), verdict).rejects.toThrow()}`",
+            (2,),
+        ),
+        (
+            "regular-expression decoy",
+            "const pattern = /expect(action(), 'mutation-verdict:behavior:x').rejects/",
+            (),
+        ),
+        (
             "synchronous custom message",
             "expect(value, 'mutation-verdict:behavior:x').toBe(1)",
             (),

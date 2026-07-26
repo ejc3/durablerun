@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { attributeExpectedFailure, requireExpectedFailure } from '../src/testing.js'
+import {
+  attributeExpectedFailure,
+  attributeReplacedFailure,
+  requireExpectedFailure,
+} from '../src/testing.js'
 
 const marker = 'mutation-verdict:behavior:testing-helper'
 const expected = new Error('expected')
@@ -59,5 +63,61 @@ describe('mutation verdict promise helpers', () => {
         },
       ),
     ).rejects.toBe(unrelated)
+  })
+
+  it('keeps reusable regular-expression matchers stateless', async () => {
+    const reusable = /expected/g
+    for (let run = 0; run < 2; run += 1) {
+      await expect(
+        requireExpectedFailure(marker, reusable, async () => {
+          throw expected
+        }),
+      ).resolves.toBeUndefined()
+    }
+  })
+
+  it('attributes only the named replacement for an expected failure', async () => {
+    await expect(
+      attributeReplacedFailure(
+        marker,
+        (error) => error === expected,
+        (error) => error === unrelated,
+        async () => {
+          throw expected
+        },
+      ),
+    ).resolves.toBeUndefined()
+    await expect(
+      attributeReplacedFailure(
+        marker,
+        (error) => error === expected,
+        (error) => error === unrelated,
+        async () => {
+          throw unrelated
+        },
+      ),
+    ).rejects.toThrow(marker)
+  })
+
+  it('does not attribute success or a third rejection as a replacement failure', async () => {
+    const third = new Error('third')
+    await expect(
+      attributeReplacedFailure(
+        marker,
+        (error) => error === expected,
+        (error) => error === unrelated,
+        async () => undefined,
+      ),
+    ).rejects.not.toThrow(marker)
+    await expect(
+      attributeReplacedFailure(
+        marker,
+        (error) => error === expected,
+        (error) => error === unrelated,
+        async () => {
+          throw third
+        },
+      ),
+    ).rejects.toBe(third)
   })
 })
