@@ -2013,6 +2013,34 @@ export class S {
         "a path-and-variable-name allowlist must not classify a second unrelated dynamic batch as the cancel transition",
     ),
     (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/store.ts": (
+                "export class Store {\n"
+                "  async visible() {\n"
+                "    const b = new FencedBatch('cancel-task', token(), {})\n"
+                "    await b.run(this.db)\n"
+                "  }\n"
+                "  async hidden(label: string) {\n"
+                "    const b = {\n"
+                "      run: (db: any) => db.batch(label, [{ sql: `SELECT 1`, args: [] }]),\n"
+                "    }\n"
+                "    await b.run(this.db)\n"
+                "  }\n"
+                "}\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "an executor name authorized in one scope must not authorize an unrelated binding that receives this.db in another scope",
+    ),
+    (
         "gate-lint.py",
         gate(
             "python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py",
@@ -4492,6 +4520,29 @@ if no_bytecode.returncode != 0:
         "mutation-probe.py dirtied its clean fixture while importing shared tooling — "
         "a mutation audit then refuses its own bytecode artifact\n"
         f"    {(no_bytecode.stdout + no_bytecode.stderr).strip()[-200:]}"
+    )
+
+ledger_no_bytecode = run(
+    "spec-ledger.py",
+    {
+        "packages/store-libsql/src/store.ts": (
+            "await this.db.batch('read-probe', [{ sql: `SELECT 1`, args: [] }], 'read')\n"
+        ),
+        "specs/Scheduler.tla": (
+            "---- MODULE Scheduler ----\n"
+            "\\* BATCH-LABEL LEDGER\n"
+            "\\* 'read-probe' -> excluded [read]\n"
+            "\\* --------------------\n\n"
+            "====\n"
+        ),
+    },
+    forbidden_artifact="scripts/__pycache__",
+)
+if ledger_no_bytecode.returncode != 0:
+    failures.append(
+        "spec-ledger.py dirtied its clean fixture while importing source_lex — "
+        "the ordinary verification gate must not create repository artifacts\n"
+        f"    {(ledger_no_bytecode.stdout + ledger_no_bytecode.stderr).strip()[-200:]}"
     )
 
 for f in failures:
