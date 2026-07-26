@@ -1,6 +1,8 @@
 import {
   INFRA_RETRY_CAP,
   LeaseLostError,
+  MAX_COUNT,
+  MAX_RUN_ORDINAL,
   REASON_CLAIM_TIMEOUT,
   type SqlExecutor,
 } from '@durablerun/core'
@@ -460,7 +462,10 @@ describe('fence provenance', () => {
         `SELECT run_id, task_id FROM runs WHERE task_id = 'NEW-TASK' ORDER BY run_id`,
       )
 
-      expect({ outcome, tasks, runs }).toEqual({
+      expect(
+        { outcome, tasks, runs },
+        'mutation-verdict:behavior:spawn-rejects-orphan-owner',
+      ).toEqual({
         outcome: { kind: 'rejected' },
         tasks: [],
         runs: [{ run_id: 'ORPHAN', task_id: 'NEW-TASK' }],
@@ -533,6 +538,67 @@ describe('fence provenance', () => {
         )
 
       expect(outcome).toEqual({ kind: 'rejected' })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('claim accepts the exact maximum run ordinal including the full infrastructure budget', async () => {
+    const f = await fixture()
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: MAX_COUNT })
+      await f.raw.batch('at-run-ordinal-bound', [
+        {
+          sql: `UPDATE tasks SET attempts = ?, infra_retries = ? WHERE task_id = ?`,
+          args: [MAX_COUNT - 1, INFRA_RETRY_CAP, spawned.taskId],
+        },
+        {
+          sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+          args: [MAX_RUN_ORDINAL, spawned.runId],
+        },
+      ])
+
+      const [claim] = await f.store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+      expect(claim).toMatchObject({
+        attempt: MAX_RUN_ORDINAL,
+        infraRetries: INFRA_RETRY_CAP,
+        maxAttempts: MAX_COUNT,
+      })
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    } finally {
+      f.close()
+    }
+  })
+
+  it('claim rejects a hostile non-integer row value without coercing it for diagnostics', async () => {
+    const f = await fixture()
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const hostile = {
+        [Symbol.toPrimitive](): never {
+          throw new Error('row coercion must not run')
+        },
+      }
+      const malformed: SqlExecutor = {
+        batch: async (label, statements, mode) =>
+          (await f.raw.batch(label, statements, mode)).map((result) => ({
+            ...result,
+            rows: result.rows.map((row) =>
+              label === 'claim' && row.attempt !== undefined
+                ? { ...row, attempt: hostile as never }
+                : row,
+            ),
+          })),
+      }
+
+      const error = await f
+        .storeOver(malformed)
+        .claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+        .then(
+          () => undefined,
+          (caught: unknown) => caught,
+        )
+      expect(error).toBeInstanceOf(RangeError)
     } finally {
       f.close()
     }
