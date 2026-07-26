@@ -1,5 +1,7 @@
 # PR3.6 — Build proposal 3's spine (`fence_stamp`), with per-statement stamps grafted in
 
+> **Historical decision record.** Status is frozen at decision time; `BUILD.md` is the sole current status owner.
+
 ## 0. What I verified first (all four proposals make claims that are wrong)
 
 | Claim | Verdict |
@@ -406,13 +408,16 @@ Increment 4 must precede 5, and 12 must be last. 7–11 are independently ordera
 
 ---
 
-## 7. Cannot be made structural — documented deferrals (BUILD.md)
+## 7. Decision-time residuals (current status lives only in BUILD.md)
 
-1. **The fence proves the batch stamped a row; it does not prove a follow-on's target *set* is derived from stamped rows.** `UPDATE tasks SET state='pending', fence_stamp=$STAMP$ WHERE queue=? AND EXISTS (SELECT 1 FROM runs WHERE fence_stamp=$FENCE:x$)` passes every check and passes the audit. `rows:'one'` catches that instance; emit's fan-outs are necessarily `{many:…}` and have no bound. The true rung-1 answer is a typed target-expression API where a follow-on cannot name a raw identifier and the primitive generates the join — which fights pluggability, since join shapes differ per dialect. **Deferred, explicitly.** Class B moves from *writable by default* to *writable only by disconnecting a fence you were forced to type*. Anyone reading this as "class B is now impossible" is reading it wrong.
+This list records the disposition when this proposal was written. It is not a
+current delivery ledger; the banner above and `BUILD.md` own that distinction.
+
+1. **The fence proves the batch stamped a row; it does not prove a follow-on's target *set* is derived from stamped rows.** `UPDATE tasks SET state='pending', fence_stamp=$STAMP$ WHERE queue=? AND EXISTS (SELECT 1 FROM runs WHERE fence_stamp=$FENCE:x$)` passed every check and passed the audit. `rows:'one'` caught that instance; emit's fan-outs were necessarily `{many:…}` and had no bound. The rung-1 answer identified here was a typed target-expression API where a follow-on cannot name a raw identifier and the primitive generates the join — a follow-up assigned to PR3.7 rather than this implementation. Class B therefore moved, at this decision point, from *writable by default* to *writable only by disconnecting a fence you were forced to type*.
 2. **Postgres double-claim** on `UPDATE … WHERE id IN (subselect)` — `casMany` guarantees a win rule, not a concurrency semantics. store-pg must use `FOR UPDATE SKIP LOCKED`; a conformance scenario must exist before PG is DONE.
 3. **§3.4 rule 2's PG/MySQL lock prelude** — `FencedBatch` has no statement kind for a lock acquisition, and check 2 rejects any non-tail statement without a fence. Needed only when store-pg lands; a `lock()` kind with mandated CAS-after-lock ordering is the shape.
 4. **MySQL `won` cannot come from `rowsAffected` alone** — no targeted `ON CONFLICT`; ODKU reports 2 for an updated row and fires on any unique key; changed-vs-matched rows flips with `CLIENT_FOUND_ROWS`. The `SqlResult` normalization contract must state matched-not-changed semantics, and spawn's MySQL CAS must be the `NOT EXISTS` form with ER_DUP_ENTRY mapped to "lost".
-5. **The whole scheme is exactly as strong as `IdSource.token()` uniqueness**, and the test harness deliberately hands out colliding ids. Add a sim assertion that a seed is never issued twice per run.
+5. **The whole scheme was exactly as strong as `IdSource.token()` uniqueness**, and the test harness deliberately handed out colliding ids. The identified follow-up was a source-level guarantee that a seed is never issued twice per run.
 6. **Zombie emit** — emit is global and has no run identity; already an SDK-side lease check (commit `a33470b`), not closable in the store.
 
 **Cost, stated:** ~45 bytes/row across four tables (a 32-hex seed + `:name` + a varint), ~+13–18% on `runs`. No index anywhere — deliberately, and it is a contract rule, not an omission. Zero marginal page cost (every CAS already dirties the row it stamps). Read cost: emit's `wake-runs` goes from 3 correlated legs to 6; claim's `task-book` from 1 to 2. Turso bills rows, not bytes, and no plan loses an index term — verified statement by statement.",

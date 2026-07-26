@@ -375,10 +375,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   connection, and dialect compilers for exactly our three targets. Used as a
   COMPILER ONLY -- never as a client -- FencedBatch keeps its batch semantics
   and swaps string templates for composed nodes.
-  Spiked at scratchpad/kysely-spike: the three checks rewritten against the node
-  tree decide all six shapes correctly, including the two spellings that beat
-  the regexes and the OR bug that shipped this week. Two things the spike also
-  established, both worth knowing before committing:
+  The PR must prove in checked-in tests that the three checks rewritten against
+  the node tree decide all six shapes correctly, including the two spellings
+  that beat the regexes and the OR bug that shipped this week. Those tests must
+  also pin two failure modes before implementation:
   - The first version of the AST check was WRONG in the same way the regex was:
     it asked whether a conjunct CONTAINED a fence rather than whether it WAS
     one, and passed the OR case exactly like its predecessor. An AST does not

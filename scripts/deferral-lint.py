@@ -17,6 +17,12 @@ Only work-item bullets count. Prose inside an entry frequently discusses
 deferral (including this file's own rationale in BUILD.md), and a checker that
 fires on text ABOUT the rule is the kind that gets weakened until it is quiet.
 
+Historical ``postmortems/*-plan.md`` files are decision records, not a second
+delivery ledger. They carry one exact, top-of-file banner declaring that their
+status is frozen and BUILD.md alone owns current status. BUILD.md in turn may
+not cite ``scratchpad/`` paths: those are intentionally transient and cannot
+serve as auditable plan evidence.
+
 Run by `pnpm verify`.
 """
 import re
@@ -31,6 +37,10 @@ ROOT = (
     else Path(__file__).resolve().parent.parent
 )
 BUILD = ROOT / "BUILD.md"
+HISTORICAL_PLAN_BANNER = (
+    "> **Historical decision record.** Status is frozen at decision time; "
+    "`BUILD.md` is the sole current status owner."
+)
 
 # Work that is announced rather than described as shipped.
 DEFERRED = re.compile(
@@ -42,10 +52,12 @@ EXCUSED = re.compile(r"\bABANDONED:", re.IGNORECASE)
 
 ENTRY = re.compile(r"^[-*] \*\*(PR[\d.]+)\b")
 BULLET = re.compile(r"^(?P<indent>\s*)[-*]\s+")
+SCRATCHPAD_PATH = re.compile(r"(?<![\w.-])scratchpad/", re.IGNORECASE)
 
 violations: list[str] = []
 owner: tuple[str, bool] | None = None
-for line in BUILD.read_text().splitlines():
+build_lines = BUILD.read_text().splitlines()
+for line in build_lines:
     entry = ENTRY.match(line)
     if entry:
         owner = (entry.group(1), "DONE" in line)
@@ -75,8 +87,31 @@ for line in BUILD.read_text().splitlines():
             f"  'ABANDONED: <reason>' — an honest answer where silence is not."
         )
 
+for line_number, line in enumerate(build_lines, start=1):
+    if SCRATCHPAD_PATH.search(line):
+        violations.append(
+            "BUILD.md points at transient scratchpad state:\n"
+            f"    line {line_number}: {line.strip()[:110]}\n"
+            "  BUILD.md is the auditable delivery ledger; replace transient\n"
+            "  scratchpad evidence with a checked-in artifact or acceptance criterion."
+        )
+
+postmortems = ROOT / "postmortems"
+for plan in sorted(postmortems.glob("*-plan.md")):
+    lines = plan.read_text().splitlines()
+    if len(lines) < 3 or lines[2] != HISTORICAL_PLAN_BANNER:
+        violations.append(
+            f"{plan.relative_to(ROOT)}: historical plan does not declare BUILD.md "
+            "as its sole current status owner:\n"
+            f"  Put this canonical banner immediately below the title:\n"
+            f"    {HISTORICAL_PLAN_BANNER}"
+        )
+
 for v in violations:
     print(v)
 if violations:
     sys.exit(1)
-print(f"deferral-lint: clean — no deferred work parked under a completed PR entry")
+print(
+    "deferral-lint: clean — delivery status has one current owner and no "
+    "deferred work is parked under a completed PR entry"
+)

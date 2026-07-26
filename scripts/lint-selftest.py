@@ -3085,6 +3085,24 @@ const pattern = /this\.db\.batch\(/
         "prose about deferral inside a live PR entry is not an orphaned work item",
     ),
     (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 current work** — planned.\n"
+                "  - **Owned mechanism** — implement it here.\n"
+            ),
+            "postmortems/fixture-plan.md": (
+                "# Historical implementation plan\n\n"
+                "> **Historical decision record.** Status is frozen at decision time; "
+                "`BUILD.md` is the sole current status owner.\n\n"
+                "## Decision-time residuals\n\n"
+                "The work was assigned to PR9.9; see BUILD.md for current status.\n"
+            ),
+        },
+        "a canonical historical banner keeps decision context without creating a second live plan",
+    ),
+    (
         "gate-lint.py",
         gate("python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py", "b-lint.py")),
         "every checker run by the gate, every one self-tested, base-gate present",
