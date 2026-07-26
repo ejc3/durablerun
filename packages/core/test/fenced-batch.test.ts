@@ -609,6 +609,22 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
     )
   })
 
+  it('rejects a fence in the negated right-hand side of IS NOT', () => {
+    const b = withCas()
+    missingConstructionGuard(
+      'mutation-verdict:construction:positive-fence-is-not',
+      /no positive fence/,
+      () =>
+        b.followOn(
+          'x',
+          `DELETE FROM waits
+           WHERE 1 IS NOT (fence_stamp = ${b.fence('win')})`,
+          [],
+          'one',
+        ),
+    )
+  })
+
   it('accepts a statement carrying both a positive and a negative fence', () => {
     // `fail`'s terminal arm: fires when the successor was NOT written, but
     // still keyed to the run this batch actually failed.

@@ -54,6 +54,7 @@ def gate(
     extra_scripts: tuple[str, ...] = (),
     base_gate: bool = True,
     base_gate_run: bool = True,
+    nightly: bool = True,
 ) -> dict[str, str]:
     """A miniature repo for gate-lint: a package.json, a scripts/ dir, a CI file.
 
@@ -90,6 +91,20 @@ def gate(
             + "]\nBAD_INVOCATIONS = []\nGOOD_CASES = []\n"
         ),
     }
+    if nightly:
+        files[".github/workflows/nightly.yml"] = (
+            "name: nightly\n"
+            "on: workflow_dispatch\n"
+            "permissions:\n"
+            "  contents: read\n"
+            "jobs:\n"
+            "  proof:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "        with:\n"
+            "          persist-credentials: false\n"
+        )
     for name in extra_scripts:
         files[f"scripts/{name}"] = "# a checker\n"
     return files
@@ -556,6 +571,15 @@ export class S {
         "a nested file must not be invisible to the fragment checker",
     ),
     (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM tasks WHERE cancel_at_ms <= 5`\n",
+            name="nested/deep/fragments.ts",
+        ),
+        "cancellation-deadline comparison outside fragments.ts",
+        "only the canonical top-level fragments.ts may define eligibility predicates",
+    ),
+    (
         "clock-lint.py",
         store("const SQL = `SELECT unixepoch('subsec')`\n", name="nested/deep/probe.ts"),
         "raw wall-clock function in store SQL",
@@ -599,6 +623,18 @@ export class S {
         store("const SQL = `SELECT value FROM meta WHERE key = 'fake_now_ms'`\n"),
         "raw meta/fake_now_ms clock read in store SQL",
         "a direct fake-now read is a second spelling of the database clock",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT value FROM meta WHERE 'fake_now_ms' = key`\n"),
+        "raw meta/fake_now_ms clock read in store SQL",
+        "reversing equality operands must not hide a direct fake-now read",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT value FROM meta WHERE key IN ('fake_now_ms')`\n"),
+        "raw meta/fake_now_ms clock read in store SQL",
+        "an IN predicate must not hide a direct fake-now read",
     ),
     (
         "clock-lint.py",
@@ -810,6 +846,17 @@ export class S {
         ),
         "does not actively run `python3 scripts/gate-lint.py --run-base HEAD BASE`",
         "an empty base-gate mapping executes no base-owned composition or checker runner",
+    ),
+    (
+        "gate-lint.py",
+        gate(
+            "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+            "&& python3 scripts/lint-selftest.py",
+            ("a-lint.py", "b-lint.py"),
+            nightly=False,
+        ),
+        ".github/workflows/nightly.yml is missing",
+        "deleting the long-running verification workflow must not make its safety checks vacuous",
     ),
     (
         "review-bot-lint.py",

@@ -689,6 +689,42 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           LeaseLostError,
         )
       })
+
+      it('suspendRun rejects a non-integer stored attempt atomically', async () => {
+        const run = await activatedRun()
+        const disposition = await f.injectStorageCorruption({
+          table: 'runs',
+          runId: run.runId,
+          column: 'attempt',
+          invalidRepresentation: 'non-integer',
+        })
+        if (disposition === 'injected') {
+          await expect(
+            f.store.suspendRun(
+              Q,
+              run.runId,
+              run.claimToken,
+              { inSeconds: 1 },
+              { key: 'poison-attempt', stateJson: '{}' },
+            ),
+          ).rejects.toThrow(LeaseLostError)
+        }
+
+        const [storedRun, checkpoints] = await f.raw.batch(
+          'suspend-poison-attempt:assert',
+          [
+            { sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] },
+            {
+              sql: `SELECT COUNT(*) AS n FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = 'poison-attempt'`,
+              args: [run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(storedRun?.rows[0]?.state).toBe('running')
+        expect(Number(checkpoints?.rows[0]?.n)).toBe(0)
+      })
     })
 
     describe('checkpoints', () => {
