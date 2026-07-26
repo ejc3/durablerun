@@ -3601,13 +3601,14 @@ def worker_environment(
     *,
     allow_host_sized_tokio: bool = False,
 ) -> dict[str, str]:
-    del allow_host_sized_tokio
     plan.temporary.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
         environment.pop(name, None)
     environment["TMPDIR"] = str(plan.temporary)
     environment["CI"] = "1"
+    if not allow_host_sized_tokio:
+        environment["TOKIO_WORKER_THREADS"] = "1"
     return environment
 
 
