@@ -186,7 +186,7 @@ def hidden_process_contract(document: str, container: str) -> dict[str, str]:
             "invalid-fence-close": f"```md\n    ```\n{body}```\n",
             "comment": f"<!--\n{body}-->\n",
             "pre": f"<pre>\n{body}</pre>\n",
-            "div": f"<div>\n{body}</div>\n",
+            "div": f"<div>\n{body}</div>\n\n",
         }
         files[document] = files[document].replace(
             body,
@@ -1145,7 +1145,7 @@ export class S {
         "gate-lint.py",
         hidden_process_contract("BUILD.md", "comment"),
         "BUILD.md misclassifies malformed suite transport",
-        "a transport block inside an HTML comment cannot own classification",
+        "nested comment markers cannot move the transport contract from its prefix",
     ),
     (
         "gate-lint.py",
