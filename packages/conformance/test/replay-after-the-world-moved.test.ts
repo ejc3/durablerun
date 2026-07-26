@@ -129,7 +129,7 @@ describe('a replay after the world moved on', () => {
 
     await attributeExpectedFailure(
       'mutation-verdict:behavior:successor-ownership',
-      /UNIQUE constraint failed: runs\.run_id/,
+      /UNIQUE constraint failed: runs\.task_id, runs\.attempt/,
       () => rec.replay('fail'),
     )
 
