@@ -170,11 +170,11 @@ passes found them before review or push.
 
 Every review-caught finding enters the PR trailer, including findings first
 reported by local adversarial agents. Prior cumulative 129 + final remote 43 +
-this audit's 14 review findings = **186 review findings**, so final PR #12
-attestation must declare `review-findings: 186`. Findings 8–12 and 16–17 are
-recorded here but do not increment that review count. Across the branch, the
-auditable total is **210 findings: 24 self-caught + 186
-review-caught**.
+this audit's 14 review findings = **186 review findings at this checkpoint**.
+Findings 8–12 and 16–17 are recorded here but do not increment that review
+count. At this checkpoint the branch's auditable total was **210 findings: 24
+self-caught + 186 review-caught**. Later rounds supersede these cumulative
+numbers without changing this round's ledger.
 
 ## Recurrence
 
