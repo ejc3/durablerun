@@ -201,6 +201,50 @@ def hidden_process_contract(document: str, container: str) -> dict[str, str]:
     return files
 
 
+def nested_build_contract(container: str) -> dict[str, str]:
+    files = process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK)
+    indented_block = "".join(
+        f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines()
+    )
+    wrappers = {
+        "fence": (
+            "- ```md\n"
+            "  - **Attributable mutation catches.**\n"
+            f"{indented_block}"
+            "  - **Fixture continuation.**\n"
+            "  ```\n"
+        ),
+        "raw-html": (
+            "- <div>\n"
+            "  - **Attributable mutation catches.**\n"
+            f"{indented_block}"
+            "  - **Fixture continuation.**\n"
+            "  </div>\n"
+        ),
+        "deindented": (
+            "  - **Attributable mutation catches.**\n"
+            "\n"
+            "outside the list\n"
+            "\n"
+            f"{indented_block}"
+            "  - **Fixture continuation.**\n"
+        ),
+        "wrong-owner": (
+            "      - **Attributable mutation catches.**\n"
+            f"{indented_block}"
+            "  - **Fixture continuation.**\n"
+        ),
+    }
+    files["BUILD.md"] = wrappers[container]
+    return files
+
+
+def raw_agent_contract(opening: str, closing: str = "") -> dict[str, str]:
+    files = process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK)
+    files["AGENTS.md"] = f"{opening}\n{files['AGENTS.md']}{closing}\n"
+    return files
+
+
 def under(prefix: str, files: dict[str, str]) -> dict[str, str]:
     return {f"{prefix}/{rel}": body for rel, body in files.items()}
 
@@ -1069,6 +1113,54 @@ export class S {
         hidden_process_contract("BUILD.md", "div"),
         "BUILD.md misclassifies malformed suite transport",
         "generic raw HTML cannot own the operative transport contract",
+    ),
+    (
+        "gate-lint.py",
+        nested_build_contract("fence"),
+        "BUILD.md misclassifies malformed suite transport",
+        "a list-marker-prefixed fence cannot make its nested contract operative",
+    ),
+    (
+        "gate-lint.py",
+        nested_build_contract("raw-html"),
+        "BUILD.md misclassifies malformed suite transport",
+        "a list-marker-prefixed raw HTML block cannot own a nested contract",
+    ),
+    (
+        "gate-lint.py",
+        nested_build_contract("deindented"),
+        "BUILD.md misclassifies malformed suite transport",
+        "a deindent terminates the owning list before the transport block",
+    ),
+    (
+        "gate-lint.py",
+        nested_build_contract("wrong-owner"),
+        "BUILD.md misclassifies malformed suite transport",
+        "the transport block must remain a child of its exact owning list item",
+    ),
+    (
+        "gate-lint.py",
+        raw_agent_contract("</div>"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a raw closing block tag can hide the following Markdown heading",
+    ),
+    (
+        "gate-lint.py",
+        raw_agent_contract("<div/>"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a self-closing raw block tag can hide the following Markdown heading",
+    ),
+    (
+        "gate-lint.py",
+        raw_agent_contract("<div></div>"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a same-line raw block tag remains open through the next blank line",
+    ),
+    (
+        "gate-lint.py",
+        raw_agent_contract("<pre class=x", "</pre>"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a type-one raw HTML block does not require a closing angle bracket",
     ),
     (
         "gate-lint.py",
