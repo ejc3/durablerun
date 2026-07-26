@@ -1603,6 +1603,7 @@ BAD_INVOCATIONS = [
         "publish-success-after-infra",
         "report-worker-crash-as-domain",
         "accept-oversized-finite-scope",
+        "accept-oversized-cpu-scope",
         "classify-missing-report-as-domain",
     )
 ]
