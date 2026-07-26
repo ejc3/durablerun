@@ -47,6 +47,17 @@ This top-of-file block is the sole normative suite transport contract:
 `parse_report` and `run_suite` raise `SuiteInfrastructureError`; only a
 structurally valid `SuiteResult` reaches verdict classification.
 <!-- mutation-suite-transport-contract:end -->"""
+PROCESS_FIXTURE_ISOLATION_FAULTS = (
+    "agents-confine-heading",
+    "agents-confine-body",
+    "agents-overview-heading",
+    "agents-continuation-heading",
+    "agents-div-boundary",
+    "build-transport-body",
+    "build-extra-start-marker",
+    "build-extra-end-marker",
+    "build-continuation-heading",
+)
 
 
 def tree(root: Path, files: dict[str, str]) -> Path:
@@ -264,9 +275,10 @@ def raw_agent_contract(opening: str, closing: str = "") -> dict[str, str]:
 
 def process_fixture_isolation_problems(
     *,
-    drop_overview_control: bool = False,
+    injected_fault: str | None = None,
 ) -> list[str]:
     """Reject process-contract negatives that also corrupt unrelated controls."""
+    del injected_fault
     problems: list[str] = []
     expected_agents_inventory = (
         (CONFINE_HEADING, 1),
@@ -276,8 +288,6 @@ def process_fixture_isolation_problems(
     )
     for container in ("fence", "invalid-fence-close", "comment", "pre", "div"):
         agents = hidden_process_contract("AGENTS.md", container)["AGENTS.md"]
-        if drop_overview_control and container == "fence":
-            agents = agents.replace(OVERVIEW_HEADING, "## Removed overview", 1)
         for marker, expected in expected_agents_inventory:
             if agents.count(marker) != expected:
                 problems.append(
@@ -2297,10 +2307,12 @@ def run(
 
 failures = []
 failures.extend(process_fixture_isolation_problems())
-if not process_fixture_isolation_problems(drop_overview_control=True):
-    failures.append(
-        "process fixture isolation self-test missed a dropped Overview control"
-    )
+for injected_fault in PROCESS_FIXTURE_ISOLATION_FAULTS:
+    if not process_fixture_isolation_problems(injected_fault=injected_fault):
+        failures.append(
+            "process fixture isolation self-test missed injected fault "
+            f"{injected_fault}"
+        )
 
 orchestration_inventory = subprocess.run(
     [
