@@ -5,6 +5,7 @@ import {
   FatalTaskError,
   LeaseLostError,
   type SchedulerStore,
+  serializeTaskValue,
   SuspendSignal,
   UserName,
   userDurationToMs,
@@ -167,11 +168,11 @@ export class ReplayContext implements TaskContext {
     this.inStep = true
     let raw: unknown
     try {
-      raw = (await fn()) ?? null
+      raw = await fn()
     } finally {
       this.inStep = false
     }
-    const stateJson = JSON.stringify(raw)
+    const stateJson = serializeTaskValue(`step '${name}' result`, raw)
     // ONE representation: the caller gets the serialize-then-parse
     // CANONICAL value on the executing pass too, so NaN, Dates, dropped
     // undefined fields, and -0 read identically on every pass of every

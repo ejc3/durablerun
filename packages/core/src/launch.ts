@@ -4,7 +4,11 @@ import type { LaunchIdentity } from './types.js'
 type LaunchPayload =
   | { readonly kind: 'accepted' }
   | { readonly kind: 'ended'; readonly ending: Ending }
+  | { readonly kind: 'unidentified-ending' }
   | { readonly kind: 'launch-failed' }
+
+const INVALID_LAUNCH: LaunchPayload = Object.freeze({ kind: 'launch-failed' })
+const AUTHENTIC_LAUNCH_OUTCOMES = new WeakMap<object, LaunchPayload>()
 
 /**
  * The result of asking a Launcher to start a worker — deliberately OPAQUE.
@@ -22,7 +26,16 @@ type LaunchPayload =
  * Launcher implementations construct outcomes via the static factories.
  */
 export class LaunchOutcome {
-  private constructor(private readonly payload: LaunchPayload) {}
+  /**
+   * Authentication lives outside the instance shape. `instanceof` alone is
+   * forgeable with Object.create(LaunchOutcome.prototype), and a private
+   * TypeScript field is still an ordinary runtime property. Only this module's
+   * constructor can enroll an object in the registry.
+   */
+  private constructor(payload: LaunchPayload) {
+    AUTHENTIC_LAUNCH_OUTCOMES.set(this, Object.freeze(payload))
+    Object.freeze(this)
+  }
 
   /** The transport took the launch (fire-and-forget ack). */
   static accepted(): LaunchOutcome {
@@ -31,12 +44,25 @@ export class LaunchOutcome {
 
   /** A sync (bounded-slot resident) launcher observed the worker end. */
   static ended(ending: Ending): LaunchOutcome {
-    return new LaunchOutcome({ kind: 'ended', ending })
+    const snapshot = snapshotEnding(ending)
+    if (snapshot.status !== 'identified') {
+      // A recognizable tokenless ending is an authenticated no-op: it cannot
+      // name a claim, and expiring whichever claim happens to own the run now
+      // would race a newer worker. Other malformed payloads are failed
+      // launches, because they provide no trustworthy evidence at all.
+      return snapshot.status === 'tokenless'
+        ? new LaunchOutcome({ kind: 'unidentified-ending' })
+        : LaunchOutcome.launchFailed()
+    }
+    return new LaunchOutcome({
+      kind: 'ended',
+      ending: Object.freeze(snapshot.ending),
+    })
   }
 
   /** The launch never left the building. */
   static launchFailed(): LaunchOutcome {
-    return new LaunchOutcome({ kind: 'launch-failed' })
+    return new LaunchOutcome(INVALID_LAUNCH)
   }
 
   /**
@@ -64,9 +90,12 @@ export class LaunchOutcome {
     run: LaunchIdentity,
     value: unknown,
   ): Promise<'accepted' | 'ended' | 'launch-failed'> {
-    const outcome = value instanceof LaunchOutcome ? value : LaunchOutcome.launchFailed()
-    const payload = outcome.payload
+    const payload =
+      value !== null && typeof value === 'object'
+        ? (AUTHENTIC_LAUNCH_OUTCOMES.get(value) ?? INVALID_LAUNCH)
+        : INVALID_LAUNCH
     if (payload.kind === 'accepted') return 'accepted'
+    if (payload.kind === 'unidentified-ending') return 'ended'
     if (payload.kind === 'ended') {
       const { ending } = payload
       if (ending.runId !== run.runId || ending.claimToken !== run.claimToken) {
@@ -79,5 +108,51 @@ export class LaunchOutcome {
       // advisory: acceleration lost, correctness unaffected
     }
     return payload.kind
+  }
+}
+
+const ENDING_KINDS = new Set<Ending['kind']>([
+  'completed',
+  'failed',
+  'crashed',
+  'timeout',
+  'unknown',
+])
+
+type EndingSnapshot =
+  | { readonly status: 'identified'; readonly ending: Ending }
+  | { readonly status: 'tokenless' }
+  | { readonly status: 'invalid' }
+
+function snapshotEnding(value: unknown): EndingSnapshot {
+  if (value === null || typeof value !== 'object') return { status: 'invalid' }
+  let runId: unknown
+  let claimToken: unknown
+  let kind: unknown
+  try {
+    const candidate = value as Record<string, unknown>
+    // Exactly one read each. User-controlled getters may throw or change
+    // between reads; authentication operates only on this guarded snapshot.
+    runId = candidate.runId
+    claimToken = candidate.claimToken
+    kind = candidate.kind
+  } catch {
+    return { status: 'invalid' }
+  }
+  if (
+    typeof runId !== 'string' ||
+    runId.length === 0 ||
+    typeof kind !== 'string' ||
+    !ENDING_KINDS.has(kind as Ending['kind'])
+  ) {
+    return { status: 'invalid' }
+  }
+  if (claimToken === undefined) return { status: 'tokenless' }
+  if (typeof claimToken !== 'string' || claimToken.length === 0) {
+    return { status: 'invalid' }
+  }
+  return {
+    status: 'identified',
+    ending: { runId, claimToken, kind: kind as Ending['kind'] },
   }
 }

@@ -1,4 +1,8 @@
 import {
+  MAX_COUNT,
+  MAX_DURATION_MS,
+  MAX_EPOCH_MS,
+  MAX_RUN_ORDINAL,
   type SchedulerStore,
   type SqlBatchMode,
   type SqlExecutor,
@@ -218,6 +222,18 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
         [NOW + 60_000, RUN],
       ),
     ],
+    inertLive: true,
+  },
+  {
+    id: 'ownership/run-task-missing',
+    covers: ['ownership/run-task-missing'],
+    statements: [sql(`DELETE FROM tasks WHERE task_id = ?`, [TASK])],
+    inertLive: true,
+  },
+  {
+    id: 'ownership/run-task-queue-mismatch',
+    covers: ['ownership/run-task-queue-mismatch'],
+    statements: [sql(`UPDATE runs SET queue = ? WHERE run_id = ?`, [OTHER_Q, RUN])],
     inertLive: true,
   },
   {
@@ -453,6 +469,40 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
   },
   ...(
     [
+      ['run-available', 'runs', 'available_at_ms', RUN, MAX_EPOCH_MS],
+      ['run-claim-expires', 'runs', 'claim_expires_at_ms', RUN, MAX_EPOCH_MS],
+      ['run-heartbeat', 'runs', 'heartbeat_at_ms', RUN, MAX_EPOCH_MS],
+      ['run-created', 'runs', 'created_at_ms', RUN, MAX_EPOCH_MS],
+      ['run-lease', 'runs', 'lease_ms', RUN, MAX_DURATION_MS],
+      ['task-enqueue', 'tasks', 'enqueue_at_ms', TASK, MAX_EPOCH_MS],
+      ['task-cancel', 'tasks', 'cancel_at_ms', TASK, MAX_EPOCH_MS],
+    ] as const
+  ).map(
+    ([id, table, column, rowId, maximum]): PoisonWitness => ({
+      id: `temporal-bound/${id}`,
+      covers: [`temporal-bound/${id}` as EngineInvariantConditionId],
+      statements: [
+        sql(
+          `UPDATE ${table} SET ${column} = ? WHERE ${table === 'runs' ? 'run_id' : 'task_id'} = ?`,
+          [maximum + 1, rowId],
+        ),
+      ],
+    }),
+  ),
+  {
+    id: 'temporal-bound/checkpoint-updated',
+    covers: ['temporal-bound/checkpoint-updated'],
+    statements: [
+      checkpoint(TASK, Q, RUN),
+      sql(
+        `UPDATE checkpoints SET updated_at_ms = ?
+         WHERE task_id = ? AND checkpoint_name = 'poison-checkpoint'`,
+        [MAX_EPOCH_MS + 1, TASK],
+      ),
+    ],
+  },
+  ...(
+    [
       [
         'task-attempts',
         {
@@ -523,6 +573,28 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
       covers: [`counter/${id}` as EngineInvariantConditionId],
       statements: [],
       storageCorruption,
+    }),
+  ),
+  ...(
+    [
+      ['task-attempts', 'tasks', 'attempts', TASK],
+      ['task-max-attempts', 'tasks', 'max_attempts', TASK],
+      ['task-infra-retries', 'tasks', 'infra_retries', TASK],
+      ['run-attempt', 'runs', 'attempt', RUN, MAX_RUN_ORDINAL],
+      ['run-claim-gen', 'runs', 'claim_gen', RUN, MAX_COUNT],
+      ['run-activated-gen', 'runs', 'activated_gen', RUN, MAX_COUNT],
+      ['run-relaunch-count', 'runs', 'relaunch_count', RUN, MAX_COUNT],
+    ] as const
+  ).map(
+    ([id, table, column, rowId, maximum = MAX_COUNT]): PoisonWitness => ({
+      id: `counter-bound/${id}`,
+      covers: [`counter-bound/${id}` as EngineInvariantConditionId],
+      statements: [
+        sql(
+          `UPDATE ${table} SET ${column} = ? WHERE ${table === 'runs' ? 'run_id' : 'task_id'} = ?`,
+          [maximum + 1, rowId],
+        ),
+      ],
     }),
   ),
   {

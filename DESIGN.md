@@ -402,8 +402,13 @@ One invocation executes one claimed run to its next suspension point:
   context through ONE classified boundary (core's `UserName.parse` /
   `userDurationToMs` / `userEpochMs`, which throw `FatalTaskError`
   directly); durable replay keys are only constructible from validated
-  names, so a future context method cannot re-open the class. Step results
-  are JSON; `undefined` pins to `null` on every pass.
+  names, so a future context method cannot re-open the class. Every durable
+  task value—step result, final result, and parsed event payload—crosses the
+  same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
+  top-level `undefined` pins to `null` on every pass, while functions, symbols,
+  bigint, cycles, and hostile serialization hooks are permanent
+  `FatalTaskError`s. The failure path never coerces a value thrown by user
+  serialization code.
   Error taxonomy on a pass: infrastructure failures (typed
   `StoreUnavailableError`, thrown at the executor boundary) abort the pass
   with NO transition — recovery is the lease story and the user's retry
@@ -522,6 +527,11 @@ are load-bearing):
    foreign task must abort the whole transition. The schema's unique
    `(task_id, attempt)` key makes two attempts of one task unable to claim the
    same ordinal.
+   Run ownership is total: every run names an existing task in the same queue.
+   Spawn therefore admits its task insert only when no pre-existing run already
+   names the newly minted task id. Losing that ownership guard aborts with no
+   task or run written; it may never create a task after an orphan run and then
+   report a different, never-inserted run as the receipt.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:
@@ -643,7 +653,14 @@ are load-bearing):
    later reads with a driver RangeError, and a fractional product silently
    breaks the integer epoch-ms contract. Durations stored in JSON
    (`cancellation.maxDurationSeconds`) are validated at spawn and their SQL
-   products CAST to INTEGER at use.
+   products CAST to INTEGER at use. Values coming back from a dialect cross
+   one dialect-neutral `decodeBoundedInteger` boundary before becoming
+   JavaScript numbers; it accepts only exact native number/bigint integers and
+   enforces the same semantic bounds the invariant evaluator uses. Run
+   ordinals have the distinct exact ceiling
+   `MAX_RUN_ORDINAL = MAX_COUNT + INFRA_RETRY_CAP`, because they count both
+   user attempts and infrastructure successors; all other durable counts use
+   `MAX_COUNT`.
 8. **Write provenance is a column, never a borrowed one.** Every table a CAS
    targets — `tasks`, `runs`, `waits`, `events` (the contract list, `core`'s
    `FENCED_TABLES`) — carries `fence_stamp TEXT` and `fence_at_ms INTEGER`.
@@ -722,7 +739,13 @@ are load-bearing):
    executor failure cannot enter the fresh-database path. Once metadata exists,
    the version read returns exactly one result containing exactly one row;
    zero, missing, or duplicated result/row shapes are schema mismatches, never
-   version zero.
+   version zero. `migrate()` performs that typed read before issuing any
+   bootstrap DDL; only its explicit absent-metadata result authorizes
+   `CREATE meta` and the version-zero insert. `CREATE IF NOT EXISTS` is not
+   evidence of freshness and may not relabel an existing empty metadata table.
+   Malformed dialect-returned values are described only by non-coercive storage
+   kind; diagnostics may not invoke serialization or user hooks and change the
+   permanent `SchemaMismatchError` classification.
 
 **Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
 `setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
@@ -756,7 +779,12 @@ not depend on careful reading:
   readable fields; the only affordance is `LaunchOutcome.reconcile`, which
   owns parsing, exact `(runId, claimToken)` identity checking, and the single
   advisory-expiry door. A mismatched or tokenless ending makes no write.
-  Trusting a report's content is a compile error, not a review catch.
+  Authentication is a module-private WeakMap, not `instanceof`, an instance
+  field, or a TypeScript-private class property. Construction snapshots each
+  untrusted ending field exactly once inside a non-throwing guard, validates
+  the complete payload, and copies it; forged prototypes, throwing/changing
+  getters, and malformed payloads become `launch-failed`. Trusting a report's
+  content is a compile error, not a review catch.
 - *The generated fault matrix* (`conformance/src/fault-matrix.ts`): every
   batch label, harvested from source by the same script that checks the
   spec ledger, is classified write/read/exempt — a new label fails the
@@ -784,12 +812,16 @@ not depend on careful reading:
   fixture's `injectStorageCorruption` seam: a permissive store returns
   `injected`, while a strict schema returns `structurally-rejected`, and both
   are valid outcomes of the identical shared witness. TypeScript evaluates
-  one of 57 typed condition IDs for every semantic arm. The seven durable
-  counters are decoded totally: a non-integer storage representation emits
-  its own typed finding and suppresses dependent arithmetic instead of
-  aborting the invariant pass. The poison surface crosses the 17 classified
-  write labels with 54 atomic corrupt-state witnesses covering that exact
-  condition inventory: 918 generated cells,
+  one of 74 typed condition IDs for every semantic arm. The seven durable
+  counters and eight temporal fields are decoded totally through core's
+  bounded decoder: a non-integer storage representation and an exact-but-
+  out-of-range value emit distinct typed findings and suppress dependent
+  arithmetic instead of aborting the invariant pass. Run→task existence and
+  queue ownership are checked explicitly. Generated just-over-bound witnesses,
+  along with the ownership witnesses, keep the poison matrix complete. The
+  poison surface crosses the 17 classified
+  write labels with 71 atomic corrupt-state witnesses covering that exact
+  condition inventory: 1,207 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead return `structurally-rejected` before invocation,
   the stronger result that the forbidden pre-state is unwritable. Each invoked

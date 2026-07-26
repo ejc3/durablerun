@@ -1,6 +1,9 @@
 import {
+  decodeBoundedInteger,
+  MAX_EPOCH_MS,
   SchemaNotInitializedError,
   SchemaMismatchError,
+  storageValueKind,
   type SqlExecutor,
   type SqlResult,
   type StoreAdmin,
@@ -25,20 +28,26 @@ export class LibsqlStoreAdmin implements StoreAdmin {
    * version and continues; authors only ever write plain DDL.
    */
   async migrate(): Promise<void> {
-    await this.db.batch('migrate:bootstrap', [
-      {
-        sql: `CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-              ) WITHOUT ROWID`,
-        args: [],
-      },
-      {
-        sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
-              ON CONFLICT (key) DO NOTHING`,
-        args: [],
-      },
-    ])
+    // Bootstrap is authorized only by the typed absence result from the exact
+    // version read. CREATE IF NOT EXISTS cannot distinguish a fresh database
+    // from an existing, initialized-but-corrupt empty meta table; running it
+    // first launders the latter into a valid version-zero database.
+    if ((await this.readSchemaVersion()) === null) {
+      await this.db.batch('migrate:bootstrap', [
+        {
+          sql: `CREATE TABLE IF NOT EXISTS meta (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                ) WITHOUT ROWID`,
+          args: [],
+        },
+        {
+          sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
+                ON CONFLICT (key) DO NOTHING`,
+          args: [],
+        },
+      ])
+    }
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
       try {
@@ -68,6 +77,14 @@ export class LibsqlStoreAdmin implements StoreAdmin {
   }
 
   async schemaVersion(): Promise<number> {
+    return (await this.readSchemaVersion()) ?? 0
+  }
+
+  /**
+   * Null is the one typed fresh-database state. Once meta exists, every
+   * malformed result—including no schema_version row—throws closed.
+   */
+  private async readSchemaVersion(): Promise<number | null> {
     let results: SqlResult[]
     try {
       results = await this.db.batch(
@@ -79,7 +96,7 @@ export class LibsqlStoreAdmin implements StoreAdmin {
       // Only a genuinely fresh database reads as version 0; a transient
       // network/auth error must not masquerade as one (it would re-apply
       // every migration over a live schema).
-      if (error instanceof SchemaNotInitializedError) return 0
+      if (error instanceof SchemaNotInitializedError) return null
       throw error
     }
     const result = results.length === 1 ? results[0] : undefined
@@ -92,7 +109,7 @@ export class LibsqlStoreAdmin implements StoreAdmin {
     const stored = row.value
     if (typeof stored !== 'string' || !/^(0|[1-9][0-9]*)$/.test(stored)) {
       throw new SchemaMismatchError(
-        `schema_version must be a canonical nonnegative integer, got ${JSON.stringify(stored)}`,
+        `schema_version must be a canonical nonnegative integer, got ${storageValueKind(stored)}`,
       )
     }
     const version = Number(stored)
@@ -124,7 +141,14 @@ export class LibsqlStoreAdmin implements StoreAdmin {
       [{ sql: `SELECT ${NOW_MS} AS now_ms`, args: [] }],
       'read',
     )
-    return Number(result?.rows[0]?.now_ms)
+    const raw = result?.rows[0]?.now_ms
+    const decoded = decodeBoundedInteger(raw, { min: 0, max: MAX_EPOCH_MS })
+    if (!decoded.ok) {
+      throw new RangeError(
+        `admin.now_ms must be an integer epoch-ms in [0, ${MAX_EPOCH_MS}] (${decoded.reason})`,
+      )
+    }
+    return decoded.value
   }
 }
 

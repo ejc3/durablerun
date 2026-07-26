@@ -4,6 +4,7 @@ import {
   FatalTaskError,
   LeaseLostError,
   type SchedulerStore,
+  serializeTaskValue,
   StoreUnavailableError,
   SuspendSignal,
 } from '@durablerun/core'
@@ -150,7 +151,7 @@ export async function runClaimedRun(
     // transient store error here is infrastructure, and billing it as a
     // user failure would terminally fail a task whose handler succeeded.
     try {
-      await store.complete(queue, runId, claimToken, JSON.stringify(result ?? null))
+      await store.complete(queue, runId, claimToken, serializeTaskValue('task result', result))
     } catch (inner) {
       return infraOutcome(inner) ?? raise(inner)
     }

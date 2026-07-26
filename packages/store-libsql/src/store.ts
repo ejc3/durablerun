@@ -9,8 +9,13 @@ import {
   INFRA_BACKOFF_SECONDS,
   INFRA_RETRY_CAP,
   type IdSource,
+  type IntegerBounds,
   LeaseLostError,
   type LeaseState,
+  MAX_COUNT,
+  MAX_DURATION_MS,
+  MAX_EPOCH_MS,
+  MAX_RUN_ORDINAL,
   NOW,
   REASON_CANCELLED,
   REASON_CLAIM_TIMEOUT,
@@ -28,12 +33,14 @@ import {
   type SqlRow,
   type SweptRun,
   type TaskResult,
+  decodeBoundedInteger,
   durationToMs,
   fenceSetAt,
   neverBuggify,
   normalizeRetryStrategy,
   requireEpochMs,
   requirePositiveInt,
+  storageValueKind,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -44,6 +51,7 @@ import {
   fencedAt,
   registeredWait,
   soleLiveRun,
+  storedBoundedInteger,
   storedInteger,
   successorOwned,
 } from './fragments.js'
@@ -56,6 +64,12 @@ const DEFAULT_RETRY: RetryStrategy = {
   maxSeconds: 3600,
 }
 const DEFAULT_MAX_ATTEMPTS = 5
+const COUNT_BOUNDS = Object.freeze({ min: 0, max: MAX_COUNT })
+const POSITIVE_COUNT_BOUNDS = Object.freeze({ min: 1, max: MAX_COUNT })
+const RUN_ORDINAL_BOUNDS = Object.freeze({ min: 1, max: MAX_RUN_ORDINAL })
+const EPOCH_BOUNDS = Object.freeze({ min: 0, max: MAX_EPOCH_MS })
+const DURATION_BOUNDS = Object.freeze({ min: 0, max: MAX_DURATION_MS })
+const POSITIVE_DURATION_BOUNDS = Object.freeze({ min: 1, max: MAX_DURATION_MS })
 
 /**
  * Attempt counters DERIVED from a stamped run's ordinal, never bumped
@@ -255,6 +269,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,
          ${NOW}, ${FENCE_VALS}
        WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
+         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)
        ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
        DO NOTHING`,
       [
@@ -271,6 +286,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         maxDelayMs,
         delayMs,
         maxDelayMs,
+        taskId,
         taskId,
       ],
     )
@@ -589,7 +605,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     ])
     const row = extended?.rows[0]
     if (!row) return { held: false, remainingMs: 0 }
-    return { held: true, remainingMs: Number(row.remaining_ms) }
+    return {
+      held: true,
+      remainingMs: rowInteger('heartbeat.remaining_ms', row.remaining_ms, DURATION_BOUNDS),
+    }
   }
 
   /**
@@ -639,9 +658,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         kind: 'expired',
         runId: String(row.run_id),
         taskId: String(row.task_id),
-        claimGen: Number(row.claim_gen),
-        activatedGen: Number(row.activated_gen),
-        relaunchCount: Number(row.relaunch_count),
+        claimGen: rowInteger('sweep.claim_gen', row.claim_gen, POSITIVE_COUNT_BOUNDS),
+        activatedGen: rowInteger('sweep.activated_gen', row.activated_gen, COUNT_BOUNDS),
+        relaunchCount: rowInteger('sweep.relaunch_count', row.relaunch_count, COUNT_BOUNDS),
       })
     }
 
@@ -855,7 +874,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       {
         sql: `UPDATE runs SET claim_expires_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-                AND claim_expires_at_ms > ${NOW_MS}`,
+                AND claim_expires_at_ms > ${NOW_MS}
+                AND EXISTS (
+                  SELECT 1 FROM tasks t
+                  WHERE t.task_id = runs.task_id AND t.queue = runs.queue
+                )`,
         args: [runId, queue, claimToken],
       },
     ])
@@ -1121,7 +1144,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `UPDATE runs SET
          state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,
          claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE t.task_id = runs.task_id
+             AND ${storedBoundedInteger('t.attempts', 0, MAX_COUNT)}
+             AND ${storedBoundedInteger('t.max_attempts', 1, MAX_COUNT)}
+             AND ${storedBoundedInteger('t.infra_retries', 0, MAX_COUNT)}
+         )`,
       [failureJson, runId, queue, claimToken],
     )
     if (retry && successorId) {
@@ -1230,7 +1261,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       checkpointName: String(row.checkpoint_name),
       stateJson: String(row.state),
       ownerRunId: String(row.owner_run_id),
-      ownerAttempt: Number(row.owner_attempt),
+      ownerAttempt: rowInteger(
+        'getCheckpoints.owner_attempt',
+        row.owner_attempt,
+        POSITIVE_COUNT_BOUNDS,
+      ),
     }))
   }
 
@@ -1323,7 +1358,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'read',
     )
     const value = rows?.rows[0]?.wake_ms
-    return value === null || value === undefined ? null : Number(value)
+    return value === null || value === undefined
+      ? null
+      : rowInteger('nextWakeAtEpochMs.wake_ms', value, EPOCH_BOUNDS)
   }
 
   // ── events (implements the TLC-verified EmitEvent / AwaitEvent actions) ─
@@ -1631,20 +1668,32 @@ function clampLimit(limit: number): number {
   return Math.max(0, Math.floor(limit))
 }
 
+function rowInteger(name: string, value: unknown, bounds: IntegerBounds): number {
+  const decoded = decodeBoundedInteger(value, bounds)
+  if (decoded.ok) return decoded.value
+  throw new RangeError(
+    `${name} must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (${decoded.reason})`,
+  )
+}
+
 function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
   const claimed: ClaimedRun = {
     runId: String(row.run_id),
     taskId: String(row.task_id),
     taskName: String(row.task_name),
-    attempt: Number(row.attempt),
-    infraRetries: Number(row.infra_retries),
-    claimGen: Number(row.claim_gen),
+    attempt: rowInteger('claim.attempt', row.attempt, RUN_ORDINAL_BOUNDS),
+    infraRetries: rowInteger('claim.infra_retries', row.infra_retries, COUNT_BOUNDS),
+    claimGen: rowInteger('claim.claim_gen', row.claim_gen, POSITIVE_COUNT_BOUNDS),
     claimToken,
-    claimExpiresAtEpochMs: Number(row.claim_expires_at_ms),
-    leaseSeconds: Number(row.lease_ms) / 1000,
+    claimExpiresAtEpochMs: rowInteger(
+      'claim.claim_expires_at_ms',
+      row.claim_expires_at_ms,
+      EPOCH_BOUNDS,
+    ),
+    leaseSeconds: rowInteger('claim.lease_ms', row.lease_ms, POSITIVE_DURATION_BOUNDS) / 1000,
     paramsJson: String(row.params),
     retryStrategy: JSON.parse(String(row.retry_strategy)) as RetryStrategy,
-    maxAttempts: Number(row.max_attempts),
+    maxAttempts: rowInteger('claim.max_attempts', row.max_attempts, POSITIVE_COUNT_BOUNDS),
     headers:
       row.headers === null ? {} : (JSON.parse(String(row.headers)) as Record<string, string>),
   }

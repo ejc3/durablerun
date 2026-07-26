@@ -69,8 +69,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       expect(uncoveredConditionIds()).toEqual([])
       expect(unknownCoveredConditionIds()).toEqual([])
       expect(duplicatePoisonWitnessIds()).toEqual([])
-      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(57)
-      expect(POISON_WITNESS_COUNT).toBe(54)
+      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(74)
+      expect(POISON_WITNESS_COUNT).toBe(71)
     })
 
     it('fails completeness when one atomic condition loses its witness', () => {

@@ -525,12 +525,12 @@ MUTATION_SPECS = [
         "matrix-attempt-edge-progress",
         "packages/store-libsql/src/store.ts",
         "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,\n"
-        "      [failureJson, runId, queue, claimToken],",
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
         "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND run_id <> 'edge-run'`,\n"
-        "      [failureJson, runId, queue, claimToken],",
+        "         AND run_id <> 'edge-run'\n"
+        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
         "the generated fault cell fires its label while the seeded attempt-cap edge never crosses",
     ),
     (
@@ -549,12 +549,12 @@ MUTATION_SPECS = [
         "provenance-fail-progress",
         "packages/store-libsql/src/store.ts",
         "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,\n"
-        "      [failureJson, runId, queue, claimToken],",
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
         "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND run_id <> 'prov-fail-run'`,\n"
-        "      [failureJson, runId, queue, claimToken],",
+        "         AND run_id <> 'prov-fail-run'\n"
+        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
         "the replay regression accepts a failure delivery that never fails its run",
     ),
     (
@@ -581,8 +581,8 @@ MUTATION_SPECS = [
     (
         "schema-absence-is-typed",
         "packages/store-libsql/src/admin.ts",
-        "      if (error instanceof SchemaNotInitializedError) return 0",
-        "      if (String(error).includes('no such table')) return 0",
+        "      if (error instanceof SchemaNotInitializedError) return null",
+        "      if (String(error).includes('no such table')) return null",
         "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
@@ -607,6 +607,13 @@ MUTATION_SPECS = [
         "       WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)",
         "       WHERE ? IS NOT NULL",
         "a task-id collision crashes spawn instead of losing",
+    ),
+    (
+        "spawn-orphan-owner-guard",
+        "packages/store-libsql/src/store.ts",
+        "         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)",
+        "         AND ? IS NOT NULL",
+        "spawn attaches a new task to a run that already claims its minted identity",
     ),
 ]
 
@@ -919,6 +926,12 @@ VERDICTS = {
         "packages/conformance/test/regressions.test.ts",
         "transition-layer review regressions (second round) spawn loses rather than crashing when only the task id collides",
         "mutation-verdict:behavior:spawn-primary-key-guard",
+    ),
+    "spawn-orphan-owner-guard": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance spawn refuses a newly minted task id that an orphan run already owns",
+        "mutation-verdict:behavior:spawn-rejects-orphan-owner",
     ),
 }
 

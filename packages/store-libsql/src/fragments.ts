@@ -133,6 +133,10 @@ export const cancelNotDue = (col: string, at: string): string =>
  */
 export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`
 
+/** Native INTEGER plus the semantic port range used before durable arithmetic. */
+export const storedBoundedInteger = (col: string, min: number, max: number): string =>
+  `(${storedInteger(col)} AND ${col} BETWEEN ${min} AND ${max})`
+
 /**
  * A task eligible to make forward progress (be claimed, be activated): still
  * live AND not past a due cancellation deadline. `t` is the alias of the tasks

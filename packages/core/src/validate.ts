@@ -11,6 +11,7 @@
  */
 
 import { FatalTaskError } from './errors.js'
+import { INFRA_RETRY_CAP } from './contract.js'
 
 /** 9999-12-31T23:59:59Z — no legitimate engine timestamp lies beyond it. */
 export const MAX_EPOCH_MS = 253_402_300_799_000
@@ -62,6 +63,13 @@ export function requireEpochMs(name: string, epochMs: number): number {
  */
 export const MAX_COUNT = 1_000_000
 
+/**
+ * A run ordinal counts user attempts and infrastructure successors. At the
+ * legal edge, MAX_COUNT user attempts can coexist with every infra successor,
+ * so the exact representable protocol ceiling is their sum.
+ */
+export const MAX_RUN_ORDINAL = MAX_COUNT + INFRA_RETRY_CAP
+
 /** Counts: maxAttempts, claim limits. */
 export function requirePositiveInt(name: string, value: number, min = 1): number {
   if (!Number.isSafeInteger(value) || value < min || value > MAX_COUNT) {
@@ -70,11 +78,98 @@ export function requirePositiveInt(name: string, value: number, min = 1): number
   return value
 }
 
+export interface IntegerBounds {
+  readonly min: number
+  readonly max: number
+}
+
+export type BoundedIntegerDecode =
+  | { readonly ok: true; readonly value: number; readonly exact: bigint }
+  | {
+      readonly ok: false
+      readonly reason: 'not-an-exact-integer' | 'out-of-range'
+      readonly exact?: bigint
+    }
+
+/** A total, non-coercive description for values returned by a SQL dialect. */
+export function storageValueKind(value: unknown): string {
+  return value === null ? 'null' : typeof value
+}
+
+/**
+ * Decode one dialect-returned SQL integer without a lossy intermediate.
+ *
+ * libSQL/SQLite adapters may return INTEGER as number or bigint; the other
+ * dialects are allowed the same two representations. Every engine read uses
+ * this one decoder before crossing into JavaScript numbers, and the invariant
+ * evaluator uses the same result to distinguish storage-class corruption from
+ * a semantically out-of-range integer. A future dialect therefore cannot make
+ * `Number(9007199254740993n)` silently become a different protocol value.
+ */
+export function decodeBoundedInteger(value: unknown, bounds: IntegerBounds): BoundedIntegerDecode {
+  if (
+    !Number.isSafeInteger(bounds.min) ||
+    !Number.isSafeInteger(bounds.max) ||
+    bounds.min > bounds.max
+  ) {
+    throw new RangeError(
+      `integer decoder bounds must be ordered safe integers, got [${bounds.min}, ${bounds.max}]`,
+    )
+  }
+  let exact: bigint
+  if (typeof value === 'bigint') {
+    exact = value
+  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    exact = BigInt(value)
+  } else {
+    return { ok: false, reason: 'not-an-exact-integer' }
+  }
+  if (exact < BigInt(bounds.min) || exact > BigInt(bounds.max)) {
+    return { ok: false, reason: 'out-of-range', exact }
+  }
+  return { ok: true, value: Number(exact), exact }
+}
+
 /** What a bad value IS, for an error message that saves a debugging session. */
 function describe(value: unknown): string {
   if (value === null) return 'null'
   if (Array.isArray(value)) return 'an array'
   return typeof value
+}
+
+/**
+ * The one durable task-value serializer.
+ *
+ * Step results, final results, and parsed event payloads all pass through this
+ * function. `undefined` has the explicit wire meaning `null`; undefined object
+ * fields retain ordinary JSON semantics. Functions, symbols, bigint and
+ * cyclic graphs are not JSON values and fail permanently at this boundary
+ * instead of becoming ordinary retryable handler errors after side effects
+ * have already run.
+ */
+export function serializeTaskValue(what: string, value: unknown): string {
+  const root = value === undefined ? null : value
+  try {
+    const serialized = JSON.stringify(root, (_key, candidate: unknown) => {
+      if (
+        typeof candidate === 'function' ||
+        typeof candidate === 'symbol' ||
+        typeof candidate === 'bigint'
+      ) {
+        throw new TypeError(`${typeof candidate} is not a JSON value`)
+      }
+      return candidate
+    })
+    if (serialized === undefined) {
+      throw new TypeError(`${describe(root)} has no JSON representation`)
+    }
+    return serialized
+  } catch {
+    // Never inspect the thrown value here. A user-defined toJSON/getter can
+    // throw any object, including a revoked proxy or an object whose own
+    // coercion throws; diagnostics must not reopen the permanent-error gate.
+    throw new FatalTaskError(`${what} is not a JSON value`)
+  }
 }
 
 /*
@@ -171,8 +266,9 @@ export function userJsonValue(what: string, json: string): string {
     )
   }
   try {
-    return JSON.stringify(JSON.parse(json))
+    return serializeTaskValue(what, JSON.parse(json))
   } catch (error) {
+    if (error instanceof FatalTaskError) throw error
     throw new FatalTaskError(`${what} is not valid JSON: ${String(error)}`)
   }
 }
