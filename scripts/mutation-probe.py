@@ -1916,6 +1916,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "accept-oversized-finite-scope",
     "accept-oversized-cpu-scope",
     "accept-unlimited-task-scope",
+    "accept-oversized-task-scope",
     "classify-missing-report-as-domain",
     "leave-zombie-group",
     "classify-malformed-report-as-domain",
@@ -3135,6 +3136,21 @@ def orchestration_self_test(fault: str | None = None) -> int:
         pass
     else:
         failures.append("confinement: unlimited task limit was accepted")
+
+    try:
+        validate_scope_limits(
+            "750",
+            "0",
+            "600000 100000",
+            tasks_max="4097",
+            configured_tasks="4096",
+            host_memory=1000,
+            host_cpus=8,
+        )
+    except ValueError:
+        pass
+    else:
+        failures.append("confinement: oversized task limit was accepted")
 
     previous = {signal.SIGTERM: signal.getsignal(signal.SIGTERM)}
     shield = CleanupSignalShield(
