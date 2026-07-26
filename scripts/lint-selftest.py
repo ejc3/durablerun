@@ -459,6 +459,21 @@ export class S {
         store(
             """
 export class S {
+  async probe(n: number | undefined) {
+    const statements = [{ sql: `UPDATE tasks SET a = 1`, args: [] }]
+    return n! / Number(this.db.batch('brand-new-write', statements)) / 2
+  }
+}
+"""
+        ),
+        "raw this.db.batch('brand-new-write') is unclassified",
+        "division after a non-null assertion must not turn executable code into a regex",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
   async probe(q: string) {
     await this.db.batch('heartbeat', [
       { sql: `UPDATE runs SET a = 1 WHERE id = ?`, args: [q] },

@@ -1443,6 +1443,26 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             (1,),
         ),
         (
+            "generic expect call",
+            "await expect<Result>(action(), 'mutation-verdict:behavior:x').rejects.toThrow()",
+            (1,),
+        ),
+        (
+            "parenthesized expect call",
+            "await (expect)(action(), 'mutation-verdict:behavior:x').rejects.toThrow()",
+            (1,),
+        ),
+        (
+            "optional expect call",
+            "await expect?.(action(), 'mutation-verdict:behavior:x').rejects.toThrow()",
+            (1,),
+        ),
+        (
+            "generic nested action without message",
+            "await expect(call<A, B>()).rejects.toThrow()",
+            (),
+        ),
+        (
             "marker through a variable",
             "const verdict = 'mutation-verdict:behavior:x'\n"
             "await expect(action(), verdict).rejects.toThrow()",
@@ -1510,6 +1530,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "unrelated object",
             "consume({kind: 'behavior', mutation: 'schema-fault-is-permanent'})",
+            frozenset(),
+        ),
+        (
+            "same-named object method",
+            "await fake.requireExpectedFailure("
+            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /x/, action)",
             frozenset(),
         ),
         (
