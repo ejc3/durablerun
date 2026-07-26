@@ -2799,6 +2799,33 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 except ProcessLookupError:
                     pass
 
+        if fault is None:
+            zombie = subprocess.Popen(
+                (sys.executable, "-c", "raise SystemExit(0)"),
+                cwd=temporary,
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + 2
+            state = ""
+            while time.monotonic() < deadline:
+                try:
+                    state = Path(f"/proc/{zombie.pid}/stat").read_text().split()[2]
+                except OSError:
+                    state = ""
+                if state == "Z":
+                    break
+                time.sleep(0.01)
+            if state != "Z":
+                failures.append("process cleanup: could not construct a zombie leader")
+            else:
+                try:
+                    terminate_process_groups([zombie])
+                except RuntimeError:
+                    failures.append(
+                        "process cleanup: a zombie leader impersonated a live group"
+                    )
+            zombie.wait()
+
     try:
         validate_scope_limits(
             "750",
