@@ -1946,6 +1946,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "allow-unfrozen-worker-install",
     "replace-worker-install-command",
     "allow-host-sized-tokio-pools",
+    "allow-worker-bytecode-artifacts",
 )
 
 
