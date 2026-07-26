@@ -102,8 +102,8 @@ valuable reproductions, but they were written after the outside detector and
 therefore do not count as self-catches.
 
 The prior cumulative `review-findings` total was 129; this remote round added
-43, so the branch stood at **172** before the later seven-finding green audit,
-which brought the review total to **179**.
+43, so the branch stood at **172** before the later green audit's fourteen
+review-caught findings brought the review total to **186**.
 
 ## Recurrence
 
@@ -172,13 +172,15 @@ No remote finding was introduced by a repair for another finding in this same
 remote round. The green changes were re-reviewed as code, not merely re-tested.
 
 Later local green-diff and mandatory mechanism audits did find residual or
-fix-induced gaps: separate conformance inventory/dispatch representations, the
-successor-ownership oracle issue recorded there as self-caught F8, and three
-successive custom-check parser boundaries recorded as F9–F11. Those belong to
-the subsequent audit's detection and fix-induced ledgers; they are not
-retroactively counted among these 43 remote findings. The final one-definition
-registry and fully owned custom-check-list grammar are the ratchets those
-audits produced.
+fix-induced gaps: the conformance inventory/dispatch split recorded as F2; the
+successor-ownership oracle issue recorded as self-caught F8; three successive
+custom-check parser boundaries recorded as F9–F11; and the promise
+attribution, matcher-state, clean-import, canonical-marker, TypeScript lexer,
+and compiler-AST gaps recorded as F12–F21. Those belong to the subsequent
+audit's detection and fix-induced ledgers; they are not retroactively counted
+among these 43 remote findings. The final one-definition registry, fully owned
+custom-check-list grammar, canonical verdict helpers, and compiler-backed
+source inventory are the ratchets those audits produced.
 
 ## Evidence
 
