@@ -116,9 +116,19 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
         "&& python3 scripts/lint-selftest.py",
         ("a-lint.py", "b-lint.py"),
     )
+    package = json.loads(files["package.json"])
+    package["name"] = "durablerun"
+    files["package.json"] = json.dumps(package)
     files["AGENTS.md"] = agents
     files["BUILD.md"] = build
-    files["scripts/confine.sh"] = "# executable owner of resource limits\n"
+    for name in (
+        "confine.sh",
+        "tla.sh",
+        "review-attest.sh",
+        "session-state.sh",
+        "source_lex.py",
+    ):
+        files[f"scripts/{name}"] = "# declared non-gate process support\n"
     return files
 
 
@@ -840,6 +850,79 @@ export class S {
         ),
         "BUILD.md misclassifies malformed suite transport",
         "reporter transport failure must never be documented as a domain verdict",
+    ),
+    (
+        "gate-lint.py",
+        {
+            rel: body
+            for rel, body in process_docs(
+                (
+                    "`scripts/confine.sh` is the single definition of the live "
+                    "protective memory, swap, CPU, and task limits.\n"
+                ),
+                (
+                    "Missing, malformed, or signaled Vitest output is infrastructure "
+                    "failure.\n"
+                ),
+            ).items()
+            if rel != "AGENTS.md"
+        },
+        "durablerun process contract source AGENTS.md is missing",
+        "deleting one process-contract source must fail closed",
+    ),
+    (
+        "gate-lint.py",
+        {
+            rel: body
+            for rel, body in process_docs(
+                (
+                    "`scripts/confine.sh` is the single definition of the live "
+                    "protective memory, swap, CPU, and task limits.\n"
+                ),
+                (
+                    "Missing, malformed, or signaled Vitest output is infrastructure "
+                    "failure.\n"
+                ),
+            ).items()
+            if rel != "BUILD.md"
+        },
+        "durablerun process contract source BUILD.md is missing",
+        "deleting the plan-side process contract must fail closed",
+    ),
+    (
+        "gate-lint.py",
+        {
+            rel: body
+            for rel, body in process_docs(
+                (
+                    "`scripts/confine.sh` is the single definition of the live "
+                    "protective memory, swap, CPU, and task limits.\n"
+                ),
+                (
+                    "Missing, malformed, or signaled Vitest output is infrastructure "
+                    "failure.\n"
+                ),
+            ).items()
+            if rel != "scripts/confine.sh"
+        },
+        "durablerun process contract source scripts/confine.sh is missing",
+        "deleting the executable policy owner must fail closed",
+    ),
+    (
+        "gate-lint.py",
+        process_docs(
+            (
+                "`scripts/confine.sh` is the single definition of the live protective "
+                "memory, swap, CPU, and task limits. The cap is sixteen gibibytes "
+                "and thirty-two cores.\n"
+            ),
+            (
+                "Missing, malformed, or signaled Vitest output is infrastructure "
+                "failure.\n"
+            ),
+        ),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "spelling numeric limits as words must not bypass the single-definition rule",
     ),
     (
         "gate-lint.py",
