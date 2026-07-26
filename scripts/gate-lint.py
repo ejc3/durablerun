@@ -424,6 +424,48 @@ def nightly_workflow_problems(path: Path) -> list[str]:
     return problems
 
 
+def process_contract_problems(root: Path) -> list[str]:
+    """Keep process docs pointed at their executable single definitions."""
+    agents_path = root / "AGENTS.md"
+    build_path = root / "BUILD.md"
+    confine_path = root / "scripts" / "confine.sh"
+    if not (agents_path.is_file() and build_path.is_file() and confine_path.is_file()):
+        return []
+
+    problems: list[str] = []
+    agents = agents_path.read_text()
+    confine_reference = (
+        "`scripts/confine.sh` is the single definition of the live protective "
+        "memory, swap, CPU, and task limits"
+    )
+    if confine_reference not in agents:
+        problems.append(
+            "AGENTS.md must name scripts/confine.sh as the single definition "
+            "of live protective resource limits."
+        )
+    if re.search(r"\b(?:MemoryMax|CPUQuota)\s+\d", agents):
+        problems.append(
+            "AGENTS.md duplicates confinement limits numerically; the executable "
+            "scripts/confine.sh policy is the single definition."
+        )
+
+    build = build_path.read_text()
+    transport_contract = (
+        "Missing, malformed, or signaled Vitest output is infrastructure failure"
+    )
+    if transport_contract not in build:
+        problems.append(
+            "BUILD.md must classify missing, malformed, and signaled Vitest "
+            "output together as infrastructure failure."
+        )
+    if re.search(r"malformed report.{0,120}wrong-path", build, re.S):
+        problems.append(
+            "BUILD.md misclassifies malformed suite transport as a domain "
+            "wrong-path verdict."
+        )
+    return problems
+
+
 def run_base_checkers(head: Path, base: Path) -> int:
     """Run BASE's checker commands with BASE scripts resolving inside HEAD."""
     _found, order, invocations, errors = gate_checkers(base)
@@ -534,6 +576,7 @@ def main() -> int:
         return run_base_checkers(ROOT, BASE)
 
     problems: list[str] = []
+    problems.extend(process_contract_problems(ROOT))
 
     on_disk = {
         p.name

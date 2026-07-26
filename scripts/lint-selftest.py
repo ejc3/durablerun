@@ -110,6 +110,18 @@ def gate(
     return files
 
 
+def process_docs(agents: str, build: str) -> dict[str, str]:
+    files = gate(
+        "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+        "&& python3 scripts/lint-selftest.py",
+        ("a-lint.py", "b-lint.py"),
+    )
+    files["AGENTS.md"] = agents
+    files["BUILD.md"] = build
+    files["scripts/confine.sh"] = "# executable owner of resource limits\n"
+    return files
+
+
 def under(prefix: str, files: dict[str, str]) -> dict[str, str]:
     return {f"{prefix}/{rel}": body for rel, body in files.items()}
 
@@ -798,6 +810,36 @@ export class S {
         ),
         "scripts/orphan-lint.py is not run by `pnpm verify`",
         "a checker sits in scripts/ that the verify chain never runs and nothing declares",
+    ),
+    (
+        "gate-lint.py",
+        process_docs(
+            (
+                "Heavy runs use scripts/confine.sh with MemoryMax 16G and "
+                "CPUQuota 3200%.\n"
+            ),
+            (
+                "Missing, malformed, or signaled Vitest output is infrastructure "
+                "failure.\n"
+            ),
+        ),
+        "AGENTS.md duplicates confinement limits numerically",
+        "copied resource numbers drift from the executable confinement policy",
+    ),
+    (
+        "gate-lint.py",
+        process_docs(
+            (
+                "`scripts/confine.sh` is the single definition of the live protective "
+                "memory, swap, CPU, and task limits.\n"
+            ),
+            (
+                "A malformed report, suite error, or disagreement is a wrong-path "
+                "result. Missing or signaled output is infrastructure failure.\n"
+            ),
+        ),
+        "BUILD.md misclassifies malformed suite transport",
+        "reporter transport failure must never be documented as a domain verdict",
     ),
     (
         "gate-lint.py",
@@ -1683,6 +1725,20 @@ const pattern = /this\.db\.batch\(/
         "gate-lint.py",
         gate("python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py", "b-lint.py")),
         "every checker run by the gate, every one self-tested, base-gate present",
+    ),
+    (
+        "gate-lint.py",
+        process_docs(
+            (
+                "`scripts/confine.sh` is the single definition of the live protective "
+                "memory, swap, CPU, and task limits.\n"
+            ),
+            (
+                "Missing, malformed, or signaled Vitest output is infrastructure "
+                "failure.\n"
+            ),
+        ),
+        "process contracts refer to their executable single definitions",
     ),
     ("clock-lint.py", CLEAN_STORE, "a batch label containing the word 'now'"),
     (
