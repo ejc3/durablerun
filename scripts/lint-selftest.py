@@ -1774,6 +1774,35 @@ export class S {
         "an alternate top-level bullet marker must not hide a completed PR's deferral",
     ),
     (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 current work** — planned.\n"
+                "  - **Owned mechanism** — implement it here.\n"
+            ),
+            "postmortems/fixture-plan.md": (
+                "# Historical implementation plan\n\n"
+                "## Cannot be made structural — documented deferrals (BUILD.md)\n\n"
+                "1. The typed target API is **Deferred, explicitly.**\n"
+            ),
+        },
+        "historical plan does not declare BUILD.md as its sole current status owner",
+        "a decision-time plan must not impersonate the current delivery ledger after its work lands",
+    ),
+    (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 compiler work** — planned.\n"
+                "  Spiked at scratchpad/compiler-spike: the prototype worked.\n"
+            ),
+        },
+        "BUILD.md points at transient scratchpad state",
+        "the canonical live plan cannot cite an uncommitted scratchpad as auditable evidence",
+    ),
+    (
         "spec-ledger.py",
         {
             "packages/store-libsql/src/probe.ts": (
