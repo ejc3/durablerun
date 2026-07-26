@@ -197,7 +197,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Structured Vitest output makes a green survivor, bind/compile error,
     different failing assertion, malformed report, suite error, or
     process/report disagreement a wrong-path result rather than credit. The
-    verifier runs a 17-case classifier self-test and seven promise-marker
+    verifier runs a 17-case classifier self-test and eleven promise-message
     source cases, with seven injected false-positive faults maintained by
     `lint-selftest.py`; both baseline and per-mutation suites route themselves
     through `scripts/confine.sh`.
@@ -213,9 +213,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     registry later expanded to 50. Its closing audit found one new
     postcondition test outside the original helper's package still entrusted
     an inverse promise marker to Vitest. One `@durablerun/core/testing`
-    definition now owns both promise-verdict helpers and the verify gate
-    rejects direct `.rejects`/`.resolves` custom-message verdicts across the
-    repository.
+    definition now owns success-to-error, expected-error-to-success, and
+    expected-error-to-replacement-error verdicts. Through the canonical
+    TypeScript structural lexer, the verify gate rejects every custom-message
+    argument on exact Vitest `expect(...).rejects`/`.resolves` chains across
+    the repository.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 54 atomic witnesses covering all 57
     invariant condition IDs: 918 generated cells, plus two inventory cases.

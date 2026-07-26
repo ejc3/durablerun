@@ -255,6 +255,57 @@ def matching_delimiter(
     return None
 
 
+def trivia_only(source: str) -> bool:
+    """Whether a span contains only whitespace and TypeScript comments."""
+    index = 0
+    while index < len(source):
+        if source[index].isspace():
+            index += 1
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index + 2)
+            index = len(source) if end < 0 else end
+            continue
+        if source.startswith("/*", index):
+            close = source.find("*/", index + 2)
+            if close < 0:
+                return False
+            index = close + 2
+            continue
+        return False
+    return True
+
+
+def split_top_level(
+    source: str,
+    structure: str,
+    start: int,
+    end: int,
+) -> list[tuple[int, int]] | None:
+    """Split a structural span on commas outside all nested delimiters."""
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    stack: list[str] = []
+    parts: list[tuple[int, int]] = []
+    part_start = start
+    for index in range(start, end):
+        char = structure[index]
+        if char in pairs:
+            stack.append(char)
+        elif char in pairs.values():
+            if not stack or pairs[stack[-1]] != char:
+                return None
+            stack.pop()
+        elif char == "," and not stack:
+            parts.append((part_start, index))
+            part_start = index + 1
+    if stack:
+        return None
+    parts.append((part_start, end))
+    if parts and trivia_only(source[parts[-1][0] : parts[-1][1]]):
+        parts.pop()
+    return parts
+
+
 def _sql_quote_end(source: str, start: int, quote: str) -> int:
     index = start + 1
     while index < len(source):

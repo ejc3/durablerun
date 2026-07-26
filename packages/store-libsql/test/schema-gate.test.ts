@@ -1,5 +1,5 @@
 import { SchemaMismatchError, type SqlExecutor, StoreUnavailableError } from '@durablerun/core'
-import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
+import { attributeReplacedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -7,6 +7,14 @@ import {
   LibsqlStoreAdmin,
   MIGRATIONS,
 } from '../src/index.js'
+
+const MISSED_VERSION_POSTCONDITION =
+  `migrate finished with the schema recorded at version ${CURRENT_SCHEMA_VERSION - 1}, ` +
+  `expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`
+
+function isMissedVersionPostcondition(error: unknown): boolean {
+  return error instanceof SchemaMismatchError && error.message === MISSED_VERSION_POSTCONDITION
+}
 
 /**
  * Two ways a database can be at the wrong schema version while every process
@@ -71,15 +79,11 @@ describe('a database older than the binary', () => {
     ]
     for (const sql of cases) {
       const marker = `mutation-verdict:behavior:schema-fault-is-permanent: ${sql}`
-      await requireExpectedFailure(
+      await attributeReplacedFailure(
         marker,
         (error) => error instanceof SchemaMismatchError,
-        () =>
-          attributeExpectedFailure(
-            marker,
-            (error) => error instanceof StoreUnavailableError,
-            () => db.batch('probe', [{ sql, args: [] }], 'read'),
-          ),
+        (error) => error instanceof StoreUnavailableError,
+        () => db.batch('probe', [{ sql, args: [] }], 'read'),
       )
     }
   })
@@ -138,7 +142,7 @@ describe('migrate reports success only when the schema is current', () => {
 
     await requireExpectedFailure(
       'mutation-verdict:behavior:migration-postcondition-old-version',
-      (error) => error instanceof SchemaMismatchError,
+      isMissedVersionPostcondition,
       () => missingPostcondition.migrate(),
     )
     expect(changed).toBe(1)
@@ -159,7 +163,7 @@ describe('migrate reports success only when the schema is current', () => {
     const unrelated = new SchemaMismatchError('an earlier schema decoder failed')
     const observed = await requireExpectedFailure(
       'mutation-verdict:behavior:migration-postcondition-old-version',
-      (error) => error instanceof SchemaMismatchError,
+      isMissedVersionPostcondition,
       async () => {
         throw unrelated
       },

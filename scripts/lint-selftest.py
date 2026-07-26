@@ -1750,7 +1750,12 @@ def run(
         (root / "scripts").mkdir(parents=True, exist_ok=True)
         copied = root / "scripts" / lint
         copied.write_text((SCRIPTS / lint).read_text())
-        if lint in {"batch-lint.py", "clock-lint.py", "fragment-lint.py"}:
+        if lint in {
+            "batch-lint.py",
+            "clock-lint.py",
+            "fragment-lint.py",
+            "mutation-probe.py",
+        }:
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )

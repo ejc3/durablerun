@@ -1,7 +1,9 @@
 export type ExpectedError = RegExp | ((error: unknown) => boolean)
 
 function matches(expected: ExpectedError, error: unknown): boolean {
-  return expected instanceof RegExp ? expected.test(String(error)) : expected(error)
+  return expected instanceof RegExp
+    ? new RegExp(expected.source, expected.flags).test(String(error))
+    : expected(error)
 }
 
 /**
@@ -39,4 +41,25 @@ export async function requireExpectedFailure(
     throw error
   }
   throw new Error(marker)
+}
+
+/**
+ * Correct code must reject with `expectedError`. A mutant that replaces that
+ * rejection with the specifically attributable `replacementError` emits the
+ * marker. Success and unrelated rejections fail without attribution.
+ */
+export async function attributeReplacedFailure(
+  marker: string,
+  expectedError: ExpectedError,
+  replacementError: ExpectedError,
+  action: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await action()
+  } catch (error) {
+    if (matches(expectedError, error)) return
+    if (matches(replacementError, error)) throw new Error(marker)
+    throw error
+  }
+  throw new Error('expected operation to reject')
 }
