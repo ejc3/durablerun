@@ -1,4 +1,9 @@
-import { LeaseLostError, type SqlExecutor } from '@durablerun/core'
+import {
+  INFRA_RETRY_CAP,
+  LeaseLostError,
+  REASON_CLAIM_TIMEOUT,
+  type SqlExecutor,
+} from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -69,6 +74,36 @@ async function query(
 ): Promise<Record<string, unknown>[]> {
   const [rows] = await raw.batch('probe', [{ sql, args }], 'read')
   return (rows?.rows ?? []) as unknown as Record<string, unknown>[]
+}
+
+async function taskRunProgress(raw: LibsqlExecutor, taskId: string) {
+  const [task] = await query(
+    raw,
+    `SELECT state, attempts, infra_retries, failure_reason
+     FROM tasks WHERE task_id = ?`,
+    [taskId],
+  )
+  const runs = await query(
+    raw,
+    `SELECT run_id, attempt, state, claimed_by, failure_reason
+     FROM runs WHERE task_id = ? ORDER BY attempt, run_id`,
+    [taskId],
+  )
+  return {
+    task: {
+      state: task?.state,
+      attempts: Number(task?.attempts),
+      infraRetries: Number(task?.infra_retries),
+      failureReason: task?.failure_reason,
+    },
+    runs: runs.map((run) => ({
+      runId: run.run_id,
+      attempt: Number(run.attempt),
+      state: run.state,
+      claimedBy: run.claimed_by,
+      failureReason: run.failure_reason,
+    })),
+  }
 }
 
 async function insertTask(
@@ -151,13 +186,17 @@ describe('fence provenance', () => {
     // goes terminal while the successor run the first pass created is still
     // pending. That is precisely the state rule 6 forbids.
     const f = await fixture(['successor-1'], ['sweep-stamp'])
-    // Legal state at the cap boundary: 19 infra retries means the live run is
-    // attempt 20, because a run's attempt counts every successor.
-    await insertTask(f.raw, { id: 'T', state: 'running', infraRetries: 19 })
+    // Legal state at the cap boundary: cap-1 infra retries means the live run
+    // is attempt cap, because a run's attempt counts every successor.
+    await insertTask(f.raw, {
+      id: 'T',
+      state: 'running',
+      infraRetries: INFRA_RETRY_CAP - 1,
+    })
     await insertRun(f.raw, {
       id: 'prov-sweep-run',
       taskId: 'T',
-      attempt: 20,
+      attempt: INFRA_RETRY_CAP,
       state: 'running',
       claimedBy: 'worker',
       claimGen: 3,
@@ -172,6 +211,33 @@ describe('fence provenance', () => {
     })
     await world.run()
 
+    expect(
+      await taskRunProgress(f.raw, 'T'),
+      'mutation-verdict:behavior:provenance-sweep-progress',
+    ).toEqual({
+      task: {
+        state: 'pending',
+        attempts: 0,
+        infraRetries: INFRA_RETRY_CAP,
+        failureReason: null,
+      },
+      runs: [
+        {
+          runId: 'prov-sweep-run',
+          attempt: INFRA_RETRY_CAP,
+          state: 'failed',
+          claimedBy: null,
+          failureReason: REASON_CLAIM_TIMEOUT,
+        },
+        {
+          runId: 'successor-1',
+          attempt: INFRA_RETRY_CAP + 1,
+          state: 'pending',
+          claimedBy: null,
+          failureReason: null,
+        },
+      ],
+    })
     expect(
       await engineInvariantViolations(f.raw),
       'mutation-verdict:behavior:provenance-sweep-progress',
@@ -219,6 +285,33 @@ describe('fence provenance', () => {
     await world.run()
 
     expect(rejection, 'mutation-verdict:behavior:provenance-sweep-progress').toBeNull()
+    expect(
+      await taskRunProgress(f.raw, 'T'),
+      'mutation-verdict:behavior:provenance-sweep-progress',
+    ).toEqual({
+      task: {
+        state: 'pending',
+        attempts: 0,
+        infraRetries: 1,
+        failureReason: null,
+      },
+      runs: [
+        {
+          runId: 'prov-sweep-run',
+          attempt: 1,
+          state: 'failed',
+          claimedBy: null,
+          failureReason: REASON_CLAIM_TIMEOUT,
+        },
+        {
+          runId: 'successor-1',
+          attempt: 2,
+          state: 'pending',
+          claimedBy: null,
+          failureReason: null,
+        },
+      ],
+    })
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
@@ -255,6 +348,33 @@ describe('fence provenance', () => {
     await world.run()
 
     expect(rejection, 'mutation-verdict:behavior:provenance-fail-progress').toBeNull()
+    expect(
+      await taskRunProgress(f.raw, 'T'),
+      'mutation-verdict:behavior:provenance-fail-progress',
+    ).toEqual({
+      task: {
+        state: 'pending',
+        attempts: 1,
+        infraRetries: 0,
+        failureReason: null,
+      },
+      runs: [
+        {
+          runId: 'prov-fail-run',
+          attempt: 1,
+          state: 'failed',
+          claimedBy: null,
+          failureReason: '{"name":"Boom"}',
+        },
+        {
+          runId: 'successor-1',
+          attempt: 2,
+          state: 'pending',
+          claimedBy: null,
+          failureReason: null,
+        },
+      ],
+    })
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })

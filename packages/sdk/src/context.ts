@@ -6,10 +6,10 @@ import {
   LeaseLostError,
   type SchedulerStore,
   SuspendSignal,
+  UserName,
   userDurationToMs,
   userEpochMs,
   userJsonValue,
-  UserName,
 } from '@durablerun/core'
 
 /**
@@ -20,6 +20,8 @@ import {
  * where the reserved-charset rule lives, once.
  */
 class EngineKey {
+  private declare readonly engineKeyBrand: undefined
+
   private constructor(readonly value: string) {}
   static readonly sleep = new EngineKey('$sleep')
   static readonly sleepUntil = new EngineKey('$sleep-until')
@@ -136,16 +138,20 @@ export class ReplayContext implements TaskContext {
    * wake. Reentrancy-proof by construction, not by remembering to check.
    */
   private enterDurableOp(what: string): void {
+    this.assertLeaseHeld()
+    if (this.inStep) {
+      throw new FatalTaskError(
+        `${what} called inside a step — durable operations cannot nest inside a step`,
+      )
+    }
+  }
+
+  private assertLeaseHeld(): void {
     // The pump observed the lease gone: stop the handler at the next
     // context call — the fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
     if (this.leaseLost?.aborted) {
       throw new LeaseLostError(`lease lost during pass (run ${this.run.runId})`)
-    }
-    if (this.inStep) {
-      throw new FatalTaskError(
-        `${what} called inside a step — durable operations cannot nest inside a step`,
-      )
     }
   }
 
@@ -211,9 +217,7 @@ export class ReplayContext implements TaskContext {
     // global), so the pump's lease-loss signal is the only stop. (emitEvent
     // allocates no replay key, so unlike the other durable ops it may run
     // inside a step; hence the bare lease check, not the full nesting gate.)
-    if (this.leaseLost?.aborted) {
-      throw new LeaseLostError(`lease lost during pass (run ${this.run.runId})`)
-    }
+    this.assertLeaseHeld()
     await this.store.emitEvent(this.queue, parsed.value, payload)
   }
 

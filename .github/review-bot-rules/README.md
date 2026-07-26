@@ -30,8 +30,10 @@ the rules are written to ask for that.
 `scripts/review-bot-lint.py` (run by `pnpm verify`) keeps this directory and
 the two configs honest: every rule file owns one marked canonical active
 synopsis and one marked canonical scope list, both bots carry the exact
-synopsis, Greptile carries the exact scopes, every reference resolves to a
-file, every scope matches a tracked path, and this README lists every rule.
+synopsis, Greptile carries the exact scopes, both configs resolve their corpus
+references to a file, unstable line-number citations are refused in favor of
+symbols/headings, every scope matches a tracked path, and both human indexes
+list every rule.
 
 **Configuration provenance is not independent of the pull request.**
 [CodeRabbit uses the feature branch under review](https://docs.coderabbit.ai/getting-started/yaml-configuration),

@@ -43,7 +43,7 @@ Postgres, because rule 8 requires each statement to record the ONE instant it
 read into `fence_at_ms` and every follow-on to derive from that. The whole
 write-provenance scheme, not implementable on a dialect the design promises. No
 mechanism caught it; a human measuring all three dialects' clock expressions
-while planning PR3.6 did (`postmortems/pr3.6-batch-fence-plan.md`: *"`DESIGN.md:517`
+while planning PR3.6 did (`postmortems/pr3.6-batch-fence-plan.md`: *"`DESIGN.md`
 currently names `clock_timestamp()`, which is per-call. That is a live spec
 bug"*). Its sibling shipped as code the same round: `clock-lint`, the mechanism
 that confines database time to one expression, was case-sensitive with
@@ -77,7 +77,8 @@ construct class, any of these:
   inequality — a syntax error on Postgres and MySQL, which spell it
   `IS DISTINCT FROM` and `NOT (x <=> y)`);
   clock calls (`unixepoch`, `strftime`, `julianday`, `datetime('now')`, `NOW(`,
-  `SYSDATE`, `CURRENT_TIMESTAMP`, `clock_timestamp`, `statement_timestamp`);
+  `SYSDATE`, `CURDATE`, `CURTIME`, `CURRENT_TIMESTAMP`, `clock_timestamp`,
+  `statement_timestamp`);
   `PRAGMA`; `WITHOUT ROWID`; `AUTOINCREMENT`; a `WHERE` on `CREATE INDEX`;
   upsert syntax (`ON CONFLICT`, `DO UPDATE`, `ON DUPLICATE KEY UPDATE`,
   `INSERT OR IGNORE`/`OR REPLACE`); `RETURNING`; `FOR UPDATE` / `SKIP LOCKED`;
@@ -121,10 +122,10 @@ construct class, any of these:
   vocabulary; or (c) globs `packages/store-libsql` where the rule is about
   every store. All three archetypes are in tree: finding 10 above is (a);
   `assertWritesStamp`'s upsert re-stamp requirement keys on `/\bDO\s+UPDATE\b/i`
-  (`packages/core/src/fenced-batch.ts:577`), so a MySQL `ON DUPLICATE KEY UPDATE`
+  (`packages/core/src/fenced-batch.ts`), so a MySQL `ON DUPLICATE KEY UPDATE`
   branch that leaves the conflicting row's provenance alone passes construction
-  — (b); and `scripts/spec-ledger.py:20` harvests `packages/store-libsql/src`
-  alone while `batch-lint.py:104`, `clock-lint.py:57` and `fragment-lint.py:28`
+  — (b); and `scripts/spec-ledger.py` harvests `packages/store-libsql/src`
+  alone while `batch-lint.py`, `clock-lint.py` and `fragment-lint.py`
   all glob `packages/store-*/src`, so a second store's batch labels would enter
   no ledger line, get no duplicate-semantics tag, and be enrolled in no
   fault-matrix cell while `label-inventory.test.ts` still passes — (c).

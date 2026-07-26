@@ -130,9 +130,31 @@ describe('a generated selection restricts to rows this batch stamped', () => {
       await stateOf(f.raw, 'stamped'),
       'mutation-verdict:behavior:generated-narrow-widens',
     ).toBe('running')
+
+    const matching = new FencedBatch('narrow-positive', 'narrow-positive-seed', { now: NOW_MS })
+    matching.cas(
+      'win',
+      'runs',
+      `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`,
+      ['run-stamped'],
+    )
+    matching.derived('spread', {
+      relation: 'runs-to-tasks',
+      fence: 'win',
+      set: { state: `'cancelled'` },
+      narrow: `task_id = ?`,
+      narrowArgs: ['stamped'],
+      rows: 'source-keys',
+    })
+    await matching.run(f.raw)
+
+    expect(
+      await stateOf(f.raw, 'stamped'),
+      'mutation-verdict:behavior:generated-narrow-progress',
+    ).toBe('cancelled')
     expect(
       await stateOf(f.raw, 'untouched'),
-      'mutation-verdict:behavior:generated-narrow-progress',
+      'mutation-verdict:behavior:generated-narrow-widens',
     ).toBe('running')
     f.close()
   })

@@ -263,9 +263,6 @@ def _sql_quote_end(source: str, start: int, quote: str) -> int:
                 index += 2
                 continue
             return index + 1
-        if source[index] == "\\":
-            index += 2
-            continue
         index += 1
     return len(source)
 
@@ -332,6 +329,14 @@ def sql_template_view(
     return "".join(visible)
 
 
+def sql_file_view(
+    source: str,
+    preserve_literals: frozenset[str] = frozenset(),
+) -> str:
+    """Expose executable text from a standalone SQL source file."""
+    return _sql_executable_text(source, preserve_literals)
+
+
 def validated_root(args: list[str], default: Path, program: str) -> Path:
     """Resolve one explicit root and refuse every vacuous spelling."""
     if len(args) > 1:
@@ -359,5 +364,21 @@ def store_typescript_sources(root: Path, program: str) -> tuple[Path, ...]:
         raise ValueError(
             f"{program}: no store TypeScript sources matched "
             "packages/store-*/src/**/*.ts; refusing a vacuous audit"
+        )
+    return paths
+
+
+def store_sql_sources(root: Path, program: str) -> tuple[Path, ...]:
+    """Return every TypeScript or standalone SQL source under a store."""
+    paths = tuple(
+        path
+        for store_dir in sorted(root.glob("packages/store-*/src"))
+        for path in sorted(store_dir.rglob("*"))
+        if path.is_file() and path.suffix in {".sql", ".ts"}
+    )
+    if not paths:
+        raise ValueError(
+            f"{program}: no store TypeScript sources or standalone SQL sources matched "
+            "packages/store-*/src/**/*.{sql,ts}; refusing a vacuous audit"
         )
     return paths

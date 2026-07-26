@@ -139,14 +139,14 @@ Allowed cases (do NOT flag these):
   counter-example kept next to one recovered from it.
 - **A fault-injection workload that swallows every call.** `go()` in
   `packages/conformance/src/fault-matrix.ts` is `try { return await op() } catch { return
-  null }` on all twenty-odd store calls, and line 332 is `.complete(…).catch(() => {})`.
+  null }` on all twenty-odd store calls, including `.complete(…).catch(() => {})`.
   Correct: crash injection rejects calls by design, and the oracle is what runs afterwards —
   invariants clean, the claim bound, and a probe task driven to completion.
 - **Arrange-phase catches and preconditions.** `.catch(() => {})` on setup calls in
-  `packages/sdk/test/review-regressions.test.ts` (lines 96, 102) and on calls whose
+  `packages/sdk/test/review-regressions.test.ts` and on calls whose
   post-assertion FAILS in the throw direction — `packages/conformance/test/regressions.test.ts`
-  line 160 asserts the task is still `'cancelled'`, which a deleted terminal guard would
-  break. `expect(run).toBeDefined()` at `packages/sdk/test/user-boundary.test.ts:70` is a
+  asserts the task is still `'cancelled'`, which a deleted terminal guard would
+  break. `expect(run).toBeDefined()` at `packages/sdk/test/user-boundary.test.ts` is a
   precondition on `claim`, followed by the discriminating assertions.
 - **A catch that records and is asserted.** `packages/conformance/test/fuzz-shard-runner.ts`
   pushes into `failures` and asserts `expect(failures).toEqual([])`;

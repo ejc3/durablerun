@@ -134,14 +134,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   wake-consumption binding (a wake bound to its awaiting step instead of
   consumed by a flag — DONE: the wake_step column, codex final review).
   A second review round against the final head found six more bugs (see
-  postmortems/pr11-codex-final-review.md), leaving three deferrals of its
-  own: enforce attestation-artifact freshness in review-attest.sh (refuse
-  a codex log or journal older than the branch head — the header promises
-  it, the code does not check it); a schema/emit-boundary guarantee that an
-  event payload is never SQL NULL (lifting the timeout sentinel from a
-  type-only to a structural guarantee); and canonicalize-and-classify a
-  handler result at the source so a non-serializable result is a permanent
-  user failure, not a silent completion with NULL.
+  postmortems/pr11-codex-final-review.md), leaving two deferrals of its own:
+  a schema/emit-boundary guarantee that an event payload is never SQL NULL
+  (lifting the timeout sentinel from a type-only to a structural guarantee);
+  and canonicalize-and-classify a handler result at the source so a
+  non-serializable result is a permanent user failure, not a silent completion
+  with NULL. Attestation-artifact freshness is DONE: the Codex log and
+  multi-lens journal each carry one exact review-head binding checked against
+  the PR head before the status can post.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
@@ -209,8 +209,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the final audit, including the exact inline-ending identity and typed
     schema-absence and version-row mutations, **37 of 37 attributable**.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
-    classified write labels cross 47 atomic witnesses covering all 50
-    invariant condition IDs: 799 generated cells, plus two inventory cases.
+    classified write labels cross 54 atomic witnesses covering all 57
+    invariant condition IDs: 918 generated cells, plus two inventory cases.
     Every injectable witness invokes its label; a strict dialect may instead
     return `structurally-rejected`, the stronger proof that the forbidden
     pre-state is unwritable. Each invoked cell freezes structured tuple keys
@@ -251,14 +251,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     CAS had cancelled. The fixes share one suspension cleanup chokepoint and
     make cancelled run IDs the authority.
   - **Portable, atomic invariant evidence.** The invariant library has one
-    typed inventory of 50 semantic conditions under 23 display names, evaluates
+    typed inventory of 57 semantic conditions under 24 display names, evaluates
     explicit dialect-neutral table projections in TypeScript, and rejects a
     short, long, or malformed executor result vector instead of treating a
     missing table as empty. Row and finding identity are structured tuples,
     never delimiter-joined display strings. Exact integers returned as safe
     numbers or bigint compare canonically; strings remain storage corruption,
-    including provenance instants. A shared statement-name grammar is used by
-    both the builder and persisted-stamp evaluator. The fixture-level
+    including provenance instants and all seven durable counter columns.
+    Counter decoding is total: corrupt storage emits its typed finding and
+    dependent arithmetic is skipped rather than aborting the invariant pass.
+    A shared statement-name grammar and fence-stamp parser are used by both the
+    builder and persisted-stamp evaluators. The fixture-level
     `injectStorageCorruption` seam returns `injected` on permissive stores or
     `structurally-rejected` on strict native types, so all dialects run the
     identical witness inventory without encoding SQLite's dynamic typing.
@@ -355,7 +358,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
 
-- **PR3.10 condition-mutation ratchet**. PR3.7's 50 condition IDs make every
+- **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory, now 57
+  IDs, makes every
   currently declared boolean/null/type arm independently witnessable; they do
   not prove the declaration itself is complete. One condition can still group
   semantic alternatives — for example the `failed` and `cancelled` members of

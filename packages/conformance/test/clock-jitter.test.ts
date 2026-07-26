@@ -136,7 +136,14 @@ async function snapshot(raw: LibsqlExecutor) {
   )
 }
 
-const SCENARIOS = ['retry', 'events', 'suspend', 'cancel'] as const
+const SCENARIOS = [
+  'retry',
+  'events',
+  'suspend',
+  'cancel',
+  'sweep-lost-launch',
+  'sweep-claim-timeout',
+] as const
 type Scenario = (typeof SCENARIOS)[number]
 
 /** One deterministic pass over the engine; `jitterMs` 0 means no jitter. */
@@ -149,7 +156,7 @@ async function run(
   snapshot: Awaited<ReturnType<typeof snapshot>>
   violations: string[]
 }> {
-  const { raw, ids } = await openTestDb({
+  const { raw, admin, ids } = await openTestDb({
     nowMs: NOW,
     idNamespace: `clock-${scenario}`,
   })
@@ -241,6 +248,24 @@ async function run(
       record('activate:w1', await store.activate(Q, r.runId, r.claimToken, r.claimGen))
     }
     record('cancel', await store.cancelTask(Q, s.taskId))
+  } else if (scenario === 'sweep-lost-launch') {
+    const s = await store.spawn(Q, 'lost-launch', '{}')
+    record('spawn', s)
+    const claimed = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('claim:w1', claimed)
+    await admin.setFakeNowEpochMs(NOW + 61_000)
+    record('sweep', await store.sweep(Q, 10))
+  } else if (scenario === 'sweep-claim-timeout') {
+    const s = await store.spawn(Q, 'claim-timeout', '{}')
+    record('spawn', s)
+    const claimed = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    record('claim:w1', claimed)
+    const [r] = claimed
+    if (r) {
+      record('activate:w1', await store.activate(Q, r.runId, r.claimToken, r.claimGen))
+    }
+    await admin.setFakeNowEpochMs(NOW + 61_000)
+    record('sweep', await store.sweep(Q, 10))
   }
 
   const violations = await engineInvariantViolations(raw)

@@ -340,8 +340,9 @@ Notes:
   every engine batch re-embeds its full fencing predicate (§3.4). Sweeping dead
   leases, enforcing cancellation, and claiming due runs in one tick is Absurd's
   `claim_task` contract, ported — but split into read-then-fenced-batches because
-  the retry-run insert needs data (retry_strategy, attempt) read from the expired
-  rows first.
+  each expired run gets its own atomic transition. The scan is advisory: successor
+  ordinals and task-terminal collision checks derive from the failed row carrying
+  this batch's fence, never from values returned by the earlier read.
 - Timer latency: resident mode sleeps until `min(next transition, poll ceiling)`,
   so wakes are as precise as the loop (ms). Serverless mode's re-arm makes it ≈
   alarm precision (seconds via QStash, ms via DO alarms on Cloudflare) instead of
@@ -758,7 +759,14 @@ not depend on careful reading:
   build until classified, and classification enrolls it against
   crash-before, crash-after, and duplicated-request faults automatically,
   with invariants, the claim QUANTITY bound, and a post-fault progress
-  probe asserted. Fault coverage is enumerated, never curated.
+  probe asserted. Cap-edge seeds use a non-first claim generation, and when
+  the trace shows their transition reached the database the matrix requires
+  the exact task/run post-state — observing a label without crossing its
+  seeded edge is not coverage. Fault coverage is enumerated, never curated.
+  Dialects enter through the central fixture registry and one
+  `storeConformance` umbrella, which always enrolls scheduler, fault, poison,
+  and generated wake-witness behavior; a backend cannot select only the
+  cheaper sub-suites.
 - *The invariant condition inventory and poison matrix*
   (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
   one dialect-neutral read batch whose result cardinality is exact and every
@@ -772,9 +780,12 @@ not depend on careful reading:
   fixture's `injectStorageCorruption` seam: a permissive store returns
   `injected`, while a strict schema returns `structurally-rejected`, and both
   are valid outcomes of the identical shared witness. TypeScript evaluates
-  one of 50 typed condition IDs for every semantic arm. The poison surface
-  crosses the 17 classified write labels with 47 atomic corrupt-state
-  witnesses covering that exact condition inventory: 799 generated cells,
+  one of 57 typed condition IDs for every semantic arm. The seven durable
+  counters are decoded totally: a non-integer storage representation emits
+  its own typed finding and suppresses dependent arithmetic instead of
+  aborting the invariant pass. The poison surface crosses the 17 classified
+  write labels with 54 atomic corrupt-state witnesses covering that exact
+  condition inventory: 918 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead return `structurally-rejected` before invocation,
   the stronger result that the forbidden pre-state is unwritable. Each invoked

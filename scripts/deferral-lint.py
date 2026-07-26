@@ -13,9 +13,9 @@ a completed entry is orphaned, and work listed under a live PR entry is owned
 by that PR — the containing entry IS the destination, so nothing needs to
 repeat it.
 
-Only sub-bullets count. Prose inside an entry frequently discusses deferral
-(including this file's own rationale in BUILD.md), and a checker that fires on
-text ABOUT the rule is the kind that gets weakened until it is quiet.
+Only work-item bullets count. Prose inside an entry frequently discusses
+deferral (including this file's own rationale in BUILD.md), and a checker that
+fires on text ABOUT the rule is the kind that gets weakened until it is quiet.
 
 Run by `pnpm verify`.
 """
@@ -40,27 +40,40 @@ DEFERRED = re.compile(
 )
 EXCUSED = re.compile(r"\bABANDONED:", re.IGNORECASE)
 
-lines = BUILD.read_text().splitlines()
+ENTRY = re.compile(r"^[-*] \*\*(PR[\d.]+)\b")
+BULLET = re.compile(r"^(?P<indent>\s*)[-*]\s+")
 
-starts = [i for i, l in enumerate(lines) if re.match(r"^- \*\*PR[\d.]+", l)]
 violations: list[str] = []
-for n, i in enumerate(starts):
-    end = starts[n + 1] if n + 1 < len(starts) else len(lines)
-    name = re.match(r"^- \*\*(PR[\d.]+)", lines[i]).group(1)
-    if "DONE" not in lines[i]:
+owner: tuple[str, bool] | None = None
+for line in BUILD.read_text().splitlines():
+    entry = ENTRY.match(line)
+    if entry:
+        owner = (entry.group(1), "DONE" in line)
         continue
-    # Sub-bullets only: these are the items, not the narration.
-    for l in lines[i:end]:
-        if not re.match(r"^\s+- ", l):
-            continue
-        if DEFERRED.search(l) and not EXCUSED.search(l):
-            violations.append(
-                f"BUILD.md: {name} is DONE and still owns deferred work:\n"
-                f"    {l.strip()[:110]}\n"
-                f"  DONE is the section a reader skips, so anything parked here is\n"
-                f"  dropped silently. Move it under the PR that will do it, or write\n"
-                f"  'ABANDONED: <reason>' — an honest answer where silence is not."
-            )
+
+    bullet = BULLET.match(line)
+    if not bullet:
+        continue
+    if not bullet.group("indent"):
+        owner = None
+    if not DEFERRED.search(line) or EXCUSED.search(line):
+        continue
+    if owner is None:
+        violations.append(
+            "BUILD.md: deferred work belongs to no PR entry:\n"
+            f"    {line.strip()[:110]}\n"
+            "  Every deferred work item must be nested under the live PR that owns it."
+        )
+        continue
+    name, done = owner
+    if done:
+        violations.append(
+            f"BUILD.md: {name} is DONE and still owns deferred work:\n"
+            f"    {line.strip()[:110]}\n"
+            f"  DONE is the section a reader skips, so anything parked here is\n"
+            f"  dropped silently. Move it under the PR that will do it, or write\n"
+            f"  'ABANDONED: <reason>' — an honest answer where silence is not."
+        )
 
 for v in violations:
     print(v)

@@ -91,6 +91,12 @@ describe('claim candidate legs', () => {
     expect(p.match(/runs_poll/g)?.length).toBeGreaterThanOrEqual(2)
     expect(p).toContain('runs_task_attempt')
     expect(p).not.toContain('SCAN sibling')
+
+    const siblingSource = 'FROM runs sibling'
+    expect(st.sql.split(siblingSource)).toHaveLength(3)
+    const degraded = st.sql.split(siblingSource).join(`${siblingSource} INDEXED BY runs_poll`)
+    const degradedPlan = await writePlan(degraded, st.args as (string | number)[])
+    expect(degradedPlan.match(/SCAN sibling/g)?.length ?? 0, degradedPlan).toBeGreaterThanOrEqual(2)
   })
 })
 

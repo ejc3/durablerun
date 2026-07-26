@@ -304,7 +304,8 @@ describe('runClaimedRun', () => {
         if (prop === 'fail') {
           return () => Promise.reject(new StoreUnavailableError('outage during fail'))
         }
-        return Reflect.get(target, prop, receiver)
+        const value = Reflect.get(target, prop, receiver)
+        return typeof value === 'function' ? value.bind(target) : value
       },
     })
     const reg = registry({

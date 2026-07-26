@@ -1,9 +1,9 @@
-import { EventTimeoutError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
+import { EventTimeoutError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
-import { runClaimedRun, type TaskContext, type TaskRegistry } from '../src/index.js'
+import { type TaskContext, type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 
@@ -335,7 +335,7 @@ describe('replay equivalence (generated programs x fault points x adversarial va
     it(`program ${seed}: every fault point yields the reference outcome`, async () => {
       const ops = generateProgram(new Rng(`program-${seed}`))
       const reference = await runProgram(ops, `ref-${seed}`, 0)
-      // Fault every store call the reference lifetime made (bounded scan).
+      // Fault a bounded odd-index sample through call 28.
       for (let call = 3; call <= 28; call += 2) {
         const faulted = await runProgram(ops, `fault-${seed}-${call}`, call)
         expect(faulted.result, `fault at call ${call}`).toBe(reference.result)

@@ -180,7 +180,7 @@ required `adversarial-review` status unless the PR body declares
 nothing was found. A nonzero count requires the PR to ADD a postmortem
 (added files; touching or renaming an old one does not count) containing
 every section of the template, placeholders filled, findings table
-non-empty. The `reviews-abandoned:` trailer can excuse incomplete review
+non-empty. The `reviews-abandoned: <non-empty reason>` trailer can excuse incomplete review
 artifacts, never this gate. Bugs caught by the author's own machinery
 before review — TLC at spec time, red tests, fuzz — are the system
 working, not SEVs; declaring `review-findings: 0` over a branch with red

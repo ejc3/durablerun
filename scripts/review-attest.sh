@@ -22,10 +22,12 @@
 #      instead made this gate refuse the very branch that introduced it,
 #      whose design notes live there too; a mechanism that can only be
 #      satisfied by mangling good documents teaches people to bypass it.
-#   3. The review artifacts verifiably COMPLETED: a codex log containing
-#      its terminal 'tokens used' marker, and a review-workflow journal
-#      with per-finding results — or an explicit 'reviews-abandoned:<reason>'
-#      trailer in the PR body (echoed into the public status description).
+#   3. The review artifacts match THIS HEAD and verifiably COMPLETED: a codex
+#      log containing exactly one matching 'review-head:' line and its
+#      'tokens used' completion marker, and a review-workflow journal with
+#      exactly one matching review-head record and per-finding results — or an explicit
+#      'reviews-abandoned:<non-empty reason>' trailer in the PR body (echoed
+#      into the public status description).
 #      Abandonment excuses the ARTIFACTS of reviews that never completed;
 #      it never excuses the postmortem obligation, which is checked first.
 #
@@ -36,7 +38,114 @@ set -euo pipefail
 usage() {
   echo "usage: review-attest.sh <pr-number> <codex-log> <workflow-journal|->" >&2
   echo "       review-attest.sh --check-postmortem <path>" >&2
+  echo "       review-attest.sh --check-codex-log <path> <head>" >&2
+  echo "       review-attest.sh --check-journal <path> <head>" >&2
+  echo "       review-attest.sh --check-pr-body <path>" >&2
   exit 2
+}
+
+# The marker is a whole line but deliberately need not be the last one: a
+# completed Codex run prints its verdict afterward, while a failed stream can
+# print the marker and then stop on an unprefixed 429. Head identity and the
+# terminal error shape are therefore independent checks.
+check_codex_log() {
+  local path="$1" expected_head="$2" actual_head head_count aborts
+  [[ -f "$path" ]] || { echo "no codex log: $path" >&2; return 1; }
+  [[ -n "$expected_head" ]] || {
+    echo "codex log check requires a non-empty expected review head." >&2
+    return 1
+  }
+
+  head_count=$(grep -cE '^review-head:' "$path" || true)
+  if [[ "$head_count" -ne 1 ]]; then
+    echo "codex log is not bound to a review head (found $head_count review-head lines)." >&2
+    return 1
+  fi
+  actual_head=$(sed -nE 's/^review-head:[[:space:]]*(.*)$/\1/p' "$path")
+  actual_head=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$actual_head")
+  if [[ -z "$actual_head" ]]; then
+    echo "codex log is not bound to a review head (the review-head value is empty)." >&2
+    return 1
+  fi
+  if [[ "$actual_head" != "$expected_head" ]]; then
+    echo "codex log reviewed $actual_head, expected $expected_head." >&2
+    return 1
+  fi
+
+  grep -qxF 'tokens used' "$path" || {
+    echo "codex log INCOMPLETE: no terminal 'tokens used' line." >&2
+    echo "  A round that never reached its end must not attest." >&2
+    return 1
+  }
+  aborts=$(tail -5 "$path" | grep -Ei \
+    '^(error|stream error):|unexpected status[[:space:]]+429|429 Too Many Requests' || true)
+  if [[ -n "$aborts" ]]; then
+    echo "codex log ENDS IN AN ERROR — the round aborted rather than finishing:" >&2
+    head -2 <<<"$aborts" >&2
+    echo "  Re-run the review, or declare 'reviews-abandoned:<reason>' in the PR body," >&2
+    echo "  which says so publicly instead of quietly." >&2
+    return 1
+  fi
+}
+
+check_journal() {
+  local path="$1" expected_head="$2" actual_head head_count result_count
+  [[ -f "$path" ]] || { echo "no workflow journal: $path" >&2; return 1; }
+  [[ -n "$expected_head" ]] || {
+    echo "review journal check requires a non-empty expected review head." >&2
+    return 1
+  }
+  if ! jq -e -s 'all(.[]; type == "object")' "$path" >/dev/null 2>&1; then
+    echo "review journal is not valid JSON-lines object evidence." >&2
+    return 1
+  fi
+
+  head_count=$(jq -s '[.[] | select(.type == "review-head")] | length' "$path")
+  if [[ "$head_count" -ne 1 ]]; then
+    echo "review journal is not bound to a review head (found $head_count review-head records)." >&2
+    return 1
+  fi
+  actual_head=$(jq -r 'select(.type == "review-head") | .head // empty' "$path")
+  if [[ -z "$actual_head" ]]; then
+    echo "review journal is not bound to a review head (the head value is empty)." >&2
+    return 1
+  fi
+  if [[ "$actual_head" != "$expected_head" ]]; then
+    echo "review journal reviewed $actual_head, expected $expected_head." >&2
+    return 1
+  fi
+
+  result_count=$(jq -s '[.[] | select(.type == "result")] | length' "$path")
+  if [[ "$result_count" -lt 1 ]]; then
+    echo "journal has no agent results" >&2
+    return 1
+  fi
+}
+
+check_pr_body() {
+  local body="$1" count line reason
+  count=$(grep -cE '^reviews-abandoned:' <<<"$body" || true)
+  if [[ "$count" -gt 1 ]]; then
+    echo "reviews-abandoned must appear at most once." >&2
+    return 1
+  fi
+  if [[ "$count" -eq 1 ]]; then
+    line=$(grep -E '^reviews-abandoned:' <<<"$body")
+    reason="${line#reviews-abandoned:}"
+    reason=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$reason")
+    if [[ -z "$reason" ]]; then
+      echo "reviews-abandoned requires a non-empty reason." >&2
+      return 1
+    fi
+  fi
+}
+
+abandonment_reason() {
+  local body="$1" line reason
+  line=$(grep -E '^reviews-abandoned:' <<<"$body" || true)
+  [[ -n "$line" ]] || return 0
+  reason="${line#reviews-abandoned:}"
+  sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$reason"
 }
 
 # One parser owns both sides of the arithmetic. The earlier global row count
@@ -245,11 +354,35 @@ if [[ "${1:-}" == "--check-postmortem" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "--check-codex-log" ]]; then
+  [[ $# -eq 3 ]] || usage
+  check_codex_log "$2" "$3"
+  echo "codex log complete and bound to review head $3"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--check-journal" ]]; then
+  [[ $# -eq 3 ]] || usage
+  check_journal "$2" "$3"
+  echo "review journal complete and bound to review head $3"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--check-pr-body" ]]; then
+  [[ $# -eq 2 ]] || usage
+  [[ -f "$2" ]] || { echo "no PR body: $2" >&2; exit 1; }
+  BODY_FIXTURE=$(<"$2")
+  check_pr_body "$BODY_FIXTURE"
+  echo "PR body review trailers are well formed"
+  exit 0
+fi
+
 [[ $# -ge 2 ]] || usage
 PR="$1"; CODEX_LOG="$2"; JOURNAL="${3:--}"
 
 SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
 BODY=$(gh pr view "$PR" --json body --jq .body)
+check_pr_body "$BODY"
 
 # --- SEV gate (runs FIRST: nothing below may skip it) -----------------------
 
@@ -342,8 +475,8 @@ fi
 
 # --- artifact completeness (or explicit public abandonment) -----------------
 
-if grep -qE '^reviews-abandoned:' <<<"$BODY"; then
-  REASON=$(grep -E '^reviews-abandoned:' <<<"$BODY" | head -1)
+REASON=$(abandonment_reason "$BODY")
+if [[ -n "$REASON" ]]; then
   gh api "repos/{owner}/{repo}/statuses/$SHA" -f state=success \
     -f context=adversarial-review -f description="ABANDONED (see PR body): ${REASON:0:80}"
   echo "attested via explicit abandonment (SEV gate above still enforced)"
@@ -367,36 +500,11 @@ reject_repo_file() {
 
 [[ -f "$CODEX_LOG" ]] || { echo "no codex log: $CODEX_LOG" >&2; exit 1; }
 reject_repo_file "$CODEX_LOG" "codex log"
-# Two checks, because one is not enough and the obvious one is a trap.
-#
-# 'tokens used' must be codex's own terminal line, not the phrase appearing
-# anywhere: a substring match accepted any file that merely mentions the
-# words, this script included.
-#
-# But it does NOT mean the review finished. Measured against two real logs: a
-# round killed partway by an upstream content filter ALSO ends with that
-# marker — codex prints it whether it completed or aborted. Requiring the
-# marker near the end is worse than useless, because a completed round keeps
-# printing its verdict afterwards while an aborted one stops right there; that
-# rule would have rejected the good log and attested the dead one.
-#
-# What actually separates them is how the log ENDS: a round that died stops on
-# an error, a round that finished stops on its findings.
-grep -qx 'tokens used' "$CODEX_LOG" || {
-  echo "codex log INCOMPLETE: no terminal 'tokens used' line." >&2
-  echo "  A round that never reached its end must not attest." >&2
-  exit 1; }
-if tail -5 "$CODEX_LOG" | grep -qE '^(ERROR|error):'; then
-  echo "codex log ENDS IN AN ERROR — the round aborted rather than finishing:" >&2
-  tail -5 "$CODEX_LOG" | grep -E '^(ERROR|error):' | head -2 >&2
-  echo "  Re-run the review, or declare 'reviews-abandoned:<reason>' in the PR body," >&2
-  echo "  which says so publicly instead of quietly." >&2
-  exit 1
-fi
+check_codex_log "$CODEX_LOG" "$SHA"
 if [[ "$JOURNAL" != "-" ]]; then
   [[ -f "$JOURNAL" ]] || { echo "no workflow journal: $JOURNAL" >&2; exit 1; }
   reject_repo_file "$JOURNAL" "workflow journal"
-  grep -q '"type":"result"' "$JOURNAL" || { echo "journal has no agent results" >&2; exit 1; }
+  check_journal "$JOURNAL" "$SHA"
 fi
 
 RAN="codex"

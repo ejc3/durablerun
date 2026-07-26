@@ -1,7 +1,7 @@
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
-import { runClaimedRun, type TaskContext, type TaskRegistry } from '../src/index.js'
+import { type TaskContext, type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 
@@ -81,7 +81,7 @@ describe('user-boundary: every invalid context input fails permanently at attemp
           [{ sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [spawned.taskId] }],
           'read',
         )
-        expect(tasks?.rows[0]?.attempts).toBe(1)
+        expect(Number(tasks?.rows[0]?.attempts)).toBe(1)
       } finally {
         raw.close()
       }

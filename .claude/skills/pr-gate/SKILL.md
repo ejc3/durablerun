@@ -46,9 +46,10 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
 6. **Launched reviewers report before merge** — MECHANIZED: main's branch
    protection requires the 'adversarial-review' commit status, which only
    scripts/review-attest.sh produces, and it refuses to attest unless the
-   codex log and the review-workflow journal verifiably COMPLETED (or the
-   PR body carries an explicit 'reviews-abandoned:<reason>' trailer, which
-   the status echoes publicly). Merging without reviews is an operation
+   codex log and the review-workflow journal are each bound to the current
+   PR head and verifiably COMPLETED (or the PR body carries an explicit
+   'reviews-abandoned:<reason>' trailer, which the status echoes publicly).
+   Merging without reviews is an operation
    GitHub refuses, not a rule to remember — it was forgotten under
    momentum twice; now the failure mode requires deliberately attesting
    falsely, a different and auditable class. The same script enforces the

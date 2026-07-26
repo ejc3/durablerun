@@ -1,11 +1,27 @@
-import { LeaseLostError, type SqlExecutor } from '@durablerun/core'
-import { Rng, SimWorld, seededIdSource } from '@durablerun/harness'
+import { type IdSource, LeaseLostError, type SqlExecutor } from '@durablerun/core'
+import { SimWorld } from '@durablerun/harness'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 import { attributeExpectedFailure } from './mutation-verdict.js'
 
 const Q = 'q'
+
+/**
+ * Give one operation an exact collision without predicting a fixture's private
+ * ID call count. The fallback keeps operations that eagerly mint a second ID
+ * deterministic even when their first compare-and-set loses.
+ */
+function storeWithFirstId(raw: SqlExecutor, firstId: string): LibsqlSchedulerStore {
+  let ids = 0
+  let tokens = 0
+  const source: IdSource = {
+    uuidv7: () => (ids++ === 0 ? firstId : `${firstId}-fallback-${ids}`),
+    token: () => `collision-token-${++tokens}`,
+  }
+  return new LibsqlSchedulerStore(raw, source)
+}
 
 /** All epoch-ms columns must hold INTEGER (or NULL) storage class. */
 async function nonIntegerTemporalRows(raw: SqlExecutor): Promise<string[]> {
@@ -98,12 +114,12 @@ describe('transition-layer review regressions (second round)', () => {
     const f = await makeLibsqlFixture('fail-collide')
     await f.admin.setFakeNowEpochMs(1_000_000)
     const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
-    // Seeded ids replay: spawn consumed two uuidv7s; fail() mints the
-    // successor id as the third BEFORE drawing its batch stamp.
-    const mirror = seededIdSource(new Rng('fail-collide'))
-    mirror.uuidv7()
-    mirror.uuidv7()
-    const predictedSuccessor = mirror.uuidv7()
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    expect(run.taskId).toBe(spawned.taskId)
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+    const predictedSuccessor = 'foreign-fail-successor'
     // A FOREIGN pending run under a live foreign task at exactly that id.
     await f.raw.batch('t', [
       {
@@ -118,13 +134,15 @@ describe('transition-layer review regressions (second round)', () => {
         args: [predictedSuccessor, Q],
       },
     ])
-    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('claim')
-    expect(run.taskId).toBe(spawned.taskId)
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     // At the cap the successor INSERT is suppressed (0 rows, no PK error) —
     // the follow-ons must NOT mistake the pre-existing foreign row for it.
-    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    await storeWithFirstId(f.raw, predictedSuccessor).fail(
+      Q,
+      run.runId,
+      run.claimToken,
+      '{"name":"Boom"}',
+      { delaySeconds: 0 },
+    )
     const [task] = await f.raw.batch('t', [
       {
         sql: `SELECT state, attempts, last_attempt_run FROM tasks WHERE task_id = ?`,
@@ -223,11 +241,10 @@ describe('transition-layer review regressions (second round)', () => {
     // Codex PR#11 round 6: the initial-run INSERT selected a bare task_id
     // even when the task insert lost (idempotency conflict). With an injected
     // uuid colliding an existing TERMINAL task, a pending run was booked under
-    // it. Predict spawn's taskId (its first uuidv7) and pre-seed that state.
-    const seed = 'spawn-collide'
-    const f = await makeLibsqlFixture(seed)
+    // it. Force spawn's first id and pre-seed that state.
+    const f = await makeLibsqlFixture('spawn-collide')
     await f.admin.setFakeNowEpochMs(1_000_000)
-    const collidingId = seededIdSource(new Rng(seed)).uuidv7()
+    const collidingId = 'terminal-task-collision'
     await f.raw.batch('t', [
       {
         sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
@@ -241,7 +258,9 @@ describe('transition-layer review regressions (second round)', () => {
     // error out of spawn. Swallowing the rejection here made this test pass
     // either way, so deleting the guard that converts the collision into a
     // lost compare-and-set broke nothing — found by mutation probe.
-    const result = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'k' })
+    const result = await storeWithFirstId(f.raw, collidingId).spawn(Q, 'job', '{}', {
+      idempotencyKey: 'k',
+    })
     expect(result.created).toBe(false)
     const [runs] = await f.raw.batch('t', [
       { sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ?`, args: [collidingId] },
@@ -261,10 +280,9 @@ describe('transition-layer review regressions (second round)', () => {
     // exists for a collision on the id ALONE, where the targeted conflict
     // clause does not apply and the insert would raise a constraint error out
     // of spawn to a caller who did nothing wrong.
-    const seed = 'spawn-collide-id-only'
-    const f = await makeLibsqlFixture(seed)
+    const f = await makeLibsqlFixture('spawn-collide-id-only')
     await f.admin.setFakeNowEpochMs(1_000_000)
-    const collidingId = seededIdSource(new Rng(seed)).uuidv7()
+    const collidingId = 'task-id-only-collision'
     await f.raw.batch('t', [
       {
         sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
@@ -277,7 +295,7 @@ describe('transition-layer review regressions (second round)', () => {
     const result = await attributeExpectedFailure(
       'mutation-verdict:behavior:spawn-primary-key-guard',
       /UNIQUE constraint failed: tasks\.task_id/,
-      () => f.store.spawn(Q, 'job', '{}'), // no idempotency key
+      () => storeWithFirstId(f.raw, collidingId).spawn(Q, 'job', '{}'), // no idempotency key
     )
     expect(result).toMatchObject({ created: false })
 
@@ -668,12 +686,11 @@ describe('sweep and cancellation review regressions', () => {
     const f = await makeLibsqlFixture('collide')
     await f.admin.setFakeNowEpochMs(1_000_000)
     const spawned = await f.store.spawn(Q, 'job', '{}')
-    // Seeded ids are deterministic: replay the same stream to predict the
-    // successor id the sweep will mint (spawn consumed two uuidv7s).
-    const mirror = seededIdSource(new Rng('collide'))
-    mirror.uuidv7()
-    mirror.uuidv7()
-    const predictedSuccessor = mirror.uuidv7()
+    const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+    const predictedSuccessor = 'foreign-sweep-successor'
     // Park a FOREIGN run under a different task at exactly that id.
     await f.raw.batch('t', [
       {
@@ -688,13 +705,10 @@ describe('sweep and cancellation review regressions', () => {
         args: [predictedSuccessor, Q],
       },
     ])
-    const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     await f.admin.setFakeNowEpochMs(1_100_000)
     // The collision must surface loudly — never silent bookkeeping against
     // a foreign row.
-    await expect(f.store.sweep(Q, 10)).rejects.toThrow()
+    await expect(storeWithFirstId(f.raw, predictedSuccessor).sweep(Q, 10)).rejects.toThrow()
     const [task] = await f.raw.batch('t', [
       {
         sql: `SELECT infra_retries, last_attempt_run FROM tasks WHERE task_id = ?`,

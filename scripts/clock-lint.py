@@ -17,7 +17,12 @@ import re
 import sys
 from pathlib import Path
 
-from source_lex import sql_template_view, store_typescript_sources, validated_root
+from source_lex import (
+    sql_file_view,
+    sql_template_view,
+    store_sql_sources,
+    validated_root,
+)
 
 try:
     root = validated_root(
@@ -25,7 +30,7 @@ try:
         Path(__file__).resolve().parent.parent,
         "clock-lint.py",
     )
-    source_paths = store_typescript_sources(root, "clock-lint.py")
+    source_paths = store_sql_sources(root, "clock-lint.py")
 except ValueError as error:
     sys.exit(str(error))
 
@@ -46,7 +51,7 @@ except ValueError as error:
 CALLS = (
     "unixepoch|julianday|strftime|now|sysdate|clock_timestamp|statement_timestamp"
     "|transaction_timestamp|getdate|timeofday|utc_timestamp|utc_date|utc_time"
-    "|localtime|localtimestamp|current_timestamp"
+    "|localtime|localtimestamp|current_timestamp|curdate|curtime"
 )
 CLOCKS = re.compile(
     rf"\b(?:{CALLS})\s*\("
@@ -58,16 +63,22 @@ CLOCKS = re.compile(
     r"|\b(?:datetime|date|time)\s*\(\s*'now'",
     re.IGNORECASE,
 )
+FAKE_NOW_READ = re.compile(
+    r"\bSELECT\b[^;]*\b(?:FROM|JOIN)\s+meta\b[^;]*"
+    r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?key\s*=\s*'fake_now_ms'",
+    re.IGNORECASE,
+)
 violations = 0
 for path in source_paths:
     if path.name == "time.ts" and path.parent.parent.parent == root / "packages":
         continue
     source = path.read_text()
-    # `datetime('now')` is a clock call whose sentinel is itself a SQL
-    # literal. Preserve only that exact literal spelling; every other SQL
-    # string remains blank, so `'NOW()'` cannot impersonate a call.
+    # `datetime('now')` and the fake-clock row both carry their sentinel as a
+    # SQL literal. Preserve only those exact values; every other data string
+    # remains blank, so `'NOW()'` cannot impersonate a call.
     try:
-        visible = sql_template_view(source, frozenset({"now"}))
+        view = sql_file_view if path.suffix == ".sql" else sql_template_view
+        visible = view(source, frozenset({"fake_now_ms", "now"}))
     except ValueError as error:
         print(f"{path.relative_to(root)}: cannot lex TypeScript source: {error}")
         violations += 1
@@ -77,6 +88,13 @@ for path in source_paths:
         print(
             f"{path.relative_to(root)}:{lineno}: raw wall-clock function in "
             f"store SQL — database time enters ONLY through NOW_MS (time.ts)"
+        )
+        violations += 1
+    for match in FAKE_NOW_READ.finditer(visible):
+        lineno = source.count("\n", 0, match.start()) + 1
+        print(
+            f"{path.relative_to(root)}:{lineno}: raw meta/fake_now_ms clock read "
+            "in store SQL — database time enters ONLY through NOW_MS (time.ts)"
         )
         violations += 1
 

@@ -732,14 +732,18 @@ function assertWritesStamp(
     }
     // An upsert that leaves the conflicting row's provenance alone would let
     // a later statement fence on a stamp this batch never wrote there.
-    const doUpdate = /\bDO\s+UPDATE\b([\s\S]*)$/i.exec(sql)
-    if (doUpdate?.[1]) {
+    const conflictUpdate = conflictUpdateTail(sql)
+    if (conflictUpdate !== null) {
       const preserved: Partial<Record<FenceTable, string>> = PRESERVED_FENCE_INSTANTS
       const column = preserved[target]
       const required = column === undefined ? FENCE_SET : preservedFenceSet(target, column)
-      const stampWrites = doUpdate[1].match(/\bfence_stamp\s*=/gi)?.length ?? 0
-      const instantWrites = doUpdate[1].match(/\bfence_at_ms\s*=/gi)?.length ?? 0
-      if (stampWrites !== 1 || instantWrites !== 1 || !containsCompleteSet(doUpdate[1], required)) {
+      const stampWrites = conflictUpdate.match(/\bfence_stamp\s*=/gi)?.length ?? 0
+      const instantWrites = conflictUpdate.match(/\bfence_at_ms\s*=/gi)?.length ?? 0
+      if (
+        stampWrites !== 1 ||
+        instantWrites !== 1 ||
+        !containsCompleteSet(conflictUpdate, required)
+      ) {
         const requirement =
           column === undefined
             ? 'does not re-stamp the row and its instant'
@@ -762,6 +766,21 @@ function assertWritesStamp(
       `${at} writes ${target} but does not stamp it — set 'fence_stamp = ${STAMP}' and derive fence_at_ms from the fenced row`,
     )
   }
+}
+
+/**
+ * The assignment tail of either supported upsert spelling.
+ *
+ * PostgreSQL/SQLite say `ON CONFLICT … DO UPDATE SET`; MySQL says
+ * `ON DUPLICATE KEY UPDATE`. Both are a second write door and therefore owe
+ * the same complete provenance write as the insert arm.
+ */
+function conflictUpdateTail(sql: string): string | null {
+  const structural = blankLiterals(sql)
+  const match = /\b(?:DO\s+UPDATE\s+SET|ON\s+DUPLICATE\s+KEY\s+UPDATE)\s+([\s\S]*)$/i.exec(
+    structural,
+  )
+  return match?.[1] ?? null
 }
 
 function containsCompleteSet(sql: string, set: string): boolean {
@@ -876,18 +895,82 @@ function hasTopLevelOr(sql: string): boolean {
 }
 
 /**
- * `[from, to)` ranges under a NOT. Covers `NOT EXISTS (…)`, `NOT IN (…)` and
- * `NOT (…)` — the parenthesised form was not recognised, so `NOT (EXISTS (…
- * fence …))` counted as a POSITIVE fence and a statement asserting the fence
- * was absent read as one requiring it present.
+ * `[from, to)` ranges under a unary NOT. Covers parenthesized operands with
+ * or without separating whitespace (`NOT (…)`, `NOT(…)`, `NOT EXISTS (…)`)
+ * and bare predicates (`NOT fence_stamp = …`). A fence equality inside one
+ * of these ranges proves absence, not authority, and cannot gate a write.
  */
 function negatedSpans(sql: string): [number, number][] {
   const spans: [number, number][] = []
-  for (const match of sql.matchAll(/\bNOT\s+(?:EXISTS\s*|IN\s*)?\(/gi)) {
-    const open = (match.index ?? 0) + match[0].length - 1
-    spans.push([open, matchingParen(sql, open)])
+  const where = topLevelWhere(sql)
+  if (where < 0) return spans
+  for (let i = where; i < sql.length; i++) {
+    if (sql[i] === "'") {
+      i = skipString(sql, i)
+      continue
+    }
+    if (!matchesWord(sql, i, 'NOT')) continue
+    // `IS NOT NULL` / `IS NOT DISTINCT FROM` use NOT as part of the binary
+    // IS predicate; it does not negate everything that follows.
+    if (previousWordIs(sql, i, 'IS')) continue
+
+    let operand = skipWhitespace(sql, i + 3)
+    if (matchesWord(sql, operand, 'EXISTS')) {
+      operand = skipWhitespace(sql, operand + 'EXISTS'.length)
+    } else if (matchesWord(sql, operand, 'IN')) {
+      operand = skipWhitespace(sql, operand + 'IN'.length)
+    }
+
+    if (sql[operand] === '(') {
+      spans.push([operand, matchingParen(sql, operand)])
+    } else {
+      spans.push([operand, unaryOperandEnd(sql, operand)])
+    }
   }
   return spans
+}
+
+function previousWordIs(sql: string, before: number, word: string): boolean {
+  let end = before
+  while (end > 0 && /\s/.test(sql[end - 1] ?? '')) end--
+  let start = end
+  while (start > 0 && /[\w$]/.test(sql[start - 1] ?? '')) start--
+  return sql.slice(start, end).toUpperCase() === word
+}
+
+function skipWhitespace(sql: string, at: number): number {
+  let i = at
+  while (i < sql.length && /\s/.test(sql[i] ?? '')) i++
+  return i
+}
+
+/** End of a bare unary predicate: the next peer AND/OR or enclosing `)`. */
+function unaryOperandEnd(sql: string, start: number): number {
+  let depth = 0
+  for (let i = start; i < sql.length; i++) {
+    const ch = sql[i]
+    if (ch === "'") {
+      i = skipString(sql, i)
+      continue
+    }
+    if (ch === '(') {
+      depth++
+      continue
+    }
+    if (ch === ')') {
+      if (depth === 0) return i
+      depth--
+      continue
+    }
+    if (
+      depth === 0 &&
+      (((ch === 'A' || ch === 'a') && matchesWord(sql, i, 'AND')) ||
+        ((ch === 'O' || ch === 'o') && matchesWord(sql, i, 'OR')))
+    ) {
+      return i
+    }
+  }
+  return sql.length
 }
 
 /** The statement with every `--` and block comment replaced by spaces. */

@@ -44,6 +44,7 @@ import {
   fencedAt,
   registeredWait,
   soleLiveRun,
+  storedInteger,
   successorOwned,
 } from './fragments.js'
 import { NOW_MS } from './time.js'
@@ -169,7 +170,7 @@ export const NEXT_WAKE_SQL = `SELECT MIN(v) AS wake_ms FROM (
     WHERE queue = ? AND cancel_at_ms IS NOT NULL AND state IN ${LIVE}
 )`
 
-export const SWEEP_SCAN_EXPIRED_SQL = `SELECT r.run_id, r.task_id, r.attempt, r.claim_gen, r.activated_gen, r.relaunch_count
+export const SWEEP_SCAN_EXPIRED_SQL = `SELECT r.run_id, r.task_id, r.claim_gen, r.activated_gen, r.relaunch_count
 FROM runs r
 WHERE r.queue = ? AND r.state = 'running'
   AND r.claim_expires_at_ms IS NOT NULL AND r.claim_expires_at_ms <= ${NOW_MS}
@@ -619,7 +620,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           kind: 'expired'
           runId: string
           taskId: string
-          attempt: number
           claimGen: number
           activatedGen: number
           relaunchCount: number
@@ -639,7 +639,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         kind: 'expired',
         runId: String(row.run_id),
         taskId: String(row.task_id),
-        attempt: Number(row.attempt),
         claimGen: Number(row.claim_gen),
         activatedGen: Number(row.activated_gen),
         relaunchCount: Number(row.relaunch_count),
@@ -739,7 +738,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
 
   private async sweepClaimTimeout(
     queue: string,
-    item: { runId: string; taskId: string; attempt: number; claimGen: number },
+    item: { runId: string; taskId: string; claimGen: number },
   ): Promise<SweptRun | null> {
     const successorId = this.ids.uuidv7()
     const b = new FencedBatch('sweep:claim-timeout', this.ids.token(), { now: NOW_MS })
@@ -768,15 +767,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `INSERT INTO runs
          (run_id, queue, task_id, attempt, state, available_at_ms,
           wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
-       SELECT ?, f.queue, f.task_id, ?, 'pending',
+       SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
               f.fence_at_ms + ${INFRA_BACKOFF_SECONDS} * 1000,
               f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
               ${STAMP}, f.fence_at_ms
        FROM runs f JOIN tasks t ON t.task_id = f.task_id
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
          AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}
-         AND NOT ${successorOwned('?', 'f.task_id', '?')}`,
-      [successorId, item.attempt + 1, item.runId, successorId, item.attempt + 1],
+         AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
+      [successorId, item.runId, successorId],
       'one',
     )
     // At the cap (pre-increment): terminal. Terminal ONLY when this batch
@@ -791,8 +790,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       set: { state: `'failed'`, failure_reason: '?' },
       setArgs: [REASON_INFRA_CAP],
       narrow: `state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
-            AND NOT ${successorOwned('?', 'tasks.task_id', '?')}`,
-      narrowArgs: [successorId, item.attempt + 1],
+            AND NOT ${successorOwned(
+              '?',
+              'tasks.task_id',
+              `(SELECT p.attempt + 1 FROM runs p
+                WHERE p.run_id = ? AND p.fence_stamp = ${b.fence('fail')})`,
+            )}`,
+      narrowArgs: [successorId, item.runId],
       rows: 'one',
     })
     // Bookkeeping keyed on our successor existing. The counter DERIVES from
@@ -984,6 +988,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND ${storedInteger('runs.attempt')}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,
       [
@@ -1048,7 +1053,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `INSERT INTO checkpoints
          (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
        SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
-       FROM runs f WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('suspend')}
+       FROM runs f WHERE ${BY_RUN} AND ${storedInteger('f.attempt')}
+         AND f.fence_stamp = ${b.fence('suspend')}
        ${CHECKPOINT_LWW}`,
       [checkpoint.key, checkpoint.stateJson, runId],
       'one',
@@ -1265,6 +1271,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          claim_expires_at_ms = ${NOW} + ?, heartbeat_at_ms = ${NOW}, ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
          AND state = 'running'
+         AND ${storedInteger('runs.attempt')}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
       [extendMs, runId, queue, taskId, claimToken],
@@ -1277,7 +1284,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `INSERT INTO checkpoints
          (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
        SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
-       FROM runs f WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('lease')}
+       FROM runs f WHERE ${BY_RUN} AND ${storedInteger('f.attempt')}
+         AND f.fence_stamp = ${b.fence('lease')}
        ${CHECKPOINT_LWW}`,
       [checkpointName, stateJson, runId],
       'one',

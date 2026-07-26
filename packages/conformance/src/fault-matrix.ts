@@ -98,6 +98,7 @@ const EDGE_TASK = 'edge-task'
 const EDGE_RUN = 'edge-run'
 const EDGE_TOKEN = 'edge-worker'
 const EDGE_MAX_ATTEMPTS = 2
+const EDGE_CLAIM_GEN = 3
 
 /**
  * Writes the edge population directly. The engine's fences exist to make
@@ -120,13 +121,14 @@ async function seedPreState(raw: SqlExecutor, preState: MatrixPreState, nowMs: n
   const run = (attempt: number, activatedGen: number, relaunchCount: number, leaseEnd: number) => ({
     sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, claimed_by, claim_gen,
             activated_gen, relaunch_count, lease_ms, claim_expires_at_ms, created_at_ms)
-          VALUES (?, ?, ?, ?, 'running', ?, 1, ?, ?, 30000, ?, ?)`,
+          VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, 30000, ?, ?)`,
     args: [
       EDGE_RUN,
       Q,
       EDGE_TASK,
       attempt,
       EDGE_TOKEN,
+      EDGE_CLAIM_GEN,
       activatedGen,
       relaunchCount,
       leaseEnd,
@@ -137,19 +139,142 @@ async function seedPreState(raw: SqlExecutor, preState: MatrixPreState, nowMs: n
   const statements = {
     // One infrastructure retry below the cap, activated then died: the
     // workload's sweep crosses the cap via the claim-timeout arm.
-    'infra-cap-edge': [task(0, INFRA_RETRY_CAP - 1), run(INFRA_RETRY_CAP, 1, 0, expired)],
+    'infra-cap-edge': [
+      task(0, INFRA_RETRY_CAP - 1),
+      run(INFRA_RETRY_CAP, EDGE_CLAIM_GEN, 0, expired),
+    ],
     // One relaunch below the cap, claimed but never activated: the sweep
     // crosses the cap via the lost-launch arm.
-    'relaunch-cap-edge': [task(0, 0), run(1, 0, RELAUNCH_CAP - 1, expired)],
+    'relaunch-cap-edge': [task(0, 0), run(1, EDGE_CLAIM_GEN - 1, RELAUNCH_CAP - 1, expired)],
     // One user attempt below the cap with a live lease: the workload fails
     // it, and the failure has to refuse the successor rather than retry past
     // the budget the caller asked for.
     'attempt-cap-edge': [
       task(EDGE_MAX_ATTEMPTS - 1, 0),
-      run(EDGE_MAX_ATTEMPTS, 1, 0, nowMs + 60_000),
+      run(EDGE_MAX_ATTEMPTS, EDGE_CLAIM_GEN, 0, nowMs + 60_000),
     ],
   }[preState]
   await raw.batch('setup', statements, 'write')
+}
+
+const EDGE_TRANSITION: Record<Exclude<MatrixPreState, 'fresh'>, string> = {
+  'infra-cap-edge': 'sweep:claim-timeout',
+  'relaunch-cap-edge': 'sweep:lost-launch',
+  'attempt-cap-edge': 'fail',
+}
+
+/**
+ * A fired matrix label is only a transport observation. It does not prove the
+ * seeded boundary crossed: a legal-looking extra guard can make the edge row
+ * a no-op while the same label still transitions ordinary workload rows.
+ *
+ * Whenever the trace says the edge transition reached the database, pin its
+ * complete durable outcome. Crash-before/orphan calls made no write and are
+ * deliberately excluded; ok, duplicate, and crash-after calls all owe the
+ * same post-state.
+ */
+async function assertEdgePostcondition(
+  raw: SqlExecutor,
+  preState: MatrixPreState,
+  trace: readonly { label: string; outcome: string }[],
+  cell: string,
+): Promise<void> {
+  if (preState === 'fresh') return
+  const transition = EDGE_TRANSITION[preState]
+  const reached = trace.some(
+    ({ label, outcome }) =>
+      label === transition && (outcome === 'ok' || outcome === 'dup' || outcome === 'crash-after'),
+  )
+  if (!reached) return
+
+  const [tasks, runs] = await raw.batch(
+    'matrix:edge-postcondition',
+    [
+      {
+        sql: `SELECT state, attempts, infra_retries, failure_reason
+              FROM tasks WHERE task_id = ?`,
+        args: [EDGE_TASK],
+      },
+      {
+        sql: `SELECT run_id, attempt, state, claimed_by, claim_gen, activated_gen,
+                     relaunch_count, failure_reason
+              FROM runs WHERE task_id = ? ORDER BY attempt, run_id`,
+        args: [EDGE_TASK],
+      },
+    ],
+    'read',
+  )
+  const task = tasks?.rows[0]
+  const rows = runs?.rows ?? []
+  const exact = (condition: boolean, detail: string): void => {
+    if (!condition) throw new Error(`matrix ${cell}: edge did not cross exactly: ${detail}`)
+  }
+
+  exact(task !== undefined, 'edge task missing')
+  if (preState === 'infra-cap-edge') {
+    const parent = rows.find((row) => row.run_id === EDGE_RUN)
+    const successor = rows.find((row) => row.run_id !== EDGE_RUN)
+    exact(
+      task?.state === 'pending' &&
+        Number(task?.attempts) === 0 &&
+        Number(task?.infra_retries) === INFRA_RETRY_CAP,
+      'claim-timeout task bookkeeping',
+    )
+    exact(rows.length === 2, 'claim-timeout successor cardinality')
+    exact(
+      parent?.state === 'failed' &&
+        Number(parent?.attempt) === INFRA_RETRY_CAP &&
+        parent?.claimed_by === null &&
+        Number(parent?.claim_gen) === EDGE_CLAIM_GEN &&
+        Number(parent?.activated_gen) === EDGE_CLAIM_GEN,
+      'claim-timeout parent state',
+    )
+    exact(
+      successor?.state === 'pending' && Number(successor?.attempt) === INFRA_RETRY_CAP + 1,
+      'claim-timeout successor state',
+    )
+    return
+  }
+
+  if (preState === 'relaunch-cap-edge') {
+    const run = rows[0]
+    exact(
+      task?.state === 'pending' &&
+        Number(task?.attempts) === 0 &&
+        Number(task?.infra_retries) === 0,
+      'lost-launch task bookkeeping',
+    )
+    exact(rows.length === 1, 'lost-launch run cardinality')
+    exact(
+      run?.run_id === EDGE_RUN &&
+        run?.state === 'pending' &&
+        Number(run?.attempt) === 1 &&
+        run?.claimed_by === null &&
+        Number(run?.claim_gen) === EDGE_CLAIM_GEN &&
+        Number(run?.activated_gen) === EDGE_CLAIM_GEN - 1 &&
+        Number(run?.relaunch_count) === RELAUNCH_CAP,
+      'lost-launch reopened run state',
+    )
+    return
+  }
+
+  const run = rows[0]
+  exact(
+    task?.state === 'failed' &&
+      Number(task?.attempts) === EDGE_MAX_ATTEMPTS &&
+      Number(task?.infra_retries) === 0 &&
+      task?.failure_reason === '{"name":"EdgeBoom"}',
+    'attempt-cap task terminal state',
+  )
+  exact(rows.length === 1, 'attempt-cap run cardinality')
+  exact(
+    run?.run_id === EDGE_RUN &&
+      run?.state === 'failed' &&
+      Number(run?.attempt) === EDGE_MAX_ATTEMPTS &&
+      run?.claimed_by === null &&
+      run?.failure_reason === '{"name":"EdgeBoom"}',
+    'attempt-cap run terminal state',
+  )
 }
 
 /**
@@ -296,6 +421,8 @@ export async function runFaultMatrixCase(
       await go(() => store.nextWakeAtEpochMs(Q))
     })
     await world.run()
+
+    await assertEdgePostcondition(f.raw, preState, world.trace, cell)
 
     // (1) Nothing the fault did may have corrupted state.
     const violations = await engineInvariantViolations(f.raw)

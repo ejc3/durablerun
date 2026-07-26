@@ -150,9 +150,9 @@ Allowed cases (do NOT flag these):
   bug, which is enough to catch it."
 - **Case-law prose in the pr-gate.** Most of `.claude/skills/pr-gate/SKILL.md` Parts 2–5 records
   traps in ordinary sentences with a pointer — "`LIMIT -1` means UNLIMITED on SQLite — clamp
-  every limit (`clampLimit`)" — and only 5 of its 320 lines carry a `MECHANIZED:` pointer.
-  Adding such a line is documentation, not a claimed prevention. The same goes for a comment
-  that explains a mechanism the diff also adds.
+  every limit (`clampLimit`)" — while `MECHANIZED:` pointers explicitly distinguish entries
+  backed by an executable control. Adding ordinary case-law prose is documentation, not a
+  claimed prevention. The same goes for a comment that explains a mechanism the diff also adds.
 - **A lower rung with the reason the higher one is unreachable, parked under a live entry.**
   BUILD.md's PR3.7 remainder ("A bound on many-row follow-ons", "A generated corrupt-pre-state
   (poison) fault surface") and PR4.1's "From PR3.6, because each is only decidable with a second

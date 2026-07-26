@@ -650,6 +650,18 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
         'one',
       ),
     ).not.toThrow()
+
+    const isNot = withCas()
+    expect(() =>
+      isNot.followOn(
+        'terminal',
+        `DELETE FROM waits
+         WHERE event_name IS NOT NULL
+           AND fence_stamp = ${isNot.fence('win')}`,
+        [],
+        'one',
+      ),
+    ).not.toThrow()
   })
 
   it('rejects a top-level OR but accepts alternation inside a fenced conjunct', () => {

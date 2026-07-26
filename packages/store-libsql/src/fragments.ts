@@ -120,11 +120,18 @@ export const successorOwned = (id: string, task: string, attempt: string): strin
  * CAS that admitted it and undo the transition it was supposed to complete.
  */
 export const cancelDue = (col: string, at: string): string =>
-  `${col} IS NOT NULL AND ${col} <= ${at}`
+  `(${col} IS NOT NULL AND ${col} <= ${at})`
 
 /** No cancellation deadline, or one still in the future as of `at`. */
 export const cancelNotDue = (col: string, at: string): string =>
   `(${col} IS NULL OR ${col} > ${at})`
+
+/**
+ * SQLite's storage-class proof for a value that will cross into another
+ * durable integer column. Permissive tables can contain text in an INTEGER
+ * column; copying that value would amplify one corrupt row into another.
+ */
+export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`
 
 /**
  * A task eligible to make forward progress (be claimed, be activated): still

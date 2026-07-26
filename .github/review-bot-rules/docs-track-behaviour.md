@@ -104,27 +104,27 @@ Allowed cases (do NOT flag these):
   correlation so a disjunction cannot swallow the fence; §3.4 rule 1 already required every row a
   follow-on writes to be fenced, so no new spec sentence is owed and the commit touches no document.
 - **A test-only diff, and an oracle that deliberately restates a rule.**
-  `packages/conformance/test/wake-witness-surface.test.ts:108` re-states the wake predicate one row
+  `packages/conformance/test/wake-witness-surface.test.ts` re-states the wake predicate one row
   at a time on purpose — "a second representation that cannot express the bug". It changes no engine
   behaviour, so no DESIGN hunk is owed, and it is not a second spelling to collapse.
 - **Past-tense history that names the mechanism now holding.**
-  `packages/store-libsql/src/fragments.ts:9`, `packages/core/src/fenced-batch.ts:302`,
-  `packages/store-libsql/src/store.ts:89`, and `scripts/review-attest.sh:117` ("a round took the
+  `packages/store-libsql/src/fragments.ts`, `packages/core/src/fenced-batch.ts`,
+  `packages/store-libsql/src/store.ts`, and `scripts/review-attest.sh` ("a round took the
   table from 38 rows to 44") — including that count, which is quoted history rather than a live
-  tally. `packages/store-libsql/src/store.ts:973` is the shape a sameness comment should have: it
+  tally. `packages/store-libsql/src/store.ts` is the shape a sameness comment should have: it
   says reschedule uses "the same predicate suspendRun uses", and both sites call
   `eligibleTask('t', NOW)` with a test that fails if either drifts.
-- **DESIGN.md narrating its own history.** `DESIGN.md:484` ("An earlier draft carried a second
+- **DESIGN.md narrating its own history.** `DESIGN.md` ("An earlier draft carried a second
   interface listing here; it drifted and is deliberately deleted — one normative surface") and
-  `DESIGN.md:542` ("An earlier draft of this rule named `clock_timestamp()`, which would have made
+  `DESIGN.md` ("An earlier draft of this rule named `clock_timestamp()`, which would have made
   rule 8 unsatisfiable on Postgres"). Deleting these to "keep the spec current" destroys the record
   of why the current text is the way it is.
-- **Measured facts about a DBMS, with their sample size.** `DESIGN.md:538` "(4000/4000 identical)"
-  and `DESIGN.md:545` "differs about 2% of the time on local SQLite (94 of 4000 measured)" are
+- **Measured facts about a DBMS, with their sample size.** `DESIGN.md` "(4000/4000 identical)"
+  and `DESIGN.md` "differs about 2% of the time on local SQLite (94 of 4000 measured)" are
   measurements of SQLite, MySQL, and Postgres — not counts of our artifacts. They need re-measuring
   only when the claim about the dialect changes.
-- **Approximate, lower-bound, or ranged counts.** `.claude/skills/pr-gate/SKILL.md:24` "200+ tests
-  (~2 min)" and `BUILD.md:268` "repeated 9–11 times" do not become false when a test file or a call
+- **Approximate, lower-bound, or ranged counts.** `.claude/skills/pr-gate/SKILL.md` "200+ tests
+  (~2 min)" and `BUILD.md` "repeated 9–11 times" do not become false when a test file or a call
   site is added. Only exact counts go stale.
 - **A category-level summary of the gate that stays true.** CLAUDE.md's "`pnpm verify` — lint +
   format-check + typecheck + test" is not falsified by adding another `lint:*` to the chain; only
@@ -138,13 +138,13 @@ Allowed cases (do NOT flag these):
   fault surface" are correct as written; `deferral-lint.py` says why: "work listed under a live PR
   entry is owned by that PR — the containing entry IS the destination, so nothing needs to repeat
   it." Likewise `ABANDONED: <reason>` under a DONE entry, and prose *about* deferral inside a DONE
-  entry (`BUILD.md:145`), because "a checker that fires on text ABOUT the rule is the kind that gets
+  entry (`BUILD.md`), because "a checker that fires on text ABOUT the rule is the kind that gets
   weakened until it is quiet".
-- **A live BUILD.md entry that owns another document's list.** `BUILD.md:265` ("PR3.5 simplification
+- **A live BUILD.md entry that owns another document's list.** `BUILD.md` ("PR3.5 simplification
   sweep") owns every item in `SIMPLIFY-BACKLOG.md`; those items need not be repeated as sub-bullets.
 - **"Deferral" as engine vocabulary.** The §3.8.2 dispatch deferral and deferred start are behaviour,
-  not unfinished work: `packages/sdk/src/run-worker.ts:29`, `packages/core/src/ports.ts:69`,
-  `packages/core/src/types.ts:32`, `packages/store-libsql/src/store.ts:971`.
+  not unfinished work: `packages/sdk/src/run-worker.ts`, `packages/core/src/ports.ts`,
+  `packages/core/src/types.ts`, `packages/store-libsql/src/store.ts`.
 - **A refactor that preserves every statement's semantics.** A hand-written WHERE replaced by a
   generated row selection, a shape hoisted into one helper, tests unified onto one fixture opener
   (`96d1575`, `a5f145b`): no DESIGN.md edit is owed when the row set written, the guards, the

@@ -94,6 +94,8 @@ function describe(value: unknown): string {
  * reserved-charset bug a second time because the check lived per-method).
  */
 export class UserName {
+  private declare readonly userNameBrand: undefined
+
   private constructor(readonly value: string) {}
 
   /**
@@ -165,7 +167,7 @@ export function userDurationToMs(
 export function userJsonValue(what: string, json: string): string {
   if (typeof json !== 'string') {
     throw new FatalTaskError(
-      `${what} is ${json === undefined ? 'undefined' : typeof json}, not a JSON string — JSON.stringify returns undefined for undefined, functions and symbols`,
+      `${what} is ${describe(json)}, not a JSON string — JSON.stringify returns undefined for undefined, functions and symbols`,
     )
   }
   try {

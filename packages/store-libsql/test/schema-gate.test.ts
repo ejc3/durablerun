@@ -100,24 +100,50 @@ describe('migrate reports success only when the schema is current', () => {
    * on every restart. The deploy is wedged and the process that wedged it
    * reported success.
    *
-   * A value that is numerically right and textually wrong is all it takes;
-   * any tool that rewrites this row (a dump/restore, an operator, another
-   * dialect's client) can produce one. Enumerating the causes is the wrong
-   * response — asserting the post-condition covers all of them.
+   * This test changes only that real version-bump statement to miss. A
+   * malformed stored value would be rejected before migration starts and
+   * would therefore prove the decoder, not this post-condition.
    */
   it('fails when the recorded version did not advance', async () => {
     await migrateTo(CURRENT_SCHEMA_VERSION - 1)
-    await db.batch('corrupt', [
-      {
-        sql: `UPDATE meta SET value = ? WHERE key = 'schema_version'`,
-        args: [`${CURRENT_SCHEMA_VERSION - 1} `],
-      },
-    ])
+    let changed = 0
+    const versionBumpMiss: SqlExecutor = {
+      batch: (label, statements, mode) =>
+        db.batch(
+          label,
+          statements.map((statement) => {
+            if (
+              !label.startsWith('migrate:v') ||
+              !/^\s*UPDATE meta SET value = \? WHERE key = 'schema_version' AND value = \?\s*$/.test(
+                statement.sql,
+              )
+            ) {
+              return statement
+            }
+            changed += 1
+            return { ...statement, sql: `${statement.sql} AND 0 = 1` }
+          }),
+          mode,
+        ),
+    }
+    const missingPostcondition = new LibsqlStoreAdmin(versionBumpMiss)
 
     await expect(
-      admin.migrate(),
+      missingPostcondition.migrate(),
       'mutation-verdict:behavior:migration-postcondition-old-version',
-    ).rejects.toThrow(/schema/i)
+    ).rejects.toBeInstanceOf(SchemaMismatchError)
+    expect(changed).toBe(1)
+
+    const [version, columns] = await db.batch(
+      'verify:partial-migration',
+      [
+        { sql: `SELECT value FROM meta WHERE key = 'schema_version'`, args: [] },
+        { sql: `PRAGMA table_info(runs)`, args: [] },
+      ],
+      'read',
+    )
+    expect(version?.rows[0]?.value).toBe(String(CURRENT_SCHEMA_VERSION - 1))
+    expect(columns?.rows.some((row) => row.name === 'fence_stamp')).toBe(true)
   })
 
   it('fails when the recorded version is not an integer', async () => {

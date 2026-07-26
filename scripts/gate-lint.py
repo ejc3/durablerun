@@ -41,27 +41,32 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Optional [root] [base]: grade a tree other than this script's own and assert
-# that its gate is a superset of base. `--run-base HEAD BASE` is the execution
-# door used by CI: stage HEAD with BASE's scripts and run BASE's semantically
-# enumerated checker commands there.
+# Three modes: grade [ROOT [BASE]], enumerate `--list-checkers ROOT`, or use
+# `--run-base HEAD BASE` to stage HEAD with BASE's scripts and execute BASE's
+# semantically enumerated checker commands there.
 OWN = Path(__file__).resolve().parent.parent
-RUN_BASE = sys.argv[1:2] == ["--run-base"]
-LIST_CHECKERS = sys.argv[1:2] == ["--list-checkers"]
+CLI_USAGE = "usage: gate-lint.py [ROOT [BASE]]"
+ARGS = sys.argv[1:]
+RUN_BASE = ARGS[:1] == ["--run-base"]
+LIST_CHECKERS = ARGS[:1] == ["--list-checkers"]
 if RUN_BASE:
-    if len(sys.argv) != 4:
+    if len(ARGS) != 3:
         sys.exit("usage: gate-lint.py --run-base HEAD BASE")
-    ROOT = Path(sys.argv[2]).resolve()
-    BASE = Path(sys.argv[3]).resolve()
+    ROOT = Path(ARGS[1]).resolve()
+    BASE = Path(ARGS[2]).resolve()
 elif LIST_CHECKERS:
-    if len(sys.argv) != 3:
+    if len(ARGS) != 2:
         sys.exit("usage: gate-lint.py --list-checkers ROOT")
-    ROOT = Path(sys.argv[2]).resolve()
+    ROOT = Path(ARGS[1]).resolve()
     BASE = None
 else:
-    _args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    ROOT = Path(_args[0]).resolve() if _args else OWN
-    BASE = Path(_args[1]).resolve() if len(_args) > 1 else None
+    unknown = next((arg for arg in ARGS if arg.startswith("-")), None)
+    if unknown is not None:
+        sys.exit(f"gate-lint.py: unknown option {unknown!r}\n{CLI_USAGE}")
+    if len(ARGS) > 2:
+        sys.exit(CLI_USAGE)
+    ROOT = Path(ARGS[0]).resolve() if ARGS else OWN
+    BASE = Path(ARGS[1]).resolve() if len(ARGS) == 2 else None
 
 # Executables under scripts/ that the gate deliberately does NOT run, each with
 # the reason. Adding a line here is the honest way to keep something out of the
@@ -76,7 +81,7 @@ NOT_IN_GATE = {
     "confine.sh": "a cgroup wrapper other commands run under, not a check",
     "tla.sh": "TLC model checking — its own CI job and `pnpm verify:tla`, far too slow for every commit",
     "review-attest.sh": "runs at PR time against a pull request, not against a working tree",
-    "session-state.sh": "reports what is still running; an operator tool with nothing to assert",
+    "session-state.sh": "reads live session/process state rather than grading a working tree",
     "source_lex.py": "shared lexical and root-validation library imported by source checkers",
 }
 
@@ -365,6 +370,60 @@ def has_base_runner(ci: Path) -> tuple[bool, list[str]]:
     return any(body.strip() == BASE_RUNNER_BODY for body in blocks), errors
 
 
+def nightly_workflow_problems(path: Path) -> list[str]:
+    """Refuse write-capable credentials in the long-running nightly jobs."""
+    if not path.exists():
+        return []
+    lines = path.read_text().splitlines()
+    problems: list[str] = []
+
+    permission_blocks = [
+        index for index, line in enumerate(lines) if re.fullmatch(r"permissions:\s*", line)
+    ]
+    permissions: list[str] = []
+    if len(permission_blocks) == 1:
+        for line in lines[permission_blocks[0] + 1 :]:
+            if line and not line.startswith(" "):
+                break
+            if line.strip():
+                permissions.append(line.strip())
+    if len(permission_blocks) != 1:
+        problems.append(
+            "nightly workflow must have exactly one top-level permissions block."
+        )
+    elif permissions != ["contents: read"]:
+        problems.append(
+            "nightly workflow permissions must be exactly `contents: read`."
+        )
+
+    checkouts = [
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^\s+- uses: actions/checkout@", line)
+    ]
+    if not checkouts:
+        problems.append("nightly workflow has no actions/checkout step.")
+    for index in checkouts:
+        indent = len(lines[index]) - len(lines[index].lstrip())
+        block: list[str] = []
+        for line in lines[index + 1 :]:
+            line_indent = len(line) - len(line.lstrip())
+            if line.strip() and line_indent == indent and line.lstrip().startswith("- "):
+                break
+            if line.strip() and line_indent < indent:
+                break
+            block.append(line)
+        if not any(
+            re.fullmatch(r"\s*persist-credentials:\s*false\s*", line)
+            for line in block
+        ):
+            problems.append(
+                "nightly checkout must disable persisted credentials with "
+                "`persist-credentials: false`."
+            )
+    return problems
+
+
 def run_base_checkers(head: Path, base: Path) -> int:
     """Run BASE's checker commands with BASE scripts resolving inside HEAD."""
     _found, order, invocations, errors = gate_checkers(base)
@@ -564,6 +623,9 @@ def main() -> int:
             "`python3 scripts/gate-lint.py --run-base HEAD BASE`. Without that "
             "execution, the whole gate is evaluated from the branch under review."
         )
+    problems.extend(
+        nightly_workflow_problems(ROOT / ".github" / "workflows" / "nightly.yml")
+    )
 
     # 6. Run from the base branch against a pull request: the gate may grow,
     #    never shrink. This is the one rule the branch under review cannot edit

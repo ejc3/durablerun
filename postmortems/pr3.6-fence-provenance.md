@@ -497,12 +497,6 @@ Still true:
   movement now exists, and it is not "review more carefully". It is: mutate
   every mechanism the day it is written, because both of round 6's catches
   were mechanisms that had a hole from birth.
-- **Nothing checks a mechanism's own mutations for arity.** The audit found
-  one mutation that could only ever be caught by the compiler, so it certified
-  a guard it never reached. It was found by accident. A probe that ran each
-  mutation and asserted the FAILING TEST NAMES differ from the compile-error
-  ones would close this; it is not written.
-
 The honest summary of the round is that the mechanism audit was worth more
 than any individual fix in it. It is the section that turned "we added
 mechanisms" into "four of them have a demonstrated false negative, here is

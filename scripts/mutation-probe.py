@@ -40,6 +40,7 @@ class ExpectedVerdict:
     file: str
     full_name: str
     marker: str
+    marker_file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -586,9 +587,10 @@ VERDICTS = {
     ),
     "emit-wake-one-witness": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/wake-witness-surface.test.ts",
-        "a wake needs ONE row that justifies it decides every park against every PAIR of corruptions",
+        "packages/conformance/test/libsql.test.ts",
+        "wake witness conformance [libsql] decides every park against every pair of corruptions",
         "mutation-verdict:behavior:emit-wake-one-witness",
+        "packages/conformance/src/suite.ts",
     ),
     "emit-replay-preserves-event-instant": ExpectedVerdict(
         "construction",
@@ -655,6 +657,7 @@ VERDICTS = {
         "packages/conformance/test/libsql.test.ts",
         "poison matrix [libsql] (write label x forbidden pre-state, generated) claim does not amplify cardinality/two-live-runs",
         "mutation-verdict:behavior:claim-requires-sole-live-run",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "claim-receipt-requires-sole-live-run": ExpectedVerdict(
         "behavior",
@@ -673,30 +676,35 @@ VERDICTS = {
         "packages/conformance/test/libsql.test.ts",
         "fault matrix [libsql] (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "sweep-lost-launch-generation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
         "fault matrix [libsql] (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "matrix-claim-timeout-edge-progress": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
         "fault matrix [libsql] (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "sweep-claim-timeout-generation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
         "fault matrix [libsql] (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "matrix-attempt-edge-progress": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
         "fault matrix [libsql] (label x fault x starting state, generated) fail survives duplicate from attempt-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "provenance-sweep-progress": ExpectedVerdict(
         "behavior",
@@ -1279,11 +1287,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 failures.append(
                     f"{mutation.name}: mutation pattern occurs {occurrences} times; expected exactly one"
                 )
-            verdict_source = (ROOT / mutation.verdict.file).read_text()
+            marker_file = mutation.verdict.marker_file or mutation.verdict.file
+            verdict_source = (ROOT / marker_file).read_text()
             if mutation.verdict.marker not in verdict_source:
                 failures.append(
                     f"{mutation.name}: verdict marker {mutation.verdict.marker!r} is absent from "
-                    f"{mutation.verdict.file}"
+                    f"{marker_file}"
                 )
     for label, result, verdict, wanted in cases:
         got = classify_verdict(result, verdict, matcher, **options)

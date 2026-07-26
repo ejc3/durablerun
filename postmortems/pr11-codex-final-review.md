@@ -1,147 +1,183 @@
 # Postmortem: the codex final-head review of PR #11
 
-Before merging PR #11, a fresh codex review was run against the branch's
-FINAL head — not the head the original events review had seen, which had
-moved by five bug fixes, three prevention mechanisms, and a simplification
-pass. This was the honest merge gate: attesting the final head against a
-stale review is exactly the "attest falsely" the attestation mechanism
-exists to prevent. Codex returned DO NOT MERGE with eight findings. Six were
-confirmed as real correctness bugs and fixed; two were refuted (with cheap
-residual hardenings recorded). This is a review-caught SEV round.
+Before merging PR #11, a fresh codex review ran against the branch's actual
+final head, not the implementation head seen by the original events review.
+That tree had moved through five bug fixes, three prevention mechanisms, and a
+simplification pass. Codex returned **DO NOT MERGE** with eight reports: six
+confirmed correctness bugs and two refuted claims with real hardening
+residuals. Re-reviewing the repairs found two more bugs and one benign legacy
+claim; reviewing that repair found one fix-induced regression. This is a
+review-caught SEV round and evidence that a review of an earlier head cannot
+attest the code eventually merged.
 
 ## Severity
 
-Two of the six are HIGH: a task that awaits the same event name twice and
-times out deadlocks forever (finding 1), and a durable operation nested in a
-step silently corrupts replay keys (finding 4). The rest leave a durable
-engine in states its own invariants could not see — an orphan wait on a
-running run, a task mirrored to sleeping on the back of an unrelated run, and
-names that do not survive storage. None had shipped; the review caught them
-before merge, which is the process working. What the round proves is that
-running the review against the ACTUAL head — after the tree had moved — was
-load-bearing: the original review could not have found bugs in code written
-after it ran.
+The worst confirmed defect deadlocked a task that awaited the same event name
+twice and timed out. Another let a durable operation nested inside a step
+silently corrupt replay keys. Others left orphan waits on running runs,
+mirrored a task to sleeping based on an unrelated run, accepted names that did
+not round-trip through storage, and let corruption pass the engine's own
+invariants. The second and third passes then showed that repairs themselves
+could reintroduce orphan writes through two database-time reads and a
+pre-existing post-state.
+
+None shipped. The important machinery failure is that the original review was
+real and useful but stale: it could not find bugs in code written after it
+ran.
 
 ## Findings
 
-| # | Defect | Impact | Verdict | Layer that should have caught it | Why it could not | Mechanism |
-|---|--------|--------|---------|----------------------------------|------------------|-----------|
-| 1 | A carried wake is matched by event NAME, not the await's step key; two same-name awaits deadlock on timeout | Run never completes, burning a pass per timer fire | CONFIRMED (high) | The replay-equivalence harness | Its generated programs never awaited the same event name twice with a timeout; the deferred "wake_step binding" was the known gap | wake_step column binds a wake to its await; the SDK matches by step key. Generated event programs now include repeated same-name timed awaits |
-| 2 | awaitEvent's wait INSERT guards on `running` only; the park on the stricter `eligibleTask` — an orphan waiting row is left | Task/run coherence violation; a later emit mutates the task inconsistently | CONFIRMED (medium) | The wait invariants | No checker flagged a waiting row on a non-sleeping run | INSERT now carries the same eligibleTask guard; wait-on-non-sleeping-run invariant added |
-| 3 | The task-mirror only checks the given run is sleeping, not that it belongs to the caller task | A mismatched call flips the caller task to sleeping on an unrelated run | CONFIRMED (medium) | The wait invariants | No checker tied a parked run's wake to its wait | Mirror fenced to the run AND task; wait-wake-name-mismatch invariant added |
-| 4 | A durable op (await/sleep) inside a ctx.step corrupts repeat counters on replay | Wrong wake consumed; nondeterministic replay | CONFIRMED (high) | The step reentrancy guard | inStep blocked only nested step(), not await/sleep | One enterDurableOp gate rejects nesting ANY durable op in a step |
-| 5 | UserName accepts an embedded NUL (SQLite truncation) and a lone surrogate (U+FFFD collision) | A name's wake never matches, or two names cross-deliver | CONFIRMED (high) | UserName.parse (the single mint point) | It checked only '#'/'$' | parse now rejects NUL and any lone surrogate |
-| 6 | wait-for-fired-event is an incomplete twin of TLA WaitIntegrity | Findings 2/3's corruption returns zero invariant violations | CONFIRMED (medium) | The invariant library itself | One conjunct stood in for a multi-conjunct invariant | Added the missing conjuncts; made wake-payload-mismatch NULL-safe |
-| 7 | SQL NULL doubles as an emitted payload and the timeout sentinel | A NULL emit could false-time-out a waiter | REFUTED (low) | — | Unreachable through the typed `payloadJson: string` boundary; the collision needs a NULL payload the API cannot produce | NULL-safe invariant landed; a schema/emit-boundary guarantee recorded as a deferral |
-| 8 | A non-serializable handler result is misclassified as infrastructure | Would burn infra_retries forever | REFUTED (low) | — | FencedBatch.compile coerces undefined→null before the bind, so no StoreUnavailableError and no infra loop; the residual is a silent completion with NULL | Canonicalize-and-classify the result at the source, recorded as a deferral |
+| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
+|---|--------|--------|----------------------------------|------------------|-------------------------|
+| 1 | Confirmed: a carried wake matched the event name, not the await's step key; two same-name awaits deadlocked after timeout | A run never completes and burns a pass per timer fire | Replay-equivalence harness | Generated programs did not repeat the same event name with a timeout; structural wake-step binding was a known deferral | `wake_step` binds delivery to one await, and generated programs repeat same-name timed awaits (rungs 1 and 3) |
+| 2 | Confirmed: the wait insert guarded only `running`, while the park used stricter task eligibility | A refused park leaves an orphan waiting row and later emit mutates inconsistent state | Wait invariants and await-event conformance | No invariant rejected a waiting row on a non-sleeping run, and the two statements duplicated their eligibility decision | Give registration and park one winning-state derivation; add wait-on-non-sleeping-run coverage (rungs 1 and 3) |
+| 3 | Confirmed: the task mirror checked that the supplied run was sleeping but not that it belonged to the supplied task | A mismatched call flips a caller task to sleeping on an unrelated run | Wait referential invariants | Existing checks did not bind the parked run, wait, and task as one witness | Fence the mirror to run and task; add wait/wake identity invariants (rungs 1 and 3) |
+| 4 | Confirmed: await or sleep inside `ctx.step` changed replay counters instead of failing | Durable replay keys diverge between first execution and replay | Step reentrancy guard | `inStep` rejected only nested `step()`, so every other durable method could bypass it | One `enterDurableOp` chokepoint rejects every replay-key-bearing durable operation inside a step (rung 1) |
+| 5 | Confirmed: `UserName` accepted embedded NUL and lone UTF-16 surrogates | A stored name fails to match its wake, or two inputs collapse to one storage value | `UserName.parse`, the single mint point | It checked only replay-key separators, not storage round-trip | Reject NUL and lone surrogates at the mint point (rung 1) |
+| 6 | Confirmed: `wait-for-fired-event` represented only one conjunct of TLA `WaitIntegrity` | Findings 2 and 3's corrupt states produced no invariant violation | Invariant library and guard-twin mapping | One named check stood in for a multi-conjunct model invariant | Add the missing wait-integrity conjuncts and make payload comparison NULL-safe (rung 3) |
+| 7 | Refuted: SQL NULL appeared to be both emitted payload and timeout sentinel | The report predicted a NULL emit could false-time-out a waiter | Typed emit boundary | The public `payloadJson: string` boundary made the reported NULL payload unreachable, but the database had no structural non-NULL guarantee | Record and later add a schema/emit-boundary non-NULL guarantee; NULL-safe invariant hardening landed (deferred rung 1) |
+| 8 | Refuted as reported: a non-serializable result appeared to become an infrastructure retry loop | The report predicted all infrastructure retries would be consumed | Batch compiler and worker error classifier | `FencedBatch.compile` coerced `undefined` to NULL before binding, so the reported store error did not occur; the real residual was silent completion with NULL | Canonicalize and classify handler results at the source (deferred rung 1) |
+| 9 | Confirmed on fixed-head re-review: wait insert and park evaluated cancellation eligibility against separate database times | A deadline between the reads registers an orphan wait that the park refuses | The first repair for finding 2 and clock-aware conformance | Sharing predicate text was mistaken for sharing one decision; fake-now made the reads identical | Evaluate eligibility once and derive the second statement from the winner's post-state (rung 1 for the resulting shape) |
+| 10 | Confirmed on fixed-head re-review: wait timeout and run availability each computed `NOW + timeout` | The run can wake after the wait's own registered deadline | Wait-integrity invariant and production-clock testing | Fake-now hid per-statement drift, and no invariant compared the two stored deadlines | Copy one stored deadline across statements; add wait-timeout-availability-mismatch (rungs 1 and 3) |
+| 11 | Refuted as reachable: pre-v3 wake decode fabricated a step from event name when `wake_step` was NULL | A hypothetical legacy row would not match the SDK's prefixed replay key | Schema migration and decode boundary | Events and `wake_step` were believed to arrive together, so the branch was considered unreachable; the fallback nevertheless encoded a misleading second representation | Decode a wake only when both event and step are present; legacy behavior remained an explicit compatibility boundary (rung 1 for current rows) |
+| 12 | Confirmed on the reorder's re-review: the reordered wait insert keyed on `wake_step` and sleeping state that could pre-exist | A stale call recreates a wait even though its own park lost | Post-transition fencing rule and duplicate-call conformance | A replay key was treated as batch authorship; a preserve-rescheduled run could already carry that state | Register under the live claim token and derive the park from that registration; use invocation provenance rather than replay identity (rung 1 for the repaired transition) |
+
+## Detection ledger
+
+| Detector | Findings | Ours? |
+|----------|----------|-------|
+| Codex final-head review | 8 | no |
+| Codex re-review of the repaired head | 3 | no |
+| Codex re-review of the await-event reorder | 1 | no |
+| Existing tests, TLC, fuzz, invariants, and lints before each report | 0 | yes |
+
+Self-catch rate: **0 of 12 review reports, or 0%** (and **0 of 9 confirmed
+defects**). The preceding events review was also **0%**, so detector
+independence did not improve between rounds.
+
+The red commits created after each report demonstrate the failures; they do
+not change who found them. Findings 7, 8, and 11 remain in the denominator
+because the review emitted them and this document records their
+disconfirmation instead of silently deleting it.
+
+## Recurrence
+
+The wake-identity class recurred immediately. The events round had added
+generated event programs, but structural binding of a wake to an await was
+deferred. Finding 1 landed exactly in that gap: generation was a detector
+proxy for a representation that still carried too little identity.
+
+Findings 2, 3, and 6 recurred after wait invariants were instituted. The
+mechanism checked selected quiescent conjuncts, not the complete TLA
+`WaitIntegrity` property. Finding 4 repeated the method-local-guard class:
+`step()` knew it could not nest itself, but the shared property “no
+replay-key-bearing operation inside a step” still had no chokepoint.
+
+Findings 9 and 12 are the most important recurrence. The repair for finding 2
+copied the eligibility predicate into both statements instead of giving the
+decision one owner; finding 9 was the resulting two-clock defect. The repair
+for findings 9 and 10 then keyed a follow-on on sleeping state plus
+`wake_step`, a post-state that could pre-exist; finding 12 was introduced by
+that repair. Predicate equality and post-state resemblance were proxies for
+one decision and one invocation's authorship.
+
+## Mechanism audit — the false negative of each
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Generated repeated-event replay programs | 3 | A generator can emit every declared op kind yet omit the exact adjacency `await("go", timeout)`, timer wake, `await("go", timeout)`; the enrollment tests still pass because they count kinds and methods, not every sequence |
+| `wake_step` binding | 1 for current-schema rows | `UPDATE runs SET wake_step = NULL WHERE run_id = ?` followed by an emit creates the historical compatibility case: strict step correlation cannot identify the registration. The current-row constructor is closed, but raw legacy/corrupt rows remain outside it |
+| `enterDurableOp` | 1 within `TaskContext` | A new replay-key-bearing context method that fails to call `enterDurableOp`, or a direct store operation below `TaskContext`, is outside the chokepoint. The context-method coverage inventory is the build-time companion, not part of the type itself |
+| `UserName.parse` round-trip rejection | 1 within ordinary construction | `raw as unknown as UserName` bypasses runtime parsing through TypeScript's explicit assertion escape hatch. Direct raw SQL can also write text the API refuses |
+| Wait-integrity invariants | 3 | An atomic batch that inserts an orphan wait and deletes it before the invariant snapshot leaves no quiescent violation. The state checker cannot prove a losing statement wrote transiently |
+| One eligibility and deadline derived from post-state | Claimed 1, hand-written in this round | Finding 12 is the executed false negative: `WHERE run_id = ? AND wake_step = ? AND state = 'sleeping'` accepted state left by an earlier preserve reschedule. The second statement derived from post-state, but not state authored by this invocation |
+| Live claim token as invocation fence | 1 while token ownership is intact | Raw corrupt state can assign the caller's token to a foreign row, and a duplicated token source can make two invocations indistinguishable. The transition assumes token uniqueness and the storage authority that establishes it |
+| Typed non-NULL payload boundary | 1 only at the API | `INSERT INTO events (..., payload) VALUES (..., NULL)` through fixture or migration SQL bypasses the string type; no schema constraint in this round rejected it |
+| Final-head review attestation | Not built in this round | A completed review log from head `H` still attests head `H+1`; `review-attest.sh` did not bind transient artifacts to the commit. This is the exact residual the round recorded |
+
+## Fix-induced defects
+
+**Two confirmed defects were introduced by repairs in this same sequence.**
+Finding 9's duplicate eligibility read was introduced when the first repair
+for finding 2 added `eligibleTask` to the wait insert while the park continued
+to evaluate it independently. Finding 12 was introduced by the repair for
+findings 9 and 10, which reordered the batch and treated an existing
+`wake_step` post-state as proof that this invocation won.
+
+Finding 10's two timeout calculations predated those repairs, and finding 11
+was refuted as reachable, so neither is counted as fix-induced. The fixes were
+re-reviewed as new code, not merely re-tested: that fresh review is exactly
+how findings 9 and 12 were found.
 
 ## Evidence
 
-- Reviewed head: pr3.1 at `f324f99`. Codex verdict verbatim:
-  **"Verdict: DO NOT MERGE."** with the eight findings above.
-- Each finding was independently re-verified by an eight-way adversarial
-  tracer pass against the actual committed code: six CONFIRMED with concrete
-  reproductions, two REFUTED with the exact reason (FencedBatch's
-  undefined→null coercion for finding 8; the typed string boundary for
-  finding 7).
-- Fixes, each red then green:
-  - Finding 1: `babc521` (red) → `83a9e23` (green).
-  - Findings 2/3: `b442b34` (red) → `59d5ca0` (green).
-  - Finding 4: `9c80840` (red) → `7d8d16a` (green).
-  - Finding 5: `4382a48` (red) → `1bc1847` (green).
-  - Finding 6: `7e39e32` (red) → `3feb96d` (green).
-- Gate after fixes: full `pnpm verify` green (319 tests, all lints), plus a
-  deep fuzz over the changed store.
+- Reviewed head: `f324f99`. Codex verdict: **“Verdict: DO NOT MERGE.”**
+- First-pass reproductions and fixes:
+  - Finding 1: red `babc521`, green `83a9e23`.
+  - Findings 2 and 3: red `b442b34`, green `59d5ca0`.
+  - Finding 4: red `9c80840`, green `7d8d16a`.
+  - Finding 5: red `4382a48`, green `1bc1847`.
+  - Finding 6: red `7e39e32`, green `3feb96d`.
+- The first repair gate was recorded as `pnpm verify` green with 319 tests,
+  followed by a deep fuzz over the changed store.
+- Findings 9 and 10: red `ed28b2b`, green `534f1f6`; recorded gate:
+  `pnpm verify` green with 320 tests and a 2,000-seed fuzz green.
+- Finding 12: red `a8875db`, green `348c374`; recorded gate:
+  `pnpm verify` green with 321 tests, a 2,000-seed fuzz green, and TLA
+  re-proving the protocol.
+- Findings 7 and 8 did not reproduce as reported. The string payload boundary
+  made SQL NULL unreachable through the public emit API, and compiler
+  `undefined`-to-NULL coercion prevented the predicted store outage. Both left
+  narrower hardening residuals, documented rather than counted as confirmed
+  bugs.
+- Finding 11 was benign under the then-current schema history: the SDK prefix
+  could not match the fabricated bare event step, and the row shape was
+  believed unreachable. Decode was tightened anyway so current rows have one
+  representation.
 
 ## Root cause
 
-The common thread is that the wake carried too little identity. A delivered
-wake named only its event, so nothing downstream — not the SDK's matching,
-not the invariants — could tell which await a wake belonged to (findings 1,
-2, 3, 6 are all facets of under-identified wait/wake state). Binding the wake
-to its await (`wake_step`) and completing the WaitIntegrity twin closes that
-class. The remaining two (durable-op-in-step, name round-trip) are boundary
-guards that were scoped too narrowly — one method's reentrancy check, one
-charset check — and are now single chokepoints.
+Four initial findings shared under-identified wait state: a delivered wake
+named its event but not its await, so neither the SDK nor invariants could
+prove which operation owned it. The other initial findings were boundary
+guards scoped to one method or one example.
 
-The process lesson: the review must run against the head being merged. The
-original events review was real and found real bugs, but the head kept
-moving after it; only a review of `f324f99` itself could find bugs in the
-code added since. The attestation script already claimed (in its header)
-that artifacts must be newer than the last commit; this round is why that
-claim must be enforced, not just stated.
+The follow-up failures expose the broader common cause. Multi-statement SQL
+duplicated an eligibility decision and database-time calculation, then the
+repair relied on a post-state that looked right without proving which
+invocation wrote it. The model represented one atomic action, while the SQL
+implementation had no structural primitive forcing one time and one
+provenance source. Review freshness was the process analogue: a log looked
+like valid evidence without proving which head produced it.
 
 ## Mechanisms
 
-Built in this PR (see the commits above): the wake_step binding, the
-enterDurableOp gate, the UserName round-trip rejection, and three new/upgraded
-WaitIntegrity invariant conjuncts.
+Built in PR #11:
 
-## Second round: re-reviewing the fixed head
+- `wake_step` delivery identity and generated repeated-await programs (rungs 1
+  and 3).
+- One `enterDurableOp` gate for replay-key-bearing context operations (rung 1).
+- NUL and lone-surrogate rejection at `UserName`'s single mint point (rung 1).
+- Complete wait-integrity conjuncts, including wait/run state, wake identity,
+  timeout equality, and NULL-safe payload checks (rung 3).
+- One eligibility decision and one stored timeout copied through the
+  await-event transition, ultimately fenced by the live claim token (rung 1
+  for that hand-written batch).
 
-Per the freshness principle this round established, the fixed head was
-re-reviewed by codex before attesting. It confirmed all six fixes sound and
-found three more, sharing one root cause: `awaitEvent`'s wait INSERT and its
-park each read database time (`NOW`) independently, so under real time (not
-the tests' fake-now) the two disagree by ~1ms of clock drift.
+Deferred (recorded in `BUILD.md`):
 
-- **A** (real): the eligibility decision — the cancellation deadline inside
-  `eligibleTask` is database time — was evaluated in both the INSERT and the
-  park, so a deadline landing between the two reads registered a wait the
-  park then refused (the orphan-on-a-running-run again, now via drift not
-  guard asymmetry).
-- **B** (real): `timeout_at_ms` (wait) and `available_at_ms` (run) were both
-  `NOW + timeout` computed separately, so they could differ by 1ms —
-  scheduling the timeout after its own registered deadline.
-- **C** (benign, unreachable): the pre-v3 wake decode fell back to the bare
-  event name for a NULL `wake_step`, which the SDK's `$await:`-prefixed keys
-  never match. No such row can exist (events were introduced with
-  `wake_step`), but the fallback was misleading.
+- Bind review artifacts to the exact PR head.
+- Make event payload non-NULL structurally at the schema/emit boundary.
+- Canonicalize and classify handler results at their source, rejecting
+  non-serializable values as permanent user failures.
 
-Fix: reorder the `awaitEvent` batch so the park runs FIRST and the wait
-derives entirely from its post-state — the wait fires iff the park set this
-run sleeping under this `wake_step`, and its `timeout_at_ms` **is** the run's
-`available_at_ms` (read from the just-parked row, not recomputed). One `NOW`,
-one eligibility decision; A and B become structurally impossible. Added the
-`wait-timeout-availability-mismatch` invariant (the WaitIntegrity conjunct
-that catches the class), and tightened the decode to require `wake_step`
-alongside `wake_event` (C). Landed `ed28b2b` (red) → `534f1f6` (green); full
-verify (320 tests) and a 2000-seed fuzz green.
+## What this round still would not catch
 
-The deeper lesson, now explicit: a multi-statement batch must not compute the
-same quantity — or an eligibility decision — from `NOW` in two places;
-derive the second from the first statement's committed post-state. This is
-the §3.4-rule-1 "fence on the post-state" pattern applied to time itself.
-
-Deferred (recorded in BUILD.md):
-
-- Enforce attestation-artifact freshness in review-attest.sh: refuse a codex
-  log or workflow journal older than the branch head, so the review always
-  matches the merged code (the header already promises this; the code does
-  not check it).
-- Finding 7 hardening: a schema/emit-boundary guarantee that an event payload
-  is never SQL NULL, lifting the timeout sentinel from a type-only guarantee
-  to a structural one.
-- Finding 8 hardening: canonicalize the handler result at the source and
-  classify a non-serializable result as a permanent user failure, rather than
-  completing silently with NULL.
-
-## Third round: the reorder's own regression
-
-The re-review's `awaitEvent` reorder was itself re-reviewed and found to have
-introduced one bug: its wait INSERT keyed on `wake_step + state='sleeping'`,
-a replay key rather than a batch-unique stamp. A run left sleeping by a
-preserve reschedule carries its `wake_step` but no wait; a stale `awaitEvent`
-with a consumed token re-matched that pre-existing post-state and recreated
-the wait, even though its own park matched zero rows — a §3.4-rule-1
-violation (a losing batch still wrote). Fixed by restoring the wait INSERT as
-the FIRST statement, fenced on the LIVE claim token (unique to this
-invocation), with the park deriving from it (fires only if the wait was just
-registered; `available_at_ms` copies the wait's `timeout_at_ms`). This keeps
-round 2's no-drift property and closes the stale-write: the batch-unique
-fence is the claim token, never the replay key. Landed red→green; verify
-(321 tests) and a 2000-seed fuzz green. TLA re-proved the protocol.
-
-Convergence: rounds found 8, then 3, then 1 — each against the head being
-merged. The lesson holds: review the code you are about to ship, and treat a
-fix as new code that itself needs review.
+The generated program surface can omit an interaction while covering every
+method. Quiescent invariants cannot see transient writes. Raw fixture or
+migration SQL can construct rows that typed SDK boundaries forbid. A
+hand-written batch can derive from a post-state without proving that its own
+compare-and-set authored that state; finding 12 demonstrated that boundary
+inside this round. Finally, a review log was still not cryptographically or
+structurally bound to the branch head, so one more commit after review could
+again make the attestation stale.

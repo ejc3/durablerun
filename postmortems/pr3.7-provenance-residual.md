@@ -583,14 +583,14 @@ Built in this PR:
   sleeping claim legs, with a shared bounded-progress conformance regression
   and libSQL recorded shipped-CAS plan assertions (rung 1 for the single
   representation; rung 2 for placement, behavior, and plan).
-- Thirty-five exact mutation verdicts parsed from structured Vitest output, a
+- Thirty-seven exact mutation verdicts parsed from structured Vitest output, a
   seventeen-case classifier, typed nine-counter/file/assertion consistency
   checks, seven injected false-positive faults, separate classifier/live-inventory
   modes, internally confined baseline/mutant suites, exact-call construction
   wrappers, one marked emit-plan vector, a split A/B event witness, and explicit
   require/attribute promise helpers. Only an exact first-line diagnostic—not a
-  substring, stack, or source frame—can answer. The full clean-tree audit is 35
-  of 35 attributable (rung 2).
+  substring, stack, or source frame—can answer. The full clean-tree audit is 37
+  of 37 attributable (rung 2).
 - One portable invariant evaluator with 50 typed condition IDs under 23 display
   names, structured finding identities, exact safe-number/bigint comparison,
   and fail-closed five-result projection shape (rungs 1 and 3).

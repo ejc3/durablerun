@@ -110,11 +110,7 @@ OPAQUE_STATEMENT_LISTS = {
     ),
 }
 
-# Every protocol transition now goes through FencedBatch, so this set is
-# empty and stays empty: there is no longer a place to record new debt.
-FENCED_DEBT: set[str] = set()
-
-CLASSIFIED = READS | SINGLE_WRITES | set(TOKEN_FENCED) | FENCED_DEBT | DYNAMIC_LABELS
+CLASSIFIED = READS | SINGLE_WRITES | set(TOKEN_FENCED) | DYNAMIC_LABELS
 
 CALL = re.compile(r"\bthis\s*\.\s*db\s*\.\s*batch\s*\(")
 STATIC_LABEL = re.compile(r"\s*'([a-zA-Z0-9:_-]+)'\s*")

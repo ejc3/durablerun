@@ -129,7 +129,7 @@ describe('a replay after the world moved on', () => {
 
     await attributeExpectedFailure(
       'mutation-verdict:behavior:successor-ownership',
-      /UNIQUE constraint failed: (?:runs\.run_id|runs\.task_id, runs\.attempt)/,
+      /UNIQUE constraint failed: runs\.run_id/,
       () => rec.replay('fail'),
     )
 
@@ -765,7 +765,7 @@ describe('a successor id that collides with a historical run of the same task', 
 
     await requireExpectedFailure(
       'mutation-verdict:behavior:successor-attempt-identity',
-      /UNIQUE constraint failed: (?:runs\.run_id|runs\.task_id, runs\.attempt)/,
+      /UNIQUE constraint failed: runs\.run_id/,
       () =>
         colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
           delaySeconds: 0,
@@ -785,7 +785,7 @@ describe('a successor id that collides with a historical run of the same task', 
     const colliding = collidingStore(f.raw, historical.runId)
     await f.admin.setFakeNowEpochMs(NOW + 100_000)
 
-    await expect(colliding.sweep(Q, 10)).rejects.toThrow()
+    await expect(colliding.sweep(Q, 10)).rejects.toThrow(/UNIQUE constraint failed: runs\.run_id/)
 
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
     expect(task?.state).toBe('running')

@@ -59,6 +59,13 @@ FORBIDDEN_PROVENANCE = (
     "Both read config from the DEFAULT BRANCH",
     "reads `.coderabbit.yaml` from the default branch",
 )
+LINE_CITATION = re.compile(
+    r"(?P<path>(?:[\w.@-]+/)*[\w.@-]+\."
+    r"(?:json|md|py|sh|tla|ts|tsx|yaml|yml)):"
+    r"(?P<line>[0-9]+)(?:-[0-9]+)?"
+)
+LITERAL_STORE_SCOPE = re.compile(r"^packages/store-(?!\*)[^/]+/")
+DIALECT_SCOPE_EXEMPTION = "<!-- review-bot-dialect-scope-exemption:"
 
 # Sections every rule must carry. The Allowed list is not optional and not a
 # formality: a rule that flags correct code gets switched off, and a switched-
@@ -120,6 +127,29 @@ def red_pair_policy(text: str, synopsis: str, rel: str) -> list[str]:
     allowed = text.split("Allowed cases", 1)[1] if "Allowed cases" in text else ""
     if re.search(r"(?im)^\s*-\s+.*combined commit", allowed):
         problems.append(f"{rel}'s Allowed cases section permits a combined repair commit.")
+    return problems
+
+
+def citation_problems(text: str, rel: str) -> list[str]:
+    """Reject line-number citations, whose target silently changes by insertion."""
+    problems: list[str] = []
+    for match in LINE_CITATION.finditer(text):
+        citation = match.group(0)
+        path = match.group("path")
+        line = int(match.group("line"))
+        target = ROOT / path
+        if "/" in path and target.is_file():
+            line_count = len(target.read_text().splitlines())
+            if line > line_count:
+                problems.append(
+                    f"{rel} references {citation}, but that file has only "
+                    f"{line_count} line{'s' if line_count != 1 else ''}."
+                )
+                continue
+        problems.append(
+            f"{rel} uses unstable line citation {citation!r}; cite the file and "
+            "symbol or heading instead."
+        )
     return problems
 
 
@@ -398,9 +428,10 @@ def main() -> int:
             )
         synopsis, synopsis_problems = rule_synopsis(body, rel)
         problems.extend(synopsis_problems)
-        if synopsis:
+        if synopsis and not synopsis_problems:
             synopses[p.stem] = synopsis
             problems.extend(red_pair_policy(body, synopsis, rel))
+        problems.extend(citation_problems(body, rel))
         scope_body, scope_problems = marked_body(body, SCOPE_START, SCOPE_END, rel)
         problems.extend(scope_problems)
         if scope_body:
@@ -411,6 +442,17 @@ def main() -> int:
                 problems.append(f"{rel} repeats a canonical review scope.")
             else:
                 rule_scopes[p.stem] = scopes
+                if (
+                    any(LITERAL_STORE_SCOPE.match(scope) for scope in scopes)
+                    and DIALECT_SCOPE_EXEMPTION not in body
+                ):
+                    literal = next(
+                        scope for scope in scopes if LITERAL_STORE_SCOPE.match(scope)
+                    )
+                    problems.append(
+                        f"{rel} uses literal dialect scope {literal!r}; use a "
+                        "packages/store-* scope or declare why the rule is dialect-local."
+                    )
 
     readme = RULES_DIR / "README.md"
     readme_text = readme.read_text() if readme.exists() else ""
@@ -602,19 +644,27 @@ def main() -> int:
                 f'to defaults and every rule here is silently unused.'
             )
 
-    # 6. The README is the human index; drift there is how a rule becomes
-    #    invisible to the person deciding whether one already covers a class.
-    if not readme.exists():
-        problems.append(f"{readme.relative_to(ROOT)} is missing, so the corpus has no human index.")
-    else:
-        text = readme_text
+    # 6. Both human indexes describe the same corpus. Drift in either is how a
+    #    rule becomes invisible to the person deciding whether one covers a class.
+    for index, text in (
+        (readme, readme_text),
+        (
+            GREPTILE_RULES,
+            GREPTILE_RULES.read_text() if GREPTILE_RULES.exists() else "",
+        ),
+    ):
+        if not index.exists():
+            problems.append(
+                f"{index.relative_to(ROOT)} is missing, so the corpus has no index there."
+            )
+            continue
         for p in files:
             if p.name not in text:
-                problems.append(f"{p.name} is not listed in {readme.relative_to(ROOT)}.")
+                problems.append(f"{p.name} is not listed in {index.relative_to(ROOT)}.")
         for named in re.findall(r"`([\w.-]+\.md)`", text):
             if named != "README.md" and named[:-3] not in stems:
                 problems.append(
-                    f"{readme.relative_to(ROOT)} lists {named}, which no longer exists."
+                    f"{index.relative_to(ROOT)} lists {named}, which no longer exists."
                 )
 
     # 7. Configuration provenance is a service fact, not an instruction a
@@ -622,7 +672,6 @@ def main() -> int:
     #    the human index and every bot-facing copy so this repository never
     #    again describes head-owned review rules as base-owned enforcement.
     if readme.exists():
-        readme_text = readme.read_text()
         for marker in PROVENANCE_MARKERS:
             if marker not in readme_text:
                 problems.append(
@@ -653,9 +702,8 @@ def main() -> int:
                 )
 
     if readme.exists():
-        body = readme.read_text()
         for false_claim in FORBIDDEN_PROVENANCE:
-            if false_claim in body:
+            if false_claim in readme_text:
                 problems.append(
                     f"{readme.relative_to(ROOT)} repeats the false provenance claim "
                     f"{false_claim!r}."
