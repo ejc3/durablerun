@@ -368,9 +368,20 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
             errors.append(f".coderabbit.yaml line {start + 1} has an invalid check name: {exc}.")
             continue
 
-        for line in lines[start + 1 : end]:
+        for line_number, line in enumerate(lines[start + 1 : end], start + 2):
+            if (
+                not significant_yaml_line(line)
+                or len(line) - len(line.lstrip()) != 8
+            ):
+                continue
             field = re.fullmatch(r"        ([A-Za-z][A-Za-z0-9_-]*):.*", line)
-            if field and field.group(1) not in {"mode", "instructions"}:
+            if not field:
+                errors.append(
+                    f".coderabbit.yaml check {name!r} line {line_number} has "
+                    "unrecognized custom-check field syntax; use literal mode and "
+                    "instructions fields only."
+                )
+            elif field.group(1) not in {"mode", "instructions"}:
                 errors.append(
                     f".coderabbit.yaml check {name!r} has unsupported field "
                     f"{field.group(1)!r}; custom checks expose only name, mode, "
