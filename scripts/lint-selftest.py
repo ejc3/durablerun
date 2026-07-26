@@ -171,21 +171,32 @@ def hidden_process_contract(document: str, container: str) -> dict[str, str]:
     files = process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK)
     if document == "AGENTS.md":
         body = files[document]
-        files[document] = (
-            f"```md\n{body}```\n"
-            if container == "fence"
-            else f"<!--\n{body}-->\n"
-        )
+        wrappers = {
+            "fence": f"```md\n{body}```\n",
+            "invalid-fence-close": f"```md\n    ```\n{body}```\n",
+            "comment": f"<!--\n{body}-->\n",
+            "pre": f"<pre>\n{body}</pre>\n",
+            "div": f"<div>\n{body}</div>\n",
+        }
+        files[document] = wrappers[container]
         return files
 
     indented_block = "".join(
         f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines()
     )
-    hidden = (
-        f"    ```md\n{indented_block}    ```\n"
-        if container == "fence"
-        else f"    <!--\n{indented_block}    -->\n"
-    )
+    wrappers = {
+        "fence": f"    ```md\n{indented_block}    ```\n",
+        "invalid-fence-close": (
+            f"    ```md\n        ```\n{indented_block}    ```\n"
+        ),
+        "comment": f"    <!--\n{indented_block}    -->\n",
+        "indented-code": "".join(
+            f"        {line}\n" for line in TRANSPORT_BLOCK.splitlines()
+        ),
+        "pre": f"    <pre>\n{indented_block}    </pre>\n",
+        "div": f"    <div>\n{indented_block}    </div>\n",
+    }
+    hidden = wrappers[container]
     files[document] = files[document].replace(indented_block, hidden)
     return files
 
@@ -1016,6 +1027,48 @@ export class S {
         hidden_process_contract("BUILD.md", "comment"),
         "BUILD.md misclassifies malformed suite transport",
         "a transport block inside an HTML comment cannot own classification",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("AGENTS.md", "invalid-fence-close"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a four-space pseudo-close does not end a top-level Markdown fence",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("BUILD.md", "invalid-fence-close"),
+        "BUILD.md misclassifies malformed suite transport",
+        "a pseudo-close four spaces beyond its list container does not end a fence",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("BUILD.md", "indented-code"),
+        "BUILD.md misclassifies malformed suite transport",
+        "list-relative indented code is not an operative transport contract",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("AGENTS.md", "pre"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "Markdown inside a raw pre block is not an operative standing rule",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("BUILD.md", "pre"),
+        "BUILD.md misclassifies malformed suite transport",
+        "Markdown inside a raw pre block is not an operative transport contract",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("AGENTS.md", "div"),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "Markdown inside a generic raw HTML block is not an operative standing rule",
+    ),
+    (
+        "gate-lint.py",
+        hidden_process_contract("BUILD.md", "div"),
+        "BUILD.md misclassifies malformed suite transport",
+        "generic raw HTML cannot own the operative transport contract",
     ),
     (
         "gate-lint.py",
