@@ -368,16 +368,32 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
             errors.append(f".coderabbit.yaml line {start + 1} has an invalid check name: {exc}.")
             continue
 
-        for line_number, line in enumerate(lines[start + 1 : end], start + 2):
-            if (
-                not significant_yaml_line(line)
-                or len(line) - len(line.lstrip()) != 8
-            ):
+        instruction_headers = [
+            i
+            for i in range(start + 1, end)
+            if re.fullmatch(r"        instructions:\s*\|\s*", lines[i])
+        ]
+        instruction_body_start = (
+            instruction_headers[0] + 1 if len(instruction_headers) == 1 else end
+        )
+        for index in range(start + 1, end):
+            line = lines[index]
+            if not significant_yaml_line(line):
+                continue
+            indent = len(line) - len(line.lstrip())
+            if index >= instruction_body_start and indent >= 10:
+                continue
+            if indent != 8:
+                errors.append(
+                    f".coderabbit.yaml check {name!r} line {index + 1} has "
+                    f"unrecognized custom-check indentation ({indent}); fields use "
+                    "eight spaces and literal instruction bodies use at least ten."
+                )
                 continue
             field = re.fullmatch(r"        ([A-Za-z][A-Za-z0-9_-]*):.*", line)
             if not field:
                 errors.append(
-                    f".coderabbit.yaml check {name!r} line {line_number} has "
+                    f".coderabbit.yaml check {name!r} line {index + 1} has "
                     "unrecognized custom-check field syntax; use literal mode and "
                     "instructions fields only."
                 )
@@ -401,11 +417,6 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
                 errors.append(
                     f".coderabbit.yaml check {name!r} has an invalid mode scalar: {exc}."
                 )
-        instruction_headers = [
-            i
-            for i in range(start + 1, end)
-            if re.fullmatch(r"        instructions:\s*\|\s*", lines[i])
-        ]
         if len(modes) != 1:
             errors.append(
                 f".coderabbit.yaml check {name!r} has {len(modes)} mode fields; expected one."
