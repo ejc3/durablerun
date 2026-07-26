@@ -86,7 +86,7 @@ describe('a replay after the world moved on', () => {
     const step = '$await:go'
     await store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, step, 'go', null)
     await attributeExpectedFailure(
-      'mutation-verdict:construction:emit-replay-preserves-event-instant',
+      { kind: 'construction', mutation: 'emit-replay-preserves-event-instant' },
       /cas 'event' must preserve events\.emitted_at_ms while re-stamping/,
       () => store.emitEvent(Q, 'go', '{"x":1}'),
     )
@@ -128,7 +128,7 @@ describe('a replay after the world moved on', () => {
     expect(claimed?.runId).toBe(successorId)
 
     await attributeExpectedFailure(
-      'mutation-verdict:behavior:successor-ownership',
+      { kind: 'behavior', mutation: 'successor-ownership' },
       /UNIQUE constraint failed: runs\.task_id, runs\.attempt/,
       () => rec.replay('fail'),
     )
@@ -538,7 +538,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     ])
 
     await attributeExpectedFailure(
-      'mutation-verdict:construction:emit-cleanup-follows-the-wake',
+      { kind: 'construction', mutation: 'emit-cleanup-follows-the-wake' },
       /derived\('waits-gone'\).*reads 'runs'.*fence 'event' stamps 'events'/,
       () => f.store.emitEvent(Q, 'go', '{"x":1}'),
     )
@@ -764,7 +764,7 @@ describe('a successor id that collides with a historical run of the same task', 
     const colliding = collidingStore(f.raw, historical.runId)
 
     await requireExpectedFailure(
-      'mutation-verdict:behavior:successor-attempt-identity',
+      { kind: 'behavior', mutation: 'successor-attempt-identity' },
       /UNIQUE constraint failed: runs\.run_id/,
       () =>
         colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {

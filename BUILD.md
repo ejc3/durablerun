@@ -197,10 +197,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Structured Vitest output makes a green survivor, bind/compile error,
     different failing assertion, malformed report, suite error, or
     process/report disagreement a wrong-path result rather than credit. The
-    verifier runs a 17-case classifier self-test and eleven promise-message
-    source cases, with seven injected false-positive faults maintained by
-    `lint-selftest.py`; both baseline and per-mutation suites route themselves
-    through `scripts/confine.sh`.
+    verifier runs a 17-case classifier self-test, eleven promise-message source
+    cases, and six canonical helper-descriptor cases, with seven injected
+    false-positive faults maintained by `lint-selftest.py`; both baseline and
+    per-mutation suites route themselves through `scripts/confine.sh`.
     The first full clean-tree audit ran all 34 mutations: 28 were attributable
     and six were `wrong-path`. Those six exposed two construction failures
     mislabeled as behavior, a split plan verdict plus a mutation with semantic
@@ -214,12 +214,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     postcondition test outside the original helper's package still entrusted
     an inverse promise marker to Vitest. One `@durablerun/core/testing`
     definition now owns success-to-error, expected-error-to-success, and
-    expected-error-to-replacement-error verdicts. Through the canonical
-    TypeScript structural lexer, the verify gate rejects every custom-message
-    argument on exact Vitest `expect(...).rejects`/`.resolves` chains across
-    the repository. The mutation runner disables Python bytecode writes before
-    importing that shared lexer, and its executable self-test rejects any
-    import artifact that would make a clean audit refuse its own tree.
+    expected-error-to-replacement-error verdicts. Callers pass a structured
+    kind/name descriptor; the helper alone constructs the canonical marker and
+    rejects decorated names. Through the canonical TypeScript structural
+    lexer, the verify gate rejects every custom-message argument on exact
+    Vitest `expect(...).rejects`/`.resolves` chains across the repository. The
+    mutation runner disables Python bytecode writes before importing that
+    shared lexer, and its executable self-test rejects any import artifact that
+    would make a clean audit refuse its own tree.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 54 atomic witnesses covering all 57
     invariant condition IDs: 918 generated cells, plus two inventory cases.

@@ -12,13 +12,13 @@ const unrelated = new Error('unrelated')
 
 describe('mutation verdict promise helpers', () => {
   it('returns an operation that succeeds as expected', async () => {
-    await expect(attributeExpectedFailure(marker, /expected/, async () => 1)).resolves.toBe(1)
+    await expect(attributeExpectedFailure(verdict, /expected/, async () => 1)).resolves.toBe(1)
   })
 
   it('attributes only the named unexpected rejection', async () => {
     await expect(
       attributeExpectedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         async () => {
           throw expected
@@ -27,7 +27,7 @@ describe('mutation verdict promise helpers', () => {
     ).rejects.toThrow(marker)
     await expect(
       attributeExpectedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         async () => {
           throw unrelated
@@ -39,7 +39,7 @@ describe('mutation verdict promise helpers', () => {
   it('accepts the named healthy rejection', async () => {
     await expect(
       requireExpectedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         async () => {
           throw expected
@@ -49,15 +49,15 @@ describe('mutation verdict promise helpers', () => {
   })
 
   it('attributes an unexpected success directly', async () => {
-    await expect(requireExpectedFailure(marker, /expected/, async () => undefined)).rejects.toThrow(
-      marker,
-    )
+    await expect(
+      requireExpectedFailure(verdict, /expected/, async () => undefined),
+    ).rejects.toThrow(marker)
   })
 
   it('propagates an unrelated rejection unchanged', async () => {
     await expect(
       requireExpectedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         async () => {
           throw unrelated
@@ -70,7 +70,7 @@ describe('mutation verdict promise helpers', () => {
     const reusable = /expected/g
     for (let run = 0; run < 2; run += 1) {
       await expect(
-        requireExpectedFailure(marker, reusable, async () => {
+        requireExpectedFailure(verdict, reusable, async () => {
           throw expected
         }),
       ).resolves.toBeUndefined()
@@ -80,7 +80,7 @@ describe('mutation verdict promise helpers', () => {
   it('attributes only the named replacement for an expected failure', async () => {
     await expect(
       attributeReplacedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         (error) => error === unrelated,
         async () => {
@@ -90,7 +90,7 @@ describe('mutation verdict promise helpers', () => {
     ).resolves.toBeUndefined()
     await expect(
       attributeReplacedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         (error) => error === unrelated,
         async () => {
@@ -128,7 +128,7 @@ describe('mutation verdict promise helpers', () => {
     const third = new Error('third')
     await expect(
       attributeReplacedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         (error) => error === unrelated,
         async () => undefined,
@@ -136,7 +136,7 @@ describe('mutation verdict promise helpers', () => {
     ).rejects.not.toThrow(marker)
     await expect(
       attributeReplacedFailure(
-        marker,
+        verdict,
         (error) => error === expected,
         (error) => error === unrelated,
         async () => {

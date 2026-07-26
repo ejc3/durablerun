@@ -83,14 +83,12 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
     for (const label of POISON_WRITE_LABELS) {
       for (const witness of POISON_WITNESSES) {
         it(`${label} does not amplify ${witness.id}`, async () => {
-          const verdict =
+          const hasClaimCardinalityVerdict =
             label === 'claim' && witness.id === 'cardinality/two-live-runs'
-              ? 'mutation-verdict:behavior:claim-requires-sole-live-run'
-              : undefined
           const run = () => runPoisonMatrixCase(makeFixture, label, witness)
-          if (verdict) {
+          if (hasClaimCardinalityVerdict) {
             const result = await attributeExpectedFailure(
-              verdict,
+              { kind: 'behavior', mutation: 'claim-requires-sole-live-run' },
               /^Error: claim\/cardinality\/two-live-runs: .*poisoned live run .* changed without quiescing/,
               run,
             )

@@ -105,6 +105,63 @@ def raw_promise_message_lines(source: str) -> tuple[int, ...]:
     return tuple(lines)
 
 
+VERDICT_HELPERS = (
+    "attributeExpectedFailure",
+    "attributeReplacedFailure",
+    "requireExpectedFailure",
+)
+MUTATION_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def helper_verdict_descriptors(source: str) -> frozenset[tuple[str, str]]:
+    """Extract canonical kind/name descriptors passed directly to verdict helpers."""
+    structure = typescript_structure(source)
+    helpers = "|".join(VERDICT_HELPERS)
+    descriptors: set[tuple[str, str]] = set()
+    for match in re.finditer(rf"\b(?:{helpers})\s*\(", structure):
+        opened = match.end() - 1
+        closed = matching_delimiter(source, opened, structure)
+        if closed is None:
+            raise ValueError("cannot establish verdict-helper call boundary")
+        arguments = split_top_level(source, structure, opened + 1, closed)
+        if not arguments:
+            continue
+        start, end = arguments[0]
+        while start < end and structure[start].isspace():
+            start += 1
+        while end > start and structure[end - 1].isspace():
+            end -= 1
+        if start == end or structure[start] != "{":
+            continue
+        object_end = matching_delimiter(source, start, structure)
+        if object_end is None or object_end != end - 1:
+            continue
+        fields = split_top_level(source, structure, start + 1, object_end)
+        if fields is None:
+            raise ValueError("cannot establish verdict-descriptor fields")
+        values: dict[str, str] = {}
+        for field_start, field_end in fields:
+            field = source[field_start:field_end]
+            parsed = re.fullmatch(
+                r"""\s*(kind|mutation)\s*:\s*(['"])([^'"]*)\2\s*""",
+                field,
+            )
+            if parsed is None:
+                values = {}
+                break
+            values[parsed.group(1)] = parsed.group(3)
+        kind = values.get("kind")
+        mutation = values.get("mutation")
+        if (
+            len(values) == 2
+            and kind in {"behavior", "construction"}
+            and mutation is not None
+            and MUTATION_NAME.fullmatch(mutation)
+        ):
+            descriptors.add((kind, mutation))
+    return frozenset(descriptors)
+
+
 # (name, file, find, replace, what removing it should break)
 MUTATION_SPECS = [
     (
@@ -1414,7 +1471,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
         (
             "explicit promise helper",
-            "await requireExpectedFailure('mutation-verdict:behavior:x', /x/, action)",
+            "await requireExpectedFailure({kind: 'behavior', mutation: 'x'}, /x/, action)",
             (),
         ),
         (
@@ -1430,11 +1487,54 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
     )
 
+    descriptor_cases = (
+        (
+            "canonical behavior descriptor",
+            "await attributeReplacedFailure("
+            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /a/, /b/, action)",
+            frozenset({("behavior", "schema-fault-is-permanent")}),
+        ),
+        (
+            "field order is semantic",
+            "await requireExpectedFailure("
+            '{ mutation: "migration-postcondition-old-version", kind: "behavior" }, /x/, action)',
+            frozenset({("behavior", "migration-postcondition-old-version")}),
+        ),
+        (
+            "decorated name",
+            "await requireExpectedFailure("
+            "{kind: 'behavior', mutation: 'migration-postcondition-old-version: detail'}, "
+            "/x/, action)",
+            frozenset(),
+        ),
+        (
+            "unrelated object",
+            "consume({kind: 'behavior', mutation: 'schema-fault-is-permanent'})",
+            frozenset(),
+        ),
+        (
+            "indirect descriptor",
+            "const verdict = {kind: 'behavior', mutation: 'schema-fault-is-permanent'}\n"
+            "await attributeReplacedFailure(verdict, /a/, /b/, action)",
+            frozenset(),
+        ),
+        (
+            "template name",
+            "await requireExpectedFailure("
+            "{kind: 'behavior', mutation: `migration-${part}`}, /x/, action)",
+            frozenset(),
+        ),
+    )
+
     failures = []
     for label, source, wanted in promise_message_cases:
         got = raw_promise_message_lines(source)
         if got != wanted:
             failures.append(f"promise-message {label}: expected {wanted}, got {got}")
+    for label, source, wanted in descriptor_cases:
+        got = helper_verdict_descriptors(source)
+        if got != wanted:
+            failures.append(f"verdict-descriptor {label}: expected {wanted}, got {got}")
     if check_live_inventory:
         if TEST_CMD[:2] != ["bash", "scripts/confine.sh"]:
             failures.append("full mutation suites are not routed through scripts/confine.sh")
@@ -1447,9 +1547,20 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 )
             marker_file = mutation.verdict.marker_file or mutation.verdict.file
             verdict_source = (ROOT / marker_file).read_text()
-            if mutation.verdict.marker not in verdict_source:
+            marker_parts = mutation.verdict.marker.split(":", 2)
+            descriptor = (
+                (marker_parts[1], marker_parts[2])
+                if len(marker_parts) == 3
+                else ("", "")
+            )
+            descriptors = helper_verdict_descriptors(verdict_source)
+            if (
+                mutation.verdict.marker not in verdict_source
+                and descriptor not in descriptors
+            ):
                 failures.append(
-                    f"{mutation.name}: verdict marker {mutation.verdict.marker!r} is absent from "
+                    f"{mutation.name}: neither direct verdict marker "
+                    f"{mutation.verdict.marker!r} nor canonical helper descriptor is present in "
                     f"{marker_file}"
                 )
         for path in sorted((ROOT / "packages").glob("**/*.ts")):
@@ -1487,7 +1598,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         return 0
     print(
         f"mutation-probe self-test: {len(cases)} attribution cases, "
-        f"{len(promise_message_cases)} promise-message cases, {len(MUTATIONS)} live mutations"
+        f"{len(promise_message_cases)} promise-message cases, "
+        f"{len(descriptor_cases)} descriptor cases, {len(MUTATIONS)} live mutations"
     )
     return 0
 

@@ -826,10 +826,11 @@ not depend on careful reading:
   structured failure diagnostic's first line: bare, `Error: <marker>`, or
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
   source is not evidence. The verify gate runs 17 classifier cases, eleven
-  promise-message source cases, and seven injected false-positive faults over
-  all 50 live mutations. The parser requires all nine aggregate counters to be
-  nonnegative integers and internally consistent within their reporter
-  domains. Test counters match test rows; each file status matches its own
+  promise-message source cases, six canonical helper-descriptor cases, and
+  seven injected false-positive faults over all 50 live mutations. The parser
+  requires all nine aggregate counters to be nonnegative integers and
+  internally consistent within their reporter domains. Test counters match
+  test rows; each file status matches its own
   assertion/message rows; suite counters are not equated with file counts
   because the reporter does not expose that topology. Every status is
   type-checked before classification. Baseline and per-mutation suites invoke
@@ -843,14 +844,16 @@ not depend on careful reading:
   original package that still relied on Vitest's lossy custom message. The
   promise helpers now have one package-neutral definition under
   `@durablerun/core/testing`, their success, expected-error, replacement-error,
-  and unrelated-error arms have direct tests, and the canonical TypeScript
-  structural lexer makes the verify gate refuse every custom-message argument
-  on an exact Vitest `expect(...).rejects` or `.resolves` chain. Verdict altitude
-  follows the earliest load-bearing boundary, not the downstream scenario
-  story; a construction wrapper encloses the exact call and exact error.
-  Behavioral mutations preserve unrelated semantics, every multi-part verdict
-  has one marked vector, and inverse promise outcomes use the shared helpers to
-  emit the marker directly rather than relying on framework custom-message
+  and unrelated-error arms have direct tests, and callers provide a structured
+  kind/name descriptor from which only the helper can construct a canonical,
+  undecorated marker. The canonical TypeScript structural lexer makes the
+  verify gate refuse every custom-message argument on an exact Vitest
+  `expect(...).rejects` or `.resolves` chain. Verdict altitude follows the
+  earliest load-bearing boundary, not the downstream scenario story; a
+  construction wrapper encloses the exact call and exact error. Behavioral
+  mutations preserve unrelated semantics, every multi-part verdict has one
+  marked vector, and inverse promise outcomes use the shared helpers to emit
+  the marker directly rather than relying on framework custom-message
   propagation. The clean-tree mutation runner disables Python bytecode writes
   before importing repository-local helpers, and the executable lint self-test
   rejects any helper-import artifact.

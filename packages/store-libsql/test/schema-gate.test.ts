@@ -78,9 +78,8 @@ describe('a database older than the binary', () => {
       `ALTER TABLE runs ADD COLUMN task_id TEXT`,
     ]
     for (const sql of cases) {
-      const marker = `mutation-verdict:behavior:schema-fault-is-permanent: ${sql}`
       await attributeReplacedFailure(
-        marker,
+        { kind: 'behavior', mutation: 'schema-fault-is-permanent' },
         (error) => error instanceof SchemaMismatchError,
         (error) => error instanceof StoreUnavailableError,
         () => db.batch('probe', [{ sql, args: [] }], 'read'),
@@ -141,7 +140,7 @@ describe('migrate reports success only when the schema is current', () => {
     const missingPostcondition = new LibsqlStoreAdmin(versionBumpMiss)
 
     await requireExpectedFailure(
-      'mutation-verdict:behavior:migration-postcondition-old-version',
+      { kind: 'behavior', mutation: 'migration-postcondition-old-version' },
       isMissedVersionPostcondition,
       () => missingPostcondition.migrate(),
     )
@@ -162,7 +161,7 @@ describe('migrate reports success only when the schema is current', () => {
   it('does not accept another schema mismatch as the missed-version postcondition', async () => {
     const unrelated = new SchemaMismatchError('an earlier schema decoder failed')
     const observed = await requireExpectedFailure(
-      'mutation-verdict:behavior:migration-postcondition-old-version',
+      { kind: 'behavior', mutation: 'migration-postcondition-old-version' },
       isMissedVersionPostcondition,
       async () => {
         throw unrelated

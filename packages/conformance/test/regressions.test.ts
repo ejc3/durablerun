@@ -293,7 +293,7 @@ describe('transition-layer review regressions (second round)', () => {
     ])
 
     const result = await attributeExpectedFailure(
-      'mutation-verdict:behavior:spawn-primary-key-guard',
+      { kind: 'behavior', mutation: 'spawn-primary-key-guard' },
       /UNIQUE constraint failed: tasks\.task_id/,
       () => storeWithFirstId(f.raw, collidingId).spawn(Q, 'job', '{}'), // no idempotency key
     )

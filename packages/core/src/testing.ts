@@ -1,4 +1,18 @@
 export type ExpectedError = RegExp | ((error: unknown) => boolean)
+export type MutationVerdictKind = 'behavior' | 'construction'
+export interface MutationVerdict {
+  readonly kind: MutationVerdictKind
+  readonly mutation: string
+}
+
+const MUTATION_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+function markerFor(verdict: MutationVerdict): string {
+  if (!MUTATION_NAME.test(verdict.mutation)) {
+    throw new Error(`invalid mutation verdict name: ${verdict.mutation}`)
+  }
+  return `mutation-verdict:${verdict.kind}:${verdict.mutation}`
+}
 
 function matches(expected: ExpectedError, error: unknown): boolean {
   return expected instanceof RegExp
@@ -12,10 +26,11 @@ function matches(expected: ExpectedError, error: unknown): boolean {
  * mutation probe reports a wrong-path catch.
  */
 export async function attributeExpectedFailure<T>(
-  marker: string,
+  verdict: MutationVerdict,
   expectedError: ExpectedError,
   action: () => Promise<T>,
 ): Promise<T> {
+  const marker = markerFor(verdict)
   try {
     return await action()
   } catch (error) {
@@ -30,10 +45,11 @@ export async function attributeExpectedFailure<T>(
  * An unrelated rejection propagates unchanged and earns no mutation credit.
  */
 export async function requireExpectedFailure(
-  marker: string,
+  verdict: MutationVerdict,
   expectedError: ExpectedError,
   action: () => Promise<unknown>,
 ): Promise<void> {
+  const marker = markerFor(verdict)
   try {
     await action()
   } catch (error) {
@@ -49,11 +65,12 @@ export async function requireExpectedFailure(
  * marker. Success and unrelated rejections fail without attribution.
  */
 export async function attributeReplacedFailure(
-  marker: string,
+  verdict: MutationVerdict,
   expectedError: ExpectedError,
   replacementError: ExpectedError,
   action: () => Promise<unknown>,
 ): Promise<void> {
+  const marker = markerFor(verdict)
   try {
     await action()
   } catch (error) {
