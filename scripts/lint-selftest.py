@@ -27,9 +27,13 @@ fixture per rule it claims to enforce.
 """
 import json
 import os
+import select
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2556,6 +2560,46 @@ ENV_BAD_CASES = [
     ),
 ]
 
+
+@dataclass(frozen=True)
+class SessionProcessCase:
+    case_id: str
+    topology: str
+    expected: str
+    why: str
+
+
+# These are live-process fixtures because /proc ancestry and cwd are the
+# contract. A fake ps listing would merely test a second representation of
+# that contract and could drift independently of the kernel surface.
+SESSION_PROCESS_CASES = (
+    SessionProcessCase(
+        "relative-repo-cwd",
+        "repo",
+        "reported",
+        "a relative non-sleep command running in the repository is live work",
+    ),
+    SessionProcessCase(
+        "unrelated-tmp-sleep",
+        "outside-sleep",
+        "clean",
+        "a sleep outside every repository root is not evidence about this session",
+    ),
+    SessionProcessCase(
+        "repo-owned-descendant",
+        "descendant",
+        "reported",
+        "a child remains repository-owned after changing its own cwd",
+    ),
+    SessionProcessCase(
+        "registered-worktree-cwd",
+        "worktree",
+        "reported",
+        "every registered worktree is a repository process root",
+    ),
+)
+
+
 BAD_INVOCATIONS = [
     (
         "review-attest.sh",
@@ -3230,6 +3274,245 @@ def run(
         return result
 
 
+SESSION_PROBE_CODE = """\
+PROBE = "session-state-relative-probe"
+import select
+print("ready", flush=True)
+select.select([], [], [])
+"""
+
+SESSION_DESCENDANT_CODE = """\
+PROBE = "session-state-descendant-probe"
+import select
+select.select([], [], [])
+"""
+
+
+def wait_for_probe(process: subprocess.Popen[str]) -> str:
+    if process.stdout is None:
+        raise AssertionError("session process probe has no readiness pipe")
+    readable, _, _ = select.select([process.stdout], [], [], 5)
+    if not readable:
+        raise AssertionError("session process probe did not become ready")
+    ready = process.stdout.readline().strip()
+    if not ready.startswith("ready"):
+        detail = process.stderr.read().strip() if process.stderr is not None else ""
+        raise AssertionError(
+            f"session process probe exited before readiness: {ready!r} {detail!r}"
+        )
+    return ready
+
+
+def stop_probe(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
+
+
+@contextmanager
+def session_process_probe(
+    topology: str,
+    root: Path,
+    outside: Path,
+):
+    environment = {**os.environ, "SESSION_PROCESS_OUTSIDE": str(outside)}
+    worktree: Path | None = None
+    process: subprocess.Popen[str] | None = None
+    try:
+        if topology == "worktree":
+            candidate_worktree = outside / "registered-worktree"
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(candidate_worktree), "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            worktree = candidate_worktree
+            cwd = worktree
+        else:
+            cwd = root
+
+        if topology == "outside-sleep":
+            sleep = shutil.which("sleep")
+            if sleep is None:
+                raise AssertionError("session process fixture requires sleep")
+            process = subprocess.Popen(
+                [sleep, "300"],
+                cwd=tempfile.gettempdir(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            probe_pid = process.pid
+        elif topology == "descendant":
+            parent_code = f"""\
+PARENT_PROBE = "session-state-parent-probe"
+import os
+import select
+import signal
+import subprocess
+import sys
+
+child = subprocess.Popen(
+    [sys.executable, "-c", {SESSION_DESCENDANT_CODE!r}],
+    cwd=os.environ["SESSION_PROCESS_OUTSIDE"],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+
+def stop(_signum, _frame):
+    if child.poll() is None:
+        child.terminate()
+    child.wait(timeout=5)
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+print(f"ready {{child.pid}}", flush=True)
+select.select([], [], [])
+"""
+            process = subprocess.Popen(
+                [sys.executable, "-c", parent_code],
+                cwd=cwd,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            ready = wait_for_probe(process)
+            probe_pid = int(ready.split()[1])
+        else:
+            process = subprocess.Popen(
+                [sys.executable, "-c", SESSION_PROBE_CODE],
+                cwd=cwd,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            wait_for_probe(process)
+            probe_pid = process.pid
+        yield probe_pid
+    finally:
+        if process is not None:
+            stop_probe(process)
+        if worktree is not None:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+
+def run_session_process_case(
+    case: SessionProcessCase,
+) -> tuple[subprocess.CompletedProcess[str], int]:
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = Path(tmp)
+        root = tree(fixture / "repo", {"README.md": "session process fixture\n"})
+        (root / "scripts").mkdir(parents=True, exist_ok=True)
+        copied = root / "scripts" / "session-state.sh"
+        copied.write_text((SCRIPTS / "session-state.sh").read_text())
+        for args in (
+            ("init", "-q"),
+            ("config", "user.name", "lint-selftest"),
+            ("config", "user.email", "lint-selftest@example.invalid"),
+            ("add", "."),
+            ("commit", "-qm", "fixture"),
+        ):
+            subprocess.run(
+                ["git", *args],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        outside = fixture / "outside"
+        outside.mkdir()
+        with session_process_probe(case.topology, root, outside) as probe_pid:
+            result = subprocess.run(
+                ["bash", str(copied)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        return result, probe_pid
+
+
+def session_process_case_problem(case: SessionProcessCase) -> str | None:
+    result, probe_pid = run_session_process_case(case)
+    output = result.stdout + result.stderr
+    reported = any(
+        fields[:2] == ["process", str(probe_pid)]
+        for fields in (line.split() for line in output.splitlines())
+    )
+    if case.expected == "reported":
+        if not reported:
+            return (
+                f"did not report probe pid {probe_pid}; exit {result.returncode}\n"
+                f"    {output.strip()[:300]}"
+            )
+        if result.returncode == 0:
+            return f"reported probe pid {probe_pid} but returned clean"
+        return None
+    if case.expected == "clean":
+        if result.returncode != 0:
+            return (
+                f"reported unrelated probe pid {probe_pid}; exit {result.returncode}\n"
+                f"    {output.strip()[:300]}"
+            )
+        if "session-state: clean" not in output:
+            return "returned zero without the clean inventory verdict"
+        return None
+    raise ValueError(f"unknown session process expectation: {case.expected}")
+
+
+def session_process_problems() -> list[str]:
+    problems: list[str] = []
+    for case in SESSION_PROCESS_CASES:
+        try:
+            problem = session_process_case_problem(case)
+        except (AssertionError, OSError, subprocess.SubprocessError, ValueError) as exc:
+            problems.append(
+                f"session-state.sh process fixture {case.case_id} could not run: {exc}"
+            )
+            continue
+        if problem is not None:
+            problems.append(
+                f"session-state.sh process fixture {case.case_id} {problem} — {case.why}"
+            )
+    return problems
+
+
+if sys.argv[1:] == ["--session-process-cases"]:
+    focused_problems = session_process_problems()
+    for focused_problem in focused_problems:
+        print(f"lint-selftest: {focused_problem}")
+    if focused_problems:
+        sys.exit(1)
+    print(
+        f"lint-selftest: {len(SESSION_PROCESS_CASES)} live session process cases accepted"
+    )
+    sys.exit(0)
+
+
 failures = []
 failures.extend(process_fixture_isolation_problems())
 failures.extend(hidden_process_enrollment_problems(BAD_CASES))
@@ -3261,6 +3544,7 @@ for fault in PROCESS_FIXTURE_ISOLATION_FAULTS:
             f"{injected_fault} incorrectly: expected {fault.expected_problems!r}, "
             f"observed {observed_problems!r}"
         )
+failures.extend(session_process_problems())
 
 orchestration_inventory = subprocess.run(
     [
