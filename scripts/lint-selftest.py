@@ -1602,6 +1602,8 @@ BAD_INVOCATIONS = [
         "leave-descendant-running",
         "publish-success-after-infra",
         "report-worker-crash-as-domain",
+        "accept-oversized-finite-scope",
+        "classify-missing-report-as-domain",
     )
 ]
 
