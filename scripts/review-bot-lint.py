@@ -45,6 +45,16 @@ SCOPE_START = "<!-- review-bot-scope:start -->"
 SCOPE_END = "<!-- review-bot-scope:end -->"
 GLOBAL_START = "<!-- review-bot-global:start -->"
 GLOBAL_END = "<!-- review-bot-global:end -->"
+GATING_START = "<!-- review-bot-gating:start -->"
+GATING_END = "<!-- review-bot-gating:end -->"
+HOSTED_GATE_NOTE = (
+    "CodeRabbit custom checks are configured with `mode: error`, and "
+    "`reviews.request_changes_workflow: true` turns a failed error check into a "
+    "requested-changes review. CodeRabbit custom checks expose `name`, `mode`, and "
+    "`instructions`; they do not define per-check GitHub status contexts. Greptile is "
+    'configured with `"statusCheck": true`. Require only the aggregate contexts the '
+    "installed apps actually publish."
+)
 
 PROVENANCE_MARKERS = (
     "https://docs.coderabbit.ai/getting-started/yaml-configuration",
@@ -186,6 +196,10 @@ def significant_yaml_line(line: str) -> bool:
     return bool(line.strip()) and not line.lstrip().startswith("#")
 
 
+def normalized_prose(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def yaml_block_end(lines: list[str], start: int, indent: int, limit: int) -> int:
     for index in range(start + 1, limit):
         line = lines[index]
@@ -266,6 +280,35 @@ def coderabbit_path_instructions(text: str) -> tuple[list[dict[str, str]], list[
     return entries, errors
 
 
+def coderabbit_request_changes_workflow(text: str) -> list[str]:
+    """Require error-mode checks to have the workflow that makes them blocking."""
+    lines = text.splitlines()
+    reviews = [i for i, line in enumerate(lines) if re.fullmatch(r"reviews:\s*", line)]
+    if len(reviews) != 1:
+        return []
+    reviews_end = yaml_block_end(lines, reviews[0], 0, len(lines))
+    values = [
+        match.group(1).split(" #", 1)[0].strip()
+        for line in lines[reviews[0] + 1 : reviews_end]
+        if (
+            match := re.fullmatch(
+                r"  request_changes_workflow:\s*(.*?)\s*",
+                line,
+            )
+        )
+    ]
+    if len(values) != 1:
+        return [
+            ".coderabbit.yaml has no unique reviews.request_changes_workflow boolean."
+        ]
+    if values[0] != "true":
+        return [
+            ".coderabbit.yaml reviews.request_changes_workflow is not true, so "
+            "error-mode custom checks cannot request changes."
+        ]
+    return []
+
+
 def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]]:
     """Harvest only active `reviews.pre_merge_checks.custom_checks` entries.
 
@@ -324,6 +367,15 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
         except (ValueError, json.JSONDecodeError) as exc:
             errors.append(f".coderabbit.yaml line {start + 1} has an invalid check name: {exc}.")
             continue
+
+        for line in lines[start + 1 : end]:
+            field = re.fullmatch(r"        ([A-Za-z][A-Za-z0-9_-]*):.*", line)
+            if field and field.group(1) not in {"mode", "instructions"}:
+                errors.append(
+                    f".coderabbit.yaml check {name!r} has unsupported field "
+                    f"{field.group(1)!r}; custom checks expose only name, mode, "
+                    "and instructions."
+                )
 
         raw_modes = [
             match.group(1)
@@ -465,6 +517,21 @@ def main() -> int:
             str(readme.relative_to(ROOT)),
         )
         problems.extend(global_problems)
+        gating_note, gating_problems = marked_body(
+            readme_text,
+            GATING_START,
+            GATING_END,
+            str(readme.relative_to(ROOT)),
+        )
+        problems.extend(gating_problems)
+        if (
+            not gating_problems
+            and normalized_prose(gating_note) != HOSTED_GATE_NOTE
+        ):
+            problems.append(
+                f"{readme.relative_to(ROOT)} hosted-gate note is not the canonical "
+                "account of active configuration."
+            )
 
     # 2. Both hosted reviewers must carry one ACTIVE body for every rule. A
     #    filename appearing in path instructions or an id with an empty body
@@ -477,6 +544,7 @@ def main() -> int:
     else:
         cr_paths, cr_path_errors = coderabbit_path_instructions(cr_text)
         problems.extend(cr_path_errors)
+        problems.extend(coderabbit_request_changes_workflow(cr_text))
         cr_checks, cr_errors = coderabbit_custom_checks(cr_text)
         problems.extend(cr_errors)
 

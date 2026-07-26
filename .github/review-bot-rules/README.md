@@ -70,11 +70,15 @@ installation is an OAuth flow in a browser and needs repo admin.
 3. **Treat in-repo rules as head-owned detection.** Landing them on `main`
    makes them the starting point for later branches, but it does not stop a
    later pull request from changing the copy that reviews that same request.
-4. **Make them gate.** `main`'s required contexts are today
-   `["verify", "tla", "adversarial-review"]`. Add each bot's check name once you
-   can see what it posts. `mode: error` and `statusCheck: true` are already set,
-   so they block the moment the contexts include them; until then they comment
-   only, which is worth having on its own.
+4. **Make them gate.**
+   <!-- review-bot-gating:start -->
+   CodeRabbit custom checks are configured with `mode: error`, and
+   `reviews.request_changes_workflow: true` turns a failed error check into a
+   requested-changes review. CodeRabbit custom checks expose `name`, `mode`, and
+   `instructions`; they do not define per-check GitHub status contexts.
+   Greptile is configured with `"statusCheck": true`. Require only the aggregate
+   contexts the installed apps actually publish.
+   <!-- review-bot-gating:end -->
 
 Nothing in `pnpm verify` changes. These are hosted reviewers; the local gate
 neither runs nor needs them, and `scripts/review-bot-lint.py` checks only that
