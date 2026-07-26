@@ -185,6 +185,21 @@ describe('migrate reports success only when the schema is current', () => {
     await expect(admin.migrate()).rejects.toBeInstanceOf(SchemaMismatchError)
   })
 
+  it('classifies a dialect-native bigint version as a schema mismatch', async () => {
+    const malformed: SqlExecutor = {
+      batch: async () => [
+        {
+          rows: [{ value: 1n as never }],
+          rowsAffected: 0,
+        },
+      ],
+    }
+
+    await expect(new LibsqlStoreAdmin(malformed).schemaVersion()).rejects.toBeInstanceOf(
+      SchemaMismatchError,
+    )
+  })
+
   it('does not mistake error text stored as the version for a fresh database', async () => {
     await migrateTo(0)
     await db.batch('corrupt', [
