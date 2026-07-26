@@ -26,13 +26,16 @@ Run by `pnpm verify`. A new lint belongs in LINTS below with at least one bad
 fixture per rule it claims to enforce.
 """
 import json
+import io
 import os
 import select
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import types
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -2744,6 +2747,8 @@ class SessionProcessCase:
     topology: str
     expected: str
     why: str
+    detail: str | None = None
+    expected_marker: str | None = None
 
 
 # These are live-process fixtures because /proc ancestry and cwd are the
@@ -2773,6 +2778,73 @@ SESSION_PROCESS_CASES = (
         "worktree",
         "reported",
         "every registered worktree is a repository process root",
+    ),
+    SessionProcessCase(
+        "foreign-session-inherited-cwd",
+        "foreign-cwd",
+        "clean",
+        "an unrelated session initializer that inherited the repository cwd is not repository work",
+    ),
+    SessionProcessCase(
+        "foreign-session-explicit-argv",
+        "foreign-argv",
+        "reported",
+        "an explicit repository argv remains evidence even after a process leaves this session",
+    ),
+    SessionProcessCase(
+        "invocation-pipeline-reader",
+        "pipeline-reader",
+        "clean",
+        "the process consuming this checker's own stdout is invocation furniture",
+    ),
+    SessionProcessCase(
+        "same-pgid-background-work",
+        "same-pgid",
+        "reported",
+        "a pre-existing repository job must not disappear merely because it shares the invocation process group",
+    ),
+    SessionProcessCase(
+        "stdin-shell-work",
+        "bash-stdin",
+        "reported",
+        "a shell executing a stdin script with only builtin waits is work, not interactive furniture",
+    ),
+    *(
+        SessionProcessCase(
+            f"argv-shell-{name}",
+            "shell-operator",
+            "reported",
+            f"a repository path adjacent to shell operator {operator!r} is explicit argv evidence",
+            detail=operator,
+        )
+        for name, operator in (
+            ("and", "&&"),
+            ("or", "||"),
+            ("pipe", "|"),
+            ("output", ">"),
+            ("input", "<"),
+        )
+    ),
+    SessionProcessCase(
+        "removed-worktree-live-process",
+        "removed-worktree",
+        "refused",
+        "a live process in a removed worktree has indeterminate deleted-cwd provenance",
+        expected_marker="cannot prove ownership of deleted working directory",
+    ),
+    SessionProcessCase(
+        "empty-worktree-inventory",
+        "worktree-inventory-empty",
+        "refused",
+        "a successful but empty worktree inventory cannot prove process scope",
+        expected_marker="git worktree inventory omitted the current repository root",
+    ),
+    SessionProcessCase(
+        "malformed-worktree-inventory",
+        "worktree-inventory-malformed",
+        "refused",
+        "a malformed worktree inventory cannot become an incomplete clean snapshot",
+        expected_marker="malformed git worktree inventory",
     ),
 )
 
@@ -3506,6 +3578,41 @@ import select
 select.select([], [], [])
 """
 
+SESSION_ORPHAN_CODE = """\
+import os
+import signal
+
+pipe_read, pipe_write = os.pipe()
+first = os.fork()
+if first:
+    os.close(pipe_write)
+    payload = os.read(pipe_read, 64)
+    os.close(pipe_read)
+    os.waitpid(first, 0)
+    print(f"ready {payload.decode('ascii')}", flush=True)
+    raise SystemExit(0)
+
+os.close(pipe_read)
+second = os.fork()
+if second:
+    os.close(pipe_write)
+    os._exit(0)
+
+os.setsid()
+os.chdir(os.environ["SESSION_PROCESS_TARGET"])
+null_fd = os.open(os.devnull, os.O_RDWR)
+for standard_fd in (0, 1, 2):
+    os.dup2(null_fd, standard_fd)
+if null_fd > 2:
+    os.close(null_fd)
+os.write(pipe_write, str(os.getpid()).encode("ascii"))
+os.close(pipe_write)
+signal.pause()
+"""
+
+SESSION_CLEAN_VERDICT = "session-state: clean —"
+SESSION_DIRTY_VERDICT = "session-state: the above is what is still alive."
+
 
 def wait_for_probe(process: subprocess.Popen[str]) -> str:
     if process.stdout is None:
@@ -3529,27 +3636,75 @@ def stop_probe(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            if os.getpgid(process.pid) == process.pid:
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
         except ProcessLookupError:
             pass
         process.wait(timeout=5)
+    if process.stdin is not None:
+        process.stdin.close()
     if process.stdout is not None:
         process.stdout.close()
     if process.stderr is not None:
         process.stderr.close()
 
 
+def worktree_git_fault_environment(outside: Path, mode: str) -> dict[str, str]:
+    real_git = shutil.which("git")
+    if real_git is None:
+        raise AssertionError("session process fixture requires git")
+    shim_dir = outside / f"git-{mode}"
+    shim_dir.mkdir()
+    shim = shim_dir / "git"
+    if mode == "empty":
+        fault = "exit 0\n"
+    elif mode == "malformed":
+        fault = (
+            "porcelain=0\n"
+            "for arg in \"$@\"; do\n"
+            "  [ \"$arg\" = \"--porcelain\" ] && porcelain=1\n"
+            "done\n"
+            "if [ \"$porcelain\" -eq 1 ]; then\n"
+            "  printf 'HEAD fixture\\0\\0'\n"
+            "else\n"
+            "  printf '%s\\n' 'not-a-worktree-record'\n"
+            "fi\n"
+            "exit 0\n"
+        )
+    else:
+        raise ValueError(f"unknown worktree Git fault {mode!r}")
+    shim.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"list\" ]; then\n"
+        f"{fault}"
+        "fi\n"
+        f"exec {shlex.quote(real_git)} \"$@\"\n"
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
 @contextmanager
 def session_process_probe(
-    topology: str,
+    case: SessionProcessCase,
     root: Path,
     outside: Path,
 ):
     environment = {**os.environ, "SESSION_PROCESS_OUTSIDE": str(outside)}
+    scan_environment: dict[str, str] = {}
     worktree: Path | None = None
+    worktree_registered = False
     process: subprocess.Popen[str] | None = None
+    orphan_pid: int | None = None
     try:
-        if topology == "worktree":
+        if case.topology in {
+            "worktree",
+            "removed-worktree",
+            "worktree-inventory-empty",
+            "worktree-inventory-malformed",
+        }:
             candidate_worktree = outside / "registered-worktree"
             subprocess.run(
                 ["git", "worktree", "add", "--detach", str(candidate_worktree), "HEAD"],
@@ -3559,11 +3714,12 @@ def session_process_probe(
                 check=True,
             )
             worktree = candidate_worktree
+            worktree_registered = True
             cwd = worktree
         else:
             cwd = root
 
-        if topology == "outside-sleep":
+        if case.topology == "outside-sleep":
             sleep = shutil.which("sleep")
             if sleep is None:
                 raise AssertionError("session process fixture requires sleep")
@@ -3576,7 +3732,7 @@ def session_process_probe(
                 start_new_session=True,
             )
             probe_pid = process.pid
-        elif topology == "descendant":
+        elif case.topology == "descendant":
             parent_code = f"""\
 PARENT_PROBE = "session-state-parent-probe"
 import os
@@ -3613,9 +3769,97 @@ select.select([], [], [])
             )
             ready = wait_for_probe(process)
             probe_pid = int(ready.split()[1])
-        else:
+        elif case.topology in {"foreign-cwd", "foreign-argv"}:
+            target = root if case.topology == "foreign-cwd" else outside
+            orphan_environment = {
+                **environment,
+                "SESSION_PROCESS_TARGET": str(target),
+            }
+            orphan_args = [sys.executable, "-c", SESSION_ORPHAN_CODE]
+            if case.topology == "foreign-argv":
+                orphan_args.append(str(root))
+            process = subprocess.Popen(
+                orphan_args,
+                cwd=outside,
+                env=orphan_environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            ready = wait_for_probe(process)
+            orphan_pid = int(ready.split()[1])
+            process.wait(timeout=5)
+            probe_pid = orphan_pid
+        elif case.topology == "same-pgid":
             process = subprocess.Popen(
                 [sys.executable, "-c", SESSION_PROBE_CODE],
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            wait_for_probe(process)
+            if os.getpgid(process.pid) != os.getpgrp():
+                raise AssertionError("same-pgid probe did not share the fixture process group")
+            probe_pid = process.pid
+        elif case.topology == "bash-stdin":
+            process = subprocess.Popen(
+                ["/bin/bash", "-s"],
+                cwd=root,
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            if process.stdin is None:
+                raise AssertionError("stdin-shell probe has no script pipe")
+            process.stdin.write(
+                "printf '%s\\n' ready\n"
+                "while :; do read -r -t 30 _ || :; done\n"
+            )
+            process.stdin.close()
+            process.stdin = None
+            wait_for_probe(process)
+            probe_pid = process.pid
+        elif case.topology == "shell-operator":
+            quoted_root = shlex.quote(str(root))
+            quoted_outside = shlex.quote(str(outside))
+            if case.detail == "&&":
+                setup = f"cd {quoted_root}&&cd {quoted_outside}"
+            elif case.detail == "||":
+                setup = f"cd {quoted_root}||exit 91; cd {quoted_outside}"
+            elif case.detail == "|":
+                setup = f"cd {quoted_root}|:; cd {quoted_outside}"
+            elif case.detail == ">":
+                setup = f"cd {quoted_root}>/dev/null; cd {quoted_outside}"
+            elif case.detail == "<":
+                setup = f"test -d {quoted_root}</dev/null; cd {quoted_outside}"
+            else:
+                raise ValueError(f"unknown shell operator {case.detail!r}")
+            process = subprocess.Popen(
+                [
+                    "/bin/bash",
+                    "-c",
+                    f"{setup}; printf '%s\\n' ready; "
+                    "while :; do read -r -t 30 _ || :; done",
+                ],
+                cwd=outside,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            wait_for_probe(process)
+            probe_pid = process.pid
+        else:
+            probe_args = [sys.executable, "-c", SESSION_PROBE_CODE]
+            process = subprocess.Popen(
+                probe_args,
                 cwd=cwd,
                 env=environment,
                 stdout=subprocess.PIPE,
@@ -3625,11 +3869,10 @@ select.select([], [], [])
             )
             wait_for_probe(process)
             probe_pid = process.pid
-        yield probe_pid
-    finally:
-        if process is not None:
-            stop_probe(process)
-        if worktree is not None:
+
+        if case.topology == "removed-worktree":
+            if worktree is None:
+                raise AssertionError("removed-worktree probe has no registered worktree")
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(worktree)],
                 cwd=root,
@@ -3637,6 +3880,94 @@ select.select([], [], [])
                 text=True,
                 check=True,
             )
+            worktree_registered = False
+            cwd_link = os.readlink(f"/proc/{probe_pid}/cwd")
+            if not cwd_link.endswith(" (deleted)"):
+                raise AssertionError(
+                    f"removed-worktree probe cwd is not deleted: {cwd_link!r}"
+                )
+        elif case.topology == "worktree-inventory-empty":
+            scan_environment = worktree_git_fault_environment(outside, "empty")
+        elif case.topology == "worktree-inventory-malformed":
+            scan_environment = worktree_git_fault_environment(outside, "malformed")
+
+        yield probe_pid, scan_environment
+    finally:
+        if process is not None:
+            stop_probe(process)
+        if orphan_pid is not None:
+            try:
+                os.kill(orphan_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            for _attempt in range(100):
+                if not Path(f"/proc/{orphan_pid}").exists():
+                    break
+                select.select([], [], [], 0.01)
+        if worktree is not None and worktree_registered:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+
+def run_pipeline_reader_case(
+    copied: Path,
+    root: Path,
+) -> tuple[subprocess.CompletedProcess[str], int]:
+    consumer_code = """\
+import os
+import sys
+print(f"ready {os.getpid()}", file=sys.stderr, flush=True)
+sys.stdout.write(sys.stdin.read())
+"""
+    consumer = subprocess.Popen(
+        [sys.executable, "-c", consumer_code],
+        cwd=root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        if consumer.stderr is None:
+            raise AssertionError("pipeline consumer has no readiness pipe")
+        readable, _, _ = select.select([consumer.stderr], [], [], 5)
+        if not readable:
+            raise AssertionError("pipeline consumer did not become ready")
+        ready = consumer.stderr.readline().strip()
+        if not ready.startswith("ready "):
+            raise AssertionError(f"pipeline consumer readiness was {ready!r}")
+        consumer_pid = int(ready.split()[1])
+        if consumer.stdin is None:
+            raise AssertionError("pipeline consumer has no stdin")
+        scanner = subprocess.run(
+            ["bash", str(copied)],
+            cwd=root,
+            stdout=consumer.stdin,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        consumer.stdin.close()
+        consumer.stdin = None
+        consumer.wait(timeout=5)
+        consumer_stdout = consumer.stdout.read() if consumer.stdout is not None else ""
+        consumer_stderr = consumer.stderr.read() if consumer.stderr is not None else ""
+        return (
+            subprocess.CompletedProcess(
+                args=scanner.args,
+                returncode=scanner.returncode,
+                stdout=consumer_stdout,
+                stderr=(scanner.stderr or "") + consumer_stderr,
+            ),
+            consumer_pid,
+        )
+    finally:
+        stop_probe(consumer)
 
 
 def run_session_process_case(
@@ -3664,43 +3995,273 @@ def run_session_process_case(
             )
         outside = fixture / "outside"
         outside.mkdir()
-        with session_process_probe(case.topology, root, outside) as probe_pid:
+        if case.topology == "pipeline-reader":
+            return run_pipeline_reader_case(copied, root)
+        with session_process_probe(case, root, outside) as (
+            probe_pid,
+            scan_environment,
+        ):
+            environment = {**os.environ, **scan_environment}
             result = subprocess.run(
                 ["bash", str(copied)],
                 cwd=root,
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=environment,
             )
         return result, probe_pid
 
 
-def session_process_case_problem(case: SessionProcessCase) -> str | None:
-    result, probe_pid = run_session_process_case(case)
+def session_process_verdict_problem(
+    case: SessionProcessCase,
+    result: subprocess.CompletedProcess[str],
+    probe_pid: int,
+) -> str | None:
     output = result.stdout + result.stderr
     reported = any(
         fields[:2] == ["process", str(probe_pid)]
         for fields in (line.split() for line in output.splitlines())
     )
+    if "Traceback (most recent call last)" in output:
+        return f"crashed instead of classifying probe pid {probe_pid}\n    {output.strip()[:300]}"
     if case.expected == "reported":
         if not reported:
             return (
                 f"did not report probe pid {probe_pid}; exit {result.returncode}\n"
                 f"    {output.strip()[:300]}"
             )
-        if result.returncode == 0:
-            return f"reported probe pid {probe_pid} but returned clean"
+        if result.returncode != 1:
+            return (
+                f"reported probe pid {probe_pid} with exit {result.returncode}, "
+                "not the inventory verdict 1"
+            )
+        if SESSION_DIRTY_VERDICT not in output:
+            return f"reported probe pid {probe_pid} without the non-clean inventory verdict"
         return None
     if case.expected == "clean":
+        if reported:
+            return f"reported invocation or foreign probe pid {probe_pid}"
         if result.returncode != 0:
             return (
-                f"reported unrelated probe pid {probe_pid}; exit {result.returncode}\n"
+                f"refused a clean topology for probe pid {probe_pid}; exit {result.returncode}\n"
                 f"    {output.strip()[:300]}"
             )
-        if "session-state: clean" not in output:
+        if SESSION_CLEAN_VERDICT not in output:
             return "returned zero without the clean inventory verdict"
         return None
+    if case.expected == "refused":
+        if result.returncode != 2:
+            return (
+                f"returned {result.returncode}, not fail-closed exit 2 for probe pid "
+                f"{probe_pid}\n    {output.strip()[:300]}"
+            )
+        if case.expected_marker is None or case.expected_marker not in output:
+            return (
+                f"refused without diagnostic {case.expected_marker!r}\n"
+                f"    {output.strip()[:300]}"
+            )
+        if SESSION_CLEAN_VERDICT in output:
+            return "printed a clean verdict after refusing incomplete evidence"
+        return None
     raise ValueError(f"unknown session process expectation: {case.expected}")
+
+
+def session_process_case_problem(case: SessionProcessCase) -> str | None:
+    result, probe_pid = run_session_process_case(case)
+    return session_process_verdict_problem(case, result, probe_pid)
+
+
+def session_process_oracle_problems() -> list[str]:
+    case = SessionProcessCase(
+        "oracle-control",
+        "synthetic",
+        "reported",
+        "a process report is valid only with the exact inventory verdict",
+    )
+    pid = 424242
+    process_line = f"process   {pid}  up 00:00:01  fixture\n"
+    valid = subprocess.CompletedProcess(
+        args=(),
+        returncode=1,
+        stdout=process_line + SESSION_DIRTY_VERDICT + "\n",
+        stderr="",
+    )
+    wrong_exit = subprocess.CompletedProcess(
+        args=(),
+        returncode=2,
+        stdout=process_line + SESSION_DIRTY_VERDICT + "\n",
+        stderr="session-state: injected evidence failure\n",
+    )
+    missing_footer = subprocess.CompletedProcess(
+        args=(),
+        returncode=1,
+        stdout=process_line,
+        stderr="",
+    )
+    problems: list[str] = []
+    if session_process_verdict_problem(case, valid, pid) is not None:
+        problems.append("session process oracle rejected its exact non-clean control")
+    if session_process_verdict_problem(case, wrong_exit, pid) is None:
+        problems.append("session process oracle accepted an evidence-error exit as a report")
+    if session_process_verdict_problem(case, missing_footer, pid) is None:
+        problems.append("session process oracle accepted a report with no inventory verdict")
+    return problems
+
+
+def load_embedded_session_scanner() -> types.ModuleType:
+    source = (SCRIPTS / "session-state.sh").read_text()
+    start_marker = "process_output=$(python3 - \"$ROOT\" <<'PY'\n"
+    main_marker = "\nroot = os.path.realpath(sys.argv[1])\n"
+    if start_marker not in source or main_marker not in source:
+        raise AssertionError(
+            "session-state process scanner has no deterministic definition seam"
+        )
+    body = source.split(start_marker, 1)[1].split("\nPY\n)", 1)[0]
+    definitions = body.split(main_marker, 1)[0]
+    module_name = "_session_state_snapshot_fixture"
+    module = types.ModuleType(module_name)
+    sys.modules[module_name] = module
+    try:
+        exec(compile(definitions, "scripts/session-state.sh::<process-scan>", "exec"), module.__dict__)
+    finally:
+        sys.modules.pop(module_name, None)
+    return module
+
+
+def session_snapshot_coherence_problem() -> str | None:
+    try:
+        module = load_embedded_session_scanner()
+    except (AssertionError, OSError, SyntaxError) as exc:
+        return f"session process scanner lacks an executable snapshot seam: {exc}"
+
+    stable_stat = module.Stat(ppid=7, state="S", start=11, comm="worker")
+    module.read_stat = lambda _pid: stable_stat
+    real_os = module.os
+    cmdline_reads = 0
+
+    class TransitionOS:
+        def stat(self, _path: str):
+            return types.SimpleNamespace(st_uid=1000)
+
+        def readlink(self, path: str) -> str:
+            if path.endswith("/cwd"):
+                # Exec moved from coherent state A (argv A, repo cwd) to
+                # coherent state B (argv B, outside cwd) between field reads.
+                return "/fixture/outside"
+            if path.endswith("/exe"):
+                return "/fixture/worker"
+            raise AssertionError(f"unexpected process link {path}")
+
+        def __getattr__(self, name: str):
+            return getattr(real_os, name)
+
+    def transition_open(path: str, _mode: str = "rb"):
+        nonlocal cmdline_reads
+        if not path.endswith("/cmdline"):
+            raise AssertionError(f"unexpected process file {path}")
+        cmdline_reads += 1
+        phase = b"worker-phase-a\0" if cmdline_reads == 1 else b"worker-phase-b\0"
+        return io.BytesIO(phase)
+
+    module.os = TransitionOS()
+    module.open = transition_open
+    try:
+        observed = module.read_process(4242, 1000)
+    except module.EvidenceError:
+        return None
+    except Exception as exc:
+        return f"session process snapshot seam crashed under exec transition: {exc}"
+    if observed is None:
+        return "session process snapshot silently dropped a live exec-transition process"
+    coherent = {
+        ((b"worker-phase-a",), "/fixture/repo"),
+        ((b"worker-phase-b",), "/fixture/outside"),
+    }
+    actual = (observed.argv, observed.cwd)
+    if actual not in coherent:
+        return (
+            "session process snapshot accepted mixed exec generations: "
+            f"argv={observed.argv!r}, cwd={observed.cwd!r}"
+        )
+    return None
+
+
+def session_internal_evidence_problems() -> list[str]:
+    problems: list[str] = []
+
+    module = load_embedded_session_scanner()
+    stable_stat = module.Stat(ppid=7, state="S", start=11, comm="worker")
+    module.read_stat = lambda _pid: stable_stat
+    real_os = module.os
+
+    class OwnerFaultOS:
+        def stat(self, _path: str):
+            raise PermissionError("fixture owner denial")
+
+        def __getattr__(self, name: str):
+            return getattr(real_os, name)
+
+    module.os = OwnerFaultOS()
+    try:
+        module.read_process(4242, 1000)
+    except module.EvidenceError:
+        pass
+    else:
+        problems.append("session process scanner swallowed a stable owner-read failure")
+
+    module = load_embedded_session_scanner()
+    stable_stat = module.Stat(ppid=7, state="S", start=11, comm="worker")
+    module.read_stat = lambda _pid: stable_stat
+    real_os = module.os
+
+    class ReadableOwnerOS:
+        def stat(self, _path: str):
+            return types.SimpleNamespace(st_uid=1000)
+
+        def __getattr__(self, name: str):
+            return getattr(real_os, name)
+
+    module.os = ReadableOwnerOS()
+    module.open = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        PermissionError("fixture argv denial")
+    )
+    try:
+        module.read_process(4242, 1000)
+    except module.EvidenceError:
+        pass
+    else:
+        problems.append("session process scanner swallowed a stable argv-read failure")
+
+    module = load_embedded_session_scanner()
+    module.open = lambda *_args, **_kwargs: io.BytesIO(b"malformed stat")
+    try:
+        module.read_stat(4242)
+    except module.EvidenceError:
+        pass
+    else:
+        problems.append("session process scanner accepted malformed /proc stat evidence")
+    return problems
+
+
+def session_pr_gate_contract_problem() -> str | None:
+    contract = (SCRIPTS.parent / ".claude/skills/pr-gate/SKILL.md").read_text()
+    required = (
+        "cwd, argv, and live ancestry",
+        "unrelated host sleeps are not repository evidence",
+    )
+    stale = (
+        "processes\n   whose command line names this repo",
+        "wait loops (a `sleep` with a live\n   parent)",
+    )
+    if any(marker not in contract for marker in required) or any(
+        marker in contract for marker in stale
+    ):
+        return (
+            "pr-gate session-state contract still describes command-name and "
+            "global-sleep proxies instead of cwd, argv, and ancestry ownership"
+        )
+    return None
 
 
 def session_process_problems() -> list[str]:
@@ -3717,6 +4278,17 @@ def session_process_problems() -> list[str]:
             problems.append(
                 f"session-state.sh process fixture {case.case_id} {problem} — {case.why}"
             )
+    problems.extend(session_process_oracle_problems())
+    coherence_problem = session_snapshot_coherence_problem()
+    if coherence_problem is not None:
+        problems.append(coherence_problem)
+    try:
+        problems.extend(session_internal_evidence_problems())
+    except (AssertionError, OSError, SyntaxError) as exc:
+        problems.append(f"session process internal fail-closed fixture could not run: {exc}")
+    contract_problem = session_pr_gate_contract_problem()
+    if contract_problem is not None:
+        problems.append(contract_problem)
     return problems
 
 
