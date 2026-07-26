@@ -2735,10 +2735,20 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 temporary / "mutations.log",
                 (),
             )
-            environment = worker_environment(
-                environment_plan,
-                allow_host_sized_tokio=fault == "allow-host-sized-tokio-pools",
-            )
+            inherited_tokio_threads = os.environ.get("TOKIO_WORKER_THREADS")
+            os.environ["TOKIO_WORKER_THREADS"] = "1"
+            try:
+                environment = worker_environment(
+                    environment_plan,
+                    allow_host_sized_tokio=(
+                        fault == "allow-host-sized-tokio-pools"
+                    ),
+                )
+            finally:
+                if inherited_tokio_threads is None:
+                    os.environ.pop("TOKIO_WORKER_THREADS", None)
+                else:
+                    os.environ["TOKIO_WORKER_THREADS"] = inherited_tokio_threads
             if environment.get("TOKIO_WORKER_THREADS") != "1":
                 failures.append(
                     "native thread budget: worker suites can create "
