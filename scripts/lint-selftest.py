@@ -1572,6 +1572,37 @@ BAD_INVOCATIONS = [
         "accept-incoherent-report",
         "accept-malformed-report",
     )
+] + [
+    (
+        "mutation-probe.py",
+        {},
+        (
+            "--orchestration-self-test",
+            "--orchestration-self-test-fault",
+            fault,
+        ),
+        f"orchestration self-test caught injected fault {fault}",
+        f"the parallel coordinator must reject its {fault} false-positive path",
+    )
+    for fault in (
+        "drop-assignment",
+        "duplicate-assignment",
+        "accept-wrong-head",
+        "accept-missing-result",
+        "accept-duplicate-result",
+        "accept-extra-result",
+        "accept-process-report-disagreement",
+        "accept-outside-cleanup",
+        "accept-unconfined-scope",
+        "accept-unowned-worker",
+        "skip-baseline-barrier",
+        "accept-external-workspace-link",
+        "accept-malformed-result-types",
+        "interrupt-cleanup",
+        "leave-descendant-running",
+        "publish-success-after-infra",
+        "report-worker-crash-as-domain",
+    )
 ]
 
 # Inputs each lint must ACCEPT. A checker that rejects everything passes every
