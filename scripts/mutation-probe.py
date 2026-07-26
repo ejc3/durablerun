@@ -2318,6 +2318,7 @@ def validate_scope_limits(
     cpu_max: str,
     *,
     tasks_max: str | None = None,
+    configured_tasks: str | None = None,
     host_memory: int,
     host_cpus: int,
     accept_unconfined: bool = False,
@@ -2328,7 +2329,7 @@ def validate_scope_limits(
     # receive pids.max at all, so an unlimited task scope could not be
     # expressed as a regression without first making that input visible.
     # Intentionally unused until the red task-limit case lands.
-    _ = tasks_max
+    _ = (tasks_max, configured_tasks)
     try:
         memory = int(memory_max)
         swap = int(swap_max)
