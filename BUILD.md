@@ -156,8 +156,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.7 close the provenance residual** — DONE. It began after the final
   PR3.6 residual review recorded 0 of 51 defects found by our machinery; the
   preceding provenance round had recorded 7 of 44 (16%).
-  PR3.7 closes at 10 of 44 findings self-caught (23%) and 34 review-caught
-  (77%); the full mutation audit contributed the final six self-catches.
+  PR3.7 closes at 10 of 50 findings self-caught (20%) and 40 review-caught
+  (80%); the full mutation audit contributed the final six self-catches.
   Landed: the typed target expression (the primitive generates each
   overwriting follow-on's row selection from the fence whenever its source is
   a table this batch stamped, and `narrow` can only shrink it; `wake-runs` is
@@ -188,12 +188,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     scalar right-hand sides only and cannot name provenance columns through
     duplicate/quoted assignments or mutate public primary identity such as
     `runs.run_id`.
-  - **Attributable mutation catches.** All 34 live mutations carry an exact
+  - **Attributable mutation catches.** All 36 live mutations carry an exact
     behavioral or construction verdict: test file, full test name, and marker.
+    The marker must be the structured failure diagnostic's first line: bare,
+    `Error: <marker>`, or `AssertionError: <marker>: …`; an arbitrary substring
+    in rendered source context is not evidence.
     Structured Vitest output makes a green survivor, bind/compile error,
     different failing assertion, malformed report, suite error, or
     process/report disagreement a wrong-path result rather than credit. The
-    verifier runs a 16-case classifier self-test, with six injected
+    verifier runs a 17-case classifier self-test, with seven injected
     false-positive faults maintained by `lint-selftest.py`; both baseline and
     per-mutation suites route themselves through `scripts/confine.sh`.
     The first full clean-tree audit ran all 34 mutations: 28 were attributable
@@ -203,7 +206,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     custom messages on unexpected resolve/reject. Exact-call construction
     wrappers, one marked plan vector with a behavior-preserving mutation, a
     split A/B wake witness, and explicit require/attribute failure helpers made
-    the final audit **34 of 34 attributable**.
+    the final audit, including the exact inline-ending identity and typed
+    schema-absence mutations, **36 of 36 attributable**.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 47 atomic witnesses covering all 50
     invariant condition IDs: 799 generated cells, plus two inventory cases.
@@ -215,7 +219,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Progress requires both a semantic healthy win and a durable six-table
     snapshot delta attributable to each store call; CTE DML counts because it
     changes state, while a SELECT returning rows and a no-op DML statement
-    cannot impersonate progress. The multiple-live-run claim witness is due
+    cannot impersonate progress. One closed snapshot descriptor owns each
+    table's name, stable ordering, and required identity/ownership columns;
+    snapshot construction rejects a row missing any authority column instead
+    of admitting an `undefined` key into the oracle. The multiple-live-run
+    claim witness is due
     when invoked, so the exact candidate-CAS mutation proves the corrupt
     subject reaches claim; a second exact mutation attacks the same-token
     receipt after a sibling is injected. A post-claim/pre-activate regression
@@ -231,7 +239,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     sibling probes. The task-book projection uses a singleton aggregate so a
     guard regression has one portable outcome rather than SQLite silently
     choosing a row that PostgreSQL/MySQL reject.
-    Fifteen adversarial oracle meta-tests maintain exact result vectors,
+    Sixteen adversarial oracle meta-tests maintain exact result vectors,
     authority, progress, canonical number/bigint equality, structured finding
     identity, and numeric worsening—including deadline deltas and
     provenance-instant spans. Emit's atomic firing exception is one condition
@@ -254,6 +262,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `injectStorageCorruption` seam returns `injected` on permissive stores or
     `structurally-rejected` on strict native types, so all dialects run the
     identical witness inventory without encoding SQLite's dynamic typing.
+  - **Schema and inline-ending boundaries fail closed.** A stored
+    `schema_version` is a canonical nonnegative base-10 safe integer (`0`
+    exactly, otherwise no leading zero), and migration success requires it to
+    equal the binary's current version exactly; malformed, negative, unsafe,
+    and future versions are mismatches. Only the dialect executor can emit
+    `SchemaNotInitializedError`, for the canonical singleton version read and
+    the native missing-`meta` error; admin catches that type rather than
+    rendered text, so neither a stored value nor an unrelated executor failure
+    can impersonate a fresh database. Inline `Ending` values have the exact
+    launch identity `(runId, claimToken)` at the type boundary, and
+    reconciliation makes no write for a different run, a stale token, or
+    hostile tokenless input.
+    Tokenless EndingFeed reconciliation remains deferred to PR6.4 because its
+    heartbeat-cutoff check and expiry need one new atomic, spec-first store
+    operation.
+
+  Final evidence: the clean-tree mutation audit was **36/36 attributable**;
+  classifier maintenance covered 17 cases and seven injected faults; the
+  poison oracle carried 16 meta-tests; the focused review-regression run passed
+  48 tests; and `pnpm verify` passed 67 files / 1,501 tests.
 
   The sole structural exception is **emitEvent's `wake-runs`**, the one
   follow-on that cannot be generated, because it selects from `waits` — rows an
@@ -388,6 +416,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - **MySQL cannot derive the winner from row counts alone** — no targeted
     `ON CONFLICT`; the `SqlResult` normalization contract must state
     matched-not-changed semantics.
+  From PR3.7:
+  - **Migration-version conformance**: lift PR3.7's libSQL schema gate into the
+    shared admin contract. Every dialect must accept only the canonical
+    nonnegative safe base-10 representation, require exact equality with the
+    binary's current version, and classify an actually absent metadata table
+    at the dialect boundary without allowing stored error-like text or an
+    unrelated read failure to impersonate a fresh database.
 
 - **PR4.2 store-postgres**: transliterate absurd.sql (SKIP LOCKED CTE, row-lock
   awaitEvent); **oracle tests**: same scenario on real Absurd (docker) vs our
@@ -422,7 +457,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR6.2** per-run DB store: fence meta row, warm pool protocol, janitor.
 - **PR6.3** delivered-wait materialization, successor pointer carry, PITR
   restore tooling.
-- **PR6.4** EndingFeed port + reconcile consumers.
+- **PR6.4** EndingFeed port + reconcile consumers (SPEC-FIRST). Token-bearing
+  signals preserve the exact `(runId, claimToken)` identity and stale or
+  mismatched signals stutter. A tokenless signal is ignored until this PR
+  models and adds one atomic scheduler-store operation that reads the current
+  claim, proves no heartbeat landed after the feed's cutoff, and expires that
+  same claim without a read/write race; a separate read followed by
+  `expireLeaseNow` is not sufficient.
 
 ## Phase 7 (optional) — WDK spec-v5 World wrapper.
 

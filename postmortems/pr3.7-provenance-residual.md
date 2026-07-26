@@ -4,7 +4,7 @@ PR3.7 closed four mechanisms deferred by the final PR3.6 review: a structural
 many-row bound, contract-owned source/target key relations, attributable
 mutation verdicts, and a generated corrupt-pre-state fault surface. The new
 poison surface found three production store defects before review. Adversarial
-review found thirty-four gaps in the mechanisms themselves, while
+review found forty gaps in the mechanisms themselves, while
 `pnpm verify` caught one integration defect in the new classifier self-test.
 The first full clean-tree mutation audit then self-caught six attribution
 defects: 28 of 34 mutations reached their exact verdict and six reached a
@@ -73,6 +73,18 @@ Vitest's custom messages disappeared on unexpected promise outcomes. A mutation
 surface that reports the right defect through the wrong assertion is not an
 attributable prevention mechanism.
 
+The closing review sequence found six more gaps. A marker appearing only as a substring
+or in source context could receive mutation credit, and a poison snapshot could
+omit a declared ownership/key column without failing closed. Migration accepted
+malformed and future versions, while a same-run ending from an older claim could
+expire the current worker's lease. Green-diff review then found that the first
+schema-version repair threw validation errors inside a broad database-read
+catch: the stored value `no such table` made its own `SchemaMismatchError` look
+like a missing metadata table and returned version zero. The narrowed catch
+still recognized absence by substring, so an unrelated executor outage carrying
+those words also returned zero. These were production or verification escapes,
+not documentary nits.
+
 ## Findings
 
 | # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
@@ -90,7 +102,7 @@ attributable prevention mechanism.
 | 11 | The invariant runner treated a truncated executor result vector as empty rows | Dropping the result for a protocol table could erase every violation in it and make checking fail open | Invariant execution boundary | Optional indexing plus an empty-array default confused “no rows” with “no result” | One atomic snapshot batch requires exactly five result sets and rejects any cardinality mismatch (rung 3) |
 | 12 | Poison completeness covered display names rather than the individual branches sharing each name | A null arm, comparison arm, or storage-kind arm could disappear while another arm kept the name covered | Invariant inventory and poison generator | Twenty-three names compressed many distinct semantic conditions | One typed inventory now gives all 50 condition IDs an independent witness, and completeness fails on missing or unknown IDs (rungs 1 and 2) |
 | 13 | Most invariants still encoded SQLite operators and storage checks in SQL; the first portable rewrite then accepted ISO strings and selected unrestricted rows | MySQL or Postgres conformance could fail or silently weaken the integer epoch-ms contract, while schema growth could change the evaluator input unnoticed | Pluggability contract, invariant portability review, and schema gates | A previous “portable evidence” repair covered provenance only; the rest of the invariant library retained SQLite semantics, and the first replacement traded those semantics for a broader representation | One dialect-neutral table snapshot is evaluated in TypeScript, result shape is exact, temporal values remain canonical integer epoch milliseconds, and native dialect adapters own normalization (rungs 1 and 2) |
-| 14 | The first `lint-selftest` integration invoked the live mutation-inventory path inside an empty checker fixture | The verification gate failed for fixture absence instead of proving that each injected classifier fault was detected | `pnpm verify` and the lint self-test harness | One command mixed a repository inventory audit with the portable classifier unit surface | The gate caught the failure; classifier-only self-tests are now separate from the live 34-entry inventory check, and both accepted and six injected-fault paths are exercised (rung 2) |
+| 14 | The first `lint-selftest` integration invoked the live mutation-inventory path inside an empty checker fixture | The verification gate failed for fixture absence instead of proving that each injected classifier fault was detected | `pnpm verify` and the lint self-test harness | One command mixed a repository inventory audit with the portable classifier unit surface | The gate caught the failure; classifier-only self-tests are now separate from the live 35-entry inventory check, and both accepted and seven injected-fault paths are exercised (rung 2) |
 | 15 | Frozen poison authority encoded composite keys by delimiter-joining their fields | Checkpoints or waits whose real key components contained the delimiter could collide, allowing a foreign row change to answer as an authorized row | Poison authority oracle | A display serialization stood in for tuple identity | Composite row keys are canonical JSON tuples and the meta-surface constructs the collision pair that defeated joined text (rung 1 for representation, rung 2 for attack) |
 | 16 | Invariant deltas identified a finding by condition plus its rendered subject | A violation could move between two distinct rows that render to the same text and remain classified as the old violation | Invariant/poison finding identity | Human-readable subjects flattened several identity components into one slash-delimited string | Every finding carries a structured `subjectIdentity` tuple; public legacy messages remain deduplicated separately (rung 1) |
 | 17 | Provenance checked stamp/instant presence but not whether a present instant used the canonical integer representation | A string or otherwise invalid provenance instant could survive as apparently valid evidence and contaminate cross-row seed comparisons | Provenance invariant and poison condition inventory | Pair completeness was used as a proxy for pair validity | `provenance/instant-not-integer` is an independent condition with its own witness and storage-corruption path (rungs 1 and 2) |
@@ -121,6 +133,12 @@ attributable prevention mechanism.
 | 42 | The dedicated `emit-wake-event-correlation` fixture was not discriminating; the pairwise wake surface killed the mutation under another marker | Coverage existed, but the mutation's claimed regression did not prove its own event-correlation property and received only wrong-path evidence | Wake-event regression and exact mutation verdict | The original rows let another wake condition decide the outcome, so a broader generated test—not the named regression—caught the change | The regression splits the legitimate A registration from the disjoint B driver row and carries its own exact marker, making removal of the run-event correlation change that assertion (rung 2) |
 | 43 | Vitest omitted a custom message when the successor-attempt rejection assertion unexpectedly resolved | The intended behavior mutation reached its target, but the audit saw an unmarked framework assertion and classified it wrong-path | Promise-verdict test helper | The test relied on Vitest forwarding a custom message through the inverse promise outcome | `requireExpectedFailure` accepts only the exact healthy rejection, throws the exact marker on unexpected success, and propagates unrelated rejection (rung 2) |
 | 44 | Vitest omitted a custom message when the claim sole-live resolution assertion rejected | The intended poison mutation reached its target, but its raw rejection lacked the attributable marker | Promise-verdict test helper and poison regression | A `.resolves` custom message was treated as an exact failure channel even though Vitest did not preserve it on rejection | `attributeExpectedFailure` converts only the exact claim/cardinality poison error to the marker and propagates every unrelated rejection (rung 2) |
+| 45 | Mutation attribution accepted the expected marker as a substring anywhere in a Vitest failure message, including a later source-code frame | An unrelated failure in the expected test could quote the marker literal from its assertion source and receive attributable credit | Mutation verdict classifier and its generated false-positive surface | Marker presence in unstructured failure text stood in for the diagnostic the assertion actually emitted; no classifier case attacked a source-context-only or superstring match | Only the first diagnostic line may answer, through an exact marker, `Error: <marker>`, or delimited `AssertionError: <marker>:` form; a seventeenth classifier case and injected `match-marker-substring` fault pin the source-context/superstring path (rung 2) |
+| 46 | Poison snapshots required the right number of result sets and a rows array, but did not require each row to contain the ownership/key columns the authority oracle consumes | A dialect adapter could omit a declared identity field, letting `undefined` enter snapshot keying and authority comparison while the oracle graded an incomplete projection | Poison snapshot boundary and frozen-authority oracle | Snapshot ordering, relationship columns, and result validation were separate representations; shape validation stopped at the row array | One `SNAPSHOT_TABLES` contract owns table order, ordering key, and required authority columns, generates the relationship-column map, and validates every returned row; a meta-test deletes `tasks.task_id` and must fail closed (rung 1 for the single definition, rung 2 for the attack) |
+| 47 | `schemaVersion()` coerced arbitrary metadata with `Number()`, while `migrate()` accepted every final version not less than the current binary | Malformed text became `NaN`, and a future version was treated as already migrated; the process could run against corrupt or unsupported schema while reporting migration success | Migration/version contract and schema gate | Numeric coercion and a lower bound were proxies for canonical, exactly supported schema identity | The reader accepts only canonical nonnegative base-10 text within JavaScript's safe-integer range, and migration's postcondition requires exact equality with `CURRENT_SCHEMA_VERSION`; malformed and future-version regressions fail with `SchemaMismatchError` (rung 3) |
+| 48 | Inline Ending reconciliation compared only `runId`, ignored the ending's claim token, and substituted the currently launched claim token into `expireLeaseNow` | A delayed ending from an older claim of the same run could expire the current worker's lease, making the next sweep reclaim live work and permit overlapping execution | Opaque `LaunchOutcome` reconciler, claim identity, and §3.9 advisory-signal contract | Run identity stood in for claim identity, and the consumer upgraded stale or tokenless evidence with authority it did not carry | `Ending` and `LaunchInvocation` share one mandatory `LaunchIdentity`; reconciliation requires exact `(runId, claimToken)` equality and tokenless hostile input fails closed, while an exact mutation and stale-ending schedule pin the write boundary (rung 1 for identity, rung 2 for the temporal attack) |
+| 49 | The first schema-version repair parsed and validated the stored value inside the same broad `try` whose catch treated any error text containing `no such table` as a fresh database | Storing the literal `no such table` raised a `SchemaMismatchError` whose own message triggered the fallback, returned version zero, and could make migrations reapply over a live corrupt schema | Migration exception boundary and green-diff review | Matching rendered exception text was a proxy for the provenance of the error, and the validation repair expanded the missing-table catch over a new failure source | The catch encloses only the metadata SELECT; row decoding and canonical validation execute after it, so validation errors cannot enter the fresh-database fallback. The exact stored-text regression pins the boundary (rung 1 for exception scope, rung 2 for the attack) |
+| 50 | After narrowing the catch, admin still inferred a missing metadata table from `String(error).includes('no such table')` | An unrelated executor outage whose message contained those words returned version zero, allowing migration to run over a live database instead of surfacing infrastructure failure | Migration exception type and documentation consistency review | Exception text still stood in for error provenance; moving validation outside the catch closed only one producer of misleading text | The dialect executor emits `SchemaNotInitializedError` only for the exact canonical singleton version read plus the native missing-`meta` error, and admin catches only that type; an exact mutation restores substring inference and the outage regression kills it (rung 1 for the typed boundary, rung 2 for the attack) |
 
 ## Detection ledger
 
@@ -131,15 +149,22 @@ attributable prevention mechanism.
 | Full clean-tree mutation audit (findings 39–44) | 6 | **yes** |
 | Initial adversarial implementation review (findings 4–13) | 10 | no |
 | Late adversarial mechanism reviews (findings 15–38) | 24 | no |
+| Post-audit adversarial review (findings 45–48) | 4 | no |
+| Green-diff adversarial review (finding 49) | 1 | no |
+| Documentation consistency review (finding 50) | 1 | no |
 | Existing conformance, fuzz, TLC, invariant, mutation, and lint gates before this round | 0 | — |
 
-Self-catch rate: **10 of 44, or 23%**. The final PR3.6 residual round was **0 of
+Self-catch rate: **10 of 50, or 20%**. The final PR3.6 residual round was **0 of
 51, or 0%**; the preceding PR3.6 provenance round was **7 of 44, or 16%**.
 The poison surface, verify gate, and full mutation audit are real movement:
 this round exceeds the earlier 16% self-catch rate. Review still found
-thirty-four of forty-four defects—**77%**—so outside review remains the majority
+forty of fifty defects—**80%**—so outside review remains the majority
 detector, but the final clean-tree gate itself now exposed six flaws that would
 previously have required another reviewer.
+
+Across the three PR3.6/PR3.7 postmortems the ledger now records **145
+documented findings: 17 self-caught and 128 review-caught**. The pull-request
+attestation therefore declares `review-findings: 128`.
 
 ## Recurrence
 
@@ -228,9 +253,9 @@ self-test that failed for missing repository files, a matching assertion beside
 a suite error, an internally contradictory success report, malformed or
 misrelated status/accounting fields, and an unconstrained heavy runner could
 all make the verifier report evidence other than the property it claimed.
-Sixteen classifier cases, six injected faults, separated classifier/live-
-inventory modes, type-safe report-consistency checks, and internal confinement
-attack those paths.
+The first repair's sixteen classifier cases, six injected faults, separated
+classifier/live-inventory modes, type-safe report-consistency checks, and
+internal confinement attacked those paths.
 
 Findings 39–44 are the next altitude of the same attribution class. A perfect
 report parser cannot recover evidence a test never emits. Findings 39 and 41
@@ -240,6 +265,35 @@ mutation” as equivalent to the mutation's exact plan or wake verdict. Findings
 43 and 44 trusted framework custom-message propagation for inverse promise
 outcomes. The full audit—not the inventory or classifier self-test—was the
 first mechanism that executed every mutation far enough to expose all six.
+
+Finding 45 is the classifier recurrence at its own matching boundary. Even a
+healthy report and the expected file and test name were insufficient while
+marker substring presence could be supplied by a source frame rather than the
+thrown diagnostic. Exact first-line matching plus the seventeenth classifier
+case and seventh injected fault now attack that attribution proxy directly.
+
+Finding 46 realizes the snapshot-shape false negative this postmortem already
+admitted: returning a rows array did not prove that the adapter returned the
+declared authority projection. Table order, ordering keys, protected columns,
+and relationship comparison had driftable representations. One table contract
+now generates the relationship map and validates every required field, and the
+sixteenth oracle meta-test deletes a protected key.
+
+Findings 47, 49, and 50 repeat the fail-open schema-gate class. `Number(value)` plus
+“not older than current” approximated a canonical version supported by this
+binary. The repair then placed its new validation throw under a catch that
+classified error provenance by the words `no such table`; a stored value could
+therefore manufacture the fallback. Narrowing the catch still classified
+provenance by message text, so an unrelated executor could manufacture it too.
+Canonical decoding and exact equality own the value property; the dialect
+executor now turns only the exact canonical read's native missing-`meta` error
+into a distinct type, and admin catches only that type.
+
+Finding 48 repeats the claim-identity lesson in the advisory plane. `runId`
+identifies a durable run across many claim generations, not the execution right
+that an Ending observed. Reconciliation upgraded an old signal by substituting
+the current token. One `LaunchIdentity` now crosses launch and inline ending,
+and only an exact `(runId, claimToken)` pair reaches advisory expiry.
 
 Finding 31 is the recurring undocumented-exception class. A narrow atomic emit
 waiver may be correct, but code alone cannot own a protocol exception. DESIGN
@@ -254,10 +308,12 @@ a spec change rather than an unremarked test edit.
 | Structural `source-keys` selection | 1 inside generated follow-ons | No generated follow-on can widen its distinct logical keys beyond the stamped source selection. The hand-written `wake-runs` statement still uses `{ many: reason }`; a stale wait shaped to satisfy its textual predicate remains the explicit PR3.8 false negative. |
 | Non-mergeable self-source materialization | 1 for the generated SQL shape | No direct target-table subquery can be emitted for a registered self relation. A future dialect can still reject another otherwise portable construct; real-dialect conformance, not this shape, owns that boundary. |
 | Closed per-table generated assignments and shared stamp-name grammar | 1 inside the generated builder | No generated caller can spell a left-hand side outside the contract or emit a stamp suffix outside the shared grammar. Hand-written `followOn()` and direct executor SQL remain adjacent raw surfaces; PR3.9's SQL AST and the poison oracle own them. |
-| Exact mutation verdict attribution, 16 classifier cases, 34/34 clean-tree audit, typed report consistency, and internal confinement | 2 | A different causal defect can still make the exact expected test throw the exact expected marker, and the audit attacks only the current 34 registered mutations. A structurally consistent forged report can still lie that Vitest ran the intended code; suite arithmetic cannot be mapped to file counts without reporter topology. The wrapper also proves only that `scripts/confine.sh` was invoked, not that the cgroup implementation enforces the intended limits. |
+| Exact first-line mutation verdict attribution, 17 classifier cases, 36/36 clean-tree audit, typed report consistency, and internal confinement | 2 | A different causal defect can still make the exact expected test emit the same exact first-line marker, and the audit attacks only the current 36 registered mutations. A structurally consistent forged report can still lie that Vitest ran the intended code; suite arithmetic cannot be mapped to file counts without reporter topology. The wrapper also proves only that `scripts/confine.sh` was invoked, not that the cgroup implementation enforces the intended limits. |
 | Exact-call construction wrappers, one marked plan vector, split A/B wake witness, and explicit promise-failure helpers | 2 | An unrelated defect can still produce the same exact construction or poison regex. The plan vector proves only its three declared access-path properties, and the A/B fixture proves only the declared event-correlation topology; a new plan or row axis needs its own mutation and witness. |
 | Per-call six-table durable-delta progress floor | 2 | A store call can write and restore the same row before its after-snapshot, or produce an external side effect outside the six tables; both are invisible. Unlike the retired SQL/row-count proxies, CTE DML, SELECT rows, and no-op DML are decided by the durable state property itself. |
-| Structured row keys, finding identities, and frozen before-state authority | 1 for representation; 2 for oracle coverage | Two tuples cannot collide merely because components contain separators. A relationship column omitted from the explicit authority schema, or a new table absent from the six-table snapshot, can still change without this oracle noticing. |
+| Structured row keys, finding identities, and one validated frozen-authority table contract | 1 for representation; 2 for oracle coverage | A returned row cannot omit a declared key/ownership field, and two tuples cannot collide merely because components contain separators. A semantically load-bearing column never declared in the authority contract, or a new table absent from the six-table snapshot, can still change without this oracle noticing. |
+| Canonical schema-version decoding, exact-current migration postcondition, and typed schema-absence boundary | 1 for exception provenance; 3 for runtime validation | A custom or broken dialect executor can falsely emit `SchemaNotInitializedError`; that adapter's native contract tests must prove it reserves the type for the exact absent-metadata condition. A database can also record the exact current version while its physical DDL is corrupt or incomplete; native schema gates and migration sentinels own that adjacent property. |
+| Exact inline Ending claim identity and opaque reconciliation | 1 for the shared identity; 2 for the stale-ending schedule | A malicious source that knows and reuses the exact current claim token is indistinguishable from the holder, and tokenless EndingFeed reconciliation remains unimplemented until its atomic heartbeat-cutoff store operation lands. |
 | Canonical exact-integer comparison and condition-specific numeric severity | 1 for number/bigint identity; 2 for severity | A newly added numeric condition that falls through to the default severity still treats every surviving instance as severity one. Its exact metric needs a meta-test like the deadline-delta and provenance-span attacks. |
 | Portable `injectStorageCorruption` disposition | 1 at the fixture contract | A broken strict-dialect fixture can falsely report `structurally-rejected` without attempting the native write. That dialect's schema gate must prove the physical constraint independently. |
 | Typed 50-condition inventory and poison completeness | 1 for IDs; 2 for coverage | Removing `cancelled` from a terminal-state set while retaining the `failed` witness can leave `terminal-task/live-run` covered. PR3.10 adds a red mutation per claimed branch and enum literal because inventory membership alone is a proxy for semantic completeness. |
@@ -269,9 +325,9 @@ a spec change rather than an unremarked test edit.
 
 ## Fix-induced defects
 
-**Twenty-four findings were induced by repairs earlier in this round: 13, 15,
+**Twenty-seven findings were induced by repairs earlier in this round: 13, 15,
 16, 18, 22, 23, 25, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
-42, 43, and 44.** The portability repair
+42, 43, 44, 45, 46, and 49.** The portability repair
 initially accepted ISO strings and unrestricted projections, then compared
 canonical integers by JavaScript representation. Authority and
 finding-identity repairs first flattened tuples. The progress repair moved from
@@ -293,17 +349,25 @@ outer boundary until finding 37 moved the shared property before both limits.
 The attribution surface then mislabeled two structural kills, split a plan
 verdict, gave one mutation semantic collateral, retained a nondiscriminating
 fixture, and delegated two exact markers to framework behavior. The full audit
-found those six defects in the new verdict machinery itself.
+found those six defects in the new verdict machinery itself. The same
+attribution repair then left substring/source-context credit expressible, while
+the frozen-authority repair validated only result-array shape and not its
+declared columns. Finally, finding 47's canonical schema-version repair placed
+its new validation error inside the old broad missing-table catch, inducing
+finding 49. Findings 47 and 48 corrected pre-existing migration and ending
+logic; finding 50 exposed the same pre-existing message classifier rather than
+a defect caused by the repair, so none of 47, 48, or 50 changes the
+fix-induced count.
 
 That count is not discounted because the defects lived briefly or only in test
 machinery. Each repair was a new change and was re-reviewed as new code. The
-fifteen oracle meta-tests are the executable result of that re-review rather
+sixteen oracle meta-tests are the executable result of that re-review rather
 than evidence that the first repairs were safe.
 
 ## Evidence
 
 - The audit's six wrong-path results are preserved in a separate red commit.
-  Their attribution fixes and the final 34-of-34 audit evidence land in the
+  Their attribution fixes and the then-final 34-of-34 audit evidence land in the
   paired green commit.
 - The first generated poison run produced four red cells. Three reproduced
   findings 1–3. The fourth was an `expire-lease-now` oracle-boundary case, not
@@ -321,7 +385,7 @@ than evidence that the first repairs were safe.
   CTE/SELECT/no-op progress, tuple collisions, and both exact numeric
   worsening gaps.
 - `pnpm verify` caught finding 14 in the first lint-selftest integration. The
-  accepted path and all six injected classifier faults now use the isolated
+  accepted path and all seven injected classifier faults now use the isolated
   classifier mode; the live mode additionally checks every mutation address,
   marker, and internal confinement prefix.
 - Finding 34's controlled classifier case was observed red as “expected
@@ -376,12 +440,34 @@ than evidence that the first repairs were safe.
   success into the successor marker; `attributeExpectedFailure` turns only the
   exact claim/cardinality poison error into the sole-live marker. Both propagate
   unrelated errors.
+- Red commit `578a744` made findings 45–48 executable. The classifier credited
+  a marker found only in assertion source context; a poison snapshot row with
+  `tasks.task_id` removed crossed the rows-array shape check; malformed and
+  future schema versions let migration resolve; and an old-token same-run
+  Ending made the current lease immediately sweepable. Green commit `53ad53b`
+  made all four paths fail closed through exact first-line marker matching, one
+  validated snapshot-table contract, canonical/exact schema-version handling,
+  and exact launch/ending claim identity.
+- Green-diff review found finding 49 in that repair. Red commit `44836cb`
+  stored `no such table` as the version and observed `schemaVersion()` return
+  zero instead of `SchemaMismatchError`. Green commit `53ad53b` narrowed the
+  catch to the metadata SELECT; parsing now occurs after it, so the same
+  regression rejects the stored value.
+- Documentation consistency review found finding 50: the narrowed catch still
+  classified any executor error containing `no such table` as fresh. Red commit
+  `179b0ab` made an unrelated `StoreUnavailableError` resolve as zero. Green
+  commit `225566d` introduced `SchemaNotInitializedError`, emitted only by the
+  dialect executor for the exact canonical version read and native absent-meta
+  error; admin catches only that type. The dedicated
+  `schema-absence-is-typed` mutation restores substring inference.
 - Current executable inventories are 50 invariant condition IDs, 47 poison
   witnesses crossed with 17 labels (799 generated cells and 801 poison cases
-  including two inventory tests), fifteen poison/invariant meta-tests, and
-  sixteen classifier cases over 34 live mutations plus six injected faults.
-  After the six attribution fixes, the full audit completed **34 of 34
-  attributable**, with no wrong-path result or survivor.
+  including two inventory tests), sixteen poison/invariant meta-tests, and
+  seventeen classifier cases over 36 live mutations plus seven injected
+  faults. The final clean-tree audit passed its baseline and completed **36 of
+  36 attributable**, with no wrong-path result or survivor.
+- The focused review-gap run passed **48/48**. The final `pnpm verify` passed
+  **67 files and 1,501 tests**.
 - Finder verdict: “The residual mechanisms still admitted post-commit proxy
   checks, source-table/key mismatches, colliding row and finding identities,
   vacuous or metadata-only poison progress, after-state authority laundering,
@@ -395,6 +481,12 @@ than evidence that the first repairs were safe.
   introduced between claim and activation.
 - Claim-analysis verdict: an earlier corrupt candidate could consume the bound
   before a late sole-live filter, permanently starving later healthy work.
+- Post-audit review verdict: source-context mutation credit, incomplete poison
+  projections, permissive schema-version handling, and current-token
+  substitution in Ending reconciliation all passed the mechanisms that claimed
+  to exclude them.
+- Green-diff review verdict: the schema repair's own exception boundary let
+  stored error text impersonate a missing metadata table.
 - Disconfirmed or reclassified claims: multiple physical waits for one stamped
   run are legal, so a physical-row cap was rejected in favor of a distinct-key
   construction guarantee; the initial advisory-expiry red cell was an oracle
@@ -425,7 +517,11 @@ One reporter aggregate domain also approximated another domain's hidden
 topology. Finally, a scenario's downstream story approximated its earliest
 failure boundary, “some assertion killed the mutant” approximated the exact
 verdict, and a framework custom message approximated a reliable promise-failure
-channel.
+channel. Marker substring presence then approximated the diagnostic's origin,
+a rows array approximated a complete authority projection, numeric coercion and
+a lower bound approximated one canonical supported schema version, rendered
+error text approximated the provenance of a database failure, and `runId`
+approximated the exact claim identity carried by an ending.
 
 The common repair is to move proof toward the source: the contract owns both
 ends of a relation; source-table provenance travels with the fence; the target
@@ -441,9 +537,13 @@ preserve unrelated behavior, and promise helpers emit markers themselves.
 Claim candidates, receipts, and activation structurally require one live run;
 due and post-claim/pre-activate regressions prove those guards on the corrupt
 subject, while the single candidate composition places eligibility before both
-bounded legs. Where a structural representation is possible it is used. Where
-only an oracle is possible, that oracle receives its own generated
-false-positive surface.
+bounded legs. Mutation credit now reads only an exact first-line diagnostic;
+one table contract defines and validates poison authority projections; schema
+decoding is canonical with an exact-current postcondition, and native metadata
+absence crosses the dialect boundary as its own type rather than rendered
+text; one claim identity crosses launch and inline Ending unchanged. Where a
+structural representation is possible it is used. Where only an oracle is
+possible, that oracle receives its own generated false-positive surface.
 
 ## Mechanisms
 
@@ -466,13 +566,14 @@ Built in this PR:
   sleeping claim legs, with a shared bounded-progress conformance regression
   and libSQL recorded shipped-CAS plan assertions (rung 1 for the single
   representation; rung 2 for placement, behavior, and plan).
-- Thirty-four exact mutation verdicts parsed from structured Vitest output, a
-  sixteen-case classifier, typed nine-counter/file/assertion consistency checks,
-  six injected false-positive faults, separate classifier/live-inventory
+- Thirty-five exact mutation verdicts parsed from structured Vitest output, a
+  seventeen-case classifier, typed nine-counter/file/assertion consistency
+  checks, seven injected false-positive faults, separate classifier/live-inventory
   modes, internally confined baseline/mutant suites, exact-call construction
   wrappers, one marked emit-plan vector, a split A/B event witness, and explicit
-  require/attribute promise helpers. The full clean-tree audit is 34 of 34
-  attributable (rung 2).
+  require/attribute promise helpers. Only an exact first-line diagnostic—not a
+  substring, stack, or source frame—can answer. The full clean-tree audit is 35
+  of 35 attributable (rung 2).
 - One portable invariant evaluator with 50 typed condition IDs under 23 display
   names, structured finding identities, exact safe-number/bigint comparison,
   and fail-closed five-result projection shape (rungs 1 and 3).
@@ -480,12 +581,21 @@ Built in this PR:
   distinguish injectable corruption from a strict schema that makes the
   forbidden representation unwritable (rung 1).
 - A 17-label by 47-witness poison matrix: 799 generated cells and 801 cases
-  including inventory, with tuple-keyed before-state authority, explicit
-  insertion ownership, per-call six-table durable-delta progress,
+  including inventory, with one table/order/required-column contract,
+  fail-closed projection validation, tuple-keyed before-state authority,
+  explicit insertion ownership, per-call six-table durable-delta progress,
   live-run/cardinality barriers, exact claim sole-live mutations, exact
   condition/subject deltas, and numeric severity for counters, deadlines, and
-  provenance spans. Fifteen adversarial oracle meta-tests attack the surface
+  provenance spans. Sixteen adversarial oracle meta-tests attack the surface
   (rung 2).
+- Canonical, safe-integer schema-version decoding, an exact-current migration
+  postcondition, and a typed `SchemaNotInitializedError` that only the dialect
+  executor can emit for the canonical version read's native absent-meta result;
+  one exact mutation maintains the admin boundary (rungs 1, 2, and 3).
+- One `LaunchIdentity` shared by launch invocations and inline Endings; opaque
+  reconciliation expires a lease only for an exact `(runId, claimToken)` match,
+  with stale-token, tokenless hostile-input, and exact-mutation coverage (rungs
+  1 and 2).
 - One narrowly documented atomic emit exception keyed by condition ID and the
   structured poisoned-run component, never by public display name (rungs 1 and
   2).
@@ -500,27 +610,38 @@ Deferred (recorded in BUILD.md):
   witnessable, but cannot prove that its own declaration omitted nothing
   (rung-2 ratchet toward the property).
 - PR4.1 owns real MySQL/PostgreSQL adapter normalization and physical schema
-  gates. The shared contract is now expressible without SQLite operators, but
-  only the real dialect matrix can prove each native projection and each
+  gates, including canonical version decoding and exact-current rejection. The
+  shared contract is now expressible without SQLite operators, but only the real
+  dialect matrix can prove each native projection, physical schema, and
   `structurally-rejected` claim.
+- PR6.4 owns tokenless EndingFeed reconciliation through an atomic
+  heartbeat-cutoff store operation. Inline reconciliation cannot substitute its
+  current token for a signal that did not carry one.
 
 ## What this round still would not catch
 
 A defect omitted from both the invariant evaluator and its 50-condition
 inventory can still ship; a surviving enum literal under an otherwise covered
-condition is the concrete example and PR3.10 owns it. The 34-of-34 audit covers
+condition is the concrete example and PR3.10 owns it. The 36-of-36 audit covers
 the registered subjects, not mutations the inventory never declared. A
-mutation can also receive the expected file/name/marker—or the same exact
-construction/poison regex—because a different causal defect failed there.
+mutation can also receive the expected file/name/exact first-line marker—or the
+same exact construction/poison regex—because a different causal defect failed
+there.
 Attribution makes wrong-path failures much harder to credit, not logically
 impossible.
 
 The poison oracle compares per-call durable snapshots, so a write that escapes
 authority and is restored within one call, or an external side effect not
-represented in the six tables, is outside its view. Its 47 witnesses also
-cannot generate a corruption axis nobody declared, and a strict fixture could
-falsely claim structural rejection unless its dialect schema gate attacks that
-claim. The sole-live-run guards address only claim/activation-time live
+represented in the six tables, is outside its view. It rejects omission of
+declared authority fields, but a new semantically load-bearing column or table
+can still escape until the contract enrolls it. Its 47 witnesses also cannot
+generate a corruption axis nobody declared, and a strict fixture could falsely
+claim structural rejection unless its dialect schema gate attacks that claim.
+Canonical version identity likewise cannot prove that the physical DDL matches
+the recorded version; dialect schema gates own that property. Exact Ending
+identity cannot authenticate a malicious source that already possesses the
+current token, and tokenless feed reconciliation remains deferred to PR6.4.
+The sole-live-run guards address only claim/activation-time live
 cardinality; they do not replace the separate ownership, queue, and state
 witnesses. The pre-limit construction covers the current pending/sleeping
 candidate legs, but a future leg still needs structural enrollment and a real

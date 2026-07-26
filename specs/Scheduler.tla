@@ -126,8 +126,13 @@
 \*    restriction is argued sound at DuplicateClaim).
 \*  - Pings, alarms, cron, EndingFeed, expireLeaseNow: by S3.9's
 \*    advisory-signal rule these may only ACCELERATE what lease expiry does
-\*    anyway; TimeAdvance already reaches lease expiry, so omitting them
-\*    removes no reachable states -- only timing, which fairness abstracts.
+\*    anyway, PROVIDED the signal preserves the exact (run, claim token)
+\*    identity. A mismatched or tokenless signal stutters; it may not expire
+\*    the run's current claim. TimeAdvance already reaches the exact claim's
+\*    lease expiry, so omitting identity-preserving acceleration removes no
+\*    reachable states -- only timing, which fairness abstracts. PR6.4 must
+\*    extend this spec before adding atomic tokenless heartbeat-cutoff
+\*    reconciliation.
 \*  - Heartbeat throttling, clock skew (engine time is the single `now` --
 \*    S3.4 rule 3 "engine time is database time" makes this faithful).
 \*  - Re-emit of an already-emitted event: the implementation may refresh an
@@ -278,8 +283,9 @@
 \*     in the protocol reads it, and a replay re-applies the same row
 \*   'sweep:scan' [read] -- read-only discovery, no state transition
 \*   'expire-lease-now' [cas-fenced] -- advisory-only token-fenced write
-\*     (replay re-applies the same absolute value); omission argued sound
-\*     in the header (accelerates TimeAdvance-reachable states only)
+\*     for the exact signal claim identity (replay re-applies the same
+\*     absolute value; mismatched/tokenless signals stutter); omission argued
+\*     sound in the header (accelerates TimeAdvance-reachable states only)
 \*   'set-checkpoint' [cas-fenced] -- lease-fenced LWW upsert; a replay
 \*     re-applies the identical row (data-plane content unmodeled by
 \*     design -- header; its lease fence rides Heartbeat)

@@ -703,6 +703,18 @@ are load-bearing):
    only ever a filter, and every fenced statement is anchored by a primary key
    or an existing index. Rows written before the provenance migration read
    NULL, and NULL never equals a stamp, so no fence can match one.
+9. **A schema version is an exact fact, not a coercible hint.** The stored
+   `schema_version` wire form is a canonical nonnegative base-10 safe integer:
+   `0` is the only zero form and no positive value has a leading zero.
+   Migration reports success only when the recorded version equals the
+   binary's current version exactly; malformed, negative, unsafe, and future
+   versions fail closed. Only an actual absent metadata table means a fresh
+   database at version zero. The dialect adapter alone classifies the canonical
+   singleton version read's native missing-metadata error as
+   `SchemaNotInitializedError`; admin catches that type, never rendered text.
+   Validation of a returned row happens outside the read-error catch, so stored
+   text—even text identical to a missing-table diagnostic—or an unrelated
+   executor failure cannot enter the fresh-database path.
 
 **Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
 `setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
@@ -734,7 +746,8 @@ not depend on careful reading:
   and pins its indexed scans and sibling probes.
 - *Opaque launch outcomes* (`core/launch.ts`): a launcher's report has no
   readable fields; the only affordance is `LaunchOutcome.reconcile`, which
-  owns parsing, identity checking, and the single advisory-expiry door.
+  owns parsing, exact `(runId, claimToken)` identity checking, and the single
+  advisory-expiry door. A mismatched or tokenless ending makes no write.
   Trusting a report's content is a compile error, not a review catch.
 - *The generated fault matrix* (`conformance/src/fault-matrix.ts`): every
   batch label, harvested from source by the same script that checks the
@@ -745,9 +758,12 @@ not depend on careful reading:
   probe asserted. Fault coverage is enumerated, never curated.
 - *The invariant condition inventory and poison matrix*
   (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
-  one dialect-neutral five-table read batch whose result cardinality is
-  exact and every slot/column is validated; a missing or malformed result is
-  an error, never an empty table. Dialect adapters expose exact integers as
+  one dialect-neutral read batch whose result cardinality is exact and every
+  slot/column is validated; a missing or malformed result is an error, never
+  an empty table. The poison snapshot's one closed descriptor owns all six
+  protocol/bookkeeping table names, their stable order, and every required
+  identity/ownership column. A row missing an authority column is rejected
+  before keys are constructed. Dialect adapters expose exact integers as
   safe numbers or bigint, which the evaluator compares canonically without a
   lossy Number conversion. Invalid native representations enter through the
   fixture's `injectStorageCorruption` seam: a permissive store returns
@@ -781,16 +797,19 @@ not depend on careful reading:
   `wait/fired-event` and the exact structured poisoned-run component; display
   names cannot widen it. Counting names, delimiter-joining keys or findings,
   observing that a label was called, or deriving authority from the
-  after-state are prohibited proxies. Fifteen adversarial oracle meta-tests
+  after-state are prohibited proxies. Sixteen adversarial oracle meta-tests
   attack these distinctions.
 - *Attributable mutation verdicts* (`scripts/mutation-probe.py`): every
   mutation names the exact behavioral or construction assertion that must
   kill it — test file, full test name, and marker in its failure. Compilation
   or bind failure, a different assertion, any suite-level error, malformed or
   internally contradictory structured output, process/report disagreement,
-  or any other wrong path receives no credit. The verify gate runs 16
-  classifier cases and six injected false-positive faults over all 34 live
-  mutations. The parser requires all nine aggregate counters to be
+  or any other wrong path receives no credit. A marker matches only the
+  structured failure diagnostic's first line: bare, `Error: <marker>`, or
+  `AssertionError: <marker>: …`; its appearance later in rendered assertion
+  source is not evidence. The verify gate runs 17 classifier cases and seven
+  injected false-positive faults over all 36 live mutations. The parser
+  requires all nine aggregate counters to be
   nonnegative integers and internally consistent within their reporter
   domains. Test counters match test rows; each file status matches its own
   assertion/message rows; suite counters are not equated with file counts
@@ -801,7 +820,7 @@ not depend on careful reading:
   construction wrappers, a single marked plan vector with a
   behavior-preserving mutation, a discriminating A/B wake witness, and
   explicit require/attribute failure helpers, the final audit classified all
-  **34 of 34 as attributable**. Verdict altitude follows the earliest
+  **36 of 36 as attributable**. Verdict altitude follows the earliest
   load-bearing boundary, not the downstream scenario story; a construction
   wrapper encloses the exact call and exact error. Behavioral mutations
   preserve unrelated semantics, every multi-part verdict has one marked
@@ -1112,21 +1131,25 @@ lease timer would do anyway, never directly complete or fail a run.
 2. **Launcher** (execution transport, agnostic on "how"):
    `launch({runId, attempt, claimToken, claimGen, shard, deadlineHint}) →`
    `accepted` (fire-and-forget ack — may still be lost) |
-   `ended` (sync HTTP: outcome observed inline — a reliable Ending; legal only
-   for drivers holding bounded launch slots, i.e. resident pools — serverless
-   ticks always fire-and-forget, §3.1 step 3) |
+   `ended({runId, claimToken, kind})` (sync HTTP: outcome observed inline — a
+   reliable Ending carrying the exact launch identity; reconcile makes no
+   write unless both fields match the invocation; legal only for drivers
+   holding bounded launch slots, i.e. resident pools — serverless ticks always
+   fire-and-forget, §3.1 step 3) |
    `launch-failed` (transport-level rejection → fenced immediate relaunch —
    still counted by the relaunch counter, since "never ran" is the launcher's
    claim, not a guarantee).
 3. **EndingFeed** (runner-termination log; honest contract: at-most-once,
    duplicated, delayed, split-brain-capable): events
-   `{runId, claimToken?, kind: completed|failed|crashed|timeout|unknown}`.
-   Consumers are stateless — any tick handler reconciles: *verify the run
-   already transitioned (controlled ending → no-op), else `expireLeaseNow`.*
-   A tokenless ending may only accelerate after a read-verify: read the run's
-   current token, confirm no heartbeat has landed since the ending's
-   timestamp, then `expireLeaseNow` with the token just read — still nothing
-   more than accelerated lease expiry.
+   `{runId, claimToken?, endedAtEpochMs, kind:
+   completed|failed|crashed|timeout|unknown}`. A token-bearing consumer calls
+   `expireLeaseNow` only for that exact `(runId, claimToken)`; a mismatched
+   signal stutters. Tokenless signals make no write until PR6.4 adds the
+   spec-first atomic heartbeat-cutoff operation: it must read the run's current
+   token, prove no heartbeat landed after the ending's cutoff, and expire that
+   same claim in one store action. A separate read followed by
+   `expireLeaseNow` races a new claim or heartbeat and is forbidden. Feed loss
+   therefore costs only acceleration, never correctness.
 4. **RunStateStore** (data plane, §3.8): `load`, attempt-guarded
    `saveCheckpoint`, streams; placements inline | per-run DB | local file+sync.
 5. **WakeSignals** (optional accelerators): `ping(shard)`, `alarmAt(shard,t)`,
@@ -1135,9 +1158,10 @@ lease timer would do anyway, never directly complete or fail a run.
 Failure taxonomy → port mapping: lost fire-and-forget launch = claimed but
 never activated → sweep sees `activated_gen < claim_gen` at lease expiry → relaunch
 without burning an attempt (this is why activation is separate from claim).
-Sync launch = a Launcher whose EndingFeed is inline and reliable — identical
-reconcile path, better p50. Catastrophic ending = `expireLeaseNow` → reclaim
-now instead of at lease expiry. Split-brain "death" of a live zombie = the same
+Sync launch = a Launcher whose exact-identity EndingFeed is inline and reliable
+— identical reconcile path, better p50. Catastrophic ending =
+`expireLeaseNow` → reclaim now instead of at lease expiry. Split-brain "death"
+of a live zombie = the same
 brief-overlap window lease expiry already tolerates; the zombie's scheduler
 writes die on the stale token, its checkpoints on attempt guards, and its next
 `heartbeat` tells it to exit. Feed totally lost = reclaim latency degrades to
