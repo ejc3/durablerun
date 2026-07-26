@@ -2491,12 +2491,48 @@ def validate_baseline_barrier(
 
 
 def worker_install_command(
-    store: Path | None = None,
+    store: Path,
     *,
     use_worker_default: bool = False,
 ) -> tuple[str, ...]:
-    del store, use_worker_default
-    return ("pnpm", "install", "--offline", "--frozen-lockfile")
+    if not store.is_absolute():
+        raise ValueError("the canonical pnpm store path must be absolute")
+    command = ["pnpm", "install", "--offline", "--frozen-lockfile"]
+    if not use_worker_default:
+        command.extend(("--store-dir", str(store)))
+    return tuple(command)
+
+
+def resolve_pnpm_store(root: Path) -> Path:
+    result = subprocess.run(
+        ["pnpm", "store", "path"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout.strip()
+    if result.returncode != 0:
+        diagnostic = (result.stdout + result.stderr).strip()
+        raise RuntimeError(
+            f"cannot resolve the coordinator's pnpm store: {diagnostic[:500]}"
+        )
+    if not output or "\n" in output:
+        raise RuntimeError(
+            "cannot resolve the coordinator's pnpm store: "
+            f"expected one path, observed {output!r}"
+        )
+    store = Path(output)
+    if not store.is_absolute():
+        raise RuntimeError(
+            "cannot resolve the coordinator's pnpm store: "
+            f"pnpm returned non-absolute path {output!r}"
+        )
+    resolved = store.resolve()
+    if not resolved.is_dir():
+        raise RuntimeError(
+            f"the coordinator's pnpm store does not exist: {resolved}"
+        )
+    return resolved
 
 
 def orchestration_self_test(fault: str | None = None) -> int:
@@ -3826,6 +3862,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
         if git_output(ROOT, "rev-parse", "HEAD^{commit}") != head:
             print("mutation-probe: HEAD moved while acquiring the audit lock", file=sys.stderr)
             return 2
+        pnpm_store = resolve_pnpm_store(ROOT)
 
         run_root = Path(
             tempfile.mkdtemp(prefix="durablerun-mutation-worktrees-")
@@ -3858,7 +3895,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
         )
         print(
             f"mutation audit: head={head} mutations={len(expected)} jobs={jobs} "
-            f"vitest-workers/job={max_workers}",
+            f"vitest-workers/job={max_workers} pnpm-store={pnpm_store}",
             flush=True,
         )
         print(f"mutation audit run root: {run_root}", flush=True)
@@ -3909,7 +3946,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             install_launches = [
                 ProcessLaunch(
                     f"install worker-{plan.worker_id:02}",
-                    worker_install_command(),
+                    worker_install_command(pnpm_store),
                     plan.path,
                     plan.install_log,
                     worker_environment(plan),
