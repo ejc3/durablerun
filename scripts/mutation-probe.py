@@ -1922,6 +1922,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "accept-wrong-registry",
     "accept-incomplete-worker",
     "use-worker-local-pnpm-store",
+    "allow-host-sized-tokio-pools",
 )
 
 
@@ -2722,6 +2723,27 @@ def orchestration_self_test(fault: str | None = None) -> int:
         worker_root = run_root / "worker-00"
         worker_root.mkdir()
         (worker_root / ".git").write_text("gitdir: fixture\n")
+        if fault in (None, "allow-host-sized-tokio-pools"):
+            environment_plan = WorkerPlan(
+                0,
+                worker_root,
+                temporary / "worker-tmp",
+                temporary / "baseline.json",
+                temporary / "mutations.json",
+                temporary / "install.log",
+                temporary / "baseline.log",
+                temporary / "mutations.log",
+                (),
+            )
+            environment = worker_environment(
+                environment_plan,
+                allow_host_sized_tokio=fault == "allow-host-sized-tokio-pools",
+            )
+            if environment.get("TOKIO_WORKER_THREADS") != "1":
+                failures.append(
+                    "native thread budget: worker suites can create "
+                    "host-sized Tokio pools"
+                )
         source_root = temporary / "source"
         source_root.mkdir()
         (source_root / ".git").mkdir()
@@ -3574,7 +3596,12 @@ def run_launches(
             handle.close()
 
 
-def worker_environment(plan: WorkerPlan) -> dict[str, str]:
+def worker_environment(
+    plan: WorkerPlan,
+    *,
+    allow_host_sized_tokio: bool = False,
+) -> dict[str, str]:
+    del allow_host_sized_tokio
     plan.temporary.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
