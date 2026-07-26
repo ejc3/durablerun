@@ -1770,10 +1770,13 @@ def run(
             "batch-lint.py",
             "clock-lint.py",
             "fragment-lint.py",
-            "mutation-probe.py",
         }:
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
+            )
+        if lint == "mutation-probe.py":
+            (root / "scripts" / "typescript-verdict-analyzer.cjs").write_text(
+                (SCRIPTS / "typescript-verdict-analyzer.cjs").read_text()
             )
         if lint == "review-bot-lint.py":
             if git_state not in {"unavailable", "empty", "tracked"}:
@@ -1802,18 +1805,27 @@ def run(
             if args is None
             else [arg.replace("{root}", str(root)) for arg in args]
         )
+        process_environment = {
+            **os.environ,
+            **{
+                key: value.replace("{root}", str(root))
+                for key, value in (environment or {}).items()
+            },
+        }
+        if lint == "mutation-probe.py":
+            dependency_root = str(SCRIPTS.parent / "node_modules")
+            inherited_node_path = process_environment.get("NODE_PATH")
+            process_environment["NODE_PATH"] = (
+                f"{dependency_root}{os.pathsep}{inherited_node_path}"
+                if inherited_node_path
+                else dependency_root
+            )
         result = subprocess.run(
             [*runner, str(copied), *lint_args],
             capture_output=True,
             text=True,
             cwd=str(root),
-            env={
-                **os.environ,
-                **{
-                    key: value.replace("{root}", str(root))
-                    for key, value in (environment or {}).items()
-                },
-            },
+            env=process_environment,
         )
         if forbidden_artifact is not None and (root / forbidden_artifact).exists():
             return subprocess.CompletedProcess(

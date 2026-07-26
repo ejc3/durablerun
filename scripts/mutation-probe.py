@@ -29,19 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-# This runner requires a clean tree and imports repository-local helpers. Do
-# not let Python create an untracked cache before the clean-tree check runs.
-sys.dont_write_bytecode = True
-
-from source_lex import (
-    matching_delimiter,
-    split_top_level,
-    split_typescript_call_arguments,
-    typescript_call_open,
-    typescript_structure,
-)
-
 ROOT = Path(__file__).resolve().parent.parent
+TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 
 
 VerdictKind = Literal["behavior", "construction"]
@@ -91,100 +80,69 @@ class SuiteResult:
         )
 
 
-def raw_promise_message_lines(source: str) -> tuple[int, ...]:
-    """Find custom messages entrusted to Vitest promise matchers."""
-    structure = typescript_structure(source)
-    lines: list[int] = []
-    for match in re.finditer(r"\bexpect\b", structure):
-        opened = typescript_call_open(
-            source,
-            match.start(),
-            match.end(),
-            structure,
+@dataclass(frozen=True)
+class TypeScriptSourceAnalysis:
+    diagnostics: tuple[str, ...]
+    promise_message_lines: tuple[int, ...]
+    helper_verdict_descriptors: frozenset[tuple[str, str]]
+    direct_verdict_markers: frozenset[str]
+
+
+def analyze_typescript_sources(
+    sources: dict[str, str],
+) -> dict[str, TypeScriptSourceAnalysis]:
+    """Ask the TypeScript compiler AST for promise calls and helper descriptors."""
+    result = subprocess.run(
+        ["node", str(TYPESCRIPT_ANALYZER)],
+        cwd=ROOT,
+        input=json.dumps({"sources": sources}),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            "TypeScript verdict analyzer failed: "
+            f"{(result.stdout + result.stderr).strip()[:500]}"
         )
-        if opened is None:
-            continue
-        closed = matching_delimiter(source, opened, structure)
-        if closed is None:
-            raise ValueError("cannot establish expect() call boundary")
-        suffix = re.match(r"\s*\.\s*(?:rejects|resolves)\b", structure[closed + 1 :])
-        if suffix is None:
-            continue
-        arguments = split_typescript_call_arguments(
-            source,
-            structure,
-            opened + 1,
-            closed,
-        )
-        if arguments is None:
-            raise ValueError("cannot establish expect() argument boundaries")
-        if len(arguments) > 1:
-            lines.append(source.count("\n", 0, match.start()) + 1)
-    return tuple(lines)
+    try:
+        payload = json.loads(result.stdout)
+        files = payload["files"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError(f"TypeScript verdict analyzer returned malformed JSON: {error}") from error
+    if not isinstance(files, dict) or set(files) != set(sources):
+        raise ValueError("TypeScript verdict analyzer returned the wrong file inventory")
 
-
-VERDICT_HELPERS = (
-    "attributeExpectedFailure",
-    "attributeReplacedFailure",
-    "requireExpectedFailure",
-)
-MUTATION_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-
-
-def helper_verdict_descriptors(source: str) -> frozenset[tuple[str, str]]:
-    """Extract canonical kind/name descriptors passed directly to verdict helpers."""
-    structure = typescript_structure(source)
-    helpers = "|".join(VERDICT_HELPERS)
-    descriptors: set[tuple[str, str]] = set()
-    for match in re.finditer(rf"\b(?:{helpers})\b", structure):
-        opened = typescript_call_open(
-            source,
-            match.start(),
-            match.end(),
-            structure,
-        )
-        if opened is None:
-            continue
-        closed = matching_delimiter(source, opened, structure)
-        if closed is None:
-            raise ValueError("cannot establish verdict-helper call boundary")
-        arguments = split_top_level(source, structure, opened + 1, closed)
-        if not arguments:
-            continue
-        start, end = arguments[0]
-        while start < end and structure[start].isspace():
-            start += 1
-        while end > start and structure[end - 1].isspace():
-            end -= 1
-        if start == end or structure[start] != "{":
-            continue
-        object_end = matching_delimiter(source, start, structure)
-        if object_end is None or object_end != end - 1:
-            continue
-        fields = split_top_level(source, structure, start + 1, object_end)
-        if fields is None:
-            raise ValueError("cannot establish verdict-descriptor fields")
-        values: dict[str, str] = {}
-        for field_start, field_end in fields:
-            field = source[field_start:field_end]
-            parsed = re.fullmatch(
-                r"""\s*(kind|mutation)\s*:\s*(['"])([^'"]*)\2\s*""",
-                field,
+    analyses: dict[str, TypeScriptSourceAnalysis] = {}
+    for path, entry in files.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: TypeScript verdict analysis is not an object")
+        diagnostics = entry.get("diagnostics")
+        lines = entry.get("promiseMessageLines")
+        descriptors = entry.get("helperVerdictDescriptors")
+        markers = entry.get("directVerdictMarkers")
+        if not (
+            isinstance(diagnostics, list)
+            and all(isinstance(item, str) for item in diagnostics)
+            and isinstance(lines, list)
+            and all(isinstance(item, int) and item > 0 for item in lines)
+            and isinstance(descriptors, list)
+            and all(
+                isinstance(item, list)
+                and len(item) == 2
+                and all(isinstance(part, str) for part in item)
+                for item in descriptors
             )
-            if parsed is None:
-                values = {}
-                break
-            values[parsed.group(1)] = parsed.group(3)
-        kind = values.get("kind")
-        mutation = values.get("mutation")
-        if (
-            len(values) == 2
-            and kind in {"behavior", "construction"}
-            and mutation is not None
-            and MUTATION_NAME.fullmatch(mutation)
+            and isinstance(markers, list)
+            and all(isinstance(item, str) for item in markers)
         ):
-            descriptors.add((kind, mutation))
-    return frozenset(descriptors)
+            raise ValueError(f"{path}: TypeScript verdict analysis has an invalid shape")
+        analyses[path] = TypeScriptSourceAnalysis(
+            tuple(diagnostics),
+            tuple(lines),
+            frozenset((item[0], item[1]) for item in descriptors),
+            frozenset(markers),
+        )
+    return analyses
 
 
 # (name, file, find, replace, what removing it should break)
@@ -1504,7 +1462,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
         (
             "relational expression before a custom message",
-            "await expect(a < b, c > (d) ? 'lost' : 'other').rejects.toThrow()",
+            "await expect((a < b), c > (d) ? 'lost' : 'other').rejects.toThrow()",
             (1,),
         ),
         (
@@ -1591,8 +1549,9 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
         (
             "same-named private method",
+            "class C { #requireExpectedFailure(...args: unknown[]) {} async run() { "
             "await this.#requireExpectedFailure("
-            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /x/, action)",
+            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /x/, action) } }",
             frozenset(),
         ),
         (
@@ -1616,12 +1575,57 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     )
 
     failures = []
-    for label, source, wanted in promise_message_cases:
-        got = raw_promise_message_lines(source)
+    analysis_sources = {
+        **{
+            f"__selftest__/promise-{index}.ts": source
+            for index, (_, source, _) in enumerate(promise_message_cases)
+        },
+        **{
+            f"__selftest__/descriptor-{index}.ts": source
+            for index, (_, source, _) in enumerate(descriptor_cases)
+        },
+    }
+    live_paths: list[Path] = []
+    if check_live_inventory:
+        live_paths = sorted((ROOT / "packages").glob("**/*.ts"))
+        analysis_sources.update(
+            {
+                str(path.relative_to(ROOT)): path.read_text()
+                for path in live_paths
+            }
+        )
+    try:
+        analyses = analyze_typescript_sources(analysis_sources)
+    except ValueError as error:
+        failures.append(str(error))
+        analyses = {}
+
+    for index, (label, _, wanted) in enumerate(promise_message_cases):
+        key = f"__selftest__/promise-{index}.ts"
+        analysis = analyses.get(key)
+        if analysis is None:
+            continue
+        if analysis.diagnostics:
+            failures.append(
+                f"promise-message {label}: TypeScript parse diagnostics "
+                f"{analysis.diagnostics}"
+            )
+            continue
+        got = analysis.promise_message_lines
         if got != wanted:
             failures.append(f"promise-message {label}: expected {wanted}, got {got}")
-    for label, source, wanted in descriptor_cases:
-        got = helper_verdict_descriptors(source)
+    for index, (label, _, wanted) in enumerate(descriptor_cases):
+        key = f"__selftest__/descriptor-{index}.ts"
+        analysis = analyses.get(key)
+        if analysis is None:
+            continue
+        if analysis.diagnostics:
+            failures.append(
+                f"verdict-descriptor {label}: TypeScript parse diagnostics "
+                f"{analysis.diagnostics}"
+            )
+            continue
+        got = analysis.helper_verdict_descriptors
         if got != wanted:
             failures.append(f"verdict-descriptor {label}: expected {wanted}, got {got}")
     if check_live_inventory:
@@ -1642,9 +1646,18 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 if len(marker_parts) == 3
                 else ("", "")
             )
-            descriptors = helper_verdict_descriptors(verdict_source)
+            marker_analysis = analyses.get(marker_file)
+            descriptors = (
+                marker_analysis.helper_verdict_descriptors
+                if marker_analysis is not None
+                else frozenset()
+            )
             if (
-                mutation.verdict.marker not in verdict_source
+                (
+                    marker_analysis is None
+                    or mutation.verdict.marker
+                    not in marker_analysis.direct_verdict_markers
+                )
                 and descriptor not in descriptors
             ):
                 failures.append(
@@ -1652,17 +1665,20 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     f"{mutation.verdict.marker!r} nor canonical helper descriptor is present in "
                     f"{marker_file}"
                 )
-        for path in sorted((ROOT / "packages").glob("**/*.ts")):
-            try:
-                lines = raw_promise_message_lines(path.read_text())
-            except ValueError as error:
+        for path in live_paths:
+            relative = str(path.relative_to(ROOT))
+            analysis = analyses.get(relative)
+            if analysis is None:
+                continue
+            if analysis.diagnostics:
                 failures.append(
-                    f"{path.relative_to(ROOT)}: cannot inspect promise verdicts: {error}"
+                    f"{relative}: cannot inspect promise verdicts: "
+                    f"{analysis.diagnostics}"
                 )
                 continue
-            for line in lines:
+            for line in analysis.promise_message_lines:
                 failures.append(
-                    f"{path.relative_to(ROOT)}:{line}: Vitest promise outcomes cannot carry "
+                    f"{relative}:{line}: Vitest promise outcomes cannot carry "
                     "a custom message; use an explicit attribution helper"
                 )
     for label, result, verdict, wanted in cases:

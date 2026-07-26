@@ -197,8 +197,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Structured Vitest output makes a green survivor, bind/compile error,
     different failing assertion, malformed report, suite error, or
     process/report disagreement a wrong-path result rather than credit. The
-    verifier runs a 17-case classifier self-test, fifteen promise-message
-    source cases, and eight canonical helper-descriptor cases, with seven
+    verifier runs a 17-case classifier self-test, nineteen promise-message
+    source cases, and ten canonical helper-descriptor cases, with seven
     injected false-positive faults maintained by `lint-selftest.py`; both
     baseline and per-mutation suites route themselves through
     `scripts/confine.sh`.
@@ -217,16 +217,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     definition now owns success-to-error, expected-error-to-success, and
     expected-error-to-replacement-error verdicts. Callers pass a structured
     kind/name descriptor; the helper alone constructs the canonical marker and
-    rejects decorated names. Through the canonical TypeScript structural
-    lexer, the verify gate rejects every custom-message argument on direct
-    Vitest `expect(...).rejects`/`.resolves` chains, including parenthesized,
-    optional-call, and generic forms without mistaking generic commas for call
-    arguments. Bare helper identity excludes same-named object methods. The
-    lexer also preserves the postfix state of TypeScript non-null assertions,
-    so following division cannot hide executable batch calls as regex
-    contents. The mutation runner disables Python bytecode writes before
-    importing that shared lexer, and its executable self-test rejects any
-    import artifact that would make a clean audit refuse its own tree.
+    rejects decorated names. One TypeScript-compiler AST pass rejects every
+    custom-message argument on direct Vitest
+    `expect(...).rejects`/`.resolves` chains, owns parenthesized,
+    optional-call, generic, and relational syntax, distinguishes real helper
+    calls from methods and constructors, and inventories exact marker string
+    literals rather than comments. The shared lightweight lexer remains only
+    on source-harvest surfaces; it preserves the postfix state of TypeScript
+    non-null assertions so following division cannot hide executable batch
+    calls as regex contents. Removing the mutation runner's repository-local
+    Python parser/import makes its bytecode self-dirty path unrepresentable;
+    the executable fixture still rejects any analyzer import artifact.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 54 atomic witnesses covering all 57
     invariant condition IDs: 918 generated cells, plus two inventory cases.

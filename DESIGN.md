@@ -825,8 +825,8 @@ not depend on careful reading:
   or any other wrong path receives no credit. A marker matches only the
   structured failure diagnostic's first line: bare, `Error: <marker>`, or
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
-  source is not evidence. The verify gate runs 17 classifier cases, fifteen
-  promise-message source cases, eight canonical helper-descriptor cases, and
+  source is not evidence. The verify gate runs 17 classifier cases, nineteen
+  promise-message source cases, ten canonical helper-descriptor cases, and
   seven injected false-positive faults over all 50 live mutations. The parser
   requires all nine aggregate counters to be nonnegative integers and
   internally consistent within their reporter domains. Test counters match
@@ -846,12 +846,13 @@ not depend on careful reading:
   `@durablerun/core/testing`, their success, expected-error, replacement-error,
   and unrelated-error arms have direct tests, and callers provide a structured
   kind/name descriptor from which only the helper can construct a canonical,
-  undecorated marker. The canonical TypeScript structural lexer makes the
-  verify gate refuse every custom-message argument on a direct Vitest
-  `expect(...).rejects` or `.resolves` chain, including parenthesized,
-  optional-call, and generic forms; generic type commas do not become call
-  arguments, and same-named object methods do not become helper inventory.
-  Prefix/postfix state is preserved for TypeScript's non-null assertion so a
+  undecorated marker. One TypeScript-compiler AST pass makes the verify gate
+  refuse every custom-message argument on a direct Vitest
+  `expect(...).rejects` or `.resolves` chain; compiler syntax owns nested
+  parentheses, optional generics, relational expressions, methods, and
+  constructors, while exact string-literal and helper-descriptor inventories
+  exclude comments and decorated names. The separate lightweight source lexer
+  preserves prefix/postfix state for TypeScript's non-null assertion so a
   following division slash cannot hide executable batch calls as regex
   contents. Verdict altitude follows the
   earliest load-bearing boundary, not the downstream scenario story; a
@@ -859,9 +860,9 @@ not depend on careful reading:
   mutations preserve unrelated semantics, every multi-part verdict has one
   marked vector, and inverse promise outcomes use the shared helpers to emit
   the marker directly rather than relying on framework custom-message
-  propagation. The clean-tree mutation runner disables Python bytecode writes
-  before importing repository-local helpers, and the executable lint self-test
-  rejects any helper-import artifact.
+  propagation. The mutation runner no longer imports its former
+  repository-local Python parser; the executable lint self-test rejects any
+  analyzer import artifact before a clean-tree audit can begin.
 - *Duplicate-delivery in the model*: the spec models a retried request per
   labeled action, and the ledger tags each label's duplicate semantics
   ([cas-fenced] / [receipt] / [read] / [setup]), machine-checked — so a
