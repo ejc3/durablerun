@@ -1922,6 +1922,13 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "accept-wrong-registry",
     "accept-incomplete-worker",
     "use-worker-local-pnpm-store",
+    "accept-failed-pnpm-store-query",
+    "accept-multiline-pnpm-store",
+    "accept-relative-pnpm-store",
+    "accept-missing-pnpm-store",
+    "allow-online-worker-install",
+    "allow-unfrozen-worker-install",
+    "replace-worker-install-command",
     "allow-host-sized-tokio-pools",
 )
 
@@ -2495,7 +2502,11 @@ def worker_install_command(
     store: Path,
     *,
     use_worker_default: bool = False,
+    allow_online: bool = False,
+    allow_unfrozen: bool = False,
+    replace_command: bool = False,
 ) -> tuple[str, ...]:
+    del allow_online, allow_unfrozen, replace_command
     if not store.is_absolute():
         raise ValueError("the canonical pnpm store path must be absolute")
     command = ["pnpm", "install", "--offline", "--frozen-lockfile"]
@@ -2504,13 +2515,15 @@ def worker_install_command(
     return tuple(command)
 
 
-def resolve_pnpm_store(root: Path) -> Path:
-    result = subprocess.run(
-        ["pnpm", "store", "path"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
+def pnpm_store_from_result(
+    result: subprocess.CompletedProcess[str],
+    *,
+    accept_failed_query: bool = False,
+    accept_multiline: bool = False,
+    accept_relative: bool = False,
+    accept_missing: bool = False,
+) -> Path:
+    del accept_failed_query, accept_multiline, accept_relative, accept_missing
     output = result.stdout.strip()
     if result.returncode != 0:
         diagnostic = (result.stdout + result.stderr).strip()
@@ -2534,6 +2547,16 @@ def resolve_pnpm_store(root: Path) -> Path:
             f"the coordinator's pnpm store does not exist: {resolved}"
         )
     return resolved
+
+
+def resolve_pnpm_store(root: Path) -> Path:
+    result = subprocess.run(
+        ["pnpm", "store", "path"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    return pnpm_store_from_result(result)
 
 
 def orchestration_self_test(fault: str | None = None) -> int:
@@ -2695,17 +2718,99 @@ def orchestration_self_test(fault: str | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="durablerun-orchestration-selftest-") as tmp:
         temporary = Path(tmp)
-        if fault in (None, "use-worker-local-pnpm-store"):
-            canonical_store = temporary / "canonical-pnpm-store"
-            command = worker_install_command(
-                canonical_store,
-                use_worker_default=fault == "use-worker-local-pnpm-store",
-            )
-            if command[-2:] != ("--store-dir", str(canonical_store)):
-                failures.append(
-                    "dependency store: worker install did not use the "
-                    "coordinator's canonical pnpm store"
+        canonical_store = temporary / "canonical-pnpm-store"
+        canonical_store.mkdir()
+        valid_store_result = subprocess.CompletedProcess(
+            ("pnpm", "store", "path"),
+            0,
+            f"{canonical_store}\n",
+            "",
+        )
+        if fault is None:
+            try:
+                resolved_store = pnpm_store_from_result(valid_store_result)
+            except RuntimeError as error:
+                failures.append(f"valid pnpm store rejected: {error}")
+            else:
+                if resolved_store != canonical_store:
+                    failures.append("valid pnpm store resolved to the wrong path")
+
+        multiline_store = temporary / "multiline\nstore"
+        multiline_store.mkdir()
+        relative_store = os.path.relpath(canonical_store, Path.cwd())
+        resolver_faults = (
+            (
+                "accept-failed-pnpm-store-query",
+                subprocess.CompletedProcess(
+                    ("pnpm", "store", "path"),
+                    1,
+                    f"{canonical_store}\n",
+                    "query failed",
+                ),
+                {"accept_failed_query": True},
+                "failed pnpm store query",
+            ),
+            (
+                "accept-multiline-pnpm-store",
+                subprocess.CompletedProcess(
+                    ("pnpm", "store", "path"),
+                    0,
+                    f"{multiline_store}\n",
+                    "",
+                ),
+                {"accept_multiline": True},
+                "multiline pnpm store output",
+            ),
+            (
+                "accept-relative-pnpm-store",
+                subprocess.CompletedProcess(
+                    ("pnpm", "store", "path"),
+                    0,
+                    f"{relative_store}\n",
+                    "",
+                ),
+                {"accept_relative": True},
+                "relative pnpm store path",
+            ),
+            (
+                "accept-missing-pnpm-store",
+                subprocess.CompletedProcess(
+                    ("pnpm", "store", "path"),
+                    0,
+                    f"{temporary / 'missing-store'}\n",
+                    "",
+                ),
+                {"accept_missing": True},
+                "missing pnpm store path",
+            ),
+        )
+        for fault_name, result, weakness, label in resolver_faults:
+            if fault not in (None, fault_name):
+                continue
+            try:
+                pnpm_store_from_result(
+                    result,
+                    **(weakness if fault == fault_name else {}),
                 )
+            except RuntimeError:
+                pass
+            else:
+                failures.append(f"dependency store: {label} was accepted")
+        if fault is None:
+            try:
+                pnpm_store_from_result(
+                    subprocess.CompletedProcess(
+                        ("pnpm", "store", "path"),
+                        0,
+                        "\n",
+                        "",
+                    )
+                )
+            except RuntimeError:
+                pass
+            else:
+                failures.append("dependency store: empty pnpm store output was accepted")
+
         run_root = temporary / "run"
         run_root.mkdir()
         outside = run_root.parent / "not-owned" / "worker-00"
@@ -2723,27 +2828,62 @@ def orchestration_self_test(fault: str | None = None) -> int:
         worker_root = run_root / "worker-00"
         worker_root.mkdir()
         (worker_root / ".git").write_text("gitdir: fixture\n")
-        if fault in (None, "allow-host-sized-tokio-pools"):
-            environment_plan = WorkerPlan(
-                0,
-                worker_root,
-                temporary / "worker-tmp",
-                temporary / "baseline.json",
-                temporary / "mutations.json",
-                temporary / "install.log",
-                temporary / "baseline.log",
-                temporary / "mutations.log",
-                (),
+        environment_plan = WorkerPlan(
+            0,
+            worker_root,
+            temporary / "worker-tmp",
+            temporary / "baseline.json",
+            temporary / "mutations.json",
+            temporary / "install.log",
+            temporary / "baseline.log",
+            temporary / "mutations.log",
+            (),
+        )
+        install_faults = (
+            "use-worker-local-pnpm-store",
+            "allow-online-worker-install",
+            "allow-unfrozen-worker-install",
+            "replace-worker-install-command",
+        )
+        if fault is None or fault in install_faults:
+            install_launch = worker_install_launch(
+                environment_plan,
+                canonical_store,
+                use_worker_default=fault == "use-worker-local-pnpm-store",
+                allow_online=fault == "allow-online-worker-install",
+                allow_unfrozen=fault == "allow-unfrozen-worker-install",
+                replace_command=fault == "replace-worker-install-command",
             )
+            expected_install_command = (
+                "pnpm",
+                "install",
+                "--offline",
+                "--frozen-lockfile",
+                "--store-dir",
+                str(canonical_store),
+            )
+            if install_launch.command != expected_install_command:
+                failures.append(
+                    "dependency store: worker install launch does not use "
+                    "the exact offline frozen canonical-store command"
+                )
+
+        if fault in (None, "allow-host-sized-tokio-pools"):
             inherited_tokio_threads = os.environ.get("TOKIO_WORKER_THREADS")
             os.environ["TOKIO_WORKER_THREADS"] = "1"
             try:
-                environment = worker_environment(
+                environment = worker_launch(
                     environment_plan,
+                    phase="baseline",
+                    head="a" * 40,
+                    max_workers=1,
+                    run_root=run_root,
+                    nonce="fixture-nonce",
+                    baseline_barrier=None,
                     allow_host_sized_tokio=(
                         fault == "allow-host-sized-tokio-pools"
                     ),
-                )
+                ).environment
             finally:
                 if inherited_tokio_threads is None:
                     os.environ.pop("TOKIO_WORKER_THREADS", None)
@@ -3624,6 +3764,30 @@ def worker_environment(
     return environment
 
 
+def worker_install_launch(
+    plan: WorkerPlan,
+    store: Path,
+    *,
+    use_worker_default: bool = False,
+    allow_online: bool = False,
+    allow_unfrozen: bool = False,
+    replace_command: bool = False,
+) -> ProcessLaunch:
+    return ProcessLaunch(
+        f"install worker-{plan.worker_id:02}",
+        worker_install_command(
+            store,
+            use_worker_default=use_worker_default,
+            allow_online=allow_online,
+            allow_unfrozen=allow_unfrozen,
+            replace_command=replace_command,
+        ),
+        plan.path,
+        plan.install_log,
+        worker_environment(plan),
+    )
+
+
 def worker_launch(
     plan: WorkerPlan,
     *,
@@ -3633,7 +3797,9 @@ def worker_launch(
     run_root: Path,
     nonce: str,
     baseline_barrier: BaselineBarrier | None,
+    allow_host_sized_tokio: bool = False,
 ) -> ProcessLaunch:
+    del allow_host_sized_tokio
     if phase == "mutations":
         if (
             not isinstance(baseline_barrier, BaselineBarrier)
@@ -3984,13 +4150,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
                 baseline_barrier=None,
             )
             install_launches = [
-                ProcessLaunch(
-                    f"install worker-{plan.worker_id:02}",
-                    worker_install_command(pnpm_store),
-                    plan.path,
-                    plan.install_log,
-                    worker_environment(plan),
-                )
+                worker_install_launch(plan, pnpm_store)
                 for plan in plans
             ]
             run_launches(
