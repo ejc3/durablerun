@@ -21,6 +21,7 @@ Usage: mutation-probe.py [-k substring]
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,69 @@ class SuiteResult:
             and not self.assertions
             and not self.suite_errors
         )
+
+
+def _code_mask(source: str) -> str:
+    """Preserve TypeScript structure while blanking strings and comments."""
+    masked = list(source)
+    i = 0
+    while i < len(source):
+        if source.startswith("//", i):
+            end = source.find("\n", i + 2)
+            end = len(source) if end == -1 else end
+            masked[i:end] = " " * (end - i)
+            i = end
+            continue
+        if source.startswith("/*", i):
+            end = source.find("*/", i + 2)
+            end = len(source) if end == -1 else end + 2
+            for at in range(i, end):
+                if source[at] != "\n":
+                    masked[at] = " "
+            i = end
+            continue
+        quote = source[i]
+        if quote not in ("'", '"', "`"):
+            i += 1
+            continue
+        end = i + 1
+        while end < len(source):
+            if source[end] == "\\":
+                end += 2
+                continue
+            end += 1
+            if source[end - 1] == quote:
+                break
+        for at in range(i, min(end, len(source))):
+            if source[at] != "\n":
+                masked[at] = " "
+        i = end
+    return "".join(masked)
+
+
+def raw_promise_verdict_lines(source: str) -> tuple[int, ...]:
+    """Find mutation markers entrusted to Vitest promise custom messages."""
+    masked = _code_mask(source)
+    lines: list[int] = []
+    for match in re.finditer(r"\bexpect\s*\(", masked):
+        opened = match.end() - 1
+        depth = 1
+        at = opened + 1
+        while at < len(masked) and depth:
+            if masked[at] == "(":
+                depth += 1
+            elif masked[at] == ")":
+                depth -= 1
+            at += 1
+        if depth:
+            continue
+        closed = at - 1
+        suffix = re.match(r"\s*\.\s*(?:rejects|resolves)\b", masked[closed + 1 :])
+        if suffix is None:
+            continue
+        if "mutation-verdict:" in source[opened + 1 : closed]:
+            lines.append(source.count("\n", 0, match.start()) + 1)
+    return tuple(lines)
 
 
 # (name, file, find, replace, what removing it should break)
@@ -1342,7 +1406,50 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
     )
 
+    promise_marker_cases = (
+        (
+            "rejects custom message",
+            "await expect(action(), 'mutation-verdict:behavior:x').rejects.toThrow()",
+            (1,),
+        ),
+        (
+            "resolves multiline template message",
+            "await expect(\n  action(),\n  `mutation-verdict:behavior:x`,\n).resolves.toBe(1)",
+            (1,),
+        ),
+        (
+            "nested action",
+            "await expect(run(() => value), 'mutation-verdict:behavior:x').rejects.toThrow()",
+            (1,),
+        ),
+        (
+            "synchronous custom message",
+            "expect(value, 'mutation-verdict:behavior:x').toBe(1)",
+            (),
+        ),
+        (
+            "explicit promise helper",
+            "await requireExpectedFailure('mutation-verdict:behavior:x', /x/, action)",
+            (),
+        ),
+        (
+            "promise matcher without verdict",
+            "await expect(action()).rejects.toThrow()",
+            (),
+        ),
+        (
+            "comment and string decoys",
+            "// expect(action(), 'mutation-verdict:behavior:x').rejects.toThrow()\n"
+            'const text = "expect(action(), \\"mutation-verdict:behavior:x\\").resolves"',
+            (),
+        ),
+    )
+
     failures = []
+    for label, source, wanted in promise_marker_cases:
+        got = raw_promise_verdict_lines(source)
+        if got != wanted:
+            failures.append(f"promise-marker {label}: expected {wanted}, got {got}")
     if check_live_inventory:
         if TEST_CMD[:2] != ["bash", "scripts/confine.sh"]:
             failures.append("full mutation suites are not routed through scripts/confine.sh")
@@ -1359,6 +1466,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 failures.append(
                     f"{mutation.name}: verdict marker {mutation.verdict.marker!r} is absent from "
                     f"{marker_file}"
+                )
+        for path in sorted((ROOT / "packages").glob("**/*.ts")):
+            for line in raw_promise_verdict_lines(path.read_text()):
+                failures.append(
+                    f"{path.relative_to(ROOT)}:{line}: mutation verdicts on promise outcomes "
+                    "must use an explicit attribution helper"
                 )
     for label, result, verdict, wanted in cases:
         got = classify_verdict(result, verdict, matcher, **options)
@@ -1382,7 +1495,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         return 0
     print(
         f"mutation-probe self-test: {len(cases)} attribution cases, "
-        f"{len(MUTATIONS)} live mutations"
+        f"{len(promise_marker_cases)} promise-marker cases, {len(MUTATIONS)} live mutations"
     )
     return 0
 
