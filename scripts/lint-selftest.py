@@ -1023,6 +1023,17 @@ export class S {
         replaced(
             corpus(WHOLE_RULE),
             ".coderabbit.yaml",
+            "    custom_checks:\n",
+            "    custom_checks:\n      statusCheck: true\n",
+        ),
+        "has unrecognized content before its first custom check",
+        "invalid mapping content cannot hide in the custom-check list prelude",
+    ),
+    (
+        "review-bot-lint.py",
+        replaced(
+            corpus(WHOLE_RULE),
+            ".coderabbit.yaml",
             "  request_changes_workflow: true\n",
             "  request_changes_workflow: false\n",
         ),
