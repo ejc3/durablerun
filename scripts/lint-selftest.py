@@ -2020,6 +2020,26 @@ def run(
 
 failures = []
 
+orchestration_inventory = subprocess.run(
+    [
+        sys.executable,
+        str(SCRIPTS / "mutation-probe.py"),
+        "--orchestration-self-test",
+    ],
+    capture_output=True,
+    text=True,
+)
+orchestration_inventory_marker = (
+    "declared injected faults exercised from canonical inventory"
+)
+if orchestration_inventory_marker not in (
+    orchestration_inventory.stdout + orchestration_inventory.stderr
+):
+    failures.append(
+        "mutation-probe.py orchestration self-test did not prove that every "
+        "declared injected fault was exercised from its canonical inventory"
+    )
+
 # The migration debt hook is itself a bypass: adding a label to the same
 # editable set makes an unfenced batch "classified" without proving any shape.
 # The rung-1 property is that no such category exists at all.
