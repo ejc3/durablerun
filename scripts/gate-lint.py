@@ -85,6 +85,22 @@ NOT_IN_GATE = {
     "source_lex.py": "shared lexical and root-validation library imported by source checkers",
 }
 
+# These base-owned meta-checkers are applied by the composition step or prove
+# facts about the base checker corpus itself; staging them over HEAD would make
+# them read HEAD's package.json beside BASE's self-test inventory and reject a
+# correctly enrolled new checker. The semantic runner below applies the
+# remaining base-owned checkers to HEAD.
+NOT_IN_BASE_SEMANTIC_RUN = {
+    "gate-lint.py": (
+        "the preceding base-gate composition step applies BASE gate-lint to "
+        "HEAD with HEAD's scripts intact"
+    ),
+    "lint-selftest.py": (
+        "it proves BASE checkers reject BASE-owned synthetic fixtures rather "
+        "than grading HEAD source"
+    ),
+}
+
 
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.S)
 SCRIPT_PATH = re.compile(r"^(?:\./)?scripts/([\w.-]+\.(?:py|sh))$")
@@ -523,6 +539,27 @@ def run_base_checkers(head: Path, base: Path) -> int:
             file=sys.stderr,
         )
         return 1
+    semantic_invocations = [
+        invocation
+        for invocation in invocations
+        if str(invocation["name"]) not in NOT_IN_BASE_SEMANTIC_RUN
+    ]
+    semantic_order = [
+        name for name in order if name not in NOT_IN_BASE_SEMANTIC_RUN
+    ]
+    if len(semantic_invocations) != len(semantic_order):
+        print(
+            "gate-lint: base semantic checker filtering lost invocation identity.",
+            file=sys.stderr,
+        )
+        return 1
+    if not semantic_order:
+        print(
+            "gate-lint: the base gate reaches no head-grading semantic checker "
+            "after its declared meta-checker exclusions.",
+            file=sys.stderr,
+        )
+        return 1
 
     with tempfile.TemporaryDirectory(prefix="durablerun-base-gate-") as tmp:
         staged = Path(tmp) / "head"
@@ -557,7 +594,7 @@ def run_base_checkers(head: Path, base: Path) -> int:
                 return 1
 
         ran = 0
-        for invocation in invocations:
+        for invocation in semantic_invocations:
             name = str(invocation["name"])
             argv = tuple(str(arg) for arg in invocation["argv"])
             environment = {
@@ -594,13 +631,23 @@ def run_base_checkers(head: Path, base: Path) -> int:
                 return 1
             ran += 1
 
-    if ran != len(order):
+    if ran != len(semantic_order):
         print(
-            f"gate-lint: expected {len(order)} base checkers but ran {ran}.",
+            f"gate-lint: expected {len(semantic_order)} base semantic checkers "
+            f"but ran {ran}.",
             file=sys.stderr,
         )
         return 1
-    print(f"gate-lint: {ran} base-owned checkers applied to the head tree")
+    skipped = ", ".join(
+        f"{name} ({reason})"
+        for name, reason in NOT_IN_BASE_SEMANTIC_RUN.items()
+        if name in order
+    )
+    print(
+        f"gate-lint: {ran} base-owned semantic checkers applied to the head tree"
+    )
+    if skipped:
+        print(f"gate-lint: base meta-checkers handled outside this run: {skipped}")
     return 0
 
 

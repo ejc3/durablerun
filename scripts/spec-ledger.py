@@ -8,30 +8,83 @@ import re
 import sys
 from pathlib import Path
 
-# Optional [root]: grade a tree other than this script's own, so the BASE
-# branch's copy can be run against a pull request (ci.yml `base-gate`).
-root = (
-    Path(sys.argv[1])
-    if len(sys.argv) > 1 and not sys.argv[1].startswith('-')
-    else Path(__file__).resolve().parent.parent
+from source_lex import (
+    batch_calls,
+    batch_label,
+    store_typescript_sources,
+    validated_root,
 )
-spec = (root / "specs" / "Scheduler.tla").read_text()
-src = ""
-for path in sorted((root / "packages" / "store-libsql" / "src").rglob("*.ts")):
-    src += path.read_text()
 
-# Harvest string-literal labels across newlines: batch( 'x' | FencedBatch( 'x'
-labels = set(re.findall(r"(?:\.batch\(|new FencedBatch\()\s*[\r\n]*\s*'([a-zA-Z0-9:_-]+)'", src))
-# Labels passed through variables must be declared here AND exist in source.
+arguments = list(sys.argv[1:])
+if arguments.count("--labels") > 1:
+    sys.exit("spec-ledger.py: --labels may appear at most once")
+labels_only = "--labels" in arguments
+if labels_only:
+    arguments.remove("--labels")
+try:
+    root = validated_root(
+        arguments,
+        Path(__file__).resolve().parent.parent,
+        "spec-ledger.py",
+    )
+    source_paths = store_typescript_sources(root, "spec-ledger.py")
+except ValueError as error:
+    sys.exit(str(error))
+
+# Variable labels are a closed, reason-bearing surface. Template migration
+# labels are setup trace addresses rather than protocol actions; their SQL
+# shape is independently fenced and checked by batch-lint.
 DYNAMIC = {"cancel-task", "sweep:cancel"}
+OPAQUE_LABELS = {
+    ("packages/store-libsql/src/store.ts", "fenced", "label"): DYNAMIC,
+}
+SETUP_LABEL_FAMILIES = {
+    (
+        "packages/store-libsql/src/admin.ts",
+        "raw",
+        "migrate:v",
+    ): "migration versions are setup trace addresses, not protocol actions",
+}
+
+labels: set[str] = set()
+all_source = ""
+for path in source_paths:
+    rel = path.relative_to(root).as_posix()
+    source = path.read_text()
+    all_source += source
+    try:
+        calls = batch_calls(source)
+    except ValueError as error:
+        sys.exit(f"{rel}: {error}")
+    for call in calls:
+        parsed = batch_label(source, call)
+        if parsed.kind == "static":
+            labels.add(parsed.value)
+            continue
+        identity = (rel, call.kind, parsed.value)
+        dynamic = OPAQUE_LABELS.get(identity)
+        if dynamic is not None:
+            labels.update(dynamic)
+            continue
+        if parsed.kind == "template" and identity in SETUP_LABEL_FAMILIES:
+            continue
+        sys.exit(
+            f"{rel}: batch call shape is opaque: "
+            f"cannot resolve {call.kind} label {parsed.value!r}"
+        )
+
+# The declared variable values must remain present in their defining source;
+# otherwise an old classification could answer for a newly opaque call.
 for label in DYNAMIC:
-    if f"'{label}'" not in src:
+    if f"'{label}'" not in all_source:
         sys.exit(f"spec-ledger: declared dynamic label '{label}' not found in source")
 labels |= DYNAMIC
 
-if "--labels" in sys.argv:
+if labels_only:
     print(json.dumps(sorted(labels)))
     sys.exit(0)
+
+spec = (root / "specs" / "Scheduler.tla").read_text()
 
 # The check is scoped to the ledger block and requires the quoted form —
 # a bare word elsewhere in the spec (prose, identifiers) counts for nothing.

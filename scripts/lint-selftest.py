@@ -3235,6 +3235,7 @@ def run(
             "batch-lint.py",
             "clock-lint.py",
             "fragment-lint.py",
+            "spec-ledger.py",
         }:
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()

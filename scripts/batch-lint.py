@@ -31,6 +31,8 @@ import sys
 from pathlib import Path
 
 from source_lex import (
+    batch_calls,
+    batch_label,
     matching_delimiter,
     split_top_level,
     store_typescript_sources,
@@ -113,9 +115,6 @@ OPAQUE_STATEMENT_LISTS = {
 
 CLASSIFIED = READS | SINGLE_WRITES | set(TOKEN_FENCED) | DYNAMIC_LABELS
 
-CALL = re.compile(r"\bthis\s*\.\s*db\s*\.\s*batch\s*\(")
-STATIC_LABEL = re.compile(r"\s*'([a-zA-Z0-9:_-]+)'\s*")
-DYNAMIC_LABEL = re.compile(r"\s*`([a-zA-Z0-9:_-]*)\$\{[^{}]+\}`\s*", re.DOTALL)
 NOW_REFERENCE = re.compile(r"\$\{\s*NOW_MS\s*\}")
 
 
@@ -206,32 +205,28 @@ for path in source_paths:
     src = path.read_text()
     try:
         structural = typescript_structure(src)
+        calls = batch_calls(src, structural)
     except ValueError as error:
         violations.append(f"{rel}: cannot lex TypeScript source: {error}")
         continue
-    for match in CALL.finditer(structural):
-        open_paren = match.end() - 1
-        close_paren = matching_delimiter(src, open_paren, structural)
-        if close_paren is None:
-            violations.append(
-                f"{rel}: cannot establish this.db.batch call boundary; "
-                "refusing an opaque batch shape"
-            )
+    for call in calls:
+        if call.kind != "raw":
             continue
-        arguments = split_top_level(src, structural, open_paren + 1, close_paren)
-        if arguments is None or len(arguments) not in {2, 3}:
+        arguments = call.arguments
+        if len(arguments) not in {2, 3}:
             violations.append(
                 f"{rel}: this.db.batch call arguments are structurally opaque"
             )
             continue
-        body = src[open_paren + 1 : close_paren]
-        label_argument = src[arguments[0][0] : arguments[0][1]]
-        static = STATIC_LABEL.fullmatch(label_argument)
-        dynamic = DYNAMIC_LABEL.fullmatch(label_argument)
-        if static:
-            label = static.group(1)
-        elif dynamic and (rel, dynamic.group(1)) in DYNAMIC:
-            label = dynamic.group(1) + "*"
+        body = src[call.open_paren + 1 : call.close_paren]
+        parsed_label = batch_label(src, call)
+        if parsed_label.kind == "static":
+            label = parsed_label.value
+        elif (
+            parsed_label.kind == "template"
+            and (rel, parsed_label.value) in DYNAMIC
+        ):
+            label = parsed_label.value + "*"
         else:
             violations.append(
                 f"{rel}: this.db.batch( with a label this lint cannot read "

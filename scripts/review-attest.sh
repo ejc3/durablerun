@@ -89,7 +89,8 @@ check_codex_log() {
 }
 
 check_journal() {
-  local path="$1" expected_head="$2" actual_head head_count result_count
+  local path="$1" expected_head="$2" actual_head head_count
+  local plan_count complete_count planned completed result_reviewers
   [[ -f "$path" ]] || { echo "no workflow journal: $path" >&2; return 1; }
   [[ -n "$expected_head" ]] || {
     echo "review journal check requires a non-empty expected review head." >&2
@@ -115,15 +116,95 @@ check_journal() {
     return 1
   fi
 
-  result_count=$(jq -s '[.[] | select(.type == "result")] | length' "$path")
-  if [[ "$result_count" -lt 1 ]]; then
-    echo "journal has no agent results" >&2
+  plan_count=$(jq -s '[.[] | select(.type == "review-plan")] | length' "$path")
+  if [[ "$plan_count" -ne 1 ]]; then
+    echo "review journal must contain exactly one review plan (found $plan_count)." >&2
+    return 1
+  fi
+  complete_count=$(jq -s '[.[] | select(.type == "review-complete")] | length' "$path")
+  if [[ "$complete_count" -eq 0 ]]; then
+    echo "review journal has no terminal completion record." >&2
+    return 1
+  fi
+  if [[ "$complete_count" -ne 1 ]]; then
+    echo "review journal must contain exactly one terminal completion record." >&2
+    return 1
+  fi
+  if ! jq -e -s '
+      all(.[];
+        .type == "review-head"
+        or .type == "review-plan"
+        or .type == "result"
+        or .type == "review-complete"
+      )
+      and (
+        [.[] | select(.type == "review-plan")][0].reviewers as $reviewers
+        | ($reviewers | type) == "array"
+        and ($reviewers | length) > 0
+        and all($reviewers[]; type == "string" and length > 0)
+        and ($reviewers | unique | length) == ($reviewers | length)
+      )
+      and all(
+        .[] | select(.type == "result");
+        (.reviewer | type) == "string"
+        and (.reviewer | length) > 0
+        and (.verdict | type) == "string"
+        and (.verdict | length) > 0
+      )
+      and (
+        [.[] | select(.type == "review-complete")][0].reviewers
+        | type
+      ) == "array"
+    ' "$path" >/dev/null; then
+    echo "review journal has an invalid plan, result, or completion schema." >&2
+    return 1
+  fi
+
+  planned=$(jq -c -s \
+    '[.[] | select(.type == "review-plan")][0].reviewers | sort' "$path")
+  completed=$(jq -c -s \
+    '[.[] | select(.type == "review-complete")][0].reviewers | sort' "$path")
+  if [[ "$completed" != "$planned" ]]; then
+    echo "review journal completion inventory differs from its plan." >&2
+    return 1
+  fi
+  result_reviewers=$(jq -c -s \
+    '[.[] | select(.type == "result") | .reviewer]' "$path")
+  if ! jq -e -s '
+      [.[] | select(.type == "result") | .reviewer] as $reviewers
+      | ($reviewers | unique | length) == ($reviewers | length)
+    ' "$path" >/dev/null; then
+    echo "review journal duplicates reviewer results." >&2
+    return 1
+  fi
+  if [[ "$(jq -c 'sort' <<<"$result_reviewers")" != "$planned" ]]; then
+    echo "review journal result inventory differs from its plan." >&2
+    return 1
+  fi
+  if ! jq -e -s '.[-1].type == "review-complete"' "$path" >/dev/null; then
+    echo "review journal terminal completion record must be last." >&2
     return 1
   fi
 }
 
+review_findings_count() {
+  local body="$1" count line
+  count=$(grep -cE '^review-findings:' <<<"$body" || true)
+  if [[ "$count" -ne 1 ]]; then
+    echo "review-findings must appear exactly once." >&2
+    return 1
+  fi
+  line=$(grep -E '^review-findings:' <<<"$body")
+  if ! grep -qE '^review-findings:[[:space:]]*[0-9]+[[:space:]]*$' <<<"$line"; then
+    echo "review-findings must be a canonical whole line." >&2
+    return 1
+  fi
+  sed -nE 's/^review-findings:[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' <<<"$line"
+}
+
 check_pr_body() {
   local body="$1" count line reason
+  review_findings_count "$body" >/dev/null || return 1
   count=$(grep -cE '^reviews-abandoned:' <<<"$body" || true)
   if [[ "$count" -gt 1 ]]; then
     echo "reviews-abandoned must appear at most once." >&2
@@ -377,8 +458,8 @@ if [[ "${1:-}" == "--check-pr-body" ]]; then
   exit 0
 fi
 
-[[ $# -ge 2 ]] || usage
-PR="$1"; CODEX_LOG="$2"; JOURNAL="${3:--}"
+[[ $# -eq 3 ]] || usage
+PR="$1"; CODEX_LOG="$2"; JOURNAL="$3"
 
 SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
 BODY=$(gh pr view "$PR" --json body --jq .body)
@@ -386,14 +467,7 @@ check_pr_body "$BODY"
 
 # --- SEV gate (runs FIRST: nothing below may skip it) -----------------------
 
-DECLARED=$(sed -nE 's/^review-findings:[[:space:]]*([0-9]+).*$/\1/p' <<<"$BODY" | head -1)
-if [[ -z "$DECLARED" ]]; then
-  echo "SEV rule: the PR body must carry a 'review-findings: <count>' line." >&2
-  echo "  0 publicly claims no review round found bugs (red commits, if any," >&2
-  echo "  were caught by the author's own machinery). A nonzero count" >&2
-  echo "  requires a postmortem added in this PR (see postmortems/TEMPLATE.md)." >&2
-  exit 1
-fi
+DECLARED=$(review_findings_count "$BODY")
 DECLARED=$((10#$DECLARED))
 
 HEADLINES=$(gh pr view "$PR" --json commits --jq '.commits[].messageHeadline')
@@ -483,6 +557,11 @@ if [[ -n "$REASON" ]]; then
   exit 0
 fi
 
+if [[ "$JOURNAL" == "-" ]]; then
+  echo "workflow journal is required unless reviews are explicitly abandoned." >&2
+  exit 1
+fi
+
 # A review artifact is a transient LOG, never a file that lives in the repo.
 # Without this, the checker's own source satisfied it: this script contains
 # both marker strings, so passing scripts/review-attest.sh as both the codex
@@ -501,14 +580,11 @@ reject_repo_file() {
 [[ -f "$CODEX_LOG" ]] || { echo "no codex log: $CODEX_LOG" >&2; exit 1; }
 reject_repo_file "$CODEX_LOG" "codex log"
 check_codex_log "$CODEX_LOG" "$SHA"
-if [[ "$JOURNAL" != "-" ]]; then
-  [[ -f "$JOURNAL" ]] || { echo "no workflow journal: $JOURNAL" >&2; exit 1; }
-  reject_repo_file "$JOURNAL" "workflow journal"
-  check_journal "$JOURNAL" "$SHA"
-fi
+[[ -f "$JOURNAL" ]] || { echo "no workflow journal: $JOURNAL" >&2; exit 1; }
+reject_repo_file "$JOURNAL" "workflow journal"
+check_journal "$JOURNAL" "$SHA"
 
-RAN="codex"
-[[ "$JOURNAL" != "-" ]] && RAN="codex + verified multi-lens review"
+RAN="codex + verified multi-lens review"
 gh api "repos/{owner}/{repo}/statuses/$SHA" -f state=success \
   -f context=adversarial-review \
   -f description="$RAN reported for $SHA; review-findings: $DECLARED"

@@ -9,7 +9,12 @@ import re
 import sys
 from pathlib import Path
 
-from source_lex import store_typescript_sources, validated_root
+from source_lex import (
+    sql_file_view,
+    sql_template_view,
+    store_sql_sources,
+    validated_root,
+)
 
 # Optional [root]: grade a tree other than this script's own, so the BASE
 # branch's copy can be run against a pull request (ci.yml `base-gate`).
@@ -19,19 +24,36 @@ try:
         Path(__file__).resolve().parent.parent,
         "fragment-lint.py",
     )
-    source_paths = store_typescript_sources(root, "fragment-lint.py")
+    source_paths = store_sql_sources(root, "fragment-lint.py")
 except ValueError as error:
     sys.exit(str(error))
 
 EXEMPT = {"fragments.ts", "schema.ts"}
+STATE_LITERALS = frozenset(
+    {
+        "pending",
+        "running",
+        "sleeping",
+        "completed",
+        "failed",
+        "cancelled",
+    }
+)
+STATE_LITERAL_SOURCE = "|".join(
+    re.escape(state) for state in sorted(STATE_LITERALS)
+)
 RULES = [
     (
-        re.compile(r"cancel_at_ms\s*(<=|>=|<|>)"),
+        re.compile(r"\bcancel_at_ms\b\s*(?:<=|>=|<|>)", re.IGNORECASE),
         "cancellation-deadline comparison outside fragments.ts "
         "(use cancelDue/cancelNotDue/eligibleTask)",
     ),
     (
-        re.compile(r"IN\s*\(\s*'(pending|running|sleeping|completed|failed|cancelled)'"),
+        re.compile(
+            r"\bIN\s*\(\s*"
+            rf"'(?:{STATE_LITERAL_SOURCE})'",
+            re.IGNORECASE,
+        ),
         "raw state list outside fragments.ts (use ${LIVE} or a new shared fragment)",
     ),
 ]
@@ -47,11 +69,19 @@ for path in source_paths:
         and relative.parts[2] == "src"
     ):
         continue
-    for lineno, line in enumerate(path.read_text().splitlines(), 1):
-        for pattern, message in RULES:
-            if pattern.search(line):
-                print(f"{path.relative_to(root)}:{lineno}: {message}")
-                violations += 1
+    source = path.read_text()
+    try:
+        view = sql_file_view if path.suffix == ".sql" else sql_template_view
+        visible = view(source, STATE_LITERALS)
+    except ValueError as error:
+        print(f"{path.relative_to(root)}: cannot lex TypeScript source: {error}")
+        violations += 1
+        continue
+    for pattern, message in RULES:
+        for match in pattern.finditer(visible):
+            lineno = source.count("\n", 0, match.start()) + 1
+            print(f"{path.relative_to(root)}:{lineno}: {message}")
+            violations += 1
 if violations:
     sys.exit(1)
 print("fragment-lint: eligibility predicates confined to fragments.ts")

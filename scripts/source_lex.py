@@ -7,9 +7,11 @@ executable string-literal region for the SQL view, so changing a quote style
 or putting a literal fragment in an interpolation cannot hide a clock.
 """
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 
 def _blank(chars: list[str], start: int, end: int) -> None:
@@ -29,6 +31,28 @@ class _Literal:
 class _Lexed:
     structure: str
     literals: tuple[_Literal, ...]
+
+
+BatchCallKind = Literal["raw", "fenced"]
+BatchLabelKind = Literal["static", "template", "opaque"]
+
+
+@dataclass(frozen=True)
+class BatchCall:
+    """One structurally resolved store batch construction or executor call."""
+
+    kind: BatchCallKind
+    open_paren: int
+    close_paren: int
+    arguments: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class BatchLabel:
+    """The syntax-level label representation shared by every batch inventory."""
+
+    kind: BatchLabelKind
+    value: str
 
 
 _EXPRESSION_PREFIX_WORDS = frozenset(
@@ -315,6 +339,131 @@ def split_top_level(
     if parts and trivia_only(source[parts[-1][0] : parts[-1][1]]):
         parts.pop()
     return parts
+
+
+_RAW_BATCH_REFERENCE = re.compile(r"\bthis\s*\.\s*db\s*\.\s*batch\b")
+_OPTIONAL_RAW_BATCH_REFERENCE = re.compile(
+    r"\bthis\s*\.\s*db\s*\?\s*\.\s*batch\b"
+)
+_COMPUTED_DB_REFERENCE = re.compile(r"\bthis\s*\.\s*db\s*\[")
+_DESTRUCTURED_BATCH_REFERENCE = re.compile(
+    r"\{\s*batch\s*\}\s*=\s*this\s*\.\s*db\b"
+)
+_ALIASED_DB_REFERENCE = re.compile(
+    r"\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*"
+    r"\s*=\s*this\s*\.\s*db\b"
+)
+_ALIASED_FENCED_BATCH = re.compile(
+    r"(?:\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*"
+    r"\s*=\s*FencedBatch\b"
+    r"|\bFencedBatch\s+as\s+[A-Za-z_$][A-Za-z0-9_$]*)"
+)
+_FENCED_BATCH_CONSTRUCTION = re.compile(
+    r"\bnew\s+(?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)?FencedBatch\s*\("
+)
+_STATIC_BATCH_LABEL = re.compile(
+    r"\s*(['\"])([A-Za-z0-9:_-]+)\1\s*",
+    re.DOTALL,
+)
+_TEMPLATE_BATCH_LABEL = re.compile(
+    r"\s*`([A-Za-z0-9:_-]*)\$\{[^{}]+\}`\s*",
+    re.DOTALL,
+)
+
+
+def _batch_call(
+    source: str,
+    structure: str,
+    kind: BatchCallKind,
+    open_paren: int,
+) -> BatchCall:
+    close_paren = matching_delimiter(source, open_paren, structure)
+    if close_paren is None:
+        raise ValueError(
+            f"cannot establish {kind} batch call boundary; "
+            "refusing an opaque batch shape"
+        )
+    arguments = split_top_level(
+        source,
+        structure,
+        open_paren + 1,
+        close_paren,
+    )
+    if arguments is None:
+        raise ValueError(f"{kind} batch call arguments are structurally opaque")
+    return BatchCall(
+        kind,
+        open_paren,
+        close_paren,
+        tuple(arguments),
+    )
+
+
+def batch_calls(
+    source: str,
+    structure: str | None = None,
+) -> tuple[BatchCall, ...]:
+    """Harvest every supported store batch door and reject indirect aliases.
+
+    The returned call boundaries are the one inventory consumed by the raw
+    batch shape checker and the protocol-label ledger. A reference to the raw
+    executor method that is not immediately called fails closed: otherwise an
+    alias can make the same batch disappear from both mechanisms.
+    """
+    visible = structure if structure is not None else typescript_structure(source)
+    indirect = (
+        _OPTIONAL_RAW_BATCH_REFERENCE.search(visible)
+        or _COMPUTED_DB_REFERENCE.search(visible)
+        or _DESTRUCTURED_BATCH_REFERENCE.search(visible)
+        or _ALIASED_DB_REFERENCE.search(visible)
+    )
+    if indirect is not None:
+        raise ValueError(
+            "batch call shape is opaque: "
+            "indirect this.db.batch reference is opaque"
+        )
+    if _ALIASED_FENCED_BATCH.search(visible) is not None:
+        raise ValueError(
+            "batch call shape is opaque: indirect FencedBatch reference is opaque"
+        )
+
+    calls: list[BatchCall] = []
+    for match in _RAW_BATCH_REFERENCE.finditer(visible):
+        open_paren = match.end()
+        while open_paren < len(visible) and visible[open_paren].isspace():
+            open_paren += 1
+        if open_paren >= len(visible) or visible[open_paren] != "(":
+            raise ValueError(
+                "batch call shape is opaque: "
+                "indirect this.db.batch reference is opaque"
+            )
+        calls.append(_batch_call(source, visible, "raw", open_paren))
+
+    for match in _FENCED_BATCH_CONSTRUCTION.finditer(visible):
+        calls.append(
+            _batch_call(
+                source,
+                visible,
+                "fenced",
+                match.end() - 1,
+            )
+        )
+    return tuple(sorted(calls, key=lambda call: call.open_paren))
+
+
+def batch_label(source: str, call: BatchCall) -> BatchLabel:
+    """Parse a harvested call's label syntax without guessing its value."""
+    if not call.arguments:
+        raise ValueError(f"{call.kind} batch call has no label argument")
+    start, end = call.arguments[0]
+    expression = source[start:end]
+    static = _STATIC_BATCH_LABEL.fullmatch(expression)
+    if static is not None:
+        return BatchLabel("static", static.group(2))
+    template = _TEMPLATE_BATCH_LABEL.fullmatch(expression)
+    if template is not None:
+        return BatchLabel("template", template.group(1))
+    return BatchLabel("opaque", expression.strip())
 
 
 def _sql_quote_end(source: str, start: int, quote: str) -> int:
