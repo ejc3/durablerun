@@ -924,6 +924,33 @@ export class S {
     ),
     (
         "gate-lint.py",
+        process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK),
+        "package.json must route verify:mutations exactly to mutation-probe.py",
+        "deleting the documented mutation-audit command must fail the process contract",
+    ),
+    (
+        "gate-lint.py",
+        {
+            **process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK),
+            "package.json": json.dumps(
+                {
+                    "name": "durablerun",
+                    "scripts": {
+                        "verify": (
+                            "python3 scripts/a-lint.py && "
+                            "python3 scripts/b-lint.py && "
+                            "python3 scripts/lint-selftest.py"
+                        ),
+                        "verify:mutations": "echo mutation-probe.py",
+                    },
+                }
+            ),
+        },
+        "package.json must route verify:mutations exactly to mutation-probe.py",
+        "printing the runner name is not execution of the documented audit command",
+    ),
+    (
+        "gate-lint.py",
         gate("python3 scripts/a-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py",), base_gate=False),
         "ci.yml has 0 base-gate jobs",
         "no base-gate job, so the whole gate is graded by the branch under review",
