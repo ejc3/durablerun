@@ -159,6 +159,49 @@ describe('migrate reports success only when the schema is current', () => {
     expect(observed.error).toBe(outage)
   })
 
+  it('requires exactly one schema-version result row', async () => {
+    const current = { value: String(CURRENT_SCHEMA_VERSION) }
+    const cases = [
+      { name: 'missing result', results: [] },
+      { name: 'missing row', results: [{ rows: [], rowsAffected: 0 }] },
+      {
+        name: 'extra result',
+        results: [
+          { rows: [current], rowsAffected: 1 },
+          { rows: [current], rowsAffected: 1 },
+        ],
+      },
+      {
+        name: 'extra row',
+        results: [{ rows: [current, current], rowsAffected: 2 }],
+      },
+    ]
+    for (const { name, results } of cases) {
+      const malformed: SqlExecutor = { batch: async () => results }
+      const observed = await new LibsqlStoreAdmin(malformed)
+        .schemaVersion()
+        .then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        )
+      if (observed.kind === 'resolved') {
+        throw new Error('mutation-verdict:behavior:schema-version-row-required')
+      }
+      expect(observed.error, name).toBeInstanceOf(SchemaMismatchError)
+    }
+  })
+
+  it('rejects an initialized metadata table with no version row', async () => {
+    await db.batch('corrupt', [
+      {
+        sql: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID`,
+        args: [],
+      },
+    ])
+
+    await expect(admin.schemaVersion()).rejects.toBeInstanceOf(SchemaMismatchError)
+  })
+
   it('fails when the recorded version is newer than this binary', async () => {
     await migrateTo(CURRENT_SCHEMA_VERSION)
     await db.batch('corrupt', [
