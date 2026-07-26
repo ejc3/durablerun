@@ -2506,10 +2506,13 @@ def worker_install_command(
     allow_unfrozen: bool = False,
     replace_command: bool = False,
 ) -> tuple[str, ...]:
-    del allow_online, allow_unfrozen, replace_command
     if not store.is_absolute():
         raise ValueError("the canonical pnpm store path must be absolute")
-    command = ["pnpm", "install", "--offline", "--frozen-lockfile"]
+    command = ["npm", "install"] if replace_command else ["pnpm", "install"]
+    if not allow_online:
+        command.append("--offline")
+    if not allow_unfrozen:
+        command.append("--frozen-lockfile")
     if not use_worker_default:
         command.extend(("--store-dir", str(store)))
     return tuple(command)
@@ -2523,26 +2526,25 @@ def pnpm_store_from_result(
     accept_relative: bool = False,
     accept_missing: bool = False,
 ) -> Path:
-    del accept_failed_query, accept_multiline, accept_relative, accept_missing
     output = result.stdout.strip()
-    if result.returncode != 0:
+    if result.returncode != 0 and not accept_failed_query:
         diagnostic = (result.stdout + result.stderr).strip()
         raise RuntimeError(
             f"cannot resolve the coordinator's pnpm store: {diagnostic[:500]}"
         )
-    if not output or "\n" in output:
+    if (not output or "\n" in output) and not accept_multiline:
         raise RuntimeError(
             "cannot resolve the coordinator's pnpm store: "
             f"expected one path, observed {output!r}"
         )
     store = Path(output)
-    if not store.is_absolute():
+    if not store.is_absolute() and not accept_relative:
         raise RuntimeError(
             "cannot resolve the coordinator's pnpm store: "
             f"pnpm returned non-absolute path {output!r}"
         )
     resolved = store.resolve()
-    if not resolved.is_dir():
+    if not resolved.is_dir() and not accept_missing:
         raise RuntimeError(
             f"the coordinator's pnpm store does not exist: {resolved}"
         )
@@ -3799,7 +3801,6 @@ def worker_launch(
     baseline_barrier: BaselineBarrier | None,
     allow_host_sized_tokio: bool = False,
 ) -> ProcessLaunch:
-    del allow_host_sized_tokio
     if phase == "mutations":
         if (
             not isinstance(baseline_barrier, BaselineBarrier)
@@ -3840,7 +3841,10 @@ def worker_launch(
         tuple(command),
         plan.path,
         log,
-        worker_environment(plan),
+        worker_environment(
+            plan,
+            allow_host_sized_tokio=allow_host_sized_tokio,
+        ),
     )
 
 
