@@ -424,6 +424,8 @@ def nightly_workflow_problems(path: Path) -> list[str]:
     return problems
 
 
+AGENTS_TITLE = "# durablerun"
+BUILD_TITLE = "# Build plan: phases → PR stack of tractable diffs"
 CONFINE_HEADING = "## Standing rule: confine heavy local runs"
 CONFINE_SECTION_BODY = """Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
 through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
@@ -431,89 +433,18 @@ the live protective memory, swap, CPU, and task limits. A runaway must die
 inside that scope rather than taking the box down. `verify:fuzz`,
 `verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired."""
 TRANSPORT_BLOCK = """<!-- mutation-suite-transport-contract:start -->
-Suite transport has one representation: `parse_report` and `run_suite` raise
-`SuiteInfrastructureError`; only a structurally valid `SuiteResult` reaches
-verdict classification.
+This top-of-file block is the sole normative suite transport contract:
+`parse_report` and `run_suite` raise `SuiteInfrastructureError`; only a
+structurally valid `SuiteResult` reaches verdict classification.
 <!-- mutation-suite-transport-contract:end -->"""
-TRANSPORT_MARKERS = frozenset(
-    (
-        "<!-- mutation-suite-transport-contract:start -->",
-        "<!-- mutation-suite-transport-contract:end -->",
-    )
+TRANSPORT_MARKERS = (
+    "<!-- mutation-suite-transport-contract:start -->",
+    "<!-- mutation-suite-transport-contract:end -->",
 )
-
-
-def operative_markdown_lines(text: str) -> list[str]:
-    """Remove fenced examples and enclosing HTML comments before parsing."""
-    active: list[str] = []
-    fence: tuple[str, int] | None = None
-    in_comment = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if fence is not None:
-            marker, width = fence
-            close = re.fullmatch(
-                rf"[ \t]*{re.escape(marker)}{{{width},}}[ \t]*",
-                line,
-            )
-            if close:
-                fence = None
-            continue
-        if in_comment:
-            if "-->" in line:
-                in_comment = False
-            continue
-
-        opening = re.match(r"^[ \t]*(`{3,}|~{3,})(.*)$", line)
-        if opening:
-            run = opening.group(1)
-            fence = (run[0], len(run))
-            continue
-        if stripped in TRANSPORT_MARKERS:
-            active.append(line)
-            continue
-        if "<!--" in line:
-            if "-->" not in line.split("<!--", 1)[1]:
-                in_comment = True
-            continue
-        active.append(line)
-    return active
-
-
-def level_two_section(text: str, heading: str) -> str | None:
-    lines = operative_markdown_lines(text)
-    starts = [index for index, line in enumerate(lines) if line == heading]
-    if len(starts) != 1:
-        return None
-    end = next(
-        (
-            index
-            for index in range(starts[0] + 1, len(lines))
-            if lines[index].startswith("## ")
-        ),
-        len(lines),
-    )
-    return "\n".join(lines[starts[0] + 1 : end]).strip()
-
-
-def attributable_mutation_section(text: str) -> str | None:
-    lines = operative_markdown_lines(text)
-    starts = [
-        index
-        for index, line in enumerate(lines)
-        if line.strip().startswith("- **Attributable mutation catches.**")
-    ]
-    if len(starts) != 1:
-        return None
-    end = next(
-        (
-            index
-            for index in range(starts[0] + 1, len(lines))
-            if re.fullmatch(r"\s{2}- \*\*.+\*\*.*", lines[index])
-        ),
-        len(lines),
-    )
-    return "\n".join(lines[starts[0] + 1 : end])
+AGENTS_PROCESS_PREFIX = (
+    f"{AGENTS_TITLE}\n\n{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
+)
+BUILD_PROCESS_PREFIX = f"{BUILD_TITLE}\n\n{TRANSPORT_BLOCK}\n\n"
 
 
 def process_contract_problems(root: Path) -> list[str]:
@@ -543,31 +474,26 @@ def process_contract_problems(root: Path) -> list[str]:
         )
 
     agents = (root / "AGENTS.md").read_text()
-    if level_two_section(agents, CONFINE_HEADING) != CONFINE_SECTION_BODY:
+    if (
+        not agents.startswith(AGENTS_PROCESS_PREFIX)
+        or agents.count(CONFINE_HEADING) != 1
+        or agents.count(CONFINE_SECTION_BODY) != 1
+    ):
         problems.append(
             "AGENTS.md confinement section must defer all quantitative policy "
-            "to scripts/confine.sh."
+            "to scripts/confine.sh from its unique top-of-file contract."
         )
 
     build = (root / "BUILD.md").read_text()
-    mutation_section = attributable_mutation_section(build)
-    normalized_build = "\n".join(
-        line.strip() for line in operative_markdown_lines(build)
-    )
-    normalized_section = (
-        "\n".join(line.strip() for line in mutation_section.splitlines())
-        if mutation_section is not None
-        else ""
-    )
     if (
-        mutation_section is None
-        or normalized_section.count(TRANSPORT_BLOCK) != 1
-        or normalized_build.count(TRANSPORT_BLOCK) != 1
+        not build.startswith(BUILD_PROCESS_PREFIX)
+        or build.count(TRANSPORT_BLOCK) != 1
+        or any(build.count(marker) != 1 for marker in TRANSPORT_MARKERS)
     ):
         problems.append(
             "BUILD.md misclassifies malformed suite transport as a domain "
-            "wrong-path verdict; its attributable-mutation section must own "
-            "the exact transport contract block."
+            "wrong-path verdict; its unique top-of-file block must own the "
+            "sole normative transport contract."
         )
     return problems
 

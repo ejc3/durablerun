@@ -1,5 +1,13 @@
 # durablerun
 
+## Standing rule: confine heavy local runs
+
+Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
+through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
+the live protective memory, swap, CPU, and task limits. A runaway must die
+inside that scope rather than taking the box down. `verify:fuzz`,
+`verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired.
+
 A port of Absurd (earendil-works/absurd, Postgres durable execution) to a
 pluggable SQL backend (SQLite/libsql first; MySQL, Postgres later), driven by
 lightweight tick drivers that launch workers on demand.
@@ -53,14 +61,6 @@ when it lands. Enforcement is structural, not aspirational:
   Rust/Tokio) implementing the same batches is a drop-in peer, proving
   itself against the same scenarios through its own runner. Never let the
   contract live only in TypeScript types.
-
-## Standing rule: confine heavy local runs
-
-Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
-through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
-the live protective memory, swap, CPU, and task limits. A runaway must die
-inside that scope rather than taking the box down. `verify:fuzz`,
-`verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired.
 
 ## Standing rule: spec first for new protocols
 

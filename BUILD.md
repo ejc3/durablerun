@@ -1,5 +1,11 @@
 # Build plan: phases → PR stack of tractable diffs
 
+<!-- mutation-suite-transport-contract:start -->
+This top-of-file block is the sole normative suite transport contract:
+`parse_report` and `run_suite` raise `SuiteInfrastructureError`; only a
+structurally valid `SuiteResult` reaches verdict classification.
+<!-- mutation-suite-transport-contract:end -->
+
 Companion to DESIGN.md (the spec). Rules for every PR: lands green (lint,
 format, unit + conformance) before the next branches off it; adds the
 conformance cases for what it builds; updates DESIGN.md in the same diff if
@@ -197,11 +203,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Structured valid Vitest output makes a green survivor, bind/compile error,
     different failing assertion, suite error, or process/report disagreement a
     wrong-path result rather than credit.
-    <!-- mutation-suite-transport-contract:start -->
-    Suite transport has one representation: `parse_report` and `run_suite` raise
-    `SuiteInfrastructureError`; only a structurally valid `SuiteResult` reaches
-    verdict classification.
-    <!-- mutation-suite-transport-contract:end -->
+    The sole normative suite-transport classification is the top-of-file
+    contract; this item records attribution behavior without redefining it.
     The verifier runs a 17-case classifier self-test, nineteen promise-message
     source cases, and ten canonical helper-descriptor cases, with seven
     injected classifier faults maintained by `lint-selftest.py`.

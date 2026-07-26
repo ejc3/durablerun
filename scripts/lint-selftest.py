@@ -33,15 +33,18 @@ import tempfile
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
+AGENTS_TITLE = "# durablerun"
+BUILD_TITLE = "# Build plan: phases → PR stack of tractable diffs"
+CONFINE_HEADING = "## Standing rule: confine heavy local runs"
 CONFINE_SECTION_BODY = """Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
 through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
 the live protective memory, swap, CPU, and task limits. A runaway must die
 inside that scope rather than taking the box down. `verify:fuzz`,
 `verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired."""
 TRANSPORT_BLOCK = """<!-- mutation-suite-transport-contract:start -->
-Suite transport has one representation: `parse_report` and `run_suite` raise
-`SuiteInfrastructureError`; only a structurally valid `SuiteResult` reaches
-verdict classification.
+This top-of-file block is the sole normative suite transport contract:
+`parse_report` and `run_suite` raise `SuiteInfrastructureError`; only a
+structurally valid `SuiteResult` reaches verdict classification.
 <!-- mutation-suite-transport-contract:end -->"""
 
 
@@ -102,14 +105,15 @@ def gate(
             }
         ),
         "AGENTS.md": (
-            "## Standing rule: confine heavy local runs\n\n"
+            f"{AGENTS_TITLE}\n\n"
+            f"{CONFINE_HEADING}\n\n"
             f"{CONFINE_SECTION_BODY}\n\n"
             "## Fixture continuation\n"
         ),
         "BUILD.md": (
-            "  - **Attributable mutation catches.**\n"
-            + "".join(f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines())
-            + "  - **Fixture continuation.**\n"
+            f"{BUILD_TITLE}\n\n"
+            f"{TRANSPORT_BLOCK}\n\n"
+            "## Fixture continuation\n"
         ),
         ".github/workflows/ci.yml": ci,
         "scripts/lint-selftest.py": (
@@ -155,14 +159,15 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
     package["name"] = "durablerun"
     files["package.json"] = json.dumps(package)
     files["AGENTS.md"] = (
-        "## Standing rule: confine heavy local runs\n\n"
+        f"{AGENTS_TITLE}\n\n"
+        f"{CONFINE_HEADING}\n\n"
         f"{agents.strip()}\n\n"
         "## Fixture continuation\n"
     )
     files["BUILD.md"] = (
-        "  - **Attributable mutation catches.**\n"
-        + "".join(f"    {line}\n" for line in build.strip().splitlines())
-        + "  - **Fixture continuation.**\n"
+        f"{BUILD_TITLE}\n\n"
+        f"{build.strip()}\n\n"
+        "## Fixture continuation\n"
     )
     return files
 
@@ -170,7 +175,7 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
 def hidden_process_contract(document: str, container: str) -> dict[str, str]:
     files = process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK)
     if document == "AGENTS.md":
-        body = files[document]
+        body = f"{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
         wrappers = {
             "fence": f"```md\n{body}```\n",
             "invalid-fence-close": f"```md\n    ```\n{body}```\n",
@@ -178,26 +183,24 @@ def hidden_process_contract(document: str, container: str) -> dict[str, str]:
             "pre": f"<pre>\n{body}</pre>\n",
             "div": f"<div>\n{body}</div>\n",
         }
-        files[document] = wrappers[container]
+        files[document] = (
+            f"{AGENTS_TITLE}\n\n{wrappers[container]}\n## Fixture continuation\n"
+        )
         return files
 
-    indented_block = "".join(
-        f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines()
-    )
     wrappers = {
-        "fence": f"    ```md\n{indented_block}    ```\n",
-        "invalid-fence-close": (
-            f"    ```md\n        ```\n{indented_block}    ```\n"
-        ),
-        "comment": f"    <!--\n{indented_block}    -->\n",
+        "fence": f"```md\n{TRANSPORT_BLOCK}\n```\n",
+        "invalid-fence-close": f"```md\n    ```\n{TRANSPORT_BLOCK}\n```\n",
+        "comment": f"<!--\n{TRANSPORT_BLOCK}\n-->\n",
         "indented-code": "".join(
-            f"        {line}\n" for line in TRANSPORT_BLOCK.splitlines()
+            f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines()
         ),
-        "pre": f"    <pre>\n{indented_block}    </pre>\n",
-        "div": f"    <div>\n{indented_block}    </div>\n",
+        "pre": f"<pre>\n{TRANSPORT_BLOCK}\n</pre>\n",
+        "div": f"<div>\n{TRANSPORT_BLOCK}\n</div>\n",
     }
-    hidden = wrappers[container]
-    files[document] = files[document].replace(indented_block, hidden)
+    files[document] = (
+        f"{BUILD_TITLE}\n\n{wrappers[container]}\n## Fixture continuation\n"
+    )
     return files
 
 
@@ -235,13 +238,14 @@ def nested_build_contract(container: str) -> dict[str, str]:
             "  - **Fixture continuation.**\n"
         ),
     }
-    files["BUILD.md"] = wrappers[container]
+    files["BUILD.md"] = f"{BUILD_TITLE}\n\n{wrappers[container]}"
     return files
 
 
 def raw_agent_contract(opening: str, closing: str = "") -> dict[str, str]:
     files = process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK)
-    files["AGENTS.md"] = f"{opening}\n{files['AGENTS.md']}{closing}\n"
+    body = files["AGENTS.md"].removeprefix(f"{AGENTS_TITLE}\n\n")
+    files["AGENTS.md"] = f"{AGENTS_TITLE}\n\n{opening}\n{body}{closing}\n"
     return files
 
 
