@@ -262,8 +262,12 @@ def raw_agent_contract(opening: str, closing: str = "") -> dict[str, str]:
     return files
 
 
-def process_fixture_isolation_problems() -> list[str]:
+def process_fixture_isolation_problems(
+    *,
+    drop_overview_control: bool = False,
+) -> list[str]:
     """Reject process-contract negatives that also corrupt unrelated controls."""
+    del drop_overview_control
     problems: list[str] = []
     expected_agents_inventory = (
         (CONFINE_HEADING, 1),
@@ -2292,6 +2296,10 @@ def run(
 
 failures = []
 failures.extend(process_fixture_isolation_problems())
+if not process_fixture_isolation_problems(drop_overview_control=True):
+    failures.append(
+        "process fixture isolation self-test missed a dropped Overview control"
+    )
 
 orchestration_inventory = subprocess.run(
     [
