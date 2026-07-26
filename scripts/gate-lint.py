@@ -427,6 +427,7 @@ def nightly_workflow_problems(path: Path) -> list[str]:
 AGENTS_TITLE = "# durablerun"
 BUILD_TITLE = "# Build plan: phases → PR stack of tractable diffs"
 CONFINE_HEADING = "## Standing rule: confine heavy local runs"
+OVERVIEW_HEADING = "## Overview"
 CONFINE_SECTION_BODY = """Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
 through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
 the live protective memory, swap, CPU, and task limits. A runaway must die
@@ -443,6 +444,7 @@ TRANSPORT_MARKERS = (
 )
 AGENTS_PROCESS_PREFIX = (
     f"{AGENTS_TITLE}\n\n{CONFINE_HEADING}\n\n{CONFINE_SECTION_BODY}\n\n"
+    f"{OVERVIEW_HEADING}\n\n"
 )
 BUILD_PROCESS_PREFIX = f"{BUILD_TITLE}\n\n{TRANSPORT_BLOCK}\n\n"
 
@@ -478,6 +480,7 @@ def process_contract_problems(root: Path) -> list[str]:
         not agents.startswith(AGENTS_PROCESS_PREFIX)
         or agents.count(CONFINE_HEADING) != 1
         or agents.count(CONFINE_SECTION_BODY) != 1
+        or agents.count(OVERVIEW_HEADING) != 1
     ):
         problems.append(
             "AGENTS.md confinement section must defer all quantitative policy "

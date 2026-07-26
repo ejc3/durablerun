@@ -36,6 +36,7 @@ SCRIPTS = Path(__file__).resolve().parent
 AGENTS_TITLE = "# durablerun"
 BUILD_TITLE = "# Build plan: phases → PR stack of tractable diffs"
 CONFINE_HEADING = "## Standing rule: confine heavy local runs"
+OVERVIEW_HEADING = "## Overview"
 CONFINE_SECTION_BODY = """Anything that can grow — fuzz runs, TLC, codex, bulk test sweeps — runs
 through `scripts/confine.sh`. `scripts/confine.sh` is the single definition of
 the live protective memory, swap, CPU, and task limits. A runaway must die
@@ -108,6 +109,8 @@ def gate(
             f"{AGENTS_TITLE}\n\n"
             f"{CONFINE_HEADING}\n\n"
             f"{CONFINE_SECTION_BODY}\n\n"
+            f"{OVERVIEW_HEADING}\n\n"
+            "Fixture overview.\n\n"
             "## Fixture continuation\n"
         ),
         "BUILD.md": (
@@ -162,6 +165,8 @@ def process_docs(agents: str, build: str) -> dict[str, str]:
         f"{AGENTS_TITLE}\n\n"
         f"{CONFINE_HEADING}\n\n"
         f"{agents.strip()}\n\n"
+        f"{OVERVIEW_HEADING}\n\n"
+        "Fixture overview.\n\n"
         "## Fixture continuation\n"
     )
     files["BUILD.md"] = (
@@ -183,23 +188,31 @@ def hidden_process_contract(document: str, container: str) -> dict[str, str]:
             "pre": f"<pre>\n{body}</pre>\n",
             "div": f"<div>\n{body}</div>\n",
         }
-        files[document] = (
-            f"{AGENTS_TITLE}\n\n{wrappers[container]}\n## Fixture continuation\n"
+        files[document] = files[document].replace(
+            body,
+            wrappers[container],
+            1,
         )
         return files
 
+    block = f"{TRANSPORT_BLOCK}\n\n"
     wrappers = {
-        "fence": f"```md\n{TRANSPORT_BLOCK}\n```\n",
-        "invalid-fence-close": f"```md\n    ```\n{TRANSPORT_BLOCK}\n```\n",
-        "comment": f"<!--\n{TRANSPORT_BLOCK}\n-->\n",
+        "fence": f"```md\n{TRANSPORT_BLOCK}\n```\n\n",
+        "invalid-fence-close": (
+            f"```md\n    ```\n{TRANSPORT_BLOCK}\n```\n\n"
+        ),
+        "comment": f"<!--\n{TRANSPORT_BLOCK}\n-->\n\n",
         "indented-code": "".join(
             f"    {line}\n" for line in TRANSPORT_BLOCK.splitlines()
-        ),
-        "pre": f"<pre>\n{TRANSPORT_BLOCK}\n</pre>\n",
-        "div": f"<div>\n{TRANSPORT_BLOCK}\n</div>\n",
+        )
+        + "\n",
+        "pre": f"<pre>\n{TRANSPORT_BLOCK}\n</pre>\n\n",
+        "div": f"<div>\n{TRANSPORT_BLOCK}\n</div>\n\n",
     }
-    files[document] = (
-        f"{BUILD_TITLE}\n\n{wrappers[container]}\n## Fixture continuation\n"
+    files[document] = files[document].replace(
+        block,
+        wrappers[container],
+        1,
     )
     return files
 

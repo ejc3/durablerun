@@ -8,6 +8,8 @@ the live protective memory, swap, CPU, and task limits. A runaway must die
 inside that scope rather than taking the box down. `verify:fuzz`,
 `verify:fuzz:deep`, `verify:tla`, and `verify:mutations` are pre-wired.
 
+## Overview
+
 A port of Absurd (earendil-works/absurd, Postgres durable execution) to a
 pluggable SQL backend (SQLite/libsql first; MySQL, Postgres later), driven by
 lightweight tick drivers that launch workers on demand.
