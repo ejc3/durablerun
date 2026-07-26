@@ -29,6 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+# This runner requires a clean tree and imports repository-local helpers. Do
+# not let Python create an untracked cache before the clean-tree check runs.
+sys.dont_write_bytecode = True
+
 from source_lex import matching_delimiter, split_top_level, typescript_structure
 
 ROOT = Path(__file__).resolve().parent.parent

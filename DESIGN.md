@@ -851,7 +851,9 @@ not depend on careful reading:
   Behavioral mutations preserve unrelated semantics, every multi-part verdict
   has one marked vector, and inverse promise outcomes use the shared helpers to
   emit the marker directly rather than relying on framework custom-message
-  propagation.
+  propagation. The clean-tree mutation runner disables Python bytecode writes
+  before importing repository-local helpers, and the executable lint self-test
+  rejects any helper-import artifact.
 - *Duplicate-delivery in the model*: the spec models a retried request per
   labeled action, and the ledger tags each label's duplicate semantics
   ([cas-fenced] / [receipt] / [read] / [setup]), machine-checked — so a

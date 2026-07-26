@@ -217,7 +217,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     expected-error-to-replacement-error verdicts. Through the canonical
     TypeScript structural lexer, the verify gate rejects every custom-message
     argument on exact Vitest `expect(...).rejects`/`.resolves` chains across
-    the repository.
+    the repository. The mutation runner disables Python bytecode writes before
+    importing that shared lexer, and its executable self-test rejects any
+    import artifact that would make a clean audit refuse its own tree.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 54 atomic witnesses covering all 57
     invariant condition IDs: 918 generated cells, plus two inventory cases.
