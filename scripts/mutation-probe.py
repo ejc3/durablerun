@@ -2915,9 +2915,15 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "the exact offline frozen canonical-store command"
                 )
 
-        if fault in (None, "allow-host-sized-tokio-pools"):
+        launch_environment_faults = (
+            "allow-host-sized-tokio-pools",
+            "allow-worker-bytecode-artifacts",
+        )
+        if fault is None or fault in launch_environment_faults:
             inherited_tokio_threads = os.environ.get("TOKIO_WORKER_THREADS")
+            inherited_bytecode = os.environ.get("PYTHONDONTWRITEBYTECODE")
             os.environ["TOKIO_WORKER_THREADS"] = "1"
+            os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
             try:
                 environment = worker_launch(
                     environment_plan,
@@ -2930,16 +2936,28 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     allow_host_sized_tokio=(
                         fault == "allow-host-sized-tokio-pools"
                     ),
+                    allow_python_bytecode=(
+                        fault == "allow-worker-bytecode-artifacts"
+                    ),
                 ).environment
             finally:
                 if inherited_tokio_threads is None:
                     os.environ.pop("TOKIO_WORKER_THREADS", None)
                 else:
                     os.environ["TOKIO_WORKER_THREADS"] = inherited_tokio_threads
+                if inherited_bytecode is None:
+                    os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+                else:
+                    os.environ["PYTHONDONTWRITEBYTECODE"] = inherited_bytecode
             if environment.get("TOKIO_WORKER_THREADS") != "1":
                 failures.append(
                     "native thread budget: worker suites can create "
                     "host-sized Tokio pools"
+                )
+            if environment.get("PYTHONDONTWRITEBYTECODE") != "1":
+                failures.append(
+                    "worker cleanliness: Python imports can create bytecode "
+                    "artifacts before mutation"
                 )
         source_root = temporary / "source"
         source_root.mkdir()
@@ -3833,6 +3851,7 @@ def worker_environment(
     plan: WorkerPlan,
     *,
     allow_host_sized_tokio: bool = False,
+    allow_python_bytecode: bool = False,
 ) -> dict[str, str]:
     plan.temporary.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
@@ -3844,6 +3863,10 @@ def worker_environment(
         environment.pop("TOKIO_WORKER_THREADS", None)
     else:
         environment["TOKIO_WORKER_THREADS"] = "1"
+    if allow_python_bytecode:
+        environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    else:
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return environment
 
 
@@ -3881,6 +3904,7 @@ def worker_launch(
     nonce: str,
     baseline_barrier: BaselineBarrier | None,
     allow_host_sized_tokio: bool = False,
+    allow_python_bytecode: bool = False,
 ) -> ProcessLaunch:
     if phase == "mutations":
         if (
@@ -3925,6 +3949,7 @@ def worker_launch(
         worker_environment(
             plan,
             allow_host_sized_tokio=allow_host_sized_tokio,
+            allow_python_bytecode=allow_python_bytecode,
         ),
     )
 
