@@ -1013,6 +1013,16 @@ export class S {
     ),
     (
         "gate-lint.py",
+        process_docs(
+            CONFINE_SECTION_BODY
+            + "\n\nThe confinement cap is ninety-nine gibibytes.",
+            TRANSPORT_BLOCK,
+        ),
+        "AGENTS.md confinement section must defer all quantitative policy",
+        "a second paragraph before the next heading extends the confinement contract",
+    ),
+    (
+        "gate-lint.py",
         {
             **process_docs(CONFINE_SECTION_BODY, TRANSPORT_BLOCK),
             "package.json": json.dumps(
