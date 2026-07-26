@@ -62,4 +62,28 @@ describe('LaunchOutcome runtime authentication', () => {
     expect(Object.hasOwn(LaunchOutcome, 'payloads')).toBe(false)
     expect((LaunchOutcome as unknown as { payloads?: unknown }).payloads).toBeUndefined()
   })
+
+  it('does not authenticate a result constructed through the runtime constructor', async () => {
+    let forged: unknown
+    try {
+      forged = Reflect.construct(
+        LaunchOutcome as unknown as new (payload: unknown) => LaunchOutcome,
+        [{ kind: 'accepted' }],
+      )
+    } catch {
+      // Refusing runtime construction is also a valid fail-closed outcome.
+      return
+    }
+
+    const fake = store()
+    expect(
+      await LaunchOutcome.reconcile(
+        fake.value,
+        'q',
+        { runId: 'run', claimToken: 'token' },
+        forged,
+      ),
+    ).toBe('launch-failed')
+    expect(fake.expireLeaseNow).toHaveBeenCalledOnce()
+  })
 })
