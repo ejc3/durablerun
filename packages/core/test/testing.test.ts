@@ -6,6 +6,7 @@ import {
 } from '../src/testing.js'
 
 const marker = 'mutation-verdict:behavior:testing-helper'
+const verdict = { kind: 'behavior', mutation: 'testing-helper' } as const
 const expected = new Error('expected')
 const unrelated = new Error('unrelated')
 
@@ -97,6 +98,30 @@ describe('mutation verdict promise helpers', () => {
         },
       ),
     ).rejects.toThrow(marker)
+  })
+
+  it('owns canonical marker construction instead of accepting decorated strings', async () => {
+    await expect(
+      attributeReplacedFailure(
+        verdict,
+        (error) => error === expected,
+        (error) => error === unrelated,
+        async () => {
+          throw unrelated
+        },
+      ),
+    ).rejects.toThrow(marker)
+
+    await expect(
+      attributeReplacedFailure(
+        { kind: 'behavior', mutation: 'testing-helper: diagnostic suffix' },
+        (error) => error === expected,
+        (error) => error === unrelated,
+        async () => {
+          throw unrelated
+        },
+      ),
+    ).rejects.toThrow('invalid mutation verdict name')
   })
 
   it('does not attribute success or a third rejection as a replacement failure', async () => {
