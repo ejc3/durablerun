@@ -1605,6 +1605,7 @@ BAD_INVOCATIONS = [
         "accept-oversized-finite-scope",
         "accept-oversized-cpu-scope",
         "classify-missing-report-as-domain",
+        "classify-malformed-report-as-domain",
     )
 ]
 

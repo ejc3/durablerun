@@ -93,6 +93,10 @@ class SuiteResult:
         )
 
 
+class SuiteInfrastructureError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class TypeScriptSourceAnalysis:
     diagnostics: tuple[str, ...]
@@ -1877,6 +1881,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "accept-oversized-finite-scope",
     "accept-oversized-cpu-scope",
     "classify-missing-report-as-domain",
+    "classify-malformed-report-as-domain",
 )
 
 
@@ -2810,39 +2815,63 @@ def orchestration_self_test(fault: str | None = None) -> int:
     transport_failures = (
         (
             "worker signal",
-            SuiteResult(
-                False,
-                False,
-                (),
-                (),
-                "",
-                "Vitest terminated by signal 9",
-            ),
-            fault == "report-worker-crash-as-domain",
+            "import os,signal; os.kill(os.getpid(), signal.SIGKILL)",
+            "report-worker-crash-as-domain",
         ),
         (
             "missing report",
-            SuiteResult(
-                False,
-                False,
-                (),
-                ("Vitest did not write its JSON report",),
-                "",
-                "Vitest did not write its JSON report",
+            "raise SystemExit(1)",
+            "classify-missing-report-as-domain",
+        ),
+        (
+            "malformed report",
+            (
+                "import pathlib,sys; "
+                "path=sys.argv[sys.argv.index('--outputFile')+1]; "
+                "pathlib.Path(path).write_text('{'); "
+                "raise SystemExit(1)"
             ),
-            fault == "classify-missing-report-as-domain",
+            "classify-malformed-report-as-domain",
         ),
     )
-    for label, result, weakness in transport_failures:
+    fixture_scope = ConfinedScope("self-test", 1, 1)
+    fixture_workspace = IsolatedWorkspace(ROOT.resolve())
+    fixture_authority = WorkerAuthority(
+        ROOT.resolve(),
+        ROOT.resolve(),
+        0,
+        "a" * 40,
+        "self-test",
+    )
+    for label, program, fault_name in transport_failures:
+        original_command = TEST_CMD[:]
+        TEST_CMD[:] = [sys.executable, "-c", program]
         try:
-            require_suite_transport(
-                result,
-                accept_failure_as_domain=weakness,
+            weakness = (
+                {"return_transport_as_domain": True}
+                if fault == fault_name
+                else {}
             )
-        except RuntimeError:
-            pass
-        else:
-            failures.append(f"worker failure: {label} became a domain verdict")
+            try:
+                run_suite(
+                    1,
+                    scope=fixture_scope,
+                    workspace=fixture_workspace,
+                    authority=fixture_authority,
+                    **weakness,
+                )
+            except SuiteInfrastructureError:
+                continue
+            except Exception as error:
+                failures.append(
+                    f"worker failure: {label} raised the wrong exception: {error}"
+                )
+            else:
+                failures.append(
+                    f"worker failure: {label} became a domain verdict"
+                )
+        finally:
+            TEST_CMD[:] = original_command
 
     if failures:
         if fault is not None:
