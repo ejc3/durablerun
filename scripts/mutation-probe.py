@@ -1872,6 +1872,7 @@ class ConfinedScope:
     cgroup: str
     memory_max: int
     cpu_quota: int
+    tasks_max: int
 
 
 @dataclass(frozen=True)
@@ -2325,12 +2326,9 @@ def validate_scope_limits(
     accept_unconfined: bool = False,
     accept_oversized_memory: bool = False,
     accept_oversized_cpu: bool = False,
-) -> tuple[int, int]:
-    # Test seam for the fourth aggregate cgroup limit. The validator did not
-    # receive pids.max at all, so an unlimited task scope could not be
-    # expressed as a regression without first making that input visible.
-    # Intentionally unused until the red task-limit case lands.
-    _ = (tasks_max, configured_tasks)
+    accept_unlimited_tasks: bool = False,
+    accept_oversized_tasks: bool = False,
+) -> tuple[int, int, int]:
     try:
         memory = int(memory_max)
         swap = int(swap_max)
@@ -2339,13 +2337,34 @@ def validate_scope_limits(
         period = int(period_text)
     except (ValueError, TypeError) as error:
         if accept_unconfined:
-            return (1, 1)
+            return (1, 1, 1)
         raise ValueError("mutation audit is not inside finite cgroup limits") from error
     if memory <= 0 or swap != 0 or quota <= 0 or period <= 0:
         if accept_unconfined:
-            return (max(1, memory), max(1, quota))
+            return (max(1, memory), max(1, quota), 1)
         raise ValueError(
             "mutation audit cgroup must have finite positive memory/CPU and zero swap"
+        )
+    try:
+        tasks = int(tasks_max or "")
+        configured = int(configured_tasks or "")
+    except (ValueError, TypeError) as error:
+        if accept_unlimited_tasks:
+            tasks = configured = 1
+        else:
+            raise ValueError(
+                "mutation audit cgroup must have a finite task limit exported by confine.sh"
+            ) from error
+    if tasks <= 0 or configured <= 0:
+        if accept_unlimited_tasks:
+            tasks = configured = 1
+        else:
+            raise ValueError(
+                "mutation audit cgroup must have positive live and configured task limits"
+            )
+    if tasks > configured and not accept_oversized_tasks:
+        raise ValueError(
+            "mutation audit cgroup task limit exceeds the policy exported by confine.sh"
         )
     if host_memory < 1:
         raise ValueError("mutation audit cannot identify positive host memory")
@@ -2359,7 +2378,7 @@ def validate_scope_limits(
         raise ValueError(
             "mutation audit cgroup CPU limit does not preserve the host reserve"
         )
-    return memory, quota
+    return memory, quota, tasks
 
 
 def prove_confined_scope(*, accept_unconfined: bool = False) -> ConfinedScope:
@@ -2380,17 +2399,20 @@ def prove_confined_scope(*, accept_unconfined: bool = False) -> ConfinedScope:
         memory_text = (scope / "memory.max").read_text().strip()
         swap_text = (scope / "memory.swap.max").read_text().strip()
         cpu_text = (scope / "cpu.max").read_text().strip()
+        tasks_text = (scope / "pids.max").read_text().strip()
     except (OSError, ValueError) as error:
         raise ValueError(f"mutation audit cannot inspect cgroup {cgroup}") from error
-    memory, quota = validate_scope_limits(
+    memory, quota, tasks = validate_scope_limits(
         memory_text,
         swap_text,
         cpu_text,
+        tasks_max=tasks_text,
+        configured_tasks=os.environ.get("CONFINE_TASKS"),
         host_memory=host_memory_bytes(),
         host_cpus=host_cpu_count(),
         accept_unconfined=accept_unconfined,
     )
-    return ConfinedScope(cgroup, memory, quota)
+    return ConfinedScope(cgroup, memory, quota, tasks)
 
 
 def prove_workspace_links(
@@ -3080,6 +3102,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
             "750",
             "0",
             "600000 100000",
+            tasks_max="4096",
+            configured_tasks="4096",
             host_memory=1000,
             host_cpus=8,
         )
@@ -3114,6 +3138,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
         try:
             validate_scope_limits(
                 *values,
+                tasks_max="4096",
+                configured_tasks="4096",
                 host_memory=1000,
                 host_cpus=8,
                 **weakness,
@@ -3129,8 +3155,10 @@ def orchestration_self_test(fault: str | None = None) -> int:
             "0",
             "600000 100000",
             tasks_max="max",
+            configured_tasks="4096",
             host_memory=1000,
             host_cpus=8,
+            accept_unlimited_tasks=fault == "accept-unlimited-task-scope",
         )
     except ValueError:
         pass
@@ -3146,6 +3174,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
             configured_tasks="4096",
             host_memory=1000,
             host_cpus=8,
+            accept_oversized_tasks=fault == "accept-oversized-task-scope",
         )
     except ValueError:
         pass
@@ -3221,7 +3250,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
             "classify-structural-report-as-domain",
         ),
     )
-    fixture_scope = ConfinedScope("self-test", 1, 1)
+    fixture_scope = ConfinedScope("self-test", 1, 1, 1)
     fixture_workspace = IsolatedWorkspace(ROOT.resolve())
     fixture_authority = WorkerAuthority(
         ROOT.resolve(),
