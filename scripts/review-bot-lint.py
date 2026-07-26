@@ -359,6 +359,14 @@ def coderabbit_custom_checks(text: str) -> tuple[list[dict[str, str]], list[str]
                 f".coderabbit.yaml line {i + 1} is a custom check without a literal name."
             )
 
+    first_entry = entries[0][0] if entries else custom_end
+    for index in range(custom[0] + 1, first_entry):
+        if significant_yaml_line(lines[index]):
+            errors.append(
+                f".coderabbit.yaml line {index + 1} has unrecognized content before "
+                "its first custom check."
+            )
+
     checks: list[dict[str, str]] = []
     for position, (start, raw_name) in enumerate(entries):
         end = entries[position + 1][0] if position + 1 < len(entries) else custom_end
