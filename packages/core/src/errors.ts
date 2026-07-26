@@ -64,6 +64,15 @@ export class SchemaMismatchError extends Error {
   override readonly name = 'SchemaMismatchError'
 }
 
+/**
+ * The schema metadata relation does not exist yet, so migration may initialize
+ * a genuinely fresh database. Dialect executors emit this only for the
+ * canonical schema-version read; StoreAdmin must never infer it from text.
+ */
+export class SchemaNotInitializedError extends Error {
+  override readonly name = 'SchemaNotInitializedError'
+}
+
 /** Worker-thrown: permanent failure, skip retries (maps to Absurd FatalError). */
 export class FatalTaskError extends Error {
   override readonly name = 'FatalTaskError'

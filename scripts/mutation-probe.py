@@ -356,9 +356,16 @@ MUTATION_SPECS = [
     (
         "schema-fault-is-permanent",
         "packages/store-libsql/src/executor.ts",
-        "      if (SCHEMA_FAULT.test(String(error))) {",
-        "      if (false && SCHEMA_FAULT.test(String(error))) {",
+        "      if (error instanceof LibsqlError && SCHEMA_FAULT.test(error.message)) {",
+        "      if (false && error instanceof LibsqlError && SCHEMA_FAULT.test(error.message)) {",
         "an un-migrated database is retried as a transient outage",
+    ),
+    (
+        "schema-absence-is-typed",
+        "packages/store-libsql/src/admin.ts",
+        "      if (error instanceof SchemaNotInitializedError) return 0",
+        "      if (String(error).includes('no such table')) return 0",
+        "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
         "spawn-primary-key-guard",
@@ -573,6 +580,12 @@ VERDICTS = {
         "packages/store-libsql/test/schema-gate.test.ts",
         "a database older than the binary classifies every SQLite schema-shape error as a permanent fault",
         "mutation-verdict:behavior:schema-fault-is-permanent",
+    ),
+    "schema-absence-is-typed": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema-gate.test.ts",
+        "migrate reports success only when the schema is current does not classify unrelated executor failures by message substring",
+        "mutation-verdict:behavior:schema-absence-is-typed",
     ),
     "spawn-primary-key-guard": ExpectedVerdict(
         "behavior",

@@ -1,8 +1,4 @@
-import {
-  SchemaMismatchError,
-  type SqlExecutor,
-  StoreUnavailableError,
-} from '@durablerun/core'
+import { SchemaMismatchError, type SqlExecutor, StoreUnavailableError } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -153,7 +149,14 @@ describe('migrate reports success only when the schema is current', () => {
       },
     }
 
-    await expect(new LibsqlStoreAdmin(deceptive).schemaVersion()).rejects.toBe(outage)
+    const observed = await new LibsqlStoreAdmin(deceptive).schemaVersion().then(
+      (value) => ({ kind: 'resolved' as const, value }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    )
+    if (observed.kind === 'resolved') {
+      throw new Error('mutation-verdict:behavior:schema-absence-is-typed')
+    }
+    expect(observed.error).toBe(outage)
   })
 
   it('fails when the recorded version is newer than this binary', async () => {

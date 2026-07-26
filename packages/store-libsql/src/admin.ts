@@ -1,10 +1,16 @@
 import {
+  SchemaNotInitializedError,
   SchemaMismatchError,
   type SqlExecutor,
   type SqlResult,
   type StoreAdmin,
 } from '@durablerun/core'
-import { CURRENT_SCHEMA_VERSION, MIGRATIONS, type Migration } from './schema.js'
+import {
+  CURRENT_SCHEMA_VERSION,
+  MIGRATIONS,
+  type Migration,
+  SCHEMA_VERSION_READ_SQL,
+} from './schema.js'
 import { NOW_MS } from './time.js'
 
 export class LibsqlStoreAdmin implements StoreAdmin {
@@ -66,14 +72,14 @@ export class LibsqlStoreAdmin implements StoreAdmin {
     try {
       results = await this.db.batch(
         'migrate:version',
-        [{ sql: `SELECT value FROM meta WHERE key = 'schema_version'`, args: [] }],
+        [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }],
         'read',
       )
     } catch (error) {
       // Only a genuinely fresh database reads as version 0; a transient
       // network/auth error must not masquerade as one (it would re-apply
       // every migration over a live schema).
-      if (String(error).includes('no such table')) return 0
+      if (error instanceof SchemaNotInitializedError) return 0
       throw error
     }
     const row = results[0]?.rows[0]

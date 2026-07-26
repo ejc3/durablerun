@@ -20,6 +20,10 @@ export interface Migration {
   statements: string[]
 }
 
+/** The one read whose missing `meta` table means the database is fresh. */
+export const SCHEMA_VERSION_READ_SQL =
+  `SELECT value FROM meta WHERE key = 'schema_version'` as const
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,

@@ -1,5 +1,6 @@
-import { type Client, createClient } from '@libsql/client'
+import { type Client, createClient, LibsqlError } from '@libsql/client'
 import {
+  SchemaNotInitializedError,
   SchemaMismatchError,
   type SqlBatchMode,
   type SqlExecutor,
@@ -7,6 +8,7 @@ import {
   type SqlStatement,
   StoreUnavailableError,
 } from '@durablerun/core'
+import { SCHEMA_VERSION_READ_SQL } from './schema.js'
 
 /**
  * SQLite's wording for "this build and this database disagree about the
@@ -14,6 +16,7 @@ import {
  * fail the same way forever, so retrying is always wrong.
  */
 const SCHEMA_FAULT = /no such (?:column|table)|has no column named|duplicate column name/i
+const MISSING_META_TABLE = /no such table:\s*meta$/i
 
 /**
  * SqlExecutor over @libsql/client. `batch(…, 'write')` is atomic — implicit
@@ -88,13 +91,28 @@ export class LibsqlExecutor implements SqlExecutor {
         mode,
       )
     } catch (error) {
+      const schemaVersionRead =
+        _label === 'migrate:version' &&
+        mode === 'read' &&
+        statements.length === 1 &&
+        statements[0]?.sql === SCHEMA_VERSION_READ_SQL &&
+        statements[0].args.length === 0
+      if (
+        schemaVersionRead &&
+        error instanceof LibsqlError &&
+        MISSING_META_TABLE.test(error.message)
+      ) {
+        throw new SchemaNotInitializedError('schema metadata has not been initialized', {
+          cause: error,
+        })
+      }
       // A schema mismatch is PERMANENT, so it gets its own type: consumers
       // treat StoreUnavailableError as transient and recover through the
       // lease, which for a missing column means retrying a deterministic
       // failure until the run's infrastructure budget is gone. Splitting it
       // out here covers every statement of every batch, including paths no
       // startup check would run.
-      if (SCHEMA_FAULT.test(String(error))) {
+      if (error instanceof LibsqlError && SCHEMA_FAULT.test(error.message)) {
         throw new SchemaMismatchError(
           `batch(${_label}) hit a schema this build does not expect — the database is probably not migrated: ${String(error)}`,
           { cause: error },
