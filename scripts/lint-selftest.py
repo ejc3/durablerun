@@ -1062,6 +1062,29 @@ def base_runner_fixture(
     return {**under("head", head), **under("base", base), "head/REJECT": "reject\n"}
 
 
+def base_runner_growth_fixture() -> dict[str, str]:
+    """A head may add a checker when its own gate and refusal corpus enroll it."""
+    base_verify = (
+        "python3 scripts/a-lint.py && bash scripts/b-lint.sh "
+        "&& python3 scripts/gate-lint.py && python3 scripts/lint-selftest.py"
+    )
+    head_verify = (
+        "python3 scripts/a-lint.py && bash scripts/b-lint.sh "
+        "&& python3 scripts/c-lint.py && python3 scripts/gate-lint.py "
+        "&& python3 scripts/lint-selftest.py"
+    )
+    base = gate(
+        base_verify,
+        ("a-lint.py", "b-lint.sh", "gate-lint.py"),
+    )
+    head = gate(
+        head_verify,
+        ("a-lint.py", "b-lint.sh", "c-lint.py", "gate-lint.py"),
+    )
+    base["scripts/gate-lint.py"] = (SCRIPTS / "gate-lint.py").read_text()
+    head["scripts/gate-lint.py"] = (SCRIPTS / "gate-lint.py").read_text()
+    return {**under("head", head), **under("base", base)}
+
 
 ACTIVE_RULE = "Flag something decidable. Pass for the nearest legitimate shape."
 CODERABBIT_GLOBAL = (
@@ -1304,6 +1327,24 @@ export class S {
         store(
             """
 export class S {
+  async probe() {
+    const batch = this.db.batch.bind(this.db)
+    await batch('brand-new-write', [
+      { sql: `UPDATE tasks SET a = 1`, args: [] },
+      { sql: `UPDATE runs SET b = 2`, args: [] },
+    ])
+  }
+}
+"""
+        ),
+        "indirect this.db.batch reference is opaque",
+        "aliasing the executor method must fail closed instead of hiding a raw multi-write batch",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class S {
   async probe(suffix: string) {
     await this.db.batch('heartbeat' + suffix, [
       { sql: `UPDATE tasks SET a = 1`, args: [] },
@@ -1515,6 +1556,24 @@ export class S {
         "cancellation-deadline comparison outside fragments.ts",
         "an eligibility comparison outside fragments.ts is how the claim lost the deadline predicate",
     ),
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM tasks WHERE CANCEL_AT_MS <= 5`\n",
+            name="probe.ts",
+        ),
+        "cancellation-deadline comparison outside fragments.ts",
+        "SQL identifiers are case-insensitive, so uppercase cannot create a second eligibility definition",
+    ),
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM tasks WHERE cancel_at_ms\n  <= 5`\n",
+            name="probe.ts",
+        ),
+        "cancellation-deadline comparison outside fragments.ts",
+        "SQL whitespace may split an eligibility comparison across source lines",
+    ),
     # Every store-source checker must see a file BELOW src/. Three of the four
     # globbed exactly one directory deep, so anything in a subfolder was
     # invisible to them; the recursive fix landed in one and the other three
@@ -1611,6 +1670,24 @@ export class S {
         ),
         "raw state list outside fragments.ts",
         "a raw state list outside fragments.ts is a second definition of 'live'",
+    ),
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM runs WHERE state in ('pending','running')`\n",
+            name="probe.ts",
+        ),
+        "raw state list outside fragments.ts",
+        "SQL keywords are case-insensitive, so lowercase in cannot bypass the live-state definition",
+    ),
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM runs WHERE state\n  IN ('pending','running')`\n",
+            name="probe.ts",
+        ),
+        "raw state list outside fragments.ts",
+        "SQL whitespace may split a raw live-state list across source lines",
     ),
     (
         "determinism-lint.sh",
@@ -1711,6 +1788,50 @@ export class S {
         },
         "batch label 'brand-new-label' is not in the ledger block",
         "a batch label mapped to no TLA action must fail until it is mapped or excluded",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/probe.ts": (
+                "await this.db.batch('cancel-task', [{ sql: `SELECT 1`, args: [] }])\n"
+                "await this.db.batch('sweep:cancel', [{ sql: `SELECT 1`, args: [] }])\n"
+            ),
+            "packages/store-mysql/src/probe.ts": (
+                "await this.db.batch('mysql-brand-new-label', "
+                "[{ sql: `SELECT 1`, args: [] }])\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch label 'mysql-brand-new-label' is not in the ledger block",
+        "the language-neutral ledger must harvest labels from every dialect store",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/probe.ts": (
+                "await this.db.batch('cancel-task', [{ sql: `SELECT 1`, args: [] }])\n"
+                "await this.db.batch('sweep:cancel', [{ sql: `SELECT 1`, args: [] }])\n"
+                "const batch = this.db.batch.bind(this.db)\n"
+                "await batch('brand-new-label', [{ sql: `SELECT 1`, args: [] }])\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* 'sweep:cancel' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "an indirect executor call must fail closed rather than vanish from the ledger and fault matrix",
     ),
     (
         "gate-lint.py",
@@ -2629,11 +2750,118 @@ BAD_INVOCATIONS = [
     (
         "review-attest.sh",
         {
+            "incomplete.jsonl": (
+                '{"type":"review-head","head":"fixture-head"}\n'
+                '{"type":"review-plan","reviewers":["whole-system"]}\n'
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+            ),
+        },
+        ("--check-journal", "{root}/incomplete.jsonl", "fixture-head"),
+        "review journal has no terminal completion record",
+        "an interrupted review must not attest after only its first result",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "missing-result.jsonl": (
+                '{"type":"review-head","head":"fixture-head"}\n'
+                '{"type":"review-plan","reviewers":["whole-system","tooling"]}\n'
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+                '{"type":"review-complete","reviewers":["whole-system","tooling"]}\n'
+            ),
+        },
+        ("--check-journal", "{root}/missing-result.jsonl", "fixture-head"),
+        "review journal result inventory differs from its plan",
+        "a completion marker cannot hide a planned reviewer that never reported",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "duplicate-result.jsonl": (
+                '{"type":"review-head","head":"fixture-head"}\n'
+                '{"type":"review-plan","reviewers":["whole-system"]}\n'
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+                '{"type":"review-complete","reviewers":["whole-system"]}\n'
+            ),
+        },
+        ("--check-journal", "{root}/duplicate-result.jsonl", "fixture-head"),
+        "review journal duplicates reviewer results",
+        "two rows from one reviewer cannot answer for two independently planned lenses",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "extra-result.jsonl": (
+                '{"type":"review-head","head":"fixture-head"}\n'
+                '{"type":"review-plan","reviewers":["whole-system"]}\n'
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+                '{"type":"result","reviewer":"unplanned","verdict":"clean"}\n'
+                '{"type":"review-complete","reviewers":["whole-system"]}\n'
+            ),
+        },
+        ("--check-journal", "{root}/extra-result.jsonl", "fixture-head"),
+        "review journal result inventory differs from its plan",
+        "an unplanned result cannot substitute for the coordinator-owned reviewer inventory",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "early-completion.jsonl": (
+                '{"type":"review-head","head":"fixture-head"}\n'
+                '{"type":"review-plan","reviewers":["whole-system"]}\n'
+                '{"type":"review-complete","reviewers":["whole-system"]}\n'
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+            ),
+        },
+        ("--check-journal", "{root}/early-completion.jsonl", "fixture-head"),
+        "review journal terminal completion record must be last",
+        "a completion record written before later work is not an atomic terminal barrier",
+    ),
+    (
+        "review-attest.sh",
+        {
             "body.md": "review-findings: 0\nreviews-abandoned:   \n",
         },
         ("--check-pr-body", "{root}/body.md"),
         "reviews-abandoned requires a non-empty reason",
         "an empty abandonment trailer must not publish a successful review status",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "body.md": "reviews-abandoned: reviewer service unavailable\n",
+        },
+        ("--check-pr-body", "{root}/body.md"),
+        "review-findings must appear exactly once",
+        "abandoning review artifacts never excuses the mandatory finding count",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "body.md": "review-findings: 0\nreview-findings: 37\n",
+        },
+        ("--check-pr-body", "{root}/body.md"),
+        "review-findings must appear exactly once",
+        "a stale zero before the real count must not skip the nonzero SEV gate",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "body.md": "review-findings: 37\nreview-findings: 0\n",
+        },
+        ("--check-pr-body", "{root}/body.md"),
+        "review-findings must appear exactly once",
+        "trailer order must not choose which of two conflicting finding counts is authoritative",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "body.md": "review-findings: 37 reviewed\n",
+        },
+        ("--check-pr-body", "{root}/body.md"),
+        "review-findings must be a canonical whole line",
+        "trailing prose must not be silently discarded while parsing the incident count",
     ),
     (
         "gate-lint.py",
@@ -2673,6 +2901,39 @@ BAD_INVOCATIONS = [
         "accept-incoherent-report",
         "accept-malformed-report",
     )
+]
+
+ENV_BAD_INVOCATIONS = [
+    (
+        "review-attest.sh",
+        {
+            "codex.log": (
+                "review-head: fixture-head\n"
+                "review analysis completed\n"
+                "tokens used\n"
+                "review verdict: no findings\n"
+            ),
+            "fake-gh.sh": (
+                "gh() {\n"
+                "  if [[ \"$1\" == pr && \"$2\" == view ]]; then\n"
+                "    case \"$5\" in\n"
+                "      headRefOid) printf '%s\\n' fixture-head ;;\n"
+                "      body) printf '%s\\n' 'review-findings: 0' ;;\n"
+                "      commits) return 0 ;;\n"
+                "      *) return 2 ;;\n"
+                "    esac\n"
+                "    return 0\n"
+                "  fi\n"
+                "  [[ \"$1\" == api ]] && return 0\n"
+                "  return 2\n"
+                "}\n"
+            ),
+        },
+        ("12", "{root}/codex.log", "-"),
+        {"BASH_ENV": "{root}/fake-gh.sh"},
+        "workflow journal is required unless reviews are explicitly abandoned",
+        "a valid Codex log alone cannot attest the mandatory multi-lens review",
+    ),
 ]
 
 # Inputs each lint must ACCEPT. A checker that rejects everything passes every
@@ -2793,6 +3054,12 @@ const pattern = /this\.db\.batch\(/
 
 GOOD_INVOCATIONS = [
     (
+        "gate-lint.py",
+        base_runner_growth_fixture(),
+        ("--run-base", "{root}/head", "{root}/base"),
+        "base-owned checks accept a head-owned checker that is wired into verify and its refusal corpus",
+    ),
+    (
         "mutation-probe.py",
         {},
         ("--classifier-self-test",),
@@ -2822,11 +3089,21 @@ GOOD_INVOCATIONS = [
         {
             "completed.jsonl": (
                 '{"type":"review-head","head":"fixture-head"}\n'
-                '{"type":"result","finding":"one","verdict":"accepted"}\n'
+                '{"type":"review-plan","reviewers":["whole-system"]}\n'
+                '{"type":"result","reviewer":"whole-system","verdict":"clean"}\n'
+                '{"type":"review-complete","reviewers":["whole-system"]}\n'
             ),
         },
         ("--check-journal", "{root}/completed.jsonl", "fixture-head"),
         "a completed multi-lens review journal is accepted only for its bound head",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "body.md": "review-findings: 0\n",
+        },
+        ("--check-pr-body", "{root}/body.md"),
+        "one canonical review finding count is accepted",
     ),
     (
         "review-attest.sh",
@@ -3095,6 +3372,27 @@ for lint, files, args, expected_marker, why in BAD_INVOCATIONS:
             f"    {' '.join(args)}"
         )
 
+for (
+    lint,
+    files,
+    args,
+    environment,
+    expected_marker,
+    why,
+) in ENV_BAD_INVOCATIONS:
+    result = run(
+        lint,
+        files,
+        args,
+        environment=environment,
+    )
+    problem = refusal_problem(result, expected_marker)
+    if problem:
+        failures.append(
+            f"{lint} {problem} — {why}\n"
+            f"    {' '.join(args)} with {environment}"
+        )
+
 for lint, files, why in GOOD_CASES:
     result = run(lint, files)
     if result.returncode != 0:
@@ -3128,6 +3426,6 @@ if failures:
 print(
     f"lint-selftest: {len(BAD_CASES)} bad inputs, {len(GIT_BAD_CASES)} Git-state "
     f"inputs, {len(ENV_BAD_CASES)} environment inputs, and "
-    f"{len(BAD_INVOCATIONS)} bad invocations rejected, "
+    f"{len(BAD_INVOCATIONS) + len(ENV_BAD_INVOCATIONS)} bad invocations rejected, "
     f"{len(GOOD_CASES) + len(GOOD_INVOCATIONS)} good inputs accepted"
 )
