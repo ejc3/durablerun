@@ -2316,12 +2316,18 @@ def validate_scope_limits(
     swap_max: str,
     cpu_max: str,
     *,
+    tasks_max: str | None = None,
     host_memory: int,
     host_cpus: int,
     accept_unconfined: bool = False,
     accept_oversized_memory: bool = False,
     accept_oversized_cpu: bool = False,
 ) -> tuple[int, int]:
+    # Test seam for the fourth aggregate cgroup limit. The validator did not
+    # receive pids.max at all, so an unlimited task scope could not be
+    # expressed as a regression without first making that input visible.
+    # Intentionally unused until the red task-limit case lands.
+    _ = tasks_max
     try:
         memory = int(memory_max)
         swap = int(swap_max)
