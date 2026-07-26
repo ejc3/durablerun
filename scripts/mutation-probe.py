@@ -1917,6 +1917,9 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "accept-oversized-cpu-scope",
     "classify-missing-report-as-domain",
     "classify-malformed-report-as-domain",
+    "classify-structural-report-as-domain",
+    "accept-wrong-registry",
+    "accept-incomplete-worker",
 )
 
 
