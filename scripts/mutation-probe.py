@@ -1921,6 +1921,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "classify-structural-report-as-domain",
     "accept-wrong-registry",
     "accept-incomplete-worker",
+    "use-worker-local-pnpm-store",
 )
 
 
@@ -2489,6 +2490,15 @@ def validate_baseline_barrier(
         raise ValueError("mutation phase has no complete exact-head baseline barrier")
 
 
+def worker_install_command(
+    store: Path | None = None,
+    *,
+    use_worker_default: bool = False,
+) -> tuple[str, ...]:
+    del store, use_worker_default
+    return ("pnpm", "install", "--offline", "--frozen-lockfile")
+
+
 def orchestration_self_test(fault: str | None = None) -> int:
     """Generated false-positive surface for the parallel coordinator."""
     expected = [
@@ -2648,6 +2658,17 @@ def orchestration_self_test(fault: str | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="durablerun-orchestration-selftest-") as tmp:
         temporary = Path(tmp)
+        if fault in (None, "use-worker-local-pnpm-store"):
+            canonical_store = temporary / "canonical-pnpm-store"
+            command = worker_install_command(
+                canonical_store,
+                use_worker_default=fault == "use-worker-local-pnpm-store",
+            )
+            if command[-2:] != ("--store-dir", str(canonical_store)):
+                failures.append(
+                    "dependency store: worker install did not use the "
+                    "coordinator's canonical pnpm store"
+                )
         run_root = temporary / "run"
         run_root.mkdir()
         outside = run_root.parent / "not-owned" / "worker-00"
@@ -3888,7 +3909,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             install_launches = [
                 ProcessLaunch(
                     f"install worker-{plan.worker_id:02}",
-                    ("pnpm", "install", "--offline", "--frozen-lockfile"),
+                    worker_install_command(),
                     plan.path,
                     plan.install_log,
                     worker_environment(plan),
