@@ -466,6 +466,48 @@ describe('tick() codex review regressions', () => {
     expect(result.nextWakeAtEpochMs).not.toBeNull()
     f.close()
   })
+
+  for (const [name, malformed] of [
+    ['a null ending', () => LaunchOutcome.ended(null as never)],
+    ['an ending with no identity', () => LaunchOutcome.ended({} as never)],
+    [
+      'an instance forged from the public prototype',
+      () => Object.create(LaunchOutcome.prototype) as LaunchOutcome,
+    ],
+  ] as const) {
+    it(`treats ${name} as launch-failed without poisoning sibling launches`, async () => {
+      const f = await fx(`tick-malformed-branded-${name.replaceAll(' ', '-')}`)
+      try {
+        await f.store.spawn(Q, 'a', '{}')
+        await f.store.spawn(Q, 'b', '{}')
+        let calls = 0
+        const launcher = new FakeLauncher(() => {
+          calls++
+          return calls === 1 ? malformed() : LaunchOutcome.accepted()
+        })
+
+        const outcome = await tick({ store: f.store, launcher, ids: f.ids }, OPTS).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          (error: unknown) => ({
+            kind: 'rejected' as const,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        )
+
+        expect(outcome).toMatchObject({
+          kind: 'resolved',
+          value: {
+            claimed: 2,
+            launched: 1,
+            launchFailed: 1,
+            ended: 0,
+          },
+        })
+      } finally {
+        f.close()
+      }
+    })
+  }
 })
 
 /**

@@ -63,6 +63,20 @@ function registry(entries: Record<string, TaskHandler>): TaskRegistry {
   return new Map(Object.entries(entries))
 }
 
+const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
+  ['function', () => () => undefined],
+  ['symbol', () => Symbol('not-json')],
+  ['bigint', () => 1n],
+  [
+    'cyclic object',
+    () => {
+      const value: { self?: unknown } = {}
+      value.self = value
+      return value
+    },
+  ],
+]
+
 async function claimAndRun(
   f: Awaited<ReturnType<typeof fx>>,
   reg: TaskRegistry,
@@ -184,6 +198,67 @@ describe('runClaimedRun', () => {
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
+
+  for (const boundary of ['step result', 'handler result'] as const) {
+    for (const [valueName, makeValue] of NON_SERIALIZABLE_VALUES) {
+      it(`fails a non-serializable ${valueName} ${boundary} permanently`, async () => {
+        const f = await fx(
+          `sdk-non-serializable-${boundary.replaceAll(' ', '-')}-${valueName.replaceAll(' ', '-')}`,
+        )
+        try {
+          let executions = 0
+          const handler: TaskHandler =
+            boundary === 'step result'
+              ? async (ctx) =>
+                  ctx.step('not-json', () => {
+                    executions++
+                    return makeValue()
+                  })
+              : async () => {
+                  executions++
+                  return makeValue()
+                }
+          const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+
+          const outcome = await claimAndRun(f, registry({ job: handler }), 'w1')
+          const [task] = await f.raw.batch(
+            'probe',
+            [
+              {
+                sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`,
+                args: [spawned.taskId],
+              },
+            ],
+            'read',
+          )
+          const [runs] = await f.raw.batch(
+            'probe',
+            [
+              {
+                sql: `SELECT state FROM runs WHERE task_id = ? ORDER BY attempt`,
+                args: [spawned.taskId],
+              },
+            ],
+            'read',
+          )
+
+          expect({
+            outcome,
+            executions,
+            task: task?.rows[0],
+            runStates: runs?.rows.map((row) => row.state),
+          }).toEqual({
+            outcome: { kind: 'failed' },
+            executions: 1,
+            task: { state: 'failed', attempts: 1 },
+            runStates: ['failed'],
+          })
+        } finally {
+          f.close()
+        }
+      })
+    }
+  }
 
   it('a failing step commits nothing: the next attempt re-executes it', async () => {
     const f = await fx('sdk-step-fail')

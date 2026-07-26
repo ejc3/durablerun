@@ -440,6 +440,36 @@ describe('fence provenance', () => {
     f.close()
   })
 
+  it('spawn refuses a newly minted task id that an orphan run already owns', async () => {
+    const f = await fixture(['NEW-TASK', 'NEW-RUN'])
+    try {
+      await insertRun(f.raw, {
+        id: 'ORPHAN',
+        taskId: 'NEW-TASK',
+        state: 'pending',
+        availableAtMs: NOW,
+      })
+
+      const outcome = await f.store.spawn(Q, 'job', '{}').then(
+        (value) => ({ kind: 'resolved' as const, value }),
+        () => ({ kind: 'rejected' as const }),
+      )
+      const tasks = await query(f.raw, `SELECT task_id FROM tasks WHERE task_id = 'NEW-TASK'`)
+      const runs = await query(
+        f.raw,
+        `SELECT run_id, task_id FROM runs WHERE task_id = 'NEW-TASK' ORDER BY run_id`,
+      )
+
+      expect({ outcome, tasks, runs }).toEqual({
+        outcome: { kind: 'rejected' },
+        tasks: [],
+        runs: [{ run_id: 'ORPHAN', task_id: 'NEW-TASK' }],
+      })
+    } finally {
+      f.close()
+    }
+  })
+
   it('spawn never reports a run id that does not exist', async () => {
     // spawn resolves its answer with a read that cannot tell "the run I just
     // inserted" from "whatever run this task already had" — and when the
@@ -476,6 +506,36 @@ describe('fence provenance', () => {
       runId: 'OLD-RUN',
     })
     f.close()
+  })
+
+  it('claim rejects a dialect-exact bigint that cannot cross the JavaScript port losslessly', async () => {
+    const f = await fixture()
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const unsafe: SqlExecutor = {
+        batch: async (label, statements, mode) =>
+          (await f.raw.batch(label, statements, mode)).map((result) => ({
+            ...result,
+            rows: result.rows.map((row) =>
+              label === 'claim' && row.attempt !== undefined
+                ? { ...row, attempt: 9_007_199_254_740_993n }
+                : row,
+            ),
+          })),
+      }
+
+      const outcome = await f
+        .storeOver(unsafe)
+        .claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+        .then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          () => ({ kind: 'rejected' as const }),
+        )
+
+      expect(outcome).toEqual({ kind: 'rejected' })
+    } finally {
+      f.close()
+    }
   })
 
   it('spawn resolves to the idempotency winner when a task id ALSO collides', async () => {

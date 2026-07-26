@@ -46,6 +46,7 @@ const VALUES: unknown[] = [
   Number.NaN, // JSON: null
   { date: new Date(1_700_000_000_000) }, // JSON: string
   { u: undefined, kept: 1 }, // JSON: field dropped
+  undefined, // JSON: top-level task result is pinned to null
   -0, // JSON: 0
 ]
 

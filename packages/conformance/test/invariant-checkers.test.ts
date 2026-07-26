@@ -1,3 +1,4 @@
+import { MAX_COUNT, MAX_EPOCH_MS, type SqlExecutor } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantFindings, engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
@@ -35,6 +36,33 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     return f
   }
+
+  it('flags a run whose owning task is missing', async () => {
+    const f = await seeded('run-owner-missing')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, created_at_ms)
+              VALUES ('orphan', ?, 'missing-task', 1, 'completed', ?)`,
+        args: [Q, NOW],
+      },
+    ])
+
+    expect(await engineInvariantViolations(f.raw)).toContain('run-owner-missing: orphan')
+    f.close()
+  })
+
+  it("flags a run whose queue disagrees with its owning task's queue", async () => {
+    const f = await seeded('run-task-queue-mismatch')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE runs SET queue = 'other-q' WHERE run_id = 'r1'`,
+        args: [],
+      },
+    ])
+
+    expect(await engineInvariantViolations(f.raw)).toContain('run-task-queue-mismatch: r1')
+    f.close()
+  })
 
   it('flags a wait row whose run belongs to a different task or queue', async () => {
     const f = await seeded('wait-cross-task')
@@ -273,6 +301,54 @@ describe('invariant checkers fire on constructed corruption', () => {
       f.close()
     })
   }
+
+  it('flags a dialect-exact bigint count above the public count contract', async () => {
+    const f = await seeded('counter-upper-bound')
+    const outOfRange: SqlExecutor = {
+      batch: async (label, statements, mode) => {
+        const results = await f.raw.batch(label, statements, mode)
+        if (label !== 'invariants') return results
+        return results.map((result, index) =>
+          index === 0
+            ? {
+                ...result,
+                rows: result.rows.map((row) =>
+                  row.task_id === 't1' ? { ...row, max_attempts: BigInt(MAX_COUNT) + 1n } : row,
+                ),
+              }
+            : result,
+        )
+      },
+    }
+
+    expect(await engineInvariantViolations(outOfRange)).toContain('counter-out-of-range: tasks/t1')
+    f.close()
+  })
+
+  it('flags a dialect-exact bigint instant beyond the epoch contract', async () => {
+    const f = await seeded('temporal-upper-bound')
+    const outOfRange: SqlExecutor = {
+      batch: async (label, statements, mode) => {
+        const results = await f.raw.batch(label, statements, mode)
+        if (label !== 'invariants') return results
+        return results.map((result, index) =>
+          index === 1
+            ? {
+                ...result,
+                rows: result.rows.map((row) =>
+                  row.run_id === 'r1'
+                    ? { ...row, available_at_ms: BigInt(MAX_EPOCH_MS) + 1n }
+                    : row,
+                ),
+              }
+            : result,
+        )
+      },
+    }
+
+    expect(await engineInvariantViolations(outOfRange)).toContain('temporal-out-of-range: runs/r1')
+    f.close()
+  })
 
   for (const [table, column, identity] of [
     ['tasks', 'attempts', 'tasks/t1'],

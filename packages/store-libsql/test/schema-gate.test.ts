@@ -256,6 +256,43 @@ describe('migrate reports success only when the schema is current', () => {
     await expect(admin.schemaVersion()).rejects.toBeInstanceOf(SchemaMismatchError)
   })
 
+  it('does not let migrate relabel an initialized versionless metadata table as fresh', async () => {
+    await db.batch('corrupt', [
+      {
+        sql: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID`,
+        args: [],
+      },
+    ])
+
+    const outcome = await admin.migrate().then(
+      () => ({ kind: 'resolved' as const }),
+      (error: unknown) => ({
+        kind: 'rejected' as const,
+        name: error instanceof Error ? error.name : typeof error,
+      }),
+    )
+    const [tables] = await db.batch(
+      'probe',
+      [
+        {
+          sql: `SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name`,
+          args: [],
+        },
+      ],
+      'read',
+    )
+
+    expect({
+      outcome,
+      tables: tables?.rows.map((row) => row.name),
+    }).toEqual({
+      outcome: { kind: 'rejected', name: 'SchemaMismatchError' },
+      tables: ['meta'],
+    })
+  })
+
   it('fails when the recorded version is newer than this binary', async () => {
     await migrateTo(CURRENT_SCHEMA_VERSION)
     await db.batch('corrupt', [
