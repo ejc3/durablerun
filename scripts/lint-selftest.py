@@ -166,6 +166,14 @@ GREPTILE_PROVENANCE = (
     "Greptile reads settings from the source branch of the PR; a pull request can edit or "
     "remove these in-repo instructions."
 )
+HOSTED_GATE_NOTE = (
+    "CodeRabbit custom checks are configured with `mode: error`, and "
+    "`reviews.request_changes_workflow: true` turns a failed error check into a "
+    "requested-changes review. CodeRabbit custom checks expose `name`, `mode`, and "
+    "`instructions`; they do not define per-check GitHub status contexts. Greptile is "
+    'configured with `"statusCheck": true`. Require only the aggregate contexts the '
+    "installed apps actually publish."
+)
 
 
 def active_check(rule: str = ACTIVE_RULE, rule_stem: str = "a-rule") -> str:
@@ -207,6 +215,7 @@ def corpus(
     cr = (
         f"# {CODERABBIT_PROVENANCE}\n"
         "reviews:\n"
+        "  request_changes_workflow: true\n"
         "  path_instructions:\n"
         f"    - path: {json.dumps(coderabbit_path)}\n"
         "      instructions: |\n"
@@ -229,6 +238,9 @@ def corpus(
             "<!-- review-bot-global:start -->\n"
             f"{CODERABBIT_GLOBAL}\n"
             "<!-- review-bot-global:end -->\n\n"
+            "<!-- review-bot-gating:start -->\n"
+            f"{HOSTED_GATE_NOTE}\n"
+            "<!-- review-bot-gating:end -->\n\n"
             f"- `{rule_stem}.md`\n"
         ),
         ".coderabbit.yaml": cr,
@@ -255,6 +267,15 @@ def corpus(
         ),
         "packages/example.ts": "// tracked scope witness\n",
     }
+
+
+def replaced(files: dict[str, str], rel: str, before: str, after: str) -> dict[str, str]:
+    """Return one fixture with one exact source fragment changed."""
+    changed = dict(files)
+    if changed[rel].count(before) != 1:
+        raise ValueError(f"{rel} fixture does not contain exactly one {before!r}")
+    changed[rel] = changed[rel].replace(before, after)
+    return changed
 
 
 WHOLE_RULE = """# A Rule
@@ -938,6 +959,42 @@ export class S {
         corpus(WHOLE_RULE, status_check=False),
         'does not set "statusCheck": true',
         "Greptile posting no status check, so its findings cannot gate anything",
+    ),
+    (
+        "review-bot-lint.py",
+        replaced(
+            corpus(WHOLE_RULE),
+            ".github/review-bot-rules/README.md",
+            HOSTED_GATE_NOTE,
+            HOSTED_GATE_NOTE.replace(
+                "they do not define per-check GitHub status contexts",
+                "`statusCheck: true` is already set for every custom check",
+            ),
+        ),
+        "hosted-gate note is not the canonical account of active configuration",
+        "README claiming CodeRabbit has a per-custom-check status field its schema does not expose",
+    ),
+    (
+        "review-bot-lint.py",
+        replaced(
+            corpus(WHOLE_RULE),
+            ".coderabbit.yaml",
+            "        mode: error\n",
+            "        mode: error\n        statusCheck: true\n",
+        ),
+        "has unsupported field 'statusCheck'",
+        "an invented CodeRabbit custom-check field is rejected instead of silently ignored",
+    ),
+    (
+        "review-bot-lint.py",
+        replaced(
+            corpus(WHOLE_RULE),
+            ".coderabbit.yaml",
+            "  request_changes_workflow: true\n",
+            "  request_changes_workflow: false\n",
+        ),
+        "request_changes_workflow is not true",
+        "error-mode custom checks with the request-changes workflow disabled cannot block a PR",
     ),
     (
         "review-bot-lint.py",
