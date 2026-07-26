@@ -1342,6 +1342,29 @@ BAD_INVOCATIONS = [
     (
         "review-attest.sh",
         {
+            "missing-head.jsonl": (
+                '{"type":"result","finding":"one","verdict":"accepted"}\n'
+            ),
+        },
+        ("--check-journal", "{root}/missing-head.jsonl", "fixture-head"),
+        "review journal is not bound to a review head",
+        "a completed-looking multi-lens journal cannot attest an unrelated head",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "wrong-head.jsonl": (
+                '{"type":"review-head","head":"stale-head"}\n'
+                '{"type":"result","finding":"one","verdict":"accepted"}\n'
+            ),
+        },
+        ("--check-journal", "{root}/wrong-head.jsonl", "fixture-head"),
+        "review journal reviewed stale-head, expected fixture-head",
+        "a multi-lens journal for an older commit must not attest the current head",
+    ),
+    (
+        "review-attest.sh",
+        {
             "body.md": "review-findings: 0\nreviews-abandoned:   \n",
         },
         ("--check-pr-body", "{root}/body.md"),
@@ -1515,6 +1538,17 @@ GOOD_INVOCATIONS = [
         },
         ("--check-codex-log", "{root}/completed.log", "fixture-head"),
         "a completed review may print its verdict after the token marker",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "completed.jsonl": (
+                '{"type":"review-head","head":"fixture-head"}\n'
+                '{"type":"result","finding":"one","verdict":"accepted"}\n'
+            ),
+        },
+        ("--check-journal", "{root}/completed.jsonl", "fixture-head"),
+        "a completed multi-lens review journal is accepted only for its bound head",
     ),
     (
         "review-attest.sh",
