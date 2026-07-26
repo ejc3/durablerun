@@ -1,4 +1,9 @@
-import { type ClaimedRun, LeaseLostError, type SqlExecutor } from '@durablerun/core'
+import {
+  type ClaimedRun,
+  LeaseLostError,
+  MAX_RUN_ORDINAL,
+  type SqlExecutor,
+} from '@durablerun/core'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
@@ -836,6 +841,25 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         expect(await f.store.getCheckpoints(Q, run.taskId, 2)).toEqual([])
         expect(await f.store.getCheckpoints(Q, run.taskId, 3)).toHaveLength(1)
+      })
+
+      it('accepts the maximum legal run ordinal in checkpoint ownership', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE checkpoints SET owner_attempt = ?
+                  WHERE task_id = ? AND checkpoint_name = 's'`,
+            args: [MAX_RUN_ORDINAL, run.taskId],
+          },
+        ])
+
+        expect(await f.store.getCheckpoints(Q, run.taskId, MAX_RUN_ORDINAL)).toMatchObject([
+          { checkpointName: 's', ownerAttempt: MAX_RUN_ORDINAL },
+        ])
       })
     })
 

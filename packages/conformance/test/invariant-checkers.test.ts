@@ -1,4 +1,9 @@
-import { MAX_COUNT, MAX_EPOCH_MS, type SqlExecutor } from '@durablerun/core'
+import {
+  MAX_COUNT,
+  MAX_EPOCH_MS,
+  MAX_RUN_ORDINAL,
+  type SqlExecutor,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantFindings, engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
@@ -286,6 +291,28 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     f.close()
   })
+
+  for (const [name, value, conditionId] of [
+    ['storage class', 'not-an-integer', 'counter/checkpoint-owner-attempt'],
+    ['upper bound', MAX_RUN_ORDINAL + 1, 'counter-bound/checkpoint-owner-attempt'],
+  ] as const) {
+    it(`flags checkpoint owner attempt ${name} corruption`, async () => {
+      const f = await seeded(`checkpoint-owner-attempt-${name}`)
+      await f.raw.batch('corrupt', [
+        {
+          sql: `INSERT INTO checkpoints
+                  (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+                VALUES ('t1', 's', ?, '{}', 'r1', ?, ?)`,
+          args: [Q, value, NOW],
+        },
+      ])
+
+      expect(
+        (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+      ).toContain(conditionId)
+      f.close()
+    })
+  }
 
   for (const column of ['available_at_ms', 'lease_ms'] as const) {
     it(`rejects an ISO datetime string in numeric ${column}`, async () => {
