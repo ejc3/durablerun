@@ -155,7 +155,7 @@ describe('fence provenance', () => {
     // attempt 20, because a run's attempt counts every successor.
     await insertTask(f.raw, { id: 'T', state: 'running', infraRetries: 19 })
     await insertRun(f.raw, {
-      id: 'R',
+      id: 'prov-sweep-run',
       taskId: 'T',
       attempt: 20,
       state: 'running',
@@ -172,7 +172,10 @@ describe('fence provenance', () => {
     })
     await world.run()
 
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    expect(
+      await engineInvariantViolations(f.raw),
+      'mutation-verdict:behavior:provenance-sweep-progress',
+    ).toEqual([])
     f.close()
   })
 
@@ -192,7 +195,7 @@ describe('fence provenance', () => {
     const f = await fixture(['successor-1'], ['sweep-stamp'])
     await insertTask(f.raw, { id: 'T', state: 'running', infraRetries: 0 })
     await insertRun(f.raw, {
-      id: 'R',
+      id: 'prov-sweep-run',
       taskId: 'T',
       attempt: 1,
       state: 'running',
@@ -215,7 +218,7 @@ describe('fence provenance', () => {
     })
     await world.run()
 
-    expect(rejection).toBeNull()
+    expect(rejection, 'mutation-verdict:behavior:provenance-sweep-progress').toBeNull()
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
@@ -228,7 +231,7 @@ describe('fence provenance', () => {
     const f = await fixture(['successor-1'], ['fail-stamp'])
     await insertTask(f.raw, { id: 'T', state: 'running', attempts: 0, maxAttempts: 5 })
     await insertRun(f.raw, {
-      id: 'R',
+      id: 'prov-fail-run',
       taskId: 'T',
       attempt: 1,
       state: 'running',
@@ -242,7 +245,7 @@ describe('fence provenance', () => {
     world.actor('worker', async (db) => {
       await f
         .storeOver(db)
-        .fail(Q, 'R', 'worker', '{"name":"Boom"}', { delaySeconds: 0 })
+        .fail(Q, 'prov-fail-run', 'worker', '{"name":"Boom"}', { delaySeconds: 0 })
         // Losing the fence on the duplicate is the documented contract; a
         // constraint violation from the store is not.
         .catch((e) => {
@@ -251,7 +254,7 @@ describe('fence provenance', () => {
     })
     await world.run()
 
-    expect(rejection).toBeNull()
+    expect(rejection, 'mutation-verdict:behavior:provenance-fail-progress').toBeNull()
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })

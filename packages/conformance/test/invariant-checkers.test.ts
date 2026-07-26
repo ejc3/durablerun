@@ -274,6 +274,37 @@ describe('invariant checkers fire on constructed corruption', () => {
     })
   }
 
+  for (const [table, column, identity] of [
+    ['tasks', 'attempts', 'tasks/t1'],
+    ['tasks', 'max_attempts', 'tasks/t1'],
+    ['tasks', 'infra_retries', 'tasks/t1'],
+    ['runs', 'attempt', 'runs/r1'],
+    ['runs', 'claim_gen', 'runs/r1'],
+    ['runs', 'activated_gen', 'runs/r1'],
+    ['runs', 'relaunch_count', 'runs/r1'],
+  ] as const) {
+    it(`reports counter storage corruption for non-integer ${table}.${column}`, async () => {
+      const f = await seeded(`counter-storage-${table}-${column}`)
+      try {
+        const key = table === 'tasks' ? 'task_id' : 'run_id'
+        const id = table === 'tasks' ? 't1' : 'r1'
+        await f.raw.batch('corrupt', [
+          {
+            sql: `UPDATE ${table} SET ${column} = 'not-an-integer' WHERE ${key} = ?`,
+            args: [id],
+          },
+        ])
+
+        expect(
+          await engineInvariantViolations(f.raw),
+          `mutation-verdict:behavior:counter-storage-${table}-${column}`,
+        ).toContain(`counter-storage-class: ${identity}`)
+      } finally {
+        f.close()
+      }
+    })
+  }
+
   for (const [title, stamp, instant] of [
     ['a stamp without an instant', 'seed:statement', null],
     ['an instant without a stamp', null, NOW],

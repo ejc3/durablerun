@@ -139,6 +139,15 @@ MUTATION_SPECS = [
         "a narrowing clause that WIDENS the set instead of shrinking it",
     ),
     (
+        "generated-narrow-drops-all",
+        "packages/core/src/fenced-batch.ts",
+        "    const narrow = spec.narrow ? `\\n         AND (${spec.narrow})` : ''",
+        "    const narrow = spec.narrow\n"
+        "      ? `\\n         AND (${spec.narrow})${spec.narrow === 'task_id = ?' ? ' AND 0 = 1' : ''}`\n"
+        "      : ''",
+        "a generated narrowing clause can silently turn every intended match into a no-op",
+    ),
+    (
         # The generator interpolates the caller's correlation into a boolean
         # position. Unbracketed, `a OR b` binds as `a OR (b AND fence)` and
         # every row matching `a` enters the selection unstamped -- the class
@@ -340,6 +349,80 @@ MUTATION_SPECS = [
         "activation launches a claimed run after its task acquires a competing live run",
     ),
     (
+        "matrix-lost-launch-edge-progress",
+        "packages/store-libsql/src/store.ts",
+        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "                   AND run_id <> 'edge-run'`",
+        "the generated fault cell fires its label while the seeded lost-launch edge never crosses",
+    ),
+    (
+        "sweep-lost-launch-generation",
+        "packages/store-libsql/src/store.ts",
+        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "                   AND (run_id <> 'edge-run' OR claim_gen = 1)`",
+        "the lost-launch edge only works at generation one",
+    ),
+    (
+        "matrix-claim-timeout-edge-progress",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND run_id <> 'edge-run'`",
+        "the generated fault cell fires its label while the seeded claim-timeout edge never crosses",
+    ),
+    (
+        "sweep-claim-timeout-generation",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND (run_id <> 'edge-run' OR claim_gen = 1)`",
+        "the claim-timeout edge only works at generation one",
+    ),
+    (
+        "matrix-attempt-edge-progress",
+        "packages/store-libsql/src/store.ts",
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,\n"
+        "      [failureJson, runId, queue, claimToken],",
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND run_id <> 'edge-run'`,\n"
+        "      [failureJson, runId, queue, claimToken],",
+        "the generated fault cell fires its label while the seeded attempt-cap edge never crosses",
+    ),
+    (
+        "provenance-sweep-progress",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND run_id <> 'prov-sweep-run'`",
+        "the replay regression accepts a sweep that never performs the transition it owes",
+    ),
+    (
+        "provenance-fail-progress",
+        "packages/store-libsql/src/store.ts",
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,\n"
+        "      [failureJson, runId, queue, claimToken],",
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND run_id <> 'prov-fail-run'`,\n"
+        "      [failureJson, runId, queue, claimToken],",
+        "the replay regression accepts a failure delivery that never fails its run",
+    ),
+    (
         "ending-claim-identity",
         "packages/core/src/launch.ts",
         "ending.runId !== run.runId || ending.claimToken !== run.claimToken",
@@ -375,6 +458,13 @@ MUTATION_SPECS = [
         "      )",
         "      return 0",
         "missing or duplicated version results are interpreted as a fresh database",
+    ),
+    (
+        "migration-postcondition-old-version",
+        "packages/store-libsql/src/admin.ts",
+        "    if (version !== CURRENT_SCHEMA_VERSION) {",
+        "    if (version > CURRENT_SCHEMA_VERSION) {",
+        "a committed migration can leave the recorded version behind and still report success",
     ),
     (
         "spawn-primary-key-guard",
@@ -427,6 +517,12 @@ VERDICTS = {
         "packages/store-libsql/test/generated-selection.test.ts",
         "a generated selection restricts to rows this batch stamped never lets narrow widen the target set",
         "mutation-verdict:behavior:generated-narrow-widens",
+    ),
+    "generated-narrow-drops-all": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/generated-selection.test.ts",
+        "a generated selection restricts to rows this batch stamped never lets narrow widen the target set",
+        "mutation-verdict:behavior:generated-narrow-progress",
     ),
     "generated-where-parens": ExpectedVerdict(
         "behavior",
@@ -572,6 +668,48 @@ VERDICTS = {
         "transition-layer review regressions (second round) activate refuses a claim whose task acquired another live run",
         "mutation-verdict:behavior:activate-requires-sole-live-run",
     ),
+    "matrix-lost-launch-edge-progress": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fault-matrix.test.ts",
+        "fault matrix (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
+        "mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge",
+    ),
+    "sweep-lost-launch-generation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fault-matrix.test.ts",
+        "fault matrix (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
+        "mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge",
+    ),
+    "matrix-claim-timeout-edge-progress": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fault-matrix.test.ts",
+        "fault matrix (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
+        "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
+    ),
+    "sweep-claim-timeout-generation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fault-matrix.test.ts",
+        "fault matrix (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
+        "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
+    ),
+    "matrix-attempt-edge-progress": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fault-matrix.test.ts",
+        "fault matrix (label x fault x starting state, generated) fail survives duplicate from attempt-cap-edge",
+        "mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge",
+    ),
+    "provenance-sweep-progress": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance a replayed claim-timeout sweep at the infra cap leaves no live run under a terminal task",
+        "mutation-verdict:behavior:provenance-sweep-progress",
+    ),
+    "provenance-fail-progress": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance a replayed retrying failure does not reject",
+        "mutation-verdict:behavior:provenance-fail-progress",
+    ),
     "ending-claim-identity": ExpectedVerdict(
         "behavior",
         "packages/driver/test/tick.test.ts",
@@ -601,6 +739,12 @@ VERDICTS = {
         "packages/store-libsql/test/schema-gate.test.ts",
         "migrate reports success only when the schema is current requires exactly one schema-version result row",
         "mutation-verdict:behavior:schema-version-row-required",
+    ),
+    "migration-postcondition-old-version": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema-gate.test.ts",
+        "migrate reports success only when the schema is current fails when the recorded version did not advance",
+        "mutation-verdict:behavior:migration-postcondition-old-version",
     ),
     "spawn-primary-key-guard": ExpectedVerdict(
         "behavior",

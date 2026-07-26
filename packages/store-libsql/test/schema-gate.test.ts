@@ -114,7 +114,10 @@ describe('migrate reports success only when the schema is current', () => {
       },
     ])
 
-    await expect(admin.migrate()).rejects.toThrow(/schema/i)
+    await expect(
+      admin.migrate(),
+      'mutation-verdict:behavior:migration-postcondition-old-version',
+    ).rejects.toThrow(/schema/i)
   })
 
   it('fails when the recorded version is not an integer', async () => {

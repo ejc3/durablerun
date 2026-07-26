@@ -1,4 +1,4 @@
-import { type ClaimedRun, LeaseLostError } from '@durablerun/core'
+import { type ClaimedRun, LeaseLostError, type SqlExecutor } from '@durablerun/core'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
@@ -348,6 +348,75 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [run.taskId] },
         ])
         expect(after?.rows[0]?.attempts).toBe(0)
+      })
+
+      it('derives the timeout successor attempt from the fenced run, not the advisory scan', async () => {
+        const spawned = await f.store.spawn(Q, 'job', '{}')
+        const run = await claimOne('tick-1')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        const staleScan: SqlExecutor = {
+          batch: async (label, statements, mode) => {
+            const results = await f.raw.batch(label, statements, mode)
+            if (label !== 'sweep:scan') return results
+            return results.map((result, index) =>
+              index === 1
+                ? {
+                    ...result,
+                    rows: result.rows.map((row) =>
+                      row.run_id === run.runId ? { ...row, attempt: 0 } : row,
+                    ),
+                  }
+                : result,
+            )
+          },
+        }
+
+        const observed = await f
+          .storeOver(staleScan)
+          .sweep(Q, 10)
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            (error: unknown) => ({ kind: 'rejected' as const, error }),
+          )
+        expect(
+          observed.kind,
+          'mutation-verdict:behavior:sweep-successor-attempt-from-fenced-row',
+        ).toBe('resolved')
+        if (observed.kind !== 'resolved') return
+        expect(observed.value).toMatchObject([
+          {
+            kind: 'claim-timeout',
+            runId: run.runId,
+            taskId: spawned.taskId,
+          },
+        ])
+
+        const [runs, task] = await f.raw.batch(
+          't',
+          [
+            {
+              sql: `SELECT run_id, attempt, state FROM runs
+                    WHERE task_id = ? ORDER BY attempt, run_id`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `SELECT state, attempts, infra_retries FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(runs?.rows).toMatchObject([
+          { run_id: run.runId, attempt: 1, state: 'failed' },
+          { attempt: 2, state: 'pending' },
+        ])
+        expect(task?.rows[0]).toMatchObject({
+          state: 'pending',
+          attempts: 0,
+          infra_retries: 1,
+        })
       })
 
       it('fails the task terminally at the infra-retry cap, no successor', async () => {

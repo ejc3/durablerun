@@ -35,9 +35,18 @@ describe('fault matrix (label x fault x starting state, generated)', () => {
     for (const preState of MATRIX_PRE_STATES) {
       const from = preState === 'fresh' ? '' : ` from ${preState}`
       it(`${label} survives ${fault}${from}`, async () => {
+        const crossingMarker = {
+          fresh: 'mutation-verdict:behavior:fault-matrix-edge-crossing:fresh',
+          'infra-cap-edge': 'mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge',
+          'relaunch-cap-edge':
+            'mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge',
+          'attempt-cap-edge':
+            'mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge',
+        }[preState]
         for (const seed of SEEDS) {
           await expect(
             runFaultMatrixCase(makeLibsqlFixture, label, fault, seed, preState as MatrixPreState),
+            crossingMarker,
           ).resolves.toBeUndefined()
         }
       })

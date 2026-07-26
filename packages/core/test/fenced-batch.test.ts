@@ -186,6 +186,59 @@ describe('a CAS must write its own provenance', () => {
     // @ts-expect-error only events has a contract-preserved fact instant
     expect(() => fenceSetAt('runs')).toThrow(/no contract-preserved fence instant/)
   })
+
+  it('rejects a MySQL upsert whose conflict branch leaves provenance stale', () => {
+    const upsert = (target: 'events' | 'runs', update: string) =>
+      batch().cas(
+        'win',
+        target,
+        `INSERT INTO ${target} (queue, ${FENCE_COLS}) VALUES (?, ${FENCE_VALS})
+         ON DUPLICATE KEY UPDATE ${update}`,
+        ['q'],
+      )
+    missingConstructionGuard(
+      'mutation-verdict:construction:mysql-upsert-provenance-stale',
+      /preserve/,
+      () => upsert('events', `emitted_at_ms = 1`),
+    )
+  })
+
+  it('rejects a MySQL upsert whose conflict branch only writes the stamp', () => {
+    const upsert = (update: string) =>
+      batch().cas(
+        'win',
+        'events',
+        `INSERT INTO events (queue, ${FENCE_COLS}) VALUES (?, ${FENCE_VALS})
+         ON DUPLICATE KEY UPDATE ${update}`,
+        ['q'],
+      )
+    missingConstructionGuard(
+      'mutation-verdict:construction:mysql-upsert-provenance-partial',
+      /preserve/,
+      () => upsert(`fence_stamp = ${STAMP}`),
+    )
+  })
+
+  it('accepts complete MySQL conflict provenance for ordinary and preserved-instant tables', () => {
+    expect(() =>
+      batch().cas(
+        'win',
+        'runs',
+        `INSERT INTO runs (queue, ${FENCE_COLS}) VALUES (?, ${FENCE_VALS})
+         ON DUPLICATE KEY UPDATE ${FENCE_SET}`,
+        ['q'],
+      ),
+    ).not.toThrow()
+    expect(() =>
+      batch().cas(
+        'win',
+        'events',
+        `INSERT INTO events (queue, ${FENCE_COLS}) VALUES (?, ${FENCE_VALS})
+         ON DUPLICATE KEY UPDATE ${fenceSetAt('events')}`,
+        ['q'],
+      ),
+    ).not.toThrow()
+  })
 })
 
 describe('fence() names a statement, and the primitive supplies the value', () => {
@@ -523,6 +576,39 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
     ).toThrow(/no positive fence/)
   })
 
+  it('rejects a fence under NOT with no separating whitespace', () => {
+    const b = withCas()
+    missingConstructionGuard(
+      'mutation-verdict:construction:positive-fence-not-parenthesized',
+      /no positive fence/,
+      () =>
+        b.followOn(
+          'x',
+          `DELETE FROM waits
+           WHERE run_id = ? AND NOT(EXISTS (SELECT 1 FROM runs
+                                             WHERE fence_stamp = ${b.fence('win')}))`,
+          ['r'],
+          'one',
+        ),
+    )
+  })
+
+  it('rejects a bare unary-NOT fence comparison', () => {
+    const b = withCas()
+    missingConstructionGuard(
+      'mutation-verdict:construction:positive-fence-bare-not',
+      /no positive fence/,
+      () =>
+        b.followOn(
+          'x',
+          `DELETE FROM waits
+           WHERE run_id = ? AND NOT fence_stamp = ${b.fence('win')}`,
+          ['r'],
+          'one',
+        ),
+    )
+  })
+
   it('accepts a statement carrying both a positive and a negative fence', () => {
     // `fail`'s terminal arm: fires when the successor was NOT written, but
     // still keyed to the run this batch actually failed.
@@ -534,6 +620,33 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
          WHERE task_id = (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})
            AND NOT EXISTS (SELECT 1 FROM runs s WHERE s.run_id = ? AND s.fence_stamp = ${b.fence('win')})`,
         ['s'],
+        'one',
+      ),
+    ).not.toThrow()
+  })
+
+  it('accepts a positive fence beside both compact and bare negative controls', () => {
+    const compact = withCas()
+    expect(() =>
+      compact.followOn(
+        'terminal',
+        `DELETE FROM waits
+         WHERE fence_stamp = ${compact.fence('win')}
+           AND NOT(EXISTS (SELECT 1 FROM runs s
+                           WHERE s.fence_stamp = ${compact.fence('win')}))`,
+        [],
+        'one',
+      ),
+    ).not.toThrow()
+
+    const bare = withCas()
+    expect(() =>
+      bare.followOn(
+        'terminal',
+        `DELETE FROM waits
+         WHERE fence_stamp = ${bare.fence('win')}
+           AND NOT run_id = ?`,
+        ['other'],
         'one',
       ),
     ).not.toThrow()

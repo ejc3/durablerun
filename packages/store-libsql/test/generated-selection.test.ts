@@ -132,7 +132,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     ).toBe('running')
     expect(
       await stateOf(f.raw, 'untouched'),
-      'mutation-verdict:behavior:generated-narrow-widens',
+      'mutation-verdict:behavior:generated-narrow-progress',
     ).toBe('running')
     f.close()
   })

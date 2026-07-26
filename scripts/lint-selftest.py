@@ -181,10 +181,12 @@ def corpus(
     coderabbit_path_instructions: str = CODERABBIT_GLOBAL,
     coderabbit_extra_path: str = "",
     greptile_scope: list[str] | None = None,
+    greptile_index: tuple[str, ...] | None = None,
 ) -> dict[str, str]:
     """A miniature review-bot corpus: one rule and both active configurations."""
     coderabbit_name = coderabbit_name or f"durablerun: {rule_stem}"
     greptile_id = greptile_id or f"durablerun-{rule_stem}"
+    greptile_index = (rule_stem,) if greptile_index is None else greptile_index
     if coderabbit_instructions is None:
         coderabbit_instructions = active_check(greptile_rule, rule_stem)
     cr = (
@@ -215,7 +217,10 @@ def corpus(
             f"- `{rule_stem}.md`\n"
         ),
         ".coderabbit.yaml": cr,
-        ".greptile/rules.md": f"# Rules\n\n{GREPTILE_PROVENANCE}\n",
+        ".greptile/rules.md": (
+            f"# Rules\n\n{GREPTILE_PROVENANCE}\n\n"
+            + "".join(f"- `{stem}.md`\n" for stem in greptile_index)
+        ),
         ".greptile/config.json": json.dumps(
             {
                 "instructions": GREPTILE_PROVENANCE,
@@ -257,6 +262,17 @@ Allowed cases (do NOT flag these):
 
 - the nearest legitimate shape
 """
+
+STORE_LIBSQL_SCOPE = "packages/store-libsql/src/**/*.ts"
+STORE_LIBSQL_RULE = WHOLE_RULE.replace(
+    "Scope: `packages/**` — siblings cover the rest.",
+    f"Scope: `{STORE_LIBSQL_SCOPE}` — siblings cover the rest.",
+).replace(
+    "<!-- review-bot-scope:start -->\npackages/**\n<!-- review-bot-scope:end -->",
+    "<!-- review-bot-scope:start -->\n"
+    f"{STORE_LIBSQL_SCOPE}\n"
+    "<!-- review-bot-scope:end -->",
+)
 
 RED_PAIR_SYNOPSIS = (
     "Flag a repair whose regression test and fix share one commit. "
@@ -570,6 +586,21 @@ export class S {
         "a literal SQL fragment inside a template interpolation remains executable",
     ),
     (
+        "clock-lint.py",
+        store(
+            r"""const SQL = `SELECT 'c:\' AS p, NOW() AS t`
+"""
+        ),
+        "raw wall-clock function in store SQL",
+        "a backslash before a SQL quote must not hide executable SQL after that quote",
+    ),
+    (
+        "clock-lint.py",
+        store("const SQL = `SELECT value FROM meta WHERE key = 'fake_now_ms'`\n"),
+        "raw meta/fake_now_ms clock read in store SQL",
+        "a direct fake-now read is a second spelling of the database clock",
+    ),
+    (
         "fragment-lint.py",
         store(
             "const SQL = `SELECT 1 FROM runs WHERE state IN ('pending','running')`\n",
@@ -631,6 +662,32 @@ export class S {
         },
         "requiring closure:",
         "requiring closure still names unfinished work under a completed entry",
+    ),
+    (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- TODO: the fence-provenance mechanism, deferred to whoever picks this up\n\n"
+                "- **PR9.9 owned work** — planned.\n"
+            )
+        },
+        "deferred work belongs to no PR entry",
+        "a deferral before the first PR entry is unowned rather than exempt",
+    ),
+    (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.8 live work** — planned.\n"
+                "  - **Owned work** — implement the live entry.\n"
+                "* **PR9.9 completed work** — DONE. It shipped.\n"
+                "  - **TODO:** add the missing mechanism.\n"
+            )
+        },
+        "PR9.9 is DONE and still owns deferred work",
+        "an alternate top-level bullet marker must not hide a completed PR's deferral",
     ),
     (
         "spec-ledger.py",
@@ -784,6 +841,17 @@ export class S {
         ),
         "Allowed cases section permits a combined repair commit",
         "the detailed allowed cases cannot contradict the mandatory pair",
+    ),
+    (
+        "review-bot-lint.py",
+        red_pair_corpus(
+            red_pair_rule(
+                "Flag a repair whose regression test and fix share one commit."
+            ),
+            "Flag a repair whose regression test and fix share one commit.",
+        ),
+        "active-review synopsis must state both a 'Flag' rejection arm and a 'Pass for' allowance arm",
+        "a malformed red-pair synopsis must produce a normal verdict instead of crashing",
     ),
     (
         "review-bot-lint.py",
@@ -959,6 +1027,39 @@ export class S {
         "repeats the false provenance claim 'Do not treat pull-request-head edits'",
         "an active bot instruction asks the source branch to ignore its own edits",
     ),
+    (
+        "review-bot-lint.py",
+        corpus(
+            WHOLE_RULE
+            + "\nEvidence: the pinned citation `packages/example.ts:99` must still resolve.\n"
+        ),
+        "references packages/example.ts:99, but that file has only 1 line",
+        "a pinned line citation must not drift beyond the referenced file unnoticed",
+    ),
+    (
+        "review-bot-lint.py",
+        {
+            **corpus(
+                STORE_LIBSQL_RULE,
+                greptile_scope=[STORE_LIBSQL_SCOPE],
+            ),
+            "packages/store-libsql/src/example.ts": "// dialect scope witness\n",
+        },
+        "uses literal dialect scope 'packages/store-libsql/src/**/*.ts'",
+        "a dialect-neutral rule must not silently exclude every later store package",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, greptile_index=()),
+        "a-rule.md is not listed in .greptile/rules.md",
+        "Greptile's human index must list every active corpus rule",
+    ),
+    (
+        "review-bot-lint.py",
+        corpus(WHOLE_RULE, greptile_index=("a-rule", "deleted-rule")),
+        ".greptile/rules.md lists deleted-rule.md, which no longer exists",
+        "a dangling Greptile index entry must not survive its rule file",
+    ),
 ] + [
     (
         "clock-lint.py",
@@ -993,6 +1094,10 @@ export class S {
         "LOCALTIMESTAMP",
         "timeofday()",
         "GETDATE()",
+        "CURDATE()",
+        "curdate()",
+        "CURTIME()",
+        "curtime()",
     )
 ]
 
@@ -1114,6 +1219,68 @@ BAD_INVOCATIONS = [
         "an empty packages directory must not make the clock audit vacuous",
     ),
     (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM tasks WHERE cancel_at_ms <= 5`\n",
+            name="probe.ts",
+        ),
+        ("--not-a-root",),
+        "unknown option '--not-a-root'",
+        "a dash-prefixed argument must not silently grade the checker's own tree",
+    ),
+    (
+        "fragment-lint.py",
+        store(
+            "const SQL = `SELECT 1 FROM tasks WHERE cancel_at_ms <= 5`\n",
+            name="probe.ts",
+        ),
+        ("{root}/missing",),
+        "root does not exist",
+        "a nonexistent root must not grade an empty fragment source set",
+    ),
+    (
+        "fragment-lint.py",
+        {"packages/.keep": ""},
+        ("{root}",),
+        "no store TypeScript sources",
+        "an empty packages directory must not make the fragment audit vacuous",
+    ),
+    (
+        "gate-lint.py",
+        gate(
+            "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+            "&& python3 scripts/lint-selftest.py",
+            ("a-lint.py", "b-lint.py"),
+        ),
+        ("--list-checker", "{root}"),
+        "unknown option '--list-checker'",
+        "a misspelled mode must not fall through to a different grading mode",
+    ),
+    (
+        "gate-lint.py",
+        gate(
+            "python3 scripts/a-lint.py && python3 scripts/b-lint.py "
+            "&& python3 scripts/lint-selftest.py",
+            ("a-lint.py", "b-lint.py"),
+        ),
+        ("{root}", "{root}", "{root}"),
+        "usage: gate-lint.py [ROOT [BASE]]",
+        "the default grading mode must reject rather than ignore an extra root",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "aborted.log": (
+                "review analysis completed\n"
+                "tokens used\n"
+                "stream error: unexpected status 429 Too Many Requests\n"
+            ),
+        },
+        ("--check-codex-log", "{root}/aborted.log"),
+        "codex log ENDS IN AN ERROR",
+        "a non-prefixed stream error after the marker is an aborted review",
+    ),
+    (
         "gate-lint.py",
         base_runner_fixture(reject_from="python"),
         ("--run-base", "{root}/head", "{root}/base"),
@@ -1212,6 +1379,18 @@ const pattern = /this\.db\.batch\(/
     ),
     ("review-bot-lint.py", corpus(WHOLE_RULE), "a complete rule referenced by both bots"),
     (
+        "deferral-lint.py",
+        {
+            "BUILD.md": (
+                "# plan\n\n"
+                "- **PR9.9 owned work** — planned.\n"
+                "  This prose explains why deferral belongs to the live entry.\n"
+                "  - **Owned mechanism** — implement it here.\n"
+            )
+        },
+        "prose about deferral inside a live PR entry is not an orphaned work item",
+    ),
+    (
         "gate-lint.py",
         gate("python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py", ("a-lint.py", "b-lint.py")),
         "every checker run by the gate, every one self-tested, base-gate present",
@@ -1255,6 +1434,18 @@ GOOD_INVOCATIONS = [
         {},
         ("--classifier-self-test",),
         "the cheap attribution self-test neither mutates sources nor requires a clean tree",
+    ),
+    (
+        "review-attest.sh",
+        {
+            "completed.log": (
+                "review analysis completed\n"
+                "tokens used\n"
+                "review verdict: no findings\n"
+            ),
+        },
+        ("--check-codex-log", "{root}/completed.log"),
+        "a completed review may print its verdict after the token marker",
     ),
     (
         "review-attest.sh",
@@ -1308,7 +1499,7 @@ def run(
         (root / "scripts").mkdir(parents=True, exist_ok=True)
         copied = root / "scripts" / lint
         copied.write_text((SCRIPTS / lint).read_text())
-        if lint in {"batch-lint.py", "clock-lint.py"}:
+        if lint in {"batch-lint.py", "clock-lint.py", "fragment-lint.py"}:
             (root / "scripts" / "source_lex.py").write_text(
                 (SCRIPTS / "source_lex.py").read_text()
             )
