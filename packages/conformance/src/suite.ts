@@ -419,6 +419,27 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      it('refuses a corrupt stored attempt without partially sweeping the expired claim', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const run = await claimOne('tick-1')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        const disposition = await f.injectStorageCorruption({
+          table: 'runs',
+          runId: run.runId,
+          column: 'attempt',
+          invalidRepresentation: 'non-integer',
+        })
+        if (disposition === 'structurally-rejected') return
+        const before = await snapshot(f, run.taskId)
+
+        expect(
+          await f.store.sweep(Q, 10),
+          'mutation-verdict:behavior:sweep-rejects-noninteger-attempt',
+        ).toEqual([])
+        expect(await snapshot(f, run.taskId)).toEqual(before)
+      })
+
       it('fails the task terminally at the infra-retry cap, no successor', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('tick-1')
