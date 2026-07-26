@@ -116,6 +116,7 @@ PROCESS_FIXTURE_REQUIRED_FAULTS = (
     "agents-continuation-heading-missing",
     "agents-continuation-heading-duplicate",
     "agents-div-boundary",
+    "agents-section-boundary",
     "build-start-marker-missing",
     "build-start-marker-duplicate",
     "build-end-marker-missing",
@@ -127,6 +128,7 @@ PROCESS_FIXTURE_REQUIRED_FAULTS = (
     "build-comment-transport-body",
     "build-pre-transport-body",
     "build-div-transport-body",
+    "build-section-transport-body",
     "ambiguous-process-fixture-mutation-target",
     "drop-hidden-process-bad-case",
     "unenrolled-process-fixture-control",
@@ -366,6 +368,22 @@ def hidden_process_cases() -> tuple[HiddenProcessCase, ...]:
             True,
             build_problem,
             "generic raw HTML cannot own the operative transport contract",
+        ),
+        HiddenProcessCase(
+            "AGENTS.md",
+            "section",
+            f"<section>\n{agents_body}</section>\n\n",
+            False,
+            agents_problem,
+            "Markdown inside a raw section is not an operative standing rule",
+        ),
+        HiddenProcessCase(
+            "BUILD.md",
+            "section",
+            f"<section>\n{TRANSPORT_BLOCK}\n</section>\n\n",
+            False,
+            build_problem,
+            "a raw section cannot own the operative transport contract",
         ),
     )
 
@@ -630,23 +648,96 @@ def process_fixture_isolation_problems(
     return problems
 
 
+def hidden_process_enrollment_problem(
+    case: HiddenProcessCase,
+    observed_count: int,
+) -> str:
+    return (
+        f"hidden process case {case.document}/{case.container} must be enrolled "
+        f"exactly once in BAD_CASES; observed {observed_count}"
+    )
+
+
 def hidden_process_enrollment_problems(
     bad_cases: list[tuple[str, dict[str, str], str, str]],
-    *,
-    drop_first: bool = False,
 ) -> list[str]:
     """Require every canonical hidden-process case to reach the executable corpus."""
     enrolled = list(bad_cases)
     canonical = hidden_process_bad_cases()
-    if drop_first:
-        enrolled.remove(canonical[0])
 
     return [
-        f"hidden process case {case.document}/{case.container} is not enrolled "
-        "in BAD_CASES"
+        hidden_process_enrollment_problem(case, 0)
         for case, bad_case in zip(hidden_process_cases(), canonical, strict=True)
         if bad_case not in enrolled
     ]
+
+
+def hidden_process_enrollment_surface_problems(
+    bad_cases: list[tuple[str, dict[str, str], str, str]],
+) -> list[str]:
+    """Mutate every canonical enrollment in both cardinality directions."""
+    problems: list[str] = []
+    canonical = hidden_process_bad_cases()
+    exercised = 0
+    for case, bad_case in zip(hidden_process_cases(), canonical, strict=True):
+        missing = list(bad_cases)
+        missing.remove(bad_case)
+        duplicate = [*bad_cases, bad_case]
+        for observed_count, mutated in ((0, missing), (2, duplicate)):
+            exercised += 1
+            expected = [hidden_process_enrollment_problem(case, observed_count)]
+            observed = hidden_process_enrollment_problems(mutated)
+            if observed != expected:
+                problems.append(
+                    "hidden process enrollment self-test attributed "
+                    f"{case.document}/{case.container} count {observed_count} "
+                    f"incorrectly: expected {expected!r}, observed {observed!r}"
+                )
+    expected_exercised = 2 * len(canonical)
+    if exercised != expected_exercised:
+        problems.append(
+            "hidden process enrollment self-test exercised "
+            f"{exercised} of {expected_exercised} cardinality faults"
+        )
+    return problems
+
+
+def process_fixture_control_collision_problems() -> list[str]:
+    """Control identities and the fault IDs they generate must be collision-free."""
+    probes = tuple(
+        (
+            control,
+            (
+                "duplicate process fixture control identity "
+                f"{control.document}/{control.key}"
+            ),
+        )
+        for control in PROCESS_FIXTURE_CONTROLS
+    ) + (
+        (
+            ProcessFixtureControl(
+                "agents-confine-heading",
+                "BUILD.md",
+                BUILD_TITLE,
+            ),
+            "duplicate process fixture fault id agents-confine-heading-missing",
+        ),
+    )
+    problems: list[str] = []
+    for probe, expected_error in probes:
+        try:
+            process_fixture_control_faults((*PROCESS_FIXTURE_CONTROLS, probe))
+        except ValueError as error:
+            if str(error) != expected_error:
+                problems.append(
+                    "process fixture control collision was rejected for the "
+                    f"wrong reason: expected {expected_error!r}, observed {str(error)!r}"
+                )
+        else:
+            problems.append(
+                f"process fixture controls accepted {expected_error}"
+            )
+    return problems
 
 
 def process_fixture_control_enrollment_problems(
@@ -2597,6 +2688,8 @@ def run(
 failures = []
 failures.extend(process_fixture_isolation_problems())
 failures.extend(hidden_process_enrollment_problems(BAD_CASES))
+failures.extend(hidden_process_enrollment_surface_problems(BAD_CASES))
+failures.extend(process_fixture_control_collision_problems())
 failures.extend(process_fixture_control_enrollment_problems())
 covered_process_fixture_faults = set(PROCESS_FIXTURE_ISOLATION_FAULTS) | {
     "drop-hidden-process-bad-case",
@@ -2631,10 +2724,6 @@ for injected_fault, fault in PROCESS_FIXTURE_ISOLATION_FAULTS.items():
             f"{injected_fault} incorrectly: expected {fault.expected_problems!r}, "
             f"observed {observed_problems!r}"
         )
-if not hidden_process_enrollment_problems(BAD_CASES, drop_first=True):
-    failures.append(
-        "process fixture isolation self-test missed a BAD_CASES enrollment loss"
-    )
 if not process_fixture_control_enrollment_problems(
     omit_generated_faults=True
 ):
