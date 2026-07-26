@@ -980,6 +980,18 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "wrong-path",
         ),
         (
+            "marker mentioned only in assertion source context",
+            failed(
+                message=(
+                    "AssertionError: expected 1 to be 2\n"
+                    f" ❯ {expected.file}:12:3\n"
+                    f"  11| expect(actual, '{expected.marker}').toBe(expected)"
+                )
+            ),
+            expected,
+            "wrong-path",
+        ),
+        (
             "same test stopped at bind-arity compilation",
             failed(message="FencedBatch[emit-event] 'wake-runs' binds 9 of 8 explicit args"),
             expected,

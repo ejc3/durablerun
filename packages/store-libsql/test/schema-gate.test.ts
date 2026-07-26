@@ -117,6 +117,33 @@ describe('migrate reports success only when the schema is current', () => {
     await expect(admin.migrate()).rejects.toThrow(/schema/i)
   })
 
+  it('fails when the recorded version is not an integer', async () => {
+    await migrateTo(0)
+    await db.batch('corrupt', [
+      {
+        sql: `UPDATE meta SET value = 'garbage' WHERE key = 'schema_version'`,
+        args: [],
+      },
+    ])
+
+    await expect(admin.migrate()).rejects.toBeInstanceOf(SchemaMismatchError)
+  })
+
+  it('fails when the recorded version is newer than this binary', async () => {
+    await migrateTo(CURRENT_SCHEMA_VERSION)
+    await db.batch('corrupt', [
+      {
+        sql: `UPDATE meta SET value = ? WHERE key = 'schema_version'`,
+        args: [String(CURRENT_SCHEMA_VERSION + 1)],
+      },
+    ])
+
+    await expect(
+      admin.migrate(),
+      'mutation-verdict:behavior:schema-version-must-be-current',
+    ).rejects.toBeInstanceOf(SchemaMismatchError)
+  })
+
   it('is unaffected on a healthy database', async () => {
     await admin.migrate()
     await admin.migrate()

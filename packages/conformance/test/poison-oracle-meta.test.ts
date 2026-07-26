@@ -69,6 +69,39 @@ describe('poison/invariant mechanism self-tests', () => {
     ).rejects.toThrow(/poison snapshot result count/)
   })
 
+  it('rejects poison snapshot rows missing authority columns', async () => {
+    await expect(
+      runPoisonMatrixCase(
+        async (seed) => {
+          const f = await makeLibsqlFixture(seed)
+          return {
+            ...f,
+            raw: {
+              batch: async (label, statements, mode) => {
+                const results = await f.raw.batch(label, statements, mode)
+                if (label !== 'poison:snapshot') return results
+                return results.map((result, index) =>
+                  index === 0
+                    ? {
+                        ...result,
+                        rows: result.rows.map((row) =>
+                          Object.fromEntries(
+                            Object.entries(row).filter(([column]) => column !== 'task_id'),
+                          ),
+                        ),
+                      }
+                    : result,
+                )
+              },
+            },
+          }
+        },
+        'driver-heartbeat',
+        witness('provenance/stamp-without-instant'),
+      ),
+    ).rejects.toThrow(/poison snapshot tasks row 0 is missing required column task_id/)
+  })
+
   it('accepts a dialect adapter that returns exact integers as bigint', async () => {
     await expect(
       runPoisonMatrixCase(

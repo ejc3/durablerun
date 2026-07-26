@@ -402,6 +402,48 @@ describe('tick() codex review regressions', () => {
     f.close()
   })
 
+  it('an ending for an older claim of the same run is ignored', async () => {
+    const f = await fx('tick-stale-ending')
+    await f.store.spawn(Q, 'job', '{}')
+    const stale = new FakeLauncher(async (inv) => {
+      const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
+      if (!run) throw new Error('activation lost')
+      return LaunchOutcome.ended({
+        runId: inv.runId,
+        claimToken: `${inv.claimToken}-stale`,
+        kind: 'crashed',
+      })
+    })
+
+    await tick({ store: f.store, launcher: stale, ids: f.ids }, OPTS)
+    const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
+    expect(second.swept, 'mutation-verdict:behavior:ending-claim-identity').toEqual([])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('a tokenless ending is ignored until an atomic heartbeat-cutoff port exists', async () => {
+    const f = await fx('tick-tokenless-ending')
+    await f.store.spawn(Q, 'job', '{}')
+    const tokenless = new FakeLauncher(async (inv) => {
+      const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
+      if (!run) throw new Error('activation lost')
+      // Hostile/untyped transport input: the public TypeScript type will make
+      // this shape unrepresentable, but reconciliation must still fail closed.
+      return LaunchOutcome.ended({
+        runId: inv.runId,
+        endedAtEpochMs: 1_000_000,
+        kind: 'crashed',
+      } as never)
+    })
+
+    await tick({ store: f.store, launcher: tokenless, ids: f.ids }, OPTS)
+    const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
+    expect(second.swept).toEqual([])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
   it('a malformed launcher outcome is a failed launch, not a tick crash', async () => {
     const f = await fx('tick-malformed')
     await f.store.spawn(Q, 'a', '{}')
