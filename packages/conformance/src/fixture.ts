@@ -10,7 +10,13 @@ export type StorageCorruption =
   | {
       table: 'tasks'
       taskId: string
-      column: 'enqueue_at_ms' | 'cancel_at_ms' | 'fence_at_ms'
+      column:
+        | 'enqueue_at_ms'
+        | 'cancel_at_ms'
+        | 'fence_at_ms'
+        | 'attempts'
+        | 'max_attempts'
+        | 'infra_retries'
       invalidRepresentation: 'non-integer'
     }
   | {
@@ -22,6 +28,10 @@ export type StorageCorruption =
         | 'heartbeat_at_ms'
         | 'created_at_ms'
         | 'lease_ms'
+        | 'attempt'
+        | 'claim_gen'
+        | 'activated_gen'
+        | 'relaunch_count'
       invalidRepresentation: 'non-integer'
     }
   | {

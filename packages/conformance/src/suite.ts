@@ -487,6 +487,42 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect((await f.store.heartbeat(Q, run.runId, run.claimToken, 60)).held).toBe(false)
       })
 
+      it('refuses both suspension paths after the task cancellation deadline', async () => {
+        const spawned = await f.store.spawn(Q, 'deadline', '{}', {
+          cancellation: { maxDelaySeconds: 10 },
+        })
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 600, limit: 1 })
+        if (!run) throw new Error('expected a claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+            args: [1_000_001, spawned.taskId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_005_000)
+
+        await expect(
+          f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1 }),
+        ).rejects.toThrow(LeaseLostError)
+        await expect(
+          f.store.suspendRun(
+            Q,
+            run.runId,
+            run.claimToken,
+            { inSeconds: 1 },
+            { key: '$sleep', stateJson: '{}' },
+          ),
+        ).rejects.toThrow(LeaseLostError)
+
+        const [after] = await f.raw.batch(
+          't',
+          [{ sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] }],
+          'read',
+        )
+        expect(after?.rows[0]?.state).toBe('running')
+      })
+
       it('cancelTask cancels explicitly regardless of deadlines', async () => {
         const spawned = await f.store.spawn(Q, 'job', '{}')
         expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
@@ -899,7 +935,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           await world.run()
           // Whoever won, the run woke EXACTLY ONCE with a consistent wake:
           // payload delivery or timeout — and the wait row is settled.
-          const [rows] = await fx.raw.batch('t', [
+          const [rows, waits] = await fx.raw.batch('t', [
             {
               sql: `SELECT wake_event, event_payload, state FROM runs WHERE run_id = ?`,
               args: [run.runId],
@@ -907,6 +943,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             { sql: `SELECT COUNT(*) AS n FROM waits WHERE status = 'waiting'`, args: [] },
           ])
           expect(rows?.rows[0]?.wake_event, `seed ${seed}`).toBe('late')
+          expect(Number(waits?.rows[0]?.n), `seed ${seed}: wait settled exactly once`).toBe(0)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
           fx.close()
         }
@@ -1298,5 +1335,262 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }
       })
     })
+  })
+}
+
+const WAKE_EVENT = 'go'
+const WAKE_STEP = '$await:go'
+const WAKE_NOW = 1_000_000
+const WAKE_FIELDS = ['queue', 'event_name', 'status', 'step_name', 'timeout_at_ms'] as const
+type WakeField = (typeof WAKE_FIELDS)[number]
+
+interface WakeRow {
+  queue: string
+  event_name: string
+  status: string
+  step_name: string
+  timeout_at_ms: number | null
+}
+
+interface WakeDeadline {
+  label: string
+  healthy: number | null
+  corrupt: number | null
+}
+
+interface WakePark {
+  state: string
+  wake_event: string
+  wake_step: string | null
+  available_at_ms: number | null
+}
+
+interface WakeOwner {
+  label: string
+  state: string
+  live: boolean
+}
+
+export interface WakeWitnessCase {
+  label: string
+  owner: WakeOwner
+  park: WakePark
+  rows: WakeRow[]
+}
+
+const WAKE_DEADLINES: readonly WakeDeadline[] = [
+  { label: 'untimed', healthy: null, corrupt: WAKE_NOW + 5_000 },
+  { label: 'timed', healthy: WAKE_NOW + 30_000, corrupt: null },
+]
+
+const WAKE_OWNERS: readonly WakeOwner[] = [
+  { label: 'live-owner', state: 'running', live: true },
+  { label: 'terminal-owner', state: 'completed', live: false },
+]
+
+function healthyWakeRow(deadline: WakeDeadline): WakeRow {
+  return {
+    queue: Q,
+    event_name: WAKE_EVENT,
+    status: 'waiting',
+    step_name: WAKE_STEP,
+    timeout_at_ms: deadline.healthy,
+  }
+}
+
+function corruptWakeRow(deadline: WakeDeadline, fields: readonly WakeField[]): WakeRow {
+  const row = healthyWakeRow(deadline)
+  const wrong: WakeRow = {
+    queue: 'elsewhere',
+    event_name: 'other-event',
+    status: 'delivered',
+    step_name: `${WAKE_STEP}#stale`,
+    timeout_at_ms: deadline.corrupt,
+  }
+  for (const field of fields) Object.assign(row, { [field]: wrong[field] })
+  return row
+}
+
+function wakeParks(deadline: WakeDeadline): Record<string, WakePark> {
+  const parked = {
+    wake_event: WAKE_EVENT,
+    wake_step: WAKE_STEP,
+    available_at_ms: deadline.healthy,
+  }
+  return {
+    parked: { state: 'sleeping', ...parked },
+    'other-event': { state: 'sleeping', ...parked, wake_event: 'other-event' },
+    'legacy-null-step': { state: 'sleeping', ...parked, wake_step: null },
+    timer: { state: 'sleeping', ...parked, available_at_ms: deadline.corrupt },
+    running: { state: 'running', ...parked },
+    pending: { state: 'pending', ...parked },
+  }
+}
+
+function shouldWake(owner: WakeOwner, park: WakePark, rows: readonly WakeRow[]): boolean {
+  if (!owner.live || park.state !== 'sleeping' || park.wake_event !== WAKE_EVENT) return false
+  const matching = rows.filter(
+    (row) =>
+      row.queue === Q &&
+      row.event_name === WAKE_EVENT &&
+      row.status === 'waiting' &&
+      row.timeout_at_ms === park.available_at_ms,
+  )
+  if (park.wake_step === null) return matching.length === 1
+  return matching.some((row) => row.step_name === park.wake_step)
+}
+
+const WAKE_SUBSETS: WakeField[][] = Array.from({ length: 1 << WAKE_FIELDS.length }, (_, mask) =>
+  WAKE_FIELDS.filter((_field, index) => mask & (1 << index)),
+)
+
+function wakeFieldName(fields: readonly WakeField[]): string {
+  return fields.length === 0 ? 'healthy' : fields.join('+')
+}
+
+const WAKE_AXES = WAKE_DEADLINES.flatMap((deadline) =>
+  WAKE_OWNERS.flatMap((owner) =>
+    Object.entries(wakeParks(deadline)).map(([parkLabel, park]) => ({
+      deadline,
+      owner,
+      parkLabel,
+      park,
+    })),
+  ),
+)
+
+export const WAKE_SINGLE_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
+  ({ deadline, owner, parkLabel, park }) =>
+    WAKE_SUBSETS.map((fields) => ({
+      label: `${deadline.label} / ${owner.label} / ${parkLabel} / ${wakeFieldName(fields)}`,
+      owner,
+      park,
+      rows: [corruptWakeRow(deadline, fields)],
+    })),
+)
+
+const WAKE_AT_STEP = WAKE_SUBSETS.filter((fields) => !fields.includes('step_name'))
+const WAKE_AT_OTHER = WAKE_SUBSETS.filter((fields) => fields.includes('step_name'))
+
+export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
+  ({ deadline, owner, parkLabel, park }) =>
+    WAKE_AT_STEP.flatMap((left) =>
+      WAKE_AT_OTHER.map((right) => ({
+        label: `${deadline.label} / ${owner.label} / ${parkLabel} / ${wakeFieldName(left)} | ${wakeFieldName(right)}`,
+        owner,
+        park,
+        rows: [corruptWakeRow(deadline, left), corruptWakeRow(deadline, right)],
+      })),
+    ),
+)
+
+async function wakeWitnessWrote(
+  fixture: StoreFixture,
+  queue: string,
+  owner: WakeOwner,
+  park: WakePark,
+  rows: readonly WakeRow[],
+): Promise<boolean> {
+  const id = queue
+  await fixture.raw.batch('setup', [
+    {
+      sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy,
+              max_attempts, cancellation, state, enqueue_at_ms, created_at_ms)
+            VALUES (?, ?, 'job', '{}', '{"kind":"none"}', 3,
+              '{"maxDurationSeconds":1}', ?, ?, ?)`,
+      args: [id, queue, owner.state, WAKE_NOW, WAKE_NOW],
+    },
+    {
+      sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, claim_gen, activated_gen,
+              wake_event, wake_step, available_at_ms, created_at_ms)
+            VALUES (?, ?, ?, 1, ?, 1, 1, ?, ?, ?, ?)`,
+      args: [
+        id,
+        queue,
+        id,
+        park.state,
+        park.wake_event,
+        park.wake_step,
+        park.available_at_ms,
+        WAKE_NOW,
+      ],
+    },
+    ...rows.map((row) => ({
+      sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
+              timeout_at_ms, created_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        id,
+        row.step_name,
+        row.queue === Q ? queue : row.queue,
+        id,
+        row.event_name,
+        row.status,
+        row.timeout_at_ms,
+        WAKE_NOW,
+      ],
+    })),
+  ])
+
+  const snapshot = async (): Promise<string> => {
+    const [result] = await fixture.raw.batch(
+      'probe',
+      [
+        {
+          sql: `SELECT state, available_at_ms, event_payload, wake_event, fence_stamp
+                FROM runs WHERE run_id = ?`,
+          args: [id],
+        },
+      ],
+      'read',
+    )
+    const row = result?.rows[0]
+    if (!row) throw new Error('wake witness run vanished')
+    return JSON.stringify(row)
+  }
+
+  const before = await snapshot()
+  await fixture.store.emitEvent(queue, WAKE_EVENT, '{"x":1}')
+  return (await snapshot()) !== before
+}
+
+export async function wakeWitnessDisagreements(
+  makeFixture: StoreFixtureFactory,
+  cases: readonly WakeWitnessCase[],
+): Promise<string[]> {
+  const fixture = await makeFixture('wake-witness')
+  try {
+    await fixture.admin.setFakeNowEpochMs(WAKE_NOW)
+    const wrong: string[] = []
+    for (const [index, testCase] of cases.entries()) {
+      const wrote = await wakeWitnessWrote(
+        fixture,
+        `${Q}-wake-${index}`,
+        testCase.owner,
+        testCase.park,
+        testCase.rows,
+      )
+      if (wrote !== shouldWake(testCase.owner, testCase.park, testCase.rows)) {
+        wrong.push(`${testCase.label}: woke=${wrote}`)
+      }
+    }
+    return wrong
+  } finally {
+    fixture.close()
+  }
+}
+
+export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
+  describe(`wake witness conformance [${dialect}]`, () => {
+    it('decides every park against every single-row corruption', async () => {
+      expect(await wakeWitnessDisagreements(makeFixture, WAKE_SINGLE_CASES)).toEqual([])
+    })
+
+    it('decides every park against every pair of corruptions', async () => {
+      expect(
+        await wakeWitnessDisagreements(makeFixture, WAKE_PAIR_CASES),
+        'mutation-verdict:behavior:emit-wake-one-witness',
+      ).toEqual([])
+    }, 15_000)
   })
 }

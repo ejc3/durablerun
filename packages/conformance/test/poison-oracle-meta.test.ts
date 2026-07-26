@@ -282,7 +282,7 @@ describe('poison/invariant mechanism self-tests', () => {
             ]),
         },
       ),
-    ).rejects.toThrow(/authority/)
+    ).rejects.toThrow(/runs\/foreign-run was outside frozen pre-state authority/)
   })
 
   it('distinguishes composite row keys that contain separators', async () => {
@@ -321,7 +321,7 @@ describe('poison/invariant mechanism self-tests', () => {
             ]),
         },
       ),
-    ).rejects.toThrow(/authority/)
+    ).rejects.toThrow(/checkpoints\/\["collision","a\/b"\] was outside frozen pre-state authority/)
   })
 
   it('uses structured finding identity when a rendered violation moves between rows', async () => {

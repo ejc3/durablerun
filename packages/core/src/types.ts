@@ -4,7 +4,24 @@
  * per-claim generations, activation state, and split retry accounting.
  */
 
-export type TaskState = 'pending' | 'running' | 'sleeping' | 'completed' | 'failed' | 'cancelled'
+/** Canonical runtime partitions for every task/run state consumer. */
+export const LIVE_STATES = Object.freeze(['pending', 'running', 'sleeping'] as const)
+export const TERMINAL_STATES = Object.freeze(['completed', 'failed', 'cancelled'] as const)
+
+export type LiveState = (typeof LIVE_STATES)[number]
+export type TerminalState = (typeof TERMINAL_STATES)[number]
+export type TaskState = LiveState | TerminalState
+
+const LIVE_STATE_SET: ReadonlySet<string> = new Set(LIVE_STATES)
+const TERMINAL_STATE_SET: ReadonlySet<string> = new Set(TERMINAL_STATES)
+
+export function isLiveState(value: unknown): value is LiveState {
+  return typeof value === 'string' && LIVE_STATE_SET.has(value)
+}
+
+export function isTerminalState(value: unknown): value is TerminalState {
+  return typeof value === 'string' && TERMINAL_STATE_SET.has(value)
+}
 
 export type RunState = TaskState
 

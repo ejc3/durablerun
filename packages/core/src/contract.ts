@@ -64,6 +64,32 @@ export function isFenceStatementName(value: string): boolean {
   return FENCE_STATEMENT_NAME.test(value)
 }
 
+export type FenceStampParseResult =
+  | { ok: true; seed: string; statement: string }
+  | {
+      ok: false
+      reason: 'no-separator' | 'empty-seed' | 'empty-statement' | 'statement-name-invalid'
+    }
+
+/**
+ * Parse the persisted `<batch-seed>:<statement-name>` representation.
+ *
+ * The seed may itself contain colons, so the statement is split at the final
+ * separator. Keeping this parser beside the statement-name grammar gives
+ * invariant checking and poison severity one canonical interpretation.
+ */
+export function parseFenceStamp(stamp: string): FenceStampParseResult {
+  const separator = stamp.lastIndexOf(':')
+  if (separator < 0) return { ok: false, reason: 'no-separator' }
+  if (separator === 0) return { ok: false, reason: 'empty-seed' }
+  if (separator === stamp.length - 1) return { ok: false, reason: 'empty-statement' }
+  const statement = stamp.slice(separator + 1)
+  if (!isFenceStatementName(statement)) {
+    return { ok: false, reason: 'statement-name-invalid' }
+  }
+  return { ok: true, seed: stamp.slice(0, separator), statement }
+}
+
 /**
  * The logical-key relations a generated follow-on may traverse.
  *

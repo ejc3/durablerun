@@ -5,7 +5,9 @@ import {
   type SqlResult,
   type SqlRow,
   type SqlStatement,
-  isFenceStatementName,
+  isLiveState,
+  isTerminalState,
+  parseFenceStamp,
 } from '@durablerun/core'
 import { MATRIX_WRITE_LABELS } from './fault-matrix.js'
 import type {
@@ -61,6 +63,7 @@ const TRIGGER_EVENT = 'label-trigger-event'
 const TRIGGER_STEP = '$await:trigger'
 const TRIGGER_IDEMPOTENCY_KEY = 'label-trigger-key'
 const TRIGGER_DRIVER = 'label-trigger-driver'
+const POISON_DRIVER = 'poison-driver'
 const PROTECTED_TASK = 'protected-task'
 const PROTECTED_RUN = 'protected-run'
 const PROTECTED_EVENT = 'protected-fired-event'
@@ -448,6 +451,80 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
       invalidRepresentation: 'non-integer',
     },
   },
+  ...(
+    [
+      [
+        'task-attempts',
+        {
+          table: 'tasks',
+          taskId: TASK,
+          column: 'attempts',
+          invalidRepresentation: 'non-integer',
+        },
+      ],
+      [
+        'task-max-attempts',
+        {
+          table: 'tasks',
+          taskId: TASK,
+          column: 'max_attempts',
+          invalidRepresentation: 'non-integer',
+        },
+      ],
+      [
+        'task-infra-retries',
+        {
+          table: 'tasks',
+          taskId: TASK,
+          column: 'infra_retries',
+          invalidRepresentation: 'non-integer',
+        },
+      ],
+      [
+        'run-attempt',
+        {
+          table: 'runs',
+          runId: RUN,
+          column: 'attempt',
+          invalidRepresentation: 'non-integer',
+        },
+      ],
+      [
+        'run-claim-gen',
+        {
+          table: 'runs',
+          runId: RUN,
+          column: 'claim_gen',
+          invalidRepresentation: 'non-integer',
+        },
+      ],
+      [
+        'run-activated-gen',
+        {
+          table: 'runs',
+          runId: RUN,
+          column: 'activated_gen',
+          invalidRepresentation: 'non-integer',
+        },
+      ],
+      [
+        'run-relaunch-count',
+        {
+          table: 'runs',
+          runId: RUN,
+          column: 'relaunch_count',
+          invalidRepresentation: 'non-integer',
+        },
+      ],
+    ] as const
+  ).map(
+    ([id, storageCorruption]): PoisonWitness => ({
+      id: `counter/${id}`,
+      covers: [`counter/${id}` as EngineInvariantConditionId],
+      statements: [],
+      storageCorruption,
+    }),
+  ),
   {
     id: 'provenance/stamp-without-instant',
     covers: ['provenance/stamp-without-instant'],
@@ -903,7 +980,7 @@ interface InvocationTarget {
 }
 
 const POISON_INVOCATION: InvocationTarget = {
-  driverId: 'poison-driver',
+  driverId: POISON_DRIVER,
   taskName: 'poison',
   taskId: TASK,
   runId: RUN,
@@ -1088,7 +1165,7 @@ function freezeAuthority(before: ProtocolSnapshot): FrozenAuthority {
       before.drivers
         .filter(
           (row) =>
-            row.queue === Q && ['poison-driver', TRIGGER_DRIVER].includes(String(row.driver_id)),
+            row.queue === Q && [POISON_DRIVER, TRIGGER_DRIVER].includes(String(row.driver_id)),
         )
         .map((row) => key('drivers', row)),
     ),
@@ -1128,7 +1205,7 @@ function explicitInsertAuthority(
   const authority = emptyInsertAuthority()
   const poisonAttempt = exactInteger(before.runs.find((run) => run.run_id === RUN)?.attempt) ?? 1n
   if (label === 'driver-heartbeat') {
-    for (const driverId of ['poison-driver', TRIGGER_DRIVER]) {
+    for (const driverId of [POISON_DRIVER, TRIGGER_DRIVER]) {
       allowInsert(authority, 'drivers', { queue: Q, driver_id: driverId })
     }
   }
@@ -1281,13 +1358,8 @@ function changedOutsideAuthority(
   return changed
 }
 
-const LIVE = new Set(['pending', 'running', 'sleeping'])
-const TERMINAL = new Set(['completed', 'failed', 'cancelled'])
-
 function liveRuns(snapshot: ProtocolSnapshot, taskId: string): SqlRow[] {
-  return snapshot.runs.filter(
-    (row) => row.task_id === taskId && LIVE.has(String(row.state)),
-  ) as SqlRow[]
+  return snapshot.runs.filter((row) => row.task_id === taskId && isLiveState(row.state)) as SqlRow[]
 }
 
 function leaseOnlyShortened(before: SqlRow, after: SqlRow): boolean {
@@ -1316,7 +1388,7 @@ function terminalBarrier(
   const afterTasks = rowsByKey('tasks', after.tasks)
   const afterRuns = rowsByKey('runs', after.runs)
   for (const task of before.tasks) {
-    if (!TERMINAL.has(String(task.state))) continue
+    if (!isTerminalState(task.state)) continue
     const taskId = String(task.task_id)
     const afterTask = afterTasks.get(taskId)
     if (!same(task, afterTask)) errors.push(`terminal task ${taskId} changed`)
@@ -1326,12 +1398,7 @@ function terminalBarrier(
       const afterRun = afterRuns.get(String(run.run_id))
       const advisoryShortening =
         label === 'expire-lease-now' && afterRun && leaseOnlyShortened(run, afterRun)
-      if (
-        afterRun &&
-        LIVE.has(String(afterRun.state)) &&
-        !same(run, afterRun) &&
-        !advisoryShortening
-      ) {
+      if (afterRun && isLiveState(afterRun.state) && !same(run, afterRun) && !advisoryShortening) {
         errors.push(`live run ${String(run.run_id)} under terminal task ${taskId} was revived`)
       }
     }
@@ -1351,7 +1418,7 @@ function inertLiveBarrier(before: ProtocolSnapshot, after: ProtocolSnapshot): st
   const oldIds = new Set(beforeRuns.map((run) => String(run.run_id)))
   for (const run of beforeRuns) {
     const current = afterRuns.get(String(run.run_id))
-    if (current && LIVE.has(String(current.state)) && !same(run, current)) {
+    if (current && isLiveState(current.state) && !same(run, current)) {
       errors.push(`poisoned live run ${String(run.run_id)} changed without quiescing`)
     }
   }
@@ -1461,14 +1528,8 @@ function findingSeverity(finding: EngineInvariantFinding, snapshot: ProtocolSnap
         ...snapshot.waits,
       ].flatMap((row) => {
         if (typeof row.fence_stamp !== 'string') return []
-        const separator = row.fence_stamp.lastIndexOf(':')
-        if (
-          separator < 1 ||
-          row.fence_stamp.slice(0, separator) !== seed ||
-          !isFenceStatementName(row.fence_stamp.slice(separator + 1))
-        ) {
-          return []
-        }
+        const parsed = parseFenceStamp(row.fence_stamp)
+        if (!parsed.ok || parsed.seed !== seed) return []
         const instant = exactInteger(row.fence_at_ms)
         return instant === undefined ? [] : [instant]
       })

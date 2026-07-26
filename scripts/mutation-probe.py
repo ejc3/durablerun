@@ -652,8 +652,8 @@ VERDICTS = {
     ),
     "claim-requires-sole-live-run": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/poison-matrix.test.ts",
-        "poison matrix (write label x invariant-forbidden pre-state, generated) claim does not amplify cardinality/two-live-runs",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (write label x forbidden pre-state, generated) claim does not amplify cardinality/two-live-runs",
         "mutation-verdict:behavior:claim-requires-sole-live-run",
     ),
     "claim-receipt-requires-sole-live-run": ExpectedVerdict(
@@ -670,32 +670,32 @@ VERDICTS = {
     ),
     "matrix-lost-launch-edge-progress": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/fault-matrix.test.ts",
-        "fault matrix (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
+        "packages/conformance/test/libsql.test.ts",
+        "fault matrix [libsql] (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge",
     ),
     "sweep-lost-launch-generation": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/fault-matrix.test.ts",
-        "fault matrix (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
+        "packages/conformance/test/libsql.test.ts",
+        "fault matrix [libsql] (label x fault x starting state, generated) sweep:lost-launch survives duplicate from relaunch-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge",
     ),
     "matrix-claim-timeout-edge-progress": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/fault-matrix.test.ts",
-        "fault matrix (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
+        "packages/conformance/test/libsql.test.ts",
+        "fault matrix [libsql] (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
     ),
     "sweep-claim-timeout-generation": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/fault-matrix.test.ts",
-        "fault matrix (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
+        "packages/conformance/test/libsql.test.ts",
+        "fault matrix [libsql] (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
     ),
     "matrix-attempt-edge-progress": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/fault-matrix.test.ts",
-        "fault matrix (label x fault x starting state, generated) fail survives duplicate from attempt-cap-edge",
+        "packages/conformance/test/libsql.test.ts",
+        "fault matrix [libsql] (label x fault x starting state, generated) fail survives duplicate from attempt-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge",
     ),
     "provenance-sweep-progress": ExpectedVerdict(

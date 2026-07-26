@@ -14,6 +14,7 @@ export {
   type EngineInvariantConditionId,
   type EngineInvariantFinding,
 } from './invariants.js'
-export { schedulerConformance } from './suite.js'
+export { schedulerConformance, wakeWitnessConformance } from './suite.js'
+export { STORE_CONFORMANCE_SURFACE_IDS, storeConformance } from './store-conformance.js'
 export * from './fault-matrix.js'
 export * from './poison-matrix.js'

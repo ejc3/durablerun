@@ -1,5 +1,4 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import type { StorageCorruption, StoreFixture } from '../src/index.js'
@@ -55,8 +54,12 @@ async function injectStorageCorruption(
 }
 
 export async function makeLibsqlFixture(seed: number | string): Promise<StoreFixture> {
-  const { raw, admin } = await openTestDb()
-  const ids = seededIdSource(new Rng(seed))
+  const encodedSeed = [...String(seed)]
+    .map((character) => character.codePointAt(0)?.toString(16))
+    .join('_')
+  const { raw, admin, ids } = await openTestDb({
+    idNamespace: `conformance-${encodedSeed || 'empty'}`,
+  })
   return {
     store: new LibsqlSchedulerStore(raw, ids),
     admin,

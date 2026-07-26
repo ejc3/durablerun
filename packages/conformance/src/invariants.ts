@@ -1,7 +1,10 @@
-import { type SqlExecutor, type SqlRow, isFenceStatementName } from '@durablerun/core'
-
-const LIVE = new Set(['pending', 'running', 'sleeping'])
-const TERMINAL = new Set(['completed', 'failed', 'cancelled'])
+import {
+  type SqlExecutor,
+  type SqlRow,
+  isLiveState,
+  isTerminalState,
+  parseFenceStamp,
+} from '@durablerun/core'
 
 /**
  * Atomic conditions claimed by the invariant library. The evaluator can only
@@ -59,6 +62,13 @@ export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'generation/negative-relaunch': 'generation-or-counter-corrupt',
   'generation/negative-attempts': 'generation-or-counter-corrupt',
   'generation/negative-infra-retries': 'generation-or-counter-corrupt',
+  'counter/task-attempts': 'counter-storage-class',
+  'counter/task-max-attempts': 'counter-storage-class',
+  'counter/task-infra-retries': 'counter-storage-class',
+  'counter/run-attempt': 'counter-storage-class',
+  'counter/run-claim-gen': 'counter-storage-class',
+  'counter/run-activated-gen': 'counter-storage-class',
+  'counter/run-relaunch-count': 'counter-storage-class',
 } as const)
 
 export type EngineInvariantConditionId = keyof typeof ENGINE_INVARIANT_CONDITION_NAMES
@@ -167,10 +177,10 @@ function text(row: SqlRow, column: string): string {
   return value
 }
 
-function integer(value: SqlValue): bigint {
+function exactInteger(value: SqlValue): bigint | undefined {
   if (typeof value === 'bigint') return value
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value)
-  throw new Error('invariant snapshot expected an exact integer counter')
+  return undefined
 }
 
 function sameValue(left: SqlValue, right: SqlValue): boolean {
@@ -236,12 +246,54 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     runsByTask.set(taskId, owned)
   }
 
+  interface TaskCounters {
+    attempts: bigint | undefined
+    maxAttempts: bigint | undefined
+    infraRetries: bigint | undefined
+  }
+  interface RunCounters {
+    attempt: bigint | undefined
+    claimGen: bigint | undefined
+    activatedGen: bigint | undefined
+    relaunchCount: bigint | undefined
+  }
+  const taskCounters = new Map<string, TaskCounters>()
+  for (const task of rows.tasks) {
+    const taskId = text(task, 'task_id')
+    const subject = `tasks/${taskId}`
+    const identity = ['tasks', taskId]
+    const attempts = exactInteger(task.attempts)
+    const maxAttempts = exactInteger(task.max_attempts)
+    const infraRetries = exactInteger(task.infra_retries)
+    if (attempts === undefined) add('counter/task-attempts', subject, identity)
+    if (maxAttempts === undefined) add('counter/task-max-attempts', subject, identity)
+    if (infraRetries === undefined) add('counter/task-infra-retries', subject, identity)
+    taskCounters.set(taskId, { attempts, maxAttempts, infraRetries })
+  }
+  const runCounters = new Map<string, RunCounters>()
+  for (const run of rows.runs) {
+    const runId = text(run, 'run_id')
+    const subject = `runs/${runId}`
+    const identity = ['runs', runId]
+    const attempt = exactInteger(run.attempt)
+    const claimGen = exactInteger(run.claim_gen)
+    const activatedGen = exactInteger(run.activated_gen)
+    const relaunchCount = exactInteger(run.relaunch_count)
+    if (attempt === undefined) add('counter/run-attempt', subject, identity)
+    if (claimGen === undefined) add('counter/run-claim-gen', subject, identity)
+    if (activatedGen === undefined) add('counter/run-activated-gen', subject, identity)
+    if (relaunchCount === undefined) add('counter/run-relaunch-count', subject, identity)
+    runCounters.set(runId, { attempt, claimGen, activatedGen, relaunchCount })
+  }
+
   for (const task of rows.tasks) {
     const taskId = text(task, 'task_id')
     const state = text(task, 'state')
+    const counters = taskCounters.get(taskId)
+    if (!counters) throw new Error(`counter snapshot missing task '${taskId}'`)
     const ownedRuns = runsByTask.get(taskId) ?? []
-    const liveRuns = ownedRuns.filter((run) => LIVE.has(text(run, 'state')))
-    if (TERMINAL.has(state)) {
+    const liveRuns = ownedRuns.filter((run) => isLiveState(text(run, 'state')))
+    if (isTerminalState(state)) {
       for (const run of liveRuns) {
         const runId = text(run, 'run_id')
         add('terminal-task/live-run', `${taskId}/${runId}`, [taskId, runId])
@@ -250,7 +302,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     if (state === 'running' && liveRuns.length === 0) {
       add('mirror/running-task-no-live-run', taskId)
     }
-    if (LIVE.has(state)) {
+    if (isLiveState(state)) {
       if (liveRuns.length === 0) add('cardinality/live-task-zero-runs', taskId)
       if (liveRuns.length > 1) add('cardinality/live-task-multiple-runs', taskId)
       for (const run of liveRuns) {
@@ -260,16 +312,27 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
         }
       }
     }
-    if (integer(task.attempts) > integer(task.max_attempts)) add('attempts/over-max', taskId)
+    if (
+      counters.attempts !== undefined &&
+      counters.maxAttempts !== undefined &&
+      counters.attempts > counters.maxAttempts
+    ) {
+      add('attempts/over-max', taskId)
+    }
 
-    const top = ownedRuns.reduce<bigint | null>((maximum, run) => {
-      const attempt = integer(run.attempt)
-      return maximum === null || attempt > maximum ? attempt : maximum
-    }, null)
+    const ownedAttempts = ownedRuns.map((run) => runCounters.get(text(run, 'run_id'))?.attempt)
+    const top =
+      ownedAttempts.length === 0 || ownedAttempts.some((attempt) => attempt === undefined)
+        ? null
+        : (ownedAttempts as bigint[]).reduce((maximum, attempt) =>
+            attempt > maximum ? attempt : maximum,
+          )
     if (top !== null) {
-      const accounted = integer(task.attempts) + integer(task.infra_retries)
-      if (accounted > top) add('accounting/above-top', taskId)
-      if (accounted < top - 1n) add('accounting/below-top-minus-one', taskId)
+      if (counters.attempts !== undefined && counters.infraRetries !== undefined) {
+        const accounted = counters.attempts + counters.infraRetries
+        if (accounted > top) add('accounting/above-top', taskId)
+        if (accounted < top - 1n) add('accounting/below-top-minus-one', taskId)
+      }
     }
     if (!validTemporal(task.enqueue_at_ms)) {
       add('temporal/task-enqueue', `tasks/${taskId}`, ['tasks', taskId])
@@ -277,8 +340,12 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     if (!validTemporal(task.cancel_at_ms)) {
       add('temporal/task-cancel', `tasks/${taskId}`, ['tasks', taskId])
     }
-    if (integer(task.attempts) < 0n) add('generation/negative-attempts', taskId)
-    if (integer(task.infra_retries) < 0n) add('generation/negative-infra-retries', taskId)
+    if (counters.attempts !== undefined && counters.attempts < 0n) {
+      add('generation/negative-attempts', taskId)
+    }
+    if (counters.infraRetries !== undefined && counters.infraRetries < 0n) {
+      add('generation/negative-infra-retries', taskId)
+    }
   }
 
   const liveCounts = new Map<string, number>()
@@ -286,7 +353,9 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     const runId = text(run, 'run_id')
     const taskId = text(run, 'task_id')
     const state = text(run, 'state')
-    if (LIVE.has(state)) liveCounts.set(taskId, (liveCounts.get(taskId) ?? 0) + 1)
+    const counters = runCounters.get(runId)
+    if (!counters) throw new Error(`counter snapshot missing run '${runId}'`)
+    if (isLiveState(state)) liveCounts.set(taskId, (liveCounts.get(taskId) ?? 0) + 1)
     if (state === 'running' && run.claimed_by === null) add('lease/running-owner-null', runId)
     const task = tasks.get(taskId)
     if (state === 'running' && task && text(task, 'state') !== 'running') {
@@ -307,11 +376,19 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     if (!validTemporal(run.lease_ms)) {
       add('temporal/run-lease', `runs/${runId}`, ['runs', runId])
     }
-    if (integer(run.activated_gen) > integer(run.claim_gen)) {
+    if (
+      counters.activatedGen !== undefined &&
+      counters.claimGen !== undefined &&
+      counters.activatedGen > counters.claimGen
+    ) {
       add('generation/activated-after-claim', runId)
     }
-    if (integer(run.claim_gen) < 0n) add('generation/negative-claim', runId)
-    if (integer(run.relaunch_count) < 0n) add('generation/negative-relaunch', runId)
+    if (counters.claimGen !== undefined && counters.claimGen < 0n) {
+      add('generation/negative-claim', runId)
+    }
+    if (counters.relaunchCount !== undefined && counters.relaunchCount < 0n) {
+      add('generation/negative-relaunch', runId)
+    }
 
     if (run.event_payload !== null) {
       const stored =
@@ -366,7 +443,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       add('wait/run-missing', subject, subjectIdentity)
       continue
     }
-    if (!LIVE.has(text(run, 'state'))) add('wait/dead-run', subject, subjectIdentity)
+    if (!isLiveState(text(run, 'state'))) add('wait/dead-run', subject, subjectIdentity)
     if (text(run, 'task_id') !== text(wait, 'task_id')) {
       add('wait/task-mismatch', subject, subjectIdentity)
     }
@@ -436,6 +513,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     }
     if (!hasStamp || !hasInstant) continue
     let validPair = true
+    let seed: string | undefined
     if (!validTemporal(instant)) {
       add('provenance/instant-not-integer', subject, identity)
       validPair = false
@@ -443,25 +521,22 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     if (typeof stamp !== 'string') {
       add('provenance/stamp-not-text', subject, identity)
       validPair = false
-    } else if (!stamp.includes(':')) {
-      add('provenance/no-separator', subject, identity)
-      validPair = false
     } else {
-      const separator = stamp.lastIndexOf(':')
-      if (separator === 0) {
-        add('provenance/empty-seed', subject, identity)
+      const parsed = parseFenceStamp(stamp)
+      if (!parsed.ok) {
+        const condition = {
+          'no-separator': 'provenance/no-separator',
+          'empty-seed': 'provenance/empty-seed',
+          'empty-statement': 'provenance/empty-statement',
+          'statement-name-invalid': 'provenance/statement-name-invalid',
+        } as const
+        add(condition[parsed.reason], subject, identity)
         validPair = false
-      } else if (separator === stamp.length - 1) {
-        add('provenance/empty-statement', subject, identity)
-        validPair = false
-      } else if (!isFenceStatementName(stamp.slice(separator + 1))) {
-        add('provenance/statement-name-invalid', subject, identity)
-        validPair = false
+      } else {
+        seed = parsed.seed
       }
     }
-    if (!validPair || typeof stamp !== 'string') continue
-    const separator = stamp.lastIndexOf(':')
-    const seed = stamp.slice(0, separator)
+    if (!validPair || seed === undefined) continue
     const instants = instantsBySeed.get(seed) ?? new Set<string>()
     instants.add(String(instant))
     instantsBySeed.set(seed, instants)
