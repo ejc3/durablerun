@@ -168,6 +168,17 @@ class _TypeScriptLexer:
                 # the following division slash look like a regex opener.
                 index += 2
                 continue
+            if self.source.startswith(("!==", "!="), index):
+                index += 3 if self.source.startswith("!==", index) else 2
+                expects_expression = True
+                continue
+            if char == "!":
+                # Logical prefix `!` preserves "expects an expression"; the
+                # TypeScript postfix non-null assertion preserves "completed
+                # an expression". Collapsing both into the binary-operator
+                # bucket made division after `value!` look like a regex.
+                index += 1
+                continue
             if char == "/" and expects_expression:
                 end = self._regex_end(index)
                 _blank(self.structure, index, end)
@@ -210,7 +221,7 @@ class _TypeScriptLexer:
                 expects_expression = True
             elif char in ")]":
                 expects_expression = False
-            elif char in ",:;=!?&|+-*%^~<>":
+            elif char in ",:;=?&|+-*%^~<>":
                 expects_expression = True
             elif char == ".":
                 expects_expression = True
@@ -304,6 +315,113 @@ def split_top_level(
     if parts and trivia_only(source[parts[-1][0] : parts[-1][1]]):
         parts.pop()
     return parts
+
+
+def _type_argument_call_end(
+    structure: str,
+    start: int,
+    end: int,
+) -> int | None:
+    """Match `<...>` only when it is the type-argument list of a call."""
+    before = start - 1
+    while before >= 0 and structure[before].isspace():
+        before -= 1
+    if before < 0 or not (
+        structure[before].isalnum() or structure[before] in "_$)]>"
+    ):
+        return None
+    depth = 0
+    index = start
+    while index < end:
+        char = structure[index]
+        if char == "<":
+            depth += 1
+        elif char == ">" and not (index > start and structure[index - 1] == "="):
+            depth -= 1
+            if depth == 0:
+                after = index + 1
+                while after < end and structure[after].isspace():
+                    after += 1
+                return index if after < end and structure[after] == "(" else None
+        index += 1
+    return None
+
+
+def split_typescript_call_arguments(
+    source: str,
+    structure: str,
+    start: int,
+    end: int,
+) -> list[tuple[int, int]] | None:
+    """Split call arguments without treating generic-type commas as arguments."""
+    argument_structure = list(structure)
+    index = start
+    while index < end:
+        if structure[index] != "<":
+            index += 1
+            continue
+        close = _type_argument_call_end(structure, index, end)
+        if close is None:
+            index += 1
+            continue
+        for at in range(index, close + 1):
+            if argument_structure[at] == ",":
+                argument_structure[at] = " "
+        index = close + 1
+    return split_top_level(source, "".join(argument_structure), start, end)
+
+
+def typescript_call_open(
+    source: str,
+    identifier_start: int,
+    identifier_end: int,
+    structure: str,
+) -> int | None:
+    """Find the call `(` after a bare identifier, transparent parens, and types."""
+    before = identifier_start - 1
+    while before >= 0 and structure[before].isspace():
+        before -= 1
+    if before >= 0 and structure[before] == ".":
+        return None
+    adjacent = identifier_start - 1
+    if adjacent >= 0 and (
+        structure[adjacent].isalnum() or structure[adjacent] in "_$"
+    ):
+        return None
+
+    at = identifier_end
+    while at < len(structure) and structure[at].isspace():
+        at += 1
+    if at < len(structure) and structure[at] == ")":
+        if (
+            before < 0
+            or structure[before] != "("
+            or matching_delimiter(source, before, structure) != at
+        ):
+            return None
+        at += 1
+        while at < len(structure) and structure[at].isspace():
+            at += 1
+
+    if at < len(structure) and structure[at] == "<":
+        close = _type_argument_call_end(structure, at, len(structure))
+        if close is None:
+            return None
+        at = close + 1
+        while at < len(structure) and structure[at].isspace():
+            at += 1
+
+    if at < len(structure) and structure[at] == "?":
+        at += 1
+        while at < len(structure) and structure[at].isspace():
+            at += 1
+        if at >= len(structure) or structure[at] != ".":
+            return None
+        at += 1
+        while at < len(structure) and structure[at].isspace():
+            at += 1
+
+    return at if at < len(structure) and structure[at] == "(" else None
 
 
 def _sql_quote_end(source: str, start: int, quote: str) -> int:

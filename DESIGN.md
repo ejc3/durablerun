@@ -825,8 +825,8 @@ not depend on careful reading:
   or any other wrong path receives no credit. A marker matches only the
   structured failure diagnostic's first line: bare, `Error: <marker>`, or
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
-  source is not evidence. The verify gate runs 17 classifier cases, eleven
-  promise-message source cases, six canonical helper-descriptor cases, and
+  source is not evidence. The verify gate runs 17 classifier cases, fifteen
+  promise-message source cases, eight canonical helper-descriptor cases, and
   seven injected false-positive faults over all 50 live mutations. The parser
   requires all nine aggregate counters to be nonnegative integers and
   internally consistent within their reporter domains. Test counters match
@@ -847,8 +847,13 @@ not depend on careful reading:
   and unrelated-error arms have direct tests, and callers provide a structured
   kind/name descriptor from which only the helper can construct a canonical,
   undecorated marker. The canonical TypeScript structural lexer makes the
-  verify gate refuse every custom-message argument on an exact Vitest
-  `expect(...).rejects` or `.resolves` chain. Verdict altitude follows the
+  verify gate refuse every custom-message argument on a direct Vitest
+  `expect(...).rejects` or `.resolves` chain, including parenthesized,
+  optional-call, and generic forms; generic type commas do not become call
+  arguments, and same-named object methods do not become helper inventory.
+  Prefix/postfix state is preserved for TypeScript's non-null assertion so a
+  following division slash cannot hide executable batch calls as regex
+  contents. Verdict altitude follows the
   earliest load-bearing boundary, not the downstream scenario story; a
   construction wrapper encloses the exact call and exact error. Behavioral
   mutations preserve unrelated semantics, every multi-part verdict has one

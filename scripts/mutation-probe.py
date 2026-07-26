@@ -33,7 +33,13 @@ from typing import Literal
 # not let Python create an untracked cache before the clean-tree check runs.
 sys.dont_write_bytecode = True
 
-from source_lex import matching_delimiter, split_top_level, typescript_structure
+from source_lex import (
+    matching_delimiter,
+    split_top_level,
+    split_typescript_call_arguments,
+    typescript_call_open,
+    typescript_structure,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -89,15 +95,27 @@ def raw_promise_message_lines(source: str) -> tuple[int, ...]:
     """Find custom messages entrusted to Vitest promise matchers."""
     structure = typescript_structure(source)
     lines: list[int] = []
-    for match in re.finditer(r"\bexpect\s*\(", structure):
-        opened = match.end() - 1
+    for match in re.finditer(r"\bexpect\b", structure):
+        opened = typescript_call_open(
+            source,
+            match.start(),
+            match.end(),
+            structure,
+        )
+        if opened is None:
+            continue
         closed = matching_delimiter(source, opened, structure)
         if closed is None:
             raise ValueError("cannot establish expect() call boundary")
         suffix = re.match(r"\s*\.\s*(?:rejects|resolves)\b", structure[closed + 1 :])
         if suffix is None:
             continue
-        arguments = split_top_level(source, structure, opened + 1, closed)
+        arguments = split_typescript_call_arguments(
+            source,
+            structure,
+            opened + 1,
+            closed,
+        )
         if arguments is None:
             raise ValueError("cannot establish expect() argument boundaries")
         if len(arguments) > 1:
@@ -118,8 +136,15 @@ def helper_verdict_descriptors(source: str) -> frozenset[tuple[str, str]]:
     structure = typescript_structure(source)
     helpers = "|".join(VERDICT_HELPERS)
     descriptors: set[tuple[str, str]] = set()
-    for match in re.finditer(rf"\b(?:{helpers})\s*\(", structure):
-        opened = match.end() - 1
+    for match in re.finditer(rf"\b(?:{helpers})\b", structure):
+        opened = typescript_call_open(
+            source,
+            match.start(),
+            match.end(),
+            structure,
+        )
+        if opened is None:
+            continue
         closed = matching_delimiter(source, opened, structure)
         if closed is None:
             raise ValueError("cannot establish verdict-helper call boundary")
@@ -1519,6 +1544,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "await requireExpectedFailure("
             '{ mutation: "migration-postcondition-old-version", kind: "behavior" }, /x/, action)',
             frozenset({("behavior", "migration-postcondition-old-version")}),
+        ),
+        (
+            "generic helper call",
+            "await attributeExpectedFailure<Result>("
+            "{kind: 'behavior', mutation: 'spawn-primary-key-guard'}, /x/, action)",
+            frozenset({("behavior", "spawn-primary-key-guard")}),
         ),
         (
             "decorated name",
