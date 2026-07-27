@@ -489,25 +489,24 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     void typecheckNonSelfRelation
 
     const forged = withCas()
-    const forgedRuntime = forged as unknown as {
-      relation: () => {
-        target: 'runs'
-        key: 'task_id'
-        from: 'runs'
-        column: 'run_id'
-      }
-    }
-    forgedRuntime.relation = () => ({
-      target: 'runs',
-      key: 'task_id',
-      from: 'runs',
-      column: 'run_id',
+    const forgedRuntime = new Proxy(forged, {
+      get(target, property, receiver) {
+        if (property === 'relation') {
+          return () => ({
+            target: 'runs',
+            key: 'task_id',
+            from: 'runs',
+            column: 'run_id',
+          })
+        }
+        return Reflect.get(target, property, receiver)
+      },
     })
     missingConstructionGuard(
       'mutation-verdict:construction:seal-source-key',
       /does not target its own source key/,
       () =>
-        forged.seal('wrong-key', {
+        forgedRuntime.seal('wrong-key', {
           relation: 'runs-to-runs',
           fence: 'win',
           rows: 'one',

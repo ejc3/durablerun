@@ -189,6 +189,12 @@ export class FencedBatch {
       )
     }
     this.now = opts.now
+    // The source audit proves that callers constructed this exact class, but
+    // JavaScript reflection could otherwise replace run() after construction
+    // and turn an already-authorized binding into an arbitrary executor door.
+    // The statements array remains mutable, so the builder API still works;
+    // only the instance's identity and own properties are sealed.
+    Object.freeze(this)
   }
 
   /**
@@ -710,6 +716,11 @@ export class FencedBatch {
     return { sql: out, args }
   }
 }
+
+// An immutable instance still inherits its executor method. Seal that shared
+// identity as well so mutating the prototype cannot rewrite every previously
+// authenticated batch at once.
+Object.freeze(FencedBatch.prototype)
 
 function assertWritesStamp(
   at: string,
