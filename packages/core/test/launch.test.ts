@@ -67,7 +67,9 @@ describe('LaunchOutcome runtime authentication', () => {
     let forged: unknown
     try {
       forged = Reflect.construct(
-        LaunchOutcome as unknown as new (payload: unknown) => LaunchOutcome,
+        LaunchOutcome as unknown as new (
+          payload: unknown,
+        ) => LaunchOutcome,
         [{ kind: 'accepted' }],
       )
     } catch {
@@ -77,12 +79,7 @@ describe('LaunchOutcome runtime authentication', () => {
 
     const fake = store()
     expect(
-      await LaunchOutcome.reconcile(
-        fake.value,
-        'q',
-        { runId: 'run', claimToken: 'token' },
-        forged,
-      ),
+      await LaunchOutcome.reconcile(fake.value, 'q', { runId: 'run', claimToken: 'token' }, forged),
     ).toBe('launch-failed')
     expect(fake.expireLeaseNow).toHaveBeenCalledOnce()
   })

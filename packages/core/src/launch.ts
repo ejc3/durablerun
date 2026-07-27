@@ -28,7 +28,7 @@ const AUTHENTIC_LAUNCH_OUTCOMES = new WeakMap<object, LaunchPayload>()
 export class LaunchOutcome {
   /**
    * Authentication lives outside the instance shape. `instanceof` alone is
-    * forgeable with Object.create(LaunchOutcome.prototype), and a private
+   * forgeable with Object.create(LaunchOutcome.prototype), and a private
    * TypeScript field is still an ordinary runtime property. Only this module's
    * factory can enroll an object in the registry. The runtime constructor
    * always throws: TypeScript privacy is erased and Reflect.construct can call
