@@ -404,6 +404,41 @@ describe('poison/invariant mechanism self-tests', () => {
     ).rejects.toThrow(/worsened/)
   })
 
+  it('catches an upper counter-bound violation worsening on the same subject', async () => {
+    await expect(
+      runPoisonMatrixCase(
+        makeLibsqlFixture,
+        'driver-heartbeat',
+        witness('counter-bound/run-claim-gen'),
+        {
+          afterInvoke: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs SET claim_gen = claim_gen + 1
+                      WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    ).rejects.toThrow(/worsened/)
+  })
+
+  it('owns a lower-bound mutation witness for every persisted counter bound', () => {
+    expect(POISON_WITNESSES.map((candidate) => candidate.id)).toEqual(
+      expect.arrayContaining([
+        'counter-bound-lower/task-attempts',
+        'counter-bound-lower/task-max-attempts',
+        'counter-bound-lower/task-infra-retries',
+        'counter-bound-lower/run-attempt',
+        'counter-bound-lower/run-claim-gen',
+        'counter-bound-lower/run-activated-gen',
+        'counter-bound-lower/run-relaunch-count',
+        'counter-bound-lower/checkpoint-owner-attempt',
+      ]),
+    )
+  })
+
   it('catches a larger deadline divergence on the same wait', async () => {
     await expect(
       runPoisonMatrixCase(makeLibsqlFixture, 'driver-heartbeat', witness('wait/deadlines-differ'), {

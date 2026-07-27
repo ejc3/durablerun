@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeBoundedInteger } from '../src/index.js'
+import { PERSISTED_INTEGER_BOUNDS, decodeBoundedInteger } from '../src/index.js'
 
 describe('decodeBoundedInteger', () => {
   const bounds = { min: 0, max: 10 }
@@ -47,5 +47,14 @@ describe('decodeBoundedInteger', () => {
       reason: 'out-of-range',
       exact: 9_007_199_254_740_993n,
     })
+  })
+
+  it('makes persisted field bounds nominal instead of interchangeable by value', () => {
+    const claimBounds: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen =
+      PERSISTED_INTEGER_BOUNDS.runs.claim_gen
+    // @ts-expect-error a task-attempt limit must never stand in for run claim generation
+    const wrongField: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen =
+      PERSISTED_INTEGER_BOUNDS.tasks.max_attempts
+    expect(claimBounds).not.toBe(wrongField)
   })
 })
