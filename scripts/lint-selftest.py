@@ -2041,6 +2041,74 @@ export class S {
         "an executor name authorized in one scope must not authorize an unrelated binding that receives this.db in another scope",
     ),
     (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/store.ts": (
+                "export class Store {\n"
+                "  async hidden(db: any, label: string) {\n"
+                "    await db.batch(label, [{ sql: `SELECT 1`, args: [] }])\n"
+                "  }\n"
+                "}\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "every executable .batch call in a store source must use the one canonical this.db.batch door",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/store.ts": (
+                "export class Store {\n"
+                "  async hidden(label: string) {\n"
+                "    const b = new FencedBatch('cancel-task', token(), {})\n"
+                "    const invoke = async (b: any) => b.run(this.db)\n"
+                "    await invoke({\n"
+                "      run: (db: any) => db.batch(label, [{ sql: `SELECT 1`, args: [] }]),\n"
+                "    })\n"
+                "  }\n"
+                "}\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* 'cancel-task' -> excluded [read]\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "a nested parameter must shadow an outer fenced binding before it can receive this.db",
+    ),
+    (
+        "spec-ledger.py",
+        {
+            "packages/store-libsql/src/store.ts": (
+                "export class Store {\n"
+                "  async hidden(b: FencedBatch, label: string) {\n"
+                "    b = {\n"
+                "      run: (db: any) => db.batch(label, [{ sql: `SELECT 1`, args: [] }]),\n"
+                "    } as any\n"
+                "    await b.run(this.db)\n"
+                "  }\n"
+                "}\n"
+            ),
+            "specs/Scheduler.tla": (
+                "---- MODULE Scheduler ----\n"
+                "\\* BATCH-LABEL LEDGER\n"
+                "\\* --------------------\n\n"
+                "====\n"
+            ),
+        },
+        "batch call shape is opaque",
+        "a typed fenced parameter cannot remain authorized after reassignment",
+    ),
+    (
         "gate-lint.py",
         gate(
             "python3 scripts/a-lint.py && python3 scripts/b-lint.py && python3 scripts/lint-selftest.py",
