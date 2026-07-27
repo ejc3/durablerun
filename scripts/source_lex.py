@@ -7,7 +7,10 @@ executable string-literal region for the SQL view, so changing a quote style
 or putting a literal fragment in an interpolation cannot hide a clock.
 """
 
+import json
+import os
 import re
+import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -53,15 +56,6 @@ class BatchLabel:
 
     kind: BatchLabelKind
     value: str
-
-
-@dataclass(frozen=True)
-class _TsToken:
-    """One executable TypeScript token in the position-preserving source."""
-
-    value: str
-    start: int
-    end: int
 
 
 _EXPRESSION_PREFIX_WORDS = frozenset(
@@ -360,211 +354,126 @@ _TEMPLATE_BATCH_LABEL = re.compile(
 )
 
 
-def _typescript_tokens(structure: str) -> tuple[_TsToken, ...]:
-    """Tokenize executable structure without reinterpreting erased literals.
-
-    This is intentionally a closed surface, not another collection of regular
-    expressions for known aliases. Identifiers and punctuation retain their
-    exact source positions; comments, strings, template text, and regexes were
-    already erased by ``typescript_structure``.
-    """
-    tokens: list[_TsToken] = []
-    index = 0
-    while index < len(structure):
-        char = structure[index]
-        if char.isspace():
-            index += 1
-            continue
-        if char.isalpha() or char in "_$":
-            end = index + 1
-            while end < len(structure) and (
-                structure[end].isalnum() or structure[end] in "_$"
-            ):
-                end += 1
-            tokens.append(_TsToken(structure[index:end], index, end))
-            index = end
-            continue
-        if char.isdigit():
-            end = index + 1
-            while end < len(structure) and (
-                structure[end].isalnum() or structure[end] in "._"
-            ):
-                end += 1
-            tokens.append(_TsToken(structure[index:end], index, end))
-            index = end
-            continue
-        tokens.append(_TsToken(char, index, index + 1))
-        index += 1
-    return tuple(tokens)
-
-
-def _import_token_indexes(tokens: tuple[_TsToken, ...]) -> frozenset[int]:
-    """Return token indexes belonging to static ES import declarations."""
-    imported: set[int] = set()
-    for index, token in enumerate(tokens):
-        if token.value != "import":
-            continue
-        cursor = index + 1
-        while cursor < len(tokens) and tokens[cursor].value != "from":
-            if tokens[cursor].value == "import":
-                break
-            imported.add(cursor)
-            cursor += 1
-    return frozenset(imported)
-
-
-def _fenced_batch_surface(
-    source: str,
-    structure: str,
-    tokens: tuple[_TsToken, ...],
-) -> tuple[list[BatchCall], frozenset[str]]:
-    """Harvest canonical constructors and the names allowed to execute them."""
-    imported = _import_token_indexes(tokens)
-    calls: list[BatchCall] = []
-    executors: set[str] = set()
-
-    for index, token in enumerate(tokens):
-        if token.value != "FencedBatch":
-            continue
-        previous = tokens[index - 1].value if index else ""
-        following = tokens[index + 1].value if index + 1 < len(tokens) else ""
-
-        if index in imported:
-            if previous == "as" or following == "as":
-                raise ValueError(
-                    "batch call shape is opaque: "
-                    "indirect FencedBatch reference is opaque"
-                )
-            continue
-
-        if previous == "new" and following == "(":
-            calls.append(
-                _batch_call(
-                    source,
-                    structure,
-                    "fenced",
-                    tokens[index + 1].start,
-                )
+def _typescript_analyzer_path() -> Path:
+    """Locate the compiler analyzer beside this module or its test harness."""
+    candidates = [Path(__file__).resolve().with_name("typescript-verdict-analyzer.cjs")]
+    for variable in ("DURABLERUN_TOOL_ROOT", "PWD"):
+        configured = os.environ.get(variable)
+        if configured:
+            candidates.append(
+                Path(configured).resolve()
+                / "scripts"
+                / "typescript-verdict-analyzer.cjs"
             )
-            if index >= 3 and tokens[index - 2].value == "=":
-                candidate = tokens[index - 3].value
-                if candidate and (candidate[0].isalpha() or candidate[0] in "_$"):
-                    executors.add(candidate)
-            continue
-
-        # A direct type annotation is the only non-construction reference
-        # admitted by the closed surface. It lets shared helpers accept and
-        # execute an already-labelled FencedBatch without creating an alias to
-        # the constructor itself.
-        if previous == ":" and index >= 2:
-            candidate = tokens[index - 2].value
-            if candidate and (candidate[0].isalpha() or candidate[0] in "_$"):
-                executors.add(candidate)
-            continue
-
-        raise ValueError(
-            "batch call shape is opaque: indirect FencedBatch reference is opaque"
-        )
-
-    return calls, frozenset(executors)
-
-
-def _batch_call(
-    source: str,
-    structure: str,
-    kind: BatchCallKind,
-    open_paren: int,
-) -> BatchCall:
-    close_paren = matching_delimiter(source, open_paren, structure)
-    if close_paren is None:
-        raise ValueError(
-            f"cannot establish {kind} batch call boundary; "
-            "refusing an opaque batch shape"
-        )
-    arguments = split_top_level(
-        source,
-        structure,
-        open_paren + 1,
-        close_paren,
-    )
-    if arguments is None:
-        raise ValueError(f"{kind} batch call arguments are structurally opaque")
-    return BatchCall(
-        kind,
-        open_paren,
-        close_paren,
-        tuple(arguments),
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise ValueError(
+        "TypeScript batch analyzer not found beside source_lex.py or under the tool root"
     )
 
 
 def batch_calls(
-    source: str,
-    structure: str | None = None,
-) -> tuple[BatchCall, ...]:
-    """Harvest the two canonical store batch doors and reject every alias.
-
-    Raw batches are exactly ``this.db.batch(...)``. Fenced batches are exactly
-    ``new FencedBatch(...)`` and execute through a directly constructed or
-    directly typed FencedBatch's ``run(this.db)``. Every other use of ``this``
-    as a value, every optional/computed receiver, and every other ``this.db``
-    placement fails closed. This is a token-level grammar for the property,
-    not a list of alias spellings that happened to be found by review.
-    """
-    visible = structure if structure is not None else typescript_structure(source)
-    tokens = _typescript_tokens(visible)
-    calls, fenced_executors = _fenced_batch_surface(
-        source,
-        visible,
-        tokens,
+    root: Path,
+    source_paths: tuple[Path, ...],
+    program: str,
+) -> dict[str, tuple[BatchCall, ...]]:
+    """Compile the complete store inventory and return identity-checked calls."""
+    sources = {
+        path.relative_to(root).as_posix(): path.read_text()
+        for path in source_paths
+    }
+    analyzer = _typescript_analyzer_path()
+    environment = os.environ.copy()
+    dependency_root = str(analyzer.parent.parent / "node_modules")
+    inherited_node_path = environment.get("NODE_PATH")
+    environment["NODE_PATH"] = (
+        f"{dependency_root}{os.pathsep}{inherited_node_path}"
+        if inherited_node_path
+        else dependency_root
     )
-
-    for index, token in enumerate(tokens):
-        if token.value != "this":
-            continue
-        following = tokens[index + 1].value if index + 1 < len(tokens) else ""
-        if following != ".":
-            raise ValueError(
-                "batch call shape is opaque: indirect this reference is opaque"
-            )
-        if index + 2 >= len(tokens) or tokens[index + 2].value != "db":
-            continue
-
-        after_db = index + 3
-        if (
-            after_db + 2 < len(tokens)
-            and tokens[after_db].value == "."
-            and tokens[after_db + 1].value == "batch"
-            and tokens[after_db + 2].value == "("
-        ):
-            calls.append(
-                _batch_call(
-                    source,
-                    visible,
-                    "raw",
-                    tokens[after_db + 2].start,
-                )
-            )
-            continue
-
-        # FencedBatch.run is the only place the executor may cross this
-        # boundary without immediately invoking its labelled raw batch door.
-        if (
-            index >= 4
-            and after_db < len(tokens)
-            and tokens[index - 1].value == "("
-            and tokens[index - 2].value == "run"
-            and tokens[index - 3].value == "."
-            and tokens[index - 4].value in fenced_executors
-            and tokens[after_db].value == ")"
-        ):
-            continue
-
+    result = subprocess.run(
+        ["node", str(analyzer)],
+        cwd=analyzer.parent.parent,
+        input=json.dumps({"analysis": "batches", "sources": sources}),
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    if result.returncode != 0:
+        detail = (result.stdout + result.stderr).strip()[:500]
+        raise ValueError(f"{program}: TypeScript batch analyzer failed: {detail}")
+    try:
+        files = json.loads(result.stdout)["files"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise ValueError(
-            "batch call shape is opaque: "
-            "indirect this.db.batch reference is opaque"
+            f"{program}: TypeScript batch analyzer returned malformed JSON: {error}"
+        ) from error
+    if not isinstance(files, dict) or set(files) != set(sources):
+        raise ValueError(
+            f"{program}: TypeScript batch analyzer returned the wrong file inventory"
         )
 
-    return tuple(sorted(calls, key=lambda call: call.open_paren))
+    inventory: dict[str, tuple[BatchCall, ...]] = {}
+    for relative, source in sources.items():
+        entry = files.get(relative)
+        if not isinstance(entry, dict):
+            raise ValueError(f"{relative}: TypeScript batch analysis is not an object")
+        diagnostics = entry.get("diagnostics")
+        errors = entry.get("errors")
+        calls = entry.get("batchCalls")
+        if not (
+            isinstance(diagnostics, list)
+            and all(isinstance(item, str) for item in diagnostics)
+            and isinstance(errors, list)
+            and all(isinstance(item, str) for item in errors)
+            and isinstance(calls, list)
+        ):
+            raise ValueError(f"{relative}: TypeScript batch analysis has an invalid shape")
+        if diagnostics:
+            raise ValueError(
+                f"{relative}: TypeScript parse is opaque: {diagnostics[0]}"
+            )
+        if errors:
+            raise ValueError(f"{relative}: {errors[0]}")
+
+        parsed: list[BatchCall] = []
+        for call in calls:
+            if not isinstance(call, dict):
+                raise ValueError(f"{relative}: batch call analysis is not an object")
+            kind = call.get("kind")
+            open_paren = call.get("openParen")
+            close_paren = call.get("closeParen")
+            arguments = call.get("arguments")
+            if not (
+                kind in {"raw", "fenced"}
+                and isinstance(open_paren, int)
+                and isinstance(close_paren, int)
+                and 0 <= open_paren < close_paren < len(source)
+                and source[open_paren] == "("
+                and source[close_paren] == ")"
+                and isinstance(arguments, list)
+                and all(
+                    isinstance(argument, list)
+                    and len(argument) == 2
+                    and all(isinstance(bound, int) for bound in argument)
+                    and open_paren < argument[0] <= argument[1] <= close_paren
+                    for argument in arguments
+                )
+            ):
+                raise ValueError(
+                    f"{relative}: TypeScript batch call boundary is opaque"
+                )
+            parsed.append(
+                BatchCall(
+                    kind,
+                    open_paren,
+                    close_paren,
+                    tuple((argument[0], argument[1]) for argument in arguments),
+                )
+            )
+        inventory[relative] = tuple(parsed)
+    return inventory
 
 
 def batch_label(source: str, call: BatchCall) -> BatchLabel:

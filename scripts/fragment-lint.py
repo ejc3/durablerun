@@ -9,6 +9,10 @@ import re
 import sys
 from pathlib import Path
 
+# Source checkers are part of the clean-tree gate. Importing their shared
+# lexical machinery must not create scripts/__pycache__ in the tree it audits.
+sys.dont_write_bytecode = True
+
 from source_lex import (
     sql_file_view,
     sql_template_view,

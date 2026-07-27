@@ -30,6 +30,10 @@ import re
 import sys
 from pathlib import Path
 
+# Source checkers are part of the clean-tree gate. Importing their shared
+# lexical machinery must not create scripts/__pycache__ in the tree it audits.
+sys.dont_write_bytecode = True
+
 from source_lex import (
     batch_calls,
     batch_label,
@@ -199,16 +203,21 @@ def inline_statement_spans(
     return statements
 
 
+try:
+    call_inventory = batch_calls(root, source_paths, "batch-lint.py")
+except ValueError as error:
+    sys.exit(str(error))
+
 violations = []
 for path in source_paths:
     rel = str(path.relative_to(root))
     src = path.read_text()
     try:
         structural = typescript_structure(src)
-        calls = batch_calls(src, structural)
     except ValueError as error:
         violations.append(f"{rel}: cannot lex TypeScript source: {error}")
         continue
+    calls = call_inventory[rel]
     for call in calls:
         if call.kind != "raw":
             continue

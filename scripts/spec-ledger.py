@@ -8,6 +8,10 @@ import re
 import sys
 from pathlib import Path
 
+# Source checkers are part of the clean-tree gate. Importing their shared
+# lexical machinery must not create scripts/__pycache__ in the tree it audits.
+sys.dont_write_bytecode = True
+
 from source_lex import (
     batch_calls,
     batch_label,
@@ -44,13 +48,15 @@ SETUP_LABEL_FAMILIES = {
 }
 
 labels: set[str] = set()
+try:
+    call_inventory = batch_calls(root, source_paths, "spec-ledger.py")
+except ValueError as error:
+    sys.exit(str(error))
+
 for path in source_paths:
     rel = path.relative_to(root).as_posix()
     source = path.read_text()
-    try:
-        calls = batch_calls(source)
-    except ValueError as error:
-        sys.exit(f"{rel}: {error}")
+    calls = call_inventory[rel]
     parsed_calls = [(call, batch_label(source, call)) for call in calls]
     opaque_identities = [
         (call.kind, parsed.value)
