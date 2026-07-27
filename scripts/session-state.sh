@@ -49,6 +49,7 @@ note() { found=1; printf '%s\n' "$*"; }
 }
 process_output=$(python3 - "$ROOT" <<'PY'
 import os
+import stat as stat_module
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -72,9 +73,15 @@ class Process:
     ppid: int
     start: int
     cwd: str | None
+    cwd_deleted: bool
     argv: tuple[bytes, ...]
     exe: str
     comm: str
+
+
+@dataclass(frozen=True)
+class Worktree:
+    path: str
 
 
 def refuse(message: str) -> None:
@@ -117,80 +124,107 @@ def same_identity(left: Stat | None, right: Stat | None) -> bool:
     )
 
 
-def read_process(pid: int, own_uid: int) -> Process | None:
-    for _attempt in range(2):
-        before = read_stat(pid)
-        if before is None or before.state == "Z":
+RETRY_OBSERVATION = object()
+
+
+def read_process_once(
+    pid: int, own_uid: int
+) -> Process | None | object:
+    before = read_stat(pid)
+    if before is None or before.state == "Z":
+        return None
+    try:
+        if os.stat(f"/proc/{pid}").st_uid != own_uid:
             return None
-        try:
-            if os.stat(f"/proc/{pid}").st_uid != own_uid:
-                return None
-        except (FileNotFoundError, ProcessLookupError):
-            return None
-        except OSError as exc:
-            after = read_stat(pid)
-            if not same_identity(before, after):
-                continue
-            raise EvidenceError(f"cannot identify /proc/{pid}: {exc}") from exc
-
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as handle:
-                argv = tuple(part for part in handle.read().split(b"\0") if part)
-        except (FileNotFoundError, ProcessLookupError):
-            after = read_stat(pid)
-            if after is None or after.state == "Z":
-                return None
-            if not same_identity(before, after):
-                continue
-            raise EvidenceError(
-                f"live same-user process {pid} has unreadable argv"
-            )
-        except OSError as exc:
-            after = read_stat(pid)
-            if not same_identity(before, after):
-                continue
-            raise EvidenceError(
-                f"cannot inspect argv for live same-user process {pid}: {exc}"
-            ) from exc
-
-        try:
-            cwd: str | None = os.readlink(f"/proc/{pid}/cwd").removesuffix(" (deleted)")
-        except (FileNotFoundError, ProcessLookupError):
-            after = read_stat(pid)
-            if after is None or after.state == "Z":
-                return None
-            if not same_identity(before, after):
-                continue
-            cwd = None
-        except OSError:
-            # Non-dumpable user furniture (notably `systemd --user` and
-            # `(sd-pam)`) deliberately hides cwd. Preserve the missing fact;
-            # after the graph is built we fail only if that fact could change
-            # repository ownership.
-            cwd = None
-
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except OSError as exc:
         after = read_stat(pid)
         if not same_identity(before, after):
+            return RETRY_OBSERVATION
+        raise EvidenceError(f"cannot identify /proc/{pid}: {exc}") from exc
+
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            argv = tuple(part for part in handle.read().split(b"\0") if part)
+    except (FileNotFoundError, ProcessLookupError):
+        after = read_stat(pid)
+        if after is None or after.state == "Z":
+            return None
+        if not same_identity(before, after):
+            return RETRY_OBSERVATION
+        raise EvidenceError(f"live same-user process {pid} has unreadable argv")
+    except OSError as exc:
+        after = read_stat(pid)
+        if not same_identity(before, after):
+            return RETRY_OBSERVATION
+        raise EvidenceError(
+            f"cannot inspect argv for live same-user process {pid}: {exc}"
+        ) from exc
+
+    cwd_deleted = False
+    try:
+        cwd_link = os.readlink(f"/proc/{pid}/cwd")
+        cwd_deleted = cwd_link.endswith(" (deleted)")
+        cwd: str | None = cwd_link.removesuffix(" (deleted)")
+    except (FileNotFoundError, ProcessLookupError):
+        after = read_stat(pid)
+        if after is None or after.state == "Z":
+            return None
+        if not same_identity(before, after):
+            return RETRY_OBSERVATION
+        cwd = None
+    except OSError:
+        # A non-dumpable process can deliberately hide cwd. Preserve that
+        # missing fact; the ownership pass refuses only when this session
+        # actually needs it to decide repository ownership.
+        cwd = None
+
+    try:
+        exe = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        exe = ""
+    after = read_stat(pid)
+    if after is None or after.state == "Z":
+        return None
+    if not same_identity(before, after):
+        return RETRY_OBSERVATION
+    return Process(
+        pid=pid,
+        ppid=before.ppid,
+        start=before.start,
+        cwd=cwd,
+        cwd_deleted=cwd_deleted,
+        argv=argv,
+        exe=exe,
+        comm=before.comm,
+    )
+
+
+def read_process(pid: int, own_uid: int) -> Process | None:
+    # start/ppid do not change across exec, so bracketing heterogeneous proc
+    # reads with stat alone is not a coherent snapshot. Require two identical
+    # complete observations; an exec between argv and cwd is then retried
+    # rather than accepted as a process state that never existed.
+    previous: Process | None = None
+    for _attempt in range(5):
+        observed = read_process_once(pid, own_uid)
+        if observed is None:
+            return None
+        if observed is RETRY_OBSERVATION:
+            previous = None
             continue
-        try:
-            exe = os.readlink(f"/proc/{pid}/exe")
-        except OSError:
-            exe = ""
-        return Process(
-            pid=pid,
-            ppid=before.ppid,
-            start=before.start,
-            cwd=cwd,
-            argv=argv,
-            exe=exe,
-            comm=before.comm,
-        )
-    # A process that exits, execs, or is reparented while the snapshot is read
-    # is ordinary churn. It did not furnish one coherent record to classify.
-    return None
+        if not isinstance(observed, Process):
+            raise EvidenceError(f"invalid process observation for {pid}")
+        if previous == observed:
+            return observed
+        previous = observed
+    raise EvidenceError(
+        f"live same-user process {pid} did not yield a coherent process snapshot"
+    )
 
 
-def worktree_roots(root: str) -> tuple[str, ...]:
+def worktree_inventory(root: str) -> tuple[Worktree, ...]:
     result = subprocess.run(
         ["git", "worktree", "list", "--porcelain", "-z"],
         cwd=root,
@@ -199,13 +233,38 @@ def worktree_roots(root: str) -> tuple[str, ...]:
     if result.returncode != 0:
         detail = os.fsdecode(result.stderr or result.stdout).strip()
         refuse(f"git worktree list failed: {detail}")
-    roots = {
-        os.path.realpath(os.fsdecode(field.removeprefix(b"worktree ")))
-        for field in result.stdout.split(b"\0")
-        if field.startswith(b"worktree ")
-    }
-    roots.add(os.path.realpath(root))
-    return tuple(sorted(roots, key=len, reverse=True))
+    if not result.stdout:
+        refuse("git worktree inventory omitted the current repository root")
+    if not result.stdout.endswith(b"\0\0"):
+        refuse("malformed git worktree inventory")
+
+    worktrees: list[Worktree] = []
+    seen: set[str] = set()
+    for raw_record in result.stdout[:-2].split(b"\0\0"):
+        fields = raw_record.split(b"\0")
+        if (
+            len(fields) < 2
+            or not fields[0].startswith(b"worktree ")
+            or not fields[0].removeprefix(b"worktree ")
+            or not (
+                fields[1].startswith(b"HEAD ")
+                or fields[1] == b"bare"
+            )
+        ):
+            refuse("malformed git worktree inventory")
+        decoded = os.fsdecode(fields[0].removeprefix(b"worktree "))
+        if not os.path.isabs(decoded):
+            refuse("malformed git worktree inventory")
+        path = os.path.realpath(decoded)
+        if path in seen:
+            refuse("malformed git worktree inventory")
+        seen.add(path)
+        worktrees.append(Worktree(path=path))
+
+    physical_root = os.path.realpath(root)
+    if physical_root not in seen:
+        refuse("git worktree inventory omitted the current repository root")
+    return tuple(sorted(worktrees, key=lambda worktree: len(worktree.path), reverse=True))
 
 
 def path_is_under(path: str | None, roots: tuple[str, ...]) -> bool:
@@ -215,8 +274,11 @@ def path_is_under(path: str | None, roots: tuple[str, ...]) -> bool:
     return any(physical == root or physical.startswith(root + os.sep) for root in roots)
 
 
-BEFORE_PATH = b" \t\r\n'\"=,:;([{"
-AFTER_PATH = b"/ \t\r\n'\"=,:;)]}"
+PATH_WORD_BYTES = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-+~%@"
+
+
+def path_word_byte(value: int) -> bool:
+    return value >= 128 or value in PATH_WORD_BYTES
 
 
 def argument_names_root(argument: bytes, root: bytes) -> bool:
@@ -225,9 +287,13 @@ def argument_names_root(argument: bytes, root: bytes) -> bool:
         found = argument.find(root, offset)
         if found < 0:
             return False
-        before_ok = found == 0 or argument[found - 1 : found] in BEFORE_PATH
+        before_ok = found == 0 or not path_word_byte(argument[found - 1])
         end = found + len(root)
-        after_ok = end == len(argument) or argument[end : end + 1] in AFTER_PATH
+        after_ok = (
+            end == len(argument)
+            or argument[end] == ord("/")
+            or not path_word_byte(argument[end])
+        )
         if before_ok and after_ok:
             return True
         offset = found + 1
@@ -267,8 +333,18 @@ def is_furniture(process: Process) -> bool:
         return True
     if name in {"bash", "dash", "fish", "sh", "zsh"}:
         # Bare interactive/login shells are furniture. A shell with -c or a
-        # script operand is work and must remain visible.
-        return not any(arg in {"-c", "--command"} or not arg.startswith("-") for arg in args)
+        # script operand (including stdin's explicit -s) is work and remains
+        # visible even when the script happens to use only shell builtins.
+        return not any(
+            arg in {"-c", "--command", "-s"}
+            or (
+                arg.startswith("-")
+                and not arg.startswith("--")
+                and "s" in arg[1:]
+            )
+            or not arg.startswith("-")
+            for arg in args
+        )
     if name == "codex":
         if args[:1] == ("app-server",):
             return True
@@ -292,8 +368,59 @@ def elapsed(start: int) -> str:
     return f"{days}-{clock}" if days else clock
 
 
+def valid_parent(process: Process, parent: Process | None) -> bool:
+    # A reused parent PID is newer than its alleged child. Parent and child can
+    # legitimately be born in the same kernel clock tick.
+    return parent is not None and parent.start <= process.start
+
+
+def descendant_set(
+    seeds: set[int],
+    children: dict[int, tuple[int, ...]],
+) -> set[int]:
+    descendants = set(seeds)
+    pending = list(seeds)
+    while pending:
+        parent = pending.pop()
+        for child in children.get(parent, ()):
+            if child not in descendants:
+                descendants.add(child)
+                pending.append(child)
+    return descendants
+
+
+def fd_identity(pid: int, fd: int, process: Process) -> tuple[int, int, int] | None:
+    # The stdout reader of this invocation is causally part of the check, not
+    # leftover repository work. Match the actual pipe object rather than a
+    # process name or the whole process group (which can contain real
+    # background work).
+    for _attempt in range(2):
+        before = read_stat(pid)
+        if (
+            before is None
+            or before.start != process.start
+            or before.ppid != process.ppid
+        ):
+            return None
+        try:
+            descriptor = os.stat(f"/proc/{pid}/fd/{fd}")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            return None
+        except OSError:
+            return None
+        after = read_stat(pid)
+        if same_identity(before, after):
+            return (
+                descriptor.st_dev,
+                descriptor.st_ino,
+                stat_module.S_IFMT(descriptor.st_mode),
+            )
+    return None
+
+
 root = os.path.realpath(sys.argv[1])
-roots = worktree_roots(root)
+worktrees = worktree_inventory(root)
+roots = tuple(worktree.path for worktree in worktrees)
 try:
     numeric_pids = sorted(
         int(name)
@@ -318,53 +445,85 @@ scanner = os.getpid()
 if scanner not in records:
     refuse("the process scanner could not read its own /proc record")
 
-ancestors: set[int] = set()
-cursor = records[scanner].ppid
-while cursor in records and cursor not in ancestors:
-    ancestors.add(cursor)
-    cursor = records[cursor].ppid
+children_lists: dict[int, list[int]] = {}
+for process in records.values():
+    parent = records.get(process.ppid)
+    if valid_parent(process, parent):
+        children_lists.setdefault(process.ppid, []).append(process.pid)
+children = {
+    pid: tuple(sorted(child_pids))
+    for pid, child_pids in children_lists.items()
+}
 
-# Exclude the scanner's own descendants and each invocation ancestor. Do not
-# seed descendant expansion with those ancestors: the live probe (and real
-# background work) is often a sibling of the checker under the same caller.
-self_tree = {scanner}
-changed = True
-while changed:
-    changed = False
-    for process in records.values():
-        if process.pid not in self_tree and process.ppid in self_tree:
-            self_tree.add(process.pid)
-            changed = True
-self_tree.update(ancestors)
+# The top contiguous same-uid ancestor defines this invocation's session.
+# cwd is meaningful ownership evidence inside that session. Outside it, only
+# an argv path explicitly naming this repository is attributable; this keeps a
+# persistent container/session initializer that inherited cwd from becoming
+# permanent false work.
+ancestry = [scanner]
+cursor = scanner
+while True:
+    process = records[cursor]
+    parent = records.get(process.ppid)
+    if (
+        not valid_parent(process, parent)
+        or parent is None
+        or parent.pid in ancestry
+    ):
+        break
+    ancestry.append(parent.pid)
+    cursor = parent.pid
+session_members = descendant_set({ancestry[-1]}, children)
+invocation_ancestors = set(ancestry[1:])
+scanner_tree = descendant_set({scanner}, children)
+self_tree = scanner_tree | invocation_ancestors
+
+# A pipeline reader is a sibling, not a scanner descendant. Command
+# substitution adds an internal pipe between the scanner and its Bash parent,
+# so inspect stdout along the complete invocation ancestry. A downstream
+# reader's fd 0 names one of those same pipe objects. Exclude exactly that
+# causal subtree while preserving unrelated same-pgid background work.
+invocation_readers: set[int] = set()
+invocation_output_fds = {
+    identity
+    for pid in invocation_ancestors
+    if (identity := fd_identity(pid, 1, records[pid])) is not None
+    and stat_module.S_ISFIFO(identity[2])
+}
+if invocation_output_fds:
+    reader_roots = {
+        pid
+        for pid, process in records.items()
+        if pid not in self_tree
+        and fd_identity(pid, 0, process) in invocation_output_fds
+    }
+    invocation_readers = descendant_set(reader_roots, children)
+nonreporting = self_tree | invocation_readers
 
 furniture = {pid for pid, process in records.items() if is_furniture(process)}
-anchors = {
+explicit_anchors = {
     pid
     for pid, process in records.items()
-    if pid not in self_tree
-    and pid not in furniture
-    and (
-        path_is_under(process.cwd, roots)
-        or arguments_name_root(process.argv, roots)
-    )
+    if arguments_name_root(process.argv, roots)
 }
+contextual_anchors = {
+    pid
+    for pid, process in records.items()
+    if pid in session_members and path_is_under(process.cwd, roots)
+}
+anchors = explicit_anchors | contextual_anchors
 owned_cache: dict[int, bool] = {}
 
 
 def is_owned(pid: int, visiting: set[int] | None = None) -> bool:
     if pid in owned_cache:
         return owned_cache[pid]
-    if pid in self_tree:
-        owned_cache[pid] = False
-        return False
     if pid in anchors:
         owned_cache[pid] = True
         return True
     process = records[pid]
     parent = records.get(process.ppid)
-    # Parent and child can be born in the same kernel clock tick. A reused
-    # parent PID is newer, so only a strictly later start invalidates the edge.
-    if parent is None or parent.start > process.start:
+    if not valid_parent(process, parent) or parent is None:
         owned_cache[pid] = False
         return False
     active = set() if visiting is None else visiting
@@ -380,8 +539,18 @@ def is_owned(pid: int, visiting: set[int] | None = None) -> bool:
 
 for pid, process in records.items():
     if (
+        process.cwd_deleted
+        and pid in session_members
+        and pid not in nonreporting
+    ):
+        refuse(
+            "cannot prove ownership of deleted working directory for live "
+            f"same-user process {pid}"
+        )
+    if (
         process.cwd is None
-        and pid not in self_tree
+        and pid in session_members
+        and pid not in nonreporting
         and pid not in furniture
         and not is_owned(pid)
     ):
@@ -392,11 +561,14 @@ for pid, process in records.items():
 
 for pid in sorted(records):
     process = records[pid]
-    if pid in furniture or not is_owned(pid):
+    if pid in nonreporting or pid in furniture or not is_owned(pid):
         continue
     command = " ".join(os.fsdecode(arg) for arg in process.argv) or f"[{process.comm}]"
     command = " ".join(command.split())
     print(f"process   {pid}  up {elapsed(process.start)}  {command[:110]}")
+for worktree in worktrees:
+    if worktree.path != root:
+        print(f"worktree  {worktree.path}")
 PY
 )
 process_status=$?
@@ -407,17 +579,6 @@ if [[ -n "$process_output" ]]; then
   found=1
   printf '%s\n' "$process_output"
 fi
-
-# --- git state ------------------------------------------------------------
-if ! worktrees=$(git worktree list 2>&1); then
-  echo "session-state: git worktree list failed: $worktrees" >&2
-  exit 2
-fi
-while read -r line; do
-  [[ -n "$line" ]] || continue
-  [[ "$line" == "$ROOT "* ]] && continue
-  note "worktree  ${line}"
-done <<<"$worktrees"
 
 if ! stashes=$(git stash list 2>&1); then
   echo "session-state: git stash list failed: $stashes" >&2

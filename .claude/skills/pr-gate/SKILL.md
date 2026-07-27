@@ -71,16 +71,17 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    meaning of. The final success line must name the current head, and the next
    session-state check must show no mutation worktrees left behind.
 8. **`bash scripts/session-state.sh` clean** — before reporting a round
-   finished. It enumerates what is still alive from ground truth: processes
-   whose command line names this repo, wait loops (a `sleep` with a live
-   parent), worktrees, stashes, uncommitted files. Never grep the process
-   table for tool names to decide nothing is running: that answer was given
-   once from `ps | grep -E 'codex-cli|tla2tools|vitest'`, which cannot match
-   a shell loop sitting in `sleep`, and it missed two — one spinning for 38
-   hours from an earlier session, and one whose own exit condition was
-   `! pgrep -f "tla.sh"`, which matched the waiter's own command line and so
-   could never become true. A negative claim needs a check that would
-   visibly fail if the claim were false.
+   finished. Repository ownership comes from cwd, argv, and live ancestry;
+   unrelated host sleeps are not repository evidence.
+   The same snapshot covers registered worktrees, while Git reports stashes and
+   uncommitted files. Never grep the process table for tool names to decide
+   nothing is running: that answer was given once from
+   `ps | grep -E 'codex-cli|tla2tools|vitest'`, which cannot match a shell loop
+   sitting in `sleep`, and it missed two — one spinning for 38 hours from an
+   earlier session, and one whose own exit condition was `! pgrep -f "tla.sh"`,
+   which matched the waiter's own command line and so could never become true.
+   A negative claim needs a check that would visibly fail if the claim were
+   false.
 9. **Simplify + elegance pass ran** — before the final push, a dedicated
    simplification review over the FULL branch diff (`/simplify`, or an
    equivalent walk of Part 5): every accepted simplification lands in the
