@@ -61,6 +61,23 @@ function unexpectedConstructionGuard(
   }
 }
 
+describe('execution identity', () => {
+  it('cannot be replaced through instance or prototype reflection', () => {
+    const b = batch()
+    if (!Object.isFrozen(b) || !Object.isFrozen(FencedBatch.prototype)) {
+      throw new Error('mutation-verdict:construction:fenced-batch-execution-identity-is-immutable')
+    }
+
+    const replacement = (): never => {
+      throw new Error('forged FencedBatch.run')
+    }
+    expect(Reflect.set(b, 'run', replacement)).toBe(false)
+    expect(Reflect.defineProperty(b, 'run', { value: replacement })).toBe(false)
+    expect(Reflect.set(FencedBatch.prototype, 'run', replacement)).toBe(false)
+    expect(Reflect.setPrototypeOf(b, { run: replacement })).toBe(false)
+  })
+})
+
 class FakeDb implements SqlExecutor {
   calls: { label: string; statements: SqlStatement[]; mode: SqlBatchMode }[] = []
   constructor(

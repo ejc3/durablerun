@@ -1993,6 +1993,7 @@ export class S {
         "spec-ledger.py",
         {
             "packages/store-libsql/src/store.ts": (
+                "import { FencedBatch } from '@durablerun/core'\n"
                 "async function cancel(label: 'cancel-task' | 'sweep:cancel') {\n"
                 "  return new FencedBatch(label, token(), {})\n"
                 "}\n"
@@ -2016,6 +2017,7 @@ export class S {
         "spec-ledger.py",
         {
             "packages/store-libsql/src/store.ts": (
+                "import { FencedBatch } from '@durablerun/core'\n"
                 "export class Store {\n"
                 "  async visible() {\n"
                 "    const b = new FencedBatch('cancel-task', token(), {})\n"
@@ -2064,6 +2066,7 @@ export class S {
         "spec-ledger.py",
         {
             "packages/store-libsql/src/store.ts": (
+                "import { FencedBatch } from '@durablerun/core'\n"
                 "export class Store {\n"
                 "  async hidden(label: string) {\n"
                 "    const b = new FencedBatch('cancel-task', token(), {})\n"
@@ -2089,6 +2092,7 @@ export class S {
         "spec-ledger.py",
         {
             "packages/store-libsql/src/store.ts": (
+                "import { FencedBatch } from '@durablerun/core'\n"
                 "export class Store {\n"
                 "  async hidden(b: FencedBatch, label: string) {\n"
                 "    b = {\n"
@@ -2107,6 +2111,233 @@ export class S {
         },
         "batch call shape is opaque",
         "a typed fenced parameter cannot remain authorized after reassignment",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class Store {
+  async hidden() {
+    await this.client.batch('hidden', [])
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "the libSQL transport exception must not authorize this.client.batch in an arbitrary store",
+    ),
+    (
+        "batch-lint.py",
+        {
+            "packages/store-libsql/src/executor.ts": """
+export class LibsqlExecutor implements SqlExecutor {
+  async batch(statements: readonly unknown[]) {
+    await this.client.batch(statements)
+  }
+
+  async hidden(statements: readonly unknown[]) {
+    await this.client.batch(statements)
+  }
+}
+""",
+        },
+        "batch call shape is opaque",
+        "even the transport owner must expose exactly one driver batch call in its canonical method",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export class Store {
+  async hidden() {
+    await this.client['batch']('hidden', [])
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a computed client member must not become an invisible transport batch",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export async function hidden(external: unknown) {
+  await external['batch']('hidden', [])
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a computed member call can resolve to batch and must fail closed",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+export async function hidden(external: unknown) {
+  const { batch: invoke } = external
+  await invoke('hidden', [])
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "destructuring a batch member must not erase the executor call",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+
+export class Store {
+  async hidden() {
+    const b = new FencedBatch('cancel-task', token(), { now: NOW_MS })
+    {
+      class b {
+        static run(db: unknown) {
+          return db['batch']('hidden', [])
+        }
+      }
+      await b.run(this.db)
+    }
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a class declaration must shadow an outer fenced binding by compiler identity",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+
+export class Store {
+  async hidden(b: FencedBatch, values: unknown[]) {
+    for (b of values) {
+      consume(b)
+    }
+    await b.run(this.db)
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a for-of target is a write that invalidates a fenced parameter",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+
+export class Store {
+  async hidden() {
+    const b = new FencedBatch('cancel-task', token(), { now: NOW_MS })
+    const attacker = {
+      db: evilExecutor,
+      async invoke() {
+        await b.run(this.db)
+      },
+    }
+    await attacker.invoke()
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a regular nested method rebinds this and cannot lend its executor to a fenced batch",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from './evil'
+
+export class Store {
+  async hidden() {
+    const b = new FencedBatch('hidden', token(), { now: NOW_MS })
+    await b.run(this.db)
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "the FencedBatch constructor must resolve to the canonical core import",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+import { evil } from './evil'
+
+export class Store {
+  async hidden(opts: { evil: FencedBatch }) {
+    await evil.run(this.db)
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a typed object member is not a parameter binding and cannot authorize an imported attacker",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+
+export class Store {
+  async hidden(b: FencedBatch, label: string) {
+    poison()
+    await b.run(this.db)
+    function poison() {
+      b = { run: (db: unknown) => db['batch'](label, []) } as any
+    }
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a hoisted function can mutate a fenced parameter before a textually earlier run",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+
+export class Store {
+  async hidden(b: FencedBatch, label: string) {
+    if (true) {
+      var b = { run: (db: unknown) => db['batch'](label, []) }
+    }
+    await b.run(this.db)
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a var declaration is function-scoped and can overwrite a fenced parameter",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+
+export class Store {
+  async hidden(b: FencedBatch) {
+    ;(b as unknown as { run: unknown }).run = evil
+    await b.run(this.db)
+  }
+}
+"""
+        ),
+        "batch call shape is opaque",
+        "a cast must not hide a direct write to a fenced executor method",
     ),
     (
         "gate-lint.py",
@@ -3356,6 +3587,36 @@ ENV_BAD_INVOCATIONS = [
 # violation. Every entry below is a false positive a checker actually produced.
 GOOD_CASES = [
     ("batch-lint.py", CLEAN_STORE, "a classified read batch"),
+    (
+        "batch-lint.py",
+        {
+            "packages/store-libsql/src/executor.ts": """
+export class LibsqlExecutor implements SqlExecutor {
+  async batch(statements: readonly unknown[]) {
+    return this.client.batch(statements)
+  }
+}
+""",
+        },
+        "the executor's single canonical client batch is the transport implementation door",
+    ),
+    (
+        "batch-lint.py",
+        store(
+            """
+import { FencedBatch } from '@durablerun/core'
+
+export class Store {
+  async ok(values: readonly unknown[]) {
+    const b = new FencedBatch('cancel-task', token(), { now: NOW_MS })
+    for (const b of values) consume(b)
+    await b.run(this.db)
+  }
+}
+"""
+        ),
+        "a loop-local shadow does not invalidate the outer fenced binding",
+    ),
     (
         "batch-lint.py",
         store(
