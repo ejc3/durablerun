@@ -1,7 +1,9 @@
 import {
+  INFRA_RETRY_CAP,
   MAX_COUNT,
   MAX_EPOCH_MS,
   MAX_RUN_ORDINAL,
+  RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
@@ -314,6 +316,57 @@ describe('invariant checkers fire on constructed corruption', () => {
     })
   }
 
+  it("flags a checkpoint owner attempt that disagrees with its owner run's ordinal", async () => {
+    const f = await seeded('checkpoint-owner-attempt-mismatch')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('t1', 's', ?, '{}', 'r1', 2, ?)`,
+        args: [Q, NOW],
+      },
+    ])
+
+    expect(
+      (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+    ).toContain('checkpoint/owner-attempt-mismatch')
+    f.close()
+  })
+
+  for (const [name, table, column, value, conditionId] of [
+    [
+      'infrastructure retry',
+      'tasks',
+      'infra_retries',
+      INFRA_RETRY_CAP + 1,
+      'counter-bound/task-infra-retries',
+    ],
+    [
+      'lost-launch relaunch',
+      'runs',
+      'relaunch_count',
+      RELAUNCH_CAP + 1,
+      'counter-bound/run-relaunch-count',
+    ],
+  ] as const) {
+    it(`uses the protocol cap for the ${name} counter`, async () => {
+      const f = await seeded(`${name.replaceAll(' ', '-')}-protocol-cap`)
+      const key = table === 'tasks' ? 'task_id' : 'run_id'
+      const id = table === 'tasks' ? 't1' : 'r1'
+      await f.raw.batch('corrupt', [
+        {
+          sql: `UPDATE ${table} SET ${column} = ? WHERE ${key} = ?`,
+          args: [value, id],
+        },
+      ])
+
+      expect(
+        (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+      ).toContain(conditionId)
+      f.close()
+    })
+  }
+
   for (const column of ['available_at_ms', 'lease_ms'] as const) {
     it(`rejects an ISO datetime string in numeric ${column}`, async () => {
       const f = await seeded(`temporal-string-${column}`)
@@ -328,6 +381,21 @@ describe('invariant checkers fire on constructed corruption', () => {
       f.close()
     })
   }
+
+  it('flags a zero stored lease as below the positive duration bound', async () => {
+    const f = await seeded('zero-lease-lower-bound')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE runs SET lease_ms = 0 WHERE run_id = 'r1'`,
+        args: [],
+      },
+    ])
+
+    expect(
+      (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+    ).toContain('temporal-bound/run-lease')
+    f.close()
+  })
 
   it('flags a dialect-exact bigint count above the public count contract', async () => {
     const f = await seeded('counter-upper-bound')

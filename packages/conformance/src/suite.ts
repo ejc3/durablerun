@@ -1,6 +1,8 @@
 import {
   type ClaimedRun,
+  INFRA_RETRY_CAP,
   LeaseLostError,
+  MAX_COUNT,
   MAX_RUN_ORDINAL,
   type SqlExecutor,
 } from '@durablerun/core'
@@ -130,6 +132,32 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toEqual([healthy.taskId])
         expect(await snapshot(f, corrupt.taskId)).toEqual(corruptBefore)
       })
+
+      for (const claimGen of [MAX_COUNT, MAX_COUNT + 1]) {
+        it(`leaves a due run unchanged when claim generation ${claimGen} cannot be incremented safely`, async () => {
+          const spawned = await f.store.spawn(Q, `bounded-generation-${claimGen}`, '{}')
+          await f.raw.batch('corrupt-claim-generation', [
+            {
+              sql: `UPDATE runs SET claim_gen = ? WHERE run_id = ?`,
+              args: [claimGen, spawned.runId],
+            },
+          ])
+          const before = await snapshot(f, spawned.taskId)
+
+          const observed = await f.store
+            .claim(Q, `bounded-claim-${claimGen}`, { leaseSeconds: 60, limit: 1 })
+            .then(
+              (value) => ({ kind: 'resolved' as const, value }),
+              (error: unknown) => ({ kind: 'rejected' as const, error }),
+            )
+
+          expect(
+            await snapshot(f, spawned.taskId),
+            'mutation-verdict:behavior:claim-rejects-generation-overflow-atomically',
+          ).toEqual(before)
+          if (observed.kind === 'resolved') expect(observed.value).toEqual([])
+        })
+      }
     })
 
     describe('activate', () => {
@@ -201,6 +229,29 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { sql: `SELECT first_started_at_ms FROM tasks WHERE task_id = ?`, args: [run.taskId] },
         ])
         expect(Number(row?.rows[0]?.first_started_at_ms)).toBe(1_000_000)
+      })
+
+      it('leaves a claimed run unchanged when its stored lease is zero', async () => {
+        const spawned = await f.store.spawn(Q, 'zero-lease', '{}')
+        const run = await claimOne('tick-zero-lease')
+        await f.raw.batch('corrupt-zero-lease', [
+          {
+            sql: `UPDATE runs SET lease_ms = 0 WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        const observed = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        )
+
+        expect(
+          await snapshot(f, spawned.taskId),
+          'mutation-verdict:behavior:activate-rejects-zero-lease-atomically',
+        ).toEqual(before)
+        if (observed.kind === 'resolved') expect(observed.value).toBeNull()
       })
     })
 
@@ -445,6 +496,33 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await snapshot(f, run.taskId)).toEqual(before)
       })
 
+      for (const attempt of [MAX_RUN_ORDINAL, MAX_RUN_ORDINAL + 1]) {
+        it(`leaves an expired claim unchanged when ordinal ${attempt} cannot produce a legal successor`, async () => {
+          const spawned = await f.store.spawn(Q, `bounded-ordinal-${attempt}`, '{}')
+          const run = await claimOne(`tick-bounded-ordinal-${attempt}`)
+          expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+          await f.raw.batch('corrupt-run-ordinal', [
+            {
+              sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+              args: [attempt, run.runId],
+            },
+          ])
+          await f.admin.setFakeNowEpochMs(1_100_000)
+          const before = await snapshot(f, spawned.taskId)
+
+          const observed = await f.store.sweep(Q, 10).then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            (error: unknown) => ({ kind: 'rejected' as const, error }),
+          )
+
+          expect(
+            await snapshot(f, spawned.taskId),
+            'mutation-verdict:behavior:sweep-rejects-attempt-overflow-atomically',
+          ).toEqual(before)
+          if (observed.kind === 'resolved') expect(observed.value).toEqual([])
+        })
+      }
+
       it('fails the task terminally at the infra-retry cap, no successor', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('tick-1')
@@ -639,6 +717,32 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         expect(task?.rows[0]).toMatchObject({ attempts: 1, state: 'sleeping' })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('leaves a claimed run unchanged when infrastructure retries exceed the protocol cap', async () => {
+        const run = await activatedRun('w-over-infra-cap')
+        await f.raw.batch('corrupt-infra-retry-cap', [
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, run.taskId],
+          },
+        ])
+        const before = await snapshot(f, run.taskId)
+
+        const observed = await f.store
+          .fail(Q, run.runId, run.claimToken, '{"name":"CorruptAccounting"}', {
+            delaySeconds: 0,
+          })
+          .then(
+            () => ({ kind: 'resolved' as const }),
+            (error: unknown) => ({ kind: 'rejected' as const, error }),
+          )
+
+        expect(
+          await snapshot(f, run.taskId),
+          'mutation-verdict:behavior:fail-rejects-infra-cap-overflow-atomically',
+        ).toEqual(before)
+        expect(observed.kind).toBe('rejected')
       })
 
       it('fail without retry is terminal and exposes the failure', async () => {
