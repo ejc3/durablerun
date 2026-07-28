@@ -23,6 +23,14 @@ function witness(id: string) {
   return found
 }
 
+function temporalWitness(boundsField: string) {
+  const field = PERSISTED_TEMPORAL_FIELDS.find(
+    (candidate) => candidate.bounds.field === boundsField,
+  )
+  if (!field) throw new Error(`missing temporal field ${boundsField}`)
+  return witness(`temporal/${field.id}`)
+}
+
 function target(id: string) {
   const found = POISON_TARGET_CASES.find((candidate) => candidate.id === id)
   if (!found) throw new Error(`missing poison target ${id}`)
@@ -155,24 +163,75 @@ describe('poison/invariant mechanism self-tests', () => {
     })
   })
 
-  it('accepts a strict dialect structurally rejecting an invalid storage representation', async () => {
+  it('credits structural rejection only after an observed storage write attempt', async () => {
+    const strictError = new Error('strict temporal column rejected invalid storage')
+    const runAvailableWitness = temporalWitness('runs.available_at_ms')
+    let attempts = 0
     await expect(
       runPoisonMatrixCase(
         async (seed) => {
           const f = await makeLibsqlFixture(seed)
+          const raw: SqlExecutor = {
+            batch: async (label, statements, mode) => {
+              if (label === 'fixture:storage-corrupt') {
+                attempts += 1
+                throw strictError
+              }
+              return f.raw.batch(label, statements, mode)
+            },
+          }
           return {
             ...f,
-            injectStorageCorruption: async () => 'structurally-rejected' as const,
+            raw,
+            storageCorruptionAttempt: () => ({
+              statements: [
+                {
+                  sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = 'poison-run'`,
+                  args: ['bad-time'],
+                },
+              ],
+              verify: () => {
+                throw new Error('strict rejection unexpectedly returned results')
+              },
+              isStructuralRejection: (error) => error === strictError,
+            }),
           }
         },
         'driver-heartbeat',
-        witness('temporal/run-available'),
+        runAvailableWitness,
       ),
     ).resolves.toMatchObject({
       label: 'driver-heartbeat',
-      witness: 'temporal/run-available',
+      witness: runAvailableWitness.id,
       corruptionDisposition: 'structurally-rejected',
     })
+    expect(
+      attempts,
+      'mutation-verdict:construction:storage-corruption-rejection-requires-observed-attempt',
+    ).toBe(1)
+  })
+
+  it('rejects a zero-statement structural-rejection claim', async () => {
+    await requireExpectedFailure(
+      { kind: 'construction', mutation: 'storage-corruption-requires-statement' },
+      /storage corruption attempt must contain at least one SQL statement/,
+      () =>
+        runPoisonMatrixCase(
+          async (seed) => {
+            const f = await makeLibsqlFixture(seed)
+            return {
+              ...f,
+              storageCorruptionAttempt: () => ({
+                statements: [],
+                verify: () => undefined,
+                isStructuralRejection: () => true,
+              }),
+            }
+          },
+          'driver-heartbeat',
+          temporalWitness('runs.available_at_ms'),
+        ),
+    )
   })
 
   it('credits a write statement whose dialect SQL begins with a CTE', async () => {
