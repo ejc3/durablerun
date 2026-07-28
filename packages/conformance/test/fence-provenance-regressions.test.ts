@@ -410,14 +410,12 @@ describe('fence provenance', () => {
     f.close()
   })
 
-  it('an activate that loses its generation check does not disarm the cancellation deadline', async () => {
-    // The task follow-on of `activate` keys on the run's claim token plus its
-    // activated generation, which a LOSING delivery also matches: after a
-    // claim leaves generation 1 claimed and 0 activated, a delivery carrying
-    // the stale generation 0 fails the compare-and-swap (activate returns
-    // null) yet its follow-on still matches the un-activated run and rewrites
-    // the task's cancellation deadline — clearing an armed start deadline, so
-    // the sweep never cancels a task that was never started.
+  it('an invalid activation generation cannot disarm the cancellation deadline', async () => {
+    // Generation zero is not a claim receipt. Reject it at the port before a
+    // driver can coerce it, and leave the task's armed start deadline intact.
+    // The older implementation let this value reach the batch: its losing CAS
+    // still left a follow-on able to match activated_gen = 0 and clear the
+    // deadline of a task that had never started.
     const f = await fixture()
     await insertTask(f.raw, {
       id: 'T',
@@ -435,7 +433,7 @@ describe('fence provenance', () => {
       claimExpiresAtMs: NOW + 60_000,
     })
 
-    expect(await f.store.activate(Q, 'R', 'worker', 0)).toBeNull() // correctly refused
+    await expect(f.store.activate(Q, 'R', 'worker', 0)).rejects.toThrow(RangeError)
 
     const [task] = await query(f.raw, `SELECT cancel_at_ms FROM tasks WHERE task_id = 'T'`)
     expect(task?.cancel_at_ms).toBe(NOW + 30_000) // deadline untouched

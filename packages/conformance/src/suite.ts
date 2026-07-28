@@ -7,7 +7,11 @@ import {
   RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
-import { requireExpectedFailure } from '@durablerun/core/testing'
+import {
+  attributeExpectedFailure,
+  attributeReplacedFailure,
+  requireExpectedFailure,
+} from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
@@ -750,7 +754,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         if (disposition === 'structurally-rejected') return
         await f.admin.setFakeNowEpochMs(1_100_000)
 
-        expect(await f.store.sweep(Q, 10)).toEqual([])
+        expect(
+          await f.store.sweep(Q, 10),
+          'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
+        ).toEqual([])
         const [task, storedRun] = await f.raw.batch(
           'terminal-timeout-corrupt-relaunch:assert',
           [
@@ -796,9 +803,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         await f.admin.setFakeNowEpochMs(1_100_000)
 
-        expect(await f.store.sweep(Q, 10)).toEqual([
-          { kind: 'relaunch-cap-exhausted', runId: run.runId, taskId: spawned.taskId },
-        ])
+        expect(
+          await f.store.sweep(Q, 10),
+          'mutation-verdict:behavior:sweep-quiesces-terminal-relaunch-cap-owner',
+        ).toEqual([{ kind: 'relaunch-cap-exhausted', runId: run.runId, taskId: spawned.taskId }])
         const [task, runs] = await f.raw.batch(
           'terminal-relaunch-cap-owner:assert',
           [
@@ -819,10 +827,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           attempts: run.maxAttempts,
           max_attempts: run.maxAttempts,
         })
-        expect(
-          runs?.rows,
-          'mutation-verdict:behavior:sweep-quiesces-terminal-relaunch-cap-owner',
-        ).toEqual([{ state: 'failed', claimed_by: null }])
+        expect(runs?.rows).toEqual([{ state: 'failed', claimed_by: null }])
       })
 
       it('rechecks a terminal relaunch-cap generation after the advisory scan', async () => {
@@ -1525,6 +1530,143 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }
       }
 
+      type InvalidCheckpointConflictCase = Readonly<{
+        id: string
+        mutationSuffix: string
+        owner: Readonly<{
+          task: 'current' | 'foreign'
+          queue: string
+          attempt: number
+          id?: 'decoy'
+        }> | null
+        checkpointQueue: string
+        ownerAttempt: number
+        fractionalStorage?: true
+      }>
+
+      const invalidCheckpointConflictCases: readonly InvalidCheckpointConflictCase[] = [
+        {
+          id: 'missing-owner',
+          mutationSuffix: 'exists',
+          owner: null,
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+        },
+        {
+          id: 'owner-id-mismatch',
+          mutationSuffix: 'owner-id',
+          owner: { task: 'current', queue: Q, attempt: 3, id: 'decoy' },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+        },
+        {
+          id: 'owner-task-mismatch',
+          mutationSuffix: 'owner-task',
+          owner: { task: 'foreign', queue: Q, attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+        },
+        {
+          id: 'owner-queue-mismatch',
+          mutationSuffix: 'owner-queue',
+          owner: { task: 'current', queue: 'q-owner-mismatch', attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+        },
+        {
+          id: 'owner-attempt-mismatch',
+          mutationSuffix: 'owner-attempt',
+          owner: { task: 'current', queue: Q, attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 4,
+        },
+        {
+          id: 'owner-attempt-out-of-range',
+          mutationSuffix: 'owner-attempt-upper',
+          owner: { task: 'current', queue: Q, attempt: MAX_RUN_ORDINAL + 1 },
+          checkpointQueue: Q,
+          ownerAttempt: MAX_RUN_ORDINAL + 1,
+        },
+        {
+          id: 'owner-attempt-below-range',
+          mutationSuffix: 'owner-attempt-lower',
+          owner: { task: 'current', queue: Q, attempt: 0 },
+          checkpointQueue: Q,
+          ownerAttempt: 0,
+        },
+        {
+          id: 'owner-attempt-fractional-storage',
+          mutationSuffix: 'owner-attempt-storage',
+          owner: { task: 'current', queue: Q, attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+          fractionalStorage: true,
+        },
+        {
+          id: 'conflict-queue-mismatch',
+          mutationSuffix: 'conflict-queue',
+          owner: { task: 'current', queue: 'q-conflict-mismatch', attempt: 3 },
+          checkpointQueue: 'q-conflict-mismatch',
+          ownerAttempt: 3,
+        },
+      ]
+
+      const checkpointConflictMutationMarkers: ReadonlySet<string> = new Set([
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-exists',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-owner-id',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-owner-task',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-owner-queue',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-owner-attempt',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-owner-attempt-upper',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-owner-attempt-lower',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-owner-attempt-storage',
+        'mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner-conflict-queue',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-exists',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-owner-id',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-owner-task',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-owner-queue',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-owner-attempt',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-owner-attempt-upper',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-owner-attempt-lower',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-owner-attempt-storage',
+        'mutation-verdict:behavior:suspend-validates-existing-lww-owner-conflict-queue',
+      ])
+
+      const checkpointConflictWriteCases = invalidCheckpointConflictCases.flatMap((relation) =>
+        [
+          {
+            id: 'checkpoint-write',
+            error: /setCheckpoint/,
+            execute: (run: ClaimedRun, checkpointName: string) =>
+              f.store.setCheckpoint(
+                Q,
+                run.taskId,
+                run.runId,
+                run.claimToken,
+                checkpointName,
+                '{"incoming":true}',
+                90,
+              ),
+          },
+          {
+            id: 'suspend',
+            error: /suspendRun/,
+            execute: (run: ClaimedRun, checkpointName: string) =>
+              f.store.suspendRun(
+                Q,
+                run.runId,
+                run.claimToken,
+                { inSeconds: 10 },
+                { key: checkpointName, stateJson: '{"incoming":true}' },
+              ),
+          },
+        ].map((operation) => ({
+          name: `${operation.id}/${relation.id}`,
+          relation,
+          operation,
+        })),
+      )
+
       it('roundtrips, extends the lease, and sorts by name', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
@@ -1754,16 +1896,118 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(checkpoint?.rows).toEqual(seeded.checkpointBefore)
       })
 
+      it.each(checkpointConflictWriteCases)(
+        'atomically refuses $name checkpoint ownership',
+        async ({ relation, operation }) => {
+          await f.store.spawn(Q, `invalid-${relation.id}`, '{}')
+          const [run] = await f.store.claim(Q, `worker-${relation.id}`, {
+            leaseSeconds: 60,
+            limit: 1,
+          })
+          if (!run) throw new Error('expected claim')
+          await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+          const checkpointName = `invalid-${relation.id}`
+          const ownerRunId = `owner-${relation.id}`
+          if (relation.owner) {
+            await f.raw.batch('checkpoint-invalid-owner:seed-run', [
+              {
+                sql: `INSERT INTO runs
+                        (run_id, queue, task_id, attempt, state, created_at_ms)
+                      VALUES (?, ?, ?, ?, 'failed', 1000000)`,
+                args: [
+                  relation.owner.id === 'decoy' ? `decoy-${relation.id}` : ownerRunId,
+                  relation.owner.queue,
+                  relation.owner.task === 'current' ? run.taskId : `foreign-task-${relation.id}`,
+                  relation.owner.attempt,
+                ],
+              },
+            ])
+          }
+          await f.raw.batch('checkpoint-invalid-owner:seed-checkpoint', [
+            {
+              sql: `INSERT INTO checkpoints
+                      (task_id, checkpoint_name, queue, state,
+                       owner_run_id, owner_attempt, updated_at_ms)
+                    VALUES (?, ?, ?, '{"existing":true}', ?, ?, 1000000)`,
+              args: [
+                run.taskId,
+                checkpointName,
+                relation.checkpointQueue,
+                ownerRunId,
+                relation.ownerAttempt,
+              ],
+            },
+          ])
+          if (relation.fractionalStorage) {
+            const runDisposition = await f.injectStorageCorruption({
+              table: 'runs',
+              runId: ownerRunId,
+              column: 'attempt',
+              invalidRepresentation: 'fractional-real',
+            })
+            if (runDisposition === 'structurally-rejected') return
+            const checkpointDisposition = await f.injectStorageCorruption({
+              table: 'checkpoints',
+              taskId: run.taskId,
+              checkpointName,
+              column: 'owner_attempt',
+              invalidRepresentation: 'fractional-real',
+            })
+            if (checkpointDisposition === 'structurally-rejected') return
+          }
+
+          const before = await snapshot(f, run.taskId)
+          const readCheckpoint = async () =>
+            (
+              await f.raw.batch(
+                'checkpoint-invalid-owner:read',
+                [
+                  {
+                    sql: `SELECT checkpoint_name, queue, state, owner_run_id,
+                                 owner_attempt, updated_at_ms
+                          FROM checkpoints
+                          WHERE task_id = ? AND checkpoint_name = ?`,
+                    args: [run.taskId, checkpointName],
+                  },
+                ],
+                'read',
+              )
+            )[0]?.rows
+          const checkpointBefore = await readCheckpoint()
+
+          const mutation = `${operation.id}-validates-existing-lww-owner-${relation.mutationSuffix}`
+          const marker = `mutation-verdict:behavior:${mutation}`
+          if (!checkpointConflictMutationMarkers.has(marker)) {
+            throw new Error(`missing checkpoint-conflict mutation marker: ${marker}`)
+          }
+          await requireExpectedFailure({ kind: 'behavior', mutation }, operation.error, () =>
+            operation.execute(run, checkpointName),
+          )
+          expect(await snapshot(f, run.taskId), `${operation.id}/${relation.id}: run`).toEqual(
+            before,
+          )
+          expect(await readCheckpoint(), `${operation.id}/${relation.id}: checkpoint`).toEqual(
+            checkpointBefore,
+          )
+        },
+      )
+
       it('suspends under a valid higher LWW owner without replacing its checkpoint', async () => {
         const seeded = await checkpointWithNewerOwner('valid-lww-suspend', false)
         if (!seeded) throw new Error('valid checkpoint owner was unexpectedly rejected')
 
-        await f.store.suspendRun(
-          Q,
-          seeded.run.runId,
-          seeded.run.claimToken,
-          { inSeconds: 10 },
-          { key: 'valid-lww-suspend', stateJson: '{"stale":true}' },
+        await attributeExpectedFailure(
+          { kind: 'behavior', mutation: 'suspend-preserves-valid-higher-lww' },
+          /suspendRun/,
+          () =>
+            f.store.suspendRun(
+              Q,
+              seeded.run.runId,
+              seeded.run.claimToken,
+              { inSeconds: 10 },
+              { key: 'valid-lww-suspend', stateJson: '{"stale":true}' },
+            ),
         )
 
         const [run, checkpoint] = await f.raw.batch(
@@ -1807,9 +2051,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           Number.POSITIVE_INFINITY,
           1n as unknown as number,
         ]) {
-          await requireExpectedFailure(
+          await attributeReplacedFailure(
             { kind: 'behavior', mutation: 'checkpoint-read-validates-run-attempt-input' },
             /runs\.attempt/,
+            /invalid run ordinal reached/,
             () => guardedStore.getCheckpoints(Q, 'missing-task', invalidAttempt),
           )
         }

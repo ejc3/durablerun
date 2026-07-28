@@ -1,4 +1,10 @@
-import { STAMP } from '@durablerun/core'
+import {
+  PERSISTED_INTEGER_BOUNDS,
+  type PersistedIntegerBounds,
+  type PersistedIntegerBoundsExceptClaimGeneration,
+  POSITIVE_CLAIM_GENERATION_BOUNDS,
+  STAMP,
+} from '@durablerun/core'
 
 /**
  * Shared SQL fragments — the ONLY place engine SQL may say what "live",
@@ -134,8 +140,94 @@ export const cancelNotDue = (col: string, at: string): string =>
 export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`
 
 /** Native INTEGER plus the semantic port range used before durable arithmetic. */
-export const storedBoundedInteger = (col: string, min: number, max: number): string =>
+const storedBoundedInteger = (col: string, min: number, max: number): string =>
   `(${storedInteger(col)} AND ${col} BETWEEN ${min} AND ${max})`
+
+const persistedColumn = (bounds: PersistedIntegerBounds, alias?: string): string => {
+  const separator = bounds.field.indexOf('.')
+  if (separator < 0 || separator === bounds.field.length - 1) {
+    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
+  }
+  const column = bounds.field.slice(separator + 1)
+  return alias === undefined ? column : `${alias}.${column}`
+}
+
+/**
+ * A persisted field checked against its one canonical semantic bound.
+ *
+ * The durable field and its semantic interval are one runtime descriptor.
+ * Callers may choose only a SQL alias; there is no independently selected
+ * column that can drift from the bounds, even through a union type.
+ */
+export const storedIntegerWithin = (
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+  alias?: string,
+): string => {
+  const column = persistedColumn(bounds, alias)
+  return storedBoundedInteger(column, bounds.min, bounds.max)
+}
+
+/**
+ * A persisted integer that is safe to increment once without leaving its
+ * semantic field range. The guard describes the RESULT of the arithmetic, not
+ * merely the source representation.
+ */
+export const storedIncrementableInteger = (
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+  alias?: string,
+): string => {
+  const column = persistedColumn(bounds, alias)
+  return storedBoundedInteger(column, bounds.min, bounds.max - 1)
+}
+
+/** A returned/consumed claim generation is always strictly positive. */
+export const storedPositiveClaimGeneration = (alias?: string): string => {
+  const bounds = POSITIVE_CLAIM_GENERATION_BOUNDS
+  const column = persistedColumn(bounds, alias)
+  return storedBoundedInteger(column, bounds.min, bounds.max)
+}
+
+/** A claim candidate's generation must have room for the claim CAS bump. */
+export const storedIncrementableClaimGeneration = (alias?: string): string => {
+  const bounds = PERSISTED_INTEGER_BOUNDS.runs.claim_gen
+  const column = persistedColumn(bounds, alias)
+  return storedBoundedInteger(column, bounds.min, bounds.max - 1)
+}
+
+/**
+ * The accounting relation of the current live run.
+ *
+ * Every transition that derives a successor ordinal or a task counter composes
+ * this one fragment before writing. That makes subtraction underflow and
+ * out-of-contract successor ordinals unreachable from a corrupt stored row.
+ */
+export const storedCurrentRunAccounting = (run: string, task: string): string => {
+  const taskBounds = PERSISTED_INTEGER_BOUNDS.tasks
+  const runBounds = PERSISTED_INTEGER_BOUNDS.runs
+  return `(${storedIntegerWithin(runBounds.attempt, run)}
+    AND ${storedIntegerWithin(taskBounds.attempts, task)}
+    AND ${storedIntegerWithin(taskBounds.max_attempts, task)}
+    AND ${storedIntegerWithin(taskBounds.infra_retries, task)}
+    AND ${task}.attempts < ${task}.max_attempts
+    AND ${run}.attempt = ${task}.attempts + ${task}.infra_retries + 1)`
+}
+
+/**
+ * A current run is the highest valid owned ordinal for its task.
+ *
+ * Refuse both a higher historical run and any sibling whose ordinal has an
+ * invalid representation/range. Consumers must not let SQLite comparison
+ * coercion decide which corrupted run is current.
+ */
+export const storedHighestOwnedOrdinal = (run: string): string => {
+  const attempt = PERSISTED_INTEGER_BOUNDS.runs.attempt
+  return `NOT EXISTS (
+    SELECT 1 FROM runs higher
+    WHERE higher.task_id = ${run}.task_id
+      AND (NOT ${storedIntegerWithin(attempt, 'higher')}
+        OR higher.attempt > ${run}.attempt)
+  )`
+}
 
 /**
  * A task eligible to make forward progress (be claimed, be activated): still

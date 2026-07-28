@@ -532,6 +532,7 @@ describe('sweep and cancellation review regressions', () => {
       // The boundary the reviewed interleaving needs: one infra retry left.
       await f.raw.batch('t', [
         { sql: `UPDATE tasks SET infra_retries = 19 WHERE task_id = ?`, args: [spawned.taskId] },
+        { sql: `UPDATE runs SET attempt = 20 WHERE task_id = ?`, args: [spawned.taskId] },
       ])
       const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
       if (!run) throw new Error('expected claim')

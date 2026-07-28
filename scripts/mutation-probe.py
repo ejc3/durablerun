@@ -45,6 +45,7 @@ TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 
 
 VerdictKind = Literal["behavior", "construction"]
+VerifierKind = Literal["vitest", "typecheck"]
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class Mutation:
     replace: str
     breaks: str
     verdict: ExpectedVerdict
+    verifier: VerifierKind = "vitest"
 
 
 @dataclass(frozen=True)
@@ -451,6 +453,664 @@ MUTATION_SPECS = [
         "activation launches a claimed run after its task acquires a competing live run",
     ),
     (
+        "claim-rejects-generation-overflow",
+        "packages/store-libsql/src/fragments.ts",
+        "export const storedIncrementableClaimGeneration = (alias?: string): string => {\n"
+        "  const bounds = PERSISTED_INTEGER_BOUNDS.runs.claim_gen\n"
+        "  const column = persistedColumn(bounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max - 1)\n"
+        "}",
+        "export const storedIncrementableClaimGeneration = (alias?: string): string => {\n"
+        "  const bounds = PERSISTED_INTEGER_BOUNDS.runs.claim_gen\n"
+        "  const column = persistedColumn(bounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max)\n"
+        "}",
+        "claim increments a stored generation past its protocol ceiling",
+    ),
+    (
+        "activate-rejects-zero-lease",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n",
+        "         AND 1 = 1\n",
+        "activation derives a new expiry from a non-positive stored lease",
+    ),
+    (
+        "activate-requires-relaunch-bound",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
+        "         AND ${soleLiveRun('runs')}\n",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
+        "         AND 1 = 1\n"
+        "         AND ${soleLiveRun('runs')}\n",
+        "activation accepts a claim whose relaunch counter is out of range",
+    ),
+    (
+        "activate-requires-current-run-accounting",
+        "packages/store-libsql/src/store.ts",
+        "           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}\n"
+        "             AND ${storedCurrentRunAccounting('runs', 't')}\n"
+        "             AND ${storedHighestOwnedOrdinal('runs')}\n"
+        "         )`,\n"
+        "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
+        "           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}\n"
+        "             AND 1 = 1\n"
+        "             AND ${storedHighestOwnedOrdinal('runs')}\n"
+        "         )`,\n"
+        "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
+        "activation stops rechecking current-run accounting at its winning CAS",
+    ),
+    (
+        "activate-validates-claim-generation-input",
+        "packages/store-libsql/src/store.ts",
+        "    const validClaimGen = requirePositiveClaimGeneration('activate.claimGen', claimGen)\n",
+        "    const validClaimGen = claimGen\n",
+        "an invalid activation claim generation reaches the SQL executor",
+    ),
+    (
+        "claim-requires-activation-generation-order",
+        "packages/store-libsql/src/store.ts",
+        "               AND r.activated_gen <= r.claim_gen\n",
+        "               AND 1 = 1\n",
+        "claim advances a run whose activation generation is ahead of its claim generation",
+    ),
+    (
+        "claim-receipt-requires-activation-generation-order",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'r')}\n"
+        "         AND r.activated_gen <= r.claim_gen\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}\n",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'r')}\n"
+        "         AND 1 = 1\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}\n",
+        "a same-token receipt returns a run whose activation generation is ahead",
+    ),
+    (
+        "claim-receipt-requires-user-attempt-budget",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedCurrentRunAccounting('r', 't')}\n"
+        "         AND ${storedHighestOwnedOrdinal('r')}\n"
+        "       ORDER BY r.run_id`",
+        "         AND ${storedCurrentRunAccounting('r', 't').replace(\n"
+        "           'AND t.attempts < t.max_attempts',\n"
+        "           'AND t.attempts <= t.max_attempts',\n"
+        "         )}\n"
+        "         AND ${storedHighestOwnedOrdinal('r')}\n"
+        "       ORDER BY r.run_id`",
+        "a same-token receipt returns a run after its user-attempt budget is exhausted",
+    ),
+    (
+        "claim-receipt-requires-highest-owned-ordinal",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedHighestOwnedOrdinal('r')}\n"
+        "       ORDER BY r.run_id`",
+        "         AND 1 = 1\n"
+        "       ORDER BY r.run_id`",
+        "a same-token receipt returns an obsolete run below a higher owned ordinal",
+    ),
+    (
+        "claim-receipt-requires-relaunch-bound",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'r')}\n",
+        "         AND 1 = 1\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'r')}\n",
+        "a same-token receipt returns a run with an out-of-range relaunch counter",
+    ),
+    (
+        "claim-receipt-allows-max-generation",
+        "packages/store-libsql/src/fragments.ts",
+        "export const storedPositiveClaimGeneration = (alias?: string): string => {\n"
+        "  const bounds = POSITIVE_CLAIM_GENERATION_BOUNDS\n"
+        "  const column = persistedColumn(bounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max)\n"
+        "}",
+        "export const storedPositiveClaimGeneration = (alias?: string): string => {\n"
+        "  const bounds = POSITIVE_CLAIM_GENERATION_BOUNDS\n"
+        "  const column = persistedColumn(bounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max - 1)\n"
+        "}",
+        "a same-token receipt wrongly refuses the maximum valid claimed generation",
+    ),
+    (
+        "current-run-requires-user-attempt-budget",
+        "packages/store-libsql/src/fragments.ts",
+        "    AND ${task}.attempts < ${task}.max_attempts\n",
+        "    AND ${task}.attempts <= ${task}.max_attempts\n",
+        "a current live run remains eligible after its user-attempt budget is exhausted",
+    ),
+    (
+        "current-run-requires-highest-owned-ordinal",
+        "packages/store-libsql/src/fragments.ts",
+        "        OR higher.attempt > ${run}.attempt)\n",
+        "        OR 1 = 0)\n",
+        "an obsolete live run remains eligible beneath a higher historical ordinal",
+    ),
+    (
+        "checkpoint-read-requires-owner-join",
+        "packages/store-libsql/src/store.ts",
+        "                JOIN runs owner\n",
+        "                LEFT JOIN runs owner\n",
+        "checkpoint reads surface a row whose declared owner tuple names no matching run",
+    ),
+    (
+        "checkpoint-read-requires-owner-attempt-relation",
+        "packages/store-libsql/src/store.ts",
+        "   AND ${owner}.attempt = ${checkpoint}.owner_attempt`",
+        "   AND 1 = 1`",
+        "checkpoint reads surface a forged owner ordinal",
+    ),
+    (
+        "checkpoint-write-rejects-fractional-owner-attempt",
+        "packages/store-libsql/src/store.ts",
+        "         AND state = 'running'\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n",
+        "         AND state = 'running'\n"
+        "         AND runs.attempt BETWEEN ${RUN_INTEGER_BOUNDS.attempt.min}\n"
+        "           AND ${RUN_INTEGER_BOUNDS.attempt.max}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n",
+        "the checkpoint lease CAS accepts a fractional owner attempt before the follow-on refuses it",
+    ),
+    (
+        "checkpoint-write-rejects-owner-attempt-overflow",
+        "packages/store-libsql/src/store.ts",
+        "         AND state = 'running'\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n",
+        "         AND state = 'running'\n"
+        "         AND ${storedInteger('runs.attempt')}\n"
+        "         AND runs.attempt >= ${RUN_INTEGER_BOUNDS.attempt.min}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n",
+        "the checkpoint lease CAS accepts an owner attempt above the protocol maximum",
+    ),
+    (
+        "checkpoint-write-validates-existing-lww-owner",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "      [extendMs, runId, queue, taskId, claimToken, checkpointName],",
+        "         AND 1 = 1`,\n"
+        "      [extendMs, runId, queue, taskId, claimToken, checkpointName],",
+        "setCheckpoint extends the lease and consumes an upsert conflict whose owner is corrupt",
+    ),
+    (
+        "suspend-validates-existing-lww-owner",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "         AND 1 = 1`,\n"
+        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "suspendRun parks the run and consumes an upsert conflict whose owner is corrupt",
+    ),
+    (
+        "suspend-preserves-valid-higher-lww",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "         AND ${validCheckpointConflict('runs', '?').replace(\n"
+        "           'AND EXISTS (',\n"
+        "           'AND c.owner_attempt <= runs.attempt AND EXISTS (',\n"
+        "         )}`,\n"
+        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "suspendRun mistakes a valid higher LWW owner for corrupt ownership",
+    ),
+    (
+        "checkpoint-read-validates-run-attempt-input",
+        "packages/store-libsql/src/store.ts",
+        "    const visibleThrough = requireRunOrdinal('getCheckpoints.attempt', attempt)\n",
+        "    const visibleThrough = attempt\n",
+        "an invalid checkpoint visibility ordinal reaches the SQL executor",
+    ),
+    (
+        "run-ordinal-rejects-bigint-client-input",
+        "packages/core/src/validate.ts",
+        "export function requireRunOrdinal(name: string, value: unknown): number {\n"
+        "  return requireClientBrandedInteger(name, value, PERSISTED_INTEGER_BOUNDS.runs.attempt)\n"
+        "}",
+        "export function requireRunOrdinal(name: string, value: unknown): number {\n"
+        "  return requireBrandedInteger(name, value, PERSISTED_INTEGER_BOUNDS.runs.attempt)\n"
+        "}",
+        "the JavaScript client boundary accepts a bigint as a public run ordinal",
+    ),
+    (
+        "stored-within-rejects-spread-descriptor",
+        "packages/store-libsql/src/fragments.ts",
+        "export const storedIntegerWithin = (\n"
+        "  bounds: PersistedIntegerBoundsExceptClaimGeneration,\n"
+        "  alias?: string,\n"
+        "): string => {\n"
+        "  const column = persistedColumn(bounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max)\n"
+        "}",
+        "export const storedIntegerWithin = (\n"
+        "  bounds:\n"
+        "    | PersistedIntegerBoundsExceptClaimGeneration\n"
+        "    | Pick<PersistedIntegerBounds, 'min' | 'max'>,\n"
+        "  alias?: string,\n"
+        "): string => {\n"
+        "  const column = persistedColumn(bounds as PersistedIntegerBounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max)\n"
+        "}",
+        "the SQL guard API accepts a forged object-spread descriptor",
+    ),
+    (
+        "stored-incrementable-rejects-spread-descriptor",
+        "packages/store-libsql/src/fragments.ts",
+        "export const storedIncrementableInteger = (\n"
+        "  bounds: PersistedIntegerBoundsExceptClaimGeneration,\n"
+        "  alias?: string,\n"
+        "): string => {\n"
+        "  const column = persistedColumn(bounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max - 1)\n"
+        "}",
+        "export const storedIncrementableInteger = (\n"
+        "  bounds:\n"
+        "    | PersistedIntegerBoundsExceptClaimGeneration\n"
+        "    | Pick<PersistedIntegerBounds, 'min' | 'max'>,\n"
+        "  alias?: string,\n"
+        "): string => {\n"
+        "  const column = persistedColumn(bounds as PersistedIntegerBounds, alias)\n"
+        "  return storedBoundedInteger(column, bounds.min, bounds.max - 1)\n"
+        "}",
+        "the increment-safe SQL guard API accepts a forged object-spread descriptor",
+    ),
+    (
+        "persisted-row-rejects-spread-descriptor",
+        "packages/store-libsql/src/store.ts",
+        "export function persistedRowInteger(\n"
+        "  scope: string,\n"
+        "  row: SqlRow,\n"
+        "  bounds: PersistedIntegerBoundsExceptClaimGeneration,\n"
+        "): number {\n"
+        "  return decodePersistedRowInteger(scope, row, bounds)\n"
+        "}",
+        "export function persistedRowInteger(\n"
+        "  scope: string,\n"
+        "  row: SqlRow,\n"
+        "  bounds:\n"
+        "    | PersistedIntegerBoundsExceptClaimGeneration\n"
+        "    | Pick<PersistedIntegerBounds, 'min' | 'max'>,\n"
+        "): number {\n"
+        "  return decodePersistedRowInteger(\n"
+        "    scope,\n"
+        "    row,\n"
+        "    bounds as PersistedIntegerBoundsExceptClaimGeneration,\n"
+        "  )\n"
+        "}",
+        "the persisted row decoder accepts a forged object-spread descriptor",
+    ),
+    (
+        "derived-row-rejects-spread-descriptor",
+        "packages/core/src/validate.ts",
+        "export function requireDerivedInteger(\n"
+        "  name: string,\n"
+        "  value: unknown,\n"
+        "  bounds: DerivedIntegerBounds,\n"
+        "): number {\n"
+        "  return requireBrandedInteger(name, value, bounds)\n"
+        "}",
+        "export function requireDerivedInteger(\n"
+        "  name: string,\n"
+        "  value: unknown,\n"
+        "  bounds: DerivedIntegerBounds | IntegerBounds,\n"
+        "): number {\n"
+        "  return requireBrandedInteger(name, value, bounds as DerivedIntegerBounds)\n"
+        "}",
+        "the derived row decoder accepts a forged object-spread descriptor",
+    ),
+    (
+        "persisted-counter-field-task-attempts",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'task-attempts',\n"
+        "    table: 'tasks',\n"
+        "    column: 'attempts',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.tasks.attempts,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits tasks.attempts",
+    ),
+    (
+        "persisted-counter-field-task-max-attempts",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'task-max-attempts',\n"
+        "    table: 'tasks',\n"
+        "    column: 'max_attempts',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.tasks.max_attempts,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits tasks.max_attempts",
+    ),
+    (
+        "persisted-counter-field-task-infra-retries",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'task-infra-retries',\n"
+        "    table: 'tasks',\n"
+        "    column: 'infra_retries',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.tasks.infra_retries,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits tasks.infra_retries",
+    ),
+    (
+        "persisted-counter-field-run-attempt",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'run-attempt',\n"
+        "    table: 'runs',\n"
+        "    column: 'attempt',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.attempt,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits runs.attempt",
+    ),
+    (
+        "persisted-counter-field-run-claim-gen",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'run-claim-gen',\n"
+        "    table: 'runs',\n"
+        "    column: 'claim_gen',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.claim_gen,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits runs.claim_gen",
+    ),
+    (
+        "persisted-counter-field-run-activated-gen",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'run-activated-gen',\n"
+        "    table: 'runs',\n"
+        "    column: 'activated_gen',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.activated_gen,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits runs.activated_gen",
+    ),
+    (
+        "persisted-counter-field-run-relaunch-count",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'run-relaunch-count',\n"
+        "    table: 'runs',\n"
+        "    column: 'relaunch_count',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.relaunch_count,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits runs.relaunch_count",
+    ),
+    (
+        "persisted-counter-field-checkpoint-owner-attempt",
+        "packages/core/src/validate.ts",
+        "  Object.freeze({\n"
+        "    id: 'checkpoint-owner-attempt',\n"
+        "    table: 'checkpoints',\n"
+        "    column: 'owner_attempt',\n"
+        "    bounds: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt,\n"
+        "  }),\n",
+        "",
+        "the generated persisted-counter contract omits checkpoints.owner_attempt",
+    ),
+    (
+        "poison-profile-claim-pending",
+        "packages/conformance/src/poison-matrix.ts",
+        "  const state =\n"
+        "    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'\n",
+        "  const state =\n"
+        "    profile === 'claim-pending' ? 'sleeping' : profile === 'claim-sleeping' ? 'sleeping' : 'running'\n",
+        "the declared claim-pending target profile is seeded as sleeping",
+    ),
+    (
+        "poison-profile-claim-sleeping",
+        "packages/conformance/src/poison-matrix.ts",
+        "  const state =\n"
+        "    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'\n",
+        "  const state =\n"
+        "    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'pending' : 'running'\n",
+        "the declared claim-sleeping target profile is seeded as pending",
+    ),
+    (
+        "poison-profile-sweep-lost-launch",
+        "packages/conformance/src/poison-matrix.ts",
+        "  const previouslyActivated = profile === 'claim-sleeping' || profile === 'sweep-claim-timeout'\n",
+        "  const previouslyActivated =\n"
+        "    profile === 'claim-sleeping' ||\n"
+        "    profile === 'sweep-claim-timeout' ||\n"
+        "    profile === 'sweep-lost-launch'\n",
+        "the declared lost-launch target profile is seeded as post-activation",
+    ),
+    (
+        "poison-profile-sweep-claim-timeout",
+        "packages/conformance/src/poison-matrix.ts",
+        "  const previouslyActivated = profile === 'claim-sleeping' || profile === 'sweep-claim-timeout'\n",
+        "  const previouslyActivated = profile === 'claim-sleeping'\n",
+        "the declared claim-timeout target profile is seeded as pre-activation",
+    ),
+    (
+        "poison-targetability-inventory",
+        "packages/conformance/src/poison-matrix.ts",
+        "    'run-activated-gen/lower',\n"
+        "    'run-relaunch-count/lower',\n"
+        "    'run-relaunch-count/upper',\n"
+        "  ]),\n"
+        "  'sweep:lost-launch': new Set([\n",
+        "    'run-activated-gen/lower',\n"
+        "    'run-relaunch-count/lower',\n"
+        "  ]),\n"
+        "  'sweep:lost-launch': new Set([\n",
+        "the upper relaunch-count boundary is silently reclassified as unreachable at claim",
+    ),
+    (
+        "poison-sweep-scan-prelimit",
+        "packages/store-libsql/src/store.ts",
+        "  AND ${sweepScanAdmissible('r', 't')}\n"
+        "ORDER BY r.claim_expires_at_ms, r.run_id\n"
+        "LIMIT ?`",
+        "  AND 1 = 1\n"
+        "ORDER BY r.claim_expires_at_ms, r.run_id\n"
+        "LIMIT ?`",
+        "a corrupt expired row consumes the sweep scan limit before target eligibility",
+    ),
+    (
+        "sweep-lost-launch-rechecks-accounting",
+        "packages/store-libsql/src/store.ts",
+        "      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE}\n"
+        "        AND ${sweepLiveOwnerAdmissible('runs', 't')}\n"
+        "    )`",
+        "      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE}\n"
+        "        AND ${sweepLiveOwnerAdmissible('runs', 't').replace(\n"
+        "          storedCurrentRunAccounting('runs', 't'),\n"
+        "          '1 = 1',\n"
+        "        )}\n"
+        "    )`",
+        "the lost-launch CAS trusts its advisory scan instead of rechecking accounting",
+    ),
+    (
+        "sweep-claim-timeout-rechecks-accounting",
+        "packages/store-libsql/src/store.ts",
+        "             AND ((t.state NOT IN ${LIVE}\n"
+        "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
+        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible('runs', 't')}))\n"
+        "         )`,\n"
+        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "             AND ((t.state NOT IN ${LIVE}\n"
+        "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
+        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible(\n"
+        "                 'runs',\n"
+        "                 't',\n"
+        "               ).replace(storedCurrentRunAccounting('runs', 't'), '1 = 1')}))\n"
+        "         )`,\n"
+        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "the claim-timeout CAS trusts its advisory scan instead of rechecking accounting",
+    ),
+    (
+        "terminal-timeout-scan-admits-terminal-owner",
+        "packages/store-libsql/src/store.ts",
+        "const sweepTerminalOwnerAdmissible = (run: string): string =>\n"
+        "  `${storedSweepGenerations(run)}\n"
+        "   AND (${run}.activated_gen = ${run}.claim_gen\n",
+        "const sweepTerminalOwnerAdmissible = (run: string): string =>\n"
+        "  `${storedSweepGenerations(run)}\n"
+        "   AND (1 = 0\n",
+        "the advisory sweep scan strands an activated run beneath a terminal task",
+    ),
+    (
+        "terminal-timeout-cas-admits-terminal-owner",
+        "packages/store-libsql/src/store.ts",
+        "             AND ((t.state NOT IN ${LIVE}\n"
+        "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
+        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible('runs', 't')}))\n"
+        "         )`,\n"
+        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "             AND ((1 = 0\n"
+        "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
+        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible('runs', 't')}))\n"
+        "         )`,\n"
+        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "the timeout CAS strands an activated run after its task became terminal",
+    ),
+    (
+        "terminal-timeout-scan-ignores-relaunch",
+        "packages/store-libsql/src/store.ts",
+        "const sweepTerminalOwnerAdmissible = (run: string): string =>\n"
+        "  `${storedSweepGenerations(run)}\n",
+        "const sweepTerminalOwnerAdmissible = (run: string): string =>\n"
+        "  `${storedSweepCounters(run)}\n",
+        "an unrelated corrupt relaunch counter hides a terminal activated timeout from discovery",
+    ),
+    (
+        "terminal-timeout-decode-ignores-relaunch",
+        "packages/store-libsql/src/store.ts",
+        "      const activatedGen = persistedRowInteger('sweep', row, RUN_INTEGER_BOUNDS.activated_gen)\n"
+        "      const identity = {\n",
+        "      const activatedGen = persistedRowInteger('sweep', row, RUN_INTEGER_BOUNDS.activated_gen)\n"
+        "      persistedRowInteger('sweep', row, RUN_INTEGER_BOUNDS.relaunch_count)\n"
+        "      const identity = {\n",
+        "the sweep decoder reads a counter that the activated-timeout arm does not consume",
+    ),
+    (
+        "terminal-relaunch-cap-scan-admits-terminal-owner",
+        "packages/store-libsql/src/store.ts",
+        "     OR (${run}.activated_gen < ${run}.claim_gen\n"
+        "       AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}\n",
+        "     OR (1 = 0 AND ${run}.activated_gen < ${run}.claim_gen\n"
+        "       AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}\n",
+        "the advisory sweep scan strands a relaunch-cap run beneath a terminal task",
+    ),
+    (
+        "terminal-relaunch-cap-cas-admits-terminal-owner",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
+        "         AND (${liveOwner} OR ${terminalOwner})`,",
+        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
+        "         AND ${liveOwner}`,",
+        "the relaunch-cap CAS strands a run after its task became terminal",
+    ),
+    (
+        "sweep-terminal-cap-rechecks-generation-lower-bound",
+        "packages/store-libsql/src/store.ts",
+        "    const terminalOwner = `EXISTS (\n"
+        "      SELECT 1 FROM tasks t\n"
+        "      WHERE t.task_id = runs.task_id AND t.state NOT IN ${LIVE}\n"
+        "        AND ${sweepTerminalOwnerAdmissible('runs')}\n"
+        "    )`",
+        "    const terminalOwner = `EXISTS (\n"
+        "      SELECT 1 FROM tasks t\n"
+        "      WHERE t.task_id = runs.task_id AND t.state NOT IN ${LIVE}\n"
+        "        AND ${sweepTerminalOwnerAdmissible('runs').replace(\n"
+        "          `runs.activated_gen BETWEEN ${RUN_INTEGER_BOUNDS.activated_gen.min} AND ${RUN_INTEGER_BOUNDS.activated_gen.max}`,\n"
+        "          `runs.activated_gen <= ${RUN_INTEGER_BOUNDS.activated_gen.max}`,\n"
+        "        )}\n"
+        "    )`",
+        "the relaunch-cap CAS trusts a generation that became negative after its advisory scan",
+    ),
+    (
+        "fail-cas-admits-terminal-owner",
+        "packages/store-libsql/src/store.ts",
+        "             AND (t.state NOT IN ${LIVE}\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "             AND (1 = 0\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "worker failure cannot quiesce its run after another actor terminalized the task",
+    ),
+    (
+        "poison-severity-lower-bound",
+        "packages/conformance/src/poison-matrix.ts",
+        "  if (exact < minimum) return minimum - exact\n",
+        "  if (exact < minimum) return 0n\n",
+        "lower-bound corruption can worsen without increasing reported severity",
+    ),
+    (
+        "poison-severity-checkpoint",
+        "packages/conformance/src/poison-matrix.ts",
+        "  if (field.table === 'checkpoints') {\n",
+        "  if (false && field.table === 'checkpoints') {\n",
+        "checkpoint counter corruption bypasses its composite-identity severity branch",
+    ),
+    (
+        "poison-target-closure-comparison",
+        "packages/conformance/src/poison-matrix.ts",
+        "  if (!same(poisonOwnedClosure(before), poisonOwnedClosure(after))) {\n",
+        "  if (false && !same(poisonOwnedClosure(before), poisonOwnedClosure(after))) {\n",
+        "a targeted transition may rewrite or launder the poison-owned closure",
+    ),
+    (
+        "poison-returned-target-comparison",
+        "packages/conformance/src/poison-matrix.ts",
+        "  if (outcomes.some((outcome) => outcomeMentionsPoison(outcome.result))) {\n",
+        "  if (false && outcomes.some((outcome) => outcomeMentionsPoison(outcome.result))) {\n",
+        "a targeted transition may return the poisoned task or run",
+    ),
+    (
+        "accounting-live-run-next-invariant",
+        "packages/conformance/src/invariants.ts",
+        "          if (liveAttempt !== undefined && liveAttempt !== accounted + 1n) {\n",
+        "          if (false && liveAttempt !== undefined && liveAttempt !== accounted + 1n) {\n",
+        "the invariant evaluator accepts a live run that is not the next accounted ordinal",
+    ),
+    (
+        "sweep-accepts-max-ordinal-at-infra-cap",
+        "packages/core/src/validate.ts",
+        "    attempt: integerBounds('runs.attempt', 1, MAX_RUN_ORDINAL),\n",
+        "    attempt: integerBounds('runs.attempt', 1, MAX_RUN_ORDINAL - 1),\n",
+        "the terminal infrastructure-cap sweep wrongly refuses the maximum legal run ordinal",
+    ),
+    (
+        "poison-relational-target-inventory",
+        "packages/conformance/src/poison-matrix.ts",
+        "  const targetArms = witness.counterBoundary?.arms ?? witness.targetArms\n",
+        "  const targetArms = witness.counterBoundary?.arms\n",
+        "relational and fractional witnesses are omitted from generated target cases",
+    ),
+    (
+        "poison-fractional-storage-guard",
+        "packages/store-libsql/src/fragments.ts",
+        "export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`\n",
+        "export const storedInteger = (col: string): string => `${col} IS NOT NULL`\n",
+        "an in-range fractional REAL value is accepted as a persisted integer",
+    ),
+    (
+        "poison-claim-relaunch-upper",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}\n",
+        "               AND (${storedInteger('r.relaunch_count')}\n"
+        "                 AND r.relaunch_count >= ${RUN_INTEGER_BOUNDS.relaunch_count.min})\n",
+        "claim accepts a relaunch counter above its protocol maximum",
+    ),
+    (
+        "poison-claim-relaunch-lower",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}\n",
+        "               AND (${storedInteger('r.relaunch_count')}\n"
+        "                 AND r.relaunch_count <= ${RUN_INTEGER_BOUNDS.relaunch_count.max})\n",
+        "claim accepts a relaunch counter below zero",
+    ),
+    (
         "matrix-lost-launch-edge-progress",
         "packages/store-libsql/src/store.ts",
         "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
@@ -474,33 +1134,43 @@ MUTATION_SPECS = [
         "matrix-claim-timeout-edge-progress",
         "packages/store-libsql/src/store.ts",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND ${storedInteger('runs.attempt')}`",
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
         "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND run_id <> 'edge-run'\n"
-        "         AND ${storedInteger('runs.attempt')}`",
+        "         AND run_id <> 'edge-run'\n",
         "the generated fault cell fires its label while the seeded claim-timeout edge never crosses",
     ),
     (
-        "sweep-rejects-noninteger-attempt",
+        "sweep-claim-timeout-generation",
         "packages/store-libsql/src/store.ts",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
         "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND ${storedInteger('runs.attempt')}`",
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}`",
-        "a corrupt attempt is coerced into a successor ordinal and resets infrastructure accounting",
+        "         AND (run_id <> 'edge-run' OR claim_gen = 1)\n",
+        "the claim-timeout edge only works at generation one",
     ),
     (
-        "suspend-rejects-noninteger-attempt",
+        "provenance-sweep-progress",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedInteger('runs.attempt')}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,\n"
-        "      [wakeArg, wakeArg, runId, queue, claimToken],",
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,\n"
-        "      [wakeArg, wakeArg, runId, queue, claimToken],",
-        "suspend parks a run while its required checkpoint marker is refused",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n",
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND run_id <> 'prov-sweep-run'\n",
+        "the replay regression accepts a sweep that never performs the transition it owes",
+    ),
+    (
+        "matrix-attempt-edge-progress",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND EXISTS (\n"
+        "           SELECT 1 FROM tasks t\n",
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND run_id <> 'edge-run'\n"
+        "         AND EXISTS (\n"
+        "           SELECT 1 FROM tasks t\n",
+        "the generated fault cell fires its label while the seeded attempt-cap edge never crosses",
     ),
     (
         "shared-conformance-runner-registry",
@@ -510,51 +1180,15 @@ MUTATION_SPECS = [
         "a dialect silently drops an entire shared conformance surface",
     ),
     (
-        "sweep-claim-timeout-generation",
-        "packages/store-libsql/src/store.ts",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND ${storedInteger('runs.attempt')}`",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND (run_id <> 'edge-run' OR claim_gen = 1)\n"
-        "         AND ${storedInteger('runs.attempt')}`",
-        "the claim-timeout edge only works at generation one",
-    ),
-    (
-        "matrix-attempt-edge-progress",
-        "packages/store-libsql/src/store.ts",
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND run_id <> 'edge-run'\n"
-        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
-        "the generated fault cell fires its label while the seeded attempt-cap edge never crosses",
-    ),
-    (
-        "provenance-sweep-progress",
-        "packages/store-libsql/src/store.ts",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND ${storedInteger('runs.attempt')}`",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
-        "         AND run_id <> 'prov-sweep-run'\n"
-        "         AND ${storedInteger('runs.attempt')}`",
-        "the replay regression accepts a sweep that never performs the transition it owes",
-    ),
-    (
         "provenance-fail-progress",
         "packages/store-libsql/src/store.ts",
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
+        "         AND EXISTS (\n"
+        "           SELECT 1 FROM tasks t\n",
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
         "         AND run_id <> 'prov-fail-run'\n"
-        "         AND ${storedBoundedInteger('runs.attempt', 1, MAX_RUN_ORDINAL)}",
+        "         AND EXISTS (\n"
+        "           SELECT 1 FROM tasks t\n",
         "the replay regression accepts a failure delivery that never fails its run",
     ),
     (
@@ -616,6 +1250,118 @@ MUTATION_SPECS = [
         "spawn attaches a new task to a run that already claims its minted identity",
     ),
 ]
+
+
+CHECKPOINT_CONFLICT_CONSUMERS = (
+    (
+        "checkpoint-write",
+        "      [extendMs, runId, queue, taskId, claimToken, checkpointName],",
+    ),
+    (
+        "suspend",
+        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+    ),
+)
+
+
+def weakened_checkpoint_conflict(suffix: str) -> str:
+    base = "validCheckpointConflict('runs', '?')"
+    replacements = {
+        "exists": (
+            f"{base}.replace(\n"
+            "           'AND NOT (',\n"
+            "           \"AND c.owner_run_id <> 'owner-missing-owner' AND NOT (\",\n"
+            "         )"
+        ),
+        "owner-id": (
+            f"{base}.replace(\n"
+            "           'AND owner.run_id = c.owner_run_id',\n"
+            "           'AND 1 = 1',\n"
+            "         )"
+        ),
+        "owner-task": (
+            f"{base}.replace(\n"
+            "           'AND owner.task_id = c.task_id',\n"
+            "           'AND 1 = 1',\n"
+            "         )"
+        ),
+        "owner-queue": (
+            f"{base}.replace(\n"
+            "           'AND owner.queue = c.queue',\n"
+            "           'AND 1 = 1',\n"
+            "         )"
+        ),
+        "owner-attempt": (
+            f"{base}.replace(\n"
+            "           'AND owner.attempt = c.owner_attempt',\n"
+            "           'AND 1 = 1',\n"
+            "         )"
+        ),
+        "owner-attempt-upper": (
+            f"{base}\n"
+            "         .replace(\n"
+            "           `c.owner_attempt BETWEEN ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.min} AND ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.max}`,\n"
+            "           `c.owner_attempt >= ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.min}`,\n"
+            "         )\n"
+            "         .replace(\n"
+            "           `owner.attempt BETWEEN ${RUN_INTEGER_BOUNDS.attempt.min} AND ${RUN_INTEGER_BOUNDS.attempt.max}`,\n"
+            "           `owner.attempt >= ${RUN_INTEGER_BOUNDS.attempt.min}`,\n"
+            "         )"
+        ),
+        "owner-attempt-lower": (
+            f"{base}\n"
+            "         .replace(\n"
+            "           `c.owner_attempt BETWEEN ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.min} AND ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.max}`,\n"
+            "           `c.owner_attempt <= ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.max}`,\n"
+            "         )\n"
+            "         .replace(\n"
+            "           `owner.attempt BETWEEN ${RUN_INTEGER_BOUNDS.attempt.min} AND ${RUN_INTEGER_BOUNDS.attempt.max}`,\n"
+            "           `owner.attempt <= ${RUN_INTEGER_BOUNDS.attempt.max}`,\n"
+            "         )"
+        ),
+        "owner-attempt-storage": (
+            f"{base}\n"
+            "         .replace(\"typeof(c.owner_attempt) = 'integer'\", 'c.owner_attempt IS NOT NULL')\n"
+            "         .replace(\"typeof(owner.attempt) = 'integer'\", 'owner.attempt IS NOT NULL')"
+        ),
+        "conflict-queue": (
+            f"{base}.replace(\n"
+            "           'c.queue = runs.queue',\n"
+            "           '1 = 1',\n"
+            "         )"
+        ),
+    }
+    return replacements[suffix]
+
+
+CHECKPOINT_CONFLICT_SUFFIXES = (
+    "exists",
+    "owner-id",
+    "owner-task",
+    "owner-queue",
+    "owner-attempt",
+    "owner-attempt-upper",
+    "owner-attempt-lower",
+    "owner-attempt-storage",
+    "conflict-queue",
+)
+
+for consumer, args_anchor in CHECKPOINT_CONFLICT_CONSUMERS:
+    for suffix in CHECKPOINT_CONFLICT_SUFFIXES:
+        MUTATION_SPECS.append(
+            (
+                f"{consumer}-validates-existing-lww-owner-{suffix}",
+                "packages/store-libsql/src/store.ts",
+                "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+                f"{args_anchor}",
+                "         AND ${"
+                f"{weakened_checkpoint_conflict(suffix)}"
+                "}`,\n"
+                f"{args_anchor}",
+                f"{consumer} accepts an existing checkpoint with invalid {suffix} ownership",
+            )
+        )
+
 
 VERDICTS = {
     "followon-provenance-check": ExpectedVerdict(
@@ -818,6 +1564,407 @@ VERDICTS = {
         "transition-layer review regressions (second round) activate refuses a claim whose task acquired another live run",
         "mutation-verdict:behavior:activate-requires-sole-live-run",
     ),
+    "claim-rejects-generation-overflow": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim leaves a due run unchanged when claim generation 1000000 cannot be incremented safely",
+        "mutation-verdict:behavior:claim-rejects-generation-overflow-atomically",
+        "packages/conformance/src/suite.ts",
+    ),
+    "activate-rejects-zero-lease": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] activate leaves a claimed run unchanged when its stored lease is zero",
+        "mutation-verdict:behavior:activate-rejects-zero-lease-atomically",
+        "packages/conformance/src/suite.ts",
+    ),
+    "activate-requires-relaunch-bound": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] activate does not activate a claim whose relaunch counter became invalid",
+        "mutation-verdict:behavior:activate-requires-relaunch-bound",
+        "packages/conformance/src/suite.ts",
+    ),
+    "activate-requires-current-run-accounting": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] activate does not activate a claim whose live run is not the next accounted ordinal",
+        "mutation-verdict:behavior:activate-requires-current-run-accounting",
+        "packages/conformance/src/suite.ts",
+    ),
+    "activate-validates-claim-generation-input": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] activate rejects invalid claim-generation inputs before reaching the executor",
+        "mutation-verdict:behavior:activate-validates-claim-generation-input",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-requires-activation-generation-order": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim applies the activation-generation relation before the claim limit",
+        "mutation-verdict:behavior:claim-requires-activation-generation-order",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-receipt-requires-activation-generation-order": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim does not return an activated-ahead run from a same-token claim receipt",
+        "mutation-verdict:behavior:claim-receipt-requires-activation-generation-order",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-receipt-requires-user-attempt-budget": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim does not return an exhausted run from a same-token claim receipt",
+        "mutation-verdict:behavior:claim-receipt-requires-user-attempt-budget",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-receipt-requires-highest-owned-ordinal": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim does not return an obsolete ordinal from a same-token claim receipt",
+        "mutation-verdict:behavior:claim-receipt-requires-highest-owned-ordinal",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-receipt-requires-relaunch-bound": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim does not return an out-of-range relaunch counter from a same-token claim receipt",
+        "mutation-verdict:behavior:claim-receipt-requires-relaunch-bound",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-receipt-allows-max-generation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim returns a same-token receipt at the maximum claimed generation",
+        "mutation-verdict:behavior:claim-receipt-allows-max-generation",
+        "packages/conformance/src/suite.ts",
+    ),
+    "current-run-requires-user-attempt-budget": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim does not claim a live run after the user-attempt budget is exhausted",
+        "mutation-verdict:behavior:claim-requires-user-attempt-budget",
+        "packages/conformance/src/suite.ts",
+    ),
+    "current-run-requires-highest-owned-ordinal": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim does not claim an obsolete live ordinal beneath a historical run",
+        "mutation-verdict:behavior:claim-requires-highest-owned-ordinal",
+        "packages/conformance/src/suite.ts",
+    ),
+    "checkpoint-read-requires-owner-join": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints does not surface a checkpoint whose owner ordinal is forged",
+        "mutation-verdict:behavior:checkpoint-read-validates-owner-attempt",
+        "packages/conformance/src/suite.ts",
+    ),
+    "checkpoint-read-requires-owner-attempt-relation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints does not surface a checkpoint whose owner ordinal is forged",
+        "mutation-verdict:behavior:checkpoint-read-validates-owner-attempt",
+        "packages/conformance/src/suite.ts",
+    ),
+    "checkpoint-write-rejects-fractional-owner-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints rejects a fractional stored owner attempt before extending the lease",
+        "mutation-verdict:behavior:checkpoint-write-rejects-fractional-owner-attempt",
+        "packages/conformance/src/suite.ts",
+    ),
+    "checkpoint-write-rejects-owner-attempt-overflow": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints rejects an out-of-range stored owner attempt before extending the lease",
+        "mutation-verdict:behavior:checkpoint-write-rejects-owner-attempt-overflow",
+        "packages/conformance/src/suite.ts",
+    ),
+    "checkpoint-write-validates-existing-lww-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints refuses a corrupt existing LWW owner before extending the lease",
+        "mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner",
+        "packages/conformance/src/suite.ts",
+    ),
+    "suspend-validates-existing-lww-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints refuses a corrupt existing LWW owner before suspending with a marker",
+        "mutation-verdict:behavior:suspend-validates-existing-lww-owner",
+        "packages/conformance/src/suite.ts",
+    ),
+    "suspend-preserves-valid-higher-lww": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints suspends under a valid higher LWW owner without replacing its checkpoint",
+        "mutation-verdict:behavior:suspend-preserves-valid-higher-lww",
+        "packages/conformance/src/suite.ts",
+    ),
+    "checkpoint-read-validates-run-attempt-input": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints validates checkpoint visibility through the run-ordinal input domain",
+        "mutation-verdict:behavior:checkpoint-read-validates-run-attempt-input",
+        "packages/conformance/src/suite.ts",
+    ),
+    "run-ordinal-rejects-bigint-client-input": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] checkpoints validates checkpoint visibility through the run-ordinal input domain",
+        "mutation-verdict:behavior:checkpoint-read-validates-run-attempt-input",
+        "packages/conformance/src/suite.ts",
+    ),
+    "stored-within-rejects-spread-descriptor": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "TypeScript construction rejects an object-spread descriptor at storedIntegerWithin",
+        "mutation-verdict:construction:stored-within-rejects-spread-descriptor",
+    ),
+    "stored-incrementable-rejects-spread-descriptor": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "TypeScript construction rejects an object-spread descriptor at storedIncrementableInteger",
+        "mutation-verdict:construction:stored-incrementable-rejects-spread-descriptor",
+    ),
+    "persisted-row-rejects-spread-descriptor": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "TypeScript construction rejects an object-spread descriptor at persistedRowInteger",
+        "mutation-verdict:construction:persisted-row-rejects-spread-descriptor",
+    ),
+    "derived-row-rejects-spread-descriptor": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "TypeScript construction rejects an object-spread descriptor at requireDerivedInteger",
+        "mutation-verdict:construction:derived-row-rejects-spread-descriptor",
+    ),
+    "persisted-counter-field-task-attempts": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "persisted-counter-field-task-max-attempts": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "persisted-counter-field-task-infra-retries": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "persisted-counter-field-run-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "persisted-counter-field-run-claim-gen": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "persisted-counter-field-run-activated-gen": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "persisted-counter-field-run-relaunch-count": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "persisted-counter-field-checkpoint-owner-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
+        "mutation-verdict:behavior:persisted-counter-field-inventory",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "poison-profile-claim-pending": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests executes the claim-pending target profile",
+        "mutation-verdict:behavior:poison-profile-claim-pending",
+    ),
+    "poison-profile-claim-sleeping": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests executes the claim-sleeping target profile",
+        "mutation-verdict:behavior:poison-profile-claim-sleeping",
+    ),
+    "poison-profile-sweep-lost-launch": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests executes the sweep-lost-launch target profile",
+        "mutation-verdict:behavior:poison-profile-sweep-lost-launch",
+    ),
+    "poison-profile-sweep-claim-timeout": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests executes the sweep-claim-timeout target profile",
+        "mutation-verdict:behavior:poison-profile-sweep-claim-timeout",
+    ),
+    "poison-targetability-inventory": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests classifies every counter boundary against every target arm",
+        "mutation-verdict:behavior:poison-targetability-inventory",
+    ),
+    "poison-sweep-scan-prelimit": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests applies sweep target eligibility before the scan limit",
+        "mutation-verdict:behavior:poison-sweep-scan-prelimit",
+    ),
+    "sweep-lost-launch-rechecks-accounting": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification rechecks lost-launch accounting after the advisory sweep scan",
+        "mutation-verdict:behavior:sweep-lost-launch-rechecks-accounting",
+        "packages/conformance/src/suite.ts",
+    ),
+    "sweep-claim-timeout-rechecks-accounting": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification rechecks claim-timeout accounting after the advisory sweep scan",
+        "mutation-verdict:behavior:sweep-claim-timeout-rechecks-accounting",
+        "packages/conformance/src/suite.ts",
+    ),
+    "terminal-timeout-scan-admits-terminal-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification quiesces an activated timeout whose task was already terminalized",
+        "mutation-verdict:behavior:sweep-quiesces-terminal-timeout-owner",
+        "packages/conformance/src/suite.ts",
+    ),
+    "terminal-timeout-cas-admits-terminal-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification quiesces an activated timeout whose task was already terminalized",
+        "mutation-verdict:behavior:sweep-quiesces-terminal-timeout-owner",
+        "packages/conformance/src/suite.ts",
+    ),
+    "terminal-timeout-scan-ignores-relaunch": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification quiesces a terminal activated timeout despite an unrelated corrupt relaunch counter",
+        "mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption",
+        "packages/conformance/src/suite.ts",
+    ),
+    "terminal-timeout-decode-ignores-relaunch": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification quiesces a terminal activated timeout despite an unrelated corrupt relaunch counter",
+        "mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption",
+        "packages/conformance/src/suite.ts",
+    ),
+    "terminal-relaunch-cap-scan-admits-terminal-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification quiesces a relaunch-cap run under a terminal owner without reviving its task",
+        "mutation-verdict:behavior:sweep-quiesces-terminal-relaunch-cap-owner",
+        "packages/conformance/src/suite.ts",
+    ),
+    "terminal-relaunch-cap-cas-admits-terminal-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification quiesces a relaunch-cap run under a terminal owner without reviving its task",
+        "mutation-verdict:behavior:sweep-quiesces-terminal-relaunch-cap-owner",
+        "packages/conformance/src/suite.ts",
+    ),
+    "sweep-terminal-cap-rechecks-generation-lower-bound": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification rechecks a terminal relaunch-cap generation after the advisory scan",
+        "mutation-verdict:behavior:sweep-terminal-cap-rechecks-generation-lower-bound",
+        "packages/conformance/src/suite.ts",
+    ),
+    "fail-cas-admits-terminal-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule quiesces a claimed run under a terminal final-attempt owner",
+        "mutation-verdict:behavior:fail-quiesces-terminal-owner",
+        "packages/conformance/src/suite.ts",
+    ),
+    "poison-severity-lower-bound": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests catches lower task-attempts worsening on the same subject",
+        "mutation-verdict:behavior:poison-severity-lower-bound",
+    ),
+    "poison-severity-checkpoint": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests catches upper checkpoint-owner-attempt worsening on the same subject",
+        "mutation-verdict:behavior:poison-severity-checkpoint",
+    ),
+    "poison-target-closure-comparison": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests rejects any targeted change to the poison-owned closure",
+        "mutation-verdict:behavior:poison-target-closure-comparison",
+    ),
+    "poison-returned-target-comparison": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests rejects returning the poison target even when storage stayed unchanged",
+        "mutation-verdict:behavior:poison-returned-target-comparison",
+    ),
+    "accounting-live-run-next-invariant": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/invariant-checkers.test.ts",
+        "invariant checkers fire on constructed corruption flags a live run whose ordinal is not the next accounted attempt",
+        "mutation-verdict:behavior:accounting-live-run-next-invariant",
+    ),
+    "sweep-accepts-max-ordinal-at-infra-cap": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification accepts the maximum ordinal at the terminal infra-cap branch",
+        "mutation-verdict:behavior:sweep-accepts-max-ordinal-at-infra-cap",
+        "packages/conformance/src/suite.ts",
+    ),
+    "poison-relational-target-inventory": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests enrolls every relational and fractional target in every lifecycle arm",
+        "mutation-verdict:behavior:poison-relational-target-inventory",
+    ),
+    "poison-fractional-storage-guard": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests contains an in-range fractional counter at the claim door",
+        "mutation-verdict:behavior:poison-fractional-storage-guard",
+    ),
+    "poison-claim-relaunch-upper": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests contains upper relaunch_count at the claim door",
+        "mutation-verdict:behavior:poison-claim-relaunch-upper",
+    ),
+    "poison-claim-relaunch-lower": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests contains lower relaunch_count at the claim door",
+        "mutation-verdict:behavior:poison-claim-relaunch-lower",
+    ),
     "matrix-lost-launch-edge-progress": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -838,20 +1985,6 @@ VERDICTS = {
         "fault matrix [libsql] (label x fault x starting state, generated) sweep:claim-timeout survives duplicate from infra-cap-edge",
         "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
         "packages/conformance/src/store-conformance.ts",
-    ),
-    "sweep-rejects-noninteger-attempt": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] sweep classification refuses a corrupt stored attempt without partially sweeping the expired claim",
-        "mutation-verdict:behavior:sweep-rejects-noninteger-attempt",
-        "packages/conformance/src/suite.ts",
-    ),
-    "suspend-rejects-noninteger-attempt": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] transitions: complete / fail / reschedule suspendRun rejects a non-integer stored attempt atomically",
-        "mutation-verdict:behavior:suspend-rejects-noninteger-attempt",
-        "packages/conformance/src/suite.ts",
     ),
     "shared-conformance-runner-registry": ExpectedVerdict(
         "construction",
@@ -935,6 +2068,30 @@ VERDICTS = {
     ),
 }
 
+CHECKPOINT_CONFLICT_CASE_IDS = {
+    "exists": "missing-owner",
+    "owner-id": "owner-id-mismatch",
+    "owner-task": "owner-task-mismatch",
+    "owner-queue": "owner-queue-mismatch",
+    "owner-attempt": "owner-attempt-mismatch",
+    "owner-attempt-upper": "owner-attempt-out-of-range",
+    "owner-attempt-lower": "owner-attempt-below-range",
+    "owner-attempt-storage": "owner-attempt-fractional-storage",
+    "conflict-queue": "conflict-queue-mismatch",
+}
+
+for consumer, _ in CHECKPOINT_CONFLICT_CONSUMERS:
+    for suffix, case_id in CHECKPOINT_CONFLICT_CASE_IDS.items():
+        name = f"{consumer}-validates-existing-lww-owner-{suffix}"
+        VERDICTS[name] = ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] checkpoints "
+            f"atomically refuses {consumer}/{case_id} checkpoint ownership",
+            f"mutation-verdict:behavior:{name}",
+            "packages/conformance/src/suite.ts",
+        )
+
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
     raise RuntimeError("mutation-probe has duplicate mutation names")
@@ -943,7 +2100,23 @@ if set(spec_names) != set(VERDICTS):
     stale = sorted(set(VERDICTS) - set(spec_names))
     raise RuntimeError(f"mutation verdict inventory mismatch: missing={missing}, stale={stale}")
 
-MUTATIONS = [Mutation(*spec, VERDICTS[spec[0]]) for spec in MUTATION_SPECS]
+TYPECHECK_MUTATION_NAMES = frozenset(
+    {
+        "stored-within-rejects-spread-descriptor",
+        "stored-incrementable-rejects-spread-descriptor",
+        "persisted-row-rejects-spread-descriptor",
+        "derived-row-rejects-spread-descriptor",
+    }
+)
+
+MUTATIONS = [
+    Mutation(
+        *spec,
+        VERDICTS[spec[0]],
+        verifier="typecheck" if spec[0] in TYPECHECK_MUTATION_NAMES else "vitest",
+    )
+    for spec in MUTATION_SPECS
+]
 
 # The suite, minus the legs whose cost dwarfs their value here: the fuzz shards
 # and the real-process chaos tests each add minutes per mutation. The real
@@ -959,6 +2132,14 @@ TEST_CMD = [
     "packages/conformance/test/fuzz-*",
     "--exclude",
     "packages/driver/test/chaos-process.test.ts",
+]
+TYPECHECK_CMD = [
+    "pnpm",
+    "exec",
+    "tsc",
+    "-p",
+    "packages/store-libsql/tsconfig.json",
+    "--noEmit",
 ]
 CONFINEMENT_ENV = "DURABLERUN_MUTATION_SCOPE"
 REPORT_VERSION = 1
@@ -1190,6 +2371,21 @@ def diagnostic_tail(path: Path, limit: int = 16_384) -> str:
         return stream.read().decode(errors="replace").strip()
 
 
+def require_verifier_capabilities(
+    *,
+    scope: ConfinedScope,
+    workspace: IsolatedWorkspace,
+    authority: WorkerAuthority,
+) -> None:
+    if (
+        workspace.root != ROOT.resolve()
+        or authority.worker_root != ROOT.resolve()
+        or scope.memory_max <= 0
+        or scope.cpu_quota <= 0
+    ):
+        raise RuntimeError("mutation verifier lacks its runtime safety capabilities")
+
+
 def run_suite(
     max_workers: int,
     *,
@@ -1198,13 +2394,11 @@ def run_suite(
     authority: WorkerAuthority,
     return_transport_as_domain: bool = False,
 ) -> SuiteResult:
-    if (
-        workspace.root != ROOT.resolve()
-        or authority.worker_root != ROOT.resolve()
-        or scope.memory_max <= 0
-        or scope.cpu_quota <= 0
-    ):
-        raise RuntimeError("mutation suite lacks its runtime safety capabilities")
+    require_verifier_capabilities(
+        scope=scope,
+        workspace=workspace,
+        authority=authority,
+    )
     with tempfile.TemporaryDirectory(prefix="durablerun-mutation-report-") as temporary:
         report = Path(temporary) / "vitest.json"
         log = Path(temporary) / "vitest.log"
@@ -1247,6 +2441,113 @@ def run_suite(
             parsed,
             return_as_domain=return_transport_as_domain,
         )
+
+
+def run_typecheck(
+    expected: ExpectedVerdict | None,
+    *,
+    scope: ConfinedScope,
+    workspace: IsolatedWorkspace,
+    authority: WorkerAuthority,
+) -> SuiteResult:
+    """Run the compiler leg and attribute only the intended unused-error directive."""
+    require_verifier_capabilities(
+        scope=scope,
+        workspace=workspace,
+        authority=authority,
+    )
+    with tempfile.TemporaryDirectory(prefix="durablerun-mutation-typecheck-") as temporary:
+        log = Path(temporary) / "tsc.log"
+        with log.open("wb") as output:
+            result = subprocess.run(
+                TYPECHECK_CMD,
+                cwd=ROOT,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+            )
+        compiler_output = log.read_text(errors="replace")
+        diagnostic = diagnostic_tail(log)
+    if result.returncode == 0:
+        return SuiteResult(True, True, (), (), diagnostic)
+    if expected is None:
+        return SuiteResult(
+            False,
+            False,
+            (),
+            ("the unmutated TypeScript construction baseline failed",),
+            diagnostic,
+        )
+
+    marker_file = expected.marker_file or expected.file
+    source_lines = (ROOT / marker_file).read_text().splitlines()
+    marker_lines = [
+        index + 1
+        for index, line in enumerate(source_lines)
+        if expected.marker in line
+    ]
+    if len(marker_lines) != 1:
+        return SuiteResult(
+            False,
+            False,
+            (),
+            (f"{marker_file}: expected one construction marker, found {len(marker_lines)}",),
+            diagnostic,
+        )
+    marker_line = marker_lines[0]
+    directive_lines = [
+        line
+        for line in range(marker_line + 1, min(len(source_lines), marker_line + 4) + 1)
+        if "@ts-expect-error" in source_lines[line - 1]
+    ]
+    if len(directive_lines) != 1:
+        return SuiteResult(
+            False,
+            False,
+            (),
+            (
+                f"{marker_file}:{marker_line}: construction marker must own exactly "
+                "one following @ts-expect-error directive",
+            ),
+            diagnostic,
+        )
+
+    compiler_errors = re.findall(
+        r"(?m)^(.+?\.tsx?)\((\d+),(\d+)\): error TS(\d+):.*$",
+        re.sub(r"\x1b\[[0-9;]*m", "", compiler_output),
+    )
+    wanted = (marker_file, str(directive_lines[0]), "2578")
+
+    def relative_compiler_path(path: str) -> str:
+        candidate = Path(path.strip())
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        try:
+            return candidate.resolve().relative_to(ROOT.resolve()).as_posix()
+        except ValueError:
+            return candidate.resolve().as_posix()
+
+    observed = [
+        (relative_compiler_path(path), line, code)
+        for path, line, _column, code in compiler_errors
+    ]
+    if observed != [wanted]:
+        return SuiteResult(
+            False,
+            False,
+            (),
+            (
+                f"TypeScript construction mutation produced {observed}, "
+                f"expected only {wanted}",
+            ),
+            diagnostic,
+        )
+    return SuiteResult(
+        False,
+        False,
+        (FailedAssertion(expected.file, expected.full_name, (expected.marker,)),),
+        (),
+        diagnostic,
+    )
 
 
 VerdictOutcome = Literal["caught", "survived", "wrong-path"]
@@ -1765,6 +3066,27 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     if check_live_inventory:
         if TEST_CMD[:3] != ["pnpm", "exec", "vitest"]:
             failures.append("worker suites do not execute Vitest directly")
+        if TYPECHECK_CMD != [
+            "pnpm",
+            "exec",
+            "tsc",
+            "-p",
+            "packages/store-libsql/tsconfig.json",
+            "--noEmit",
+        ]:
+            failures.append("construction mutations do not execute the pinned TypeScript compiler leg")
+        selected_typecheck = {
+            mutation.name for mutation in MUTATIONS if mutation.verifier == "typecheck"
+        }
+        if selected_typecheck != TYPECHECK_MUTATION_NAMES:
+            failures.append(
+                "the construction-mutation verifier inventory differs from its canonical names"
+            )
+        if any(
+            mutation.verifier == "typecheck" and mutation.verdict.kind != "construction"
+            for mutation in MUTATIONS
+        ):
+            failures.append("a typecheck mutation is attributed as a behavioral verdict")
         confined = confinement_command([])
         if confined[:4] != [
             "bash",
@@ -1969,6 +3291,7 @@ def mutation_registry_digest() -> str:
             "find": mutation.find,
             "replace": mutation.replace,
             "breaks": mutation.breaks,
+            "verifier": mutation.verifier,
             "verdict": {
                 "kind": mutation.verdict.kind,
                 "file": mutation.verdict.file,
@@ -3482,11 +4805,20 @@ def execute_mutation(
             raise RuntimeError(
                 f"{mutation.name}: worker diff is {changed}, expected only {mutation.file}"
             )
-        result = run_suite(
-            max_workers,
-            scope=scope,
-            workspace=workspace,
-            authority=authority,
+        result = (
+            run_typecheck(
+                mutation.verdict,
+                scope=scope,
+                workspace=workspace,
+                authority=authority,
+            )
+            if mutation.verifier == "typecheck"
+            else run_suite(
+                max_workers,
+                scope=scope,
+                workspace=workspace,
+                authority=authority,
+            )
         )
         outcome = classify_verdict(result, mutation.verdict)
         if outcome == "caught":
@@ -3568,6 +4900,15 @@ def worker_phase(
             workspace=workspace,
             authority=authority,
         )
+        if baseline.green and any(
+            by_name[name][1].verifier == "typecheck" for name in mutation_names
+        ):
+            baseline = run_typecheck(
+                None,
+                scope=scope,
+                workspace=workspace,
+                authority=authority,
+            )
         payload = {
             "version": REPORT_VERSION,
             "phase": "baseline",

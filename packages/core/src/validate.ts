@@ -83,31 +83,51 @@ export interface IntegerBounds {
   readonly max: number
 }
 
-declare const INTEGER_BOUNDS_DOMAIN: unique symbol
-
 /**
  * A numeric interval owned by one durable field or one explicitly derived
- * domain. Equal endpoints do not make two domains interchangeable.
+ * domain. Equal endpoints do not make two domains interchangeable. The
+ * descriptor is a class with a private identity member so object spread
+ * cannot preserve its nominal type and replace the canonical endpoints.
  */
-export interface BrandedIntegerBounds<Domain extends string> extends IntegerBounds {
-  readonly [INTEGER_BOUNDS_DOMAIN]: Domain
+class IntegerBoundsDescriptor<Domain extends string> implements IntegerBounds {
+  readonly min: number
+  readonly max: number
+  private readonly canonicalDomain: Domain
+
+  public constructor(domain: Domain, min: number, max: number) {
+    this.canonicalDomain = domain
+    this.min = min
+    this.max = max
+  }
+
+  // The durable field identity is deliberately a prototype getter backed by
+  // private state. Object spread therefore copies endpoints but cannot copy
+  // either the field or the nominal identity.
+  get field(): Domain {
+    return this.canonicalDomain
+  }
 }
 
+export type BrandedIntegerBounds<Domain extends string> = IntegerBoundsDescriptor<Domain>
+
 const integerBounds = <const Domain extends string>(
-  _domain: Domain,
+  domain: Domain,
   min: number,
   max: number,
-): Readonly<BrandedIntegerBounds<Domain>> =>
-  Object.freeze({ min, max }) as Readonly<BrandedIntegerBounds<Domain>>
+): BrandedIntegerBounds<Domain> => {
+  const bounds = new IntegerBoundsDescriptor(domain, min, max)
+  Object.freeze(bounds)
+  return bounds
+}
 
 /**
  * Narrow one domain without borrowing another field's coincidentally equal
  * interval. Used for post-transition refinements such as positive claim_gen.
  */
-export function refineIntegerBounds<const Domain extends string>(
+function refineIntegerBounds<const Domain extends string>(
   bounds: BrandedIntegerBounds<Domain>,
   refinement: { readonly min?: number; readonly max?: number },
-): Readonly<BrandedIntegerBounds<Domain>> {
+): BrandedIntegerBounds<Domain> {
   const min = refinement.min ?? bounds.min
   const max = refinement.max ?? bounds.max
   if (
@@ -121,7 +141,7 @@ export function refineIntegerBounds<const Domain extends string>(
       `integer refinement must stay inside [${bounds.min}, ${bounds.max}], got [${min}, ${max}]`,
     )
   }
-  return Object.freeze({ min, max }) as Readonly<BrandedIntegerBounds<Domain>>
+  return integerBounds(bounds.field, min, max)
 }
 
 /**
@@ -157,6 +177,17 @@ export const PERSISTED_INTEGER_BOUNDS = Object.freeze({
     updated_at_ms: integerBounds('checkpoints.updated_at_ms', 0, MAX_EPOCH_MS),
   }),
 })
+
+type NestedValues<T> = T extends unknown ? T[keyof T] : never
+export type PersistedIntegerBounds = NestedValues<NestedValues<typeof PERSISTED_INTEGER_BOUNDS>>
+export type PersistedIntegerBoundsExceptClaimGeneration = Exclude<
+  PersistedIntegerBounds,
+  typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen
+>
+export const POSITIVE_CLAIM_GENERATION_BOUNDS = refineIntegerBounds(
+  PERSISTED_INTEGER_BOUNDS.runs.claim_gen,
+  { min: 1 },
+)
 
 type PersistedCounterFieldContract =
   | Readonly<{
@@ -275,6 +306,8 @@ export const DERIVED_INTEGER_BOUNDS = Object.freeze({
   epoch_ms: integerBounds('derived.epoch_ms', 0, MAX_EPOCH_MS),
   duration_ms: integerBounds('derived.duration_ms', 0, MAX_DURATION_MS),
 })
+export type DerivedIntegerBounds =
+  (typeof DERIVED_INTEGER_BOUNDS)[keyof typeof DERIVED_INTEGER_BOUNDS]
 
 export type BoundedIntegerDecode =
   | { readonly ok: true; readonly value: number; readonly exact: bigint }
@@ -321,6 +354,70 @@ export function decodeBoundedInteger(value: unknown, bounds: IntegerBounds): Bou
     return { ok: false, reason: 'out-of-range', exact }
   }
   return { ok: true, value: Number(exact), exact }
+}
+
+function requireBrandedInteger(
+  name: string,
+  value: unknown,
+  bounds: BrandedIntegerBounds<string>,
+): number {
+  const decoded = decodeBoundedInteger(value, bounds)
+  if (decoded.ok) return decoded.value
+  throw new RangeError(
+    `${name} (${bounds.field}) must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (${decoded.reason})`,
+  )
+}
+
+/**
+ * Client inputs are JavaScript numbers. Bigints are accepted only while
+ * decoding dialect-returned INTEGER values; letting a client bigint reach a
+ * driver would make coercion behavior part of the protocol.
+ */
+function requireClientBrandedInteger(
+  name: string,
+  value: unknown,
+  bounds: BrandedIntegerBounds<string>,
+): number {
+  if (typeof value !== 'number') {
+    throw new RangeError(
+      `${name} (${bounds.field}) must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (not-an-exact-integer)`,
+    )
+  }
+  return requireBrandedInteger(name, value, bounds)
+}
+
+/**
+ * Decode a SQL result computed from multiple durable values.
+ *
+ * Only derived-domain descriptors fit this API. Persisted fields must retain
+ * their own identity all the way to their field-specific decoder.
+ */
+export function requireDerivedInteger(
+  name: string,
+  value: unknown,
+  bounds: DerivedIntegerBounds,
+): number {
+  return requireBrandedInteger(name, value, bounds)
+}
+
+/**
+ * Validate the run ordinal accepted by a store port.
+ *
+ * The call site has no bounds menu: the run-attempt domain is closed over
+ * here, so an equal-looking checkpoint-owner interval cannot stand in for it.
+ */
+export function requireRunOrdinal(name: string, value: unknown): number {
+  return requireClientBrandedInteger(name, value, PERSISTED_INTEGER_BOUNDS.runs.attempt)
+}
+
+/**
+ * Validate the claim generation accepted by the activation port.
+ *
+ * Claim generations are positive receipts. The call site has no bounds menu
+ * and no driver-coercion escape hatch.
+ */
+export function requirePositiveClaimGeneration(name: string, value: unknown): number {
+  return requireClientBrandedInteger(name, value, POSITIVE_CLAIM_GENERATION_BOUNDS)
 }
 
 /** What a bad value IS, for an error message that saves a debugging session. */
