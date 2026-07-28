@@ -16,7 +16,6 @@ import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
-import { timestampBoundaryConformance } from './time-boundaries.js'
 
 const Q = 'q'
 
@@ -60,7 +59,6 @@ async function snapshot(f: StoreFixture, taskId: string): Promise<unknown> {
  * is part of the contract.
  */
 export function schedulerConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
-  timestampBoundaryConformance(dialect, makeFixture)
   describe(`scheduler conformance [${dialect}]`, () => {
     let f: StoreFixture
 

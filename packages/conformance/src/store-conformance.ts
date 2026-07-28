@@ -22,6 +22,7 @@ import {
   unknownCoveredConditionIds,
 } from './poison-matrix.js'
 import { schedulerConformance, wakeWitnessConformance } from './suite.js'
+import { timestampBoundaryConformance } from './time-boundaries.js'
 
 const FAULT_SEEDS = [1, 2] as const
 
@@ -134,6 +135,7 @@ const STORE_CONFORMANCE_SURFACES = Object.freeze([
   { id: 'scheduler', run: schedulerConformance },
   { id: 'fault-matrix', run: faultMatrixConformance },
   { id: 'poison-matrix', run: poisonMatrixConformance },
+  { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
   { id: 'wake-witness', run: wakeWitnessConformance },
 ] as const)
 
