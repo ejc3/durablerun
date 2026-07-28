@@ -598,6 +598,63 @@ export function timestampBoundaryConformance(
       })
     }
 
+    it('driver-heartbeat overflow preserves its source and expired cleanup victim', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:driver-heartbeat-overflow-cleanup')
+      try {
+        const sourceDriver = 'overflow-source'
+        const victimDriver = 'expired-victim'
+        const expected = [
+          {
+            driver_id: victimDriver,
+            last_beat_ms: NORMAL_NOW_MS - 2,
+            expires_at_ms: NORMAL_NOW_MS - 1,
+          },
+          {
+            driver_id: sourceDriver,
+            last_beat_ms: NORMAL_NOW_MS - 1,
+            expires_at_ms: NORMAL_NOW_MS + 60_000,
+          },
+        ]
+        await fixture.raw.batch('time-boundary:driver-heartbeat-overflow-cleanup-setup', [
+          {
+            sql: `INSERT INTO drivers
+                    (queue, driver_id, last_beat_ms, expires_at_ms)
+                  VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+            args: [
+              Q,
+              victimDriver,
+              NORMAL_NOW_MS - 2,
+              NORMAL_NOW_MS - 1,
+              Q,
+              sourceDriver,
+              NORMAL_NOW_MS - 1,
+              NORMAL_NOW_MS + 60_000,
+            ],
+          },
+        ])
+        await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS)
+
+        await fixture.store.driverHeartbeat(Q, sourceDriver, ONE_MS_SECONDS).catch(() => undefined)
+        const [drivers] = await fixture.raw.batch(
+          'time-boundary:driver-heartbeat-overflow-cleanup-after',
+          [
+            {
+              sql: `SELECT driver_id, last_beat_ms, expires_at_ms
+                    FROM drivers WHERE queue = ? ORDER BY driver_id`,
+              args: [Q],
+            },
+          ],
+          'read',
+        )
+        expect(
+          drivers?.rows,
+          'mutation-verdict:behavior:timestamp-driver-heartbeat-overflow-preserves-cleanup-inputs',
+        ).toEqual(expected)
+      } finally {
+        fixture.close()
+      }
+    })
+
     it('allows the relaunch-cap terminal arm at the epoch ceiling', async () => {
       const fixture = await fixtureAt(makeFixture, 'terminal:relaunch-cap')
       try {
@@ -726,6 +783,53 @@ export function timestampBoundaryConformance(
             'claim_expires_at_ms',
           ),
         ).toBe(MAX_EPOCH_MS)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('accepts a max-duration just above the seconds ceiling when it rounds to the ms ceiling', async () => {
+      const fixture = await fixtureAt(makeFixture, 'control:activation-rounded-duration-max')
+      try {
+        const durationSeconds = MAX_DURATION_MS / 1000 + 0.0004
+        if (
+          durationSeconds <= MAX_DURATION_MS / 1000 ||
+          Math.round(durationSeconds * 1000) !== MAX_DURATION_MS
+        ) {
+          throw new Error('rounded max-duration setup does not straddle the seconds ceiling')
+        }
+        const firstStartedAtMs = MAX_EPOCH_MS - MAX_DURATION_MS
+        await fixture.admin.setFakeNowEpochMs(firstStartedAtMs)
+        const task = await spawned(fixture, 'activation-rounded-duration-max', {
+          cancellation: { maxDurationSeconds: durationSeconds },
+        })
+        const run = await claimOne(fixture, 'activation-rounded-duration-max-token')
+
+        const activation = await fixture.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const [persisted] = await fixture.raw.batch(
+          'time-boundary:activation-rounded-duration-max-after',
+          [
+            {
+              sql: `SELECT first_started_at_ms, cancel_at_ms
+                    FROM tasks WHERE task_id = ?`,
+              args: [task.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(
+          {
+            activated: activation !== null,
+            task: persisted?.rows[0],
+          },
+          'mutation-verdict:behavior:timestamp-activation-rounded-duration-max',
+        ).toEqual({
+          activated: true,
+          task: {
+            first_started_at_ms: firstStartedAtMs,
+            cancel_at_ms: MAX_EPOCH_MS,
+          },
+        })
       } finally {
         fixture.close()
       }
