@@ -1,40 +1,64 @@
-import { PERSISTED_INTEGER_BOUNDS } from '@durablerun/core'
+import { DERIVED_INTEGER_BOUNDS, PERSISTED_INTEGER_BOUNDS } from '@durablerun/core'
 import { expect, it } from 'vitest'
-import { storedIncrementableInteger, storedIntegerWithin } from '../src/fragments.js'
+import {
+  storedIncrementableClaimGeneration,
+  storedIncrementableInteger,
+  storedIntegerWithin,
+  storedPositiveClaimGeneration,
+} from '../src/fragments.js'
 import { persistedRowInteger } from '../src/store.js'
 
 it('binds a persisted SQL column to its own nominal integer domain', () => {
-  expect(
-    storedIntegerWithin('t.infra_retries', PERSISTED_INTEGER_BOUNDS.tasks.infra_retries),
-  ).toContain('t.infra_retries')
+  expect(storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.tasks.infra_retries, 't')).toContain(
+    't.infra_retries',
+  )
 
-  // @ts-expect-error attempts bounds must never validate infra_retries
-  storedIntegerWithin('t.infra_retries', PERSISTED_INTEGER_BOUNDS.tasks.attempts)
-
-  expect(
-    storedIncrementableInteger('infra_retries', PERSISTED_INTEGER_BOUNDS.tasks.infra_retries),
-  ).toContain('infra_retries')
-
-  // @ts-expect-error attempts bounds must never validate infra_retries
-  storedIncrementableInteger('t.infra_retries', PERSISTED_INTEGER_BOUNDS.tasks.attempts)
+  expect(storedIncrementableInteger(PERSISTED_INTEGER_BOUNDS.tasks.infra_retries)).toContain(
+    'infra_retries',
+  )
 
   expect(
-    persistedRowInteger('claim.infra_retries', 0, PERSISTED_INTEGER_BOUNDS.tasks.infra_retries),
+    persistedRowInteger(
+      'claim',
+      { infra_retries: 0 },
+      PERSISTED_INTEGER_BOUNDS.tasks.infra_retries,
+    ),
   ).toBe(0)
-
-  // @ts-expect-error attempts bounds must never decode infra_retries
-  persistedRowInteger('claim.infra_retries', 0, PERSISTED_INTEGER_BOUNDS.tasks.attempts)
 
   const unionBounds = PERSISTED_INTEGER_BOUNDS.tasks.attempts as
     | typeof PERSISTED_INTEGER_BOUNDS.tasks.attempts
     | typeof PERSISTED_INTEGER_BOUNDS.tasks.infra_retries
 
-  // @ts-expect-error a union must not restore the independently selected column/bounds API
-  storedIntegerWithin('t.infra_retries', unionBounds)
+  // A union is safe now: whichever descriptor arrives owns both the field and
+  // its interval, so no independently selected source can disagree with it.
+  expect(storedIntegerWithin(unionBounds, 't')).toContain(`t.${unionBounds.field.split('.')[1]}`)
+  expect(storedIncrementableInteger(unionBounds, 't')).toContain(
+    `t.${unionBounds.field.split('.')[1]}`,
+  )
+  expect(persistedRowInteger('claim', { attempts: 0, infra_retries: 0 }, unionBounds)).toBe(0)
 
-  // @ts-expect-error a union must not restore the independently selected column/bounds API
-  storedIncrementableInteger('t.infra_retries', unionBounds)
+  expect(storedPositiveClaimGeneration('r')).toContain('r.claim_gen')
+  expect(storedIncrementableClaimGeneration('r')).toContain('r.claim_gen')
 
-  // @ts-expect-error a union must not restore the independently selected column/bounds API
-  persistedRowInteger('claim.infra_retries', 0, unionBounds)
+  const compileOnly = (): void => {
+    // @ts-expect-error the independent column/bounds API no longer exists
+    storedIntegerWithin('t.infra_retries', PERSISTED_INTEGER_BOUNDS.tasks.attempts)
+    // @ts-expect-error the independent column/bounds API no longer exists
+    storedIncrementableInteger('t.infra_retries', PERSISTED_INTEGER_BOUNDS.tasks.attempts)
+    // @ts-expect-error the independent value/bounds API no longer exists
+    persistedRowInteger('claim.infra_retries', 0, PERSISTED_INTEGER_BOUNDS.tasks.attempts)
+
+    // @ts-expect-error claim generation must use its fixed positive/incrementable helpers
+    storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.runs.claim_gen, 'r')
+    // @ts-expect-error claim generation must use its fixed positive/incrementable helpers
+    storedIncrementableInteger(PERSISTED_INTEGER_BOUNDS.runs.claim_gen, 'r')
+
+    // @ts-expect-error derived results are not persisted SQL fields
+    storedIntegerWithin(DERIVED_INTEGER_BOUNDS.duration_ms, 'r')
+    // @ts-expect-error derived results are not persisted SQL fields
+    storedIncrementableInteger(DERIVED_INTEGER_BOUNDS.duration_ms, 'r')
+    // @ts-expect-error derived results cannot be decoded as persisted row fields
+    persistedRowInteger('derived', { duration_ms: 0 }, DERIVED_INTEGER_BOUNDS.duration_ms)
+  }
+  expect(compileOnly).toBeTypeOf('function')
 })

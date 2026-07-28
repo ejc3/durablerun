@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { PERSISTED_INTEGER_BOUNDS, decodeBoundedInteger } from '../src/index.js'
+import {
+  DERIVED_INTEGER_BOUNDS,
+  MAX_RUN_ORDINAL,
+  PERSISTED_INTEGER_BOUNDS,
+  decodeBoundedInteger,
+  requireDerivedInteger,
+  requireRunOrdinal,
+} from '../src/index.js'
 
 describe('decodeBoundedInteger', () => {
   const bounds = { min: 0, max: 10 }
@@ -56,5 +63,22 @@ describe('decodeBoundedInteger', () => {
     const wrongField: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen =
       PERSISTED_INTEGER_BOUNDS.tasks.max_attempts
     expect(claimBounds).not.toBe(wrongField)
+  })
+
+  it('keeps persisted descriptors out of the derived-result decoder', () => {
+    expect(requireDerivedInteger('remaining', 0, DERIVED_INTEGER_BOUNDS.duration_ms)).toBe(0)
+    const compileOnly = (): void => {
+      // @ts-expect-error persisted fields must use their field-specific decoder
+      requireDerivedInteger('attempt', 1, PERSISTED_INTEGER_BOUNDS.runs.attempt)
+    }
+    expect(compileOnly).toBeTypeOf('function')
+  })
+
+  it('validates a port run ordinal through one fixed domain', () => {
+    expect(requireRunOrdinal('attempt', 1)).toBe(1)
+    expect(requireRunOrdinal('attempt', MAX_RUN_ORDINAL)).toBe(MAX_RUN_ORDINAL)
+    for (const invalid of [0, 1.5, MAX_RUN_ORDINAL + 1, Number.NaN, Number.POSITIVE_INFINITY, 1n]) {
+      expect(() => requireRunOrdinal('attempt', invalid)).toThrow(/runs\.attempt/)
+    }
   })
 })
