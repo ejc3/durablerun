@@ -785,6 +785,45 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toEqual([{ state: 'failed', claimed_by: null }])
       })
 
+      it('rechecks a terminal relaunch-cap generation after the advisory scan', async () => {
+        const spawned = await f.store.spawn(Q, 'terminal-relaunch-cap-generation-race', '{}')
+        const run = await claimOne('tick-terminal-relaunch-cap-generation-race')
+        await f.raw.batch('terminalize-relaunch-cap-generation-race', [
+          {
+            sql: `UPDATE tasks
+                  SET state = 'failed', attempts = max_attempts,
+                      failure_reason = '{"name":"External"}'
+                  WHERE task_id = ?`,
+            args: [spawned.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ?, relaunch_count = ? WHERE run_id = ?`,
+            args: [run.maxAttempts, RELAUNCH_CAP, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        let afterCorruption: unknown
+        const interposed = interposeAfterBatch(f.raw, 'sweep:scan', async () => {
+          await f.raw.batch('corrupt-generation-after-terminal-cap-scan', [
+            {
+              sql: `UPDATE runs SET activated_gen = -1 WHERE run_id = ?`,
+              args: [run.runId],
+            },
+          ])
+          afterCorruption = await snapshot(f, spawned.taskId)
+        })
+
+        const swept = await f.storeOver(interposed.executor).sweep(Q, 10)
+        expect(interposed.fired()).toBe(true)
+        expect(
+          swept,
+          'mutation-verdict:behavior:sweep-terminal-cap-rechecks-generation-lower-bound',
+        ).toEqual([])
+        expect(afterCorruption).toBeDefined()
+        expect(await snapshot(f, spawned.taskId)).toEqual(afterCorruption)
+      })
+
       it('derives the timeout successor attempt from the fenced run, not the advisory scan', async () => {
         const spawned = await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('tick-1')
