@@ -10,11 +10,14 @@ import {
 import type { StoreFixtureFactory } from './fixture.js'
 import { ENGINE_INVARIANT_CONDITIONS } from './invariants.js'
 import {
+  POISON_TARGET_CASES,
+  POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
   POISON_WITNESS_COUNT,
   POISON_WRITE_LABELS,
   duplicatePoisonWitnessIds,
   runPoisonMatrixCase,
+  runPoisonTargetCase,
   uncoveredConditionIds,
   unknownCoveredConditionIds,
 } from './poison-matrix.js'
@@ -64,13 +67,23 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
 }
 
 function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
-  describe(`poison matrix [${dialect}] (write label x forbidden pre-state, generated)`, () => {
+  describe(`poison matrix [${dialect}] (ambient write label x forbidden pre-state)`, () => {
     it('covers every invariant and keeps the atomic witness inventory pinned', () => {
-      expect(uncoveredConditionIds()).toEqual([])
+      expect(
+        uncoveredConditionIds(),
+        'mutation-verdict:behavior:persisted-counter-field-inventory',
+      ).toEqual([])
       expect(unknownCoveredConditionIds()).toEqual([])
       expect(duplicatePoisonWitnessIds()).toEqual([])
-      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(74)
-      expect(POISON_WITNESS_COUNT).toBe(71)
+      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(79)
+      expect(POISON_WITNESS_COUNT).toBe(87)
+      expect(POISON_WRITE_LABELS).toHaveLength(17)
+      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(1_479)
+      expect(POISON_TARGET_CASES).toHaveLength(49)
+      expect(POISON_UNREACHABLE_TARGETS).toHaveLength(27)
+      expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
+        POISON_TARGET_CASES.length,
+      )
     })
 
     it('fails completeness when one atomic condition loses its witness', () => {
@@ -102,6 +115,18 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         })
       }
     }
+
+    describe('branch-reachable counter containment', () => {
+      for (const target of POISON_TARGET_CASES) {
+        it(`${target.profile} contains ${target.witness.id}`, async () => {
+          await expect(runPoisonTargetCase(makeFixture, target)).resolves.toMatchObject({
+            label: target.label,
+            witness: target.witness.id,
+            profile: target.profile,
+          })
+        })
+      }
+    })
   })
 }
 

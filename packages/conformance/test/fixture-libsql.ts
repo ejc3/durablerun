@@ -10,7 +10,9 @@ async function injectStorageCorruption(
   const value =
     corruption.invalidRepresentation === 'non-integer'
       ? 'bad-time'
-      : new Uint8Array([112, 111, 105, 115, 111, 110])
+      : corruption.invalidRepresentation === 'fractional-real'
+        ? 0.5
+        : new Uint8Array([112, 111, 105, 115, 111, 110])
   switch (corruption.table) {
     case 'tasks':
       await raw.batch(

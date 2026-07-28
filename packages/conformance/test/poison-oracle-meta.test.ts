@@ -1,12 +1,29 @@
-import type { SqlExecutor } from '@durablerun/core'
+import {
+  PERSISTED_COUNTER_FIELDS,
+  type PersistedCounterFieldDescriptor,
+  type SqlExecutor,
+} from '@durablerun/core'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantFindings } from '../src/invariants.js'
-import { POISON_WITNESSES, runPoisonMatrixCase } from '../src/poison-matrix.js'
+import {
+  POISON_TARGET_CASES,
+  POISON_UNREACHABLE_TARGETS,
+  POISON_WITNESSES,
+  runPoisonMatrixCase,
+  runPoisonTargetCase,
+} from '../src/poison-matrix.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 function witness(id: string) {
   const found = POISON_WITNESSES.find((candidate) => candidate.id === id)
   if (!found) throw new Error(`missing poison witness ${id}`)
+  return found
+}
+
+function target(id: string) {
+  const found = POISON_TARGET_CASES.find((candidate) => candidate.id === id)
+  if (!found) throw new Error(`missing poison target ${id}`)
   return found
 }
 
@@ -404,61 +421,16 @@ describe('poison/invariant mechanism self-tests', () => {
     ).rejects.toThrow(/worsened/)
   })
 
-  const counterBoundFields = [
-    {
-      id: 'task-attempts',
-      table: 'tasks',
-      column: 'attempts',
-      predicate: `task_id = 'poison-task'`,
-    },
-    {
-      id: 'task-max-attempts',
-      table: 'tasks',
-      column: 'max_attempts',
-      predicate: `task_id = 'poison-task'`,
-    },
-    {
-      id: 'task-infra-retries',
-      table: 'tasks',
-      column: 'infra_retries',
-      predicate: `task_id = 'poison-task'`,
-    },
-    {
-      id: 'run-attempt',
-      table: 'runs',
-      column: 'attempt',
-      predicate: `run_id = 'poison-run'`,
-    },
-    {
-      id: 'run-claim-gen',
-      table: 'runs',
-      column: 'claim_gen',
-      predicate: `run_id = 'poison-run'`,
-    },
-    {
-      id: 'run-activated-gen',
-      table: 'runs',
-      column: 'activated_gen',
-      predicate: `run_id = 'poison-run'`,
-    },
-    {
-      id: 'run-relaunch-count',
-      table: 'runs',
-      column: 'relaunch_count',
-      predicate: `run_id = 'poison-run'`,
-    },
-    {
-      id: 'checkpoint-owner-attempt',
-      table: 'checkpoints',
-      column: 'owner_attempt',
-      predicate: `task_id = 'poison-task' AND checkpoint_name = 'poison-checkpoint'`,
-    },
-  ] as const
+  const fieldPredicate = (field: PersistedCounterFieldDescriptor): string => {
+    if (field.table === 'tasks') return `task_id = 'poison-task'`
+    if (field.table === 'runs') return `run_id = 'poison-run'`
+    return `task_id = 'poison-task' AND checkpoint_name = 'poison-checkpoint'`
+  }
 
   for (const side of ['upper', 'lower'] as const) {
-    for (const field of counterBoundFields) {
+    for (const field of PERSISTED_COUNTER_FIELDS) {
       it(`catches ${side} ${field.id} worsening on the same subject`, async () => {
-        await expect(
+        const run = () =>
           runPoisonMatrixCase(
             makeLibsqlFixture,
             'driver-heartbeat',
@@ -471,23 +443,306 @@ describe('poison/invariant mechanism self-tests', () => {
                   {
                     sql: `UPDATE ${field.table}
                           SET ${field.column} = ${field.column} ${side === 'upper' ? '+' : '-'} 1
-                          WHERE ${field.predicate}`,
+                          WHERE ${fieldPredicate(field)}`,
                     args: [],
                   },
                 ]),
             },
-          ),
-        ).rejects.toThrow(/worsened/)
+          )
+        if (side === 'lower' && field.id === 'task-attempts') {
+          await requireExpectedFailure(
+            { kind: 'behavior', mutation: 'poison-severity-lower-bound' },
+            /worsened/,
+            run,
+          )
+        } else if (side === 'upper' && field.id === 'checkpoint-owner-attempt') {
+          await requireExpectedFailure(
+            { kind: 'behavior', mutation: 'poison-severity-checkpoint' },
+            /worsened/,
+            run,
+          )
+        } else {
+          await expect(run()).rejects.toThrow(/worsened/)
+        }
       })
     }
   }
 
   it('owns both boundary witnesses for every persisted counter bound', () => {
     const ids = new Set(POISON_WITNESSES.map((candidate) => candidate.id))
-    for (const field of counterBoundFields) {
+    for (const field of PERSISTED_COUNTER_FIELDS) {
       expect(ids).toContain(`counter-bound/${field.id}`)
       expect(ids).toContain(`counter-bound-lower/${field.id}`)
     }
+  })
+
+  it('classifies every counter boundary against every target arm', () => {
+    const boundaries = POISON_WITNESSES.filter(
+      (candidate) => candidate.counterBoundary !== undefined,
+    )
+    expect(boundaries).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2)
+    expect(
+      boundaries.flatMap((candidate) =>
+        Object.entries(candidate.counterBoundary?.arms ?? {}).map(([arm, classification]) => ({
+          id: candidate.id,
+          arm,
+          kind: classification.kind,
+        })),
+      ),
+    ).toHaveLength(PERSISTED_COUNTER_FIELDS.length * 2 * 3)
+    expect(
+      POISON_TARGET_CASES,
+      'mutation-verdict:behavior:poison-targetability-inventory',
+    ).toHaveLength(49)
+    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(27)
+  })
+
+  it('pins every unreachable counter target and its reason', () => {
+    expect(POISON_UNREACHABLE_TARGETS.map((target) => `${target.id}=${target.reason}`)).toEqual([
+      'counter-bound/task-attempts/claim=counter-relation-needs-another-invalid-field',
+      'counter-bound/task-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound/task-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/claim=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/sweep:lost-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-attempt/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-activated-gen/claim=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-activated-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound/run-relaunch-count/sweep:lost-launch=downstream-cas-still-refuses-value',
+      'counter-bound/checkpoint-owner-attempt/claim=transition-does-not-read-field',
+      'counter-bound/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
+      'counter-bound/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
+      'counter-bound-lower/task-max-attempts/claim=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/task-max-attempts/sweep:lost-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/task-max-attempts/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-attempt/claim=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-attempt/sweep:lost-launch=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-attempt/sweep:claim-timeout=counter-relation-needs-another-invalid-field',
+      'counter-bound-lower/run-claim-gen/claim=generation-classification-needs-another-invalid-field',
+      'counter-bound-lower/run-claim-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
+      'counter-bound-lower/run-claim-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound-lower/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
+      'counter-bound-lower/checkpoint-owner-attempt/claim=transition-does-not-read-field',
+      'counter-bound-lower/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
+      'counter-bound-lower/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
+    ])
+  })
+
+  it('generates both ordered claim legs for a targetable boundary', () => {
+    expect(
+      POISON_TARGET_CASES.filter(
+        (candidate) => candidate.witness.id === 'counter-bound/task-infra-retries',
+      )
+        .map((candidate) => candidate.profile)
+        .filter((profile) => profile.startsWith('claim-'))
+        .sort(),
+    ).toEqual(['claim-pending', 'claim-sleeping'])
+  })
+
+  it('owns an executable case for every declared lifecycle profile', () => {
+    expect(new Set(POISON_TARGET_CASES.map((candidate) => candidate.profile))).toEqual(
+      new Set(['claim-pending', 'claim-sleeping', 'sweep-lost-launch', 'sweep-claim-timeout']),
+    )
+  })
+
+  it('enrolls every relational and fractional target in every lifecycle arm', () => {
+    const profiles = [
+      'claim-pending',
+      'claim-sleeping',
+      'sweep-lost-launch',
+      'sweep-claim-timeout',
+    ] as const
+    const witnesses = [
+      'attempts/at-max-with-live-run',
+      'accounting/below-top-minus-one',
+      'accounting/live-run-not-next',
+      'counter-fractional/task-max-attempts',
+      'counter-fractional/run-relaunch-count',
+    ] as const
+    const expected = witnesses.flatMap((witnessId) =>
+      profiles.map((profile) => `${witnessId}/${profile}`),
+    )
+    const actual = POISON_TARGET_CASES.map((candidate) => candidate.id).filter((id) =>
+      witnesses.some((witnessId) => id.startsWith(`${witnessId}/`)),
+    )
+
+    expect(actual, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual(expected)
+  })
+
+  it('executes the claim-pending target profile', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-profile-claim-pending' },
+      /declared claim-pending/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/task-max-attempts/claim-pending'),
+        ),
+    )
+  })
+
+  it('executes the claim-sleeping target profile', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-profile-claim-sleeping' },
+      /declared claim-sleeping/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/task-max-attempts/claim-sleeping'),
+        ),
+    )
+  })
+
+  it('executes the sweep-lost-launch target profile', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-profile-sweep-lost-launch' },
+      /declared sweep-lost-launch/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/task-max-attempts/sweep-lost-launch'),
+        ),
+    )
+  })
+
+  it('executes the sweep-claim-timeout target profile', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-profile-sweep-claim-timeout' },
+      /declared sweep-claim-timeout/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/task-max-attempts/sweep-claim-timeout'),
+        ),
+    )
+  })
+
+  it('applies sweep target eligibility before the scan limit', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-sweep-scan-prelimit' },
+      /made no durable state change/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/task-max-attempts/sweep-lost-launch'),
+        ),
+    )
+  })
+
+  it('contains upper relaunch_count at the claim door', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-claim-relaunch-upper' },
+      /targeted poison-owned closure changed|returned the poison task or run/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/run-relaunch-count/claim-pending'),
+        ),
+    )
+  })
+
+  it('contains lower relaunch_count at the claim door', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-claim-relaunch-lower' },
+      /targeted poison-owned closure changed|returned the poison task or run/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound-lower/run-relaunch-count/claim-pending'),
+        ),
+    )
+  })
+
+  it('contains an in-range fractional counter at the claim door', async () => {
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-fractional-storage-guard' },
+      /targeted poison-owned closure changed|returned the poison task or run/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-fractional/task-max-attempts/claim-pending'),
+        ),
+    )
+  })
+
+  it('rejects any targeted change to the poison-owned closure', async () => {
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-target-closure-comparison' },
+      /targeted poison-owned closure changed/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/task-max-attempts/claim-pending'),
+          {
+            afterInvoke: (raw) =>
+              write(raw, [
+                {
+                  sql: `UPDATE runs SET heartbeat_at_ms = 1000001
+                      WHERE run_id = 'poison-run'`,
+                  args: [],
+                },
+              ]),
+          },
+        ),
+    )
+  })
+
+  it('rejects laundering the poison into a clean successor', async () => {
+    await expect(
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/sweep-claim-timeout'),
+        {
+          afterInvoke: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs
+                      SET state = 'failed', claimed_by = NULL, claim_expires_at_ms = NULL
+                      WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+              {
+                sql: `INSERT INTO runs
+                        (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+                      VALUES ('laundered-successor', 'q', 'poison-task', 2,
+                              'pending', 1000000, 1000000)`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    ).rejects.toThrow(/targeted poison-owned closure changed/)
+  })
+
+  it('rejects returning the poison target even when storage stayed unchanged', async () => {
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-returned-target-comparison' },
+      /returned the poison task or run/,
+      () =>
+        runPoisonTargetCase(
+          makeLibsqlFixture,
+          target('counter-bound/task-max-attempts/claim-pending'),
+          {
+            afterOutcomes: (outcomes) => {
+              outcomes.push({
+                target: 'poison',
+                result: [{ taskId: 'poison-task', runId: 'poison-run' }],
+              })
+            },
+          },
+        ),
+    )
+  })
+
+  it('keeps the durable progress floor independent of targeted refusal', async () => {
+    await expect(
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/claim-pending'),
+        { healthyTrigger: false },
+      ),
+    ).rejects.toThrow(/made no durable state change/)
   })
 
   it('catches a larger deadline divergence on the same wait', async () => {

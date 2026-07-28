@@ -1,8 +1,9 @@
 import {
-  MAX_COUNT,
-  MAX_DURATION_MS,
-  MAX_EPOCH_MS,
-  MAX_RUN_ORDINAL,
+  type IntegerBounds,
+  PERSISTED_COUNTER_FIELDS,
+  PERSISTED_INTEGER_BOUNDS,
+  type PersistedCounterFieldDescriptor,
+  type PersistedCounterFieldId,
   type SchedulerStore,
   type SqlBatchMode,
   type SqlExecutor,
@@ -75,12 +76,51 @@ const PROTECTED_WAIT_EVENT = 'protected-wait-event'
 const PROTECTED_STEP = '$await:protected'
 const PROTECTED_DRIVER = 'protected-driver'
 
+export type PoisonTargetArm = 'claim' | 'sweep:lost-launch' | 'sweep:claim-timeout'
+export type PoisonTargetProfile =
+  | 'claim-pending'
+  | 'claim-sleeping'
+  | 'sweep-lost-launch'
+  | 'sweep-claim-timeout'
+
+type CounterSeedOverrides = Readonly<
+  Partial<{
+    attempts: number
+    maxAttempts: number
+    infraRetries: number
+    attempt: number
+    claimGen: number
+    activatedGen: number
+    relaunchCount: number
+  }>
+>
+
+export type PoisonTargetability =
+  | { readonly kind: 'targetable'; readonly companions?: CounterSeedOverrides }
+  | {
+      readonly kind: 'unreachable'
+      readonly reason:
+        | 'counter-relation-needs-another-invalid-field'
+        | 'generation-classification-needs-another-invalid-field'
+        | 'downstream-cas-still-refuses-value'
+        | 'transition-does-not-read-field'
+    }
+
+export interface CounterBoundaryTarget {
+  readonly fieldId: PersistedCounterFieldId
+  readonly side: 'upper' | 'lower'
+  readonly arms: Readonly<Record<PoisonTargetArm, PoisonTargetability>>
+}
+
 export interface PoisonWitness {
   id: string
   covers: readonly EngineInvariantConditionId[]
   statements: readonly SqlStatement[]
   storageCorruption?: StorageCorruption
   inertLive?: true
+  counterBoundary?: CounterBoundaryTarget
+  targetArms?: Readonly<Record<PoisonTargetArm, PoisonTargetability>>
+  targetNonExactField?: PersistedCounterFieldId
 }
 
 const sql = (
@@ -153,13 +193,155 @@ const checkpoint = (
   queue: string,
   ownerRunId: string,
   updatedAt: string | number = NOW,
+  ownerAttempt: string | number = 1,
 ): SqlStatement =>
   sql(
     `INSERT INTO checkpoints
        (task_id, checkpoint_name, queue, state, status, owner_run_id, owner_attempt, updated_at_ms)
-     VALUES (?, 'poison-checkpoint', ?, '{}', 'committed', ?, 1, ?)`,
-    [taskId, queue, ownerRunId, updatedAt],
+     VALUES (?, 'poison-checkpoint', ?, '{}', 'committed', ?, ?, ?)`,
+    [taskId, queue, ownerRunId, ownerAttempt, updatedAt],
   )
+
+const TARGETABLE_COUNTER_BOUNDARIES = Object.freeze({
+  claim: new Set([
+    'task-attempts/lower',
+    'task-max-attempts/upper',
+    'task-infra-retries/lower',
+    'task-infra-retries/upper',
+    'run-claim-gen/upper',
+    'run-activated-gen/lower',
+    'run-relaunch-count/lower',
+    'run-relaunch-count/upper',
+  ]),
+  'sweep:lost-launch': new Set([
+    'task-attempts/lower',
+    'task-max-attempts/upper',
+    'task-infra-retries/lower',
+    'task-infra-retries/upper',
+    'run-claim-gen/upper',
+    'run-activated-gen/lower',
+    'run-relaunch-count/lower',
+  ]),
+  'sweep:claim-timeout': new Set([
+    'task-attempts/lower',
+    'task-max-attempts/upper',
+    'task-infra-retries/lower',
+    'task-infra-retries/upper',
+    'run-relaunch-count/lower',
+    'run-relaunch-count/upper',
+  ]),
+} satisfies Readonly<Record<PoisonTargetArm, ReadonlySet<string>>>)
+
+const ALL_TARGET_ARMS = Object.freeze({
+  claim: Object.freeze({ kind: 'targetable' as const }),
+  'sweep:lost-launch': Object.freeze({ kind: 'targetable' as const }),
+  'sweep:claim-timeout': Object.freeze({ kind: 'targetable' as const }),
+})
+
+function counterCompanions(
+  fieldId: PersistedCounterFieldId,
+  side: 'upper' | 'lower',
+): CounterSeedOverrides | undefined {
+  const key = `${fieldId}/${side}`
+  if (key === 'task-attempts/lower') return Object.freeze({ infraRetries: 1 })
+  if (key === 'task-infra-retries/lower') return Object.freeze({ attempts: 1 })
+  if (key === 'task-infra-retries/upper') {
+    return Object.freeze({
+      attempt: PERSISTED_INTEGER_BOUNDS.tasks.infra_retries.max + 2,
+    })
+  }
+  return undefined
+}
+
+function unreachableCounterReason(
+  fieldId: PersistedCounterFieldId,
+  side: 'upper' | 'lower',
+  arm: PoisonTargetArm,
+): Extract<PoisonTargetability, { kind: 'unreachable' }>['reason'] {
+  if (fieldId === 'checkpoint-owner-attempt') return 'transition-does-not-read-field'
+  if (fieldId === 'run-relaunch-count' && side === 'upper' && arm === 'sweep:lost-launch') {
+    return 'downstream-cas-still-refuses-value'
+  }
+  if (fieldId === 'run-claim-gen' || fieldId === 'run-activated-gen') {
+    return 'generation-classification-needs-another-invalid-field'
+  }
+  return 'counter-relation-needs-another-invalid-field'
+}
+
+function counterBoundaryTarget(
+  fieldId: PersistedCounterFieldId,
+  side: 'upper' | 'lower',
+): CounterBoundaryTarget {
+  const key = `${fieldId}/${side}`
+  const companions = counterCompanions(fieldId, side)
+  const arm = (name: PoisonTargetArm): PoisonTargetability =>
+    TARGETABLE_COUNTER_BOUNDARIES[name].has(key)
+      ? Object.freeze({
+          kind: 'targetable' as const,
+          ...(companions === undefined ? {} : { companions }),
+        })
+      : Object.freeze({
+          kind: 'unreachable' as const,
+          reason: unreachableCounterReason(fieldId, side, name),
+        })
+  return Object.freeze({
+    fieldId,
+    side,
+    arms: Object.freeze({
+      claim: arm('claim'),
+      'sweep:lost-launch': arm('sweep:lost-launch'),
+      'sweep:claim-timeout': arm('sweep:claim-timeout'),
+    }),
+  })
+}
+
+function counterValueStatement(
+  field: PersistedCounterFieldDescriptor,
+  value: number,
+): SqlStatement {
+  if (field.table === 'checkpoints') return checkpoint(TASK, Q, RUN, NOW, value)
+  const identityColumn = field.table === 'tasks' ? 'task_id' : 'run_id'
+  const identity = field.table === 'tasks' ? TASK : RUN
+  return sql(`UPDATE ${field.table} SET ${field.column} = ? WHERE ${identityColumn} = ?`, [
+    value,
+    identity,
+  ])
+}
+
+function persistedCounterField(id: PersistedCounterFieldId): PersistedCounterFieldDescriptor {
+  const field = PERSISTED_COUNTER_FIELDS.find((candidate) => candidate.id === id)
+  if (!field) throw new Error(`missing persisted counter field '${id}'`)
+  return field
+}
+
+function counterStorageCorruption(
+  field: PersistedCounterFieldDescriptor,
+  invalidRepresentation: 'fractional-real' | 'non-integer' = 'non-integer',
+): StorageCorruption {
+  if (field.table === 'tasks') {
+    return {
+      table: 'tasks',
+      taskId: TASK,
+      column: field.column,
+      invalidRepresentation,
+    }
+  }
+  if (field.table === 'runs') {
+    return {
+      table: 'runs',
+      runId: RUN,
+      column: field.column,
+      invalidRepresentation,
+    }
+  }
+  return {
+    table: 'checkpoints',
+    taskId: TASK,
+    checkpointName: 'poison-checkpoint',
+    column: field.column,
+    invalidRepresentation,
+  }
+}
 
 const event = (payload: string | null): SqlStatement =>
   sql(
@@ -245,6 +427,15 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     ],
   },
   {
+    id: 'attempts/at-max-with-live-run',
+    covers: ['attempts/at-max-with-live-run'],
+    statements: [
+      sql(`UPDATE tasks SET attempts = max_attempts WHERE task_id = ?`, [TASK]),
+      sql(`UPDATE runs SET attempt = 6 WHERE run_id = ?`, [RUN]),
+    ],
+    targetArms: ALL_TARGET_ARMS,
+  },
+  {
     id: 'accounting/above-top',
     covers: ['accounting/above-top'],
     statements: [sql(`UPDATE tasks SET attempts = 2 WHERE task_id = ?`, [TASK])],
@@ -252,7 +443,21 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
   {
     id: 'accounting/below-top-minus-one',
     covers: ['accounting/below-top-minus-one'],
-    statements: [sql(`UPDATE runs SET attempt = 3 WHERE run_id = ?`, [RUN])],
+    statements: [
+      sql(
+        `INSERT INTO runs
+           (run_id, queue, task_id, attempt, state, created_at_ms)
+         VALUES (?, ?, ?, 3, 'failed', ?)`,
+        [RUN_2, Q, TASK, NOW],
+      ),
+    ],
+    targetArms: ALL_TARGET_ARMS,
+  },
+  {
+    id: 'accounting/live-run-not-next',
+    covers: ['accounting/live-run-not-next'],
+    statements: [sql(`UPDATE tasks SET attempts = 1 WHERE task_id = ?`, [TASK])],
+    targetArms: ALL_TARGET_ARMS,
   },
   {
     id: 'checkpoint/task-mismatch',
@@ -268,6 +473,11 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     id: 'checkpoint/owner-missing',
     covers: ['checkpoint/owner-missing'],
     statements: [checkpoint(TASK, Q, GHOST_RUN)],
+  },
+  {
+    id: 'checkpoint/owner-attempt-mismatch',
+    covers: ['checkpoint/owner-attempt-mismatch'],
+    statements: [checkpoint(TASK, Q, RUN, NOW, 2)],
   },
   {
     id: 'wait/dead-run',
@@ -469,13 +679,49 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
   },
   ...(
     [
-      ['run-available', 'runs', 'available_at_ms', RUN, MAX_EPOCH_MS],
-      ['run-claim-expires', 'runs', 'claim_expires_at_ms', RUN, MAX_EPOCH_MS],
-      ['run-heartbeat', 'runs', 'heartbeat_at_ms', RUN, MAX_EPOCH_MS],
-      ['run-created', 'runs', 'created_at_ms', RUN, MAX_EPOCH_MS],
-      ['run-lease', 'runs', 'lease_ms', RUN, MAX_DURATION_MS],
-      ['task-enqueue', 'tasks', 'enqueue_at_ms', TASK, MAX_EPOCH_MS],
-      ['task-cancel', 'tasks', 'cancel_at_ms', TASK, MAX_EPOCH_MS],
+      [
+        'run-available',
+        'runs',
+        'available_at_ms',
+        RUN,
+        PERSISTED_INTEGER_BOUNDS.runs.available_at_ms.max,
+      ],
+      [
+        'run-claim-expires',
+        'runs',
+        'claim_expires_at_ms',
+        RUN,
+        PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms.max,
+      ],
+      [
+        'run-heartbeat',
+        'runs',
+        'heartbeat_at_ms',
+        RUN,
+        PERSISTED_INTEGER_BOUNDS.runs.heartbeat_at_ms.max,
+      ],
+      [
+        'run-created',
+        'runs',
+        'created_at_ms',
+        RUN,
+        PERSISTED_INTEGER_BOUNDS.runs.created_at_ms.max,
+      ],
+      ['run-lease', 'runs', 'lease_ms', RUN, PERSISTED_INTEGER_BOUNDS.runs.lease_ms.max],
+      [
+        'task-enqueue',
+        'tasks',
+        'enqueue_at_ms',
+        TASK,
+        PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms.max,
+      ],
+      [
+        'task-cancel',
+        'tasks',
+        'cancel_at_ms',
+        TASK,
+        PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms.max,
+      ],
     ] as const
   ).map(
     ([id, table, column, rowId, maximum]): PoisonWitness => ({
@@ -490,6 +736,11 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     }),
   ),
   {
+    id: 'temporal-bound/run-lease-zero',
+    covers: ['temporal-bound/run-lease'],
+    statements: [sql(`UPDATE runs SET lease_ms = 0 WHERE run_id = ?`, [RUN])],
+  },
+  {
     id: 'temporal-bound/checkpoint-updated',
     covers: ['temporal-bound/checkpoint-updated'],
     statements: [
@@ -497,104 +748,54 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
       sql(
         `UPDATE checkpoints SET updated_at_ms = ?
          WHERE task_id = ? AND checkpoint_name = 'poison-checkpoint'`,
-        [MAX_EPOCH_MS + 1, TASK],
+        [PERSISTED_INTEGER_BOUNDS.checkpoints.updated_at_ms.max + 1, TASK],
       ),
     ],
   },
-  ...(
-    [
-      [
-        'task-attempts',
-        {
-          table: 'tasks',
-          taskId: TASK,
-          column: 'attempts',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'task-max-attempts',
-        {
-          table: 'tasks',
-          taskId: TASK,
-          column: 'max_attempts',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'task-infra-retries',
-        {
-          table: 'tasks',
-          taskId: TASK,
-          column: 'infra_retries',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-attempt',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'attempt',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-claim-gen',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'claim_gen',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-activated-gen',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'activated_gen',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-relaunch-count',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'relaunch_count',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-    ] as const
-  ).map(
-    ([id, storageCorruption]): PoisonWitness => ({
-      id: `counter/${id}`,
-      covers: [`counter/${id}` as EngineInvariantConditionId],
-      statements: [],
-      storageCorruption,
+  ...PERSISTED_COUNTER_FIELDS.map(
+    (field): PoisonWitness => ({
+      id: `counter/${field.id}`,
+      covers: [`counter/${field.id}` as EngineInvariantConditionId],
+      statements: field.table === 'checkpoints' ? [checkpoint(TASK, Q, RUN)] : [],
+      storageCorruption: counterStorageCorruption(field),
     }),
   ),
-  ...(
-    [
-      ['task-attempts', 'tasks', 'attempts', TASK],
-      ['task-max-attempts', 'tasks', 'max_attempts', TASK],
-      ['task-infra-retries', 'tasks', 'infra_retries', TASK],
-      ['run-attempt', 'runs', 'attempt', RUN, MAX_RUN_ORDINAL],
-      ['run-claim-gen', 'runs', 'claim_gen', RUN, MAX_COUNT],
-      ['run-activated-gen', 'runs', 'activated_gen', RUN, MAX_COUNT],
-      ['run-relaunch-count', 'runs', 'relaunch_count', RUN, MAX_COUNT],
-    ] as const
-  ).map(
-    ([id, table, column, rowId, maximum = MAX_COUNT]): PoisonWitness => ({
-      id: `counter-bound/${id}`,
-      covers: [`counter-bound/${id}` as EngineInvariantConditionId],
-      statements: [
-        sql(
-          `UPDATE ${table} SET ${column} = ? WHERE ${table === 'runs' ? 'run_id' : 'task_id'} = ?`,
-          [maximum + 1, rowId],
-        ),
-      ],
+  {
+    id: 'counter-fractional/task-max-attempts',
+    covers: ['counter/task-max-attempts'],
+    statements: [],
+    storageCorruption: counterStorageCorruption(
+      persistedCounterField('task-max-attempts'),
+      'fractional-real',
+    ),
+    targetArms: ALL_TARGET_ARMS,
+    targetNonExactField: 'task-max-attempts',
+  },
+  {
+    id: 'counter-fractional/run-relaunch-count',
+    covers: ['counter/run-relaunch-count'],
+    statements: [],
+    storageCorruption: counterStorageCorruption(
+      persistedCounterField('run-relaunch-count'),
+      'fractional-real',
+    ),
+    targetArms: ALL_TARGET_ARMS,
+    targetNonExactField: 'run-relaunch-count',
+  },
+  ...PERSISTED_COUNTER_FIELDS.map(
+    (field): PoisonWitness => ({
+      id: `counter-bound/${field.id}`,
+      covers: [`counter-bound/${field.id}` as EngineInvariantConditionId],
+      statements: [counterValueStatement(field, field.bounds.max + 1)],
+      counterBoundary: counterBoundaryTarget(field.id, 'upper'),
+    }),
+  ),
+  ...PERSISTED_COUNTER_FIELDS.map(
+    (field): PoisonWitness => ({
+      id: `counter-bound-lower/${field.id}`,
+      covers: [`counter-bound/${field.id}` as EngineInvariantConditionId],
+      statements: [counterValueStatement(field, field.bounds.min - 1)],
+      counterBoundary: counterBoundaryTarget(field.id, 'lower'),
     }),
   ),
   {
@@ -732,6 +933,62 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
 export const POISON_WITNESS_COUNT = POISON_WITNESSES.length
 /** One source of truth: every classified write label is automatically enrolled. */
 export const POISON_WRITE_LABELS = MATRIX_WRITE_LABELS
+
+export interface PoisonTargetCase {
+  readonly id: string
+  readonly label: PoisonTargetArm
+  readonly profile: PoisonTargetProfile
+  readonly witness: PoisonWitness
+  readonly companions: CounterSeedOverrides
+}
+
+export interface UnreachablePoisonTarget {
+  readonly id: string
+  readonly witness: string
+  readonly arm: PoisonTargetArm
+  readonly reason: Extract<PoisonTargetability, { kind: 'unreachable' }>['reason']
+}
+
+const profilesForArm = (arm: PoisonTargetArm): readonly PoisonTargetProfile[] =>
+  arm === 'claim'
+    ? ['claim-pending', 'claim-sleeping']
+    : [arm === 'sweep:lost-launch' ? 'sweep-lost-launch' : 'sweep-claim-timeout']
+
+const targetCases: PoisonTargetCase[] = []
+const unreachableTargets: UnreachablePoisonTarget[] = []
+for (const witness of POISON_WITNESSES) {
+  const targetArms = witness.counterBoundary?.arms ?? witness.targetArms
+  if (!targetArms) continue
+  for (const arm of ['claim', 'sweep:lost-launch', 'sweep:claim-timeout'] as const) {
+    const targetability = targetArms[arm]
+    if (targetability.kind === 'unreachable') {
+      unreachableTargets.push(
+        Object.freeze({
+          id: `${witness.id}/${arm}`,
+          witness: witness.id,
+          arm,
+          reason: targetability.reason,
+        }),
+      )
+      continue
+    }
+    for (const profile of profilesForArm(arm)) {
+      targetCases.push(
+        Object.freeze({
+          id: `${witness.id}/${profile}`,
+          label: arm,
+          profile,
+          witness,
+          companions: targetability.companions ?? Object.freeze({}),
+        }),
+      )
+    }
+  }
+}
+
+export const POISON_TARGET_CASES: readonly PoisonTargetCase[] = Object.freeze(targetCases)
+export const POISON_UNREACHABLE_TARGETS: readonly UnreachablePoisonTarget[] =
+  Object.freeze(unreachableTargets)
 
 export function uncoveredConditionIds(
   witnesses: readonly Pick<PoisonWitness, 'covers'>[] = POISON_WITNESSES,
@@ -922,6 +1179,90 @@ async function seedBase(f: StoreFixture): Promise<void> {
   )
 }
 
+async function preparePoisonTarget(
+  raw: SqlExecutor,
+  profile: PoisonTargetProfile,
+  companions: CounterSeedOverrides,
+): Promise<void> {
+  const claiming = profile === 'claim-pending' || profile === 'claim-sleeping'
+  const state =
+    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'
+  const claimGen = claiming ? 0 : 1
+  const activatedGen = profile === 'sweep-claim-timeout' ? claimGen : 0
+
+  await raw.batch(
+    'poison:target-profile',
+    [
+      sql(
+        `UPDATE tasks
+         SET state = ?, attempts = ?, max_attempts = ?, infra_retries = ?
+         WHERE task_id = ?`,
+        [state, 0, 5, 0, TASK],
+      ),
+      sql(
+        `UPDATE runs
+         SET state = ?, attempt = ?, claimed_by = ?, claim_gen = ?, activated_gen = ?,
+             relaunch_count = ?, lease_ms = ?, claim_expires_at_ms = ?,
+             heartbeat_at_ms = ?, available_at_ms = ?
+         WHERE run_id = ?`,
+        [
+          state,
+          1,
+          claiming ? null : TOKEN,
+          claimGen,
+          activatedGen,
+          0,
+          claiming ? null : 60_000,
+          claiming ? null : NOW - 2,
+          claiming ? null : NOW - 60_000,
+          claiming ? NOW - 2 : null,
+          RUN,
+        ],
+      ),
+    ],
+    'write',
+  )
+
+  const findings = await engineInvariantFindings(raw)
+  if (findings.length > 0) {
+    throw new Error(
+      `${profile}: target profile is not a clean pre-corruption world: ${findings
+        .map((finding) => finding.message)
+        .join('; ')}`,
+    )
+  }
+
+  if (Object.keys(companions).length === 0) return
+
+  // Some boundary witnesses need a coordinated second value to isolate the
+  // target field. Apply it only after proving the lifecycle profile itself is
+  // a clean world; the witness immediately completes the coordinated state.
+  await raw.batch(
+    'poison:target-companions',
+    [
+      sql(
+        `UPDATE tasks
+         SET attempts = ?, max_attempts = ?, infra_retries = ?
+         WHERE task_id = ?`,
+        [companions.attempts ?? 0, companions.maxAttempts ?? 5, companions.infraRetries ?? 0, TASK],
+      ),
+      sql(
+        `UPDATE runs
+         SET attempt = ?, claim_gen = ?, activated_gen = ?, relaunch_count = ?
+         WHERE run_id = ?`,
+        [
+          companions.attempt ?? 1,
+          companions.claimGen ?? claimGen,
+          companions.activatedGen ?? activatedGen,
+          companions.relaunchCount ?? 0,
+          RUN,
+        ],
+      ),
+    ],
+    'write',
+  )
+}
+
 function triggerTask(
   state: 'pending' | 'running' | 'sleeping',
   cancelAt: number | null = null,
@@ -1089,6 +1430,7 @@ async function invoke(
   label: (typeof MATRIX_WRITE_LABELS)[number],
   store: SchedulerStore,
   target: InvocationTarget,
+  selectionLimit = 100,
 ): Promise<unknown> {
   switch (label) {
     case 'driver-heartbeat':
@@ -1096,7 +1438,7 @@ async function invoke(
     case 'spawn':
       return store.spawn(Q, target.taskName, '{}', { idempotencyKey: target.idempotencyKey })
     case 'claim':
-      return store.claim(Q, target.claimWorker, { leaseSeconds: 60, limit: 100 })
+      return store.claim(Q, target.claimWorker, { leaseSeconds: 60, limit: selectionLimit })
     case 'activate':
       return store.activate(Q, target.runId, target.token, 1)
     case 'heartbeat':
@@ -1144,7 +1486,7 @@ async function invoke(
     case 'sweep:cancel':
     case 'sweep:lost-launch':
     case 'sweep:claim-timeout':
-      return store.sweep(Q, 100)
+      return store.sweep(Q, selectionLimit)
     default:
       throw new Error(`poison matrix has no driver for write label '${label}'`)
   }
@@ -1199,7 +1541,7 @@ type FrozenAuthority = Record<SnapshotTable, ReadonlySet<string>>
 type ExpectedInsertion = Readonly<Record<string, string | number | bigint | null>>
 type InsertAuthority = Record<SnapshotTable, Map<string, ExpectedInsertion>>
 
-interface InvocationOutcome {
+export interface PoisonInvocationOutcome {
   target: 'poison' | 'healthy'
   result?: unknown
   error?: unknown
@@ -1272,7 +1614,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
 function explicitInsertAuthority(
   label: string,
   before: ProtocolSnapshot,
-  outcomes: readonly InvocationOutcome[],
+  outcomes: readonly PoisonInvocationOutcome[],
 ): InsertAuthority {
   const authority = emptyInsertAuthority()
   const poisonAttempt = exactInteger(before.runs.find((run) => run.run_id === RUN)?.attempt) ?? 1n
@@ -1483,14 +1825,20 @@ function terminalBarrier(
   return errors
 }
 
-function inertLiveBarrier(before: ProtocolSnapshot, after: ProtocolSnapshot): string[] {
+function inertLiveBarrier(
+  label: string,
+  before: ProtocolSnapshot,
+  after: ProtocolSnapshot,
+): string[] {
   const errors: string[] = []
   const beforeRuns = liveRuns(before, TASK)
   const afterRuns = rowsByKey('runs', after.runs)
   const oldIds = new Set(beforeRuns.map((run) => String(run.run_id)))
   for (const run of beforeRuns) {
     const current = afterRuns.get(String(run.run_id))
-    if (current && isLiveState(current.state) && !same(run, current)) {
+    const advisoryShortening =
+      label === 'expire-lease-now' && current && leaseOnlyShortened(run, current)
+    if (current && isLiveState(current.state) && !same(run, current) && !advisoryShortening) {
       errors.push(`poisoned live run ${String(run.run_id)} changed without quiescing`)
     }
   }
@@ -1517,7 +1865,41 @@ function rowById(
   return snapshot[table].find((row) => row[column] === id)
 }
 
+function integerBoundSeverity(value: unknown, bounds: IntegerBounds): bigint {
+  const exact = exactInteger(value)
+  if (exact === undefined) return 0n
+  const minimum = BigInt(bounds.min)
+  const maximum = BigInt(bounds.max)
+  if (exact < minimum) return minimum - exact
+  if (exact > maximum) return exact - maximum
+  return 0n
+}
+
+function counterBoundSeverity(
+  finding: EngineInvariantFinding,
+  snapshot: ProtocolSnapshot,
+): bigint | undefined {
+  if (!finding.conditionId.startsWith('counter-bound/')) return undefined
+  const fieldId = finding.conditionId.slice('counter-bound/'.length)
+  const field = PERSISTED_COUNTER_FIELDS.find((candidate) => candidate.id === fieldId)
+  if (!field) return undefined
+  if (field.table === 'checkpoints') {
+    const taskId = finding.subjectIdentity[1]
+    const checkpointName = finding.subjectIdentity[2]
+    const row =
+      taskId === undefined || checkpointName === undefined
+        ? undefined
+        : checkpointByName(snapshot, taskId, checkpointName)
+    return integerBoundSeverity(row?.[field.column], field.bounds)
+  }
+  const rowId = finding.subjectIdentity[1]
+  const row = rowId === undefined ? undefined : rowById(snapshot, field.table, rowId)
+  return integerBoundSeverity(row?.[field.column], field.bounds)
+}
+
 function findingSeverity(finding: EngineInvariantFinding, snapshot: ProtocolSnapshot): bigint {
+  const counterSeverity = counterBoundSeverity(finding, snapshot)
+  if (counterSeverity !== undefined) return counterSeverity
   const primarySubject = finding.subjectIdentity[0] ?? finding.subject
   const task = rowById(snapshot, 'tasks', primarySubject)
   const run = rowById(snapshot, 'runs', primarySubject)
@@ -1527,6 +1909,13 @@ function findingSeverity(finding: EngineInvariantFinding, snapshot: ProtocolSnap
       const maximum = exactInteger(task?.max_attempts)
       return attempts !== undefined && maximum !== undefined && attempts > maximum
         ? attempts - maximum
+        : 0n
+    }
+    case 'attempts/at-max-with-live-run': {
+      const attempts = exactInteger(task?.attempts)
+      const maximum = exactInteger(task?.max_attempts)
+      return attempts !== undefined && maximum !== undefined && attempts >= maximum
+        ? attempts - maximum + 1n
         : 0n
     }
     case 'accounting/above-top':
@@ -1547,6 +1936,15 @@ function findingSeverity(finding: EngineInvariantFinding, snapshot: ProtocolSnap
         : accounted < top - 1n
           ? top - 1n - accounted
           : 0n
+    }
+    case 'accounting/live-run-not-next': {
+      const attempts = exactInteger(task?.attempts)
+      const infra = exactInteger(task?.infra_retries)
+      const current = liveRuns(snapshot, primarySubject)
+      const attempt = current.length === 1 ? exactInteger(current[0]?.attempt) : undefined
+      if (attempts === undefined || infra === undefined || attempt === undefined) return 0n
+      const expected = attempts + infra + 1n
+      return attempt > expected ? attempt - expected : expected - attempt
     }
     case 'generation/activated-after-claim': {
       const activated = exactInteger(run?.activated_gen)
@@ -1651,13 +2049,13 @@ function checkpointByName(
 }
 
 function hasOutcome(
-  outcomes: readonly InvocationOutcome[],
+  outcomes: readonly PoisonInvocationOutcome[],
   predicate: (result: unknown) => boolean,
 ): boolean {
   return outcomes.some((outcome) => outcome.error === undefined && predicate(outcome.result))
 }
 
-function outcomeItems(outcomes: readonly InvocationOutcome[]): Record<string, unknown>[] {
+function outcomeItems(outcomes: readonly PoisonInvocationOutcome[]): Record<string, unknown>[] {
   return outcomes.flatMap((outcome) =>
     Array.isArray(outcome.result)
       ? outcome.result
@@ -1667,10 +2065,115 @@ function outcomeItems(outcomes: readonly InvocationOutcome[]): Record<string, un
   )
 }
 
+function declaredTargetErrors(
+  profile: PoisonTargetProfile,
+  before: ProtocolSnapshot,
+  witness: PoisonWitness,
+): string[] {
+  const errors: string[] = []
+  const task = rowById(before, 'tasks', TASK)
+  const run = rowById(before, 'runs', RUN)
+  const expectedState =
+    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'
+  if (task?.state !== expectedState || run?.state !== expectedState) {
+    errors.push(`declared ${profile} lifecycle was not applied`)
+  }
+
+  const attempt = exactInteger(run?.attempt)
+  const attempts = exactInteger(task?.attempts)
+  const maximum = exactInteger(task?.max_attempts)
+  const infra = exactInteger(task?.infra_retries)
+  const allowsNonExactMaximum = witness.targetNonExactField === 'task-max-attempts'
+  const allowsExhaustedBudget = witness.covers.includes('attempts/at-max-with-live-run')
+  const allowsAccountingMismatch = witness.covers.includes('accounting/live-run-not-next')
+  if (
+    attempt === undefined ||
+    attempts === undefined ||
+    (maximum === undefined && !allowsNonExactMaximum) ||
+    infra === undefined ||
+    (maximum !== undefined && attempts >= maximum && !allowsExhaustedBudget) ||
+    (attempt !== attempts + infra + 1n && !allowsAccountingMismatch)
+  ) {
+    errors.push(`declared ${profile} counter companions do not isolate one boundary`)
+  }
+
+  if (profile === 'claim-pending' || profile === 'claim-sleeping') {
+    const available = exactInteger(run?.available_at_ms)
+    if (
+      run?.claimed_by !== null ||
+      run?.claim_expires_at_ms !== null ||
+      available === undefined ||
+      available > BigInt(NOW)
+    ) {
+      errors.push(`declared ${profile} run is not a due unclaimed candidate`)
+    }
+    return errors
+  }
+
+  const expires = exactInteger(run?.claim_expires_at_ms)
+  const claimGen = exactInteger(run?.claim_gen)
+  const activatedGen = exactInteger(run?.activated_gen)
+  if (
+    run?.claimed_by !== TOKEN ||
+    expires === undefined ||
+    expires > BigInt(NOW) ||
+    claimGen === undefined ||
+    activatedGen === undefined
+  ) {
+    errors.push(`declared ${profile} run is not an expired owned claim`)
+    return errors
+  }
+  if (profile === 'sweep-lost-launch' && activatedGen >= claimGen) {
+    errors.push('declared lost-launch target is not pre-activation')
+  }
+  if (profile === 'sweep-claim-timeout' && activatedGen !== claimGen) {
+    errors.push('declared claim-timeout target is not post-activation')
+  }
+  return errors
+}
+
+function poisonOwnedClosure(snapshot: ProtocolSnapshot): Record<string, readonly SqlRow[]> {
+  const runs = snapshot.runs.filter((row) => row.task_id === TASK)
+  const runIds = new Set(runs.map((row) => String(row.run_id)))
+  return {
+    tasks: snapshot.tasks.filter((row) => row.task_id === TASK),
+    runs,
+    waits: snapshot.waits.filter((row) => row.task_id === TASK || runIds.has(String(row.run_id))),
+    checkpoints: snapshot.checkpoints.filter(
+      (row) => row.task_id === TASK || runIds.has(String(row.owner_run_id)),
+    ),
+  }
+}
+
+function outcomeMentionsPoison(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(outcomeMentionsPoison)
+  const item = object(value)
+  if (!item) return false
+  if (item.taskId === TASK || item.runId === RUN) return true
+  return Object.values(item).some((candidate) =>
+    Array.isArray(candidate) ? candidate.some(outcomeMentionsPoison) : false,
+  )
+}
+
+function poisonTargetErrors(
+  before: ProtocolSnapshot,
+  after: ProtocolSnapshot,
+  outcomes: readonly PoisonInvocationOutcome[],
+): string[] {
+  const errors: string[] = []
+  if (!same(poisonOwnedClosure(before), poisonOwnedClosure(after))) {
+    errors.push('targeted poison-owned closure changed')
+  }
+  if (outcomes.some((outcome) => outcomeMentionsPoison(outcome.result))) {
+    errors.push('targeted operation returned the poison task or run')
+  }
+  return errors
+}
+
 function healthyWinErrors(
   label: string,
   after: ProtocolSnapshot,
-  outcomes: readonly InvocationOutcome[],
+  outcomes: readonly PoisonInvocationOutcome[],
 ): string[] {
   const errors: string[] = []
   const task = rowById(after, 'tasks', TRIGGER_TASK)
@@ -1914,6 +2417,7 @@ function newFindings(
 export interface PoisonCaseResult {
   label: string
   witness: string
+  profile?: PoisonTargetProfile
   invocationError: unknown
   corruptionDisposition: StorageCorruptionDisposition
 }
@@ -1924,6 +2428,11 @@ export interface PoisonCaseOptions {
    * corrupt-target call is a no-op. Normal generated cells leave this true.
    */
   healthyTrigger?: boolean
+  /** Generated branch-reachable counter containment profile. */
+  targetProfile?: PoisonTargetProfile
+  targetCompanions?: CounterSeedOverrides
+  /** Test-only result hook proving the returned-target oracle is live. */
+  afterOutcomes?(outcomes: PoisonInvocationOutcome[]): void
   /** Test-only corruption hooks for oracle self-tests. */
   beforeSnapshot?(raw: SqlExecutor): Promise<void>
   afterInvoke?(raw: SqlExecutor): Promise<void>
@@ -1940,9 +2449,13 @@ export async function runPoisonMatrixCase(
   witness: PoisonWitness,
   options: PoisonCaseOptions = {},
 ): Promise<PoisonCaseResult> {
-  const f = await makeFixture(`poison-${label}-${witness.id}`)
+  const caseName = `${label}-${witness.id}${options.targetProfile ? `-${options.targetProfile}` : ''}`
+  const f = await makeFixture(`poison-${caseName}`)
   try {
     await seedBase(f)
+    if (options.targetProfile) {
+      await preparePoisonTarget(f.raw, options.targetProfile, options.targetCompanions ?? {})
+    }
     if (witness.statements.length > 0) {
       await f.raw.batch('poison:corrupt', witness.statements, 'write')
     }
@@ -1953,6 +2466,7 @@ export async function runPoisonMatrixCase(
       return {
         label,
         witness: witness.id,
+        ...(options.targetProfile ? { profile: options.targetProfile } : {}),
         invocationError: null,
         corruptionDisposition,
       }
@@ -1971,15 +2485,21 @@ export async function runPoisonMatrixCase(
       }
     }
     const before = await snapshot(f.raw)
+    if (options.targetProfile) {
+      const targetErrors = declaredTargetErrors(options.targetProfile, before, witness)
+      if (targetErrors.length > 0) {
+        throw new Error(`${caseName}: ${targetErrors.join('; ')}`)
+      }
+    }
     const frozenAuthority = freezeAuthority(before)
     const recorder = new RecordingExecutor(f.raw)
     const store = f.storeOver(recorder)
-    const outcomes: InvocationOutcome[] = []
+    const outcomes: PoisonInvocationOutcome[] = []
     const call = async (
-      target: InvocationOutcome['target'],
+      target: PoisonInvocationOutcome['target'],
       invokeTarget: () => Promise<unknown>,
     ): Promise<void> => {
-      const outcome: InvocationOutcome = { target }
+      const outcome: PoisonInvocationOutcome = { target }
       outcomes.push(outcome)
       try {
         outcome.result = await invokeTarget()
@@ -1987,10 +2507,12 @@ export async function runPoisonMatrixCase(
         outcome.error = error
       }
     }
-    await call('poison', () => invoke(label, store, POISON_INVOCATION))
-    if (options.healthyTrigger !== false) {
+    const targetedSelection = options.targetProfile !== undefined
+    await call('poison', () => invoke(label, store, POISON_INVOCATION, targetedSelection ? 1 : 100))
+    if (options.healthyTrigger !== false && !targetedSelection) {
       await call('healthy', () => invoke(label, store, HEALTHY_INVOCATION))
     }
+    options.afterOutcomes?.(outcomes)
     try {
       // Hooks deliberately run outside the recorder: oracle self-tests must
       // not be able to satisfy the progress floor with their own mutation.
@@ -2017,12 +2539,13 @@ export async function runPoisonMatrixCase(
         (row) => `write escaped authority: ${row}`,
       ),
       ...terminalBarrier(label, before, after),
-      ...(witness.inertLive ? inertLiveBarrier(before, after) : []),
+      ...(witness.inertLive ? inertLiveBarrier(label, before, after) : []),
       ...newFindings(label, beforeFindings, afterFindings).map(
         (item) => `new invariant violation: ${item}`,
       ),
       ...worsenedFindings(beforeFindings, afterFindings, before, after),
       ...(options.healthyTrigger === false ? [] : healthyWinErrors(label, after, outcomes)),
+      ...(options.targetProfile ? poisonTargetErrors(before, after, outcomes) : []),
     ]
     if (liveRuns(after, TASK).length > liveRuns(before, TASK).length) {
       errors.push('poisoned task gained live-run cardinality')
@@ -2033,10 +2556,23 @@ export async function runPoisonMatrixCase(
     return {
       label,
       witness: witness.id,
+      ...(options.targetProfile ? { profile: options.targetProfile } : {}),
       invocationError: outcomes.find((outcome) => outcome.target === 'poison')?.error ?? null,
       corruptionDisposition,
     }
   } finally {
     f.close()
   }
+}
+
+export function runPoisonTargetCase(
+  makeFixture: StoreFixtureFactory,
+  target: PoisonTargetCase,
+  options: Omit<PoisonCaseOptions, 'targetProfile' | 'targetCompanions'> = {},
+): Promise<PoisonCaseResult> {
+  return runPoisonMatrixCase(makeFixture, target.label, target.witness, {
+    ...options,
+    targetProfile: target.profile,
+    targetCompanions: target.companions,
+  })
 }

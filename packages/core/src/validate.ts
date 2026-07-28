@@ -10,8 +10,8 @@
  * milliseconds are computed (and rounded) here.
  */
 
+import { INFRA_RETRY_CAP, RELAUNCH_CAP } from './contract.js'
 import { FatalTaskError } from './errors.js'
-import { INFRA_RETRY_CAP } from './contract.js'
 
 /** 9999-12-31T23:59:59Z — no legitimate engine timestamp lies beyond it. */
 export const MAX_EPOCH_MS = 253_402_300_799_000
@@ -82,6 +82,199 @@ export interface IntegerBounds {
   readonly min: number
   readonly max: number
 }
+
+declare const INTEGER_BOUNDS_DOMAIN: unique symbol
+
+/**
+ * A numeric interval owned by one durable field or one explicitly derived
+ * domain. Equal endpoints do not make two domains interchangeable.
+ */
+export interface BrandedIntegerBounds<Domain extends string> extends IntegerBounds {
+  readonly [INTEGER_BOUNDS_DOMAIN]: Domain
+}
+
+const integerBounds = <const Domain extends string>(
+  _domain: Domain,
+  min: number,
+  max: number,
+): Readonly<BrandedIntegerBounds<Domain>> =>
+  Object.freeze({ min, max }) as Readonly<BrandedIntegerBounds<Domain>>
+
+/**
+ * Narrow one domain without borrowing another field's coincidentally equal
+ * interval. Used for post-transition refinements such as positive claim_gen.
+ */
+export function refineIntegerBounds<const Domain extends string>(
+  bounds: BrandedIntegerBounds<Domain>,
+  refinement: { readonly min?: number; readonly max?: number },
+): Readonly<BrandedIntegerBounds<Domain>> {
+  const min = refinement.min ?? bounds.min
+  const max = refinement.max ?? bounds.max
+  if (
+    !Number.isSafeInteger(min) ||
+    !Number.isSafeInteger(max) ||
+    min < bounds.min ||
+    max > bounds.max ||
+    min > max
+  ) {
+    throw new RangeError(
+      `integer refinement must stay inside [${bounds.min}, ${bounds.max}], got [${min}, ${max}]`,
+    )
+  }
+  return Object.freeze({ min, max }) as Readonly<BrandedIntegerBounds<Domain>>
+}
+
+/**
+ * Semantic bounds for the persisted integer fields currently audited by the
+ * engine and invariant library. This is not yet a complete timestamp inventory.
+ *
+ * This is deliberately field-keyed instead of a menu of generic "count" or
+ * "duration" bounds. A caller cannot accidentally validate infra_retries
+ * against MAX_COUNT, treat a nullable positive lease as a zero-based duration,
+ * or decode checkpoint ownership as a user-attempt count.
+ */
+export const PERSISTED_INTEGER_BOUNDS = Object.freeze({
+  tasks: Object.freeze({
+    attempts: integerBounds('tasks.attempts', 0, MAX_COUNT),
+    max_attempts: integerBounds('tasks.max_attempts', 1, MAX_COUNT),
+    infra_retries: integerBounds('tasks.infra_retries', 0, INFRA_RETRY_CAP),
+    enqueue_at_ms: integerBounds('tasks.enqueue_at_ms', 0, MAX_EPOCH_MS),
+    cancel_at_ms: integerBounds('tasks.cancel_at_ms', 0, MAX_EPOCH_MS),
+  }),
+  runs: Object.freeze({
+    attempt: integerBounds('runs.attempt', 1, MAX_RUN_ORDINAL),
+    claim_gen: integerBounds('runs.claim_gen', 0, MAX_COUNT),
+    activated_gen: integerBounds('runs.activated_gen', 0, MAX_COUNT),
+    relaunch_count: integerBounds('runs.relaunch_count', 0, RELAUNCH_CAP),
+    lease_ms: integerBounds('runs.lease_ms', 1, MAX_DURATION_MS),
+    available_at_ms: integerBounds('runs.available_at_ms', 0, MAX_EPOCH_MS),
+    claim_expires_at_ms: integerBounds('runs.claim_expires_at_ms', 0, MAX_EPOCH_MS),
+    heartbeat_at_ms: integerBounds('runs.heartbeat_at_ms', 0, MAX_EPOCH_MS),
+    created_at_ms: integerBounds('runs.created_at_ms', 0, MAX_EPOCH_MS),
+  }),
+  checkpoints: Object.freeze({
+    owner_attempt: integerBounds('checkpoints.owner_attempt', 1, MAX_RUN_ORDINAL),
+    updated_at_ms: integerBounds('checkpoints.updated_at_ms', 0, MAX_EPOCH_MS),
+  }),
+})
+
+type PersistedCounterFieldContract =
+  | Readonly<{
+      id: 'task-attempts'
+      table: 'tasks'
+      column: 'attempts'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.attempts
+    }>
+  | Readonly<{
+      id: 'task-max-attempts'
+      table: 'tasks'
+      column: 'max_attempts'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.max_attempts
+    }>
+  | Readonly<{
+      id: 'task-infra-retries'
+      table: 'tasks'
+      column: 'infra_retries'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.tasks.infra_retries
+    }>
+  | Readonly<{
+      id: 'run-attempt'
+      table: 'runs'
+      column: 'attempt'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.attempt
+    }>
+  | Readonly<{
+      id: 'run-claim-gen'
+      table: 'runs'
+      column: 'claim_gen'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen
+    }>
+  | Readonly<{
+      id: 'run-activated-gen'
+      table: 'runs'
+      column: 'activated_gen'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.activated_gen
+    }>
+  | Readonly<{
+      id: 'run-relaunch-count'
+      table: 'runs'
+      column: 'relaunch_count'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.runs.relaunch_count
+    }>
+  | Readonly<{
+      id: 'checkpoint-owner-attempt'
+      table: 'checkpoints'
+      column: 'owner_attempt'
+      bounds: typeof PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt
+    }>
+
+/**
+ * The complete persisted-counter inventory.
+ *
+ * Each descriptor binds its public condition/witness ID to one exact durable
+ * column and that column's nominal bounds. Generated witness, severity, and
+ * inventory surfaces iterate this list instead of maintaining table-specific
+ * copies.
+ */
+export const PERSISTED_COUNTER_FIELDS = Object.freeze([
+  Object.freeze({
+    id: 'task-attempts',
+    table: 'tasks',
+    column: 'attempts',
+    bounds: PERSISTED_INTEGER_BOUNDS.tasks.attempts,
+  }),
+  Object.freeze({
+    id: 'task-max-attempts',
+    table: 'tasks',
+    column: 'max_attempts',
+    bounds: PERSISTED_INTEGER_BOUNDS.tasks.max_attempts,
+  }),
+  Object.freeze({
+    id: 'task-infra-retries',
+    table: 'tasks',
+    column: 'infra_retries',
+    bounds: PERSISTED_INTEGER_BOUNDS.tasks.infra_retries,
+  }),
+  Object.freeze({
+    id: 'run-attempt',
+    table: 'runs',
+    column: 'attempt',
+    bounds: PERSISTED_INTEGER_BOUNDS.runs.attempt,
+  }),
+  Object.freeze({
+    id: 'run-claim-gen',
+    table: 'runs',
+    column: 'claim_gen',
+    bounds: PERSISTED_INTEGER_BOUNDS.runs.claim_gen,
+  }),
+  Object.freeze({
+    id: 'run-activated-gen',
+    table: 'runs',
+    column: 'activated_gen',
+    bounds: PERSISTED_INTEGER_BOUNDS.runs.activated_gen,
+  }),
+  Object.freeze({
+    id: 'run-relaunch-count',
+    table: 'runs',
+    column: 'relaunch_count',
+    bounds: PERSISTED_INTEGER_BOUNDS.runs.relaunch_count,
+  }),
+  Object.freeze({
+    id: 'checkpoint-owner-attempt',
+    table: 'checkpoints',
+    column: 'owner_attempt',
+    bounds: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt,
+  }),
+] as const satisfies readonly PersistedCounterFieldContract[])
+
+export type PersistedCounterFieldDescriptor = (typeof PERSISTED_COUNTER_FIELDS)[number]
+export type PersistedCounterFieldId = PersistedCounterFieldDescriptor['id']
+
+/** Numeric results computed from several persisted sources, never one column. */
+export const DERIVED_INTEGER_BOUNDS = Object.freeze({
+  epoch_ms: integerBounds('derived.epoch_ms', 0, MAX_EPOCH_MS),
+  duration_ms: integerBounds('derived.duration_ms', 0, MAX_DURATION_MS),
+})
 
 export type BoundedIntegerDecode =
   | { readonly ok: true; readonly value: number; readonly exact: bigint }

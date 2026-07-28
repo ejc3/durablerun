@@ -1,11 +1,9 @@
 import {
-  decodeBoundedInteger,
-  MAX_COUNT,
-  MAX_DURATION_MS,
-  MAX_EPOCH_MS,
-  MAX_RUN_ORDINAL,
+  type IntegerBounds,
+  PERSISTED_INTEGER_BOUNDS,
   type SqlExecutor,
   type SqlRow,
+  decodeBoundedInteger,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
@@ -23,10 +21,13 @@ export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'mirror/running-task-no-live-run': 'running-task-with-no-live-run',
   'cardinality/multiple-live-runs': 'multiple-live-runs-per-task',
   'attempts/over-max': 'attempts-exceeds-cap',
+  'attempts/at-max-with-live-run': 'attempt-budget-exhausted-with-live-run',
   'accounting/above-top': 'attempt-accounting-drift',
   'accounting/below-top-minus-one': 'attempt-accounting-drift',
+  'accounting/live-run-not-next': 'attempt-accounting-drift',
   'checkpoint/task-mismatch': 'checkpoint-cross-task',
   'checkpoint/queue-mismatch': 'checkpoint-cross-task',
+  'checkpoint/owner-attempt-mismatch': 'checkpoint-owner-attempt-mismatch',
   'wait/dead-run': 'wait-referencing-dead-run',
   'cardinality/live-task-zero-runs': 'live-task-without-exactly-one-live-run',
   'cardinality/live-task-multiple-runs': 'live-task-without-exactly-one-live-run',
@@ -84,6 +85,7 @@ export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'counter/run-claim-gen': 'counter-storage-class',
   'counter/run-activated-gen': 'counter-storage-class',
   'counter/run-relaunch-count': 'counter-storage-class',
+  'counter/checkpoint-owner-attempt': 'counter-storage-class',
   'counter-bound/task-attempts': 'counter-out-of-range',
   'counter-bound/task-max-attempts': 'counter-out-of-range',
   'counter-bound/task-infra-retries': 'counter-out-of-range',
@@ -91,6 +93,7 @@ export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'counter-bound/run-claim-gen': 'counter-out-of-range',
   'counter-bound/run-activated-gen': 'counter-out-of-range',
   'counter-bound/run-relaunch-count': 'counter-out-of-range',
+  'counter-bound/checkpoint-owner-attempt': 'counter-out-of-range',
 } as const)
 
 export type EngineInvariantConditionId = keyof typeof ENGINE_INVARIANT_CONDITION_NAMES
@@ -165,7 +168,14 @@ const SNAPSHOT_PROJECTIONS = [
   },
   {
     table: 'checkpoints',
-    columns: ['task_id', 'checkpoint_name', 'queue', 'owner_run_id', 'updated_at_ms'],
+    columns: [
+      'task_id',
+      'checkpoint_name',
+      'queue',
+      'owner_run_id',
+      'owner_attempt',
+      'updated_at_ms',
+    ],
   },
   {
     table: 'events',
@@ -224,7 +234,7 @@ function sameValue(left: SqlValue, right: SqlValue): boolean {
  */
 function validTemporal(value: SqlValue): boolean {
   if (value === null) return true
-  return decodeBoundedInteger(value, { min: 0, max: MAX_EPOCH_MS }).ok
+  return decodeBoundedInteger(value, PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms).ok
 }
 
 function eventKey(queue: string, eventName: string): string {
@@ -253,10 +263,9 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     boundCondition: EngineInvariantConditionId,
     subject: string,
     identity: readonly string[],
-    minimum = 0,
-    maximum = MAX_COUNT,
+    bounds: IntegerBounds,
   ): { value: bigint | undefined; exact: bigint | undefined } => {
-    const decoded = decodeBoundedInteger(value, { min: minimum, max: maximum })
+    const decoded = decodeBoundedInteger(value, bounds)
     if (decoded.ok) return { value: decoded.exact, exact: decoded.exact }
     add(
       decoded.reason === 'not-an-exact-integer' ? storageCondition : boundCondition,
@@ -274,10 +283,10 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     boundCondition: EngineInvariantConditionId,
     subject: string,
     identity: readonly string[],
-    maximum = MAX_EPOCH_MS,
+    bounds: IntegerBounds,
   ): void => {
     if (value === null) return
-    const decoded = decodeBoundedInteger(value, { min: 0, max: maximum })
+    const decoded = decodeBoundedInteger(value, bounds)
     if (decoded.ok) return
     add(
       decoded.reason === 'not-an-exact-integer' ? storageCondition : boundCondition,
@@ -321,6 +330,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'counter-bound/task-attempts',
       subject,
       identity,
+      PERSISTED_INTEGER_BOUNDS.tasks.attempts,
     )
     const maxAttempts = count(
       task.max_attempts,
@@ -328,7 +338,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'counter-bound/task-max-attempts',
       subject,
       identity,
-      1,
+      PERSISTED_INTEGER_BOUNDS.tasks.max_attempts,
     )
     const infraRetries = count(
       task.infra_retries,
@@ -336,6 +346,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'counter-bound/task-infra-retries',
       subject,
       identity,
+      PERSISTED_INTEGER_BOUNDS.tasks.infra_retries,
     )
     if (attempts.exact !== undefined && attempts.exact < 0n) {
       add('generation/negative-attempts', taskId)
@@ -360,8 +371,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'counter-bound/run-attempt',
       subject,
       identity,
-      1,
-      MAX_RUN_ORDINAL,
+      PERSISTED_INTEGER_BOUNDS.runs.attempt,
     )
     const claimGen = count(
       run.claim_gen,
@@ -369,6 +379,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'counter-bound/run-claim-gen',
       subject,
       identity,
+      PERSISTED_INTEGER_BOUNDS.runs.claim_gen,
     )
     const activatedGen = count(
       run.activated_gen,
@@ -376,6 +387,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'counter-bound/run-activated-gen',
       subject,
       identity,
+      PERSISTED_INTEGER_BOUNDS.runs.activated_gen,
     )
     const relaunchCount = count(
       run.relaunch_count,
@@ -383,6 +395,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'counter-bound/run-relaunch-count',
       subject,
       identity,
+      PERSISTED_INTEGER_BOUNDS.runs.relaunch_count,
     )
     if (claimGen.exact !== undefined && claimGen.exact < 0n) {
       add('generation/negative-claim', runId)
@@ -431,6 +444,15 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     ) {
       add('attempts/over-max', taskId)
     }
+    if (
+      isLiveState(state) &&
+      liveRuns.length > 0 &&
+      counters.attempts !== undefined &&
+      counters.maxAttempts !== undefined &&
+      counters.attempts >= counters.maxAttempts
+    ) {
+      add('attempts/at-max-with-live-run', taskId)
+    }
 
     const ownedAttempts = ownedRuns.map((run) => runCounters.get(text(run, 'run_id'))?.attempt)
     const top =
@@ -444,6 +466,12 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
         const accounted = counters.attempts + counters.infraRetries
         if (accounted > top) add('accounting/above-top', taskId)
         if (accounted < top - 1n) add('accounting/below-top-minus-one', taskId)
+        if (isLiveState(state) && liveRuns.length === 1) {
+          const liveAttempt = runCounters.get(text(liveRuns[0] as SqlRow, 'run_id'))?.attempt
+          if (liveAttempt !== undefined && liveAttempt !== accounted + 1n) {
+            add('accounting/live-run-not-next', taskId)
+          }
+        }
       }
     }
     temporal(
@@ -452,6 +480,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/task-enqueue',
       `tasks/${taskId}`,
       ['tasks', taskId],
+      PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms,
     )
     temporal(
       task.cancel_at_ms,
@@ -459,6 +488,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/task-cancel',
       `tasks/${taskId}`,
       ['tasks', taskId],
+      PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms,
     )
   }
 
@@ -486,6 +516,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/run-available',
       `runs/${runId}`,
       ['runs', runId],
+      PERSISTED_INTEGER_BOUNDS.runs.available_at_ms,
     )
     temporal(
       run.claim_expires_at_ms,
@@ -493,6 +524,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/run-claim-expires',
       `runs/${runId}`,
       ['runs', runId],
+      PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms,
     )
     temporal(
       run.heartbeat_at_ms,
@@ -500,6 +532,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/run-heartbeat',
       `runs/${runId}`,
       ['runs', runId],
+      PERSISTED_INTEGER_BOUNDS.runs.heartbeat_at_ms,
     )
     temporal(
       run.created_at_ms,
@@ -507,6 +540,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/run-created',
       `runs/${runId}`,
       ['runs', runId],
+      PERSISTED_INTEGER_BOUNDS.runs.created_at_ms,
     )
     temporal(
       run.lease_ms,
@@ -514,7 +548,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/run-lease',
       `runs/${runId}`,
       ['runs', runId],
-      MAX_DURATION_MS,
+      PERSISTED_INTEGER_BOUNDS.runs.lease_ms,
     )
     if (
       counters.activatedGen !== undefined &&
@@ -544,7 +578,16 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     const checkpointName = text(checkpoint, 'checkpoint_name')
     const subject = `${taskId}/${checkpointName}`
     const subjectIdentity = [taskId, checkpointName]
-    const owner = runs.get(text(checkpoint, 'owner_run_id'))
+    const ownerAttempt = count(
+      checkpoint.owner_attempt,
+      'counter/checkpoint-owner-attempt',
+      'counter-bound/checkpoint-owner-attempt',
+      `checkpoints/${subject}`,
+      ['checkpoints', ...subjectIdentity],
+      PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt,
+    )
+    const ownerRunId = text(checkpoint, 'owner_run_id')
+    const owner = runs.get(ownerRunId)
     if (!owner) add('checkpoint/owner-missing', subject, subjectIdentity)
     else {
       if (text(owner, 'task_id') !== taskId) {
@@ -553,6 +596,14 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       if (text(owner, 'queue') !== text(checkpoint, 'queue')) {
         add('checkpoint/queue-mismatch', subject, subjectIdentity)
       }
+      const ownerRunAttempt = runCounters.get(ownerRunId)?.attempt
+      if (
+        ownerAttempt.value !== undefined &&
+        ownerRunAttempt !== undefined &&
+        ownerAttempt.value !== ownerRunAttempt
+      ) {
+        add('checkpoint/owner-attempt-mismatch', subject, subjectIdentity)
+      }
     }
     temporal(
       checkpoint.updated_at_ms,
@@ -560,6 +611,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
       'temporal-bound/checkpoint-updated',
       `checkpoints/${subject}`,
       ['checkpoints', ...subjectIdentity],
+      PERSISTED_INTEGER_BOUNDS.checkpoints.updated_at_ms,
     )
   }
 

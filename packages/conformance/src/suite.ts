@@ -4,8 +4,10 @@ import {
   LeaseLostError,
   MAX_COUNT,
   MAX_RUN_ORDINAL,
+  RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
+import { requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
@@ -204,6 +206,112 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await snapshot(f, exhausted.taskId)).toEqual(exhaustedBefore)
       })
 
+      it('does not return an exhausted run from a same-token claim receipt', async () => {
+        const spawned = await f.store.spawn(Q, 'exhausted-receipt', '{}', { maxAttempts: 5 })
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toHaveLength(1)
+        await f.raw.batch('corrupt-receipt-at-attempt-cap', [
+          {
+            sql: `UPDATE tasks SET attempts = max_attempts WHERE task_id = ?`,
+            args: [spawned.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = 6 WHERE run_id = ?`,
+            args: [spawned.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-requires-user-attempt-budget',
+        ).toEqual([])
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('does not return an activated-ahead run from a same-token claim receipt', async () => {
+        const spawned = await f.store.spawn(Q, 'activated-ahead-receipt', '{}')
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toHaveLength(1)
+        await f.raw.batch('corrupt-receipt-activation-generation', [
+          {
+            sql: `UPDATE runs SET activated_gen = claim_gen + 1 WHERE run_id = ?`,
+            args: [spawned.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-requires-activation-generation-order',
+        ).toEqual([])
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('does not return an obsolete ordinal from a same-token claim receipt', async () => {
+        const spawned = await f.store.spawn(Q, 'obsolete-ordinal-receipt', '{}')
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toHaveLength(1)
+        await f.raw.batch('corrupt-receipt-historical-ordinal', [
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('receipt-historical-higher', ?, ?, 3, 'failed', 999999)`,
+            args: [Q, spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-requires-highest-owned-ordinal',
+        ).toEqual([])
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('does not return an out-of-range relaunch counter from a same-token claim receipt', async () => {
+        const spawned = await f.store.spawn(Q, 'relaunch-receipt', '{}')
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toHaveLength(1)
+        await f.raw.batch('corrupt-receipt-relaunch-count', [
+          {
+            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+            args: [RELAUNCH_CAP + 1, spawned.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-requires-relaunch-bound',
+        ).toEqual([])
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('returns a same-token receipt at the maximum claimed generation', async () => {
+        const spawned = await f.store.spawn(Q, 'max-generation-receipt', '{}')
+        await f.raw.batch('seed-max-receipt-generation', [
+          {
+            sql: `UPDATE runs SET claim_gen = ? WHERE run_id = ?`,
+            args: [MAX_COUNT - 1, spawned.runId],
+          },
+        ])
+        const [claimed] = await f.store.claim(Q, 'receipt-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        expect(claimed?.claimGen).toBe(MAX_COUNT)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-allows-max-generation',
+        ).toMatchObject([{ runId: spawned.runId, claimGen: MAX_COUNT }])
+      })
+
       for (const claimGen of [MAX_COUNT, MAX_COUNT + 1]) {
         it(`leaves a due run unchanged when claim generation ${claimGen} cannot be incremented safely`, async () => {
           const spawned = await f.store.spawn(Q, `bounded-generation-${claimGen}`, '{}')
@@ -323,6 +431,24 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           'mutation-verdict:behavior:activate-rejects-zero-lease-atomically',
         ).toEqual(before)
         if (observed.kind === 'resolved') expect(observed.value).toBeNull()
+      })
+
+      it('does not activate a claim whose relaunch counter became invalid', async () => {
+        const spawned = await f.store.spawn(Q, 'invalid-relaunch-at-activation', '{}')
+        const run = await claimOne('tick-invalid-relaunch')
+        await f.raw.batch('corrupt-relaunch-before-activation', [
+          {
+            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+            args: [RELAUNCH_CAP + 1, run.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+          'mutation-verdict:behavior:activate-requires-relaunch-bound',
+        ).toBeNull()
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
       })
     })
 
@@ -567,39 +693,68 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await snapshot(f, run.taskId)).toEqual(before)
       })
 
-      for (const attempt of [MAX_RUN_ORDINAL, MAX_RUN_ORDINAL + 1]) {
-        it(`leaves an expired claim unchanged when ordinal ${attempt} cannot produce a legal successor`, async () => {
-          const spawned = await f.store.spawn(Q, `bounded-ordinal-${attempt}`, '{}')
-          const run = await claimOne(`tick-bounded-ordinal-${attempt}`)
-          expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
-          await f.raw.batch('corrupt-run-ordinal', [
-            {
-              sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-              args: [attempt, run.runId],
-            },
-          ])
-          await f.admin.setFakeNowEpochMs(1_100_000)
-          const before = await snapshot(f, spawned.taskId)
+      it('leaves an expired claim unchanged when its ordinal exceeds the protocol bound', async () => {
+        const spawned = await f.store.spawn(Q, 'overflowed-run-ordinal', '{}')
+        const run = await claimOne('tick-overflowed-run-ordinal')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.raw.batch('corrupt-run-ordinal', [
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [MAX_RUN_ORDINAL + 1, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        const before = await snapshot(f, spawned.taskId)
 
-          const observed = await f.store.sweep(Q, 10).then(
-            (value) => ({ kind: 'resolved' as const, value }),
-            (error: unknown) => ({ kind: 'rejected' as const, error }),
-          )
+        const observed = await f.store.sweep(Q, 10).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        )
 
-          expect(
-            await snapshot(f, spawned.taskId),
-            'mutation-verdict:behavior:sweep-rejects-attempt-overflow-atomically',
-          ).toEqual(before)
-          if (observed.kind === 'resolved') expect(observed.value).toEqual([])
-        })
-      }
+        expect(
+          await snapshot(f, spawned.taskId),
+          'mutation-verdict:behavior:sweep-rejects-attempt-overflow-atomically',
+        ).toEqual(before)
+        if (observed.kind === 'resolved') expect(observed.value).toEqual([])
+      })
+
+      it('accepts the maximum ordinal at the terminal infra-cap branch', async () => {
+        await f.store.spawn(Q, 'max-run-ordinal', '{}', { maxAttempts: MAX_COUNT })
+        const run = await claimOne('tick-max-run-ordinal')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.raw.batch('seed-max-run-ordinal', [
+          {
+            sql: `UPDATE tasks
+                  SET attempts = ?, max_attempts = ?, infra_retries = ?
+                  WHERE task_id = ?`,
+            args: [MAX_COUNT - 1, MAX_COUNT, INFRA_RETRY_CAP, run.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [MAX_RUN_ORDINAL, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        expect(
+          await f.store.sweep(Q, 10),
+          'mutation-verdict:behavior:sweep-accepts-max-ordinal-at-infra-cap',
+        ).toEqual([{ kind: 'infra-cap-exhausted', runId: run.runId, taskId: run.taskId }])
+      })
 
       it('fails the task terminally at the infra-retry cap, no successor', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('tick-1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         await f.raw.batch('t', [
-          { sql: `UPDATE tasks SET infra_retries = 20 WHERE task_id = ?`, args: [run.taskId] },
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP, run.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, run.runId],
+          },
         ])
         await f.admin.setFakeNowEpochMs(1_100_000)
         const swept = await f.store.sweep(Q, 10)
@@ -797,6 +952,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
             args: [INFRA_RETRY_CAP + 1, run.taskId],
           },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 2, run.runId],
+          },
         ])
         const before = await snapshot(f, run.taskId)
 
@@ -981,14 +1140,34 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // Simulate a newer attempt having already committed this name.
         await f.raw.batch('t', [
           {
-            sql: `UPDATE checkpoints SET owner_attempt = 5, state = '{"v":5}'
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('newer-checkpoint-owner', ?, ?, 5, 'failed', 1000000)`,
+            args: [Q, run.taskId],
+          },
+          {
+            sql: `UPDATE checkpoints
+                  SET owner_run_id = 'newer-checkpoint-owner',
+                      owner_attempt = 5,
+                      state = '{"v":5}'
                   WHERE task_id = ? AND checkpoint_name = 's'`,
             args: [run.taskId],
           },
         ])
+        await f.admin.setFakeNowEpochMs(1_010_000)
         await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{"v":1}', 60)
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, 5)
         expect(checkpoints[0]?.stateJson).toBe('{"v":5}')
+        const [lease] = await f.raw.batch('t', [
+          {
+            sql: `SELECT heartbeat_at_ms, claim_expires_at_ms FROM runs WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ])
+        expect(lease?.rows[0]).toMatchObject({
+          heartbeat_at_ms: 1_010_000,
+          claim_expires_at_ms: 1_070_000,
+        })
       })
 
       it('a stale token writes nothing and throws LeaseLostError', async () => {
@@ -1002,6 +1181,39 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.getCheckpoints(Q, run.taskId, 9)).toEqual([])
       })
 
+      it('rejects a fractional stored owner attempt before extending the lease', async () => {
+        await f.store.spawn(Q, 'fractional-checkpoint-owner', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const disposition = await f.injectStorageCorruption({
+          table: 'runs',
+          runId: run.runId,
+          column: 'attempt',
+          invalidRepresentation: 'fractional-real',
+        })
+        if (disposition === 'structurally-rejected') return
+        const before = await snapshot(f, run.taskId)
+
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'checkpoint-write-rejects-fractional-owner-attempt' },
+          /setCheckpoint/,
+          () =>
+            f.store.setCheckpoint(
+              Q,
+              run.taskId,
+              run.runId,
+              run.claimToken,
+              'fractional-owner',
+              '{}',
+              60,
+            ),
+        )
+
+        expect(await snapshot(f, run.taskId)).toEqual(before)
+        expect(await f.store.getCheckpoints(Q, run.taskId, MAX_RUN_ORDINAL)).toEqual([])
+      })
+
       it('visibility filters by owner attempt', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
@@ -1010,7 +1222,15 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
         await f.raw.batch('t', [
           {
-            sql: `UPDATE checkpoints SET owner_attempt = 3 WHERE task_id = ?`,
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('visible-checkpoint-owner', ?, ?, 3, 'failed', 1000000)`,
+            args: [Q, run.taskId],
+          },
+          {
+            sql: `UPDATE checkpoints
+                  SET owner_run_id = 'visible-checkpoint-owner', owner_attempt = 3
+                  WHERE task_id = ?`,
             args: [run.taskId],
           },
         ])
@@ -1046,7 +1266,14 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
         await f.raw.batch('t', [
           {
-            sql: `UPDATE checkpoints SET owner_attempt = ?
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('max-checkpoint-owner', ?, ?, ?, 'failed', 1000000)`,
+            args: [Q, run.taskId, MAX_RUN_ORDINAL],
+          },
+          {
+            sql: `UPDATE checkpoints
+                  SET owner_run_id = 'max-checkpoint-owner', owner_attempt = ?
                   WHERE task_id = ? AND checkpoint_name = 's'`,
             args: [MAX_RUN_ORDINAL, run.taskId],
           },

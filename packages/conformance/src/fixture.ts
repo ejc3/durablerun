@@ -17,7 +17,7 @@ export type StorageCorruption =
         | 'attempts'
         | 'max_attempts'
         | 'infra_retries'
-      invalidRepresentation: 'non-integer'
+      invalidRepresentation: 'fractional-real' | 'non-integer'
     }
   | {
       table: 'runs'
@@ -32,14 +32,14 @@ export type StorageCorruption =
         | 'claim_gen'
         | 'activated_gen'
         | 'relaunch_count'
-      invalidRepresentation: 'non-integer'
+      invalidRepresentation: 'fractional-real' | 'non-integer'
     }
   | {
       table: 'checkpoints'
       taskId: string
       checkpointName: string
-      column: 'updated_at_ms'
-      invalidRepresentation: 'non-integer'
+      column: 'owner_attempt' | 'updated_at_ms'
+      invalidRepresentation: 'fractional-real' | 'non-integer'
     }
   | {
       table: 'tasks'
