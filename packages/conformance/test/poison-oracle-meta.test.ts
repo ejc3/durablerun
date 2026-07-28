@@ -404,39 +404,90 @@ describe('poison/invariant mechanism self-tests', () => {
     ).rejects.toThrow(/worsened/)
   })
 
-  it('catches an upper counter-bound violation worsening on the same subject', async () => {
-    await expect(
-      runPoisonMatrixCase(
-        makeLibsqlFixture,
-        'driver-heartbeat',
-        witness('counter-bound/run-claim-gen'),
-        {
-          afterInvoke: (raw) =>
-            write(raw, [
-              {
-                sql: `UPDATE runs SET claim_gen = claim_gen + 1
-                      WHERE run_id = 'poison-run'`,
-                args: [],
-              },
-            ]),
-        },
-      ),
-    ).rejects.toThrow(/worsened/)
-  })
+  const counterBoundFields = [
+    {
+      id: 'task-attempts',
+      table: 'tasks',
+      column: 'attempts',
+      predicate: `task_id = 'poison-task'`,
+    },
+    {
+      id: 'task-max-attempts',
+      table: 'tasks',
+      column: 'max_attempts',
+      predicate: `task_id = 'poison-task'`,
+    },
+    {
+      id: 'task-infra-retries',
+      table: 'tasks',
+      column: 'infra_retries',
+      predicate: `task_id = 'poison-task'`,
+    },
+    {
+      id: 'run-attempt',
+      table: 'runs',
+      column: 'attempt',
+      predicate: `run_id = 'poison-run'`,
+    },
+    {
+      id: 'run-claim-gen',
+      table: 'runs',
+      column: 'claim_gen',
+      predicate: `run_id = 'poison-run'`,
+    },
+    {
+      id: 'run-activated-gen',
+      table: 'runs',
+      column: 'activated_gen',
+      predicate: `run_id = 'poison-run'`,
+    },
+    {
+      id: 'run-relaunch-count',
+      table: 'runs',
+      column: 'relaunch_count',
+      predicate: `run_id = 'poison-run'`,
+    },
+    {
+      id: 'checkpoint-owner-attempt',
+      table: 'checkpoints',
+      column: 'owner_attempt',
+      predicate: `task_id = 'poison-task' AND checkpoint_name = 'poison-checkpoint'`,
+    },
+  ] as const
 
-  it('owns a lower-bound mutation witness for every persisted counter bound', () => {
-    expect(POISON_WITNESSES.map((candidate) => candidate.id)).toEqual(
-      expect.arrayContaining([
-        'counter-bound-lower/task-attempts',
-        'counter-bound-lower/task-max-attempts',
-        'counter-bound-lower/task-infra-retries',
-        'counter-bound-lower/run-attempt',
-        'counter-bound-lower/run-claim-gen',
-        'counter-bound-lower/run-activated-gen',
-        'counter-bound-lower/run-relaunch-count',
-        'counter-bound-lower/checkpoint-owner-attempt',
-      ]),
-    )
+  for (const side of ['upper', 'lower'] as const) {
+    for (const field of counterBoundFields) {
+      it(`catches ${side} ${field.id} worsening on the same subject`, async () => {
+        await expect(
+          runPoisonMatrixCase(
+            makeLibsqlFixture,
+            'driver-heartbeat',
+            witness(
+              side === 'upper' ? `counter-bound/${field.id}` : `counter-bound-lower/${field.id}`,
+            ),
+            {
+              afterInvoke: (raw) =>
+                write(raw, [
+                  {
+                    sql: `UPDATE ${field.table}
+                          SET ${field.column} = ${field.column} ${side === 'upper' ? '+' : '-'} 1
+                          WHERE ${field.predicate}`,
+                    args: [],
+                  },
+                ]),
+            },
+          ),
+        ).rejects.toThrow(/worsened/)
+      })
+    }
+  }
+
+  it('owns both boundary witnesses for every persisted counter bound', () => {
+    const ids = new Set(POISON_WITNESSES.map((candidate) => candidate.id))
+    for (const field of counterBoundFields) {
+      expect(ids).toContain(`counter-bound/${field.id}`)
+      expect(ids).toContain(`counter-bound-lower/${field.id}`)
+    }
   })
 
   it('catches a larger deadline divergence on the same wait', async () => {

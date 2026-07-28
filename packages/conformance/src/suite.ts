@@ -133,6 +133,77 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await snapshot(f, corrupt.taskId)).toEqual(corruptBefore)
       })
 
+      it('applies the activation-generation relation before the claim limit', async () => {
+        const poisoned = await f.store.spawn(Q, 'activated-ahead', '{}')
+        await f.raw.batch('corrupt-activation-generation', [
+          {
+            sql: `UPDATE runs SET activated_gen = claim_gen + 1 WHERE run_id = ?`,
+            args: [poisoned.runId],
+          },
+        ])
+        const poisonedBefore = await snapshot(f, poisoned.taskId)
+
+        await f.admin.setFakeNowEpochMs(1_000_001)
+        const healthy = await f.store.spawn(Q, 'healthy-after-activated-ahead', '{}')
+        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
+
+        expect(
+          claimed.map((run) => run.taskId),
+          'mutation-verdict:behavior:claim-requires-activation-generation-order',
+        ).toEqual([healthy.taskId])
+        expect(await snapshot(f, poisoned.taskId)).toEqual(poisonedBefore)
+      })
+
+      it('does not claim an obsolete live ordinal beneath a historical run', async () => {
+        const obsolete = await f.store.spawn(Q, 'obsolete-ordinal', '{}')
+        await f.raw.batch('corrupt-historical-ordinal', [
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('historical-higher-run', ?, ?, 3, 'failed', 999999)`,
+            args: [Q, obsolete.taskId],
+          },
+        ])
+        const obsoleteBefore = await snapshot(f, obsolete.taskId)
+
+        await f.admin.setFakeNowEpochMs(1_000_001)
+        const healthy = await f.store.spawn(Q, 'healthy-after-obsolete', '{}')
+        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
+
+        expect(
+          claimed.map((run) => run.taskId),
+          'mutation-verdict:behavior:claim-requires-highest-owned-ordinal',
+        ).toEqual([healthy.taskId])
+        expect(await snapshot(f, obsolete.taskId)).toEqual(obsoleteBefore)
+      })
+
+      it('does not claim a live run after the user-attempt budget is exhausted', async () => {
+        const exhausted = await f.store.spawn(Q, 'exhausted-live-run', '{}', {
+          maxAttempts: 5,
+        })
+        await f.raw.batch('corrupt-live-run-at-attempt-cap', [
+          {
+            sql: `UPDATE tasks SET attempts = max_attempts WHERE task_id = ?`,
+            args: [exhausted.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = 6 WHERE run_id = ?`,
+            args: [exhausted.runId],
+          },
+        ])
+        const exhaustedBefore = await snapshot(f, exhausted.taskId)
+
+        await f.admin.setFakeNowEpochMs(1_000_001)
+        const healthy = await f.store.spawn(Q, 'healthy-after-exhausted', '{}')
+        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
+
+        expect(
+          claimed.map((run) => run.taskId),
+          'mutation-verdict:behavior:claim-requires-user-attempt-budget',
+        ).toEqual([healthy.taskId])
+        expect(await snapshot(f, exhausted.taskId)).toEqual(exhaustedBefore)
+      })
+
       for (const claimGen of [MAX_COUNT, MAX_COUNT + 1]) {
         it(`leaves a due run unchanged when claim generation ${claimGen} cannot be incremented safely`, async () => {
           const spawned = await f.store.spawn(Q, `bounded-generation-${claimGen}`, '{}')
@@ -945,6 +1016,26 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         expect(await f.store.getCheckpoints(Q, run.taskId, 2)).toEqual([])
         expect(await f.store.getCheckpoints(Q, run.taskId, 3)).toHaveLength(1)
+      })
+
+      it('does not surface a checkpoint whose owner ordinal is forged', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await f.raw.batch('forge-checkpoint-owner-attempt', [
+          {
+            sql: `UPDATE checkpoints SET owner_attempt = owner_attempt + 1
+                  WHERE task_id = ? AND checkpoint_name = 's'`,
+            args: [run.taskId],
+          },
+        ])
+
+        expect(
+          await f.store.getCheckpoints(Q, run.taskId, run.attempt + 1),
+          'mutation-verdict:behavior:checkpoint-read-validates-owner-attempt',
+        ).toEqual([])
       })
 
       it('accepts the maximum legal run ordinal in checkpoint ownership', async () => {

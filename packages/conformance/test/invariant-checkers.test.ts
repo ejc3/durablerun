@@ -244,6 +244,25 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
+  it('flags a live run after the user-attempt budget is exhausted', async () => {
+    const f = await seeded('live-run-at-attempt-cap')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks SET attempts = max_attempts WHERE task_id = 't1'`,
+        args: [],
+      },
+      {
+        sql: `UPDATE runs SET attempt = 4 WHERE run_id = 'r1'`,
+        args: [],
+      },
+    ])
+
+    expect(
+      (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+    ).toContain('attempts/at-max-with-live-run')
+    f.close()
+  })
+
   it('keeps atomic condition IDs while deduplicating the legacy public violation', async () => {
     const f = await seeded('atomic-and-public')
     await f.raw.batch('corrupt', [
