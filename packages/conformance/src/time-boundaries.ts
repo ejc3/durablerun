@@ -2,11 +2,13 @@ import {
   type ClaimedRun,
   INFRA_BACKOFF_SECONDS,
   INFRA_RETRY_CAP,
+  MAX_DURATION_MS,
   MAX_EPOCH_MS,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_CAP,
   type SqlExecutor,
   type SpawnOptions,
+  decodeBoundedInteger,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
@@ -23,6 +25,8 @@ interface PreparedBoundary {
 interface TimeBoundaryCase {
   readonly id: string
   readonly deltaMs: number
+  readonly exactMarker: `mutation-verdict:behavior:${string}`
+  readonly overflowMarker: `mutation-verdict:behavior:${string}`
   prepare(fixture: StoreFixture): Promise<PreparedBoundary>
 }
 
@@ -96,7 +100,17 @@ async function scalar(
   if (value === null || value === undefined) {
     throw new Error(`timestamp boundary target ${column} is absent`)
   }
-  return Number(value)
+  return exactEpochInteger(value, column)
+}
+
+function exactEpochInteger(value: unknown, field: string): number {
+  const decoded = decodeBoundedInteger(value, { min: 0, max: MAX_EPOCH_MS })
+  if (!decoded.ok) {
+    throw new RangeError(
+      `timestamp boundary target ${field} must be an exact native integer (${decoded.reason})`,
+    )
+  }
+  return decoded.value
 }
 
 async function durableSnapshot(fixture: StoreFixture): Promise<unknown> {
@@ -106,6 +120,7 @@ async function durableSnapshot(fixture: StoreFixture): Promise<unknown> {
       { sql: `SELECT * FROM tasks ORDER BY task_id`, args: [] },
       { sql: `SELECT * FROM runs ORDER BY task_id, attempt, run_id`, args: [] },
       { sql: `SELECT * FROM waits ORDER BY run_id, step_name`, args: [] },
+      { sql: `SELECT * FROM events ORDER BY queue, event_name`, args: [] },
       {
         sql: `SELECT * FROM checkpoints ORDER BY task_id, checkpoint_name`,
         args: [],
@@ -117,10 +132,37 @@ async function durableSnapshot(fixture: StoreFixture): Promise<unknown> {
   return results.map((result) => result.rows)
 }
 
+/**
+ * A stricter dialect may make an invalid stored value unwritable. That is the
+ * stronger result, provided the rejected setup itself leaves no partial row.
+ */
+async function tryInjectCorruption(
+  fixture: StoreFixture,
+  label: string,
+  statements: readonly {
+    sql: string
+    args: readonly (string | number | bigint | null)[]
+  }[],
+): Promise<boolean> {
+  const before = await durableSnapshot(fixture)
+  try {
+    await fixture.raw.batch(
+      label,
+      statements.map(({ sql, args }) => ({ sql, args: [...args] })),
+    )
+    return true
+  } catch {
+    expect(await durableSnapshot(fixture)).toEqual(before)
+    return false
+  }
+}
+
 const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'spawn enqueue deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-spawn-enqueue-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-spawn-enqueue-overflow',
     async prepare(fixture) {
       let runId: string | null = null
       return {
@@ -148,6 +190,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'spawn cancellation deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-spawn-cancellation-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-spawn-cancellation-overflow',
     async prepare(fixture) {
       let taskId: string | null = null
       return {
@@ -175,6 +219,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'claim lease deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-claim-lease-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-claim-lease-overflow',
     async prepare(fixture) {
       const initial = await spawned(fixture, 'claim-lease')
       let runId = initial.runId
@@ -198,6 +244,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'activation lease deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-activation-lease-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-activation-lease-overflow',
     async prepare(fixture) {
       await spawned(fixture, 'activate-lease')
       const run = await claimOne(fixture, 'activate-lease-token', ONE_MS_SECONDS)
@@ -222,6 +270,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'activation max-duration deadline',
     deltaMs: 2,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-activation-max-duration-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-activation-max-duration-overflow',
     async prepare(fixture) {
       const task = await spawned(fixture, 'activate-duration', {
         cancellation: { maxDurationSeconds: 0.002 },
@@ -248,6 +298,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'heartbeat lease deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-heartbeat-lease-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-heartbeat-lease-overflow',
     async prepare(fixture) {
       const run = await activated(fixture, 'heartbeat-lease')
       return {
@@ -271,6 +323,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'lost-launch relaunch deadline',
     deltaMs: RELAUNCH_BACKOFF_BASE_SECONDS * 1000,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-lost-launch-relaunch-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-lost-launch-relaunch-overflow',
     async prepare(fixture) {
       await spawned(fixture, 'lost-launch')
       const run = await claimOne(fixture, 'lost-launch-token', ONE_MS_SECONDS)
@@ -297,6 +351,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'claim-timeout successor deadline',
     deltaMs: INFRA_BACKOFF_SECONDS * 1000,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-claim-timeout-successor-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-claim-timeout-successor-overflow',
     async prepare(fixture) {
       const run = await activated(fixture, 'claim-timeout')
       return {
@@ -323,6 +379,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'driver heartbeat deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-driver-heartbeat-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-driver-heartbeat-overflow',
     async prepare(fixture) {
       return {
         async invoke() {
@@ -344,6 +402,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'reschedule wake deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-reschedule-wake-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-reschedule-wake-overflow',
     async prepare(fixture) {
       const run = await activated(fixture, 'reschedule')
       return {
@@ -368,6 +428,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'suspend wake deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-suspend-wake-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-suspend-wake-overflow',
     async prepare(fixture) {
       const run = await activated(fixture, 'suspend')
       return {
@@ -396,6 +458,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'user-retry successor deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-user-retry-successor-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-user-retry-successor-overflow',
     async prepare(fixture) {
       const run = await activated(fixture, 'user-retry')
       return {
@@ -421,6 +485,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'checkpoint lease deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-checkpoint-lease-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-checkpoint-lease-overflow',
     async prepare(fixture) {
       const run = await activated(fixture, 'checkpoint')
       return {
@@ -451,6 +517,8 @@ const BOUNDARY_CASES: readonly TimeBoundaryCase[] = [
   {
     id: 'event timeout deadline',
     deltaMs: 1,
+    exactMarker: 'mutation-verdict:behavior:timestamp-addition-event-timeout-exact',
+    overflowMarker: 'mutation-verdict:behavior:timestamp-addition-event-timeout-overflow',
     async prepare(fixture) {
       const run = await activated(fixture, 'await-event')
       return {
@@ -497,7 +565,7 @@ export function timestampBoundaryConformance(
   dialect: string,
   makeFixture: StoreFixtureFactory,
 ): void {
-  describe(`timestamp addition boundaries [${dialect}]`, () => {
+  describe(`timestamp boundaries [${dialect}]`, () => {
     for (const testCase of BOUNDARY_CASES) {
       it(`${testCase.id} accepts an exact MAX_EPOCH_MS result`, async () => {
         const fixture = await fixtureAt(makeFixture, `${testCase.id}:exact`)
@@ -507,7 +575,10 @@ export function timestampBoundaryConformance(
           await prepared.invoke()
           const targets = await prepared.targets()
           expect(targets).not.toHaveLength(0)
-          expect(targets.every((value) => value === MAX_EPOCH_MS)).toBe(true)
+          expect(
+            targets.every((value) => value === MAX_EPOCH_MS),
+            testCase.exactMarker,
+          ).toBe(true)
         } finally {
           fixture.close()
         }
@@ -520,10 +591,7 @@ export function timestampBoundaryConformance(
           await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS - testCase.deltaMs + 1)
           const before = await durableSnapshot(fixture)
           await prepared.invoke().catch(() => undefined)
-          expect(
-            await durableSnapshot(fixture),
-            'mutation-verdict:behavior:timestamp-addition-bounds',
-          ).toEqual(before)
+          expect(await durableSnapshot(fixture), testCase.overflowMarker).toEqual(before)
         } finally {
           fixture.close()
         }
@@ -543,7 +611,10 @@ export function timestampBoundaryConformance(
         ])
         await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS)
 
-        expect(await fixture.store.sweep(Q, 1)).toEqual([
+        expect(
+          await fixture.store.sweep(Q, 1),
+          'mutation-verdict:behavior:timestamp-terminal-relaunch-cap-at-max',
+        ).toEqual([
           {
             kind: 'relaunch-cap-exhausted',
             runId: run.runId,
@@ -571,7 +642,10 @@ export function timestampBoundaryConformance(
         ])
         await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS)
 
-        expect(await fixture.store.sweep(Q, 1)).toEqual([
+        expect(
+          await fixture.store.sweep(Q, 1),
+          'mutation-verdict:behavior:timestamp-terminal-infra-cap-at-max',
+        ).toEqual([
           {
             kind: 'infra-cap-exhausted',
             runId: run.runId,
@@ -595,7 +669,10 @@ export function timestampBoundaryConformance(
         })
 
         const result = await fixture.store.getTaskResult(Q, run.taskId)
-        expect(result).toMatchObject({ state: 'failed' })
+        expect(
+          result,
+          'mutation-verdict:behavior:timestamp-terminal-user-failure-at-max',
+        ).toMatchObject({ state: 'failed' })
         expect(
           await scalar(
             fixture,
@@ -631,6 +708,7 @@ export function timestampBoundaryConformance(
 
         expect(
           await fixture.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+          'mutation-verdict:behavior:timestamp-activation-existing-first-start-at-max',
         ).not.toBeNull()
         expect(
           await scalar(
@@ -653,59 +731,174 @@ export function timestampBoundaryConformance(
       }
     })
 
-    it('refuses a negative run availability before claiming atomically', async () => {
-      const fixture = await fixtureAt(makeFixture, 'consumer:claim-available-lower')
+    it('skips a negative pending availability before the claim limit', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:claim-pending-available-lower')
       try {
-        const run = await spawned(fixture, 'claim-negative-available')
-        await fixture.raw.batch('time-boundary:claim-negative-available', [
-          {
-            sql: `UPDATE runs SET available_at_ms = -1 WHERE run_id = ?`,
-            args: [run.runId],
-          },
-        ])
-        const before = await durableSnapshot(fixture)
+        const poison = await spawned(fixture, 'claim-negative-pending')
+        const healthy = await spawned(fixture, 'claim-healthy-pending')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:claim-negative-pending',
+          [
+            {
+              sql: `UPDATE runs SET available_at_ms = -1 WHERE run_id = ?`,
+              args: [poison.runId],
+            },
+          ],
+        )
+        if (!supported) return
 
         expect(
-          await fixture.store.claim(Q, 'claim-negative-available-token', {
-            leaseSeconds: 60,
-            limit: 1,
-          }),
-          'mutation-verdict:behavior:timestamp-claim-validates-available-lower-bound',
-        ).toEqual([])
-        expect(
-          await durableSnapshot(fixture),
-          'mutation-verdict:behavior:timestamp-claim-validates-available-lower-bound',
-        ).toEqual(before)
+          (
+            await fixture.store.claim(Q, 'claim-negative-pending-token', {
+              leaseSeconds: 60,
+              limit: 1,
+            })
+          ).map((run) => run.runId),
+          'mutation-verdict:behavior:timestamp-claim-pending-lower-before-limit',
+        ).toEqual([healthy.runId])
+        const [poisoned] = await fixture.raw.batch(
+          'time-boundary:claim-negative-pending-after',
+          [
+            {
+              sql: `SELECT state, available_at_ms FROM runs WHERE run_id = ?`,
+              args: [poison.runId],
+            },
+          ],
+          'read',
+        )
+        expect(poisoned?.rows[0]).toMatchObject({
+          state: 'pending',
+          available_at_ms: -1,
+        })
       } finally {
         fixture.close()
       }
     })
 
-    it('refuses an out-of-range cancellation deadline before claiming atomically', async () => {
-      const fixture = await fixtureAt(makeFixture, 'consumer:claim-cancel-upper')
+    it('skips a negative wait timeout before the sleeping claim limit', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:claim-sleeping-timeout-lower')
       try {
-        const task = await spawned(fixture, 'claim-invalid-cancellation', {
-          cancellation: { maxDelaySeconds: 60 },
-        })
-        await fixture.raw.batch('time-boundary:claim-invalid-cancellation', [
-          {
-            sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
-            args: [MAX_EPOCH_MS + 1, task.taskId],
-          },
-        ])
-        const before = await durableSnapshot(fixture)
+        const poison = await activated(fixture, 'claim-negative-sleeping')
+        const poisonWait = await fixture.store.awaitEvent(
+          Q,
+          poison.taskId,
+          poison.runId,
+          poison.claimToken,
+          'poison-step',
+          'poison-event',
+          60,
+        )
+        if (poisonWait.emitted) throw new Error('poison wait unexpectedly found an event')
+
+        const healthy = await activated(fixture, 'claim-healthy-sleeping')
+        const healthyWait = await fixture.store.awaitEvent(
+          Q,
+          healthy.taskId,
+          healthy.runId,
+          healthy.claimToken,
+          'healthy-step',
+          'healthy-event',
+          60,
+        )
+        if (healthyWait.emitted) throw new Error('healthy wait unexpectedly found an event')
+
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:claim-negative-sleeping',
+          [
+            {
+              sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`,
+              args: [NORMAL_NOW_MS - 1, poison.runId],
+            },
+            {
+              sql: `UPDATE waits SET timeout_at_ms = -1
+                    WHERE run_id = ? AND step_name = ?`,
+              args: [poison.runId, 'poison-step'],
+            },
+            {
+              sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`,
+              args: [NORMAL_NOW_MS, healthy.runId],
+            },
+            {
+              sql: `UPDATE waits SET timeout_at_ms = ?
+                    WHERE run_id = ? AND step_name = ?`,
+              args: [NORMAL_NOW_MS, healthy.runId, 'healthy-step'],
+            },
+          ],
+        )
+        if (!supported) return
 
         expect(
-          await fixture.store.claim(Q, 'claim-invalid-cancellation-token', {
-            leaseSeconds: 60,
-            limit: 1,
-          }),
-          'mutation-verdict:behavior:timestamp-claim-validates-cancellation-upper-bound',
-        ).toEqual([])
+          (
+            await fixture.store.claim(Q, 'claim-negative-sleeping-token', {
+              leaseSeconds: 60,
+              limit: 1,
+            })
+          ).map((run) => run.runId),
+          'mutation-verdict:behavior:timestamp-claim-sleeping-timeout-lower-before-limit',
+        ).toEqual([healthy.runId])
+        const [poisonedRun, poisonedWait] = await fixture.raw.batch(
+          'time-boundary:claim-negative-sleeping-after',
+          [
+            {
+              sql: `SELECT state, available_at_ms FROM runs WHERE run_id = ?`,
+              args: [poison.runId],
+            },
+            {
+              sql: `SELECT timeout_at_ms FROM waits
+                    WHERE run_id = ? AND step_name = ?`,
+              args: [poison.runId, 'poison-step'],
+            },
+          ],
+          'read',
+        )
+        expect(poisonedRun?.rows[0]).toMatchObject({
+          state: 'sleeping',
+          available_at_ms: NORMAL_NOW_MS - 1,
+        })
+        expect(poisonedWait?.rows[0]).toMatchObject({ timeout_at_ms: -1 })
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('skips an out-of-range cancellation deadline before the claim limit', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:claim-cancel-upper')
+      try {
+        const poison = await spawned(fixture, 'claim-invalid-cancellation', {
+          cancellation: { maxDelaySeconds: 60 },
+        })
+        const healthy = await spawned(fixture, 'claim-healthy-cancellation')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:claim-invalid-cancellation',
+          [
+            {
+              sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+              args: [MAX_EPOCH_MS + 1, poison.taskId],
+            },
+            {
+              sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`,
+              args: [NORMAL_NOW_MS - 1, poison.runId],
+            },
+            {
+              sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`,
+              args: [NORMAL_NOW_MS, healthy.runId],
+            },
+          ],
+        )
+        if (!supported) return
+
         expect(
-          await durableSnapshot(fixture),
-          'mutation-verdict:behavior:timestamp-claim-validates-cancellation-upper-bound',
-        ).toEqual(before)
+          (
+            await fixture.store.claim(Q, 'claim-invalid-cancellation-token', {
+              leaseSeconds: 60,
+              limit: 1,
+            })
+          ).map((run) => run.runId),
+          'mutation-verdict:behavior:timestamp-claim-cancellation-upper-before-limit',
+        ).toEqual([healthy.runId])
       } finally {
         fixture.close()
       }
@@ -714,36 +907,87 @@ export function timestampBoundaryConformance(
     for (const activatedBeforeExpiry of [false, true]) {
       const branch = activatedBeforeExpiry ? 'claim-timeout' : 'lost-launch'
 
-      it(`${branch} sweep refuses a negative claim expiry atomically`, async () => {
+      it(`${branch} sweep skips a negative claim expiry before its limit`, async () => {
         const fixture = await fixtureAt(makeFixture, `consumer:${branch}-expiry-lower`)
         try {
           await spawned(fixture, `${branch}-negative-expiry`)
-          const run = await claimOne(fixture, `${branch}-negative-expiry-token`)
+          const poison = await claimOne(fixture, `${branch}-negative-expiry-token`)
           if (activatedBeforeExpiry) {
             const activation = await fixture.store.activate(
               Q,
-              run.runId,
-              run.claimToken,
-              run.claimGen,
+              poison.runId,
+              poison.claimToken,
+              poison.claimGen,
             )
             if (!activation) throw new Error(`${branch} setup lost activation`)
           }
-          await fixture.raw.batch('time-boundary:negative-claim-expiry', [
-            {
-              sql: `UPDATE runs SET claim_expires_at_ms = -1 WHERE run_id = ?`,
-              args: [run.runId],
-            },
-          ])
-          const before = await durableSnapshot(fixture)
 
-          expect(
-            await fixture.store.sweep(Q, 1),
-            'mutation-verdict:behavior:timestamp-sweep-validates-claim-expiry-lower-bound',
-          ).toEqual([])
-          expect(
-            await durableSnapshot(fixture),
-            'mutation-verdict:behavior:timestamp-sweep-validates-claim-expiry-lower-bound',
-          ).toEqual(before)
+          await spawned(fixture, `${branch}-healthy-expiry`)
+          const healthy = await claimOne(fixture, `${branch}-healthy-expiry-token`)
+          if (activatedBeforeExpiry) {
+            const activation = await fixture.store.activate(
+              Q,
+              healthy.runId,
+              healthy.claimToken,
+              healthy.claimGen,
+            )
+            if (!activation) throw new Error(`${branch} healthy setup lost activation`)
+          }
+          const supported = await tryInjectCorruption(
+            fixture,
+            'time-boundary:negative-claim-expiry',
+            [
+              {
+                sql: `UPDATE runs SET claim_expires_at_ms = -1 WHERE run_id = ?`,
+                args: [poison.runId],
+              },
+              {
+                sql: `UPDATE runs SET claim_expires_at_ms = ? WHERE run_id = ?`,
+                args: [NORMAL_NOW_MS - 1, healthy.runId],
+              },
+            ],
+          )
+          if (!supported) return
+
+          const swept = await fixture.store.sweep(Q, 1)
+          if (activatedBeforeExpiry) {
+            expect(
+              swept,
+              'mutation-verdict:behavior:timestamp-sweep-timeout-lower-before-limit',
+            ).toMatchObject([
+              {
+                kind: 'claim-timeout',
+                runId: healthy.runId,
+                taskId: healthy.taskId,
+              },
+            ])
+          } else {
+            expect(
+              swept,
+              'mutation-verdict:behavior:timestamp-sweep-lost-launch-lower-before-limit',
+            ).toEqual([
+              {
+                kind: 'lost-launch',
+                runId: healthy.runId,
+                taskId: healthy.taskId,
+                relaunchCount: 1,
+              },
+            ])
+          }
+          const [poisoned] = await fixture.raw.batch(
+            'time-boundary:negative-claim-expiry-after',
+            [
+              {
+                sql: `SELECT state, claim_expires_at_ms FROM runs WHERE run_id = ?`,
+                args: [poison.runId],
+              },
+            ],
+            'read',
+          )
+          expect(poisoned?.rows[0]).toMatchObject({
+            state: 'running',
+            claim_expires_at_ms: -1,
+          })
         } finally {
           fixture.close()
         }
@@ -765,55 +1009,676 @@ export function timestampBoundaryConformance(
           }
           await fixture.admin.setFakeNowEpochMs(1_100_000)
 
+          let supported = false
           let afterCorruption: unknown
           const interposed = interposeAfterBatch(fixture.raw, 'sweep:scan', async () => {
-            await fixture.raw.batch('time-boundary:claim-expiry-race', [
+            supported = await tryInjectCorruption(fixture, 'time-boundary:claim-expiry-race', [
               {
                 sql: `UPDATE runs SET claim_expires_at_ms = -1 WHERE run_id = ?`,
                 args: [run.runId],
               },
             ])
-            afterCorruption = await durableSnapshot(fixture)
+            if (supported) afterCorruption = await durableSnapshot(fixture)
           })
 
-          expect(
-            await fixture.storeOver(interposed.executor).sweep(Q, 1),
-            'mutation-verdict:behavior:timestamp-sweep-rechecks-claim-expiry-bound',
-          ).toEqual([])
+          const swept = await fixture.storeOver(interposed.executor).sweep(Q, 1)
+          if (!supported) return
+          if (activatedBeforeExpiry) {
+            expect(
+              swept,
+              'mutation-verdict:behavior:timestamp-sweep-timeout-rechecks-expiry-bound',
+            ).toEqual([])
+          } else {
+            expect(
+              swept,
+              'mutation-verdict:behavior:timestamp-sweep-lost-launch-rechecks-expiry-bound',
+            ).toEqual([])
+          }
           expect(interposed.fired()).toBe(true)
           expect(afterCorruption).toBeDefined()
-          expect(
-            await durableSnapshot(fixture),
-            'mutation-verdict:behavior:timestamp-sweep-rechecks-claim-expiry-bound',
-          ).toEqual(afterCorruption)
+          expect(await durableSnapshot(fixture)).toEqual(afterCorruption)
         } finally {
           fixture.close()
         }
       })
     }
 
-    it('deadline cancellation refuses a negative deadline atomically', async () => {
-      const fixture = await fixtureAt(makeFixture, 'consumer:cancel-deadline-lower')
+    it('nextWakeAt skips a negative pending availability', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:next-wake-pending-lower')
       try {
-        const task = await spawned(fixture, 'cancel-negative-deadline', {
+        const poison = await spawned(fixture, 'next-wake-negative-pending')
+        const healthy = await spawned(fixture, 'next-wake-healthy-pending')
+        const healthyWake = NORMAL_NOW_MS + 10
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:next-wake-negative-pending',
+          [
+            {
+              sql: `UPDATE runs SET available_at_ms = -1 WHERE run_id = ?`,
+              args: [poison.runId],
+            },
+            {
+              sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`,
+              args: [healthyWake, healthy.runId],
+            },
+          ],
+        )
+        if (!supported) return
+
+        const observed = await fixture.store.nextWakeAtEpochMs(Q).catch((error: unknown) => error)
+        expect(observed, 'mutation-verdict:behavior:timestamp-next-wake-pending-lower').toBe(
+          healthyWake,
+        )
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('nextWakeAt skips a negative sleeping availability', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:next-wake-sleeping-lower')
+      try {
+        const poison = await activated(fixture, 'next-wake-negative-sleeping')
+        await fixture.store.reschedule(Q, poison.runId, poison.claimToken, {
+          inSeconds: 60,
+        })
+        const healthy = await activated(fixture, 'next-wake-healthy-sleeping')
+        await fixture.store.reschedule(Q, healthy.runId, healthy.claimToken, {
+          inSeconds: 60,
+        })
+        const healthyWake = NORMAL_NOW_MS + 10
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:next-wake-negative-sleeping',
+          [
+            {
+              sql: `UPDATE runs SET available_at_ms = -1 WHERE run_id = ?`,
+              args: [poison.runId],
+            },
+            {
+              sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`,
+              args: [healthyWake, healthy.runId],
+            },
+          ],
+        )
+        if (!supported) return
+
+        const observed = await fixture.store.nextWakeAtEpochMs(Q).catch((error: unknown) => error)
+        expect(observed, 'mutation-verdict:behavior:timestamp-next-wake-sleeping-lower').toBe(
+          healthyWake,
+        )
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('nextWakeAt skips a negative running claim expiry', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:next-wake-expiry-lower')
+      try {
+        await spawned(fixture, 'next-wake-negative-expiry')
+        const poison = await claimOne(fixture, 'next-wake-negative-expiry-token')
+        await spawned(fixture, 'next-wake-healthy-expiry')
+        const healthy = await claimOne(fixture, 'next-wake-healthy-expiry-token')
+        const healthyWake = NORMAL_NOW_MS + 10
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:next-wake-negative-expiry',
+          [
+            {
+              sql: `UPDATE runs SET claim_expires_at_ms = -1 WHERE run_id = ?`,
+              args: [poison.runId],
+            },
+            {
+              sql: `UPDATE runs SET claim_expires_at_ms = ? WHERE run_id = ?`,
+              args: [healthyWake, healthy.runId],
+            },
+          ],
+        )
+        if (!supported) return
+
+        const observed = await fixture.store.nextWakeAtEpochMs(Q).catch((error: unknown) => error)
+        expect(observed, 'mutation-verdict:behavior:timestamp-next-wake-expiry-lower').toBe(
+          healthyWake,
+        )
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('nextWakeAt skips a negative cancellation deadline', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:next-wake-cancel-lower')
+      try {
+        const poison = await spawned(fixture, 'next-wake-negative-cancel', {
           cancellation: { maxDelaySeconds: 60 },
         })
-        await fixture.raw.batch('time-boundary:cancel-negative-deadline', [
+        const healthy = await spawned(fixture, 'next-wake-healthy-cancel', {
+          cancellation: { maxDelaySeconds: 60 },
+        })
+        const healthyWake = NORMAL_NOW_MS + 10
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:next-wake-negative-cancel',
+          [
+            {
+              sql: `UPDATE runs SET available_at_ms = NULL WHERE run_id IN (?, ?)`,
+              args: [poison.runId, healthy.runId],
+            },
+            {
+              sql: `UPDATE tasks SET cancel_at_ms = -1 WHERE task_id = ?`,
+              args: [poison.taskId],
+            },
+            {
+              sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+              args: [healthyWake, healthy.taskId],
+            },
+          ],
+        )
+        if (!supported) return
+
+        const observed = await fixture.store.nextWakeAtEpochMs(Q).catch((error: unknown) => error)
+        expect(observed, 'mutation-verdict:behavior:timestamp-next-wake-cancel-lower').toBe(
+          healthyWake,
+        )
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('expireLeaseNow refuses to launder an out-of-range stored expiry', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:expire-lease-upper')
+      try {
+        const run = await activated(fixture, 'expire-lease-invalid-expiry')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:expire-lease-invalid-expiry',
+          [
+            {
+              sql: `UPDATE runs SET claim_expires_at_ms = ? WHERE run_id = ?`,
+              args: [MAX_EPOCH_MS + 1, run.runId],
+            },
+          ],
+        )
+        if (!supported) return
+        const before = await durableSnapshot(fixture)
+
+        const expired = await fixture.store.expireLeaseNow(Q, run.runId, run.claimToken)
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-expire-lease-validates-expiry-upper',
+        ).toEqual(before)
+        expect(expired).toBe(false)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('emit skips an invalid timed wait while delivering a healthy peer', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:emit-wait-lower')
+      try {
+        const poison = await activated(fixture, 'emit-negative-wait')
+        const poisonWait = await fixture.store.awaitEvent(
+          Q,
+          poison.taskId,
+          poison.runId,
+          poison.claimToken,
+          'poison-emit-step',
+          'shared-emit-event',
+          60,
+        )
+        if (poisonWait.emitted) throw new Error('poison emit wait unexpectedly found an event')
+
+        const healthy = await activated(fixture, 'emit-healthy-wait')
+        const healthyWait = await fixture.store.awaitEvent(
+          Q,
+          healthy.taskId,
+          healthy.runId,
+          healthy.claimToken,
+          'healthy-emit-step',
+          'shared-emit-event',
+          60,
+        )
+        if (healthyWait.emitted) throw new Error('healthy emit wait unexpectedly found an event')
+
+        const supported = await tryInjectCorruption(fixture, 'time-boundary:emit-negative-wait', [
           {
-            sql: `UPDATE tasks SET cancel_at_ms = -1 WHERE task_id = ?`,
-            args: [task.taskId],
+            sql: `UPDATE runs SET available_at_ms = -1 WHERE run_id = ?`,
+            args: [poison.runId],
+          },
+          {
+            sql: `UPDATE waits SET timeout_at_ms = -1
+                    WHERE run_id = ? AND step_name = ?`,
+            args: [poison.runId, 'poison-emit-step'],
           },
         ])
+        if (!supported) return
+
+        await fixture.store.emitEvent(Q, 'shared-emit-event', '{"ok":true}')
+        const [poisonRun, healthyRun, poisonRegistration, healthyRegistration, event] =
+          await fixture.raw.batch(
+            'time-boundary:emit-negative-wait-after',
+            [
+              {
+                sql: `SELECT state, available_at_ms, event_payload
+                      FROM runs WHERE run_id = ?`,
+                args: [poison.runId],
+              },
+              {
+                sql: `SELECT state, available_at_ms, event_payload
+                      FROM runs WHERE run_id = ?`,
+                args: [healthy.runId],
+              },
+              {
+                sql: `SELECT timeout_at_ms FROM waits
+                      WHERE run_id = ? AND step_name = ?`,
+                args: [poison.runId, 'poison-emit-step'],
+              },
+              {
+                sql: `SELECT COUNT(*) AS count FROM waits
+                      WHERE run_id = ? AND step_name = ?`,
+                args: [healthy.runId, 'healthy-emit-step'],
+              },
+              {
+                sql: `SELECT payload, emitted_at_ms FROM events
+                      WHERE queue = ? AND event_name = ?`,
+                args: [Q, 'shared-emit-event'],
+              },
+            ],
+            'read',
+          )
+        expect(
+          {
+            poisonRun: poisonRun?.rows[0],
+            healthyRun: healthyRun?.rows[0],
+            poisonRegistration: poisonRegistration?.rows[0],
+            healthyRegistrationCount: exactEpochInteger(
+              healthyRegistration?.rows[0]?.count,
+              'healthy-registration-count',
+            ),
+            event: event?.rows[0],
+          },
+          'mutation-verdict:behavior:timestamp-emit-validates-timed-wait-lower',
+        ).toEqual({
+          poisonRun: {
+            state: 'sleeping',
+            available_at_ms: -1,
+            event_payload: null,
+          },
+          healthyRun: {
+            state: 'pending',
+            available_at_ms: NORMAL_NOW_MS,
+            event_payload: '{"ok":true}',
+          },
+          poisonRegistration: { timeout_at_ms: -1 },
+          healthyRegistrationCount: 0,
+          event: { payload: '{"ok":true}', emitted_at_ms: NORMAL_NOW_MS },
+        })
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('activation refuses a negative persisted first-start instant atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:activation-first-start-lower')
+      try {
+        await spawned(fixture, 'activation-negative-first-start', {
+          cancellation: { maxDurationSeconds: 60 },
+        })
+        const first = await claimOne(fixture, 'activation-negative-first-start-first')
+        const firstActivation = await fixture.store.activate(
+          Q,
+          first.runId,
+          first.claimToken,
+          first.claimGen,
+        )
+        if (!firstActivation) throw new Error('first-start setup lost its first activation')
+        await fixture.store.fail(Q, first.runId, first.claimToken, '{"name":"retry"}', {
+          delaySeconds: 0,
+        })
+        const second = await claimOne(fixture, 'activation-negative-first-start-second')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:activation-negative-first-start',
+          [
+            {
+              sql: `UPDATE tasks SET first_started_at_ms = -1 WHERE task_id = ?`,
+              args: [second.taskId],
+            },
+          ],
+        )
+        if (!supported) return
         const before = await durableSnapshot(fixture)
+
+        const activation = await fixture.store
+          .activate(Q, second.runId, second.claimToken, second.claimGen)
+          .catch((error: unknown) => error)
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-activation-validates-first-start-lower',
+        ).toEqual(before)
+        expect(activation).toBeNull()
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('activation refuses a negative stored max-duration atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:activation-duration-lower')
+      try {
+        await spawned(fixture, 'activation-negative-duration', {
+          cancellation: { maxDurationSeconds: 60 },
+        })
+        const run = await claimOne(fixture, 'activation-negative-duration-token')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:activation-negative-duration',
+          [
+            {
+              sql: `UPDATE tasks SET cancellation = ? WHERE task_id = ?`,
+              args: [JSON.stringify({ maxDurationSeconds: -1 }), run.taskId],
+            },
+          ],
+        )
+        if (!supported) return
+        const before = await durableSnapshot(fixture)
+
+        const activation = await fixture.store
+          .activate(Q, run.runId, run.claimToken, run.claimGen)
+          .catch((error: unknown) => error)
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-activation-validates-stored-duration-lower',
+        ).toEqual(before)
+        expect(activation).toBeNull()
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('activation refuses a stored max-duration above the duration bound atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:activation-duration-upper')
+      try {
+        await spawned(fixture, 'activation-oversized-duration', {
+          cancellation: { maxDurationSeconds: 60 },
+        })
+        const run = await claimOne(fixture, 'activation-oversized-duration-token')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:activation-oversized-duration',
+          [
+            {
+              sql: `UPDATE tasks SET cancellation = ? WHERE task_id = ?`,
+              args: [
+                JSON.stringify({
+                  maxDurationSeconds: MAX_DURATION_MS / 1000 + 1,
+                }),
+                run.taskId,
+              ],
+            },
+          ],
+        )
+        if (!supported) return
+        const before = await durableSnapshot(fixture)
+
+        const activation = await fixture.store
+          .activate(Q, run.runId, run.claimToken, run.claimGen)
+          .catch((error: unknown) => error)
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-activation-validates-stored-duration-upper',
+        ).toEqual(before)
+        expect(activation).toBeNull()
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('activation refuses a coercible string max-duration atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:activation-duration-storage')
+      try {
+        await spawned(fixture, 'activation-string-duration', {
+          cancellation: { maxDurationSeconds: 60 },
+        })
+        const run = await claimOne(fixture, 'activation-string-duration-token')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:activation-string-duration',
+          [
+            {
+              sql: `UPDATE tasks SET cancellation = ? WHERE task_id = ?`,
+              args: [JSON.stringify({ maxDurationSeconds: '60' }), run.taskId],
+            },
+          ],
+        )
+        if (!supported) return
+        const before = await durableSnapshot(fixture)
+
+        const activation = await fixture.store
+          .activate(Q, run.runId, run.claimToken, run.claimGen)
+          .catch((error: unknown) => error)
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-activation-validates-stored-duration-storage',
+        ).toEqual(before)
+        expect(activation).toBeNull()
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('re-emission refuses to propagate a negative stored event instant', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:event-emitted-lower')
+      try {
+        const run = await activated(fixture, 'event-negative-emitted')
+        const wait = await fixture.store.awaitEvent(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          'event-step',
+          'stored-event',
+          null,
+        )
+        if (wait.emitted) throw new Error('event propagation setup unexpectedly found an event')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:event-negative-emitted',
+          [
+            {
+              sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                    VALUES (?, ?, ?, -1)`,
+              args: [Q, 'stored-event', '{"stored":true}'],
+            },
+          ],
+        )
+        if (!supported) return
+        const before = await durableSnapshot(fixture)
+
+        await fixture.store.emitEvent(Q, 'stored-event', '{"replacement":true}').catch(() => {})
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-emit-validates-existing-emitted-lower',
+        ).toEqual(before)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('re-emission refuses to propagate an event instant above the epoch bound', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:event-emitted-upper')
+      try {
+        const run = await activated(fixture, 'event-oversized-emitted')
+        const wait = await fixture.store.awaitEvent(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          'event-step',
+          'oversized-stored-event',
+          null,
+        )
+        if (wait.emitted) throw new Error('event propagation setup unexpectedly found an event')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:event-oversized-emitted',
+          [
+            {
+              sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                    VALUES (?, ?, ?, ?)`,
+              args: [Q, 'oversized-stored-event', '{"stored":true}', MAX_EPOCH_MS + 1],
+            },
+          ],
+        )
+        if (!supported) return
+        const before = await durableSnapshot(fixture)
+
+        await fixture.store
+          .emitEvent(Q, 'oversized-stored-event', '{"replacement":true}')
+          .catch(() => {})
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-emit-validates-existing-emitted-upper',
+        ).toEqual(before)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('re-emission preserves and propagates a valid event instant at the epoch ceiling', async () => {
+      const fixture = await fixtureAt(makeFixture, 'control:event-emitted-max')
+      try {
+        const run = await activated(fixture, 'event-max-emitted')
+        const wait = await fixture.store.awaitEvent(
+          Q,
+          run.taskId,
+          run.runId,
+          run.claimToken,
+          'event-step',
+          'max-stored-event',
+          null,
+        )
+        if (wait.emitted) throw new Error('event ceiling setup unexpectedly found an event')
+        await fixture.raw.batch('time-boundary:event-max-emitted', [
+          {
+            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                  VALUES (?, ?, ?, ?)`,
+            args: [Q, 'max-stored-event', '{"stored":true}', MAX_EPOCH_MS],
+          },
+        ])
+        await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS)
+
+        await fixture.store.emitEvent(Q, 'max-stored-event', '{"replacement":true}')
+        const [event, woken, registration] = await fixture.raw.batch(
+          'time-boundary:event-max-emitted-after',
+          [
+            {
+              sql: `SELECT payload, emitted_at_ms FROM events
+                    WHERE queue = ? AND event_name = ?`,
+              args: [Q, 'max-stored-event'],
+            },
+            {
+              sql: `SELECT state, available_at_ms, event_payload
+                    FROM runs WHERE run_id = ?`,
+              args: [run.runId],
+            },
+            {
+              sql: `SELECT COUNT(*) AS count FROM waits
+                    WHERE run_id = ? AND step_name = ?`,
+              args: [run.runId, 'event-step'],
+            },
+          ],
+          'read',
+        )
+        expect(
+          {
+            event: event?.rows[0],
+            run: woken?.rows[0],
+            registrationCount: exactEpochInteger(
+              registration?.rows[0]?.count,
+              'max-event-registration-count',
+            ),
+          },
+          'mutation-verdict:behavior:timestamp-emit-preserves-existing-emitted-max',
+        ).toEqual({
+          event: { payload: '{"stored":true}', emitted_at_ms: MAX_EPOCH_MS },
+          run: {
+            state: 'pending',
+            available_at_ms: MAX_EPOCH_MS,
+            event_payload: '{"stored":true}',
+          },
+          registrationCount: 0,
+        })
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('the boundary oracle rejects parseable timestamp text', () => {
+      expect(
+        () => exactEpochInteger(String(NORMAL_NOW_MS), 'text-probe'),
+        'mutation-verdict:behavior:timestamp-boundary-oracle-rejects-text',
+      ).toThrow(/exact native integer/)
+    })
+
+    it('the boundary oracle rejects a fractional timestamp number', () => {
+      expect(
+        () => exactEpochInteger(NORMAL_NOW_MS + 0.5, 'fractional-probe'),
+        'mutation-verdict:behavior:timestamp-boundary-oracle-rejects-fractional',
+      ).toThrow(/exact native integer/)
+    })
+
+    it('deadline cancellation skips a negative deadline before its limit', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:cancel-deadline-lower')
+      try {
+        const poison = await spawned(fixture, 'cancel-negative-deadline', {
+          cancellation: { maxDelaySeconds: 60 },
+        })
+        const healthy = await spawned(fixture, 'cancel-healthy-deadline', {
+          cancellation: { maxDelaySeconds: 60 },
+        })
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:cancel-negative-deadline',
+          [
+            {
+              sql: `UPDATE tasks SET cancel_at_ms = -1 WHERE task_id = ?`,
+              args: [poison.taskId],
+            },
+            {
+              sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+              args: [NORMAL_NOW_MS - 1, healthy.taskId],
+            },
+          ],
+        )
+        if (!supported) return
 
         expect(
           await fixture.store.sweep(Q, 1),
-          'mutation-verdict:behavior:timestamp-cancel-validates-deadline-lower-bound',
-        ).toEqual([])
-        expect(
-          await durableSnapshot(fixture),
-          'mutation-verdict:behavior:timestamp-cancel-validates-deadline-lower-bound',
-        ).toEqual(before)
+          'mutation-verdict:behavior:timestamp-cancel-lower-before-limit',
+        ).toEqual([
+          {
+            kind: 'cancelled',
+            taskId: healthy.taskId,
+            runId: healthy.runId,
+          },
+        ])
+        const [poisonedTask, poisonedRun] = await fixture.raw.batch(
+          'time-boundary:cancel-negative-deadline-after',
+          [
+            {
+              sql: `SELECT state, cancel_at_ms FROM tasks WHERE task_id = ?`,
+              args: [poison.taskId],
+            },
+            {
+              sql: `SELECT state FROM runs WHERE run_id = ?`,
+              args: [poison.runId],
+            },
+          ],
+          'read',
+        )
+        expect(poisonedTask?.rows[0]).toMatchObject({
+          state: 'pending',
+          cancel_at_ms: -1,
+        })
+        expect(poisonedRun?.rows[0]).toMatchObject({ state: 'pending' })
       } finally {
         fixture.close()
       }
@@ -827,27 +1692,26 @@ export function timestampBoundaryConformance(
         })
         await fixture.admin.setFakeNowEpochMs(1_100_000)
 
+        let supported = false
         let afterCorruption: unknown
         const interposed = interposeAfterBatch(fixture.raw, 'sweep:scan', async () => {
-          await fixture.raw.batch('time-boundary:cancel-deadline-race', [
+          supported = await tryInjectCorruption(fixture, 'time-boundary:cancel-deadline-race', [
             {
               sql: `UPDATE tasks SET cancel_at_ms = -1 WHERE task_id = ?`,
               args: [task.taskId],
             },
           ])
-          afterCorruption = await durableSnapshot(fixture)
+          if (supported) afterCorruption = await durableSnapshot(fixture)
         })
 
-        expect(
-          await fixture.storeOver(interposed.executor).sweep(Q, 1),
-          'mutation-verdict:behavior:timestamp-cancel-rechecks-deadline-bound',
-        ).toEqual([])
+        const swept = await fixture.storeOver(interposed.executor).sweep(Q, 1)
+        if (!supported) return
+        expect(swept, 'mutation-verdict:behavior:timestamp-cancel-rechecks-deadline-bound').toEqual(
+          [],
+        )
         expect(interposed.fired()).toBe(true)
         expect(afterCorruption).toBeDefined()
-        expect(
-          await durableSnapshot(fixture),
-          'mutation-verdict:behavior:timestamp-cancel-rechecks-deadline-bound',
-        ).toEqual(afterCorruption)
+        expect(await durableSnapshot(fixture)).toEqual(afterCorruption)
       } finally {
         fixture.close()
       }
