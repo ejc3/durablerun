@@ -17,11 +17,12 @@ import {
   parseFenceStamp,
 } from '@durablerun/core'
 import { MATRIX_WRITE_LABELS } from './fault-matrix.js'
-import type {
-  StorageCorruption,
-  StorageCorruptionDisposition,
-  StoreFixture,
-  StoreFixtureFactory,
+import {
+  executeStorageCorruption,
+  type StorageCorruption,
+  type StorageCorruptionDisposition,
+  type StoreFixture,
+  type StoreFixtureFactory,
 } from './fixture.js'
 import {
   ENGINE_INVARIANT_CONDITIONS,
@@ -2566,7 +2567,7 @@ export async function runPoisonMatrixCase(
       await f.raw.batch('poison:corrupt', witness.statements, 'write')
     }
     const corruptionDisposition = witness.storageCorruption
-      ? await f.injectStorageCorruption(witness.storageCorruption)
+      ? await executeStorageCorruption(f, witness.storageCorruption)
       : 'injected'
     if (corruptionDisposition === 'structurally-rejected') {
       return {

@@ -14,7 +14,7 @@ import {
 } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { executeStorageCorruption, type StoreFixture, type StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 
 const Q = 'q'
@@ -745,7 +745,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             args: [spawned.taskId],
           },
         ])
-        const disposition = await f.injectStorageCorruption({
+        const disposition = await executeStorageCorruption(f, {
           table: 'runs',
           runId: run.runId,
           column: 'relaunch_count',
@@ -993,7 +993,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const run = await claimOne('tick-1')
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
         await f.admin.setFakeNowEpochMs(1_100_000)
-        const disposition = await f.injectStorageCorruption({
+        const disposition = await executeStorageCorruption(f, {
           table: 'runs',
           runId: run.runId,
           column: 'attempt',
@@ -1423,7 +1423,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('suspendRun rejects a non-integer stored attempt atomically', async () => {
         const run = await activatedRun()
-        const disposition = await f.injectStorageCorruption({
+        const disposition = await executeStorageCorruption(f, {
           table: 'runs',
           runId: run.runId,
           column: 'attempt',
@@ -1501,7 +1501,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         if (corruptOwner) {
-          const disposition = await f.injectStorageCorruption({
+          const disposition = await executeStorageCorruption(f, {
             table: 'checkpoints',
             taskId: run.taskId,
             checkpointName,
@@ -1755,7 +1755,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
         if (!run) throw new Error('expected claim')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        const disposition = await f.injectStorageCorruption({
+        const disposition = await executeStorageCorruption(f, {
           table: 'runs',
           runId: run.runId,
           column: 'attempt',
@@ -1940,14 +1940,14 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             },
           ])
           if (relation.fractionalStorage) {
-            const runDisposition = await f.injectStorageCorruption({
+            const runDisposition = await executeStorageCorruption(f, {
               table: 'runs',
               runId: ownerRunId,
               column: 'attempt',
               invalidRepresentation: 'fractional-real',
             })
             if (runDisposition === 'structurally-rejected') return
-            const checkpointDisposition = await f.injectStorageCorruption({
+            const checkpointDisposition = await executeStorageCorruption(f, {
               table: 'checkpoints',
               taskId: run.taskId,
               checkpointName,

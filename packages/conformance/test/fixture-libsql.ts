@@ -1,12 +1,9 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
-import type { StorageCorruption, StoreFixture } from '../src/index.js'
+import type { StorageCorruption, StorageCorruptionAttempt, StoreFixture } from '../src/index.js'
 
-async function injectStorageCorruption(
-  raw: SqlExecutor,
-  corruption: StorageCorruption,
-): Promise<'injected'> {
+function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
   const fractionalValue =
     corruption.column === 'max_attempts' ||
     corruption.column === 'attempt' ||
@@ -55,9 +52,8 @@ async function injectStorageCorruption(
       identityArgs = [corruption.queue, corruption.driverId]
       break
   }
-  const [, observed] = await raw.batch(
-    'fixture:storage-corrupt',
-    [
+  return {
+    statements: [
       {
         sql: `UPDATE ${table} SET ${corruption.column} = ? WHERE ${where}`,
         args: [value, ...identityArgs],
@@ -69,24 +65,26 @@ async function injectStorageCorruption(
         args: identityArgs,
       },
     ],
-    'write',
-  )
-  const expectedStorageType =
-    corruption.invalidRepresentation === 'non-integer'
-      ? 'text'
-      : corruption.invalidRepresentation === 'fractional-real'
-        ? 'real'
-        : 'blob'
-  const row = observed?.rows[0]
-  if (
-    row?.storage_type !== expectedStorageType ||
-    (corruption.invalidRepresentation !== 'non-text' && row.stored_value !== value)
-  ) {
-    throw new Error(
-      `storage corruption was not preserved as ${expectedStorageType} ${String(value)}; got ${String(row?.storage_type)} ${String(row?.stored_value)}`,
-    )
+    isStructuralRejection: () => false,
+    verify: (results) => {
+      const observed = results[1]
+      const expectedStorageType =
+        corruption.invalidRepresentation === 'non-integer'
+          ? 'text'
+          : corruption.invalidRepresentation === 'fractional-real'
+            ? 'real'
+            : 'blob'
+      const row = observed?.rows[0]
+      if (
+        row?.storage_type !== expectedStorageType ||
+        (corruption.invalidRepresentation !== 'non-text' && row.stored_value !== value)
+      ) {
+        throw new Error(
+          `storage corruption was not preserved as ${expectedStorageType} ${String(value)}; got ${String(row?.storage_type)} ${String(row?.stored_value)}`,
+        )
+      }
+    },
   }
-  return 'injected'
 }
 
 export async function makeLibsqlFixture(seed: number | string): Promise<StoreFixture> {
@@ -100,7 +98,7 @@ export async function makeLibsqlFixture(seed: number | string): Promise<StoreFix
     store: new LibsqlSchedulerStore(raw, ids),
     admin,
     raw,
-    injectStorageCorruption: (corruption) => injectStorageCorruption(raw, corruption),
+    storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new LibsqlSchedulerStore(db, ids, buggify),
     close: () => raw.close(),
   }

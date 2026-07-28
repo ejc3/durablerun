@@ -288,20 +288,55 @@ these three things; nothing else in the system does I/O, time, or randomness.
     CAS had cancelled. The fixes share one suspension cleanup chokepoint and
     make cancelled run IDs the authority.
   - **Portable, atomic invariant evidence.** The invariant library has one
-    typed inventory of 57 semantic conditions under 24 display names, evaluates
+    typed inventory of 109 semantic conditions, evaluates
     explicit dialect-neutral table projections in TypeScript, and rejects a
     short, long, or malformed executor result vector instead of treating a
     missing table as empty. Row and finding identity are structured tuples,
     never delimiter-joined display strings. Exact integers returned as safe
     numbers or bigint compare canonically; strings remain storage corruption,
-    including provenance instants and all seven durable counter columns.
+    including provenance instants and all eight durable counter columns.
     Counter decoding is total: corrupt storage emits its typed finding and
     dependent arithmetic is skipped rather than aborting the invariant pass.
     A shared statement-name grammar and fence-stamp parser are used by both the
-    builder and persisted-stamp evaluators. The fixture-level
-    `injectStorageCorruption` seam returns `injected` on permissive stores or
-    `structurally-rejected` on strict native types, so all dialects run the
-    identical witness inventory without encoding SQLite's dynamic typing.
+    builder and persisted-stamp evaluators. A fixture prepares dialect-specific
+    invalid-storage SQL, but the shared runner owns its nonempty execution and
+    may credit `structurally-rejected` only after the raw executor raises a
+    narrowly classified native error. A fixture cannot opt out by returning a
+    disposition. All dialects therefore run the identical witness inventory
+    without encoding SQLite's dynamic typing.
+  - **Persisted temporal-domain containment.** One frozen core inventory now
+    owns all 23 temporal fields across the six scheduler/bookkeeping tables,
+    including field identity, epoch-versus-duration kind, exact bounds, and
+    migrated nullability. Public condition/witness IDs are derived from the
+    nominal `table.column` bounds identity rather than being a second
+    independently swappable label. The inventory generates 46 storage/bound
+    conditions, the portable snapshot columns, and 69 storage/lower/upper
+    poison witnesses.
+    The complete matrix is 109 conditions, 139 witnesses, and 2,363 ambient
+    cells. LibSQL migration conformance discovers every native `INTEGER`
+    column and compares the exact field/nullability vector to the union of all
+    eight counter plus 23 temporal descriptors—31 durable integer fields,
+    without a naming proxy. Invariant result assembly keys each projection by
+    its declared table rather than rebinding the six result slots through
+    another positional table list.
+    Fourteen derived-deadline sites prove exact headroom before addition, while
+    fixed-field fragments reject corrupt persisted instants before ordered
+    limits, at post-scan CASes, in all four next-wake sources, and before direct
+    comparison or propagation. The shared addition helper renders each delta
+    once so anonymous placeholders cannot be duplicated. Terminal-arm controls
+    keep quiescing paths legal at the epoch ceiling. Stored JSON
+    max-duration uses the same rounded-millisecond semantics as the port;
+    `setFakeNowEpochMs` now validates the administrative clock before SQL; and
+    an unrepresentable driver expiry leaves both the heartbeat and its cleanup
+    unchanged. Cleanup also refuses invalid stored last-beat/expiry inputs
+    rather than comparing or deleting them. The first full 23-field generated
+    poison run found the invalid-expiry cleanup defect before review; the
+    direct case pins the self-catch without replacing its generated detector.
+    The timestamp suite is a
+    first-class central conformance surface, not a nested call another backend
+    can omit. Sixty-four attributable temporal/admin/enrollment mutations bring
+    the current registry to 191; the classifier self-test is green, while the
+    clean-head full audit remains part of the final evidence below.
   - **Schema and inline-ending boundaries fail closed.** A stored
     `schema_version` is a canonical nonnegative base-10 safe integer (`0`
     exactly, otherwise no leading zero), and migration success requires it to
@@ -321,10 +356,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     heartbeat-cutoff check and expiry need one new atomic, spec-first store
     operation.
 
-  Final evidence: the clean-tree mutation audit was **37/37 attributable**;
-  classifier maintenance covered 17 cases and seven injected faults; the
-  poison oracle carried 16 meta-tests; the focused review-regression run passed
-  56 tests; and `pnpm verify` passed 67 files / 1,503 tests.
+  Pre-temporal closeout evidence: the clean-tree mutation audit was **37/37
+  attributable**; classifier maintenance covered 17 cases and seven injected
+  faults; the poison oracle carried 16 meta-tests; the focused
+  review-regression run passed 56 tests; and `pnpm verify` passed 67 files /
+  1,503 tests.
+  **PENDING TEMPORAL FINAL EVIDENCE:** replace this marker with the final clean
+  head SHA, focused timestamp total, full attributable mutation total,
+  `pnpm verify`, fuzz, TLC, and hosted nightly results before merge.
 
   The sole structural exception is **emitEvent's `wake-runs`**, the one
   follow-on that cannot be generated, because it selects from `waits` — rows an
@@ -395,7 +434,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
 
-- **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory, now 57
+- **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory, now 109
   IDs, makes every
   currently declared boolean/null/type arm independently witnessable; they do
   not prove the declaration itself is complete. One condition can still group
@@ -467,6 +506,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     binary's current version, and classify an actually absent metadata table
     at the dialect boundary without allowing stored error-like text or an
     unrelated read failure to impersonate a fresh database.
+  - **Temporal schema enrollment for each new dialect**: the 23-field temporal
+    contract, conditions, snapshots, and corruption witnesses are already
+    dialect-neutral. Each dialect migration must additionally prove its native
+    numeric/time encoding and nullability against the combined 31-field durable
+    integer inventory (the present `PRAGMA table_info` proof is intentionally
+    libSQL-specific); no dialect may declare itself conformant by running the
+    behavioral surface alone.
 
 - **PR4.2 store-postgres**: transliterate absurd.sql (SKIP LOCKED CTE, row-lock
   awaitEvent); **oracle tests**: same scenario on real Absurd (docker) vs our

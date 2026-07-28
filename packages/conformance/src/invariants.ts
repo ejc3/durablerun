@@ -789,7 +789,8 @@ export async function engineInvariantFindings(raw: SqlExecutor): Promise<EngineI
       `invariant result count mismatch: expected ${SNAPSHOT_STATEMENTS.length}, got ${results.length}`,
     )
   }
-  const rows = SNAPSHOT_PROJECTIONS.map(({ columns }, resultIndex) => {
+  const rowsByTable = new Map<PersistedTemporalTable, readonly SqlRow[]>()
+  SNAPSHOT_PROJECTIONS.forEach(({ table, columns }, resultIndex) => {
     const result = results[resultIndex]
     if (!result || !Array.isArray(result.rows)) {
       throw new Error(`invariant snapshot result ${resultIndex} has no rows array`)
@@ -802,15 +803,20 @@ export async function engineInvariantFindings(raw: SqlExecutor): Promise<EngineI
         )
       }
     })
-    return result.rows
+    rowsByTable.set(table, result.rows)
   })
+  const requiredRows = (table: PersistedTemporalTable): readonly SqlRow[] => {
+    const rows = rowsByTable.get(table)
+    if (!rows) throw new Error(`invariant snapshot omitted table '${table}'`)
+    return rows
+  }
   return evaluate({
-    tasks: rows[0] ?? [],
-    runs: rows[1] ?? [],
-    checkpoints: rows[2] ?? [],
-    events: rows[3] ?? [],
-    waits: rows[4] ?? [],
-    drivers: rows[5] ?? [],
+    tasks: requiredRows('tasks'),
+    runs: requiredRows('runs'),
+    checkpoints: requiredRows('checkpoints'),
+    events: requiredRows('events'),
+    waits: requiredRows('waits'),
+    drivers: requiredRows('drivers'),
   })
 }
 

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
+import { PERSISTED_COUNTER_FIELDS, PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -47,9 +47,13 @@ describe('migrations', () => {
     }
   })
 
-  it('enrolls every migrated temporal column with exact nullability', async () => {
+  it('enrolls every migrated integer column with exact nullability', async () => {
     await admin.migrate()
-    const tables = [...new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => field.table))]
+    const persistedIntegers = [
+      ...PERSISTED_COUNTER_FIELDS.map((field) => ({ ...field, nullable: false })),
+      ...PERSISTED_TEMPORAL_FIELDS,
+    ]
+    const tables = [...new Set(persistedIntegers.map((field) => field.table))]
     const results = await db.batch(
       'test:temporal-schema',
       tables.map((table) => ({ sql: `PRAGMA table_info(${table})`, args: [] })),
@@ -60,20 +64,24 @@ describe('migrations', () => {
         const table = tables[index]
         if (table === undefined) throw new Error(`missing temporal table at index ${index}`)
         return result.rows
-          .filter((row) => typeof row.name === 'string' && row.name.endsWith('_ms'))
+          .filter((row) => String(row.type).toUpperCase() === 'INTEGER')
           .map((row) => ({
             field: `${table}.${String(row.name)}`,
             nullable: row.notnull === 0 || row.notnull === 0n,
           }))
       })
       .sort((left, right) => left.field.localeCompare(right.field))
-    const expected = PERSISTED_TEMPORAL_FIELDS.map(({ table, column, nullable }) => ({
-      field: `${table}.${column}`,
-      nullable,
-    })).sort((left, right) => left.field.localeCompare(right.field))
+    const expected = persistedIntegers
+      .map(({ table, column, nullable }) => ({
+        field: `${table}.${column}`,
+        nullable,
+      }))
+      .sort((left, right) => left.field.localeCompare(right.field))
 
-    expect(observed).toEqual(expected)
-    expect(observed).toHaveLength(23)
+    expect(observed, 'mutation-verdict:construction:migrated-integer-inventory-complete').toEqual(
+      expected,
+    )
+    expect(observed).toHaveLength(31)
   })
 })
 

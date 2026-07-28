@@ -6,6 +6,7 @@ import {
   RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
+import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantFindings, engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
@@ -425,7 +426,7 @@ describe('invariant checkers fire on constructed corruption', () => {
 
     expect(
       (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
-    ).toContain('temporal-bound/run-lease')
+    ).toContain('temporal-bound/runs.lease_ms')
     f.close()
   })
 
@@ -602,5 +603,19 @@ describe('invariant checkers fire on constructed corruption', () => {
     const f = await seeded('clean')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
+  })
+
+  it('binds every snapshot result through its projection table identity', async () => {
+    const f = await seeded('projection-table-identity')
+    try {
+      const findings = await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'invariant-snapshot-table-identity' },
+        /invariant snapshot omitted table 'runs'/,
+        () => engineInvariantFindings(f.raw),
+      )
+      expect(findings).toEqual([])
+    } finally {
+      f.close()
+    }
   })
 })

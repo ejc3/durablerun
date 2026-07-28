@@ -1,4 +1,5 @@
 import {
+  MAX_EPOCH_MS,
   PERSISTED_INTEGER_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
@@ -63,13 +64,17 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
  */
 export const registeredWait = (
   run: string,
-): { step: string; current: string; unambiguous: string } => {
+): { step: string; current: string; unambiguous: string; temporallySafe: string } => {
   const witness = `w.run_id = ${run}.run_id
       AND w.queue = ${run}.queue
       AND w.task_id = ${run}.task_id
       AND w.event_name = ${run}.wake_event
       AND w.status = 'waiting'
-      AND w.timeout_at_ms IS ${run}.available_at_ms`
+      AND w.timeout_at_ms IS ${run}.available_at_ms
+      AND (${run}.available_at_ms IS NULL
+        OR ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.runs.available_at_ms, run)})
+      AND (w.timeout_at_ms IS NULL
+        OR ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms, 'w')})`
   return {
     step: `(SELECT MIN(w.step_name) FROM waits w
             WHERE ${witness}
@@ -83,6 +88,12 @@ export const registeredWait = (
     unambiguous: `NOT EXISTS (SELECT COUNT(*) FROM waits w
                               WHERE ${witness}
                               HAVING COUNT(*) > 1)`,
+    temporallySafe: `NOT EXISTS (
+      SELECT 1 FROM waits w
+      WHERE w.run_id = ${run}.run_id AND w.status = 'waiting'
+        AND w.timeout_at_ms IS NOT NULL
+        AND NOT ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms, 'w')}
+    )`,
   }
 }
 
@@ -125,12 +136,19 @@ export const successorOwned = (id: string, task: string, attempt: string): strin
  * recorded, because a follow-on re-reading the clock can disagree with the
  * CAS that admitted it and undo the transition it was supposed to complete.
  */
-export const cancelDue = (col: string, at: string): string =>
-  `(${col} IS NOT NULL AND ${col} <= ${at})`
+export const cancelDue = (task: string, at: string): string => {
+  const column = `${task}.cancel_at_ms`
+  return `(${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms, task)}
+    AND ${column} <= ${at})`
+}
 
 /** No cancellation deadline, or one still in the future as of `at`. */
-export const cancelNotDue = (col: string, at: string): string =>
-  `(${col} IS NULL OR ${col} > ${at})`
+export const cancelNotDue = (task: string, at: string): string => {
+  const column = `${task}.cancel_at_ms`
+  return `(${column} IS NULL
+    OR (${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms, task)}
+      AND ${column} > ${at}))`
+}
 
 /**
  * SQLite's storage-class proof for a value that will cross into another
@@ -178,6 +196,44 @@ export const storedIncrementableInteger = (
 ): string => {
   const column = persistedColumn(bounds, alias)
   return storedBoundedInteger(column, bounds.min, bounds.max - 1)
+}
+
+/**
+ * One database instant plus one or more already-validated relative durations.
+ *
+ * The base must itself be an exact epoch integer. Callers supply deltas that
+ * their own port/stored-field guards have already constrained to nonnegative
+ * durations; subtraction proves headroom before the write performs the
+ * addition. Each delta occurs exactly once so an anonymous SQL placeholder
+ * still consumes exactly one argument.
+ */
+export const epochAdditionFits = (base: string, ...deltas: readonly string[]): string => {
+  if (deltas.length === 0) throw new Error('epochAdditionFits requires at least one delta')
+  const totalDelta = deltas.map((delta) => `(${delta})`).join(' + ')
+  return `(${storedInteger(base)}
+    AND (${base}) BETWEEN 0 AND ${MAX_EPOCH_MS}
+    AND (${base}) <= ${MAX_EPOCH_MS} - (${totalDelta}))`
+}
+
+/** A due run availability, including its exact persisted field contract. */
+export const runAvailableDue = (run: string, at: string): string => {
+  const column = `${run}.available_at_ms`
+  return `(${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.runs.available_at_ms, run)}
+    AND ${column} <= ${at})`
+}
+
+/** An expired claim, including its exact persisted field contract. */
+export const runClaimExpired = (run: string, at: string): string => {
+  const column = `${run}.claim_expires_at_ms`
+  return `(${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms, run)}
+    AND ${column} <= ${at})`
+}
+
+/** A claim expiry strictly after `at`, including its exact field contract. */
+export const runClaimUnexpired = (run: string, at: string): string => {
+  const column = `${run}.claim_expires_at_ms`
+  return `(${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms, run)}
+    AND ${column} > ${at})`
 }
 
 /** A returned/consumed claim generation is always strictly positive. */
@@ -235,7 +291,7 @@ export const storedHighestOwnedOrdinal = (run: string): string => {
  * table in the calling query.
  */
 export const eligibleTask = (t: string, at: string): string =>
-  `${t}.state IN ${LIVE} AND ${cancelNotDue(`${t}.cancel_at_ms`, at)}`
+  `${t}.state IN ${LIVE} AND ${cancelNotDue(t, at)}`
 
 /**
  * A claim candidate is the task's only live run.

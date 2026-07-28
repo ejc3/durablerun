@@ -332,13 +332,11 @@ type PersistedIntegerColumn<Table extends PersistedIntegerTable> =
  * cannot satisfy this boundary for a different column.
  */
 function persistedTemporalField<
-  const Id extends string,
   const Table extends PersistedIntegerTable,
   const Column extends PersistedIntegerColumn<Table>,
   const Kind extends 'epoch-ms' | 'duration-ms',
   const Nullable extends boolean,
 >(
-  id: Id,
   table: Table,
   column: Column,
   bounds: (typeof PERSISTED_INTEGER_BOUNDS)[Table][Column] &
@@ -346,7 +344,7 @@ function persistedTemporalField<
   kind: Kind,
   nullable: Nullable,
 ) {
-  return Object.freeze({ id, table, column, bounds, kind, nullable })
+  return Object.freeze({ id: bounds.field, table, column, bounds, kind, nullable })
 }
 
 /**
@@ -360,7 +358,6 @@ function persistedTemporalField<
  */
 export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
   persistedTemporalField(
-    'task-enqueue',
     'tasks',
     'enqueue_at_ms',
     PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms,
@@ -368,7 +365,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     false,
   ),
   persistedTemporalField(
-    'task-first-started',
     'tasks',
     'first_started_at_ms',
     PERSISTED_INTEGER_BOUNDS.tasks.first_started_at_ms,
@@ -376,7 +372,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'task-cancel',
     'tasks',
     'cancel_at_ms',
     PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms,
@@ -384,7 +379,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'task-cancelled',
     'tasks',
     'cancelled_at_ms',
     PERSISTED_INTEGER_BOUNDS.tasks.cancelled_at_ms,
@@ -392,7 +386,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'task-created',
     'tasks',
     'created_at_ms',
     PERSISTED_INTEGER_BOUNDS.tasks.created_at_ms,
@@ -400,7 +393,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     false,
   ),
   persistedTemporalField(
-    'task-fence',
     'tasks',
     'fence_at_ms',
     PERSISTED_INTEGER_BOUNDS.tasks.fence_at_ms,
@@ -408,7 +400,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-lease',
     'runs',
     'lease_ms',
     PERSISTED_INTEGER_BOUNDS.runs.lease_ms,
@@ -416,7 +407,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-claim-expires',
     'runs',
     'claim_expires_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms,
@@ -424,7 +414,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-heartbeat',
     'runs',
     'heartbeat_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.heartbeat_at_ms,
@@ -432,7 +421,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-available',
     'runs',
     'available_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.available_at_ms,
@@ -440,7 +428,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-started',
     'runs',
     'started_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.started_at_ms,
@@ -448,7 +435,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-completed',
     'runs',
     'completed_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.completed_at_ms,
@@ -456,7 +442,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-failed',
     'runs',
     'failed_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.failed_at_ms,
@@ -464,7 +449,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'run-created',
     'runs',
     'created_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.created_at_ms,
@@ -472,7 +456,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     false,
   ),
   persistedTemporalField(
-    'run-fence',
     'runs',
     'fence_at_ms',
     PERSISTED_INTEGER_BOUNDS.runs.fence_at_ms,
@@ -480,7 +463,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'checkpoint-updated',
     'checkpoints',
     'updated_at_ms',
     PERSISTED_INTEGER_BOUNDS.checkpoints.updated_at_ms,
@@ -488,7 +470,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     false,
   ),
   persistedTemporalField(
-    'event-emitted',
     'events',
     'emitted_at_ms',
     PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms,
@@ -496,7 +477,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'event-fence',
     'events',
     'fence_at_ms',
     PERSISTED_INTEGER_BOUNDS.events.fence_at_ms,
@@ -504,7 +484,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'wait-timeout',
     'waits',
     'timeout_at_ms',
     PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms,
@@ -512,7 +491,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'wait-created',
     'waits',
     'created_at_ms',
     PERSISTED_INTEGER_BOUNDS.waits.created_at_ms,
@@ -520,7 +498,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     false,
   ),
   persistedTemporalField(
-    'wait-fence',
     'waits',
     'fence_at_ms',
     PERSISTED_INTEGER_BOUNDS.waits.fence_at_ms,
@@ -528,7 +505,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     true,
   ),
   persistedTemporalField(
-    'driver-last-beat',
     'drivers',
     'last_beat_ms',
     PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms,
@@ -536,7 +512,6 @@ export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
     false,
   ),
   persistedTemporalField(
-    'driver-expires',
     'drivers',
     'expires_at_ms',
     PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms,

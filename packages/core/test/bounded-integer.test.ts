@@ -77,7 +77,9 @@ describe('decodeBoundedInteger', () => {
     ).toHaveProperty('size', 23)
     for (const field of PERSISTED_TEMPORAL_FIELDS) {
       expect(Object.isFrozen(field)).toBe(true)
-      expect(field.id).toBe(field.bounds.field)
+      expect(field.id, 'mutation-verdict:construction:temporal-field-id-is-bounds-field').toBe(
+        field.bounds.field,
+      )
       expect(field.bounds.field).toBe(`${field.table}.${field.column}`)
       expect(field.bounds.min).toBe(field.kind === 'duration-ms' ? 1 : 0)
       expect(field.bounds.max).toBe(field.kind === 'duration-ms' ? MAX_DURATION_MS : MAX_EPOCH_MS)

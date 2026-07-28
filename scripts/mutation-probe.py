@@ -343,10 +343,8 @@ MUTATION_SPECS = [
     (
         "emit-replay-preserves-event-instant",
         "packages/store-libsql/src/store.ts",
-        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}\n"
-        "       WHERE events.fence_stamp IS NOT ${STAMP}`",
-        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${FENCE_SET}\n"
-        "       WHERE events.fence_stamp IS NOT ${STAMP}`",
+        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}",
+        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${FENCE_SET}",
         "an older emit replayed after a fresh emit moves its seed to a second instant",
     ),
     (
@@ -478,9 +476,11 @@ MUTATION_SPECS = [
         "activate-requires-relaunch-bound",
         "packages/store-libsql/src/store.ts",
         "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
+        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}\n"
         "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
         "         AND ${soleLiveRun('runs')}\n",
         "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
+        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}\n"
         "         AND 1 = 1\n"
         "         AND ${soleLiveRun('runs')}\n",
         "activation accepts a claim whose relaunch counter is out of range",
@@ -491,11 +491,13 @@ MUTATION_SPECS = [
         "           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}\n"
         "             AND ${storedCurrentRunAccounting('runs', 't')}\n"
         "             AND ${storedHighestOwnedOrdinal('runs')}\n"
+        "             AND ${activationDurationAdmissible('t', NOW)}\n"
         "         )`,\n"
         "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
         "           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}\n"
         "             AND 1 = 1\n"
         "             AND ${storedHighestOwnedOrdinal('runs')}\n"
+        "             AND ${activationDurationAdmissible('t', NOW)}\n"
         "         )`,\n"
         "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
         "activation stops rechecking current-run accounting at its winning CAS",
@@ -627,31 +629,45 @@ MUTATION_SPECS = [
     (
         "checkpoint-write-validates-existing-lww-owner",
         "packages/store-libsql/src/store.ts",
-        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
-        "      [extendMs, runId, queue, taskId, claimToken, checkpointName],",
-        "         AND 1 = 1`,\n"
-        "      [extendMs, runId, queue, taskId, claimToken, checkpointName],",
+        "         AND ${validCheckpointConflict('runs', '?')}\n"
+        "         AND ${epochAdditionFits(NOW, '?')}`,\n"
+        "      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],",
+        "         AND 1 = 1\n"
+        "         AND ${epochAdditionFits(NOW, '?')}`,\n"
+        "      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],",
         "setCheckpoint extends the lease and consumes an upsert conflict whose owner is corrupt",
     ),
     (
         "suspend-validates-existing-lww-owner",
         "packages/store-libsql/src/store.ts",
-        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
-        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
-        "         AND 1 = 1`,\n"
-        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "         AND ${validCheckpointConflict('runs', '?')}\n"
+        "         ${wakeFits}`,\n"
+        "      [\n"
+        "        wakeArg,\n"
+        "        wakeArg,",
+        "         AND 1 = 1\n"
+        "         ${wakeFits}`,\n"
+        "      [\n"
+        "        wakeArg,\n"
+        "        wakeArg,",
         "suspendRun parks the run and consumes an upsert conflict whose owner is corrupt",
     ),
     (
         "suspend-preserves-valid-higher-lww",
         "packages/store-libsql/src/store.ts",
-        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
-        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "         AND ${validCheckpointConflict('runs', '?')}\n"
+        "         ${wakeFits}`,\n"
+        "      [\n"
+        "        wakeArg,\n"
+        "        wakeArg,",
         "         AND ${validCheckpointConflict('runs', '?').replace(\n"
         "           'AND EXISTS (',\n"
         "           'AND c.owner_attempt <= runs.attempt AND EXISTS (',\n"
-        "         )}`,\n"
-        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "         )}\n"
+        "         ${wakeFits}`,\n"
+        "      [\n"
+        "        wakeArg,\n"
+        "        wakeArg,",
         "suspendRun mistakes a valid higher LWW owner for corrupt ownership",
     ),
     (
@@ -933,15 +949,21 @@ MUTATION_SPECS = [
         "packages/store-libsql/src/store.ts",
         "             AND ((t.state NOT IN ${LIVE}\n"
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
-        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible('runs', 't')}))\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${sweepLiveOwnerAdmissible('runs', 't')}\n"
+        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
+        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
         "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
         "             AND ((t.state NOT IN ${LIVE}\n"
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
-        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible(\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${sweepLiveOwnerAdmissible(\n"
         "                 'runs',\n"
         "                 't',\n"
-        "               ).replace(storedCurrentRunAccounting('runs', 't'), '1 = 1')}))\n"
+        "               ).replace(storedCurrentRunAccounting('runs', 't'), '1 = 1')}\n"
+        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
+        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
         "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
         "the claim-timeout CAS trusts its advisory scan instead of rechecking accounting",
@@ -962,12 +984,18 @@ MUTATION_SPECS = [
         "packages/store-libsql/src/store.ts",
         "             AND ((t.state NOT IN ${LIVE}\n"
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
-        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible('runs', 't')}))\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${sweepLiveOwnerAdmissible('runs', 't')}\n"
+        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
+        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
         "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
         "             AND ((1 = 0\n"
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
-        "               OR (t.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible('runs', 't')}))\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${sweepLiveOwnerAdmissible('runs', 't')}\n"
+        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
+        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
         "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
         "the timeout CAS strands an activated run after its task became terminal",
@@ -1114,9 +1142,9 @@ MUTATION_SPECS = [
         "matrix-lost-launch-edge-progress",
         "packages/store-libsql/src/store.ts",
         "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
         "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "                   AND run_id <> 'edge-run'`",
         "the generated fault cell fires its label while the seeded lost-launch edge never crosses",
     ),
@@ -1124,9 +1152,9 @@ MUTATION_SPECS = [
         "sweep-lost-launch-generation",
         "packages/store-libsql/src/store.ts",
         "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}`",
+        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
         "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "                   AND (run_id <> 'edge-run' OR claim_gen = 1)`",
         "the lost-launch edge only works at generation one",
     ),
@@ -1134,9 +1162,9 @@ MUTATION_SPECS = [
         "matrix-claim-timeout-edge-progress",
         "packages/store-libsql/src/store.ts",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n",
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "         AND run_id <> 'edge-run'\n",
         "the generated fault cell fires its label while the seeded claim-timeout edge never crosses",
     ),
@@ -1144,9 +1172,9 @@ MUTATION_SPECS = [
         "sweep-claim-timeout-generation",
         "packages/store-libsql/src/store.ts",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n",
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "         AND (run_id <> 'edge-run' OR claim_gen = 1)\n",
         "the claim-timeout edge only works at generation one",
     ),
@@ -1154,9 +1182,9 @@ MUTATION_SPECS = [
         "provenance-sweep-progress",
         "packages/store-libsql/src/store.ts",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n",
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW}\n"
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "         AND run_id <> 'prov-sweep-run'\n",
         "the replay regression accepts a sweep that never performs the transition it owes",
     ),
@@ -1255,11 +1283,17 @@ MUTATION_SPECS = [
 CHECKPOINT_CONFLICT_CONSUMERS = (
     (
         "checkpoint-write",
-        "      [extendMs, runId, queue, taskId, claimToken, checkpointName],",
+        "\n"
+        "         AND ${epochAdditionFits(NOW, '?')}`,\n"
+        "      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],",
     ),
     (
         "suspend",
-        "      [wakeArg, wakeArg, runId, queue, claimToken, checkpoint.key],",
+        "\n"
+        "         ${wakeFits}`,\n"
+        "      [\n"
+        "        wakeArg,\n"
+        "        wakeArg,",
     ),
 )
 
@@ -1346,21 +1380,598 @@ CHECKPOINT_CONFLICT_SUFFIXES = (
     "conflict-queue",
 )
 
-for consumer, args_anchor in CHECKPOINT_CONFLICT_CONSUMERS:
+for consumer, tail_anchor in CHECKPOINT_CONFLICT_CONSUMERS:
     for suffix in CHECKPOINT_CONFLICT_SUFFIXES:
         MUTATION_SPECS.append(
             (
                 f"{consumer}-validates-existing-lww-owner-{suffix}",
                 "packages/store-libsql/src/store.ts",
-                "         AND ${validCheckpointConflict('runs', '?')}`,\n"
-                f"{args_anchor}",
+                "         AND ${validCheckpointConflict('runs', '?')}"
+                f"{tail_anchor}",
                 "         AND ${"
                 f"{weakened_checkpoint_conflict(suffix)}"
-                "}`,\n"
-                f"{args_anchor}",
+                "}"
+                f"{tail_anchor}",
                 f"{consumer} accepts an existing checkpoint with invalid {suffix} ownership",
             )
         )
+
+
+TIME_BOUNDARY_SOURCE = "packages/conformance/src/time-boundaries.ts"
+TIME_BOUNDARY_TEST = "packages/conformance/test/libsql.test.ts"
+
+
+def weakened_epoch_addition(call: str) -> str:
+    """Keep every bind while changing bounded headroom into excess headroom."""
+    return f'{call}.replace(" - ", " + ")'
+
+
+TIMESTAMP_ADDITION_CASES = (
+    (
+        "spawn-enqueue",
+        "spawn enqueue deadline",
+        "         AND ${epochAdditionFits(NOW, '?')}\n"
+        "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
+        "epochAdditionFits(NOW, '?')",
+        "       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,\n",
+        "       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ? - 1,\n",
+    ),
+    (
+        "spawn-cancellation",
+        "spawn cancellation deadline",
+        "         AND ${epochAdditionFits(NOW, '?')}\n"
+        "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
+        "epochAdditionFits(NOW, '?', '?')",
+        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,\n",
+        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? - 1 ELSE NULL END,\n",
+    ),
+    (
+        "claim-lease",
+        "claim lease deadline",
+        "       AND ${epochAdditionFits(NOW, '?')}`,\n"
+        "      [\n"
+        "        claimToken,",
+        "epochAdditionFits(NOW, '?')",
+        "         claim_expires_at_ms = ${NOW} + ?,\n"
+        "         heartbeat_at_ms = ${NOW},\n"
+        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
+        "         claim_expires_at_ms = ${NOW} + ? - 1,\n"
+        "         heartbeat_at_ms = ${NOW},\n"
+        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
+    ),
+    (
+        "activation-lease",
+        "activation lease deadline",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
+        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}",
+        "epochAdditionFits(NOW, 'runs.lease_ms')",
+        "         claim_expires_at_ms = ${NOW} + lease_ms,\n"
+        "         heartbeat_at_ms = ${NOW},",
+        "         claim_expires_at_ms = ${NOW} + lease_ms - 1,\n"
+        "         heartbeat_at_ms = ${NOW},",
+    ),
+    (
+        "activation-max-duration",
+        "activation max-duration deadline",
+        "    WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0",
+        "epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)",
+        "            COALESCE(first_started_at_ms, ${activated}) + ${taskMaxDurationMs('tasks')}\n",
+        "            COALESCE(first_started_at_ms, ${activated}) + ${taskMaxDurationMs('tasks')} - 1\n",
+    ),
+    (
+        "heartbeat-lease",
+        "heartbeat lease deadline",
+        "                AND ${epochAdditionFits(NOW_MS, '?')}\n"
+        "              RETURNING claim_expires_at_ms - heartbeat_at_ms AS remaining_ms",
+        "epochAdditionFits(NOW_MS, '?')",
+        "                claim_expires_at_ms = ${NOW_MS} + ?,\n"
+        "                heartbeat_at_ms = ${NOW_MS}",
+        "                claim_expires_at_ms = ${NOW_MS} + ? - 1,\n"
+        "                heartbeat_at_ms = ${NOW_MS}",
+    ),
+    (
+        "lost-launch-relaunch",
+        "lost-launch relaunch deadline",
+        "         AND ${liveOwner}\n"
+        "         AND ${epochAdditionFits(NOW, relaunchDelayMs)}`",
+        "epochAdditionFits(NOW, relaunchDelayMs)",
+        "         available_at_ms = ${NOW} + ${relaunchDelayMs},\n",
+        "         available_at_ms = ${NOW} + ${relaunchDelayMs} - 1,\n",
+    ),
+    (
+        "claim-timeout-successor",
+        "claim-timeout successor deadline",
+        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
+        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
+        "epochAdditionFits(NOW, infraDelayMs)",
+        "              f.fence_at_ms + ${infraDelayMs},\n",
+        "              f.fence_at_ms + ${infraDelayMs} - 1,\n",
+    ),
+    (
+        "driver-heartbeat",
+        "driver heartbeat deadline",
+        "              WHERE ${epochAdditionFits(NOW_MS, '?')}\n"
+        "              ON CONFLICT (queue, driver_id) DO UPDATE SET",
+        "epochAdditionFits(NOW_MS, '?')",
+        "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?\n",
+        "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ? - 1\n",
+    ),
+    (
+        "reschedule-wake",
+        "reschedule wake deadline",
+        "    const wakeFits = 'inSeconds' in wake ? `AND ${epochAdditionFits(NOW_MS, '?')}` : ''\n"
+        "    // ONE SQL shape for both dispositions",
+        "epochAdditionFits(NOW_MS, '?')",
+        "  async reschedule(\n"
+        "    queue: string,\n"
+        "    runId: string,\n"
+        "    claimToken: string,\n"
+        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
+        "    wakeDisposition: 'consume' | 'preserve' = 'consume',\n"
+        "  ): Promise<void> {\n"
+        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`",
+        "  async reschedule(\n"
+        "    queue: string,\n"
+        "    runId: string,\n"
+        "    claimToken: string,\n"
+        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
+        "    wakeDisposition: 'consume' | 'preserve' = 'consume',\n"
+        "  ): Promise<void> {\n"
+        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ? - 1` : `?`",
+    ),
+    (
+        "suspend-wake",
+        "suspend wake deadline",
+        "    const wakeFits = 'inSeconds' in wake ? `AND ${epochAdditionFits(NOW_MS, '?')}` : ''\n"
+        "    const b = new FencedBatch('suspend'",
+        "epochAdditionFits(NOW_MS, '?')",
+        "  async suspendRun(\n"
+        "    queue: string,\n"
+        "    runId: string,\n"
+        "    claimToken: string,\n"
+        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
+        "    checkpoint: { key: string; stateJson: string },\n"
+        "  ): Promise<void> {\n"
+        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`",
+        "  async suspendRun(\n"
+        "    queue: string,\n"
+        "    runId: string,\n"
+        "    claimToken: string,\n"
+        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
+        "    checkpoint: { key: string; stateJson: string },\n"
+        "  ): Promise<void> {\n"
+        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ? - 1` : `?`",
+    ),
+    (
+        "user-retry-successor",
+        "user-retry successor deadline",
+        "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\n"
+        "          OR ${epochAdditionFits(NOW, '?')})`",
+        "epochAdditionFits(NOW, '?')",
+        "                f.fence_at_ms + ?,\n",
+        "                f.fence_at_ms + ? - 1,\n",
+    ),
+    (
+        "checkpoint-lease",
+        "checkpoint lease deadline",
+        "         AND ${validCheckpointConflict('runs', '?')}\n"
+        "         AND ${epochAdditionFits(NOW, '?')}`",
+        "epochAdditionFits(NOW, '?')",
+        "         claim_expires_at_ms = ${NOW} + ?, heartbeat_at_ms = ${NOW}, ${FENCE_SET}\n",
+        "         claim_expires_at_ms = ${NOW} + ? - 1, heartbeat_at_ms = ${NOW}, ${FENCE_SET}\n",
+    ),
+    (
+        "event-timeout",
+        "event timeout deadline",
+        "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?')})\n"
+        "       ON CONFLICT (run_id, step_name) DO NOTHING",
+        "epochAdditionFits(NOW, '?')",
+        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}\n",
+        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? - 1 ELSE NULL END, ${NOW}, ${FENCE_VALS}\n",
+    ),
+)
+
+for slug, title, guard_anchor, guard_call, exact_find, exact_replace in TIMESTAMP_ADDITION_CASES:
+    MUTATION_SPECS.extend(
+        (
+            (
+                f"timestamp-addition-{slug}-overflow",
+                "packages/store-libsql/src/store.ts",
+                guard_anchor,
+                guard_anchor.replace(guard_call, weakened_epoch_addition(guard_call), 1),
+                f"{title} persists a derived epoch above the maximum",
+            ),
+            (
+                f"timestamp-addition-{slug}-exact",
+                "packages/store-libsql/src/store.ts",
+                exact_find,
+                exact_replace,
+                f"{title} persists an off-by-one result at the exact epoch ceiling",
+            ),
+        )
+    )
+
+
+TIMESTAMP_BEHAVIOR_MUTATIONS = (
+    (
+        "timestamp-terminal-relaunch-cap-at-max",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
+        "         AND (${liveOwner} OR ${terminalOwner})",
+        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
+        "         AND (${liveOwner} OR ${terminalOwner})\n"
+        "         AND ${epochAdditionFits(NOW, relaunchDelayMs)}",
+        "allows the relaunch-cap terminal arm at the epoch ceiling",
+        "the terminal relaunch-cap arm is incorrectly gated by unused deadline headroom",
+    ),
+    (
+        "timestamp-terminal-infra-cap-at-max",
+        "packages/store-libsql/src/store.ts",
+        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
+        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
+        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
+        "                   AND ${epochAdditionFits(NOW, infraDelayMs)})))",
+        "allows the infra-cap terminal arm at the epoch ceiling",
+        "the terminal infrastructure-cap arm is incorrectly gated by successor headroom",
+    ),
+    (
+        "timestamp-terminal-user-failure-at-max",
+        "packages/store-libsql/src/store.ts",
+        "           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts\n",
+        "           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) <= t.max_attempts\n",
+        "allows terminal user failure when retry budget is exhausted",
+        "an exhausted user retry budget incorrectly creates an overflowing successor",
+    ),
+    (
+        "timestamp-activation-existing-first-start-at-max",
+        "packages/store-libsql/src/store.ts",
+        "    WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0",
+        "    WHEN NOT ${epochAdditionFits(at, durationMs)} THEN 0",
+        "uses an existing first-start instant for max-duration on reactivation",
+        "reactivation checks duration headroom from now instead of the persisted first start",
+    ),
+    (
+        "timestamp-claim-pending-lower-before-limit",
+        "packages/store-libsql/src/store.ts",
+        "             WHERE r.queue = ? AND r.state = 'pending'\n"
+        "               AND ${runAvailableDue('r', NOW)}",
+        "             WHERE r.queue = ? AND r.state = 'pending'\n"
+        '               AND ${runAvailableDue(\'r\', NOW).replace(" BETWEEN 0 AND ", " <= ")}',
+        "skips a negative pending availability before the claim limit",
+        "a negative pending availability consumes the bounded claim shortlist",
+    ),
+    (
+        "timestamp-claim-sleeping-timeout-lower-before-limit",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${candidateWait.temporallySafe}\n",
+        "               AND 1 = 1\n",
+        "skips a negative wait timeout before the sleeping claim limit",
+        "a sleeping run with an invalid timed wait consumes the bounded claim shortlist",
+    ),
+    (
+        "timestamp-claim-cancellation-upper-before-limit",
+        "packages/store-libsql/src/fragments.ts",
+        "export const eligibleTask = (t: string, at: string): string =>\n"
+        "  `${t}.state IN ${LIVE} AND ${cancelNotDue(t, at)}`",
+        "export const eligibleTask = (t: string, at: string): string =>\n"
+        '  `${t}.state IN ${LIVE} AND ${cancelNotDue(t, at).replace(/ BETWEEN 0 AND [0-9]+/, " >= 0")}`',
+        "skips an out-of-range cancellation deadline before the claim limit",
+        "an oversized cancellation deadline remains claim-eligible",
+    ),
+    (
+        "timestamp-sweep-lost-launch-lower-before-limit",
+        "packages/store-libsql/src/store.ts",
+        "  AND ${runClaimExpired('r', NOW_MS)}\n"
+        "  AND ${sweepScanAdmissible('r', 't')}",
+        "  AND (${runClaimExpired('r', NOW_MS)}\n"
+        "    OR (r.claim_expires_at_ms < 0 AND r.activated_gen < r.claim_gen))\n"
+        "  AND ${sweepScanAdmissible('r', 't')}",
+        "lost-launch sweep skips a negative claim expiry before its limit",
+        "a negative lost-launch expiry consumes the bounded sweep scan",
+    ),
+    (
+        "timestamp-sweep-timeout-lower-before-limit",
+        "packages/store-libsql/src/store.ts",
+        "  AND ${runClaimExpired('r', NOW_MS)}\n"
+        "  AND ${sweepScanAdmissible('r', 't')}",
+        "  AND (${runClaimExpired('r', NOW_MS)}\n"
+        "    OR (r.claim_expires_at_ms < 0 AND r.activated_gen = r.claim_gen))\n"
+        "  AND ${sweepScanAdmissible('r', 't')}",
+        "claim-timeout sweep skips a negative claim expiry before its limit",
+        "a negative activated expiry consumes the bounded sweep scan",
+    ),
+    (
+        "timestamp-sweep-lost-launch-rechecks-expiry-bound",
+        "packages/store-libsql/src/store.ts",
+        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
+        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        '                   AND activated_gen < claim_gen AND ${runClaimExpired(\'runs\', NOW).replace(" BETWEEN 0 AND ", " <= ")}`',
+        "lost-launch sweep rechecks the claim expiry bound after discovery",
+        "the lost-launch CAS accepts a negative expiry after its advisory scan",
+    ),
+    (
+        "timestamp-sweep-timeout-rechecks-expiry-bound",
+        "packages/store-libsql/src/store.ts",
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "         AND EXISTS (",
+        '         AND activated_gen = claim_gen AND ${runClaimExpired(\'runs\', NOW).replace(" BETWEEN 0 AND ", " <= ")}\n'
+        "         AND EXISTS (",
+        "claim-timeout sweep rechecks the claim expiry bound after discovery",
+        "the claim-timeout CAS accepts a negative expiry after its advisory scan",
+    ),
+    (
+        "timestamp-next-wake-pending-lower",
+        "packages/store-libsql/src/store.ts",
+        "    WHERE r.queue = ? AND r.state = 'pending'\n"
+        "      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}",
+        "    WHERE r.queue = ? AND r.state = 'pending'\n"
+        '      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, \'r\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "nextWakeAt skips a negative pending availability",
+        "nextWakeAt reports a negative pending availability",
+    ),
+    (
+        "timestamp-next-wake-sleeping-lower",
+        "packages/store-libsql/src/store.ts",
+        "    WHERE r.queue = ? AND r.state = 'sleeping'\n"
+        "      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}",
+        "    WHERE r.queue = ? AND r.state = 'sleeping'\n"
+        '      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, \'r\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "nextWakeAt skips a negative sleeping availability",
+        "nextWakeAt reports a negative sleeping availability",
+    ),
+    (
+        "timestamp-next-wake-expiry-lower",
+        "packages/store-libsql/src/store.ts",
+        "    WHERE r.queue = ? AND r.state = 'running'\n"
+        "      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}",
+        "    WHERE r.queue = ? AND r.state = 'running'\n"
+        '      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, \'r\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "nextWakeAt skips a negative running claim expiry",
+        "nextWakeAt reports a negative running claim expiry",
+    ),
+    (
+        "timestamp-next-wake-cancel-lower",
+        "packages/store-libsql/src/store.ts",
+        "    WHERE t.queue = ? AND t.state IN ${LIVE}\n"
+        "      AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't')}",
+        "    WHERE t.queue = ? AND t.state IN ${LIVE}\n"
+        '      AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, \'t\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "nextWakeAt skips a negative cancellation deadline",
+        "nextWakeAt reports a negative cancellation deadline",
+    ),
+    (
+        "timestamp-expire-lease-validates-expiry-upper",
+        "packages/store-libsql/src/store.ts",
+        "                AND ${runClaimUnexpired('runs', NOW_MS)}\n",
+        '                AND ${runClaimUnexpired(\'runs\', NOW_MS).replace(/ BETWEEN 0 AND [0-9]+/, " >= 0")}\n',
+        "expireLeaseNow refuses to launder an out-of-range stored expiry",
+        "expireLeaseNow launders an oversized expiry into a valid instant",
+    ),
+    (
+        "timestamp-emit-validates-timed-wait-lower",
+        "packages/store-libsql/src/store.ts",
+        "    const runWait = registeredWait('runs')\n",
+        "    const runWait = registeredWait('runs')\n"
+        '    runWait.current = runWait.current.replaceAll(" BETWEEN 0 AND ", " <= ")\n'
+        '    runWait.step = runWait.step.replaceAll(" BETWEEN 0 AND ", " <= ")\n',
+        "emit skips an invalid timed wait while delivering a healthy peer",
+        "emit consumes a timed wait whose run and registration carry invalid epochs",
+    ),
+    (
+        "timestamp-driver-cleanup-requires-last-beat-bound",
+        "packages/store-libsql/src/store.ts",
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms)}\n",
+        "                AND 1 = 1\n",
+        "driver cleanup refuses an expired row with an invalid last beat",
+        "driver cleanup deletes an expired row whose last beat is invalid",
+    ),
+    (
+        "timestamp-driver-cleanup-requires-expiry-bound",
+        "packages/store-libsql/src/store.ts",
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}\n",
+        "                AND 1 = 1\n",
+        "driver cleanup refuses a row with an invalid expiry",
+        "driver cleanup deletes a row whose expiry is invalid",
+    ),
+    (
+        "timestamp-driver-heartbeat-overflow-preserves-cleanup-inputs",
+        "packages/store-libsql/src/store.ts",
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}\n"
+        "                AND ${epochAdditionFits(NOW_MS, '?')}`",
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}\n"
+        "                AND ${epochAdditionFits(NOW_MS, '?').replace(\" - \", \" + \")}`",
+        "driver-heartbeat overflow preserves its source and expired cleanup victim",
+        "an overflowed heartbeat still cleans rows using a source beat it did not write",
+    ),
+    (
+        "timestamp-activation-validates-first-start-lower",
+        "packages/store-libsql/src/store.ts",
+        "    WHEN ${firstStarted} IS NOT NULL\n"
+        "      AND NOT ${storedIntegerWithin(TASK_INTEGER_BOUNDS.first_started_at_ms, task)} THEN 0",
+        "    WHEN 0 = 1\n"
+        "      AND NOT ${storedIntegerWithin(TASK_INTEGER_BOUNDS.first_started_at_ms, task)} THEN 0",
+        "activation refuses a negative persisted first-start instant atomically",
+        "activation consumes a negative persisted first-start instant",
+    ),
+    (
+        "timestamp-activation-validates-stored-duration-lower",
+        "packages/store-libsql/src/store.ts",
+        "    WHEN (${seconds}) < 0 OR (${durationMs}) > ${MAX_DURATION_MS} THEN 0",
+        "    WHEN 0 = 1 OR (${durationMs}) > ${MAX_DURATION_MS} THEN 0",
+        "activation refuses a negative stored max-duration atomically",
+        "activation consumes a negative persisted max-duration",
+    ),
+    (
+        "timestamp-activation-validates-stored-duration-upper",
+        "packages/store-libsql/src/store.ts",
+        "    WHEN (${seconds}) < 0 OR (${durationMs}) > ${MAX_DURATION_MS} THEN 0",
+        "    WHEN (${seconds}) < 0 OR 0 = 1 THEN 0",
+        "activation refuses a stored max-duration above the duration bound atomically",
+        "activation consumes a persisted max-duration above its protocol ceiling",
+    ),
+    (
+        "timestamp-activation-validates-stored-duration-storage",
+        "packages/store-libsql/src/store.ts",
+        "    WHEN json_type(${cancellation}, ${path}) NOT IN ('integer','real') THEN 0",
+        "    WHEN json_type(${cancellation}, ${path}) NOT IN ('integer','real','text') THEN 0",
+        "activation refuses a coercible string max-duration atomically",
+        "activation coerces a string max-duration across the JSON boundary",
+    ),
+    (
+        "timestamp-activation-rounded-duration-max",
+        "packages/store-libsql/src/store.ts",
+        "    WHEN (${seconds}) < 0 OR (${durationMs}) > ${MAX_DURATION_MS} THEN 0",
+        "    WHEN (${seconds}) < 0 OR (${seconds}) > ${MAX_DURATION_MS / 1000} THEN 0",
+        "accepts a max-duration just above the seconds ceiling when it rounds to the ms ceiling",
+        "activation checks raw seconds instead of the canonical rounded millisecond duration",
+    ),
+    (
+        "timestamp-emit-validates-existing-emitted-lower",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
+        '         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, \'events\').replace(" BETWEEN 0 AND ", " <= ")}`',
+        "re-emission refuses to propagate a negative stored event instant",
+        "re-emission propagates a negative stored event instant",
+    ),
+    (
+        "timestamp-emit-validates-existing-emitted-upper",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
+        '         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, \'events\').replace(/ BETWEEN 0 AND [0-9]+/, " >= 0")}`',
+        "re-emission refuses to propagate an event instant above the epoch bound",
+        "re-emission propagates an oversized stored event instant",
+    ),
+    (
+        "timestamp-emit-preserves-existing-emitted-max",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
+        '         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, \'events\').replace(" BETWEEN 0 AND ", " BETWEEN 0 AND -1 + ")}`',
+        "re-emission preserves and propagates a valid event instant at the epoch ceiling",
+        "re-emission rejects the maximum valid stored event instant",
+    ),
+    (
+        "timestamp-boundary-oracle-rejects-text",
+        TIME_BOUNDARY_SOURCE,
+        "  const decoded = decodeBoundedInteger(value, { min: 0, max: MAX_EPOCH_MS })",
+        "  const decoded = decodeBoundedInteger(typeof value === 'string' ? Number(value) : value, {\n"
+        "    min: 0,\n"
+        "    max: MAX_EPOCH_MS,\n"
+        "  })",
+        "the boundary oracle rejects parseable timestamp text",
+        "the timestamp oracle coerces parseable text",
+    ),
+    (
+        "timestamp-boundary-oracle-rejects-fractional",
+        TIME_BOUNDARY_SOURCE,
+        "  const decoded = decodeBoundedInteger(value, { min: 0, max: MAX_EPOCH_MS })",
+        "  const decoded = decodeBoundedInteger(\n"
+        "    typeof value === 'number' ? Math.trunc(value) : value,\n"
+        "    { min: 0, max: MAX_EPOCH_MS },\n"
+        "  )",
+        "the boundary oracle rejects a fractional timestamp number",
+        "the timestamp oracle truncates a fractional number",
+    ),
+    (
+        "timestamp-cancel-lower-before-limit",
+        "packages/store-libsql/src/store.ts",
+        "WHERE t.queue = ? AND ${cancelDue('t', NOW_MS)}\n"
+        "  AND t.state IN ${LIVE}",
+        'WHERE t.queue = ? AND ${cancelDue(\'t\', NOW_MS).replace(" BETWEEN 0 AND ", " <= ")}\n'
+        "  AND t.state IN ${LIVE}",
+        "deadline cancellation skips a negative deadline before its limit",
+        "a negative cancellation deadline consumes the bounded sweep scan",
+    ),
+    (
+        "timestamp-cancel-rechecks-deadline-bound",
+        "packages/store-libsql/src/store.ts",
+        "    const deadlineGuard = deadlineOnly ? `AND ${cancelDue('tasks', NOW)}` : ''",
+        '    const deadlineGuard = deadlineOnly\n'
+        '      ? `AND ${cancelDue(\'tasks\', NOW).replace(" BETWEEN 0 AND ", " <= ")}`\n'
+        "      : ''",
+        "deadline cancellation rechecks its bound after discovery",
+        "the cancellation CAS accepts a negative deadline after its advisory scan",
+    ),
+)
+
+for name, file, find, replace, full_name, breaks in TIMESTAMP_BEHAVIOR_MUTATIONS:
+    MUTATION_SPECS.append((name, file, find, replace, breaks))
+
+MUTATION_SPECS.extend(
+    (
+        (
+            "storage-corruption-requires-statement",
+            "packages/conformance/src/fixture.ts",
+            "  if (attempt.statements.length === 0) {\n"
+            "    throw new Error('storage corruption attempt must contain at least one SQL statement')\n"
+            "  }",
+            "  if (false && attempt.statements.length === 0) {\n"
+            "    throw new Error('storage corruption attempt must contain at least one SQL statement')\n"
+            "  }",
+            "a fixture can claim structural rejection without naming a storage write",
+        ),
+        (
+            "storage-corruption-rejection-requires-observed-attempt",
+            "packages/conformance/src/fixture.ts",
+            "    results = await fixture.raw.batch('fixture:storage-corrupt', attempt.statements, 'write')",
+            "    return 'structurally-rejected'",
+            "a fixture can claim structural rejection without calling the real raw executor",
+        ),
+        (
+            "temporal-field-id-is-bounds-field",
+            "packages/core/src/validate.ts",
+            "  return Object.freeze({ id: bounds.field, table, column, bounds, kind, nullable })",
+            "  return Object.freeze({ id: column, table, column, bounds, kind, nullable })",
+            "a temporal descriptor derives its identity from the column spelling instead of its nominal bounds",
+        ),
+        (
+            "migrated-integer-inventory-complete",
+            "packages/store-libsql/test/schema.test.ts",
+            "          .filter((row) => String(row.type).toUpperCase() === 'INTEGER')",
+            "          .filter(\n"
+            "            (row) =>\n"
+            "              String(row.type).toUpperCase() === 'INTEGER' &&\n"
+            "              String(row.name).endsWith('_ms'),\n"
+            "          )",
+            "schema enrollment regresses to the _ms spelling proxy and omits persisted counters",
+        ),
+        (
+            "invariant-snapshot-table-identity",
+            "packages/conformance/src/invariants.ts",
+            "    rowsByTable.set(table, result.rows)",
+            "    rowsByTable.set('tasks', result.rows)",
+            "the invariant snapshot assigns every result to one fixed table instead of its projection identity",
+        ),
+        (
+            "timestamp-addition-single-use-deltas",
+            "packages/store-libsql/src/fragments.ts",
+            "  const totalDelta = deltas.map((delta) => `(${delta})`).join(' + ')",
+            "  const totalDelta = deltas.map((delta) => `(${delta}) + (${delta})`).join(' + ')",
+            "each anonymous duration placeholder is consumed twice",
+        ),
+        (
+            "timestamp-boundary-enrollment",
+            "packages/conformance/src/store-conformance.ts",
+            "  { id: 'timestamp-boundaries', run: timestampBoundaryConformance },\n",
+            "",
+            "a dialect silently drops timestamp boundary conformance",
+        ),
+        (
+            "admin-fake-now-invalid",
+            "packages/store-libsql/src/admin.ts",
+            "    const validEpochMs = requireEpochMs('epochMs', epochMs)",
+            "    const validEpochMs = epochMs",
+            "the fake engine clock accepts invalid epoch values",
+        ),
+        (
+            "admin-fake-now-exact-endpoints",
+            "packages/store-libsql/src/admin.ts",
+            "    const validEpochMs = requireEpochMs('epochMs', epochMs)",
+            "    const validEpochMs = requireEpochMs('epochMs', epochMs === 0 ? -1 : epochMs)",
+            "the fake engine clock rejects an exact legal epoch endpoint",
+        ),
+    )
+)
 
 
 VERDICTS = {
@@ -2067,6 +2678,92 @@ VERDICTS = {
         "mutation-verdict:behavior:spawn-rejects-orphan-owner",
     ),
 }
+
+for slug, title, _guard_anchor, _guard_call, _exact_find, _exact_replace in (
+    TIMESTAMP_ADDITION_CASES
+):
+    for boundary in ("overflow", "exact"):
+        name = f"timestamp-addition-{slug}-{boundary}"
+        test_suffix = (
+            "refuses overflow by one without a partial transition"
+            if boundary == "overflow"
+            else "accepts an exact MAX_EPOCH_MS result"
+        )
+        VERDICTS[name] = ExpectedVerdict(
+            "behavior",
+            TIME_BOUNDARY_TEST,
+            f"timestamp boundaries [libsql] {title} {test_suffix}",
+            f"mutation-verdict:behavior:{name}",
+            TIME_BOUNDARY_SOURCE,
+        )
+
+for name, _file, _find, _replace, full_name, _breaks in TIMESTAMP_BEHAVIOR_MUTATIONS:
+    VERDICTS[name] = ExpectedVerdict(
+        "behavior",
+        TIME_BOUNDARY_TEST,
+        f"timestamp boundaries [libsql] {full_name}",
+        f"mutation-verdict:behavior:{name}",
+        TIME_BOUNDARY_SOURCE,
+    )
+
+VERDICTS.update(
+    {
+        "storage-corruption-requires-statement": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/poison-oracle-meta.test.ts",
+            "poison/invariant mechanism self-tests rejects a zero-statement structural-rejection claim",
+            "mutation-verdict:construction:storage-corruption-requires-statement",
+        ),
+        "storage-corruption-rejection-requires-observed-attempt": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/poison-oracle-meta.test.ts",
+            "poison/invariant mechanism self-tests credits structural rejection only after an observed storage write attempt",
+            "mutation-verdict:construction:storage-corruption-rejection-requires-observed-attempt",
+        ),
+        "temporal-field-id-is-bounds-field": ExpectedVerdict(
+            "construction",
+            "packages/core/test/bounded-integer.test.ts",
+            "decodeBoundedInteger pins the complete nominal persisted-temporal inventory",
+            "mutation-verdict:construction:temporal-field-id-is-bounds-field",
+        ),
+        "migrated-integer-inventory-complete": ExpectedVerdict(
+            "construction",
+            "packages/store-libsql/test/schema.test.ts",
+            "migrations enrolls every migrated integer column with exact nullability",
+            "mutation-verdict:construction:migrated-integer-inventory-complete",
+        ),
+        "invariant-snapshot-table-identity": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/invariant-checkers.test.ts",
+            "invariant checkers fire on constructed corruption binds every snapshot result through its projection table identity",
+            "mutation-verdict:construction:invariant-snapshot-table-identity",
+        ),
+        "timestamp-addition-single-use-deltas": ExpectedVerdict(
+            "construction",
+            "packages/store-libsql/test/fragments.test.ts",
+            "epoch-addition fragments emits each anonymous duration placeholder exactly once",
+            "mutation-verdict:construction:timestamp-addition-single-use-deltas",
+        ),
+        "timestamp-boundary-enrollment": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/enrollment.test.ts",
+            "shared conformance enrollment is one indivisible door couples the surface inventory and umbrella dispatch in one registry",
+            "mutation-verdict:construction:shared-conformance-runner-registry",
+        ),
+        "admin-fake-now-invalid": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/admin-time-boundary.test.ts",
+            "fake engine-time boundary rejects a negative fake clock without changing time",
+            "mutation-verdict:behavior:admin-fake-now-invalid",
+        ),
+        "admin-fake-now-exact-endpoints": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/admin-time-boundary.test.ts",
+            "fake engine-time boundary accepts both exact epoch endpoints",
+            "mutation-verdict:behavior:admin-fake-now-exact-endpoints",
+        ),
+    }
+)
 
 CHECKPOINT_CONFLICT_CASE_IDS = {
     "exists": "missing-owner",

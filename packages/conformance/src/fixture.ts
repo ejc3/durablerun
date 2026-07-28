@@ -4,6 +4,8 @@ import type {
   PersistedTemporalFieldDescriptor,
   SchedulerStore,
   SqlExecutor,
+  SqlResult,
+  SqlStatement,
   StoreAdmin,
 } from '@durablerun/core'
 
@@ -71,6 +73,20 @@ export type StorageCorruption =
 export type StorageCorruptionDisposition = 'injected' | 'structurally-rejected'
 
 /**
+ * A dialect-specific invalid-storage write prepared for shared execution.
+ *
+ * The conformance runner, not the fixture, owns execution. That makes a
+ * claimed structural rejection observable: at least one actual SQL statement
+ * must cross the fixture's raw executor and raise an error that the dialect's
+ * narrow classifier recognizes.
+ */
+export interface StorageCorruptionAttempt {
+  readonly statements: readonly SqlStatement[]
+  readonly verify: (results: readonly SqlResult[]) => void | Promise<void>
+  readonly isStructuralRejection: (error: unknown) => boolean
+}
+
+/**
  * The pluggability contract (repo CLAUDE.md law): a dialect is DONE when its
  * factory passes the identical suite — scheduler plane today, run-bookkeeping
  * (RunStateStore) when it lands. store-libsql implements this now;
@@ -84,12 +100,8 @@ export interface StoreFixture {
   admin: StoreAdmin
   /** The real executor — for raw shared-schema assertions and SimWorld. */
   raw: SqlExecutor
-  /**
-   * Ask the dialect fixture to construct an invalid native storage value.
-   * Strict schemas report structural rejection; permissive schemas inject it
-   * so the portable invariant evaluator must detect it.
-   */
-  injectStorageCorruption(corruption: StorageCorruption): Promise<StorageCorruptionDisposition>
+  /** Prepare, but do not execute, the dialect's invalid-storage write. */
+  storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt
   /**
    * A store over a substitute executor (a SimWorld actor wrapper) sharing
    * this fixture's database and id stream — how sims run N concurrent
@@ -100,3 +112,30 @@ export interface StoreFixture {
 }
 
 export type StoreFixtureFactory = (seed: number | string) => Promise<StoreFixture>
+
+/**
+ * The only conformance path that may credit structural storage rejection.
+ *
+ * Fixtures choose dialect SQL and classify the resulting native error, but
+ * cannot return a success token themselves. The shared runner executes a
+ * nonempty attempt through the fixture's real raw executor before it can
+ * report `structurally-rejected`.
+ */
+export async function executeStorageCorruption(
+  fixture: StoreFixture,
+  corruption: StorageCorruption,
+): Promise<StorageCorruptionDisposition> {
+  const attempt = fixture.storageCorruptionAttempt(corruption)
+  if (attempt.statements.length === 0) {
+    throw new Error('storage corruption attempt must contain at least one SQL statement')
+  }
+  let results: SqlResult[]
+  try {
+    results = await fixture.raw.batch('fixture:storage-corrupt', attempt.statements, 'write')
+  } catch (error) {
+    if (!attempt.isStructuralRejection(error)) throw error
+    return 'structurally-rejected'
+  }
+  await attempt.verify(results)
+  return 'injected'
+}

@@ -587,6 +587,27 @@ are load-bearing):
    Stability does NOT extend across statements: the same expression in two
    statements of one batch differs about 2% of the time on local SQLite (94 of
    4000 measured) and far more over a network, which is what rule 8 exists for.
+   Database ownership of the clock does not exempt it from the numeric
+   contract. Every engine instant is an exact native integer in
+   `[0, MAX_EPOCH_MS]`, and every persisted relative duration is an exact
+   native integer in its field's duration domain. Before writing `now + delta`,
+   the authoritative statement proves both the instant and every delta valid
+   and proves `now <= MAX_EPOCH_MS - sum(delta)`. This applies to all fourteen
+   derived-deadline sites: spawn delay and cancellation, claim and activation
+   leases, activation max-duration, heartbeat, both sweep successors, driver
+   heartbeat, both suspension APIs, user retry, checkpoint extension, and
+   event timeout. A terminal arm that derives no successor remains legal at
+   the ceiling; an irrelevant future deadline may not prevent quiescence.
+   Persisted timestamp consumers enforce the same exact field contract at the
+   door that consumes it: before an ordered `LIMIT`, again at a winning CAS
+   after an advisory scan, and before copying or comparing it into another
+   durable value. A negative or over-ceiling deadline therefore cannot starve
+   healthy work, become due through comparison, or be laundered by a write.
+   Driver heartbeat is one atomic transition for this purpose: if its derived
+   expiry is unrepresentable, neither the heartbeat row nor its expired-row
+   cleanup may change. Cleanup also validates the stored last-beat and expiry
+   fields of both its source heartbeat and each deletion candidate; corrupt
+   observability rows are refused, not compared into authority or deleted.
 4. **Claim is a fenced batch, not a lone statement.** It has two identities:
    `claimed_by = :claim_token` is the durable lease and idempotent receipt,
    while the FencedBatch invocation seed gives the claim CAS its fresh
@@ -652,8 +673,14 @@ are load-bearing):
    unchecked Infinity is an unexpirable lease, an unsafe integer poisons
    later reads with a driver RangeError, and a fractional product silently
    breaks the integer epoch-ms contract. Durations stored in JSON
-   (`cancellation.maxDurationSeconds`) are validated at spawn and their SQL
-   products CAST to INTEGER at use. Values coming back from a dialect cross
+   (`cancellation.maxDurationSeconds`) are validated at spawn and revalidated
+   when consumed from durable JSON. Their SQL conversion implements the same
+   rounded-millisecond result as `durationToMs`; a seconds value slightly above
+   the nominal seconds quotient is legal when rounding still yields exactly
+   `MAX_DURATION_MS`, while a value whose rounded result exceeds the ceiling is
+   refused. The administrative `fake_now` seam is a port too:
+   `setFakeNowEpochMs` crosses `requireEpochMs` before any metadata write.
+   Values coming back from a dialect cross
    one dialect-neutral `decodeBoundedInteger` boundary before becoming
    JavaScript numbers; it accepts only exact native number/bigint integers and
    enforces the same semantic bounds the invariant evaluator uses. Run
@@ -808,23 +835,39 @@ not depend on careful reading:
   identity/ownership column. A row missing an authority column is rejected
   before keys are constructed. Dialect adapters expose exact integers as
   safe numbers or bigint, which the evaluator compares canonically without a
-  lossy Number conversion. Invalid native representations enter through the
-  fixture's `injectStorageCorruption` seam: a permissive store returns
-  `injected`, while a strict schema returns `structurally-rejected`, and both
-  are valid outcomes of the identical shared witness. TypeScript evaluates
-  one of 74 typed condition IDs for every semantic arm. The seven durable
-  counters and eight temporal fields are decoded totally through core's
+  lossy Number conversion. For invalid native representations, the fixture
+  prepares a nonempty dialect statement and a narrow native-error classifier;
+  the shared runner alone executes the attempt through the raw executor. A
+  permissive store must verify the injection, while a strict schema receives
+  `structurally-rejected` credit only after an observed attempted write raises
+  the classified error. A fixture cannot return evidence by assertion.
+  TypeScript evaluates
+  one of 109 typed condition IDs for every semantic arm. The eight durable
+  counters and 23 temporal fields are decoded totally through core's
   bounded decoder: a non-integer storage representation and an exact-but-
   out-of-range value emit distinct typed findings and suppress dependent
   arithmetic instead of aborting the invariant pass. Run→task existence and
-  queue ownership are checked explicitly. Generated just-over-bound witnesses,
-  along with the ownership witnesses, keep the poison matrix complete. The
-  poison surface crosses the 17 classified
-  write labels with 71 atomic corrupt-state witnesses covering that exact
-  condition inventory: 1,207 generated cells,
+  queue ownership are checked explicitly. One frozen temporal inventory covers
+  all 23 `_ms` fields across tasks, runs, checkpoints, events, waits, and
+  drivers, derives the public condition/witness identity from the nominal
+  `table.column` bounds identity, records each field's epoch/duration kind and
+  exact nullability, and
+  generates both temporal conditions, the six-table snapshot projection, and
+  three witnesses per field: invalid storage, one below the lower bound, and
+  one above the upper bound. The migrated libSQL schema discovers every native
+  `INTEGER` column across those tables and compares the exact field/nullability
+  vector to the union of eight counter descriptors and 23 temporal descriptors:
+  all 31 durable integers are enrolled without relying on a name suffix.
+  Snapshot results are assembled by each projection's declared table key,
+  never by a second hard-coded positional table list.
+  Generated just-over-bound witnesses, along with the ownership witnesses,
+  keep the poison matrix complete. The poison surface crosses the 17 classified
+  write labels with 139 atomic corrupt-state witnesses covering that exact
+  condition inventory: 2,363 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
-  strict dialect may instead return `structurally-rejected` before invocation,
-  the stronger result that the forbidden pre-state is unwritable. Each invoked
+  strict dialect may instead produce an observed `structurally-rejected`
+  attempt before invocation, the stronger result that the forbidden pre-state
+  is unwritable. Each invoked
   cell freezes structured tuple keys for a protected pre-operation population
   across every protocol/bookkeeping table, permits new rows only through
   explicit complete ownership tuples, and rejects writes outside before-state
@@ -849,6 +892,20 @@ not depend on careful reading:
   observing that a label was called, or deriving authority from the
   after-state are prohibited proxies. Sixteen adversarial oracle meta-tests
   attack these distinctions.
+- *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
+  `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
+  the 23-field inventory above is the sole persisted temporal representation.
+  Fixed-field fragments own due/not-due comparisons, and one
+  `epochAdditionFits` constructor owns derived-epoch headroom. Each delta
+  expression appears exactly once in the generated predicate, so an anonymous
+  SQL placeholder consumes one argument rather than being duplicated by a
+  textual helper. The conformance registry enrolls the timestamp surface as a
+  peer of scheduler, fault, poison, and wake-witness coverage; nesting it
+  inside another suite is not enrollment. Fourteen exact-ceiling/overflow
+  pairs, bounded-discovery and post-scan interpositions, all four next-wake
+  sources, direct copy/compare consumers, fake-clock inputs, terminal-arm
+  controls, rounded-duration parity, and driver-cleanup atomicity pin the
+  contract independently of the global invariant.
 - *Attributable mutation verdicts* (`scripts/mutation-probe.py`): every
   mutation names the exact behavioral or construction assertion that must
   kill it — test file, full test name, and marker in its failure. Compilation
@@ -859,7 +916,7 @@ not depend on careful reading:
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
   source is not evidence. The verify gate runs 17 classifier cases, nineteen
   promise-message source cases, ten canonical helper-descriptor cases, and
-  seven injected classifier faults over all 50 live mutations. A separate
+  seven injected classifier faults over all 191 live mutations. A separate
   generated coordinator surface injects shard omission and overlap, wrong
   heads, missing/duplicate/extra results, process/report disagreement, and
   non-owned cleanup targets, plus unconfined execution, an unowned worker,
