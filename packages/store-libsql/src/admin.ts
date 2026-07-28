@@ -1,6 +1,7 @@
 import {
   decodeBoundedInteger,
   MAX_EPOCH_MS,
+  requireEpochMs,
   SchemaNotInitializedError,
   SchemaMismatchError,
   storageValueKind,
@@ -126,11 +127,12 @@ export class LibsqlStoreAdmin implements StoreAdmin {
       ])
       return
     }
+    const validEpochMs = requireEpochMs('epochMs', epochMs)
     await this.db.batch('admin:set-fake-now', [
       {
         sql: `INSERT INTO meta (key, value) VALUES ('fake_now_ms', ?)
               ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-        args: [String(epochMs)],
+        args: [String(validEpochMs)],
       },
     ])
   }
