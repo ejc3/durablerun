@@ -368,6 +368,46 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         return run
       }
 
+      it('rejects invalid claim-generation inputs before reaching the executor', async () => {
+        let executorCalls = 0
+        const forbiddenExecutor: SqlExecutor = {
+          batch: async () => {
+            executorCalls += 1
+            throw new Error('invalid claim generation reached the SQL executor')
+          },
+        }
+        const guardedStore = f.storeOver(forbiddenExecutor)
+        const invalidClaimGenerations = [
+          { name: 'string', value: '1' as unknown as number },
+          { name: 'bigint', value: 1n as unknown as number },
+          { name: 'fractional', value: 1.5 },
+          { name: 'non-safe', value: Number.MAX_SAFE_INTEGER + 1 },
+          { name: 'zero', value: 0 },
+          { name: 'negative', value: -1 },
+          { name: 'above-protocol-bound', value: MAX_COUNT + 1 },
+        ]
+        const observed: { name: string; rejectedBeforeSql: boolean }[] = []
+
+        for (const { name, value } of invalidClaimGenerations) {
+          const error = await guardedStore.activate(Q, 'run', 'token', value).then(
+            () => null,
+            (reason: unknown) => reason,
+          )
+          observed.push({ name, rejectedBeforeSql: error instanceof RangeError })
+        }
+
+        expect(
+          observed,
+          'mutation-verdict:behavior:activate-validates-claim-generation-input',
+        ).toEqual(
+          invalidClaimGenerations.map(({ name }) => ({
+            name,
+            rejectedBeforeSql: true,
+          })),
+        )
+        expect(executorCalls).toBe(0)
+      })
+
       it('passes exactly once per claim generation and returns the worker payload', async () => {
         await f.store.spawn(Q, 'job', '{"k":1}')
         const run = await claimOne('tick-1')
