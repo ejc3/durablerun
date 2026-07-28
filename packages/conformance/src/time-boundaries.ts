@@ -5,6 +5,7 @@ import {
   MAX_EPOCH_MS,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_CAP,
+  type SqlExecutor,
   type SpawnOptions,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
@@ -23,6 +24,27 @@ interface TimeBoundaryCase {
   readonly id: string
   readonly deltaMs: number
   prepare(fixture: StoreFixture): Promise<PreparedBoundary>
+}
+
+function interposeAfterBatch(
+  delegate: SqlExecutor,
+  targetLabel: string,
+  after: () => Promise<void>,
+): { executor: SqlExecutor; fired: () => boolean } {
+  let didFire = false
+  return {
+    executor: {
+      batch: async (label, statements, mode) => {
+        const results = await delegate.batch(label, statements, mode)
+        if (!didFire && label === targetLabel) {
+          didFire = true
+          await after()
+        }
+        return results
+      },
+    },
+    fired: () => didFire,
+  }
 }
 
 async function spawned(
@@ -626,6 +648,206 @@ export function timestampBoundaryConformance(
             'claim_expires_at_ms',
           ),
         ).toBe(MAX_EPOCH_MS)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('refuses a negative run availability before claiming atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:claim-available-lower')
+      try {
+        const run = await spawned(fixture, 'claim-negative-available')
+        await fixture.raw.batch('time-boundary:claim-negative-available', [
+          {
+            sql: `UPDATE runs SET available_at_ms = -1 WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ])
+        const before = await durableSnapshot(fixture)
+
+        expect(
+          await fixture.store.claim(Q, 'claim-negative-available-token', {
+            leaseSeconds: 60,
+            limit: 1,
+          }),
+          'mutation-verdict:behavior:timestamp-claim-validates-available-lower-bound',
+        ).toEqual([])
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-claim-validates-available-lower-bound',
+        ).toEqual(before)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('refuses an out-of-range cancellation deadline before claiming atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:claim-cancel-upper')
+      try {
+        const task = await spawned(fixture, 'claim-invalid-cancellation', {
+          cancellation: { maxDelaySeconds: 60 },
+        })
+        await fixture.raw.batch('time-boundary:claim-invalid-cancellation', [
+          {
+            sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+            args: [MAX_EPOCH_MS + 1, task.taskId],
+          },
+        ])
+        const before = await durableSnapshot(fixture)
+
+        expect(
+          await fixture.store.claim(Q, 'claim-invalid-cancellation-token', {
+            leaseSeconds: 60,
+            limit: 1,
+          }),
+          'mutation-verdict:behavior:timestamp-claim-validates-cancellation-upper-bound',
+        ).toEqual([])
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-claim-validates-cancellation-upper-bound',
+        ).toEqual(before)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    for (const activatedBeforeExpiry of [false, true]) {
+      const branch = activatedBeforeExpiry ? 'claim-timeout' : 'lost-launch'
+
+      it(`${branch} sweep refuses a negative claim expiry atomically`, async () => {
+        const fixture = await fixtureAt(makeFixture, `consumer:${branch}-expiry-lower`)
+        try {
+          await spawned(fixture, `${branch}-negative-expiry`)
+          const run = await claimOne(fixture, `${branch}-negative-expiry-token`)
+          if (activatedBeforeExpiry) {
+            const activation = await fixture.store.activate(
+              Q,
+              run.runId,
+              run.claimToken,
+              run.claimGen,
+            )
+            if (!activation) throw new Error(`${branch} setup lost activation`)
+          }
+          await fixture.raw.batch('time-boundary:negative-claim-expiry', [
+            {
+              sql: `UPDATE runs SET claim_expires_at_ms = -1 WHERE run_id = ?`,
+              args: [run.runId],
+            },
+          ])
+          const before = await durableSnapshot(fixture)
+
+          expect(
+            await fixture.store.sweep(Q, 1),
+            'mutation-verdict:behavior:timestamp-sweep-validates-claim-expiry-lower-bound',
+          ).toEqual([])
+          expect(
+            await durableSnapshot(fixture),
+            'mutation-verdict:behavior:timestamp-sweep-validates-claim-expiry-lower-bound',
+          ).toEqual(before)
+        } finally {
+          fixture.close()
+        }
+      })
+
+      it(`${branch} sweep rechecks the claim expiry bound after discovery`, async () => {
+        const fixture = await fixtureAt(makeFixture, `consumer:${branch}-expiry-race`)
+        try {
+          await spawned(fixture, `${branch}-expiry-race`)
+          const run = await claimOne(fixture, `${branch}-expiry-race-token`)
+          if (activatedBeforeExpiry) {
+            const activation = await fixture.store.activate(
+              Q,
+              run.runId,
+              run.claimToken,
+              run.claimGen,
+            )
+            if (!activation) throw new Error(`${branch} setup lost activation`)
+          }
+          await fixture.admin.setFakeNowEpochMs(1_100_000)
+
+          let afterCorruption: unknown
+          const interposed = interposeAfterBatch(fixture.raw, 'sweep:scan', async () => {
+            await fixture.raw.batch('time-boundary:claim-expiry-race', [
+              {
+                sql: `UPDATE runs SET claim_expires_at_ms = -1 WHERE run_id = ?`,
+                args: [run.runId],
+              },
+            ])
+            afterCorruption = await durableSnapshot(fixture)
+          })
+
+          expect(
+            await fixture.storeOver(interposed.executor).sweep(Q, 1),
+            'mutation-verdict:behavior:timestamp-sweep-rechecks-claim-expiry-bound',
+          ).toEqual([])
+          expect(interposed.fired()).toBe(true)
+          expect(afterCorruption).toBeDefined()
+          expect(
+            await durableSnapshot(fixture),
+            'mutation-verdict:behavior:timestamp-sweep-rechecks-claim-expiry-bound',
+          ).toEqual(afterCorruption)
+        } finally {
+          fixture.close()
+        }
+      })
+    }
+
+    it('deadline cancellation refuses a negative deadline atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:cancel-deadline-lower')
+      try {
+        const task = await spawned(fixture, 'cancel-negative-deadline', {
+          cancellation: { maxDelaySeconds: 60 },
+        })
+        await fixture.raw.batch('time-boundary:cancel-negative-deadline', [
+          {
+            sql: `UPDATE tasks SET cancel_at_ms = -1 WHERE task_id = ?`,
+            args: [task.taskId],
+          },
+        ])
+        const before = await durableSnapshot(fixture)
+
+        expect(
+          await fixture.store.sweep(Q, 1),
+          'mutation-verdict:behavior:timestamp-cancel-validates-deadline-lower-bound',
+        ).toEqual([])
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-cancel-validates-deadline-lower-bound',
+        ).toEqual(before)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('deadline cancellation rechecks its bound after discovery', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:cancel-deadline-race')
+      try {
+        const task = await spawned(fixture, 'cancel-deadline-race', {
+          cancellation: { maxDelaySeconds: 60 },
+        })
+        await fixture.admin.setFakeNowEpochMs(1_100_000)
+
+        let afterCorruption: unknown
+        const interposed = interposeAfterBatch(fixture.raw, 'sweep:scan', async () => {
+          await fixture.raw.batch('time-boundary:cancel-deadline-race', [
+            {
+              sql: `UPDATE tasks SET cancel_at_ms = -1 WHERE task_id = ?`,
+              args: [task.taskId],
+            },
+          ])
+          afterCorruption = await durableSnapshot(fixture)
+        })
+
+        expect(
+          await fixture.storeOver(interposed.executor).sweep(Q, 1),
+          'mutation-verdict:behavior:timestamp-cancel-rechecks-deadline-bound',
+        ).toEqual([])
+        expect(interposed.fired()).toBe(true)
+        expect(afterCorruption).toBeDefined()
+        expect(
+          await durableSnapshot(fixture),
+          'mutation-verdict:behavior:timestamp-cancel-rechecks-deadline-bound',
+        ).toEqual(afterCorruption)
       } finally {
         fixture.close()
       }
