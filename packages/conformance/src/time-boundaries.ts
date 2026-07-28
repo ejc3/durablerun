@@ -561,6 +561,45 @@ async function fixtureAt(makeFixture: StoreFixtureFactory, seed: string): Promis
   return fixture
 }
 
+async function driverCleanupRows(
+  fixture: StoreFixture,
+  victimLastBeatMs: number,
+  victimExpiresAtMs: number,
+) {
+  const sourceDriver = 'cleanup-source'
+  const victimDriver = 'cleanup-victim'
+  await fixture.raw.batch('time-boundary:driver-cleanup-setup', [
+    {
+      sql: `INSERT INTO drivers
+              (queue, driver_id, last_beat_ms, expires_at_ms)
+            VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+      args: [
+        Q,
+        sourceDriver,
+        NORMAL_NOW_MS - 1,
+        NORMAL_NOW_MS + 60_000,
+        Q,
+        victimDriver,
+        victimLastBeatMs,
+        victimExpiresAtMs,
+      ],
+    },
+  ])
+  await fixture.store.driverHeartbeat(Q, sourceDriver, ONE_MS_SECONDS)
+  const [drivers] = await fixture.raw.batch(
+    'time-boundary:driver-cleanup-after',
+    [
+      {
+        sql: `SELECT driver_id, last_beat_ms, expires_at_ms
+              FROM drivers WHERE queue = ? ORDER BY driver_id`,
+        args: [Q],
+      },
+    ],
+    'read',
+  )
+  return drivers?.rows
+}
+
 export function timestampBoundaryConformance(
   dialect: string,
   makeFixture: StoreFixtureFactory,
@@ -650,6 +689,52 @@ export function timestampBoundaryConformance(
           drivers?.rows,
           'mutation-verdict:behavior:timestamp-driver-heartbeat-overflow-preserves-cleanup-inputs',
         ).toEqual(expected)
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('driver cleanup refuses an expired row with an invalid last beat', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:driver-cleanup-last-beat')
+      try {
+        expect(
+          await driverCleanupRows(fixture, -1, NORMAL_NOW_MS - 1),
+          'mutation-verdict:behavior:timestamp-driver-cleanup-requires-last-beat-bound',
+        ).toEqual([
+          {
+            driver_id: 'cleanup-source',
+            last_beat_ms: NORMAL_NOW_MS,
+            expires_at_ms: NORMAL_NOW_MS + 1,
+          },
+          {
+            driver_id: 'cleanup-victim',
+            last_beat_ms: -1,
+            expires_at_ms: NORMAL_NOW_MS - 1,
+          },
+        ])
+      } finally {
+        fixture.close()
+      }
+    })
+
+    it('driver cleanup refuses a row with an invalid expiry', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:driver-cleanup-expiry')
+      try {
+        expect(
+          await driverCleanupRows(fixture, 0, -1),
+          'mutation-verdict:behavior:timestamp-driver-cleanup-requires-expiry-bound',
+        ).toEqual([
+          {
+            driver_id: 'cleanup-source',
+            last_beat_ms: NORMAL_NOW_MS,
+            expires_at_ms: NORMAL_NOW_MS + 1,
+          },
+          {
+            driver_id: 'cleanup-victim',
+            last_beat_ms: 0,
+            expires_at_ms: -1,
+          },
+        ])
       } finally {
         fixture.close()
       }
