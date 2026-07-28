@@ -1346,6 +1346,29 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(Number(checkpoints?.rows[0]?.n)).toBe(0)
       })
 
+      it('validates checkpoint visibility through the run-ordinal input domain', async () => {
+        let executorCalls = 0
+        const forbiddenExecutor: SqlExecutor = {
+          batch: async () => {
+            executorCalls += 1
+            throw new Error('invalid run ordinal reached the SQL executor')
+          },
+        }
+        const guardedStore = f.storeOver(forbiddenExecutor)
+
+        for (const invalidAttempt of [0, 1.5, MAX_RUN_ORDINAL + 1]) {
+          await requireExpectedFailure(
+            { kind: 'behavior', mutation: 'checkpoint-read-validates-run-attempt-input' },
+            /runs\.attempt/,
+            () => guardedStore.getCheckpoints(Q, 'missing-task', invalidAttempt),
+          )
+        }
+        expect(executorCalls).toBe(0)
+
+        expect(await f.store.getCheckpoints(Q, 'missing-task', 1)).toEqual([])
+        expect(await f.store.getCheckpoints(Q, 'missing-task', MAX_RUN_ORDINAL)).toEqual([])
+      })
+
       it('visibility filters by owner attempt', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
