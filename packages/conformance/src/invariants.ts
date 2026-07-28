@@ -1,6 +1,10 @@
 import {
   type IntegerBounds,
   PERSISTED_INTEGER_BOUNDS,
+  PERSISTED_TEMPORAL_FIELDS,
+  type PersistedTemporalFieldDescriptor,
+  type PersistedTemporalFieldId,
+  type PersistedTemporalTable,
   type SqlExecutor,
   type SqlRow,
   decodeBoundedInteger,
@@ -14,7 +18,7 @@ import {
  * emit a finding through one of these IDs, and the poison surface checks this
  * exact inventory rather than the coarser user-facing invariant names.
  */
-export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
+const STATIC_ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'terminal-task/live-run': 'terminal-task-with-live-run',
   'lease/running-owner-null': 'ownerless-running-run',
   'mirror/running-run-task-not-running': 'running-run-under-non-running-task',
@@ -48,22 +52,6 @@ export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'payload/event-missing': 'wake-payload-mismatch',
   'payload/stored-payload-null': 'wake-payload-mismatch',
   'payload/stored-payload-different': 'wake-payload-mismatch',
-  'temporal/run-available': 'temporal-storage-class',
-  'temporal/run-claim-expires': 'temporal-storage-class',
-  'temporal/run-heartbeat': 'temporal-storage-class',
-  'temporal/run-created': 'temporal-storage-class',
-  'temporal/run-lease': 'temporal-storage-class',
-  'temporal/task-enqueue': 'temporal-storage-class',
-  'temporal/task-cancel': 'temporal-storage-class',
-  'temporal/checkpoint-updated': 'temporal-storage-class',
-  'temporal-bound/run-available': 'temporal-out-of-range',
-  'temporal-bound/run-claim-expires': 'temporal-out-of-range',
-  'temporal-bound/run-heartbeat': 'temporal-out-of-range',
-  'temporal-bound/run-created': 'temporal-out-of-range',
-  'temporal-bound/run-lease': 'temporal-out-of-range',
-  'temporal-bound/task-enqueue': 'temporal-out-of-range',
-  'temporal-bound/task-cancel': 'temporal-out-of-range',
-  'temporal-bound/checkpoint-updated': 'temporal-out-of-range',
   'provenance/stamp-without-instant': 'provenance-pair-broken',
   'provenance/instant-without-stamp': 'provenance-pair-broken',
   'provenance/instant-not-integer': 'provenance-pair-broken',
@@ -96,6 +84,31 @@ export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'counter-bound/checkpoint-owner-attempt': 'counter-out-of-range',
 } as const)
 
+export type TemporalStorageConditionId = `temporal/${PersistedTemporalFieldId}`
+export type TemporalBoundConditionId = `temporal-bound/${PersistedTemporalFieldId}`
+
+/**
+ * Every persisted temporal field owns exactly two atomic conditions. Building
+ * this record from the frozen inventory prevents a newly enrolled timestamp
+ * from existing without both storage-class and semantic-bound coverage.
+ */
+const TEMPORAL_INVARIANT_CONDITION_NAMES = Object.freeze(
+  Object.fromEntries(
+    PERSISTED_TEMPORAL_FIELDS.flatMap(({ id }) => [
+      [`temporal/${id}`, 'temporal-storage-class'],
+      [`temporal-bound/${id}`, 'temporal-out-of-range'],
+    ]),
+  ),
+) as Readonly<
+  Record<TemporalStorageConditionId, 'temporal-storage-class'> &
+    Record<TemporalBoundConditionId, 'temporal-out-of-range'>
+>
+
+export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
+  ...STATIC_ENGINE_INVARIANT_CONDITION_NAMES,
+  ...TEMPORAL_INVARIANT_CONDITION_NAMES,
+})
+
 export type EngineInvariantConditionId = keyof typeof ENGINE_INVARIANT_CONDITION_NAMES
 
 export const ENGINE_INVARIANT_CONDITIONS = Object.freeze(
@@ -117,35 +130,44 @@ export interface EngineInvariantFinding {
   message: string
 }
 
-interface ProtocolRows {
-  tasks: readonly SqlRow[]
-  runs: readonly SqlRow[]
-  checkpoints: readonly SqlRow[]
-  events: readonly SqlRow[]
-  waits: readonly SqlRow[]
-}
+type ProtocolRows = Readonly<Record<PersistedTemporalTable, readonly SqlRow[]>>
 
 type SqlValue = SqlRow[string] | undefined
 
+function withTemporalColumns(
+  table: PersistedTemporalTable,
+  baseColumns: readonly string[],
+): readonly string[] {
+  return Object.freeze([
+    ...new Set([
+      ...baseColumns,
+      ...PERSISTED_TEMPORAL_FIELDS.filter((field) => field.table === table).map(
+        (field) => field.column,
+      ),
+    ]),
+  ])
+}
+
+/**
+ * The six portable table snapshots are closed over the inventory: adding a
+ * descriptor necessarily selects that durable column for invariant evaluation.
+ */
 const SNAPSHOT_PROJECTIONS = [
   {
     table: 'tasks',
-    columns: [
+    columns: withTemporalColumns('tasks', [
       'task_id',
       'queue',
       'state',
       'attempts',
       'max_attempts',
       'infra_retries',
-      'enqueue_at_ms',
-      'cancel_at_ms',
       'fence_stamp',
-      'fence_at_ms',
-    ],
+    ]),
   },
   {
     table: 'runs',
-    columns: [
+    columns: withTemporalColumns('runs', [
       'run_id',
       'queue',
       'task_id',
@@ -155,45 +177,40 @@ const SNAPSHOT_PROJECTIONS = [
       'claim_gen',
       'activated_gen',
       'relaunch_count',
-      'lease_ms',
-      'claim_expires_at_ms',
-      'heartbeat_at_ms',
-      'available_at_ms',
-      'created_at_ms',
       'wake_event',
       'event_payload',
       'fence_stamp',
-      'fence_at_ms',
-    ],
+    ]),
   },
   {
     table: 'checkpoints',
-    columns: [
+    columns: withTemporalColumns('checkpoints', [
       'task_id',
       'checkpoint_name',
       'queue',
       'owner_run_id',
       'owner_attempt',
-      'updated_at_ms',
-    ],
+    ]),
   },
   {
     table: 'events',
-    columns: ['queue', 'event_name', 'payload', 'fence_stamp', 'fence_at_ms'],
+    columns: withTemporalColumns('events', ['queue', 'event_name', 'payload', 'fence_stamp']),
   },
   {
     table: 'waits',
-    columns: [
+    columns: withTemporalColumns('waits', [
       'run_id',
       'step_name',
       'queue',
       'task_id',
       'event_name',
       'status',
-      'timeout_at_ms',
       'fence_stamp',
-      'fence_at_ms',
-    ],
+    ]),
+  },
+  {
+    table: 'drivers',
+    columns: withTemporalColumns('drivers', ['queue', 'driver_id']),
   },
 ] as const
 
@@ -232,13 +249,61 @@ function sameValue(left: SqlValue, right: SqlValue): boolean {
  * safe JS numbers or bigint; strings (including parseable date strings) are a
  * different storage representation and remain corruption.
  */
-function validTemporal(value: SqlValue): boolean {
+function validTemporal(value: SqlValue, bounds: IntegerBounds): boolean {
   if (value === null) return true
-  return decodeBoundedInteger(value, PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms).ok
+  return decodeBoundedInteger(value, bounds).ok
 }
 
 function eventKey(queue: string, eventName: string): string {
   return JSON.stringify([queue, eventName])
+}
+
+function temporalSubject(
+  table: PersistedTemporalTable,
+  row: SqlRow,
+): { subject: string; identity: readonly string[] } {
+  switch (table) {
+    case 'tasks': {
+      const taskId = text(row, 'task_id')
+      return { subject: `tasks/${taskId}`, identity: ['tasks', taskId] }
+    }
+    case 'runs': {
+      const runId = text(row, 'run_id')
+      return { subject: `runs/${runId}`, identity: ['runs', runId] }
+    }
+    case 'checkpoints': {
+      const taskId = text(row, 'task_id')
+      const checkpointName = text(row, 'checkpoint_name')
+      return {
+        subject: `checkpoints/${taskId}/${checkpointName}`,
+        identity: ['checkpoints', taskId, checkpointName],
+      }
+    }
+    case 'events': {
+      const queue = text(row, 'queue')
+      const eventName = text(row, 'event_name')
+      return {
+        subject: `events/${queue}/${eventName}`,
+        identity: ['events', queue, eventName],
+      }
+    }
+    case 'waits': {
+      const runId = text(row, 'run_id')
+      const stepName = text(row, 'step_name')
+      return {
+        subject: `waits/${runId}/${stepName}`,
+        identity: ['waits', runId, stepName],
+      }
+    }
+    case 'drivers': {
+      const queue = text(row, 'queue')
+      const driverId = text(row, 'driver_id')
+      return {
+        subject: `drivers/${queue}/${driverId}`,
+        identity: ['drivers', queue, driverId],
+      }
+    }
+  }
 }
 
 function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
@@ -279,17 +344,17 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
   }
   const temporal = (
     value: SqlValue,
-    storageCondition: EngineInvariantConditionId,
-    boundCondition: EngineInvariantConditionId,
+    field: PersistedTemporalFieldDescriptor,
     subject: string,
     identity: readonly string[],
-    bounds: IntegerBounds,
   ): void => {
-    if (value === null) return
-    const decoded = decodeBoundedInteger(value, bounds)
+    if (value === null && field.nullable) return
+    const decoded = decodeBoundedInteger(value, field.bounds)
     if (decoded.ok) return
     add(
-      decoded.reason === 'not-an-exact-integer' ? storageCondition : boundCondition,
+      decoded.reason === 'not-an-exact-integer'
+        ? (`temporal/${field.id}` as TemporalStorageConditionId)
+        : (`temporal-bound/${field.id}` as TemporalBoundConditionId),
       subject,
       identity,
     )
@@ -306,6 +371,16 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     const owned = runsByTask.get(taskId) ?? []
     owned.push(run)
     runsByTask.set(taskId, owned)
+  }
+
+  // Evaluation is generated at the same altitude as condition enrollment.
+  // There is no table-specific temporal call site to forget when the schema
+  // gains a field.
+  for (const field of PERSISTED_TEMPORAL_FIELDS) {
+    for (const row of rows[field.table]) {
+      const { subject, identity } = temporalSubject(field.table, row)
+      temporal(row[field.column], field, subject, identity)
+    }
   }
 
   interface TaskCounters {
@@ -474,22 +549,6 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
         }
       }
     }
-    temporal(
-      task.enqueue_at_ms,
-      'temporal/task-enqueue',
-      'temporal-bound/task-enqueue',
-      `tasks/${taskId}`,
-      ['tasks', taskId],
-      PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms,
-    )
-    temporal(
-      task.cancel_at_ms,
-      'temporal/task-cancel',
-      'temporal-bound/task-cancel',
-      `tasks/${taskId}`,
-      ['tasks', taskId],
-      PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms,
-    )
   }
 
   const liveCounts = new Map<string, number>()
@@ -510,46 +569,6 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     if (state === 'running' && task && text(task, 'state') !== 'running') {
       add('mirror/running-run-task-not-running', runId)
     }
-    temporal(
-      run.available_at_ms,
-      'temporal/run-available',
-      'temporal-bound/run-available',
-      `runs/${runId}`,
-      ['runs', runId],
-      PERSISTED_INTEGER_BOUNDS.runs.available_at_ms,
-    )
-    temporal(
-      run.claim_expires_at_ms,
-      'temporal/run-claim-expires',
-      'temporal-bound/run-claim-expires',
-      `runs/${runId}`,
-      ['runs', runId],
-      PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms,
-    )
-    temporal(
-      run.heartbeat_at_ms,
-      'temporal/run-heartbeat',
-      'temporal-bound/run-heartbeat',
-      `runs/${runId}`,
-      ['runs', runId],
-      PERSISTED_INTEGER_BOUNDS.runs.heartbeat_at_ms,
-    )
-    temporal(
-      run.created_at_ms,
-      'temporal/run-created',
-      'temporal-bound/run-created',
-      `runs/${runId}`,
-      ['runs', runId],
-      PERSISTED_INTEGER_BOUNDS.runs.created_at_ms,
-    )
-    temporal(
-      run.lease_ms,
-      'temporal/run-lease',
-      'temporal-bound/run-lease',
-      `runs/${runId}`,
-      ['runs', runId],
-      PERSISTED_INTEGER_BOUNDS.runs.lease_ms,
-    )
     if (
       counters.activatedGen !== undefined &&
       counters.claimGen !== undefined &&
@@ -605,14 +624,6 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
         add('checkpoint/owner-attempt-mismatch', subject, subjectIdentity)
       }
     }
-    temporal(
-      checkpoint.updated_at_ms,
-      'temporal/checkpoint-updated',
-      'temporal-bound/checkpoint-updated',
-      `checkpoints/${subject}`,
-      ['checkpoints', ...subjectIdentity],
-      PERSISTED_INTEGER_BOUNDS.checkpoints.updated_at_ms,
-    )
   }
 
   for (const wait of rows.waits) {
@@ -660,30 +671,45 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     key: string
     identity: readonly string[]
     row: SqlRow
+    instantBounds: IntegerBounds
   }> = [
     ...rows.tasks.map((row) => {
       const taskId = text(row, 'task_id')
-      return { source: 'tasks', key: taskId, identity: ['tasks', taskId], row }
+      return {
+        source: 'tasks',
+        key: taskId,
+        identity: ['tasks', taskId],
+        row,
+        instantBounds: PERSISTED_INTEGER_BOUNDS.tasks.fence_at_ms,
+      }
     }),
     ...rows.runs.map((row) => {
       const runId = text(row, 'run_id')
-      return { source: 'runs', key: runId, identity: ['runs', runId], row }
+      return {
+        source: 'runs',
+        key: runId,
+        identity: ['runs', runId],
+        row,
+        instantBounds: PERSISTED_INTEGER_BOUNDS.runs.fence_at_ms,
+      }
     }),
     ...rows.waits.map((row) => ({
       source: 'waits',
       key: `${text(row, 'run_id')}/${text(row, 'step_name')}`,
       identity: ['waits', text(row, 'run_id'), text(row, 'step_name')],
       row,
+      instantBounds: PERSISTED_INTEGER_BOUNDS.waits.fence_at_ms,
     })),
     ...rows.events.map((row) => ({
       source: 'events',
       key: `${text(row, 'queue')}/${text(row, 'event_name')}`,
       identity: ['events', text(row, 'queue'), text(row, 'event_name')],
       row,
+      instantBounds: PERSISTED_INTEGER_BOUNDS.events.fence_at_ms,
     })),
   ]
   const instantsBySeed = new Map<string, Set<string>>()
-  for (const { source, key, identity, row } of provenanceRows) {
+  for (const { source, key, identity, row, instantBounds } of provenanceRows) {
     const subject = `${source}/${key}`
     const stamp = row.fence_stamp
     const instant = row.fence_at_ms
@@ -700,7 +726,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
     if (!hasStamp || !hasInstant) continue
     let validPair = true
     let seed: string | undefined
-    if (!validTemporal(instant)) {
+    if (!validTemporal(instant, instantBounds)) {
       add('provenance/instant-not-integer', subject, identity)
       validPair = false
     }
@@ -751,7 +777,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
 }
 
 /**
- * Portable invariant runner: every backend returns the same five shared-table
+ * Portable invariant runner: every backend returns the same six shared-table
  * snapshots, and all NULL-safe comparisons, joins, type checks and rendering
  * happen in TypeScript. No SQLite operator or function is part of the
  * conformance contract.
@@ -784,6 +810,7 @@ export async function engineInvariantFindings(raw: SqlExecutor): Promise<EngineI
     checkpoints: rows[2] ?? [],
     events: rows[3] ?? [],
     waits: rows[4] ?? [],
+    drivers: rows[5] ?? [],
   })
 }
 

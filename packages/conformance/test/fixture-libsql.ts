@@ -20,7 +20,7 @@ async function injectStorageCorruption(
       : corruption.invalidRepresentation === 'fractional-real'
         ? fractionalValue
         : new Uint8Array([112, 111, 105, 115, 111, 110])
-  let table: 'checkpoints' | 'runs' | 'tasks'
+  let table: 'checkpoints' | 'drivers' | 'events' | 'runs' | 'tasks' | 'waits'
   let where: string
   let identityArgs: string[]
   switch (corruption.table) {
@@ -38,6 +38,21 @@ async function injectStorageCorruption(
       table = 'checkpoints'
       where = 'task_id = ? AND checkpoint_name = ?'
       identityArgs = [corruption.taskId, corruption.checkpointName]
+      break
+    case 'events':
+      table = 'events'
+      where = 'queue = ? AND event_name = ?'
+      identityArgs = [corruption.queue, corruption.eventName]
+      break
+    case 'waits':
+      table = 'waits'
+      where = 'run_id = ? AND step_name = ?'
+      identityArgs = [corruption.runId, corruption.stepName]
+      break
+    case 'drivers':
+      table = 'drivers'
+      where = 'queue = ? AND driver_id = ?'
+      identityArgs = [corruption.queue, corruption.driverId]
       break
   }
   const [, observed] = await raw.batch(

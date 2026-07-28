@@ -1,4 +1,18 @@
-import type { Buggify, SchedulerStore, SqlExecutor, StoreAdmin } from '@durablerun/core'
+import type {
+  Buggify,
+  PersistedCounterFieldDescriptor,
+  PersistedTemporalFieldDescriptor,
+  SchedulerStore,
+  SqlExecutor,
+  StoreAdmin,
+} from '@durablerun/core'
+
+type PersistedNumericField = PersistedCounterFieldDescriptor | PersistedTemporalFieldDescriptor
+type PersistedNumericColumn<Table extends PersistedNumericField['table']> = Extract<
+  PersistedNumericField,
+  { readonly table: Table }
+>['column']
+type InvalidNumericRepresentation = 'fractional-real' | 'non-integer'
 
 /**
  * A deliberately invalid storage representation used by the generated poison
@@ -10,36 +24,42 @@ export type StorageCorruption =
   | {
       table: 'tasks'
       taskId: string
-      column:
-        | 'enqueue_at_ms'
-        | 'cancel_at_ms'
-        | 'fence_at_ms'
-        | 'attempts'
-        | 'max_attempts'
-        | 'infra_retries'
-      invalidRepresentation: 'fractional-real' | 'non-integer'
+      column: PersistedNumericColumn<'tasks'>
+      invalidRepresentation: InvalidNumericRepresentation
     }
   | {
       table: 'runs'
       runId: string
-      column:
-        | 'available_at_ms'
-        | 'claim_expires_at_ms'
-        | 'heartbeat_at_ms'
-        | 'created_at_ms'
-        | 'lease_ms'
-        | 'attempt'
-        | 'claim_gen'
-        | 'activated_gen'
-        | 'relaunch_count'
-      invalidRepresentation: 'fractional-real' | 'non-integer'
+      column: PersistedNumericColumn<'runs'>
+      invalidRepresentation: InvalidNumericRepresentation
     }
   | {
       table: 'checkpoints'
       taskId: string
       checkpointName: string
-      column: 'owner_attempt' | 'updated_at_ms'
-      invalidRepresentation: 'fractional-real' | 'non-integer'
+      column: PersistedNumericColumn<'checkpoints'>
+      invalidRepresentation: InvalidNumericRepresentation
+    }
+  | {
+      table: 'events'
+      queue: string
+      eventName: string
+      column: PersistedNumericColumn<'events'>
+      invalidRepresentation: InvalidNumericRepresentation
+    }
+  | {
+      table: 'waits'
+      runId: string
+      stepName: string
+      column: PersistedNumericColumn<'waits'>
+      invalidRepresentation: InvalidNumericRepresentation
+    }
+  | {
+      table: 'drivers'
+      queue: string
+      driverId: string
+      column: PersistedNumericColumn<'drivers'>
+      invalidRepresentation: InvalidNumericRepresentation
     }
   | {
       table: 'tasks'

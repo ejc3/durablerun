@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -41,9 +42,38 @@ describe('migrations', () => {
       },
     ])
     const names = (result?.rows ?? []).map((r) => r.name)
-    for (const t of ['meta', 'tasks', 'runs', 'checkpoints', 'events', 'waits']) {
+    for (const t of ['meta', 'tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers']) {
       expect(names).toContain(t)
     }
+  })
+
+  it('enrolls every migrated temporal column with exact nullability', async () => {
+    await admin.migrate()
+    const tables = [...new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => field.table))]
+    const results = await db.batch(
+      'test:temporal-schema',
+      tables.map((table) => ({ sql: `PRAGMA table_info(${table})`, args: [] })),
+      'read',
+    )
+    const observed = results
+      .flatMap((result, index) => {
+        const table = tables[index]
+        if (table === undefined) throw new Error(`missing temporal table at index ${index}`)
+        return result.rows
+          .filter((row) => typeof row.name === 'string' && row.name.endsWith('_ms'))
+          .map((row) => ({
+            field: `${table}.${String(row.name)}`,
+            nullable: row.notnull === 0 || row.notnull === 0n,
+          }))
+      })
+      .sort((left, right) => left.field.localeCompare(right.field))
+    const expected = PERSISTED_TEMPORAL_FIELDS.map(({ table, column, nullable }) => ({
+      field: `${table}.${column}`,
+      nullable,
+    })).sort((left, right) => left.field.localeCompare(right.field))
+
+    expect(observed).toEqual(expected)
+    expect(observed).toHaveLength(23)
   })
 })
 

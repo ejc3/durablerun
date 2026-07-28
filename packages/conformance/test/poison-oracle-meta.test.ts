@@ -1,6 +1,8 @@
 import {
   PERSISTED_COUNTER_FIELDS,
+  PERSISTED_TEMPORAL_FIELDS,
   type PersistedCounterFieldDescriptor,
+  type PersistedTemporalFieldDescriptor,
   type SqlExecutor,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
@@ -427,6 +429,23 @@ describe('poison/invariant mechanism self-tests', () => {
     return `task_id = 'poison-task' AND checkpoint_name = 'poison-checkpoint'`
   }
 
+  const temporalFieldPredicate = (field: PersistedTemporalFieldDescriptor): string => {
+    switch (field.table) {
+      case 'tasks':
+        return `task_id = 'poison-task'`
+      case 'runs':
+        return `run_id = 'poison-run'`
+      case 'checkpoints':
+        return `task_id = 'poison-task' AND checkpoint_name = 'poison-checkpoint'`
+      case 'events':
+        return `queue = 'q' AND event_name = 'protected-fired-event'`
+      case 'waits':
+        return `run_id = 'protected-run' AND step_name = '$await:protected'`
+      case 'drivers':
+        return `queue = 'q' AND driver_id = 'protected-driver'`
+    }
+  }
+
   for (const side of ['upper', 'lower'] as const) {
     for (const field of PERSISTED_COUNTER_FIELDS) {
       it(`catches ${side} ${field.id} worsening on the same subject`, async () => {
@@ -475,6 +494,58 @@ describe('poison/invariant mechanism self-tests', () => {
       expect(ids).toContain(`counter-bound-lower/${field.id}`)
     }
   })
+
+  it('owns storage and both boundary witnesses for every persisted temporal field', () => {
+    const ids = new Set(POISON_WITNESSES.map((candidate) => candidate.id))
+    for (const field of PERSISTED_TEMPORAL_FIELDS) {
+      expect(ids).toContain(`temporal/${field.id}`)
+      expect(ids).toContain(`temporal-bound-lower/${field.id}`)
+      expect(ids).toContain(`temporal-bound/${field.id}`)
+    }
+    const temporalWitnesses = POISON_WITNESSES.filter(
+      ({ id }) =>
+        id.startsWith('temporal/') ||
+        id.startsWith('temporal-bound-lower/') ||
+        id.startsWith('temporal-bound/'),
+    )
+    expect(temporalWitnesses).toHaveLength(69)
+    expect(
+      [
+        ...new Set(
+          temporalWitnesses.flatMap((candidate) =>
+            candidate.storageCorruption === undefined ? [] : [candidate.storageCorruption.table],
+          ),
+        ),
+      ].sort(),
+    ).toEqual(['checkpoints', 'drivers', 'events', 'runs', 'tasks', 'waits'])
+  })
+
+  for (const side of ['upper', 'lower'] as const) {
+    for (const field of PERSISTED_TEMPORAL_FIELDS) {
+      it(`catches ${side} ${field.id} temporal-bound worsening on the same subject`, async () => {
+        await expect(
+          runPoisonMatrixCase(
+            makeLibsqlFixture,
+            'emit-event',
+            witness(
+              side === 'upper' ? `temporal-bound/${field.id}` : `temporal-bound-lower/${field.id}`,
+            ),
+            {
+              afterInvoke: (raw) =>
+                write(raw, [
+                  {
+                    sql: `UPDATE ${field.table}
+                          SET ${field.column} = ${field.column} ${side === 'upper' ? '+' : '-'} 1
+                          WHERE ${temporalFieldPredicate(field)}`,
+                    args: [],
+                  },
+                ]),
+            },
+          ),
+        ).rejects.toThrow(/worsened/)
+      })
+    }
+  }
 
   it('classifies every counter boundary against every target arm', () => {
     const boundaries = POISON_WITNESSES.filter(

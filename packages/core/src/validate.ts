@@ -145,8 +145,8 @@ function refineIntegerBounds<const Domain extends string>(
 }
 
 /**
- * Semantic bounds for the persisted integer fields currently audited by the
- * engine and invariant library. This is not yet a complete timestamp inventory.
+ * Semantic bounds for every persisted integer field audited by the engine and
+ * invariant library.
  *
  * This is deliberately field-keyed instead of a menu of generic "count" or
  * "duration" bounds. A caller cannot accidentally validate infra_retries
@@ -159,7 +159,11 @@ export const PERSISTED_INTEGER_BOUNDS = Object.freeze({
     max_attempts: integerBounds('tasks.max_attempts', 1, MAX_COUNT),
     infra_retries: integerBounds('tasks.infra_retries', 0, INFRA_RETRY_CAP),
     enqueue_at_ms: integerBounds('tasks.enqueue_at_ms', 0, MAX_EPOCH_MS),
+    first_started_at_ms: integerBounds('tasks.first_started_at_ms', 0, MAX_EPOCH_MS),
     cancel_at_ms: integerBounds('tasks.cancel_at_ms', 0, MAX_EPOCH_MS),
+    cancelled_at_ms: integerBounds('tasks.cancelled_at_ms', 0, MAX_EPOCH_MS),
+    created_at_ms: integerBounds('tasks.created_at_ms', 0, MAX_EPOCH_MS),
+    fence_at_ms: integerBounds('tasks.fence_at_ms', 0, MAX_EPOCH_MS),
   }),
   runs: Object.freeze({
     attempt: integerBounds('runs.attempt', 1, MAX_RUN_ORDINAL),
@@ -170,11 +174,28 @@ export const PERSISTED_INTEGER_BOUNDS = Object.freeze({
     available_at_ms: integerBounds('runs.available_at_ms', 0, MAX_EPOCH_MS),
     claim_expires_at_ms: integerBounds('runs.claim_expires_at_ms', 0, MAX_EPOCH_MS),
     heartbeat_at_ms: integerBounds('runs.heartbeat_at_ms', 0, MAX_EPOCH_MS),
+    started_at_ms: integerBounds('runs.started_at_ms', 0, MAX_EPOCH_MS),
+    completed_at_ms: integerBounds('runs.completed_at_ms', 0, MAX_EPOCH_MS),
+    failed_at_ms: integerBounds('runs.failed_at_ms', 0, MAX_EPOCH_MS),
     created_at_ms: integerBounds('runs.created_at_ms', 0, MAX_EPOCH_MS),
+    fence_at_ms: integerBounds('runs.fence_at_ms', 0, MAX_EPOCH_MS),
   }),
   checkpoints: Object.freeze({
     owner_attempt: integerBounds('checkpoints.owner_attempt', 1, MAX_RUN_ORDINAL),
     updated_at_ms: integerBounds('checkpoints.updated_at_ms', 0, MAX_EPOCH_MS),
+  }),
+  events: Object.freeze({
+    emitted_at_ms: integerBounds('events.emitted_at_ms', 0, MAX_EPOCH_MS),
+    fence_at_ms: integerBounds('events.fence_at_ms', 0, MAX_EPOCH_MS),
+  }),
+  waits: Object.freeze({
+    timeout_at_ms: integerBounds('waits.timeout_at_ms', 0, MAX_EPOCH_MS),
+    created_at_ms: integerBounds('waits.created_at_ms', 0, MAX_EPOCH_MS),
+    fence_at_ms: integerBounds('waits.fence_at_ms', 0, MAX_EPOCH_MS),
+  }),
+  drivers: Object.freeze({
+    last_beat_ms: integerBounds('drivers.last_beat_ms', 0, MAX_EPOCH_MS),
+    expires_at_ms: integerBounds('drivers.expires_at_ms', 0, MAX_EPOCH_MS),
   }),
 })
 
@@ -300,6 +321,233 @@ export const PERSISTED_COUNTER_FIELDS = Object.freeze([
 
 export type PersistedCounterFieldDescriptor = (typeof PERSISTED_COUNTER_FIELDS)[number]
 export type PersistedCounterFieldId = PersistedCounterFieldDescriptor['id']
+
+type PersistedIntegerTable = keyof typeof PERSISTED_INTEGER_BOUNDS
+type PersistedIntegerColumn<Table extends PersistedIntegerTable> =
+  keyof (typeof PERSISTED_INTEGER_BOUNDS)[Table] & string
+
+/**
+ * Mint one temporal descriptor only when its table, column and nominal
+ * descriptor all name the same durable field. Coincidentally equal endpoints
+ * cannot satisfy this boundary for a different column.
+ */
+function persistedTemporalField<
+  const Id extends string,
+  const Table extends PersistedIntegerTable,
+  const Column extends PersistedIntegerColumn<Table>,
+  const Kind extends 'epoch-ms' | 'duration-ms',
+  const Nullable extends boolean,
+>(
+  id: Id,
+  table: Table,
+  column: Column,
+  bounds: (typeof PERSISTED_INTEGER_BOUNDS)[Table][Column] &
+    BrandedIntegerBounds<`${Table}.${Column}`>,
+  kind: Kind,
+  nullable: Nullable,
+) {
+  return Object.freeze({ id, table, column, bounds, kind, nullable })
+}
+
+/**
+ * The complete persisted temporal inventory: 23 fields across all six
+ * scheduler tables. It is the single generation source for invariant
+ * conditions, portable snapshots, corruption witnesses and schema enrollment.
+ *
+ * `kind` distinguishes absolute database instants from relative durations;
+ * `nullable` records the migrated schema contract rather than whichever
+ * lifecycle state happens to populate a field.
+ */
+export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
+  persistedTemporalField(
+    'task-enqueue',
+    'tasks',
+    'enqueue_at_ms',
+    PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms,
+    'epoch-ms',
+    false,
+  ),
+  persistedTemporalField(
+    'task-first-started',
+    'tasks',
+    'first_started_at_ms',
+    PERSISTED_INTEGER_BOUNDS.tasks.first_started_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'task-cancel',
+    'tasks',
+    'cancel_at_ms',
+    PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'task-cancelled',
+    'tasks',
+    'cancelled_at_ms',
+    PERSISTED_INTEGER_BOUNDS.tasks.cancelled_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'task-created',
+    'tasks',
+    'created_at_ms',
+    PERSISTED_INTEGER_BOUNDS.tasks.created_at_ms,
+    'epoch-ms',
+    false,
+  ),
+  persistedTemporalField(
+    'task-fence',
+    'tasks',
+    'fence_at_ms',
+    PERSISTED_INTEGER_BOUNDS.tasks.fence_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-lease',
+    'runs',
+    'lease_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.lease_ms,
+    'duration-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-claim-expires',
+    'runs',
+    'claim_expires_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-heartbeat',
+    'runs',
+    'heartbeat_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.heartbeat_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-available',
+    'runs',
+    'available_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.available_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-started',
+    'runs',
+    'started_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.started_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-completed',
+    'runs',
+    'completed_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.completed_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-failed',
+    'runs',
+    'failed_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.failed_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'run-created',
+    'runs',
+    'created_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.created_at_ms,
+    'epoch-ms',
+    false,
+  ),
+  persistedTemporalField(
+    'run-fence',
+    'runs',
+    'fence_at_ms',
+    PERSISTED_INTEGER_BOUNDS.runs.fence_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'checkpoint-updated',
+    'checkpoints',
+    'updated_at_ms',
+    PERSISTED_INTEGER_BOUNDS.checkpoints.updated_at_ms,
+    'epoch-ms',
+    false,
+  ),
+  persistedTemporalField(
+    'event-emitted',
+    'events',
+    'emitted_at_ms',
+    PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'event-fence',
+    'events',
+    'fence_at_ms',
+    PERSISTED_INTEGER_BOUNDS.events.fence_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'wait-timeout',
+    'waits',
+    'timeout_at_ms',
+    PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'wait-created',
+    'waits',
+    'created_at_ms',
+    PERSISTED_INTEGER_BOUNDS.waits.created_at_ms,
+    'epoch-ms',
+    false,
+  ),
+  persistedTemporalField(
+    'wait-fence',
+    'waits',
+    'fence_at_ms',
+    PERSISTED_INTEGER_BOUNDS.waits.fence_at_ms,
+    'epoch-ms',
+    true,
+  ),
+  persistedTemporalField(
+    'driver-last-beat',
+    'drivers',
+    'last_beat_ms',
+    PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms,
+    'epoch-ms',
+    false,
+  ),
+  persistedTemporalField(
+    'driver-expires',
+    'drivers',
+    'expires_at_ms',
+    PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms,
+    'epoch-ms',
+    false,
+  ),
+] as const)
+
+export type PersistedTemporalFieldDescriptor = (typeof PERSISTED_TEMPORAL_FIELDS)[number]
+export type PersistedTemporalFieldId = PersistedTemporalFieldDescriptor['id']
+export type PersistedTemporalTable = PersistedTemporalFieldDescriptor['table']
 
 /** Numeric results computed from several persisted sources, never one column. */
 export const DERIVED_INTEGER_BOUNDS = Object.freeze({

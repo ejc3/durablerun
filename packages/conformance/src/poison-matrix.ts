@@ -2,8 +2,10 @@ import {
   type IntegerBounds,
   PERSISTED_COUNTER_FIELDS,
   PERSISTED_INTEGER_BOUNDS,
+  PERSISTED_TEMPORAL_FIELDS,
   type PersistedCounterFieldDescriptor,
   type PersistedCounterFieldId,
+  type PersistedTemporalFieldDescriptor,
   type SchedulerStore,
   type SqlBatchMode,
   type SqlExecutor,
@@ -340,6 +342,93 @@ function counterStorageCorruption(
   }
 }
 
+function temporalSeedStatements(field: PersistedTemporalFieldDescriptor): readonly SqlStatement[] {
+  return field.table === 'checkpoints' ? [checkpoint(TASK, Q, RUN)] : []
+}
+
+function temporalValueStatement(
+  field: PersistedTemporalFieldDescriptor,
+  value: number,
+): SqlStatement {
+  switch (field.table) {
+    case 'tasks':
+      return sql(`UPDATE tasks SET ${field.column} = ? WHERE task_id = ?`, [value, TASK])
+    case 'runs':
+      return sql(`UPDATE runs SET ${field.column} = ? WHERE run_id = ?`, [value, RUN])
+    case 'checkpoints':
+      return checkpoint(TASK, Q, RUN, value)
+    case 'events':
+      return sql(`UPDATE events SET ${field.column} = ? WHERE queue = ? AND event_name = ?`, [
+        value,
+        Q,
+        PROTECTED_EVENT,
+      ])
+    case 'waits':
+      return sql(`UPDATE waits SET ${field.column} = ? WHERE run_id = ? AND step_name = ?`, [
+        value,
+        PROTECTED_RUN,
+        PROTECTED_STEP,
+      ])
+    case 'drivers':
+      return sql(`UPDATE drivers SET ${field.column} = ? WHERE queue = ? AND driver_id = ?`, [
+        value,
+        Q,
+        PROTECTED_DRIVER,
+      ])
+  }
+}
+
+function temporalStorageCorruption(field: PersistedTemporalFieldDescriptor): StorageCorruption {
+  switch (field.table) {
+    case 'tasks':
+      return {
+        table: 'tasks',
+        taskId: TASK,
+        column: field.column,
+        invalidRepresentation: 'non-integer',
+      }
+    case 'runs':
+      return {
+        table: 'runs',
+        runId: RUN,
+        column: field.column,
+        invalidRepresentation: 'non-integer',
+      }
+    case 'checkpoints':
+      return {
+        table: 'checkpoints',
+        taskId: TASK,
+        checkpointName: 'poison-checkpoint',
+        column: field.column,
+        invalidRepresentation: 'non-integer',
+      }
+    case 'events':
+      return {
+        table: 'events',
+        queue: Q,
+        eventName: PROTECTED_EVENT,
+        column: field.column,
+        invalidRepresentation: 'non-integer',
+      }
+    case 'waits':
+      return {
+        table: 'waits',
+        runId: PROTECTED_RUN,
+        stepName: PROTECTED_STEP,
+        column: field.column,
+        invalidRepresentation: 'non-integer',
+      }
+    case 'drivers':
+      return {
+        table: 'drivers',
+        queue: Q,
+        driverId: PROTECTED_DRIVER,
+        column: field.column,
+        invalidRepresentation: 'non-integer',
+      }
+  }
+}
+
 const event = (payload: string | null): SqlStatement =>
   sql(
     `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
@@ -588,167 +677,31 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
       event('{"got":2}'),
     ],
   },
-  ...(
-    [
-      [
-        'run-available',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'available_at_ms',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-claim-expires',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'claim_expires_at_ms',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-heartbeat',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'heartbeat_at_ms',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-created',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'created_at_ms',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'run-lease',
-        {
-          table: 'runs',
-          runId: RUN,
-          column: 'lease_ms',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'task-enqueue',
-        {
-          table: 'tasks',
-          taskId: TASK,
-          column: 'enqueue_at_ms',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-      [
-        'task-cancel',
-        {
-          table: 'tasks',
-          taskId: TASK,
-          column: 'cancel_at_ms',
-          invalidRepresentation: 'non-integer',
-        },
-      ],
-    ] as const
-  ).map(
-    ([id, storageCorruption]): PoisonWitness => ({
-      id: `temporal/${id}`,
-      covers: [`temporal/${id}` as EngineInvariantConditionId],
-      statements: [],
-      storageCorruption,
+  // Three generated witnesses per temporal descriptor prove the full
+  // storage/lower/upper surface. The duplicated hand-maintained timestamp
+  // lists that previously covered only eight fields no longer exist.
+  ...PERSISTED_TEMPORAL_FIELDS.map(
+    (field): PoisonWitness => ({
+      id: `temporal/${field.id}`,
+      covers: [`temporal/${field.id}` as EngineInvariantConditionId],
+      statements: temporalSeedStatements(field),
+      storageCorruption: temporalStorageCorruption(field),
     }),
   ),
-  {
-    id: 'temporal/checkpoint-updated',
-    covers: ['temporal/checkpoint-updated'],
-    statements: [checkpoint(TASK, Q, RUN)],
-    storageCorruption: {
-      table: 'checkpoints',
-      taskId: TASK,
-      checkpointName: 'poison-checkpoint',
-      column: 'updated_at_ms',
-      invalidRepresentation: 'non-integer',
-    },
-  },
-  ...(
-    [
-      [
-        'run-available',
-        'runs',
-        'available_at_ms',
-        RUN,
-        PERSISTED_INTEGER_BOUNDS.runs.available_at_ms.max,
-      ],
-      [
-        'run-claim-expires',
-        'runs',
-        'claim_expires_at_ms',
-        RUN,
-        PERSISTED_INTEGER_BOUNDS.runs.claim_expires_at_ms.max,
-      ],
-      [
-        'run-heartbeat',
-        'runs',
-        'heartbeat_at_ms',
-        RUN,
-        PERSISTED_INTEGER_BOUNDS.runs.heartbeat_at_ms.max,
-      ],
-      [
-        'run-created',
-        'runs',
-        'created_at_ms',
-        RUN,
-        PERSISTED_INTEGER_BOUNDS.runs.created_at_ms.max,
-      ],
-      ['run-lease', 'runs', 'lease_ms', RUN, PERSISTED_INTEGER_BOUNDS.runs.lease_ms.max],
-      [
-        'task-enqueue',
-        'tasks',
-        'enqueue_at_ms',
-        TASK,
-        PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms.max,
-      ],
-      [
-        'task-cancel',
-        'tasks',
-        'cancel_at_ms',
-        TASK,
-        PERSISTED_INTEGER_BOUNDS.tasks.cancel_at_ms.max,
-      ],
-    ] as const
-  ).map(
-    ([id, table, column, rowId, maximum]): PoisonWitness => ({
-      id: `temporal-bound/${id}`,
-      covers: [`temporal-bound/${id}` as EngineInvariantConditionId],
-      statements: [
-        sql(
-          `UPDATE ${table} SET ${column} = ? WHERE ${table === 'runs' ? 'run_id' : 'task_id'} = ?`,
-          [maximum + 1, rowId],
-        ),
-      ],
+  ...PERSISTED_TEMPORAL_FIELDS.map(
+    (field): PoisonWitness => ({
+      id: `temporal-bound-lower/${field.id}`,
+      covers: [`temporal-bound/${field.id}` as EngineInvariantConditionId],
+      statements: [temporalValueStatement(field, field.bounds.min - 1)],
     }),
   ),
-  {
-    id: 'temporal-bound/run-lease-zero',
-    covers: ['temporal-bound/run-lease'],
-    statements: [sql(`UPDATE runs SET lease_ms = 0 WHERE run_id = ?`, [RUN])],
-  },
-  {
-    id: 'temporal-bound/checkpoint-updated',
-    covers: ['temporal-bound/checkpoint-updated'],
-    statements: [
-      checkpoint(TASK, Q, RUN),
-      sql(
-        `UPDATE checkpoints SET updated_at_ms = ?
-         WHERE task_id = ? AND checkpoint_name = 'poison-checkpoint'`,
-        [PERSISTED_INTEGER_BOUNDS.checkpoints.updated_at_ms.max + 1, TASK],
-      ),
-    ],
-  },
+  ...PERSISTED_TEMPORAL_FIELDS.map(
+    (field): PoisonWitness => ({
+      id: `temporal-bound/${field.id}`,
+      covers: [`temporal-bound/${field.id}` as EngineInvariantConditionId],
+      statements: [temporalValueStatement(field, field.bounds.max + 1)],
+    }),
+  ),
   ...PERSISTED_COUNTER_FIELDS.map(
     (field): PoisonWitness => ({
       id: `counter/${field.id}`,
@@ -1895,7 +1848,49 @@ function counterBoundSeverity(
   return integerBoundSeverity(row?.[field.column], field.bounds)
 }
 
+function temporalRow(
+  snapshot: ProtocolSnapshot,
+  finding: EngineInvariantFinding,
+  field: PersistedTemporalFieldDescriptor,
+): SqlRow | undefined {
+  const [table, first, second] = finding.subjectIdentity
+  if (table !== field.table || first === undefined) return undefined
+  switch (field.table) {
+    case 'tasks':
+    case 'runs':
+      return rowById(snapshot, field.table, first)
+    case 'checkpoints':
+      return second === undefined ? undefined : checkpointByName(snapshot, first, second)
+    case 'events':
+      return second === undefined
+        ? undefined
+        : snapshot.events.find((row) => row.queue === first && row.event_name === second)
+    case 'waits':
+      return second === undefined
+        ? undefined
+        : snapshot.waits.find((row) => row.run_id === first && row.step_name === second)
+    case 'drivers':
+      return second === undefined
+        ? undefined
+        : snapshot.drivers.find((row) => row.queue === first && row.driver_id === second)
+  }
+}
+
+function temporalBoundSeverity(
+  finding: EngineInvariantFinding,
+  snapshot: ProtocolSnapshot,
+): bigint | undefined {
+  if (!finding.conditionId.startsWith('temporal-bound/')) return undefined
+  const fieldId = finding.conditionId.slice('temporal-bound/'.length)
+  const field = PERSISTED_TEMPORAL_FIELDS.find((candidate) => candidate.id === fieldId)
+  if (!field) return undefined
+  const row = temporalRow(snapshot, finding, field)
+  return integerBoundSeverity(row?.[field.column], field.bounds)
+}
+
 function findingSeverity(finding: EngineInvariantFinding, snapshot: ProtocolSnapshot): bigint {
+  const temporalSeverity = temporalBoundSeverity(finding, snapshot)
+  if (temporalSeverity !== undefined) return temporalSeverity
   const counterSeverity = counterBoundSeverity(finding, snapshot)
   if (counterSeverity !== undefined) return counterSeverity
   const primarySubject = finding.subjectIdentity[0] ?? finding.subject

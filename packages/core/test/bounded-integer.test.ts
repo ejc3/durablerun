@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   DERIVED_INTEGER_BOUNDS,
+  MAX_DURATION_MS,
+  MAX_EPOCH_MS,
   MAX_RUN_ORDINAL,
   PERSISTED_INTEGER_BOUNDS,
+  PERSISTED_TEMPORAL_FIELDS,
   decodeBoundedInteger,
   requireDerivedInteger,
   requireRunOrdinal,
@@ -63,6 +66,23 @@ describe('decodeBoundedInteger', () => {
     const wrongField: typeof PERSISTED_INTEGER_BOUNDS.runs.claim_gen =
       PERSISTED_INTEGER_BOUNDS.tasks.max_attempts
     expect(claimBounds).not.toBe(wrongField)
+  })
+
+  it('pins the complete nominal persisted-temporal inventory', () => {
+    expect(PERSISTED_TEMPORAL_FIELDS).toHaveLength(23)
+    expect(Object.isFrozen(PERSISTED_TEMPORAL_FIELDS)).toBe(true)
+    expect(new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => field.id))).toHaveProperty('size', 23)
+    expect(
+      new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => `${field.table}.${field.column}`)),
+    ).toHaveProperty('size', 23)
+    for (const field of PERSISTED_TEMPORAL_FIELDS) {
+      expect(Object.isFrozen(field)).toBe(true)
+      expect(field.bounds.field).toBe(`${field.table}.${field.column}`)
+      expect(field.bounds.min).toBe(field.kind === 'duration-ms' ? 1 : 0)
+      expect(field.bounds.max).toBe(field.kind === 'duration-ms' ? MAX_DURATION_MS : MAX_EPOCH_MS)
+    }
+    expect(PERSISTED_TEMPORAL_FIELDS.filter((field) => field.nullable)).toHaveLength(16)
+    expect(PERSISTED_TEMPORAL_FIELDS.filter((field) => !field.nullable)).toHaveLength(7)
   })
 
   it('keeps persisted descriptors out of the derived-result decoder', () => {
