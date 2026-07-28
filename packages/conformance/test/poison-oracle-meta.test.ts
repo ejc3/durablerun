@@ -493,8 +493,8 @@ describe('poison/invariant mechanism self-tests', () => {
     expect(
       POISON_TARGET_CASES,
       'mutation-verdict:behavior:poison-targetability-inventory',
-    ).toHaveLength(49)
-    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(27)
+    ).toHaveLength(50)
+    expect(POISON_UNREACHABLE_TARGETS).toHaveLength(26)
   })
 
   it('pins every unreachable counter target and its reason', () => {
@@ -509,7 +509,6 @@ describe('poison/invariant mechanism self-tests', () => {
       'counter-bound/run-activated-gen/claim=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:lost-launch=generation-classification-needs-another-invalid-field',
       'counter-bound/run-activated-gen/sweep:claim-timeout=generation-classification-needs-another-invalid-field',
-      'counter-bound/run-relaunch-count/sweep:lost-launch=downstream-cas-still-refuses-value',
       'counter-bound/checkpoint-owner-attempt/claim=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:lost-launch=transition-does-not-read-field',
       'counter-bound/checkpoint-owner-attempt/sweep:claim-timeout=transition-does-not-read-field',
@@ -568,6 +567,88 @@ describe('poison/invariant mechanism self-tests', () => {
     )
 
     expect(actual, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual(expected)
+  })
+
+  it('rejects a claim target that no longer sorts before its healthy trigger', async () => {
+    await expect(
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/claim-pending'),
+        {
+          beforeSnapshot: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs SET available_at_ms = 999997
+                      WHERE run_id = 'label-trigger-run'`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    ).rejects.toThrow(/poison does not sort before the healthy trigger/)
+  })
+
+  it('rejects a sweep target that no longer expires before its healthy trigger', async () => {
+    await expect(
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/sweep-lost-launch'),
+        {
+          beforeSnapshot: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs SET claim_expires_at_ms = 999997
+                      WHERE run_id = 'label-trigger-run'`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    ).rejects.toThrow(/poison does not sort before the healthy trigger/)
+  })
+
+  it('rejects a target with an unrelated eligibility refusal', async () => {
+    await expect(
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/claim-pending'),
+        {
+          beforeSnapshot: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs SET activated_gen = claim_gen + 1
+                      WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    ).rejects.toThrow(/generation tuple has an unrelated claim refusal/)
+  })
+
+  it('seeds a sleeping claim target from a prior activated generation', async () => {
+    let generation: unknown
+    await runPoisonTargetCase(
+      makeLibsqlFixture,
+      target('counter-bound/task-max-attempts/claim-sleeping'),
+      {
+        beforeSnapshot: async (raw) => {
+          const [rows] = await raw.batch(
+            'oracle-meta',
+            [
+              {
+                sql: `SELECT claim_gen, activated_gen FROM runs
+                      WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+            ],
+            'read',
+          )
+          generation = rows?.rows[0]
+        },
+      },
+    )
+    expect(generation).toMatchObject({ claim_gen: 1, activated_gen: 1 })
   })
 
   it('executes the claim-pending target profile', async () => {

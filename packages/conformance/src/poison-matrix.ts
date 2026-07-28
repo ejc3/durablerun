@@ -102,7 +102,6 @@ export type PoisonTargetability =
       readonly reason:
         | 'counter-relation-needs-another-invalid-field'
         | 'generation-classification-needs-another-invalid-field'
-        | 'downstream-cas-still-refuses-value'
         | 'transition-does-not-read-field'
     }
 
@@ -221,6 +220,7 @@ const TARGETABLE_COUNTER_BOUNDARIES = Object.freeze({
     'run-claim-gen/upper',
     'run-activated-gen/lower',
     'run-relaunch-count/lower',
+    'run-relaunch-count/upper',
   ]),
   'sweep:claim-timeout': new Set([
     'task-attempts/lower',
@@ -259,9 +259,6 @@ function unreachableCounterReason(
   arm: PoisonTargetArm,
 ): Extract<PoisonTargetability, { kind: 'unreachable' }>['reason'] {
   if (fieldId === 'checkpoint-owner-attempt') return 'transition-does-not-read-field'
-  if (fieldId === 'run-relaunch-count' && side === 'upper' && arm === 'sweep:lost-launch') {
-    return 'downstream-cas-still-refuses-value'
-  }
   if (fieldId === 'run-claim-gen' || fieldId === 'run-activated-gen') {
     return 'generation-classification-needs-another-invalid-field'
   }
@@ -1184,11 +1181,12 @@ async function preparePoisonTarget(
   profile: PoisonTargetProfile,
   companions: CounterSeedOverrides,
 ): Promise<void> {
-  const claiming = profile === 'claim-pending' || profile === 'claim-sleeping'
+  const claimCandidate = profile === 'claim-pending' || profile === 'claim-sleeping'
+  const previouslyActivated = profile === 'claim-sleeping' || profile === 'sweep-claim-timeout'
   const state =
     profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'
-  const claimGen = claiming ? 0 : 1
-  const activatedGen = profile === 'sweep-claim-timeout' ? claimGen : 0
+  const claimGen = profile === 'claim-pending' ? 0 : 1
+  const activatedGen = previouslyActivated ? claimGen : 0
 
   await raw.batch(
     'poison:target-profile',
@@ -1208,14 +1206,14 @@ async function preparePoisonTarget(
         [
           state,
           1,
-          claiming ? null : TOKEN,
+          claimCandidate ? null : TOKEN,
           claimGen,
           activatedGen,
           0,
-          claiming ? null : 60_000,
-          claiming ? null : NOW - 2,
-          claiming ? null : NOW - 60_000,
-          claiming ? NOW - 2 : null,
+          claimCandidate ? null : 60_000,
+          claimCandidate ? null : NOW - 2,
+          claimCandidate ? null : NOW - 60_000,
+          claimCandidate ? NOW - 2 : null,
           RUN,
         ],
       ),
@@ -2065,24 +2063,82 @@ function outcomeItems(outcomes: readonly PoisonInvocationOutcome[]): Record<stri
   )
 }
 
+function counterValue(before: ProtocolSnapshot, field: PersistedCounterFieldDescriptor): unknown {
+  if (field.table === 'tasks') return rowById(before, 'tasks', TASK)?.[field.column]
+  if (field.table === 'runs') return rowById(before, 'runs', RUN)?.[field.column]
+  return undefined
+}
+
+function exactWithin(value: unknown, bounds: IntegerBounds): boolean {
+  const exact = exactInteger(value)
+  return exact !== undefined && exact >= BigInt(bounds.min) && exact <= BigInt(bounds.max)
+}
+
+function orderedBefore(
+  leftTime: bigint,
+  leftId: string,
+  rightTime: bigint,
+  rightId: string,
+): boolean {
+  return leftTime < rightTime || (leftTime === rightTime && leftId < rightId)
+}
+
 function declaredTargetErrors(
   profile: PoisonTargetProfile,
   before: ProtocolSnapshot,
   witness: PoisonWitness,
+  requireHealthyOrdering: boolean,
 ): string[] {
   const errors: string[] = []
   const task = rowById(before, 'tasks', TASK)
   const run = rowById(before, 'runs', RUN)
+  const healthyRun = rowById(before, 'runs', TRIGGER_RUN)
   const expectedState =
     profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'
   if (task?.state !== expectedState || run?.state !== expectedState) {
     errors.push(`declared ${profile} lifecycle was not applied`)
+  }
+  if (
+    task?.queue !== Q ||
+    run?.queue !== Q ||
+    run?.task_id !== TASK ||
+    liveRuns(before, TASK).length !== 1
+  ) {
+    errors.push(`declared ${profile} owner closure is not uniquely eligible`)
+  }
+  const cancelAt = task?.cancel_at_ms
+  if (
+    cancelAt !== null &&
+    (exactInteger(cancelAt) === undefined || (exactInteger(cancelAt) as bigint) <= BigInt(NOW))
+  ) {
+    errors.push(`declared ${profile} task is already cancellation-due`)
   }
 
   const attempt = exactInteger(run?.attempt)
   const attempts = exactInteger(task?.attempts)
   const maximum = exactInteger(task?.max_attempts)
   const infra = exactInteger(task?.infra_retries)
+  const claimGen = exactInteger(run?.claim_gen)
+  const activatedGen = exactInteger(run?.activated_gen)
+  const targetFieldId = witness.counterBoundary?.fieldId ?? witness.targetNonExactField
+  for (const field of PERSISTED_COUNTER_FIELDS) {
+    if (field.table === 'checkpoints' || field.id === targetFieldId) continue
+    if (!exactWithin(counterValue(before, field), field.bounds)) {
+      errors.push(`declared ${profile} has unrelated invalid counter ${field.id}`)
+    }
+  }
+  if (witness.targetNonExactField) {
+    const field = persistedCounterField(witness.targetNonExactField)
+    const value = counterValue(before, field)
+    if (
+      typeof value !== 'number' ||
+      Number.isInteger(value) ||
+      value < field.bounds.min ||
+      value > field.bounds.max
+    ) {
+      errors.push(`declared ${profile} fractional target is not in-range REAL data`)
+    }
+  }
   const allowsNonExactMaximum = witness.targetNonExactField === 'task-max-attempts'
   const allowsExhaustedBudget = witness.covers.includes('attempts/at-max-with-live-run')
   const allowsAccountingMismatch = witness.covers.includes('accounting/live-run-not-next')
@@ -2096,6 +2152,18 @@ function declaredTargetErrors(
   ) {
     errors.push(`declared ${profile} counter companions do not isolate one boundary`)
   }
+  if (
+    !witness.covers.includes('accounting/below-top-minus-one') &&
+    attempt !== undefined &&
+    before.runs.some(
+      (candidate) =>
+        candidate.task_id === TASK &&
+        exactInteger(candidate.attempt) !== undefined &&
+        (exactInteger(candidate.attempt) as bigint) > attempt,
+    )
+  ) {
+    errors.push(`declared ${profile} has an unrelated higher owned ordinal`)
+  }
 
   if (profile === 'claim-pending' || profile === 'claim-sleeping') {
     const available = exactInteger(run?.available_at_ms)
@@ -2107,12 +2175,42 @@ function declaredTargetErrors(
     ) {
       errors.push(`declared ${profile} run is not a due unclaimed candidate`)
     }
+    if (
+      claimGen === undefined ||
+      activatedGen === undefined ||
+      activatedGen > claimGen ||
+      (targetFieldId !== 'run-claim-gen' &&
+        claimGen >= BigInt(PERSISTED_INTEGER_BOUNDS.runs.claim_gen.max))
+    ) {
+      errors.push(`declared ${profile} generation tuple has an unrelated claim refusal`)
+    }
+    if (run?.wake_step === null && typeof run.wake_event === 'string') {
+      const matchingWaits = before.waits.filter(
+        (wait) =>
+          wait.run_id === RUN &&
+          wait.queue === Q &&
+          wait.task_id === TASK &&
+          wait.event_name === run.wake_event &&
+          wait.status === 'waiting' &&
+          wait.timeout_at_ms === run.available_at_ms,
+      )
+      if (matchingWaits.length > 1) {
+        errors.push(`declared ${profile} has an unrelated ambiguous wait registration`)
+      }
+    }
+    const healthyAvailable = exactInteger(healthyRun?.available_at_ms)
+    if (
+      requireHealthyOrdering &&
+      (available === undefined ||
+        healthyAvailable === undefined ||
+        !orderedBefore(available, RUN, healthyAvailable, TRIGGER_RUN))
+    ) {
+      errors.push(`declared ${profile} poison does not sort before the healthy trigger`)
+    }
     return errors
   }
 
   const expires = exactInteger(run?.claim_expires_at_ms)
-  const claimGen = exactInteger(run?.claim_gen)
-  const activatedGen = exactInteger(run?.activated_gen)
   if (
     run?.claimed_by !== TOKEN ||
     expires === undefined ||
@@ -2128,6 +2226,19 @@ function declaredTargetErrors(
   }
   if (profile === 'sweep-claim-timeout' && activatedGen !== claimGen) {
     errors.push('declared claim-timeout target is not post-activation')
+  }
+  if (
+    targetFieldId !== 'run-claim-gen' &&
+    (claimGen < 1n || claimGen > BigInt(PERSISTED_INTEGER_BOUNDS.runs.claim_gen.max))
+  ) {
+    errors.push(`declared ${profile} claim generation has an unrelated sweep refusal`)
+  }
+  const healthyExpires = exactInteger(healthyRun?.claim_expires_at_ms)
+  if (
+    requireHealthyOrdering &&
+    (healthyExpires === undefined || !orderedBefore(expires, RUN, healthyExpires, TRIGGER_RUN))
+  ) {
+    errors.push(`declared ${profile} poison does not sort before the healthy trigger`)
   }
   return errors
 }
@@ -2486,7 +2597,12 @@ export async function runPoisonMatrixCase(
     }
     const before = await snapshot(f.raw)
     if (options.targetProfile) {
-      const targetErrors = declaredTargetErrors(options.targetProfile, before, witness)
+      const targetErrors = declaredTargetErrors(
+        options.targetProfile,
+        before,
+        witness,
+        options.healthyTrigger !== false,
+      )
       if (targetErrors.length > 0) {
         throw new Error(`${caseName}: ${targetErrors.join('; ')}`)
       }

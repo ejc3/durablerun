@@ -15,6 +15,27 @@ import { engineInvariantViolations } from './invariants.js'
 
 const Q = 'q'
 
+function interposeAfterBatch(
+  delegate: SqlExecutor,
+  targetLabel: string,
+  after: () => Promise<void>,
+): { executor: SqlExecutor; fired: () => boolean } {
+  let didFire = false
+  return {
+    executor: {
+      batch: async (label, statements, mode) => {
+        const results = await delegate.batch(label, statements, mode)
+        if (!didFire && label === targetLabel) {
+          didFire = true
+          await after()
+        }
+        return results
+      },
+    },
+    fired: () => didFire,
+  }
+}
+
 async function snapshot(f: StoreFixture, taskId: string): Promise<unknown> {
   const [tasks, runs] = await f.raw.batch(
     'snap',
@@ -450,6 +471,24 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toBeNull()
         expect(await snapshot(f, spawned.taskId)).toEqual(before)
       })
+
+      it('does not activate a claim whose live run is not the next accounted ordinal', async () => {
+        const spawned = await f.store.spawn(Q, 'invalid-accounting-at-activation', '{}')
+        const run = await claimOne('tick-invalid-accounting')
+        await f.raw.batch('corrupt-accounting-before-activation', [
+          {
+            sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+            args: [run.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+          'mutation-verdict:behavior:activate-requires-current-run-accounting',
+        ).toBeNull()
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
     })
 
     describe('heartbeat', () => {
@@ -670,6 +709,56 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           attempts: 0,
           infra_retries: 1,
         })
+      })
+
+      async function sweepAfterAccountingCorruption(activated: boolean) {
+        const classification = activated ? 'claim-timeout' : 'lost-launch'
+        const spawned = await f.store.spawn(Q, `${classification}-cas-recheck`, '{}')
+        const run = await claimOne(`tick-${classification}-cas-recheck`)
+        if (activated) {
+          expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        }
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        let afterCorruption: unknown
+        const interposed = interposeAfterBatch(f.raw, 'sweep:scan', async () => {
+          await f.raw.batch('corrupt-accounting-after-sweep-scan', [
+            {
+              sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+              args: [run.taskId],
+            },
+          ])
+          afterCorruption = await snapshot(f, spawned.taskId)
+        })
+        const swept = await f.storeOver(interposed.executor).sweep(Q, 1)
+        return {
+          swept,
+          interposed: interposed.fired(),
+          afterCorruption,
+          after: await snapshot(f, spawned.taskId),
+        }
+      }
+
+      it('rechecks lost-launch accounting after the advisory sweep scan', async () => {
+        const observed = await sweepAfterAccountingCorruption(false)
+        expect(
+          observed.swept,
+          'mutation-verdict:behavior:sweep-lost-launch-rechecks-accounting',
+        ).toEqual([])
+        expect(observed.interposed).toBe(true)
+        expect(observed.afterCorruption).toBeDefined()
+        expect(observed.after).toEqual(observed.afterCorruption)
+      })
+
+      it('rechecks claim-timeout accounting after the advisory sweep scan', async () => {
+        const observed = await sweepAfterAccountingCorruption(true)
+        expect(
+          observed.swept,
+          'mutation-verdict:behavior:sweep-claim-timeout-rechecks-accounting',
+        ).toEqual([])
+        expect(observed.interposed).toBe(true)
+        expect(observed.afterCorruption).toBeDefined()
+        expect(observed.after).toEqual(observed.afterCorruption)
       })
 
       it('refuses a corrupt stored attempt without partially sweeping the expired claim', async () => {
@@ -1212,6 +1301,49 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
         expect(await snapshot(f, run.taskId)).toEqual(before)
         expect(await f.store.getCheckpoints(Q, run.taskId, MAX_RUN_ORDINAL)).toEqual([])
+      })
+
+      it('rejects an out-of-range stored owner attempt before extending the lease', async () => {
+        await f.store.spawn(Q, 'overflowed-checkpoint-owner', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.raw.batch('corrupt-checkpoint-owner-bound', [
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [MAX_RUN_ORDINAL + 1, run.runId],
+          },
+        ])
+        const before = await snapshot(f, run.taskId)
+
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'checkpoint-write-rejects-owner-attempt-overflow' },
+          /setCheckpoint/,
+          () =>
+            f.store.setCheckpoint(
+              Q,
+              run.taskId,
+              run.runId,
+              run.claimToken,
+              'overflowed-owner',
+              '{}',
+              60,
+            ),
+        )
+
+        expect(await snapshot(f, run.taskId)).toEqual(before)
+        const [checkpoints] = await f.raw.batch(
+          'checkpoint-owner-bound:assert',
+          [
+            {
+              sql: `SELECT COUNT(*) AS n FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = 'overflowed-owner'`,
+              args: [run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(Number(checkpoints?.rows[0]?.n)).toBe(0)
       })
 
       it('visibility filters by owner attempt', async () => {
