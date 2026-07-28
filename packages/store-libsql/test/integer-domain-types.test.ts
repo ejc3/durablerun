@@ -1,4 +1,8 @@
-import { DERIVED_INTEGER_BOUNDS, PERSISTED_INTEGER_BOUNDS } from '@durablerun/core'
+import {
+  DERIVED_INTEGER_BOUNDS,
+  PERSISTED_INTEGER_BOUNDS,
+  requireDerivedInteger,
+} from '@durablerun/core'
 import { expect, it } from 'vitest'
 import {
   storedIncrementableClaimGeneration,
@@ -41,6 +45,23 @@ it('binds a persisted SQL column to its own nominal integer domain', () => {
   expect(storedIncrementableClaimGeneration('r')).toContain('r.claim_gen')
 
   const compileOnly = (): void => {
+    const widenedAttemptBounds = {
+      ...PERSISTED_INTEGER_BOUNDS.runs.attempt,
+      min: 0,
+      max: Number.MAX_SAFE_INTEGER,
+    }
+    // @ts-expect-error persisted descriptor endpoints cannot be replaced by spreading
+    storedIntegerWithin(widenedAttemptBounds, 'r')
+    // @ts-expect-error persisted row decoding requires the canonical descriptor endpoints
+    persistedRowInteger('claim', { attempt: 0 }, widenedAttemptBounds)
+
+    const widenedDurationBounds = {
+      ...DERIVED_INTEGER_BOUNDS.duration_ms,
+      max: Number.MAX_SAFE_INTEGER,
+    }
+    // @ts-expect-error derived decoding requires the canonical descriptor endpoints
+    requireDerivedInteger('remaining', Number.MAX_SAFE_INTEGER, widenedDurationBounds)
+
     // @ts-expect-error the independent column/bounds API no longer exists
     storedIntegerWithin('t.infra_retries', PERSISTED_INTEGER_BOUNDS.tasks.attempts)
     // @ts-expect-error the independent column/bounds API no longer exists

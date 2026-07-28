@@ -688,6 +688,56 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toEqual([{ state: 'failed', claimed_by: null }])
       })
 
+      it('quiesces a terminal activated timeout despite an unrelated corrupt relaunch counter', async () => {
+        const spawned = await f.store.spawn(Q, 'terminal-timeout-corrupt-relaunch', '{}')
+        const run = await claimOne('tick-terminal-timeout-corrupt-relaunch')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.raw.batch('terminalize-timeout-corrupt-relaunch', [
+          {
+            sql: `UPDATE tasks
+                  SET state = 'failed', attempts = max_attempts,
+                      failure_reason = '{"name":"External"}'
+                  WHERE task_id = ?`,
+            args: [spawned.taskId],
+          },
+        ])
+        const disposition = await f.injectStorageCorruption({
+          table: 'runs',
+          runId: run.runId,
+          column: 'relaunch_count',
+          invalidRepresentation: 'fractional-real',
+        })
+        if (disposition === 'structurally-rejected') return
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        expect(await f.store.sweep(Q, 10)).toEqual([])
+        const [task, storedRun] = await f.raw.batch(
+          'terminal-timeout-corrupt-relaunch:assert',
+          [
+            {
+              sql: `SELECT state, attempts, max_attempts, failure_reason
+                    FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `SELECT state, claimed_by FROM runs WHERE run_id = ?`,
+              args: [run.runId],
+            },
+          ],
+          'read',
+        )
+        expect(task?.rows[0]).toMatchObject({
+          state: 'failed',
+          attempts: run.maxAttempts,
+          max_attempts: run.maxAttempts,
+          failure_reason: '{"name":"External"}',
+        })
+        expect(
+          storedRun?.rows,
+          'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
+        ).toEqual([{ state: 'failed', claimed_by: null }])
+      })
+
       it('quiesces a relaunch-cap run under a terminal owner without reviving its task', async () => {
         const spawned = await f.store.spawn(Q, 'terminal-relaunch-cap-owner', '{}')
         const run = await claimOne('tick-terminal-relaunch-cap-owner')
