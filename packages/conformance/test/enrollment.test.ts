@@ -4,13 +4,20 @@ import { describe, expect, it } from 'vitest'
 import * as conformance from '../src/index.js'
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
-const SURFACES = ['scheduler', 'fault-matrix', 'poison-matrix', 'wake-witness']
+const SURFACES = [
+  'scheduler',
+  'fault-matrix',
+  'poison-matrix',
+  'timestamp-boundaries',
+  'wake-witness',
+]
 const REGISTRY = `${ROOT}/packages/conformance/test/dialect-fixtures.ts`
 const UMBRELLA = `${ROOT}/packages/conformance/src/store-conformance.ts`
 const SURFACE_BINDINGS = [
   ['scheduler', 'schedulerConformance'],
   ['fault-matrix', 'faultMatrixConformance'],
   ['poison-matrix', 'poisonMatrixConformance'],
+  ['timestamp-boundaries', 'timestampBoundaryConformance'],
   ['wake-witness', 'wakeWitnessConformance'],
 ]
 
