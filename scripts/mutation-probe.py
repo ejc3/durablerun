@@ -1970,6 +1970,63 @@ MUTATION_SPECS.extend(
             "    const validEpochMs = requireEpochMs('epochMs', epochMs === 0 ? -1 : epochMs)",
             "the fake engine clock rejects an exact legal epoch endpoint",
         ),
+        (
+            "nightly-fuzz-plan-exact-coverage",
+            "packages/conformance/test/fuzz-shard-runner.ts",
+            "  for (let seed = shard + batch * shardCount; seed < totalSeeds; seed += shardCount * batchCount) {",
+            "  for (let seed = shard; seed < totalSeeds; seed += shardCount) {",
+            "bounded fuzz processes overlap and each repeat the complete logical shard",
+        ),
+        (
+            "nightly-fuzz-plan-dimensions",
+            "packages/conformance/test/fuzz-shard-runner.ts",
+            "    if (!Number.isInteger(value) || value <= 0) {",
+            "    if (value < 0) {",
+            "a zero or fractional fuzz-plan dimension is accepted",
+        ),
+        (
+            "nightly-fuzz-plan-coordinate-range",
+            "packages/conformance/test/fuzz-shard-runner.ts",
+            "    if (!Number.isInteger(value) || value < 0 || value >= upper) {",
+            "    if (!Number.isInteger(value) || value < 0 || value > upper) {",
+            "a shard or batch index equal to its exclusive upper bound is accepted",
+        ),
+        (
+            "nightly-fuzz-plan-empty-rejected",
+            "packages/conformance/test/fuzz-shard-runner.ts",
+            "  if (seeds.length === 0) {\n"
+            "    throw new RangeError(\n"
+            "      `fuzz batch ${batch}/${batchCount} of shard ${shard}/${shardCount} owns no seeds`,\n"
+            "    )\n"
+            "  }",
+            "  if (false && seeds.length === 0) {\n"
+            "    throw new RangeError(\n"
+            "      `fuzz batch ${batch}/${batchCount} of shard ${shard}/${shardCount} owns no seeds`,\n"
+            "    )\n"
+            "  }",
+            "an empty fuzz process is credited as a planned batch",
+        ),
+        (
+            "nightly-fuzz-workflow-enrollment",
+            ".github/workflows/nightly.yml",
+            "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]",
+            "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]",
+            "the hosted nightly silently omits one logical fuzz shard",
+        ),
+        (
+            "nightly-fuzz-workflow-batches",
+            ".github/workflows/nightly.yml",
+            "          for batch in 0 1 2 3; do",
+            "          for batch in 0 1 2; do",
+            "the hosted nightly silently omits one batch from every logical shard",
+        ),
+        (
+            "nightly-fuzz-workflow-confinement",
+            ".github/workflows/nightly.yml",
+            "              bash scripts/confine.sh \\\n",
+            "",
+            "the hosted nightly runs growing fuzz work outside the aggregate resource scope",
+        ),
     )
 )
 
@@ -2761,6 +2818,48 @@ VERDICTS.update(
             "packages/store-libsql/test/admin-time-boundary.test.ts",
             "fake engine-time boundary accepts both exact epoch endpoints",
             "mutation-verdict:behavior:admin-fake-now-exact-endpoints",
+        ),
+        "nightly-fuzz-plan-exact-coverage": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan partitions every nightly seed exactly once into bounded fresh-process batches",
+            "mutation-verdict:construction:nightly-fuzz-plan-exact-coverage",
+        ),
+        "nightly-fuzz-plan-dimensions": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan rejects invalid plan dimensions",
+            "mutation-verdict:construction:nightly-fuzz-plan-dimensions",
+        ),
+        "nightly-fuzz-plan-coordinate-range": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan rejects out-of-range shard and batch coordinates",
+            "mutation-verdict:construction:nightly-fuzz-plan-coordinate-range",
+        ),
+        "nightly-fuzz-plan-empty-rejected": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan rejects an empty process batch",
+            "mutation-verdict:construction:nightly-fuzz-plan-empty-rejected",
+        ),
+        "nightly-fuzz-workflow-enrollment": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan enrolls every logical shard and bounded batch in the hosted nightly",
+            "mutation-verdict:construction:nightly-fuzz-workflow-enrollment",
+        ),
+        "nightly-fuzz-workflow-batches": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan enrolls every logical shard and bounded batch in the hosted nightly",
+            "mutation-verdict:construction:nightly-fuzz-workflow-batches",
+        ),
+        "nightly-fuzz-workflow-confinement": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan enrolls every logical shard and bounded batch in the hosted nightly",
+            "mutation-verdict:construction:nightly-fuzz-workflow-confinement",
         ),
     }
 )
