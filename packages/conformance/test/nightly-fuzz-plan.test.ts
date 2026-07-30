@@ -1,7 +1,50 @@
 import { attributeExpectedFailure } from '@durablerun/core/testing'
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import { fuzzBatchSeeds } from './fuzz-shard-runner.js'
+
+interface HostedFuzzProcess {
+  readonly shard: number
+  readonly shardCount: number
+  readonly batch: number
+  readonly batchCount: number
+  readonly walks: number
+  readonly totalSeeds: number
+  readonly steps: number
+  readonly command: string
+}
+
+const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
+const NIGHTLY_FUZZ_SCRIPT = fileURLToPath(
+  new URL('../../../scripts/nightly-fuzz-shard.sh', import.meta.url),
+)
+
+function hostedFuzzPlan(shard: number): readonly HostedFuzzProcess[] {
+  const output = execFileSync('bash', [NIGHTLY_FUZZ_SCRIPT, '--plan', String(shard)], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  })
+  return output
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const [ownedShard, shardCount, batch, batchCount, walks, totalSeeds, steps, command] =
+        line.split('\t')
+      return {
+        shard: Number(ownedShard),
+        shardCount: Number(shardCount),
+        batch: Number(batch),
+        batchCount: Number(batchCount),
+        walks: Number(walks),
+        totalSeeds: Number(totalSeeds),
+        steps: Number(steps),
+        command: command ?? '',
+      }
+    })
+}
 
 describe('fuzz shard batch plan', () => {
   it('partitions every nightly seed exactly once into bounded fresh-process batches', async () => {
@@ -90,35 +133,144 @@ describe('fuzz shard batch plan', () => {
       new URL('../../../.github/workflows/nightly.yml', import.meta.url),
       'utf8',
     )
-    const shardVector = workflow.match(/shard:\s*\[([^\]]+)\]/)?.[1]
-    expect(shardVector).toBeDefined()
+    const document = parse(workflow) as {
+      jobs: {
+        fuzz: {
+          needs: string
+          strategy: {
+            'fail-fast': boolean
+            'max-parallel': number
+            matrix: { shard: number[] }
+          }
+          steps: Array<{ name?: string; env?: Record<string, string>; run?: string }>
+        }
+        tla: {
+          strategy: { matrix: { target: string[] } }
+          steps: Array<{ run?: string }>
+        }
+      }
+    }
+    const fuzzJob = document.jobs.fuzz
     await attributeExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-workflow-enrollment' },
       /expected .* to deeply equal/,
-      async () =>
-        expect(shardVector?.split(',').map((value) => Number(value.trim()))).toEqual(
-          Array.from({ length: 32 }, (_, shard) => shard),
-        ),
+      async () => {
+        expect({
+          needs: fuzzJob.needs,
+          failFast: fuzzJob.strategy['fail-fast'],
+          maxParallel: fuzzJob.strategy['max-parallel'],
+          shards: fuzzJob.strategy.matrix.shard,
+        }).toEqual({
+          needs: 'verify',
+          failFast: false,
+          maxParallel: 8,
+          shards: Array.from({ length: 32 }, (_, shard) => shard),
+        })
+      },
     )
-    const fuzzStep = workflow.match(
-      /- name: Run bounded nightly fuzz shard(?<step>[\s\S]+?)(?=\n {2}# One TLC process)/,
-    )?.groups?.step
+    const fuzzStep = fuzzJob.steps.find((step) => step.name === 'Run bounded nightly fuzz shard')
     expect(fuzzStep).toBeDefined()
     await attributeExpectedFailure(
-      { kind: 'construction', mutation: 'nightly-fuzz-workflow-batches' },
-      /expected .* to contain/,
+      { kind: 'construction', mutation: 'nightly-fuzz-workflow-invocation' },
+      /expected .* to deeply equal/,
       async () => {
-        expect(fuzzStep).toContain('for batch in 0 1 2 3')
-        expect(fuzzStep).toContain('FUZZ_BATCHES=4 FUZZ_BATCH_INDEX="$batch"')
+        expect(fuzzStep).toEqual({
+          name: 'Run bounded nightly fuzz shard',
+          env: { FUZZ_SHARD: '${{ matrix.shard }}' },
+          run: 'bash scripts/nightly-fuzz-shard.sh "$FUZZ_SHARD"',
+        })
+      },
+    )
+    expect(document.jobs.tla.strategy.matrix.target).toEqual([
+      'safety',
+      'liveness1',
+      'liveness2',
+      'liveness3',
+      'liveness4',
+      'liveness5',
+    ])
+    expect(document.jobs.tla.steps.at(-1)?.run).toBe(
+      'TLA_ONLY=${{ matrix.target }} bash scripts/confine.sh bash scripts/tla.sh',
+    )
+  })
+
+  it('executes one canonical confined command for every hosted batch', async () => {
+    const plans = Array.from({ length: 32 }, (_, shard) => hostedFuzzPlan(shard))
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'nightly-fuzz-workflow-batches' },
+      /expected .* to deeply equal/,
+      async () => {
+        for (const [shard, plan] of plans.entries()) {
+          expect(
+            plan.map(({ batch, batchCount, shard: ownedShard, shardCount }) => ({
+              batch,
+              batchCount,
+              shard: ownedShard,
+              shardCount,
+            })),
+          ).toEqual(
+            Array.from({ length: 4 }, (_, batch) => ({
+              batch,
+              batchCount: 4,
+              shard,
+              shardCount: 32,
+            })),
+          )
+        }
       },
     )
     await attributeExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-workflow-confinement' },
-      /expected .* to contain/,
+      /expected .* to be/,
       async () => {
-        expect(fuzzStep).toContain('bash scripts/confine.sh')
+        for (const [shard, plan] of plans.entries()) {
+          for (const process of plan) {
+            expect(process.command).toBe(
+              `bash scripts/confine.sh pnpm exec vitest run packages/conformance/test/fuzz-${String(
+                shard,
+              ).padStart(2, '0')}.test.ts --maxWorkers=1`,
+            )
+          }
+        }
       },
     )
-    expect(fuzzStep).toContain('fuzz-${shard_file}.test.ts')
+    for (const plan of plans) {
+      expect(plan.reduce((sum, process) => sum + process.walks, 0)).toBe(625)
+      for (const process of plan) {
+        expect(process.walks).toBe(
+          fuzzBatchSeeds({
+            totalSeeds: process.totalSeeds,
+            shard: process.shard,
+            shardCount: process.shardCount,
+            batch: process.batch,
+            batchCount: process.batchCount,
+          }).length,
+        )
+        expect(process.steps).toBe(150)
+      }
+    }
+  })
+
+  it('derives every fuzz file coordinate from its filename', async () => {
+    const directory = new URL('.', import.meta.url)
+    const expected = Array.from(
+      { length: 32 },
+      (_, shard) => `fuzz-${String(shard).padStart(2, '0')}.test.ts`,
+    )
+    const files = readdirSync(directory)
+      .filter((file) => /^fuzz-\d{2}\.test\.ts$/.test(file))
+      .toSorted()
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'nightly-fuzz-file-enrollment' },
+      /expected .* to be/,
+      async () => {
+        expect(files).toEqual(expected)
+        for (const [shard, file] of files.entries()) {
+          expect(readFileSync(new URL(file, directory), 'utf8')).toBe(
+            `import { runFuzzShard } from './fuzz-shard-runner.js'\n\nrunFuzzShard(${shard}, 32)\n`,
+          )
+        }
+      },
+    )
   })
 })
