@@ -14,31 +14,15 @@ import {
 } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { executeStorageCorruption, type StoreFixture, type StoreFixtureFactory } from './fixture.js'
+import {
+  executeStorageCorruption,
+  interposeAfterBatch,
+  type StoreFixture,
+  type StoreFixtureFactory,
+} from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 
 const Q = 'q'
-
-function interposeAfterBatch(
-  delegate: SqlExecutor,
-  targetLabel: string,
-  after: () => Promise<void>,
-): { executor: SqlExecutor; fired: () => boolean } {
-  let didFire = false
-  return {
-    executor: {
-      batch: async (label, statements, mode) => {
-        const results = await delegate.batch(label, statements, mode)
-        if (!didFire && label === targetLabel) {
-          didFire = true
-          await after()
-        }
-        return results
-      },
-    },
-    fired: () => didFire,
-  }
-}
 
 async function snapshot(f: StoreFixture, taskId: string): Promise<unknown> {
   const [tasks, runs] = await f.raw.batch(

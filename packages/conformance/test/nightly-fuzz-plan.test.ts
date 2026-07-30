@@ -136,11 +136,13 @@ describe('fuzz shard batch plan', () => {
     const document = parse(workflow) as {
       jobs: {
         fuzz: {
+          if?: unknown
+          'continue-on-error'?: unknown
           needs: string
           strategy: {
             'fail-fast': boolean
             'max-parallel': number
-            matrix: { shard: number[] }
+            matrix: { shard: number[]; exclude?: unknown }
           }
           steps: Array<{ name?: string; env?: Record<string, string>; run?: string }>
         }
@@ -166,6 +168,27 @@ describe('fuzz shard batch plan', () => {
           maxParallel: 8,
           shards: Array.from({ length: 32 }, (_, shard) => shard),
         })
+      },
+    )
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'nightly-fuzz-workflow-if' },
+      /expected .* to be undefined/,
+      async () => {
+        expect(fuzzJob.if).toBeUndefined()
+      },
+    )
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'nightly-fuzz-workflow-continue-on-error' },
+      /expected .* to be undefined/,
+      async () => {
+        expect(fuzzJob['continue-on-error']).toBeUndefined()
+      },
+    )
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'nightly-fuzz-workflow-exclude' },
+      /expected .* to be undefined/,
+      async () => {
+        expect(fuzzJob.strategy.matrix.exclude).toBeUndefined()
       },
     )
     const fuzzStep = fuzzJob.steps.find((step) => step.name === 'Run bounded nightly fuzz shard')
@@ -223,20 +246,37 @@ describe('fuzz shard batch plan', () => {
       { kind: 'construction', mutation: 'nightly-fuzz-workflow-confinement' },
       /expected .* to be/,
       async () => {
-        for (const [shard, plan] of plans.entries()) {
+        for (const plan of plans) {
           for (const process of plan) {
-            expect(process.command).toBe(
-              `bash scripts/confine.sh pnpm exec vitest run packages/conformance/test/fuzz-${String(
-                shard,
-              ).padStart(2, '0')}.test.ts --maxWorkers=1`,
-            )
+            expect(process.command).toContain(' bash scripts/confine.sh ')
           }
         }
       },
     )
-    for (const plan of plans) {
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'nightly-fuzz-runtime-environment' },
+      /expected false to be true/,
+      async () => {
+        for (const plan of plans) {
+          for (const process of plan) {
+            expect(
+              process.command.startsWith(
+                `env FUZZ_SEEDS=20000 FUZZ_STEPS=150 FUZZ_BATCHES=4 FUZZ_BATCH_INDEX=${process.batch} `,
+              ),
+            ).toBe(true)
+          }
+        }
+      },
+    )
+    for (const [shard, plan] of plans.entries()) {
       expect(plan.reduce((sum, process) => sum + process.walks, 0)).toBe(625)
       for (const process of plan) {
+        expect(process.command).toContain(
+          `pnpm exec vitest run packages/conformance/test/fuzz-${String(shard).padStart(
+            2,
+            '0',
+          )}.test.ts --maxWorkers=1`,
+        )
         expect(process.walks).toBe(
           fuzzBatchSeeds({
             totalSeeds: process.totalSeeds,

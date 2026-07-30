@@ -113,6 +113,27 @@ export interface StoreFixture {
 
 export type StoreFixtureFactory = (seed: number | string) => Promise<StoreFixture>
 
+export function interposeAfterBatch(
+  delegate: SqlExecutor,
+  targetLabel: string,
+  after: () => Promise<void>,
+): { executor: SqlExecutor; fired: () => boolean } {
+  let didFire = false
+  return {
+    executor: {
+      batch: async (label, statements, mode) => {
+        const results = await delegate.batch(label, statements, mode)
+        if (!didFire && label === targetLabel) {
+          didFire = true
+          await after()
+        }
+        return results
+      },
+    },
+    fired: () => didFire,
+  }
+}
+
 /**
  * The only conformance path that may credit structural storage rejection.
  *

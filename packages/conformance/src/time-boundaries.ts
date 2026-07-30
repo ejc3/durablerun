@@ -6,12 +6,11 @@ import {
   MAX_EPOCH_MS,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_CAP,
-  type SqlExecutor,
   type SpawnOptions,
   decodeBoundedInteger,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { interposeAfterBatch, type StoreFixture, type StoreFixtureFactory } from './fixture.js'
 
 const Q = 'time-boundary'
 const NORMAL_NOW_MS = 1_000_000
@@ -28,27 +27,6 @@ interface TimeBoundaryCase {
   readonly exactMarker: `mutation-verdict:behavior:${string}`
   readonly overflowMarker: `mutation-verdict:behavior:${string}`
   prepare(fixture: StoreFixture): Promise<PreparedBoundary>
-}
-
-function interposeAfterBatch(
-  delegate: SqlExecutor,
-  targetLabel: string,
-  after: () => Promise<void>,
-): { executor: SqlExecutor; fired: () => boolean } {
-  let didFire = false
-  return {
-    executor: {
-      batch: async (label, statements, mode) => {
-        const results = await delegate.batch(label, statements, mode)
-        if (!didFire && label === targetLabel) {
-          didFire = true
-          await after()
-        }
-        return results
-      },
-    },
-    fired: () => didFire,
-  }
 }
 
 async function spawned(

@@ -30,6 +30,11 @@ for ((batch = 0; batch < BATCH_COUNT; batch++)); do
   start=$((shard + batch * SHARD_COUNT))
   count=$(((TOTAL_SEEDS - 1 - start) / (SHARD_COUNT * BATCH_COUNT) + 1))
   command=(
+    env
+    "FUZZ_SEEDS=$TOTAL_SEEDS"
+    "FUZZ_STEPS=$STEPS"
+    "FUZZ_BATCHES=$BATCH_COUNT"
+    "FUZZ_BATCH_INDEX=$batch"
     bash scripts/confine.sh
     pnpm exec vitest run "packages/conformance/test/fuzz-${shard_file}.test.ts"
     --maxWorkers=1
@@ -40,9 +45,7 @@ for ((batch = 0; batch < BATCH_COUNT; batch++)); do
       "$count" "$TOTAL_SEEDS" "$STEPS" "${command[*]}"
     continue
   fi
-  FUZZ_SEEDS="$TOTAL_SEEDS" FUZZ_STEPS="$STEPS" \
-    FUZZ_BATCHES="$BATCH_COUNT" FUZZ_BATCH_INDEX="$batch" \
-    "${command[@]}"
+  "${command[@]}"
   walks=$((walks + count))
 done
 

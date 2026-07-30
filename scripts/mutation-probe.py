@@ -2028,11 +2028,42 @@ MUTATION_SPECS.extend(
             "the hosted nightly runs growing fuzz work outside the aggregate resource scope",
         ),
         (
+            "nightly-fuzz-runtime-environment",
+            "scripts/nightly-fuzz-shard.sh",
+            '    "FUZZ_BATCH_INDEX=$batch"\n',
+            "",
+            "the hosted process plan no longer executes the batch coordinate it reports",
+        ),
+        (
             "nightly-fuzz-workflow-invocation",
             ".github/workflows/nightly.yml",
             '        run: bash scripts/nightly-fuzz-shard.sh "$FUZZ_SHARD"',
             '        run: echo bash scripts/nightly-fuzz-shard.sh "$FUZZ_SHARD"',
             "the hosted workflow prints the canonical command instead of executing it",
+        ),
+        (
+            "nightly-fuzz-workflow-if",
+            ".github/workflows/nightly.yml",
+            "  fuzz:\n",
+            "  fuzz:\n    if: false\n",
+            "the hosted fuzz job is structurally enrolled but unconditionally skipped",
+        ),
+        (
+            "nightly-fuzz-workflow-continue-on-error",
+            ".github/workflows/nightly.yml",
+            "  fuzz:\n",
+            "  fuzz:\n    continue-on-error: true\n",
+            "the hosted fuzz job can fail while the nightly remains green",
+        ),
+        (
+            "nightly-fuzz-workflow-exclude",
+            ".github/workflows/nightly.yml",
+            "      max-parallel: 8\n      matrix:\n",
+            "      max-parallel: 8\n"
+            "      matrix:\n"
+            "        exclude:\n"
+            "          - shard: 31\n",
+            "the hosted matrix lists every shard but excludes one from execution",
         ),
         (
             "nightly-fuzz-file-enrollment",
@@ -2875,11 +2906,35 @@ VERDICTS.update(
             "fuzz shard batch plan executes one canonical confined command for every hosted batch",
             "mutation-verdict:construction:nightly-fuzz-workflow-confinement",
         ),
+        "nightly-fuzz-runtime-environment": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan executes one canonical confined command for every hosted batch",
+            "mutation-verdict:construction:nightly-fuzz-runtime-environment",
+        ),
         "nightly-fuzz-workflow-invocation": ExpectedVerdict(
             "construction",
             "packages/conformance/test/nightly-fuzz-plan.test.ts",
             "fuzz shard batch plan enrolls every logical shard and bounded batch in the hosted nightly",
             "mutation-verdict:construction:nightly-fuzz-workflow-invocation",
+        ),
+        "nightly-fuzz-workflow-if": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan enrolls every logical shard and bounded batch in the hosted nightly",
+            "mutation-verdict:construction:nightly-fuzz-workflow-if",
+        ),
+        "nightly-fuzz-workflow-continue-on-error": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan enrolls every logical shard and bounded batch in the hosted nightly",
+            "mutation-verdict:construction:nightly-fuzz-workflow-continue-on-error",
+        ),
+        "nightly-fuzz-workflow-exclude": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan enrolls every logical shard and bounded batch in the hosted nightly",
+            "mutation-verdict:construction:nightly-fuzz-workflow-exclude",
         ),
         "nightly-fuzz-file-enrollment": ExpectedVerdict(
             "construction",

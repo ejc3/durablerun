@@ -92,7 +92,7 @@ function activationDurationAdmissible(task: string, at: string): string {
   const cancellation = `${task}.cancellation`
   const path = `'$.maxDurationSeconds'`
   const seconds = `json_extract(${cancellation}, ${path})`
-  const durationMs = `CAST(ROUND((${seconds}) * 1000) AS INTEGER)`
+  const durationMs = taskMaxDurationMs(task)
   const firstStarted = `${task}.first_started_at_ms`
   return `(CASE
     WHEN ${cancellation} IS NULL THEN 1
