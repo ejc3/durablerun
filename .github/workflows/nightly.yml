@@ -48,15 +48,7 @@ jobs:
       - name: Run bounded nightly fuzz shard
         env:
           FUZZ_SHARD: ${{ matrix.shard }}
-        run: |
-          shard_file="$(printf '%02d' "$FUZZ_SHARD")"
-          for batch in 0 1 2 3; do
-            FUZZ_SEEDS=20000 FUZZ_STEPS=150 \
-              FUZZ_BATCHES=4 FUZZ_BATCH_INDEX="$batch" \
-              bash scripts/confine.sh \
-              pnpm exec vitest run "packages/conformance/test/fuzz-${shard_file}.test.ts" \
-                --maxWorkers=1
-          done
+        run: bash scripts/nightly-fuzz-shard.sh "$FUZZ_SHARD"
   # One TLC process per runner: six concurrent JVMs on one 7 GB runner
   # starve each other (the shared disk filling under three liveness graphs
   # once failed all three heavy groups in the same minute, printing

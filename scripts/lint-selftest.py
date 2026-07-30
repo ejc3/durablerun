@@ -208,6 +208,7 @@ def gate(
         files[f"scripts/{name}"] = "# a checker\n"
     for name in (
         "confine.sh",
+        "nightly-fuzz-shard.sh",
         "tla.sh",
         "review-attest.sh",
         "session-state.sh",

@@ -79,6 +79,7 @@ else:
 # the staleness rule below only applies when it is grading that repo.
 NOT_IN_GATE = {
     "confine.sh": "a cgroup wrapper other commands run under, not a check",
+    "nightly-fuzz-shard.sh": "a bounded workload runner invoked by the hosted nightly, not a check",
     "tla.sh": "TLC model checking — its own CI job and `pnpm verify:tla`, far too slow for every commit",
     "review-attest.sh": "runs at PR time against a pull request, not against a working tree",
     "session-state.sh": "reads live session/process state rather than grading a working tree",
