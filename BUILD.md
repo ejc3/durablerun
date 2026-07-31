@@ -207,7 +207,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     contract; this item records attribution behavior without redefining it.
     The verifier runs 17 attribution cases, nineteen promise-message source
     cases, ten canonical helper-descriptor cases, two helper-binding cases,
-    three helper-marker cases, and sixteen direct-marker cases across all 206
+    three helper-marker cases, and sixteen direct-marker cases across all 207
     live mutations; seven injected classifier faults are maintained by
     `lint-selftest.py`.
     The parallel coordinator has its own generated injected faults for shard
@@ -221,6 +221,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     25% of host memory and the host CPU reserve, while per-worker Vitest
     concurrency divides that aggregate CPU budget. The source checkout never
     contains a mutant.
+    The nightly's execution proof pairs source and observation: the registry
+    replaces the real `"${command[@]}"` dispatch with `:`, while the focused
+    verdict runs the shipped real-mode loop with `PATH` set to a temporary
+    directory containing a probe `env`. For shard 0, that child emits one
+    tagged stdout record for each of the four batch indices derived from the
+    canonical plan.
     The first full clean-tree audit ran all 34 mutations: 28 were attributable
     and six were `wrong-path`. Those six exposed two construction failures
     mislabeled as behavior, a split plan verdict plus a mutation with semantic
@@ -346,8 +352,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     first-class central conformance surface, not a nested call another backend
     can omit. Sixty-four attributable temporal/admin/enrollment mutations
     brought the registry to 191. The final attribution closeout inventories
-    206 live mutations; its code-head audit is recorded in the closeout
-    postmortem, while the exact final branch-head evidence remains below.
+    207 live mutations; the dispatch mutation has its own exact targeted
+    verdict, while the complete final branch-head evidence remains below.
   - **Schema and inline-ending boundaries fail closed.** A stored
     `schema_version` is a canonical nonnegative base-10 safe integer (`0`
     exactly, otherwise no leading zero), and migration success requires it to

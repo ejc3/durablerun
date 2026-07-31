@@ -2,7 +2,7 @@ import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/co
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
@@ -50,34 +50,31 @@ function hostedFuzzPlan(shard: number): readonly HostedFuzzProcess[] {
 
 function executedHostedFuzzBatches(shard: number): readonly number[] {
   const directory = mkdtempSync(join(tmpdir(), 'durablerun-nightly-execution-'))
-  const executions = join(directory, 'executions')
   try {
-    writeFileSync(executions, '')
     writeFileSync(
       join(directory, 'env'),
       `#!/bin/sh
 for argument do
   case "$argument" in
     FUZZ_BATCH_INDEX=*)
-      printf '%s\\n' "\${argument#FUZZ_BATCH_INDEX=}" >> "$DURABLERUN_NIGHTLY_EXECUTION_PROBE"
+      printf 'nightly-fuzz-executed-batch=%s\\n' "\${argument#FUZZ_BATCH_INDEX=}"
       exit 0
       ;;
   esac
 done
-printf 'missing\\n' >> "$DURABLERUN_NIGHTLY_EXECUTION_PROBE"
+printf 'nightly-fuzz-executed-batch=missing\\n'
 `,
       { mode: 0o755 },
     )
-    execFileSync('/bin/bash', [NIGHTLY_FUZZ_SCRIPT, String(shard)], {
+    const output = execFileSync('/bin/bash', [NIGHTLY_FUZZ_SCRIPT, String(shard)], {
       cwd: ROOT,
       encoding: 'utf8',
-      env: {
-        ...process.env,
-        DURABLERUN_NIGHTLY_EXECUTION_PROBE: executions,
-        PATH: `${directory}${delimiter}${process.env.PATH ?? ''}`,
-      },
+      env: { PATH: directory },
     })
-    return readFileSync(executions, 'utf8').split('\n').filter(Boolean).map(Number)
+    return output
+      .split('\n')
+      .filter((line) => line.startsWith('nightly-fuzz-executed-batch='))
+      .map((line) => Number(line.slice('nightly-fuzz-executed-batch='.length)))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
