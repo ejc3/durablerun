@@ -92,14 +92,17 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('rejects retry durations above the durable bound without writing', async () => {
-        await expect(
-          f.store.spawn(Q, 'oversized-retry', '{}', {
-            retryStrategy: {
-              kind: 'fixed',
-              baseSeconds: MAX_DURATION_MS / 1000 + 1,
-            },
-          }),
-        ).rejects.toThrow(RangeError)
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'retry-spawn-normalization' },
+          /exceeds the 100-year duration bound/,
+          async () =>
+            f.store.spawn(Q, 'oversized-retry', '{}', {
+              retryStrategy: {
+                kind: 'fixed',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+              },
+            }),
+        )
 
         const [count] = await f.raw.batch(
           'retry-bound-probe',
@@ -108,9 +111,54 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         )
         expect(Number(count?.rows[0]?.n)).toBe(0)
       })
+
+      it('rejects an explicit null retry strategy without writing', async () => {
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'retry-spawn-null' },
+          /retry strategy must be an object/,
+          async () =>
+            f.store.spawn(Q, 'null-retry', '{}', {
+              retryStrategy: null as never,
+            }),
+        )
+
+        const [count] = await f.raw.batch(
+          'retry-null-probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
+      })
     })
 
     describe('claim', () => {
+      it('rejects a corrupt persisted retry strategy instead of exposing unchecked JSON', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-retry', '{}', {
+          retryStrategy: {
+            kind: 'fixed',
+            baseSeconds: 1,
+          },
+        })
+        await f.raw.batch('corrupt-retry-strategy', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [
+              JSON.stringify({
+                kind: 'fixed',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+              }),
+              spawned.taskId,
+            ],
+          },
+        ])
+
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'retry-persisted-normalization' },
+          /exceeds the 100-year duration bound/,
+          async () => f.store.claim(Q, 'corrupt-retry-token', { leaseSeconds: 60, limit: 1 }),
+        )
+      })
+
       it('claims due runs oldest-first with claim_gen 1 and full task data', async () => {
         await f.store.spawn(Q, 'a', '{"n":1}')
         await f.store.spawn(Q, 'b', '{"n":2}')
