@@ -13,9 +13,10 @@ const MUTATION_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const VERDICT_MARKER_SOURCE =
   'mutation-verdict:(?:behavior|construction):[a-z0-9]+(?:[-:][a-z0-9]+)*'
 const VERDICT_MARKER = new RegExp(`^${VERDICT_MARKER_SOURCE}$`)
+const VERDICT_MARKER_BOUNDARY = String.raw`[\p{ID_Continue}$:-]`
 const EXPECT_ERROR_VERDICT_MARKER = new RegExp(
-  `(?<![A-Za-z0-9_:-])${VERDICT_MARKER_SOURCE}(?![A-Za-z0-9_:-])`,
-  'g',
+  `(?<!${VERDICT_MARKER_BOUNDARY})${VERDICT_MARKER_SOURCE}(?!${VERDICT_MARKER_BOUNDARY})`,
+  'gu',
 )
 
 function unwrap(expression) {
