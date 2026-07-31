@@ -3,15 +3,14 @@ import {
   type ClaimedRun,
   EventTimeoutError,
   FatalTaskError,
-  LeaseLostError,
   type SchedulerStore,
-  serializeTaskValue,
-  SuspendSignal,
   UserName,
+  serializeTaskValue,
   userDurationToMs,
   userEpochMs,
   userJsonValue,
 } from '@durablerun/core'
+import { type TaskControlIssuer, createTaskControlScope } from './task-control.js'
 
 /**
  * An engine-namespace replay key ('$'-prefixed, so no validated user name
@@ -76,12 +75,17 @@ export interface TaskContext {
 export class ReplayContext implements TaskContext {
   readonly attempt: number
   readonly taskName: string
+  readonly #store: SchedulerStore
+  readonly #queue: string
+  readonly #run: ClaimedRun
+  readonly #leaseLost: AbortSignal | undefined
+  readonly #controls: TaskControlIssuer
   private readonly seen = new Map<string, unknown>()
   private readonly nameUses = new Map<string, number>()
   private inStep = false
   /**
    * The claim's carried wake, held as the ONLY mutable reference to it —
-   * takeWake consumes it, and nothing else reads this.run.wake. Consume-once
+   * takeWake consumes it, and nothing else reads this.#run.wake. Consume-once
    * is then structural, not a discipline: a taken wake is unreadable, so a
    * second await of the same event name cannot re-see it (the stale-wake
    * re-consumption that was the worst confirmed bug of the events review).
@@ -89,12 +93,18 @@ export class ReplayContext implements TaskContext {
   private pendingWake: ClaimedRun['wake']
 
   constructor(
-    private readonly store: SchedulerStore,
-    private readonly queue: string,
-    private readonly run: ClaimedRun,
+    store: SchedulerStore,
+    queue: string,
+    run: ClaimedRun,
     checkpoints: Checkpoint[],
-    private readonly leaseLost?: AbortSignal,
+    leaseLost?: AbortSignal,
+    controls: TaskControlIssuer = createTaskControlScope().issuer,
   ) {
+    this.#store = store
+    this.#queue = queue
+    this.#run = run
+    this.#leaseLost = leaseLost
+    this.#controls = controls
     this.attempt = run.attempt - run.infraRetries
     this.taskName = run.taskName
     this.pendingWake = run.wake
@@ -151,8 +161,8 @@ export class ReplayContext implements TaskContext {
     // The pump observed the lease gone: stop the handler at the next
     // context call — the fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
-    if (this.leaseLost?.aborted) {
-      throw new LeaseLostError(`lease lost during pass (run ${this.run.runId})`)
+    if (this.#leaseLost?.aborted) {
+      this.#controls.leaseLost(`lease lost during pass (run ${this.#run.runId})`)
     }
   }
 
@@ -178,14 +188,16 @@ export class ReplayContext implements TaskContext {
     // undefined fields, and -0 read identically on every pass of every
     // schedule (there is no second path for divergence to live in).
     const result = JSON.parse(stateJson) as T
-    await this.store.setCheckpoint(
-      this.queue,
-      this.run.taskId,
-      this.run.runId,
-      this.run.claimToken,
-      key,
-      stateJson,
-      this.run.leaseSeconds,
+    await this.#controls.storeCall(() =>
+      this.#store.setCheckpoint(
+        this.#queue,
+        this.#run.taskId,
+        this.#run.runId,
+        this.#run.claimToken,
+        key,
+        stateJson,
+        this.#run.leaseSeconds,
+      ),
     )
     this.seen.set(key, result)
     return result
@@ -219,7 +231,7 @@ export class ReplayContext implements TaskContext {
     // allocates no replay key, so unlike the other durable ops it may run
     // inside a step; hence the bare lease check, not the full nesting gate.)
     this.assertLeaseHeld()
-    await this.store.emitEvent(this.queue, parsed.value, payload)
+    await this.#controls.storeCall(() => this.#store.emitEvent(this.#queue, parsed.value, payload))
   }
 
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
@@ -249,21 +261,23 @@ export class ReplayContext implements TaskContext {
       if (memo.timedOut) throw new EventTimeoutError(name)
       return memo.payloadJson as string
     }
-    const outcome = await this.store.awaitEvent(
-      this.queue,
-      this.run.taskId,
-      this.run.runId,
-      this.run.claimToken,
-      key,
-      // parsed.value, not `name` — emitEvent already sends the parsed form,
-      // and the two must be the same string or a wait registers under one
-      // spelling while the emit fires the other and never matches it. They
-      // are identical today because parse only validates; the moment it
-      // normalizes anything, the raw path becomes a silent lost wakeup. The
-      // validated value is the canonical one, so nothing downstream should
-      // read the raw one again.
-      parsed.value,
-      opts?.timeoutSeconds ?? null,
+    const outcome = await this.#controls.storeCall(() =>
+      this.#store.awaitEvent(
+        this.#queue,
+        this.#run.taskId,
+        this.#run.runId,
+        this.#run.claimToken,
+        key,
+        // parsed.value, not `name` — emitEvent already sends the parsed form,
+        // and the two must be the same string or a wait registers under one
+        // spelling while the emit fires the other and never matches it. They
+        // are identical today because parse only validates; the moment it
+        // normalizes anything, the raw path becomes a silent lost wakeup. The
+        // validated value is the canonical one, so nothing downstream should
+        // read the raw one again.
+        parsed.value,
+        opts?.timeoutSeconds ?? null,
+      ),
     )
     if (outcome.emitted) {
       await this.commitMarker(key, JSON.stringify({ payloadJson: outcome.payloadJson }))
@@ -271,19 +285,21 @@ export class ReplayContext implements TaskContext {
     }
     // The store batch ALREADY parked the run: signal without a wake so the
     // runtime performs no second suspension.
-    throw new SuspendSignal('await-event')
+    this.#controls.suspend('await-event')
   }
 
   /** Lease-fenced marker write shared by the await memoization. */
   private async commitMarker(key: string, stateJson: string): Promise<void> {
-    await this.store.setCheckpoint(
-      this.queue,
-      this.run.taskId,
-      this.run.runId,
-      this.run.claimToken,
-      key,
-      stateJson,
-      this.run.leaseSeconds,
+    await this.#controls.storeCall(() =>
+      this.#store.setCheckpoint(
+        this.#queue,
+        this.#run.taskId,
+        this.#run.runId,
+        this.#run.claimToken,
+        key,
+        stateJson,
+        this.#run.leaseSeconds,
+      ),
     )
     this.seen.set(key, JSON.parse(stateJson))
   }
@@ -303,6 +319,6 @@ export class ReplayContext implements TaskContext {
   ): Promise<void> {
     const key = this.storageName(kind)
     if (this.seen.has(key)) return // the wake already happened: continue
-    throw new SuspendSignal('sleep', wake, { key, stateJson: JSON.stringify(wake) })
+    this.#controls.suspend('sleep', wake, { key, stateJson: JSON.stringify(wake) })
   }
 }

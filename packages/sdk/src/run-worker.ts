@@ -1,14 +1,12 @@
 import {
   type Clock,
-  decideRetry,
-  FatalTaskError,
-  LeaseLostError,
   type SchedulerStore,
+  decideRetry,
   serializeTaskValue,
-  StoreUnavailableError,
-  SuspendSignal,
+  snapshotTaskThrowable,
 } from '@durablerun/core'
 import { ReplayContext, type TaskContext } from './context.js'
+import { createTaskControlScope, trustedStoreControl } from './task-control.js'
 
 /** A registered durable task function. Params arrive parsed from JSON. */
 export type TaskHandler = (ctx: TaskContext, params: unknown) => Promise<unknown>
@@ -41,19 +39,17 @@ export interface RunInvocation {
  * The infrastructure-failure classification, in ONE place: a lost lease and
  * a store outage each abort the pass without spending the user's budget,
  * and every transition write (complete, suspend, fail, the rolling-deploy
- * defer) must treat them identically. Returns undefined for anything else —
- * a genuine user failure — so the caller rethrows or classifies it. Two of
- * the five call sites once open-coded this and silently dropped the outage
- * arm, rethrowing raw; a single definition makes that divergence unwritable.
+ * defer) must treat them identically. Anything else is rethrown. This
+ * function is used only immediately around a store call, where origin rather
+ * than a
+ * user-constructible public class grants infrastructure authority. Two of the
+ * five call sites once open-coded this and silently dropped the outage arm; a
+ * single definition makes that divergence unwritable.
  */
-function infraOutcome(error: unknown): WorkerOutcome | undefined {
-  if (error instanceof LeaseLostError) return { kind: 'lease-lost' }
-  if (error instanceof StoreUnavailableError) return { kind: 'aborted' }
-  return undefined
-}
-
-/** A throw as an expression, so `infraOutcome(e) ?? raise(e)` reads inline. */
-function raise(error: unknown): never {
+function trustedStoreOutcome(error: unknown): WorkerOutcome {
+  const control = trustedStoreControl(error)
+  if (control?.kind === 'lease-lost') return { kind: 'lease-lost' }
+  if (control?.kind === 'store-unavailable') return { kind: 'aborted' }
   throw error
 }
 
@@ -100,7 +96,7 @@ export async function runClaimedRun(
         'preserve',
       )
     } catch (error) {
-      return infraOutcome(error) ?? raise(error)
+      return trustedStoreOutcome(error)
     }
     return { kind: 'deferred' }
   }
@@ -135,9 +131,17 @@ export async function runClaimedRun(
   } catch (error) {
     pumpStop.abort()
     await pump
-    return infraOutcome(error) ?? raise(error)
+    return trustedStoreOutcome(error)
   }
-  const ctx = new ReplayContext(store, queue, run, checkpoints, leaseLost.signal)
+  const taskControls = createTaskControlScope()
+  const ctx = new ReplayContext(
+    store,
+    queue,
+    run,
+    checkpoints,
+    leaseLost.signal,
+    taskControls.issuer,
+  )
 
   try {
     let params: unknown
@@ -147,62 +151,61 @@ export async function runClaimedRun(
       params = run.paramsJson // legacy/opaque payloads pass through as text
     }
     const result = await handler(ctx, params)
+    const resultJson = serializeTaskValue('task result', result)
     // The completion write sits OUTSIDE the user-failure classification: a
     // transient store error here is infrastructure, and billing it as a
     // user failure would terminally fail a task whose handler succeeded.
     try {
-      await store.complete(queue, runId, claimToken, serializeTaskValue('task result', result))
+      await store.complete(queue, runId, claimToken, resultJson)
     } catch (inner) {
-      return infraOutcome(inner) ?? raise(inner)
+      return trustedStoreOutcome(inner)
     }
     return { kind: 'completed' }
   } catch (error) {
-    if (error instanceof SuspendSignal) {
+    const control = taskControls.snapshot(error)
+    if (control?.kind === 'suspend') {
       // awaitEvent parks the run INSIDE its own atomic batch — a second
       // park here would overwrite the registered wait.
-      if (error.reason === 'await-event') return { kind: 'suspended' }
+      if (control.reason === 'await-event') return { kind: 'suspended' }
       try {
         // The park and its marker are ONE transition (or neither happens):
         // a marker without a park would lie on the next pass.
-        if (error.checkpoint) {
-          await store.suspendRun(queue, runId, claimToken, error.wake ?? { inSeconds: 0 }, {
-            key: error.checkpoint.key,
-            stateJson: error.checkpoint.stateJson,
+        if (control.checkpoint) {
+          await store.suspendRun(queue, runId, claimToken, control.wake ?? { inSeconds: 0 }, {
+            key: control.checkpoint.key,
+            stateJson: control.checkpoint.stateJson,
           })
         } else {
-          await store.reschedule(queue, runId, claimToken, error.wake ?? { inSeconds: 0 })
+          await store.reschedule(queue, runId, claimToken, control.wake ?? { inSeconds: 0 })
         }
         return { kind: 'suspended' }
       } catch (inner) {
-        return infraOutcome(inner) ?? raise(inner)
+        return trustedStoreOutcome(inner)
       }
     }
-    // Infrastructure failure by TYPE (a lost lease, or a store outage inside
-    // a step arriving here through user code): abort with no transition —
-    // the lease story recovers and the user's retry budget is untouched.
-    const infra = infraOutcome(error)
-    if (infra) return infra
+    // An invocation-authenticated infrastructure control (a lost lease, or a
+    // store outage crossing the context boundary): abort with no additional
+    // transition — the lease story recovers and the user's retry budget is
+    // untouched.
+    if (control?.kind === 'lease-lost') return { kind: 'lease-lost' }
+    if (control?.kind === 'store-unavailable') return { kind: 'aborted' }
 
     // A user failure: core decides retry over the USER ordinal.
+    const thrown = snapshotTaskThrowable(error)
     const userAttempt = ctx.attempt
-    const decision =
-      error instanceof FatalTaskError
-        ? ({ retry: false } as const)
-        : decideRetry(run.retryStrategy, userAttempt, run.maxAttempts)
-    const failureJson = JSON.stringify({
-      name: error instanceof Error ? error.name : 'Error',
-      message: error instanceof Error ? error.message : String(error),
-    })
+    const decision = thrown.fatal
+      ? ({ retry: false } as const)
+      : decideRetry(run.retryStrategy, userAttempt, run.maxAttempts)
     try {
       await store.fail(
         queue,
         runId,
         claimToken,
-        failureJson,
+        thrown.failureJson,
         decision.retry ? { delaySeconds: decision.delaySeconds } : null,
       )
     } catch (inner) {
-      return infraOutcome(inner) ?? raise(inner)
+      return trustedStoreOutcome(inner)
     }
     return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
   } finally {

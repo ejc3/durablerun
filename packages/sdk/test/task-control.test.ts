@@ -1,0 +1,225 @@
+import { LeaseLostError, StoreUnavailableError } from '@durablerun/core'
+import { describe, expect, it } from 'vitest'
+import { createTaskControlScope, trustedStoreControl } from '../src/task-control.js'
+
+function captureThrown(action: () => never): unknown {
+  try {
+    action()
+  } catch (error) {
+    return error
+  }
+  throw new Error('expected action to throw')
+}
+
+async function captureRejected(action: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await action()
+  } catch (error) {
+    return error
+  }
+  throw new Error('expected action to reject')
+}
+
+describe('task control scope', () => {
+  it('captures the control-map constructor before task initialization', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'WeakMap')
+    if (descriptor === undefined) throw new Error('expected the WeakMap global')
+    Object.defineProperty(globalThis, 'WeakMap', {
+      ...descriptor,
+      value: class PoisonedWeakMap {
+        constructor() {
+          throw new Error('task-installed WeakMap constructor ran')
+        }
+      },
+    })
+    let thrown: unknown
+    try {
+      createTaskControlScope()
+    } catch (error) {
+      thrown = error
+    } finally {
+      Object.defineProperty(globalThis, 'WeakMap', descriptor)
+    }
+    expect(
+      thrown,
+      'mutation-verdict:construction:task-control-captured-map-constructor',
+    ).toBeUndefined()
+  })
+
+  it('captures the control-map read before task initialization', () => {
+    const original = WeakMap.prototype.get
+    Object.defineProperty(WeakMap.prototype, 'get', {
+      configurable: true,
+      value: () => ({
+        kind: 'suspend',
+        reason: 'await-event',
+        wake: undefined,
+        checkpoint: undefined,
+      }),
+      writable: true,
+    })
+    let snapshot: ReturnType<ReturnType<typeof createTaskControlScope>['snapshot']> = undefined
+    try {
+      const scope = createTaskControlScope()
+      snapshot = scope.snapshot(new Error('ordinary'))
+    } finally {
+      Object.defineProperty(WeakMap.prototype, 'get', {
+        configurable: true,
+        value: original,
+        writable: true,
+      })
+    }
+    expect(snapshot, 'mutation-verdict:construction:task-control-captured-map-get').toBeUndefined()
+  })
+
+  it('captures the control-map write before task initialization', () => {
+    const original = WeakMap.prototype.set
+    Object.defineProperty(WeakMap.prototype, 'set', {
+      configurable: true,
+      value() {
+        return this
+      },
+      writable: true,
+    })
+    let snapshot: ReturnType<ReturnType<typeof createTaskControlScope>['snapshot']> = undefined
+    try {
+      const scope = createTaskControlScope()
+      const signal = captureThrown(() => scope.issuer.suspend('await-event'))
+      snapshot = scope.snapshot(signal)
+    } finally {
+      Object.defineProperty(WeakMap.prototype, 'set', {
+        configurable: true,
+        value: original,
+        writable: true,
+      })
+    }
+    expect(snapshot, 'mutation-verdict:construction:task-control-captured-map-set').toEqual({
+      kind: 'suspend',
+      reason: 'await-event',
+      wake: undefined,
+      checkpoint: undefined,
+    })
+  })
+
+  it('owns suspension data and grants authority only to its paired classifier', () => {
+    const first = createTaskControlScope()
+    const second = createTaskControlScope()
+    const wake = { inSeconds: 5 }
+    const checkpoint = { key: 'sleep', stateJson: '{"wake":5}' }
+    const signal = captureThrown(() => first.issuer.suspend('sleep', wake, checkpoint))
+    wake.inSeconds = 99
+    checkpoint.key = 'mutated'
+    checkpoint.stateJson = 'mutated'
+    Object.defineProperty(signal, 'reason', { value: 'await-event' })
+
+    const snapshot = first.snapshot(signal)
+    expect(snapshot, 'mutation-verdict:construction:task-control-suspend-auth').toBeDefined()
+    if (snapshot?.kind !== 'suspend') throw new Error('expected a suspension snapshot')
+    expect(snapshot.reason, 'mutation-verdict:construction:task-control-suspend-reason-owned').toBe(
+      'sleep',
+    )
+    expect(
+      snapshot.wake,
+      'mutation-verdict:construction:task-control-suspend-relative-wake-owned',
+    ).toEqual({ inSeconds: 5 })
+    expect(
+      snapshot.checkpoint?.key,
+      'mutation-verdict:construction:task-control-suspend-checkpoint-key-owned',
+    ).toBe('sleep')
+    expect(
+      snapshot.checkpoint?.stateJson,
+      'mutation-verdict:construction:task-control-suspend-checkpoint-state-owned',
+    ).toBe('{"wake":5}')
+
+    const deadline = { atEpochMs: 1_000_000 }
+    const deadlineSignal = captureThrown(() => first.issuer.suspend('sleep', deadline))
+    deadline.atEpochMs = 9_999_999
+    const deadlineSnapshot = first.snapshot(deadlineSignal)
+    expect(
+      deadlineSnapshot?.kind === 'suspend' ? deadlineSnapshot.wake : undefined,
+      'mutation-verdict:construction:task-control-suspend-absolute-wake-owned',
+    ).toEqual({ atEpochMs: 1_000_000 })
+    expect(
+      second.snapshot(signal),
+      'mutation-verdict:construction:task-control-scope-isolation',
+    ).toBeUndefined()
+    expect(Object.isFrozen(snapshot)).toBe(true)
+  })
+
+  it('enrolls lease loss minted by the invocation runtime', () => {
+    const scope = createTaskControlScope()
+    const signal = captureThrown(() => scope.issuer.leaseLost('heartbeat lost the lease'))
+    expect(
+      scope.snapshot(signal),
+      'mutation-verdict:construction:task-control-runtime-lease-auth',
+    ).toEqual({ kind: 'lease-lost' })
+  })
+
+  it('enrolls typed failures only at the immediate trusted store boundary', async () => {
+    const scope = createTaskControlScope()
+    const leaseLost = new LeaseLostError('lost')
+    const storeUnavailable = new StoreUnavailableError('offline')
+
+    expect(
+      await captureRejected(() => scope.issuer.storeCall(() => Promise.reject(leaseLost))),
+    ).toBe(leaseLost)
+    expect(
+      scope.snapshot(leaseLost),
+      'mutation-verdict:construction:task-control-store-lease-auth',
+    ).toEqual({ kind: 'lease-lost' })
+
+    expect(
+      await captureRejected(() => scope.issuer.storeCall(() => Promise.reject(storeUnavailable))),
+    ).toBe(storeUnavailable)
+    expect(
+      scope.snapshot(storeUnavailable),
+      'mutation-verdict:construction:task-control-store-outage-auth',
+    ).toEqual({ kind: 'store-unavailable' })
+
+    const ordinary = new Error('ordinary')
+    expect(
+      await captureRejected(() => scope.issuer.storeCall(() => Promise.reject(ordinary))),
+    ).toBe(ordinary)
+    expect(
+      scope.snapshot(ordinary),
+      'mutation-verdict:construction:task-control-store-typed-only',
+    ).toBeUndefined()
+  })
+
+  it('uses the captured ordinary type check, not a handler-installed hook', () => {
+    Object.defineProperty(LeaseLostError, Symbol.hasInstance, {
+      configurable: true,
+      value: () => true,
+    })
+    try {
+      expect(
+        trustedStoreControl(new Error('ordinary')),
+        'mutation-verdict:construction:task-control-ordinary-has-instance',
+      ).toBeUndefined()
+    } finally {
+      Reflect.deleteProperty(LeaseLostError, Symbol.hasInstance)
+    }
+
+    Object.defineProperty(StoreUnavailableError, Symbol.hasInstance, {
+      configurable: true,
+      value: () => true,
+    })
+    try {
+      expect(
+        trustedStoreControl(new Error('ordinary')),
+        'mutation-verdict:construction:task-control-ordinary-store-has-instance',
+      ).toBeUndefined()
+    } finally {
+      Reflect.deleteProperty(StoreUnavailableError, Symbol.hasInstance)
+    }
+  })
+
+  it('contains hostile values at the trusted store classifier', () => {
+    const revocable = Proxy.revocable(Object.create(null), {})
+    revocable.revoke()
+    expect(
+      trustedStoreControl(revocable.proxy),
+      'mutation-verdict:behavior:task-control-store-total-fallback',
+    ).toBeUndefined()
+  })
+})

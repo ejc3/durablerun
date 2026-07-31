@@ -5,6 +5,106 @@
  * ctx.sleepFor / ctx.awaitEvent and caught by the worker runtime.
  */
 
+export type TaskThrowableSnapshot = Readonly<{
+  kind: 'failure'
+  fatal: boolean
+  failureJson: string
+}>
+
+const freeze = Object.freeze
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor
+const getPrototypeOf = Object.getPrototypeOf
+const stringifyPrimitive = String
+const stringifyJson = JSON.stringify
+const AUTHENTIC_FATAL_FAILURES = new WeakMap<object, TaskThrowableSnapshot>()
+const getAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.get.bind(AUTHENTIC_FATAL_FAILURES)
+const setAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.set.bind(AUTHENTIC_FATAL_FAILURES)
+
+function taskFailureJson(name: string, message: string): string {
+  // Quote primitive strings separately: serializing an object would consult a
+  // user-installed Object.prototype.toJSON after the handler has run.
+  return `{"name":${stringifyJson(name)},"message":${stringifyJson(message)}}`
+}
+
+export const UNINSPECTABLE_TASK_FAILURE_JSON = taskFailureJson(
+  'Error',
+  'task threw an uninspectable value',
+)
+
+const GENERIC_TASK_FAILURE = freeze({
+  kind: 'failure',
+  fatal: false,
+  failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
+} as const)
+
+function authenticateFatalFailure(error: object, snapshot: TaskThrowableSnapshot): void {
+  setAuthenticFatalFailure(error, freeze(snapshot))
+}
+
+type DataString =
+  | { readonly kind: 'value'; readonly value: string }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unsafe' }
+
+/**
+ * Read an Error-like data field without invoking accessors or coercion.
+ * Prototype traversal preserves built-in names such as TypeError while the
+ * fixed depth makes hostile or cyclic proxy chains total.
+ */
+function errorDataString(value: object, field: 'name' | 'message'): DataString {
+  let current: object | null = value
+  for (let depth = 0; depth < 8 && current !== null; depth++) {
+    const descriptor = getOwnPropertyDescriptor(current, field)
+    if (descriptor !== undefined) {
+      return 'value' in descriptor && typeof descriptor.value === 'string'
+        ? { kind: 'value', value: descriptor.value }
+        : { kind: 'unsafe' }
+    }
+    current = getPrototypeOf(current)
+  }
+  return current === null ? { kind: 'absent' } : { kind: 'unsafe' }
+}
+
+function unauthenticatedTaskFailure(value: unknown): TaskThrowableSnapshot {
+  if ((typeof value === 'object' && value !== null) || typeof value === 'function') {
+    const name = errorDataString(value, 'name')
+    if (name.kind === 'unsafe') return GENERIC_TASK_FAILURE
+    const message = errorDataString(value, 'message')
+    if (message.kind !== 'value') return GENERIC_TASK_FAILURE
+    return freeze({
+      kind: 'failure',
+      fatal: false,
+      failureJson: taskFailureJson(name.kind === 'value' ? name.value : 'Error', message.value),
+    })
+  }
+
+  const message = typeof value === 'string' ? value : stringifyPrimitive(value)
+  return freeze({
+    kind: 'failure',
+    fatal: false,
+    failureJson: taskFailureJson('Error', message),
+  })
+}
+
+/**
+ * The single total user-failure boundary. FatalTaskError is the one
+ * intentionally public policy signal; every other JavaScript value becomes
+ * owned failure JSON without retaining, coercing an object, or later
+ * re-reading the thrown value. Engine control authority is invocation-local
+ * in the SDK and is checked before this function is called.
+ */
+export function snapshotTaskThrowable(value: unknown): TaskThrowableSnapshot {
+  try {
+    if ((typeof value === 'object' && value !== null) || typeof value === 'function') {
+      const authentic = getAuthenticFatalFailure(value)
+      if (authentic !== undefined) return authentic
+    }
+    return unauthenticatedTaskFailure(value)
+  } catch {
+    return GENERIC_TASK_FAILURE
+  }
+}
+
 export class SuspendSignal extends Error {
   override readonly name = 'SuspendSignal'
   constructor(
@@ -30,7 +130,9 @@ export class RunCancelledError extends Error {
 
 /**
  * The lease is gone — swept, superseded, or expired (Absurd AB002). The
- * worker must abort immediately; another claim now owns the run.
+ * worker must abort immediately when this originates at a trusted store or
+ * runtime boundary; another claim now owns the run. Task construction alone
+ * carries no runtime authority.
  */
 export class LeaseLostError extends Error {
   override readonly name = 'LeaseLostError'
@@ -39,8 +141,10 @@ export class LeaseLostError extends Error {
 /**
  * The store could not be reached or the write did not go through — a
  * TRANSIENT infrastructure failure (network, busy database). Consumers
- * classify by this TYPE: infrastructure problems abort a pass quietly and
- * recover through the lease, and must never spend the user's retry budget.
+ * classify this type only at the immediate trusted store boundary:
+ * infrastructure problems abort a pass quietly and recover through the
+ * lease, and must never spend the user's retry budget. Task construction
+ * alone carries no runtime authority.
  */
 export class StoreUnavailableError extends Error {
   override readonly name = 'StoreUnavailableError'
@@ -73,9 +177,25 @@ export class SchemaNotInitializedError extends Error {
   override readonly name = 'SchemaNotInitializedError'
 }
 
-/** Worker-thrown: permanent failure, skip retries (maps to Absurd FatalError). */
+/** Intentionally public task policy: permanent failure, skip retries. */
 export class FatalTaskError extends Error {
   override readonly name = 'FatalTaskError'
+  constructor(message?: string, options?: ErrorOptions) {
+    super(message, options)
+    const descriptor = getOwnPropertyDescriptor(this, 'message')
+    const ownedMessage =
+      descriptor !== undefined && 'value' in descriptor && typeof descriptor.value === 'string'
+        ? descriptor.value
+        : ''
+    authenticateFatalFailure(
+      this,
+      freeze({
+        kind: 'failure',
+        fatal: true,
+        failureJson: taskFailureJson('FatalTaskError', ownedMessage),
+      }),
+    )
+  }
 }
 
 /**

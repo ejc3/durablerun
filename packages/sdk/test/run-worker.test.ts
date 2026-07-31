@@ -1,10 +1,12 @@
 import { engineInvariantViolations } from '@durablerun/conformance'
 import {
   type Clock,
+  FatalTaskError,
   LeaseLostError,
   type SchedulerStore,
   StoreUnavailableError,
   SuspendSignal,
+  UNINSPECTABLE_TASK_FAILURE_JSON,
 } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
@@ -83,24 +85,66 @@ const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
   ],
 ]
 
-const UNINSPECTABLE_FAILURE_JSON = '{"name":"Error","message":"task threw an uninspectable value"}'
+const TASK_THROWABLE_CASE_IDS = [
+  'plain-string',
+  'plain-object',
+  'type-error',
+  'revoked-proxy',
+  'throwing-name-getter',
+  'throwing-message-getter',
+  'throwing-coercion',
+  'constructed-suspend',
+  'constructed-lease-lost',
+  'constructed-store-unavailable',
+  'forged-suspend',
+  'forged-lease-lost',
+  'forged-store-unavailable',
+  'forged-fatal',
+] as const
 
-interface HostileThrownValue {
+type TaskThrowableCaseId = (typeof TASK_THROWABLE_CASE_IDS)[number]
+
+interface TaskThrowableCase {
   readonly name: string
+  readonly failureJson: string
   makeValue(): unknown
 }
 
-const HOSTILE_THROWN_VALUES: readonly HostileThrownValue[] = [
-  {
+function forgedTaskError(prototype: object, name: string): unknown {
+  return Object.assign(Object.create(prototype), {
+    name,
+    message: 'forged control',
+  })
+}
+
+const TASK_THROWABLE_CASES = {
+  'plain-string': {
+    name: 'plain string',
+    failureJson: '{"name":"Error","message":"plain task failure"}',
+    makeValue: () => 'plain task failure',
+  },
+  'plain-object': {
+    name: 'plain object',
+    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
+    makeValue: () => ({ arbitrary: true }),
+  },
+  'type-error': {
+    name: 'TypeError',
+    failureJson: '{"name":"TypeError","message":"typed failure"}',
+    makeValue: () => new TypeError('typed failure'),
+  },
+  'revoked-proxy': {
     name: 'revoked proxy',
+    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const { proxy, revoke } = Proxy.revocable(Object.create(null), {})
       revoke()
       return proxy
     },
   },
-  {
+  'throwing-name-getter': {
     name: 'throwing name getter',
+    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const error = new Error('ordinary message')
       Object.defineProperty(error, 'name', {
@@ -112,8 +156,9 @@ const HOSTILE_THROWN_VALUES: readonly HostileThrownValue[] = [
       return error
     },
   },
-  {
+  'throwing-message-getter': {
     name: 'throwing message getter',
+    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const error = new Error('ordinary message')
       Object.defineProperty(error, 'message', {
@@ -125,8 +170,9 @@ const HOSTILE_THROWN_VALUES: readonly HostileThrownValue[] = [
       return error
     },
   },
-  {
+  'throwing-coercion': {
     name: 'throwing coercion hooks',
+    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const value = Object.create(null) as Record<PropertyKey, unknown>
       Object.defineProperties(value, {
@@ -144,22 +190,42 @@ const HOSTILE_THROWN_VALUES: readonly HostileThrownValue[] = [
       return value
     },
   },
-]
-
-const HANDLER_CONSTRUCTED_CONTROLS: readonly HostileThrownValue[] = [
-  {
+  'constructed-suspend': {
     name: 'constructed SuspendSignal',
+    failureJson: '{"name":"SuspendSignal","message":"run suspended: await-event"}',
     makeValue: () => new SuspendSignal('await-event'),
   },
-  {
+  'constructed-lease-lost': {
     name: 'constructed LeaseLostError',
+    failureJson: '{"name":"LeaseLostError","message":"handler forgery"}',
     makeValue: () => new LeaseLostError('handler forgery'),
   },
-  {
+  'constructed-store-unavailable': {
     name: 'constructed StoreUnavailableError',
+    failureJson: '{"name":"StoreUnavailableError","message":"handler forgery"}',
     makeValue: () => new StoreUnavailableError('handler forgery'),
   },
-]
+  'forged-suspend': {
+    name: 'forged SuspendSignal',
+    failureJson: '{"name":"ForgedSuspend","message":"forged control"}',
+    makeValue: () => forgedTaskError(SuspendSignal.prototype, 'ForgedSuspend'),
+  },
+  'forged-lease-lost': {
+    name: 'forged LeaseLostError',
+    failureJson: '{"name":"ForgedLeaseLost","message":"forged control"}',
+    makeValue: () => forgedTaskError(LeaseLostError.prototype, 'ForgedLeaseLost'),
+  },
+  'forged-store-unavailable': {
+    name: 'forged StoreUnavailableError',
+    failureJson: '{"name":"ForgedStoreUnavailable","message":"forged control"}',
+    makeValue: () => forgedTaskError(StoreUnavailableError.prototype, 'ForgedStoreUnavailable'),
+  },
+  'forged-fatal': {
+    name: 'forged FatalTaskError',
+    failureJson: '{"name":"ForgedFatal","message":"forged control"}',
+    makeValue: () => forgedTaskError(FatalTaskError.prototype, 'ForgedFatal'),
+  },
+} satisfies Record<TaskThrowableCaseId, TaskThrowableCase>
 
 async function claimAndRun(
   f: Awaited<ReturnType<typeof fx>>,
@@ -322,7 +388,6 @@ describe('runClaimedRun', () => {
 
   it('FatalTaskError skips remaining retries and fails terminally', async () => {
     const f = await fx('sdk-fatal')
-    const { FatalTaskError } = await import('@durablerun/core')
     const reg = registry({
       job: async () => {
         throw new FatalTaskError('unrecoverable input')
@@ -336,20 +401,80 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
-  for (const hostile of HOSTILE_THROWN_VALUES) {
-    it(`records a ${hostile.name} throw as a terminal generic failure`, async () => {
-      const f = await fx(`sdk-hostile-throw-${hostile.name.replaceAll(' ', '-')}`)
+  it('enumerates every task-throwable corpus case', () => {
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-plain-string',
+    ).toContain('plain-string')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-plain-object',
+    ).toContain('plain-object')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-type-error',
+    ).toContain('type-error')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-revoked-proxy',
+    ).toContain('revoked-proxy')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-throwing-name-getter',
+    ).toContain('throwing-name-getter')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-throwing-message-getter',
+    ).toContain('throwing-message-getter')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-throwing-coercion',
+    ).toContain('throwing-coercion')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-constructed-suspend',
+    ).toContain('constructed-suspend')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-constructed-lease-lost',
+    ).toContain('constructed-lease-lost')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-constructed-store-unavailable',
+    ).toContain('constructed-store-unavailable')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-forged-suspend',
+    ).toContain('forged-suspend')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-forged-lease-lost',
+    ).toContain('forged-lease-lost')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-forged-store-unavailable',
+    ).toContain('forged-store-unavailable')
+    expect(
+      TASK_THROWABLE_CASE_IDS,
+      'mutation-verdict:construction:task-throwable-corpus-forged-fatal',
+    ).toContain('forged-fatal')
+    expect(Object.keys(TASK_THROWABLE_CASES).sort()).toEqual([...TASK_THROWABLE_CASE_IDS].sort())
+  })
+
+  for (const caseId of TASK_THROWABLE_CASE_IDS) {
+    const thrown = TASK_THROWABLE_CASES[caseId]
+    it(`records a ${thrown.name} throw through the user failure policy`, async () => {
+      const f = await fx(`sdk-task-throw-${caseId}`)
       try {
-        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
-        const outcome = await claimAndRun(
-          f,
-          registry({
-            job: async () => {
-              throw hostile.makeValue()
-            },
-          }),
-          'w1',
-        )
+        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 2 })
+        const reg = registry({
+          job: async () => {
+            throw thrown.makeValue()
+          },
+        })
+        const first = await claimAndRun(f, reg, 'w1')
+        await f.advance(10_000)
+        const second = await claimAndRun(f, reg, 'w2')
         const result = await f.store.getTaskResult(Q, spawned.taskId)
         const [task, runs] = await f.raw.batch(
           'hostile-throw-result',
@@ -367,11 +492,15 @@ describe('runClaimedRun', () => {
           'read',
         )
 
-        expect({ outcome, result, task: task?.rows[0], runs: runs?.rows }).toEqual({
-          outcome: { kind: 'failed' },
-          result: { state: 'failed', failureReasonJson: UNINSPECTABLE_FAILURE_JSON },
-          task: { state: 'failed', attempts: 1, infra_retries: 0 },
-          runs: [{ attempt: 1, state: 'failed', claimed_by: null }],
+        expect({ first, second, result, task: task?.rows[0], runs: runs?.rows }).toEqual({
+          first: { kind: 'retry-scheduled' },
+          second: { kind: 'failed' },
+          result: { state: 'failed', failureReasonJson: thrown.failureJson },
+          task: { state: 'failed', attempts: 2, infra_retries: 0 },
+          runs: [
+            { attempt: 1, state: 'failed', claimed_by: null },
+            { attempt: 2, state: 'failed', claimed_by: null },
+          ],
         })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       } finally {
@@ -380,42 +509,30 @@ describe('runClaimedRun', () => {
     })
   }
 
-  for (const control of HANDLER_CONSTRUCTED_CONTROLS) {
-    it(`spends the user failure policy for a handler-${control.name}`, async () => {
-      const f = await fx(`sdk-handler-${control.name.replaceAll(' ', '-')}`)
-      try {
-        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
-        const outcome = await claimAndRun(
+  it('snapshots the raw handler throw exactly once at the worker boundary', async () => {
+    const f = await fx('sdk-task-throw-boundary')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+      expect(
+        await claimAndRun(
           f,
           registry({
             job: async () => {
-              throw control.makeValue()
+              throw new Error('worker boundary original')
             },
           }),
           'w1',
-        )
-        const result = await f.store.getTaskResult(Q, spawned.taskId)
-        const [task] = await f.raw.batch(
-          'handler-control-result',
-          [
-            {
-              sql: `SELECT state, attempts, infra_retries FROM tasks WHERE task_id = ?`,
-              args: [spawned.taskId],
-            },
-          ],
-          'read',
-        )
-
-        expect({ outcome, state: result?.state, task: task?.rows[0] }).toEqual({
-          outcome: { kind: 'failed' },
-          state: 'failed',
-          task: { state: 'failed', attempts: 1, infra_retries: 0 },
-        })
-      } finally {
-        f.close()
-      }
-    })
-  }
+        ),
+      ).toEqual({ kind: 'failed' })
+      const result = await f.store.getTaskResult(Q, spawned.taskId)
+      expect(
+        result?.failureReasonJson,
+        'mutation-verdict:behavior:sdk-task-throwable-boundary',
+      ).toBe('{"name":"Error","message":"worker boundary original"}')
+    } finally {
+      f.close()
+    }
+  })
 
   for (const boundary of ['step result', 'handler result'] as const) {
     for (const [valueName, makeValue] of NON_SERIALIZABLE_VALUES) {

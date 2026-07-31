@@ -413,11 +413,19 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. The failure path never coerces a value thrown by user
-  serialization code.
-  Error taxonomy on a pass: infrastructure failures (typed
-  `StoreUnavailableError`, thrown at the executor boundary) abort the pass
-  with NO transition — recovery is the lease story and the user's retry
+  `FatalTaskError`s. At the user-handler catch boundary, only controls minted
+  by that invocation's private runtime authority can suspend or abort; a public
+  `SuspendSignal`, `LeaseLostError`, or `StoreUnavailableError` constructed by
+  task code is an ordinary task failure. `FatalTaskError` is the intentionally
+  public policy signal that skips retries. Every other thrown value becomes one
+  owned canonical failure snapshot; error-like diagnostics come only from
+  guarded data-string descriptors, and uninspectable objects use one fixed JSON
+  spelling without invoking getters or coercion.
+  Error taxonomy on a pass: infrastructure failures from caught
+  post-activation reads and transitions are classified at the immediate catch;
+  context store failures are enrolled before they cross the handler boundary.
+  Both abort the pass with NO ADDITIONAL transition — a lost response may
+  already have committed — so recovery is the lease story and the user's retry
   budget is never touched; only errors from user code spend user attempts.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement

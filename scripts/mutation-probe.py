@@ -2183,6 +2183,430 @@ MUTATION_SPECS.extend(
             "export type NormalizedRetryStrategy = RetryStrategy",
             "object spread can forge normalized retry data at compile time",
         ),
+        (
+            "task-throwable-primitive",
+            "packages/core/src/errors.ts",
+            "  const message = typeof value === 'string' ? value : stringifyPrimitive(value)",
+            "  const message =\n"
+            "    typeof value === 'string' ? 'mutated task failure' : stringifyPrimitive(value)",
+            "a primitive throw crosses the snapshot boundary with a different message",
+        ),
+        (
+            "task-throwable-prototype-data",
+            "packages/core/src/errors.ts",
+            "    const name = errorDataString(value, 'name')",
+            "    const name: DataString = { kind: 'absent' } // MUTATION",
+            "a built-in Error subtype loses its data-string prototype name",
+        ),
+        (
+            "task-throwable-generic-payload",
+            "packages/core/src/errors.ts",
+            "  'task threw an uninspectable value',",
+            "  'mutated uninspectable task failure',",
+            "uninspectable objects acquire a second generic wire spelling",
+        ),
+        (
+            "task-throwable-total-fallback",
+            "packages/core/src/errors.ts",
+            "  } catch {\n"
+            "    return GENERIC_TASK_FAILURE\n"
+            "  }",
+            "  } catch (error) {\n"
+            "    throw error // MUTATION\n"
+            "  }",
+            "a hostile proxy trap escapes the total throwable boundary",
+        ),
+        (
+            "task-throwable-name-data-only",
+            "packages/core/src/errors.ts",
+            "    const name = errorDataString(value, 'name')",
+            "    const name: DataString = {\n"
+            "      kind: 'value',\n"
+            "      value: Reflect.get(value, 'name') as string,\n"
+            "    }",
+            "failure normalization invokes a hostile name getter",
+        ),
+        (
+            "task-throwable-message-data-only",
+            "packages/core/src/errors.ts",
+            "    const message = errorDataString(value, 'message')",
+            "    const message: DataString = {\n"
+            "      kind: 'value',\n"
+            "      value: Reflect.get(value, 'message') as string,\n"
+            "    }",
+            "failure normalization invokes a hostile message getter",
+        ),
+        (
+            "task-throwable-no-object-coercion",
+            "packages/core/src/errors.ts",
+            "    if (message.kind !== 'value') return GENERIC_TASK_FAILURE",
+            "    if (message.kind !== 'value') {\n"
+            "      return freeze({\n"
+            "        kind: 'failure',\n"
+            "        fatal: false,\n"
+            "        failureJson: taskFailureJson('Error', stringifyPrimitive(value)),\n"
+            "      })\n"
+            "    }",
+            "failure normalization coerces an uninspectable object",
+        ),
+        (
+            "task-control-suspend-auth",
+            "packages/sdk/src/task-control.ts",
+            "      return enroll(new SuspendSignal(reason, wake, checkpoint), {\n"
+            "        kind: 'suspend',\n"
+            "        reason,\n"
+            "        wake: ownedWake,\n"
+            "        checkpoint: ownedCheckpoint,\n"
+            "      })",
+            "      throw new SuspendSignal(reason, ownedWake, ownedCheckpoint) // MUTATION",
+            "a suspension minted by the invocation is not enrolled in its control scope",
+        ),
+        (
+            "task-control-suspend-reason-owned",
+            "packages/sdk/src/task-control.ts",
+            "      return enroll(new SuspendSignal(reason, wake, checkpoint), {\n"
+            "        kind: 'suspend',\n"
+            "        reason,\n"
+            "        wake: ownedWake,\n"
+            "        checkpoint: ownedCheckpoint,\n"
+            "      })",
+            "      const signal = new SuspendSignal(reason, wake, checkpoint)\n"
+            "      return enroll(signal, {\n"
+            "        kind: 'suspend',\n"
+            "        get reason(): 'sleep' | 'await-event' {\n"
+            "          return signal.reason as 'sleep' | 'await-event'\n"
+            "        },\n"
+            "        wake: ownedWake,\n"
+            "        checkpoint: ownedCheckpoint,\n"
+            "      })",
+            "the suspension snapshot re-reads a handler-mutated reason",
+        ),
+        (
+            "task-control-suspend-relative-wake-owned",
+            "packages/sdk/src/task-control.ts",
+            "            ? freeze({ inSeconds: wake.inSeconds })",
+            "            ? wake",
+            "the suspension snapshot retains a handler-mutable relative wake",
+        ),
+        (
+            "task-control-suspend-absolute-wake-owned",
+            "packages/sdk/src/task-control.ts",
+            "            : freeze({ atEpochMs: wake.atEpochMs })",
+            "            : wake",
+            "the suspension snapshot retains a handler-mutable absolute wake",
+        ),
+        (
+            "task-control-suspend-checkpoint-key-owned",
+            "packages/sdk/src/task-control.ts",
+            "          : freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })",
+            "          : freeze({\n"
+            "              get key() {\n"
+            "                return checkpoint.key\n"
+            "              },\n"
+            "              stateJson: checkpoint.stateJson,\n"
+            "            })",
+            "the suspension snapshot re-reads a handler-mutated checkpoint key",
+        ),
+        (
+            "task-control-suspend-checkpoint-state-owned",
+            "packages/sdk/src/task-control.ts",
+            "          : freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })",
+            "          : freeze({\n"
+            "              key: checkpoint.key,\n"
+            "              get stateJson() {\n"
+            "                return checkpoint.stateJson\n"
+            "              },\n"
+            "            })",
+            "the suspension snapshot re-reads handler-mutated checkpoint state",
+        ),
+        (
+            "task-control-captured-map-constructor",
+            "packages/sdk/src/task-control.ts",
+            "  const controls = new TaskControlMap<object, TaskControlSnapshot>()",
+            "  const controls = new WeakMap<object, TaskControlSnapshot>()",
+            "task initialization can replace the control registry constructor",
+        ),
+        (
+            "task-control-captured-map-get",
+            "packages/sdk/src/task-control.ts",
+            "      return weakMapGet(controls, value)",
+            "      return controls.get(value)",
+            "task initialization can replace the control registry read",
+        ),
+        (
+            "task-control-captured-map-set",
+            "packages/sdk/src/task-control.ts",
+            "    weakMapSet(controls, error, freeze(snapshot))",
+            "    controls.set(error, freeze(snapshot))",
+            "task initialization can replace the control registry write",
+        ),
+        (
+            "task-control-scope-isolation",
+            "packages/sdk/src/task-control.ts",
+            "  const controls = new TaskControlMap<object, TaskControlSnapshot>()",
+            "  const controls =\n"
+            "    ((createTaskControlScope as unknown as {\n"
+            "      mutationControls?: WeakMap<object, TaskControlSnapshot>\n"
+            "    }).mutationControls ??= new TaskControlMap<object, TaskControlSnapshot>())",
+            "one invocation accepts a control minted by another invocation",
+        ),
+        (
+            "task-control-runtime-lease-auth",
+            "packages/sdk/src/task-control.ts",
+            "      return enroll(new LeaseLostError(message), LEASE_LOST)",
+            "      throw new LeaseLostError(message) // MUTATION",
+            "lease loss minted by the invocation runtime is not enrolled",
+        ),
+        (
+            "task-control-store-lease-auth",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(LeaseLostError, error)) return LEASE_LOST",
+            "    if (false && hasInstance(LeaseLostError, error)) return LEASE_LOST",
+            "a typed lease loss from the immediate store boundary is not authenticated",
+        ),
+        (
+            "task-control-store-outage-auth",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
+            "    if (false && hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
+            "a typed outage from the immediate store boundary is not authenticated",
+        ),
+        (
+            "task-control-store-typed-only",
+            "packages/sdk/src/task-control.ts",
+            "  } catch {\n"
+            "    // A hostile proxy is not one of the store's typed infrastructure errors.\n"
+            "  }\n"
+            "  return undefined\n"
+            "}",
+            "  } catch {\n"
+            "    // A hostile proxy is not one of the store's typed infrastructure errors.\n"
+            "  }\n"
+            "  return STORE_UNAVAILABLE // MUTATION\n"
+            "}",
+            "an ordinary store rejection gains infrastructure authority",
+        ),
+        (
+            "task-control-store-total-fallback",
+            "packages/sdk/src/task-control.ts",
+            "  } catch {\n"
+            "    // A hostile proxy is not one of the store's typed infrastructure errors.\n"
+            "  }\n"
+            "  return undefined\n"
+            "}",
+            "  } catch (error) {\n"
+            "    throw error // MUTATION\n"
+            "  }\n"
+            "  return undefined\n"
+            "}",
+            "a hostile proxy escapes the trusted store classifier",
+        ),
+        (
+            "task-control-ordinary-has-instance",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(LeaseLostError, error)) return LEASE_LOST",
+            "    if (error instanceof LeaseLostError) return LEASE_LOST",
+            "a handler-installed Symbol.hasInstance hook can mint lease-loss authority",
+        ),
+        (
+            "task-control-ordinary-store-has-instance",
+            "packages/sdk/src/task-control.ts",
+            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
+            "    if (error instanceof StoreUnavailableError) return STORE_UNAVAILABLE",
+            "a handler-installed Symbol.hasInstance hook can mint store-outage authority",
+        ),
+        (
+            "task-throwable-public-suspend",
+            "packages/core/src/errors.ts",
+            "  override readonly name = 'SuspendSignal'",
+            "  override readonly name = (\n"
+            "    authenticateFatalFailure(this, GENERIC_TASK_FAILURE),\n"
+            "    'SuspendSignal'\n"
+            "  )",
+            "constructing the public suspension class gains privileged failure enrollment",
+        ),
+        (
+            "task-throwable-public-lease-lost",
+            "packages/core/src/errors.ts",
+            "  override readonly name = 'LeaseLostError'",
+            "  override readonly name = (\n"
+            "    authenticateFatalFailure(this, GENERIC_TASK_FAILURE),\n"
+            "    'LeaseLostError'\n"
+            "  )",
+            "constructing the public lease-loss class gains privileged failure enrollment",
+        ),
+        (
+            "task-throwable-public-store-unavailable",
+            "packages/core/src/errors.ts",
+            "  override readonly name = 'StoreUnavailableError'",
+            "  override readonly name = (\n"
+            "    authenticateFatalFailure(this, GENERIC_TASK_FAILURE),\n"
+            "    'StoreUnavailableError'\n"
+            "  )",
+            "constructing the public store-outage class gains privileged failure enrollment",
+        ),
+        (
+            "task-throwable-fatal-auth",
+            "packages/core/src/errors.ts",
+            "    authenticateFatalFailure(\n"
+            "      this,\n"
+            "      freeze({\n"
+            "        kind: 'failure',\n"
+            "        fatal: true,\n"
+            "        failureJson: taskFailureJson('FatalTaskError', ownedMessage),\n"
+            "      }),\n"
+            "    )",
+            "    void ownedMessage // MUTATION",
+            "a genuine fatal failure is not snapshotted at construction",
+        ),
+        (
+            "task-throwable-fatal-flag",
+            "packages/core/src/errors.ts",
+            "        fatal: true,",
+            "        fatal: false,",
+            "a genuine FatalTaskError spends the ordinary retry budget",
+        ),
+        (
+            "task-throwable-forged-suspend",
+            "packages/core/src/errors.ts",
+            "      const authentic = getAuthenticFatalFailure(value)",
+            "      const authentic =\n"
+            "        getAuthenticFatalFailure(value) ??\n"
+            "        (value instanceof SuspendSignal ? GENERIC_TASK_FAILURE : undefined)",
+            "the public suspension prototype alone grants privileged failure enrollment",
+        ),
+        (
+            "task-throwable-forged-lease-lost",
+            "packages/core/src/errors.ts",
+            "      const authentic = getAuthenticFatalFailure(value)",
+            "      const authentic =\n"
+            "        getAuthenticFatalFailure(value) ??\n"
+            "        (value instanceof LeaseLostError ? GENERIC_TASK_FAILURE : undefined)",
+            "the public lease-loss prototype alone grants privileged failure enrollment",
+        ),
+        (
+            "task-throwable-forged-store-unavailable",
+            "packages/core/src/errors.ts",
+            "      const authentic = getAuthenticFatalFailure(value)",
+            "      const authentic =\n"
+            "        getAuthenticFatalFailure(value) ??\n"
+            "        (value instanceof StoreUnavailableError ? GENERIC_TASK_FAILURE : undefined)",
+            "the public store-outage prototype alone grants privileged failure enrollment",
+        ),
+        (
+            "task-throwable-forged-fatal",
+            "packages/core/src/errors.ts",
+            "      const authentic = getAuthenticFatalFailure(value)",
+            "      const authentic =\n"
+            "        getAuthenticFatalFailure(value) ??\n"
+            "        (value instanceof FatalTaskError ? GENERIC_TASK_FAILURE : undefined)",
+            "the public fatal-error prototype alone grants fatal-policy enrollment",
+        ),
+        (
+            "task-throwable-corpus-plain-string",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'plain-string',\n",
+            "",
+            "the SDK throwable corpus silently omits primitive string throws",
+        ),
+        (
+            "task-throwable-corpus-plain-object",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'plain-object',\n",
+            "",
+            "the SDK throwable corpus silently omits uninspectable plain objects",
+        ),
+        (
+            "task-throwable-corpus-type-error",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'type-error',\n",
+            "",
+            "the SDK throwable corpus silently omits built-in Error subtypes",
+        ),
+        (
+            "task-throwable-corpus-revoked-proxy",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'revoked-proxy',\n",
+            "",
+            "the SDK throwable corpus silently omits revoked proxies",
+        ),
+        (
+            "task-throwable-corpus-throwing-name-getter",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'throwing-name-getter',\n",
+            "",
+            "the SDK throwable corpus silently omits hostile name getters",
+        ),
+        (
+            "task-throwable-corpus-throwing-message-getter",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'throwing-message-getter',\n",
+            "",
+            "the SDK throwable corpus silently omits hostile message getters",
+        ),
+        (
+            "task-throwable-corpus-throwing-coercion",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'throwing-coercion',\n",
+            "",
+            "the SDK throwable corpus silently omits hostile object coercion",
+        ),
+        (
+            "task-throwable-corpus-constructed-suspend",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'constructed-suspend',\n",
+            "",
+            "the SDK throwable corpus silently omits public suspension construction",
+        ),
+        (
+            "task-throwable-corpus-constructed-lease-lost",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'constructed-lease-lost',\n",
+            "",
+            "the SDK throwable corpus silently omits public lease-loss construction",
+        ),
+        (
+            "task-throwable-corpus-constructed-store-unavailable",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'constructed-store-unavailable',\n",
+            "",
+            "the SDK throwable corpus silently omits public store-outage construction",
+        ),
+        (
+            "task-throwable-corpus-forged-suspend",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'forged-suspend',\n",
+            "",
+            "the SDK throwable corpus silently omits forged suspension prototypes",
+        ),
+        (
+            "task-throwable-corpus-forged-lease-lost",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'forged-lease-lost',\n",
+            "",
+            "the SDK throwable corpus silently omits forged lease-loss prototypes",
+        ),
+        (
+            "task-throwable-corpus-forged-store-unavailable",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'forged-store-unavailable',\n",
+            "",
+            "the SDK throwable corpus silently omits forged store-outage prototypes",
+        ),
+        (
+            "task-throwable-corpus-forged-fatal",
+            "packages/sdk/test/run-worker.test.ts",
+            "  'forged-fatal',\n",
+            "",
+            "the SDK throwable corpus silently omits forged fatal-error prototypes",
+        ),
+        (
+            "sdk-task-throwable-boundary",
+            "packages/sdk/src/run-worker.ts",
+            "    const thrown = snapshotTaskThrowable(error)",
+            "    const thrown = snapshotTaskThrowable(new Error('worker boundary replacement'))",
+            "the worker snapshots a replacement instead of the raw handler throw",
+        ),
     )
 )
 
@@ -3131,6 +3555,294 @@ VERDICTS.update(
             "packages/store-libsql/test/retry-strategy-types.test.ts",
             "TypeScript construction rejects a spread-normalized retry strategy",
             "mutation-verdict:construction:retry-normalized-type-is-nominal",
+        ),
+        "task-throwable-primitive": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable owns primitive and Error diagnostics in one canonical representation",
+            "mutation-verdict:behavior:task-throwable-primitive",
+        ),
+        "task-throwable-prototype-data": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable owns primitive and Error diagnostics in one canonical representation",
+            "mutation-verdict:behavior:task-throwable-prototype-data",
+        ),
+        "task-throwable-generic-payload": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable uses one generic payload for uninspectable objects",
+            "mutation-verdict:behavior:task-throwable-generic-payload",
+        ),
+        "task-throwable-total-fallback": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable contains revoked proxy traps at the total fallback",
+            "mutation-verdict:behavior:task-throwable-total-fallback",
+        ),
+        "task-throwable-name-data-only": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable reads names from data descriptors without invoking getters",
+            "mutation-verdict:behavior:task-throwable-name-data-only",
+        ),
+        "task-throwable-message-data-only": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable reads messages from data descriptors without invoking getters",
+            "mutation-verdict:behavior:task-throwable-message-data-only",
+        ),
+        "task-throwable-no-object-coercion": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable never coerces an uninspectable object",
+            "mutation-verdict:behavior:task-throwable-no-object-coercion",
+        ),
+        "task-control-suspend-auth": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope owns suspension data and grants authority only to its paired classifier",
+            "mutation-verdict:construction:task-control-suspend-auth",
+        ),
+        "task-control-suspend-reason-owned": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope owns suspension data and grants authority only to its paired classifier",
+            "mutation-verdict:construction:task-control-suspend-reason-owned",
+        ),
+        "task-control-suspend-relative-wake-owned": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope owns suspension data and grants authority only to its paired classifier",
+            "mutation-verdict:construction:task-control-suspend-relative-wake-owned",
+        ),
+        "task-control-suspend-absolute-wake-owned": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope owns suspension data and grants authority only to its paired classifier",
+            "mutation-verdict:construction:task-control-suspend-absolute-wake-owned",
+        ),
+        "task-control-suspend-checkpoint-key-owned": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope owns suspension data and grants authority only to its paired classifier",
+            "mutation-verdict:construction:task-control-suspend-checkpoint-key-owned",
+        ),
+        "task-control-suspend-checkpoint-state-owned": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope owns suspension data and grants authority only to its paired classifier",
+            "mutation-verdict:construction:task-control-suspend-checkpoint-state-owned",
+        ),
+        "task-control-captured-map-constructor": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope captures the control-map constructor before task initialization",
+            "mutation-verdict:construction:task-control-captured-map-constructor",
+        ),
+        "task-control-captured-map-get": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope captures the control-map read before task initialization",
+            "mutation-verdict:construction:task-control-captured-map-get",
+        ),
+        "task-control-captured-map-set": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope captures the control-map write before task initialization",
+            "mutation-verdict:construction:task-control-captured-map-set",
+        ),
+        "task-control-scope-isolation": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope owns suspension data and grants authority only to its paired classifier",
+            "mutation-verdict:construction:task-control-scope-isolation",
+        ),
+        "task-control-runtime-lease-auth": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope enrolls lease loss minted by the invocation runtime",
+            "mutation-verdict:construction:task-control-runtime-lease-auth",
+        ),
+        "task-control-store-lease-auth": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope enrolls typed failures only at the immediate trusted store boundary",
+            "mutation-verdict:construction:task-control-store-lease-auth",
+        ),
+        "task-control-store-outage-auth": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope enrolls typed failures only at the immediate trusted store boundary",
+            "mutation-verdict:construction:task-control-store-outage-auth",
+        ),
+        "task-control-store-typed-only": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope enrolls typed failures only at the immediate trusted store boundary",
+            "mutation-verdict:construction:task-control-store-typed-only",
+        ),
+        "task-control-store-total-fallback": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope contains hostile values at the trusted store classifier",
+            "mutation-verdict:behavior:task-control-store-total-fallback",
+        ),
+        "task-control-ordinary-has-instance": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope uses the captured ordinary type check, not a handler-installed hook",
+            "mutation-verdict:construction:task-control-ordinary-has-instance",
+        ),
+        "task-control-ordinary-store-has-instance": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope uses the captured ordinary type check, not a handler-installed hook",
+            "mutation-verdict:construction:task-control-ordinary-store-has-instance",
+        ),
+        "task-throwable-public-suspend": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable treats public engine control constructors as ordinary task failures",
+            "mutation-verdict:construction:task-throwable-public-suspend",
+        ),
+        "task-throwable-public-lease-lost": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable treats public engine control constructors as ordinary task failures",
+            "mutation-verdict:construction:task-throwable-public-lease-lost",
+        ),
+        "task-throwable-public-store-unavailable": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable treats public engine control constructors as ordinary task failures",
+            "mutation-verdict:construction:task-throwable-public-store-unavailable",
+        ),
+        "task-throwable-fatal-auth": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable authenticates the intentionally public fatal policy at construction",
+            "mutation-verdict:construction:task-throwable-fatal-auth",
+        ),
+        "task-throwable-fatal-flag": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable authenticates the intentionally public fatal policy at construction",
+            "mutation-verdict:behavior:task-throwable-fatal-flag",
+        ),
+        "task-throwable-forged-suspend": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable rejects prototype forgeries as ordinary user failures",
+            "mutation-verdict:construction:task-throwable-forged-suspend",
+        ),
+        "task-throwable-forged-lease-lost": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable rejects prototype forgeries as ordinary user failures",
+            "mutation-verdict:construction:task-throwable-forged-lease-lost",
+        ),
+        "task-throwable-forged-store-unavailable": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable rejects prototype forgeries as ordinary user failures",
+            "mutation-verdict:construction:task-throwable-forged-store-unavailable",
+        ),
+        "task-throwable-forged-fatal": ExpectedVerdict(
+            "construction",
+            "packages/core/test/errors.test.ts",
+            "snapshotTaskThrowable rejects prototype forgeries as ordinary user failures",
+            "mutation-verdict:construction:task-throwable-forged-fatal",
+        ),
+        "task-throwable-corpus-plain-string": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-plain-string",
+        ),
+        "task-throwable-corpus-plain-object": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-plain-object",
+        ),
+        "task-throwable-corpus-type-error": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-type-error",
+        ),
+        "task-throwable-corpus-revoked-proxy": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-revoked-proxy",
+        ),
+        "task-throwable-corpus-throwing-name-getter": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-throwing-name-getter",
+        ),
+        "task-throwable-corpus-throwing-message-getter": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-throwing-message-getter",
+        ),
+        "task-throwable-corpus-throwing-coercion": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-throwing-coercion",
+        ),
+        "task-throwable-corpus-constructed-suspend": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-constructed-suspend",
+        ),
+        "task-throwable-corpus-constructed-lease-lost": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-constructed-lease-lost",
+        ),
+        "task-throwable-corpus-constructed-store-unavailable": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-constructed-store-unavailable",
+        ),
+        "task-throwable-corpus-forged-suspend": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-forged-suspend",
+        ),
+        "task-throwable-corpus-forged-lease-lost": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-forged-lease-lost",
+        ),
+        "task-throwable-corpus-forged-store-unavailable": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-forged-store-unavailable",
+        ),
+        "task-throwable-corpus-forged-fatal": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun enumerates every task-throwable corpus case",
+            "mutation-verdict:construction:task-throwable-corpus-forged-fatal",
+        ),
+        "sdk-task-throwable-boundary": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun snapshots the raw handler throw exactly once at the worker boundary",
+            "mutation-verdict:behavior:sdk-task-throwable-boundary",
         ),
     }
 )
