@@ -46,6 +46,29 @@ async function nonIntegerTemporalRows(raw: SqlExecutor): Promise<string[]> {
   return (result?.rows ?? []).map((r) => String(r.v))
 }
 
+async function addLowerLiveSibling(
+  raw: SqlExecutor,
+  taskId: string,
+  claimedRunId: string,
+): Promise<void> {
+  await raw.batch('forge-lower-live-sibling', [
+    {
+      sql: `UPDATE runs SET attempt = 2 WHERE run_id = ?`,
+      args: [claimedRunId],
+    },
+    {
+      sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+      args: [taskId],
+    },
+    {
+      sql: `INSERT INTO runs
+              (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+            VALUES ('corrupt-sibling', ?, ?, 1, 'pending', 1060000, 1000000)`,
+      args: [Q, taskId],
+    },
+  ])
+}
+
 /**
  * Red/green regression case law (repo rule: every
  * bug lands as a red-test commit first, then the fix commit). Each test
@@ -343,14 +366,7 @@ describe('transition-layer review regressions (second round)', () => {
     const spawned = await f.store.spawn(Q, 'job', '{}')
     const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('claim')
-    await f.raw.batch('t', [
-      {
-        sql: `INSERT INTO runs
-                (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
-              VALUES ('corrupt-sibling', ?, ?, 2, 'pending', 1060000, 1000000)`,
-        args: [Q, spawned.taskId],
-      },
-    ])
+    await addLowerLiveSibling(f.raw, spawned.taskId, run.runId)
 
     const receipt = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
     expect(receipt, 'mutation-verdict:behavior:claim-receipt-requires-sole-live-run').toHaveLength(
@@ -365,14 +381,7 @@ describe('transition-layer review regressions (second round)', () => {
     const spawned = await f.store.spawn(Q, 'job', '{}')
     const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('claim')
-    await f.raw.batch('t', [
-      {
-        sql: `INSERT INTO runs
-                (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
-              VALUES ('corrupt-sibling', ?, ?, 2, 'pending', 1060000, 1000000)`,
-        args: [Q, spawned.taskId],
-      },
-    ])
+    await addLowerLiveSibling(f.raw, spawned.taskId, run.runId)
 
     const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     expect(activated, 'mutation-verdict:behavior:activate-requires-sole-live-run').toBeNull()

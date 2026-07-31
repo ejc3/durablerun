@@ -711,28 +711,19 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
       storageCorruption: counterStorageCorruption(field),
     }),
   ),
-  {
-    id: 'counter-fractional/task-max-attempts',
-    covers: ['counter/task-max-attempts'],
-    statements: [],
-    storageCorruption: counterStorageCorruption(
-      persistedCounterField('task-max-attempts'),
-      'fractional-real',
-    ),
-    targetArms: ALL_TARGET_ARMS,
-    targetNonExactField: 'task-max-attempts',
-  },
-  {
-    id: 'counter-fractional/run-relaunch-count',
-    covers: ['counter/run-relaunch-count'],
-    statements: [],
-    storageCorruption: counterStorageCorruption(
-      persistedCounterField('run-relaunch-count'),
-      'fractional-real',
-    ),
-    targetArms: ALL_TARGET_ARMS,
-    targetNonExactField: 'run-relaunch-count',
-  },
+  ...PERSISTED_COUNTER_FIELDS.flatMap((field): PoisonWitness[] => {
+    if (field.id !== 'task-max-attempts' && field.id !== 'run-relaunch-count') return []
+    return [
+      {
+        id: `counter-fractional/${field.id}`,
+        covers: [`counter/${field.id}`],
+        statements: [],
+        storageCorruption: counterStorageCorruption(field, 'fractional-real'),
+        targetArms: ALL_TARGET_ARMS,
+        targetNonExactField: field.id,
+      },
+    ]
+  }),
   ...PERSISTED_COUNTER_FIELDS.map(
     (field): PoisonWitness => ({
       id: `counter-bound/${field.id}`,
@@ -1021,7 +1012,7 @@ const SNAPSHOT_TABLES = [
 ] as const
 
 type SnapshotTable = (typeof SNAPSHOT_TABLES)[number][0]
-type ProtocolSnapshot = Record<SnapshotTable, readonly SqlRow[]>
+export type ProtocolSnapshot = Record<SnapshotTable, readonly SqlRow[]>
 const RELATIONSHIP_COLUMNS = {} as Record<SnapshotTable, readonly string[]>
 for (const [table, , columns] of SNAPSHOT_TABLES) {
   RELATIONSHIP_COLUMNS[table] = columns
@@ -1889,7 +1880,14 @@ function temporalBoundSeverity(
   return integerBoundSeverity(row?.[field.column], field.bounds)
 }
 
-function findingSeverity(finding: EngineInvariantFinding, snapshot: ProtocolSnapshot): bigint {
+/**
+ * Pure severity oracle. Its direct witnesses keep failures in this mechanism
+ * attributable instead of routing them through transition and closure checks.
+ */
+export function findingSeverity(
+  finding: EngineInvariantFinding,
+  snapshot: ProtocolSnapshot,
+): bigint {
   const temporalSeverity = temporalBoundSeverity(finding, snapshot)
   if (temporalSeverity !== undefined) return temporalSeverity
   const counterSeverity = counterBoundSeverity(finding, snapshot)

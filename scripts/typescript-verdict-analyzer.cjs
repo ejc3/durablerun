@@ -10,7 +10,13 @@ const VERDICT_HELPERS = new Set([
   'requireExpectedFailure',
 ])
 const MUTATION_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-const VERDICT_MARKER = /^mutation-verdict:(?:behavior|construction):[a-z0-9]+(?:[-:][a-z0-9]+)*$/
+const VERDICT_MARKER_SOURCE =
+  'mutation-verdict:(?:behavior|construction):[a-z0-9]+(?:[-:][a-z0-9]+)*'
+const VERDICT_MARKER = new RegExp(`^${VERDICT_MARKER_SOURCE}$`)
+const EXPECT_ERROR_VERDICT_MARKER = new RegExp(
+  `(?<![A-Za-z0-9_:-])${VERDICT_MARKER_SOURCE}(?![A-Za-z0-9_:-])`,
+  'g',
+)
 
 function unwrap(expression) {
   let current = expression
@@ -110,6 +116,35 @@ function analyze(path, source) {
   const promiseMessageLines = new Set()
   const descriptors = new Map()
   const directMarkers = new Set()
+  const expectErrorMarkers = []
+
+  for (const directive of sourceFile.commentDirectives ?? []) {
+    if (directive.type !== ts.CommentDirectiveType.ExpectError) continue
+    const comment = sourceFile.text.slice(directive.range.pos, directive.range.end)
+    const directiveOffset = comment.indexOf('@ts-expect-error')
+    if (directiveOffset === -1) continue
+    const directiveLine = comment.slice(directiveOffset).split(/\r?\n/, 1)[0]
+    const matches = [...directiveLine.matchAll(EXPECT_ERROR_VERDICT_MARKER)]
+    if (matches.length > 1) {
+      const line = sourceFile.getLineAndCharacterOfPosition(directive.range.pos).line
+      diagnostics.push(
+        `${line}:1 @ts-expect-error directive owns ${matches.length} verdict markers`,
+      )
+    }
+    for (const match of matches) {
+      directMarkers.add(match[0])
+      const position = directive.range.pos + directiveOffset + (match.index ?? 0)
+      const line = sourceFile.getLineAndCharacterOfPosition(position).line
+      expectErrorMarkers.push([match[0], line])
+    }
+  }
+  const markerCounts = new Map()
+  for (const [marker] of expectErrorMarkers) {
+    markerCounts.set(marker, (markerCounts.get(marker) ?? 0) + 1)
+  }
+  for (const [marker, count] of markerCounts) {
+    if (count > 1) diagnostics.push(`${marker} appears on ${count} @ts-expect-error directives`)
+  }
 
   function visit(node) {
     if (
@@ -137,6 +172,9 @@ function analyze(path, source) {
       left.join(':').localeCompare(right.join(':')),
     ),
     directVerdictMarkers: [...directMarkers].sort(),
+    expectErrorVerdictMarkers: expectErrorMarkers.sort(
+      (left, right) => left[1] - right[1] || left[0].localeCompare(right[0]),
+    ),
   }
 }
 

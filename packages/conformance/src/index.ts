@@ -18,4 +18,25 @@ export {
 } from './invariants.js'
 export { STORE_CONFORMANCE_SURFACE_IDS, storeConformance } from './store-conformance.js'
 export * from './fault-matrix.js'
-export * from './poison-matrix.js'
+export {
+  type CounterBoundaryTarget,
+  duplicatePoisonWitnessIds,
+  type PoisonCaseOptions,
+  type PoisonCaseResult,
+  type PoisonInvocationOutcome,
+  POISON_TARGET_CASES,
+  type PoisonTargetArm,
+  type PoisonTargetCase,
+  type PoisonTargetability,
+  type PoisonTargetProfile,
+  POISON_UNREACHABLE_TARGETS,
+  type PoisonWitness,
+  POISON_WITNESS_COUNT,
+  POISON_WITNESSES,
+  POISON_WRITE_LABELS,
+  runPoisonMatrixCase,
+  runPoisonTargetCase,
+  type UnreachablePoisonTarget,
+  uncoveredConditionIds,
+  unknownCoveredConditionIds,
+} from './poison-matrix.js'

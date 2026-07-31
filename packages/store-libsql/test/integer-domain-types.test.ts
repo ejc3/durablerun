@@ -50,22 +50,18 @@ it('binds a persisted SQL column to its own nominal integer domain', () => {
       min: 0,
       max: Number.MAX_SAFE_INTEGER,
     }
-    void 'mutation-verdict:construction:stored-within-rejects-spread-descriptor'
-    // @ts-expect-error persisted descriptor endpoints cannot be replaced by spreading
+    // @ts-expect-error persisted descriptor endpoints cannot be replaced by spreading — mutation-verdict:construction:stored-within-rejects-spread-descriptor
     storedIntegerWithin(widenedAttemptBounds, 'r')
-    void 'mutation-verdict:construction:stored-incrementable-rejects-spread-descriptor'
-    // @ts-expect-error incrementable descriptors also require canonical endpoints
+    // @ts-expect-error incrementable descriptors also require canonical endpoints — mutation-verdict:construction:stored-incrementable-rejects-spread-descriptor
     storedIncrementableInteger(widenedAttemptBounds, 'r')
-    void 'mutation-verdict:construction:persisted-row-rejects-spread-descriptor'
-    // @ts-expect-error persisted row decoding requires the canonical descriptor endpoints
+    // @ts-expect-error persisted row decoding requires canonical endpoints — mutation-verdict:construction:persisted-row-rejects-spread-descriptor
     persistedRowInteger('claim', { attempt: 0 }, widenedAttemptBounds)
 
     const widenedDurationBounds = {
       ...DERIVED_INTEGER_BOUNDS.duration_ms,
       max: Number.MAX_SAFE_INTEGER,
     }
-    void 'mutation-verdict:construction:derived-row-rejects-spread-descriptor'
-    // @ts-expect-error derived decoding requires the canonical descriptor endpoints
+    // @ts-expect-error derived decoding requires canonical endpoints — mutation-verdict:construction:derived-row-rejects-spread-descriptor
     requireDerivedInteger('remaining', Number.MAX_SAFE_INTEGER, widenedDurationBounds)
 
     // @ts-expect-error the independent column/bounds API no longer exists

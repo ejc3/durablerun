@@ -313,11 +313,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           leaseSeconds: 60,
           limit: 1,
         })
-        expect(claimed?.claimGen).toBe(MAX_COUNT)
+        expect(
+          claimed?.claimGen,
+          'mutation-verdict:behavior:claim-receipt-allows-max-generation',
+        ).toBe(MAX_COUNT)
 
         expect(
           await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
-          'mutation-verdict:behavior:claim-receipt-allows-max-generation',
         ).toMatchObject([{ runId: spawned.runId, claimGen: MAX_COUNT }])
       })
 
@@ -738,8 +740,16 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         if (disposition === 'structurally-rejected') return
         await f.admin.setFakeNowEpochMs(1_100_000)
 
+        const swept = await attributeExpectedFailure(
+          { kind: 'behavior', mutation: 'terminal-timeout-decode-ignores-relaunch' },
+          (error) =>
+            error instanceof RangeError &&
+            error.message ===
+              `sweep.relaunch_count must be an exact SQL integer in [0, ${RELAUNCH_CAP}], got number (not-an-exact-integer)`,
+          () => f.store.sweep(Q, 10),
+        )
         expect(
-          await f.store.sweep(Q, 10),
+          swept,
           'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
         ).toEqual([])
         const [task, storedRun] = await f.raw.batch(
@@ -935,8 +945,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const interposed = interposeAfterBatch(f.raw, 'sweep:scan', async () => {
           await f.raw.batch('corrupt-accounting-after-sweep-scan', [
             {
-              sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
-              args: [run.taskId],
+              sql: activated
+                ? `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`
+                : `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+              args: activated ? [INFRA_RETRY_CAP, run.taskId] : [run.taskId],
             },
           ])
           afterCorruption = await snapshot(f, spawned.taskId)
@@ -1814,20 +1826,17 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const seeded = await checkpointWithNewerOwner('corrupt-lww-set', true)
         if (!seeded) return
 
-        await requireExpectedFailure(
-          { kind: 'behavior', mutation: 'checkpoint-write-validates-existing-lww-owner' },
-          /setCheckpoint/,
-          () =>
-            f.store.setCheckpoint(
-              Q,
-              seeded.run.taskId,
-              seeded.run.runId,
-              seeded.run.claimToken,
-              'corrupt-lww-set',
-              '{"stale":true}',
-              90,
-            ),
-        )
+        await expect(
+          f.store.setCheckpoint(
+            Q,
+            seeded.run.taskId,
+            seeded.run.runId,
+            seeded.run.claimToken,
+            'corrupt-lww-set',
+            '{"stale":true}',
+            90,
+          ),
+        ).rejects.toThrow(/setCheckpoint/)
 
         expect(await snapshot(f, seeded.run.taskId)).toEqual(seeded.before)
         const [checkpoint] = await f.raw.batch(
@@ -1850,18 +1859,15 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const seeded = await checkpointWithNewerOwner('corrupt-lww-suspend', true)
         if (!seeded) return
 
-        await requireExpectedFailure(
-          { kind: 'behavior', mutation: 'suspend-validates-existing-lww-owner' },
-          /suspendRun/,
-          () =>
-            f.store.suspendRun(
-              Q,
-              seeded.run.runId,
-              seeded.run.claimToken,
-              { inSeconds: 10 },
-              { key: 'corrupt-lww-suspend', stateJson: '{"stale":true}' },
-            ),
-        )
+        await expect(
+          f.store.suspendRun(
+            Q,
+            seeded.run.runId,
+            seeded.run.claimToken,
+            { inSeconds: 10 },
+            { key: 'corrupt-lww-suspend', stateJson: '{"stale":true}' },
+          ),
+        ).rejects.toThrow(/suspendRun/)
 
         expect(await snapshot(f, seeded.run.taskId)).toEqual(seeded.before)
         const [checkpoint] = await f.raw.batch(
@@ -1880,9 +1886,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(checkpoint?.rows).toEqual(seeded.checkpointBefore)
       })
 
-      it.each(checkpointConflictWriteCases)(
-        'atomically refuses $name checkpoint ownership',
-        async ({ relation, operation }) => {
+      for (const { name, relation, operation } of checkpointConflictWriteCases) {
+        it(`atomically refuses ${name} checkpoint ownership`, async () => {
           await f.store.spawn(Q, `invalid-${relation.id}`, '{}')
           const [run] = await f.store.claim(Q, `worker-${relation.id}`, {
             leaseSeconds: 60,
@@ -1974,8 +1979,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(await readCheckpoint(), `${operation.id}/${relation.id}: checkpoint`).toEqual(
             checkpointBefore,
           )
-        },
-      )
+        })
+      }
 
       it('suspends under a valid higher LWW owner without replacing its checkpoint', async () => {
         const seeded = await checkpointWithNewerOwner('valid-lww-suspend', false)

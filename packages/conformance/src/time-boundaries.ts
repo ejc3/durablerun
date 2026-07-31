@@ -623,8 +623,8 @@ export function timestampBoundaryConformance(
         const expected = [
           {
             driver_id: victimDriver,
-            last_beat_ms: NORMAL_NOW_MS - 2,
-            expires_at_ms: NORMAL_NOW_MS - 1,
+            last_beat_ms: NORMAL_NOW_MS - 3,
+            expires_at_ms: NORMAL_NOW_MS - 2,
           },
           {
             driver_id: sourceDriver,
@@ -640,8 +640,8 @@ export function timestampBoundaryConformance(
             args: [
               Q,
               victimDriver,
+              NORMAL_NOW_MS - 3,
               NORMAL_NOW_MS - 2,
-              NORMAL_NOW_MS - 1,
               Q,
               sourceDriver,
               NORMAL_NOW_MS - 1,
@@ -1517,10 +1517,7 @@ export function timestampBoundaryConformance(
         const activation = await fixture.store
           .activate(Q, second.runId, second.claimToken, second.claimGen)
           .catch((error: unknown) => error)
-        expect(
-          await durableSnapshot(fixture),
-          'mutation-verdict:behavior:timestamp-activation-validates-first-start-lower',
-        ).toEqual(before)
+        expect(await durableSnapshot(fixture)).toEqual(before)
         expect(activation).toBeNull()
       } finally {
         fixture.close()

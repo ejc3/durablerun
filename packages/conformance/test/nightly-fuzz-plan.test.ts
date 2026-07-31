@@ -79,41 +79,44 @@ describe('fuzz shard batch plan', () => {
     const valid = { totalSeeds: 64, shard: 0, shardCount: 32, batch: 0, batchCount: 2 }
     await attributeExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-plan-dimensions' },
-      /expected function to throw an error/,
+      /expected .* to throw an error$/,
       async () => {
-        for (const override of [
-          { totalSeeds: 0 },
-          { totalSeeds: 1.5 },
-          { shardCount: 0 },
-          { shardCount: 1.5 },
-          { batchCount: 0 },
-          { batchCount: 1.5 },
-        ]) {
-          expect(() => fuzzBatchSeeds({ ...valid, ...override })).toThrow(
-            /must be a positive integer/,
-          )
-        }
+        expect(() => fuzzBatchSeeds({ ...valid, totalSeeds: 1.5 })).toThrow(
+          /totalSeeds must be a positive integer/,
+        )
       },
     )
+    for (const override of [
+      { totalSeeds: 0 },
+      { shardCount: 0 },
+      { shardCount: 1.5 },
+      { batchCount: 0 },
+      { batchCount: 1.5 },
+    ]) {
+      expect(() => fuzzBatchSeeds({ ...valid, ...override })).toThrow(/must be a positive integer/)
+    }
   })
 
   it('rejects out-of-range shard and batch coordinates', async () => {
     const valid = { totalSeeds: 64, shard: 0, shardCount: 32, batch: 0, batchCount: 2 }
     await attributeExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-plan-coordinate-range' },
-      /expected function to throw an error/,
+      /expected .* to throw an error$/,
       async () => {
-        for (const override of [{ shard: -1 }, { shard: 32 }, { batch: -1 }, { batch: 2 }]) {
-          expect(() => fuzzBatchSeeds({ ...valid, ...override })).toThrow(/must be an integer in/)
-        }
+        expect(() => fuzzBatchSeeds({ ...valid, shard: valid.shardCount })).toThrow(
+          /shard must be an integer in/,
+        )
       },
     )
+    for (const override of [{ shard: -1 }, { batch: -1 }, { batch: valid.batchCount }]) {
+      expect(() => fuzzBatchSeeds({ ...valid, ...override })).toThrow(/must be an integer in/)
+    }
   })
 
   it('rejects an empty process batch', async () => {
     await attributeExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-plan-empty-rejected' },
-      /expected function to throw an error/,
+      /expected .* to throw an error$/,
       async () => {
         expect(() =>
           fuzzBatchSeeds({
@@ -244,7 +247,7 @@ describe('fuzz shard batch plan', () => {
     )
     await attributeExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-workflow-confinement' },
-      /expected .* to be/,
+      /expected .* to contain/,
       async () => {
         for (const plan of plans) {
           for (const process of plan) {

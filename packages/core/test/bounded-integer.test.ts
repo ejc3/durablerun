@@ -10,6 +10,7 @@ import {
   requireDerivedInteger,
   requireRunOrdinal,
 } from '../src/index.js'
+import { attributeExpectedFailure } from '../src/testing.js'
 
 describe('decodeBoundedInteger', () => {
   const bounds = { min: 0, max: 10 }
@@ -68,18 +69,24 @@ describe('decodeBoundedInteger', () => {
     expect(claimBounds).not.toBe(wrongField)
   })
 
-  it('pins the complete nominal persisted-temporal inventory', () => {
+  it('pins the complete nominal persisted-temporal inventory', async () => {
     expect(PERSISTED_TEMPORAL_FIELDS).toHaveLength(23)
     expect(Object.isFrozen(PERSISTED_TEMPORAL_FIELDS)).toBe(true)
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'temporal-field-id-is-bounds-field' },
+      /expected .* to be/,
+      async () => {
+        for (const field of PERSISTED_TEMPORAL_FIELDS) {
+          expect(field.id).toBe(field.bounds.field)
+        }
+      },
+    )
     expect(new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => field.id))).toHaveProperty('size', 23)
     expect(
       new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => `${field.table}.${field.column}`)),
     ).toHaveProperty('size', 23)
     for (const field of PERSISTED_TEMPORAL_FIELDS) {
       expect(Object.isFrozen(field)).toBe(true)
-      expect(field.id, 'mutation-verdict:construction:temporal-field-id-is-bounds-field').toBe(
-        field.bounds.field,
-      )
       expect(field.bounds.field).toBe(`${field.table}.${field.column}`)
       expect(field.bounds.min).toBe(field.kind === 'duration-ms' ? 1 : 0)
       expect(field.bounds.max).toBe(field.kind === 'duration-ms' ? MAX_DURATION_MS : MAX_EPOCH_MS)

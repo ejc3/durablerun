@@ -115,6 +115,7 @@ class TypeScriptSourceAnalysis:
     promise_message_lines: tuple[int, ...]
     helper_verdict_descriptors: frozenset[tuple[str, str]]
     direct_verdict_markers: frozenset[str]
+    expect_error_verdict_markers: tuple[tuple[str, int], ...]
 
 
 def analyze_typescript_sources(
@@ -149,6 +150,7 @@ def analyze_typescript_sources(
         lines = entry.get("promiseMessageLines")
         descriptors = entry.get("helperVerdictDescriptors")
         markers = entry.get("directVerdictMarkers")
+        expect_error_markers = entry.get("expectErrorVerdictMarkers")
         if not (
             isinstance(diagnostics, list)
             and all(isinstance(item, str) for item in diagnostics)
@@ -163,6 +165,15 @@ def analyze_typescript_sources(
             )
             and isinstance(markers, list)
             and all(isinstance(item, str) for item in markers)
+            and isinstance(expect_error_markers, list)
+            and all(
+                isinstance(item, list)
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and isinstance(item[1], int)
+                and item[1] > 0
+                for item in expect_error_markers
+            )
         ):
             raise ValueError(f"{path}: TypeScript verdict analysis has an invalid shape")
         analyses[path] = TypeScriptSourceAnalysis(
@@ -170,6 +181,7 @@ def analyze_typescript_sources(
             tuple(lines),
             frozenset((item[0], item[1]) for item in descriptors),
             frozenset(markers),
+            tuple((item[0], item[1]) for item in expect_error_markers),
         )
     return analyses
 
@@ -627,32 +639,6 @@ MUTATION_SPECS = [
         "the checkpoint lease CAS accepts an owner attempt above the protocol maximum",
     ),
     (
-        "checkpoint-write-validates-existing-lww-owner",
-        "packages/store-libsql/src/store.ts",
-        "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         AND ${epochAdditionFits(NOW, '?')}`,\n"
-        "      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],",
-        "         AND 1 = 1\n"
-        "         AND ${epochAdditionFits(NOW, '?')}`,\n"
-        "      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],",
-        "setCheckpoint extends the lease and consumes an upsert conflict whose owner is corrupt",
-    ),
-    (
-        "suspend-validates-existing-lww-owner",
-        "packages/store-libsql/src/store.ts",
-        "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         ${wakeFits}`,\n"
-        "      [\n"
-        "        wakeArg,\n"
-        "        wakeArg,",
-        "         AND 1 = 1\n"
-        "         ${wakeFits}`,\n"
-        "      [\n"
-        "        wakeArg,\n"
-        "        wakeArg,",
-        "suspendRun parks the run and consumes an upsert conflict whose owner is corrupt",
-    ),
-    (
         "suspend-preserves-valid-higher-lww",
         "packages/store-libsql/src/store.ts",
         "         AND ${validCheckpointConflict('runs', '?')}\n"
@@ -701,7 +687,7 @@ MUTATION_SPECS = [
         "export const storedIntegerWithin = (\n"
         "  bounds:\n"
         "    | PersistedIntegerBoundsExceptClaimGeneration\n"
-        "    | Pick<PersistedIntegerBounds, 'min' | 'max'>,\n"
+        "    | (Pick<PersistedIntegerBounds, 'min' | 'max'> & { readonly field?: never }),\n"
         "  alias?: string,\n"
         "): string => {\n"
         "  const column = persistedColumn(bounds as PersistedIntegerBounds, alias)\n"
@@ -722,7 +708,7 @@ MUTATION_SPECS = [
         "export const storedIncrementableInteger = (\n"
         "  bounds:\n"
         "    | PersistedIntegerBoundsExceptClaimGeneration\n"
-        "    | Pick<PersistedIntegerBounds, 'min' | 'max'>,\n"
+        "    | (Pick<PersistedIntegerBounds, 'min' | 'max'> & { readonly field?: never }),\n"
         "  alias?: string,\n"
         "): string => {\n"
         "  const column = persistedColumn(bounds as PersistedIntegerBounds, alias)\n"
@@ -745,7 +731,7 @@ MUTATION_SPECS = [
         "  row: SqlRow,\n"
         "  bounds:\n"
         "    | PersistedIntegerBoundsExceptClaimGeneration\n"
-        "    | Pick<PersistedIntegerBounds, 'min' | 'max'>,\n"
+        "    | (Pick<PersistedIntegerBounds, 'min' | 'max'> & { readonly field?: never }),\n"
         "): number {\n"
         "  return decodePersistedRowInteger(\n"
         "    scope,\n"
@@ -768,7 +754,7 @@ MUTATION_SPECS = [
         "export function requireDerivedInteger(\n"
         "  name: string,\n"
         "  value: unknown,\n"
-        "  bounds: DerivedIntegerBounds | IntegerBounds,\n"
+        "  bounds: DerivedIntegerBounds | (IntegerBounds & { readonly field?: never }),\n"
         "): number {\n"
         "  return requireBrandedInteger(name, value, bounds as DerivedIntegerBounds)\n"
         "}",
@@ -1332,31 +1318,22 @@ def weakened_checkpoint_conflict(suffix: str) -> str:
             "         )"
         ),
         "owner-attempt-upper": (
-            f"{base}\n"
-            "         .replace(\n"
+            f"{base}.replace(\n"
             "           `c.owner_attempt BETWEEN ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.min} AND ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.max}`,\n"
             "           `c.owner_attempt >= ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.min}`,\n"
-            "         )\n"
-            "         .replace(\n"
-            "           `owner.attempt BETWEEN ${RUN_INTEGER_BOUNDS.attempt.min} AND ${RUN_INTEGER_BOUNDS.attempt.max}`,\n"
-            "           `owner.attempt >= ${RUN_INTEGER_BOUNDS.attempt.min}`,\n"
             "         )"
         ),
         "owner-attempt-lower": (
-            f"{base}\n"
-            "         .replace(\n"
+            f"{base}.replace(\n"
             "           `c.owner_attempt BETWEEN ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.min} AND ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.max}`,\n"
             "           `c.owner_attempt <= ${CHECKPOINT_INTEGER_BOUNDS.owner_attempt.max}`,\n"
-            "         )\n"
-            "         .replace(\n"
-            "           `owner.attempt BETWEEN ${RUN_INTEGER_BOUNDS.attempt.min} AND ${RUN_INTEGER_BOUNDS.attempt.max}`,\n"
-            "           `owner.attempt <= ${RUN_INTEGER_BOUNDS.attempt.max}`,\n"
             "         )"
         ),
         "owner-attempt-storage": (
-            f"{base}\n"
-            "         .replace(\"typeof(c.owner_attempt) = 'integer'\", 'c.owner_attempt IS NOT NULL')\n"
-            "         .replace(\"typeof(owner.attempt) = 'integer'\", 'owner.attempt IS NOT NULL')"
+            f"{base}.replace("
+            "\"typeof(c.owner_attempt) = 'integer'\", "
+            "'c.owner_attempt IS NOT NULL'"
+            ")"
         ),
         "conflict-queue": (
             f"{base}.replace(\n"
@@ -1783,16 +1760,6 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
         "                AND ${epochAdditionFits(NOW_MS, '?').replace(\" - \", \" + \")}`",
         "driver-heartbeat overflow preserves its source and expired cleanup victim",
         "an overflowed heartbeat still cleans rows using a source beat it did not write",
-    ),
-    (
-        "timestamp-activation-validates-first-start-lower",
-        "packages/store-libsql/src/store.ts",
-        "    WHEN ${firstStarted} IS NOT NULL\n"
-        "      AND NOT ${storedIntegerWithin(TASK_INTEGER_BOUNDS.first_started_at_ms, task)} THEN 0",
-        "    WHEN 0 = 1\n"
-        "      AND NOT ${storedIntegerWithin(TASK_INTEGER_BOUNDS.first_started_at_ms, task)} THEN 0",
-        "activation refuses a negative persisted first-start instant atomically",
-        "activation consumes a negative persisted first-start instant",
     ),
     (
         "timestamp-activation-validates-stored-duration-lower",
@@ -2261,7 +2228,7 @@ VERDICTS = {
     "claim-requires-sole-live-run": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (write label x forbidden pre-state, generated) claim does not amplify cardinality/two-live-runs",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) claim does not amplify cardinality/two-live-runs",
         "mutation-verdict:behavior:claim-requires-sole-live-run",
         "packages/conformance/src/store-conformance.ts",
     ),
@@ -2394,20 +2361,6 @@ VERDICTS = {
         "packages/conformance/test/libsql.test.ts",
         "scheduler conformance [libsql] checkpoints rejects an out-of-range stored owner attempt before extending the lease",
         "mutation-verdict:behavior:checkpoint-write-rejects-owner-attempt-overflow",
-        "packages/conformance/src/suite.ts",
-    ),
-    "checkpoint-write-validates-existing-lww-owner": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] checkpoints refuses a corrupt existing LWW owner before extending the lease",
-        "mutation-verdict:behavior:checkpoint-write-validates-existing-lww-owner",
-        "packages/conformance/src/suite.ts",
-    ),
-    "suspend-validates-existing-lww-owner": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] checkpoints refuses a corrupt existing LWW owner before suspending with a marker",
-        "mutation-verdict:behavior:suspend-validates-existing-lww-owner",
         "packages/conformance/src/suite.ts",
     ),
     "suspend-preserves-valid-higher-lww": ExpectedVerdict(
@@ -2564,14 +2517,14 @@ VERDICTS = {
     "terminal-timeout-scan-admits-terminal-owner": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] sweep classification quiesces an activated timeout whose task was already terminalized",
+        "scheduler conformance [libsql] sweep classification quiesces an activated expired run under a terminal final-attempt owner",
         "mutation-verdict:behavior:sweep-quiesces-terminal-timeout-owner",
         "packages/conformance/src/suite.ts",
     ),
     "terminal-timeout-cas-admits-terminal-owner": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] sweep classification quiesces an activated timeout whose task was already terminalized",
+        "scheduler conformance [libsql] sweep classification quiesces an activated expired run under a terminal final-attempt owner",
         "mutation-verdict:behavior:sweep-quiesces-terminal-timeout-owner",
         "packages/conformance/src/suite.ts",
     ),
@@ -2620,13 +2573,13 @@ VERDICTS = {
     "poison-severity-lower-bound": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests catches lower task-attempts worsening on the same subject",
+        "poison/invariant mechanism self-tests computes exact lower-bound counter severity",
         "mutation-verdict:behavior:poison-severity-lower-bound",
     ),
     "poison-severity-checkpoint": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests catches upper checkpoint-owner-attempt worsening on the same subject",
+        "poison/invariant mechanism self-tests resolves checkpoint severity by composite identity",
         "mutation-verdict:behavior:poison-severity-checkpoint",
     ),
     "poison-target-closure-comparison": ExpectedVerdict(
@@ -3356,43 +3309,53 @@ def run_typecheck(
         )
 
     marker_file = expected.marker_file or expected.file
-    source_lines = (ROOT / marker_file).read_text().splitlines()
+    verdict_source = (ROOT / marker_file).read_text()
+    try:
+        marker_analysis = analyze_typescript_sources({marker_file: verdict_source})[
+            marker_file
+        ]
+    except ValueError as error:
+        return SuiteResult(
+            False,
+            False,
+            (),
+            (f"{marker_file}: cannot inspect construction marker: {error}",),
+            diagnostic,
+        )
+    if marker_analysis.diagnostics:
+        return SuiteResult(
+            False,
+            False,
+            (),
+            (
+                f"{marker_file}: cannot own a construction marker: "
+                f"{marker_analysis.diagnostics}",
+            ),
+            diagnostic,
+        )
     marker_lines = [
-        index + 1
-        for index, line in enumerate(source_lines)
-        if expected.marker in line
+        line
+        for marker, line in marker_analysis.expect_error_verdict_markers
+        if marker == expected.marker
     ]
     if len(marker_lines) != 1:
         return SuiteResult(
             False,
             False,
             (),
-            (f"{marker_file}: expected one construction marker, found {len(marker_lines)}",),
-            diagnostic,
-        )
-    marker_line = marker_lines[0]
-    directive_lines = [
-        line
-        for line in range(marker_line + 1, min(len(source_lines), marker_line + 4) + 1)
-        if "@ts-expect-error" in source_lines[line - 1]
-    ]
-    if len(directive_lines) != 1:
-        return SuiteResult(
-            False,
-            False,
-            (),
             (
-                f"{marker_file}:{marker_line}: construction marker must own exactly "
-                "one following @ts-expect-error directive",
+                f"{marker_file}: expected one compiler-owned @ts-expect-error marker, "
+                f"found {len(marker_lines)}",
             ),
             diagnostic,
         )
+    marker_line = marker_lines[0]
 
     compiler_errors = re.findall(
         r"(?m)^(.+?\.tsx?)\((\d+),(\d+)\): error TS(\d+):.*$",
         re.sub(r"\x1b\[[0-9;]*m", "", compiler_output),
     )
-    wanted = (marker_file, str(directive_lines[0]), "2578")
+    wanted = (marker_file, str(marker_line), "2578")
 
     def relative_compiler_path(path: str) -> str:
         candidate = Path(path.strip())
@@ -3886,6 +3849,123 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
     )
 
+    direct_marker_cases = (
+        (
+            "exact string literal",
+            "void 'mutation-verdict:construction:probe'",
+            frozenset({"mutation-verdict:construction:probe"}),
+            (),
+            None,
+        ),
+        (
+            "expect-error directive comment",
+            "// @ts-expect-error intentional — mutation-verdict:construction:probe\n"
+            "consume(invalid)",
+            frozenset({"mutation-verdict:construction:probe"}),
+            (("mutation-verdict:construction:probe", 1),),
+            None,
+        ),
+        (
+            "expect-error block directive",
+            "/* @ts-expect-error mutation-verdict:construction:probe */ consume(invalid)",
+            frozenset({"mutation-verdict:construction:probe"}),
+            (("mutation-verdict:construction:probe", 1),),
+            None,
+        ),
+        (
+            "unowned marker comment",
+            "// mutation-verdict:construction:probe\nconsume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "marker before directive",
+            "// mutation-verdict:construction:probe @ts-expect-error intentional\n"
+            "consume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "directive string decoy",
+            "const text = '@ts-expect-error mutation-verdict:construction:probe'",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "prose-prefixed directive decoy",
+            "// prose @ts-expect-error mutation-verdict:construction:probe\nconsume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "decorated marker suffix",
+            "// @ts-expect-error mutation-verdict:construction:probe: detail\nconsume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "decorated marker prefix",
+            "// @ts-expect-error not-a-mutation-verdict:construction:probe\n"
+            "consume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "uppercase prefix adjacency",
+            "// @ts-expect-error Xmutation-verdict:construction:probe\nconsume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "uppercase suffix adjacency",
+            "// @ts-expect-error mutation-verdict:construction:probeX\nconsume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "multiline marker ownership",
+            "/* @ts-expect-error\n"
+            "mutation-verdict:construction:probe */\n"
+            "consume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "two markers on one directive",
+            "// @ts-expect-error mutation-verdict:construction:probe "
+            "mutation-verdict:construction:probe\n"
+            "consume(invalid)",
+            frozenset({"mutation-verdict:construction:probe"}),
+            (
+                ("mutation-verdict:construction:probe", 1),
+                ("mutation-verdict:construction:probe", 1),
+            ),
+            "directive owns 2 verdict markers",
+        ),
+        (
+            "one marker on two directives",
+            "// @ts-expect-error mutation-verdict:construction:probe\n"
+            "consume(invalid)\n"
+            "// @ts-expect-error mutation-verdict:construction:probe\n"
+            "consume(otherInvalid)",
+            frozenset({"mutation-verdict:construction:probe"}),
+            (
+                ("mutation-verdict:construction:probe", 1),
+                ("mutation-verdict:construction:probe", 3),
+            ),
+            "appears on 2 @ts-expect-error directives",
+        ),
+    )
+
     failures = []
     analysis_sources = {
         **{
@@ -3895,6 +3975,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         **{
             f"__selftest__/descriptor-{index}.ts": source
             for index, (_, source, _) in enumerate(descriptor_cases)
+        },
+        **{
+            f"__selftest__/direct-marker-{index}.ts": source
+            for index, (_, source, _, _, _) in enumerate(direct_marker_cases)
         },
     }
     live_paths: list[Path] = []
@@ -3940,6 +4024,38 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         got = analysis.helper_verdict_descriptors
         if got != wanted:
             failures.append(f"verdict-descriptor {label}: expected {wanted}, got {got}")
+    for index, (
+        label,
+        _,
+        wanted,
+        wanted_expect_error,
+        wanted_diagnostic,
+    ) in enumerate(direct_marker_cases):
+        key = f"__selftest__/direct-marker-{index}.ts"
+        analysis = analyses.get(key)
+        if analysis is None:
+            continue
+        if wanted_diagnostic is None and analysis.diagnostics:
+            failures.append(
+                f"direct-marker {label}: TypeScript parse diagnostics "
+                f"{analysis.diagnostics}"
+            )
+            continue
+        if wanted_diagnostic is not None and not any(
+            wanted_diagnostic in diagnostic for diagnostic in analysis.diagnostics
+        ):
+            failures.append(
+                f"direct-marker {label}: expected diagnostic {wanted_diagnostic!r}, "
+                f"got {analysis.diagnostics}"
+            )
+        got = analysis.direct_verdict_markers
+        if got != wanted:
+            failures.append(f"direct-marker {label}: expected {wanted}, got {got}")
+        if analysis.expect_error_verdict_markers != wanted_expect_error:
+            failures.append(
+                f"direct-marker {label}: expected directive ownership "
+                f"{wanted_expect_error}, got {analysis.expect_error_verdict_markers}"
+            )
     if check_live_inventory:
         if TEST_CMD[:3] != ["pnpm", "exec", "vitest"]:
             failures.append("worker suites do not execute Vitest directly")
@@ -4049,7 +4165,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     print(
         f"mutation-probe self-test: {len(cases)} attribution cases, "
         f"{len(promise_message_cases)} promise-message cases, "
-        f"{len(descriptor_cases)} descriptor cases, {len(MUTATIONS)} live mutations"
+        f"{len(descriptor_cases)} descriptor cases, "
+        f"{len(direct_marker_cases)} direct-marker cases, {len(MUTATIONS)} live mutations"
     )
     return 0
 

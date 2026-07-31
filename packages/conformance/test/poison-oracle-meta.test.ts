@@ -7,14 +7,17 @@ import {
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
-import { engineInvariantFindings } from '../src/invariants.js'
+import { type EngineInvariantFinding, engineInvariantFindings } from '../src/invariants.js'
 import {
   POISON_TARGET_CASES,
   POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
+  findingSeverity,
+  type ProtocolSnapshot,
   runPoisonMatrixCase,
   runPoisonTargetCase,
 } from '../src/poison-matrix.js'
+import { executeStorageCorruption } from '../src/fixture.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 function witness(id: string) {
@@ -35,6 +38,18 @@ function target(id: string) {
   const found = POISON_TARGET_CASES.find((candidate) => candidate.id === id)
   if (!found) throw new Error(`missing poison target ${id}`)
   return found
+}
+
+function protocolSnapshot(overrides: Partial<ProtocolSnapshot> = {}): ProtocolSnapshot {
+  return {
+    tasks: [],
+    runs: [],
+    checkpoints: [],
+    events: [],
+    waits: [],
+    drivers: [],
+    ...overrides,
+  }
 }
 
 async function write(raw: SqlExecutor, statements: Parameters<SqlExecutor['batch']>[1]) {
@@ -212,26 +227,32 @@ describe('poison/invariant mechanism self-tests', () => {
   })
 
   it('rejects a zero-statement structural-rejection claim', async () => {
-    await requireExpectedFailure(
-      { kind: 'construction', mutation: 'storage-corruption-requires-statement' },
-      /storage corruption attempt must contain at least one SQL statement/,
-      () =>
-        runPoisonMatrixCase(
-          async (seed) => {
-            const f = await makeLibsqlFixture(seed)
-            return {
+    const f = await makeLibsqlFixture('zero-statement-corruption')
+    try {
+      await requireExpectedFailure(
+        { kind: 'construction', mutation: 'storage-corruption-requires-statement' },
+        /storage corruption attempt must contain at least one SQL statement/,
+        () =>
+          executeStorageCorruption(
+            {
               ...f,
               storageCorruptionAttempt: () => ({
                 statements: [],
                 verify: () => undefined,
                 isStructuralRejection: () => true,
               }),
-            }
-          },
-          'driver-heartbeat',
-          temporalWitness('runs.available_at_ms'),
-        ),
-    )
+            },
+            {
+              table: 'runs',
+              runId: 'unused',
+              column: 'available_at_ms',
+              invalidRepresentation: 'non-integer',
+            },
+          ),
+      )
+    } finally {
+      f.close()
+    }
   })
 
   it('credits a write statement whose dialect SQL begins with a CTE', async () => {
@@ -505,6 +526,74 @@ describe('poison/invariant mechanism self-tests', () => {
     }
   }
 
+  it('computes exact lower-bound counter severity', async () => {
+    const field = PERSISTED_COUNTER_FIELDS.find((candidate) => candidate.id === 'task-max-attempts')
+    if (!field) throw new Error('missing task-max-attempts field')
+    const finding: EngineInvariantFinding = {
+      conditionId: 'counter-bound/task-max-attempts',
+      name: 'counter-out-of-range',
+      subject: 'tasks/poison-task',
+      subjectIdentity: ['tasks', 'poison-task'],
+      message: 'counter-out-of-range: tasks/poison-task',
+    }
+    const severity = (offset: number): bigint =>
+      findingSeverity(
+        finding,
+        protocolSnapshot({
+          tasks: [{ task_id: 'poison-task', max_attempts: field.bounds.min - offset }],
+        }),
+      )
+
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-severity-lower-bound' },
+      /unexpected lower-bound severities/,
+      async () => {
+        const actual = [severity(1), severity(2)]
+        if (actual[0] !== 1n || actual[1] !== 2n) {
+          throw new Error(`unexpected lower-bound severities: ${actual.join(', ')}`)
+        }
+      },
+    )
+  })
+
+  it('resolves checkpoint severity by composite identity', async () => {
+    const field = PERSISTED_COUNTER_FIELDS.find(
+      (candidate) => candidate.id === 'checkpoint-owner-attempt',
+    )
+    if (!field) throw new Error('missing checkpoint-owner-attempt field')
+    const finding: EngineInvariantFinding = {
+      conditionId: 'counter-bound/checkpoint-owner-attempt',
+      name: 'counter-out-of-range',
+      subject: 'checkpoints/poison-task/poison-checkpoint',
+      subjectIdentity: ['checkpoints', 'poison-task', 'poison-checkpoint'],
+      message: 'counter-out-of-range: checkpoints/poison-task/poison-checkpoint',
+    }
+    const severity = (offset: number): bigint =>
+      findingSeverity(
+        finding,
+        protocolSnapshot({
+          checkpoints: [
+            {
+              task_id: 'poison-task',
+              checkpoint_name: 'poison-checkpoint',
+              owner_attempt: field.bounds.max + offset,
+            },
+          ],
+        }),
+      )
+
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-severity-checkpoint' },
+      /unexpected checkpoint severities/,
+      async () => {
+        const actual = [severity(1), severity(2)]
+        if (actual[0] !== 1n || actual[1] !== 2n) {
+          throw new Error(`unexpected checkpoint severities: ${actual.join(', ')}`)
+        }
+      },
+    )
+  })
+
   for (const side of ['upper', 'lower'] as const) {
     for (const field of PERSISTED_COUNTER_FIELDS) {
       it(`catches ${side} ${field.id} worsening on the same subject`, async () => {
@@ -527,21 +616,7 @@ describe('poison/invariant mechanism self-tests', () => {
                 ]),
             },
           )
-        if (side === 'lower' && field.id === 'task-attempts') {
-          await requireExpectedFailure(
-            { kind: 'behavior', mutation: 'poison-severity-lower-bound' },
-            /worsened/,
-            run,
-          )
-        } else if (side === 'upper' && field.id === 'checkpoint-owner-attempt') {
-          await requireExpectedFailure(
-            { kind: 'behavior', mutation: 'poison-severity-checkpoint' },
-            /worsened/,
-            run,
-          )
-        } else {
-          await expect(run()).rejects.toThrow(/worsened/)
-        }
+        await expect(run()).rejects.toThrow(/worsened/)
       })
     }
   }
@@ -808,7 +883,7 @@ describe('poison/invariant mechanism self-tests', () => {
   it('executes the sweep-lost-launch target profile', async () => {
     await attributeExpectedFailure(
       { kind: 'behavior', mutation: 'poison-profile-sweep-lost-launch' },
-      /declared sweep-lost-launch/,
+      /declared lost-launch target/,
       () =>
         runPoisonTargetCase(
           makeLibsqlFixture,
@@ -820,7 +895,7 @@ describe('poison/invariant mechanism self-tests', () => {
   it('executes the sweep-claim-timeout target profile', async () => {
     await attributeExpectedFailure(
       { kind: 'behavior', mutation: 'poison-profile-sweep-claim-timeout' },
-      /declared sweep-claim-timeout/,
+      /declared claim-timeout target/,
       () =>
         runPoisonTargetCase(
           makeLibsqlFixture,

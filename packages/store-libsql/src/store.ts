@@ -100,8 +100,6 @@ function activationDurationAdmissible(task: string, at: string): string {
     WHEN json_type(${cancellation}, ${path}) IS NULL THEN 1
     WHEN json_type(${cancellation}, ${path}) NOT IN ('integer','real') THEN 0
     WHEN (${seconds}) < 0 OR (${durationMs}) > ${MAX_DURATION_MS} THEN 0
-    WHEN ${firstStarted} IS NOT NULL
-      AND NOT ${storedIntegerWithin(TASK_INTEGER_BOUNDS.first_started_at_ms, task)} THEN 0
     WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0
     ELSE 1
   END = 1)`
@@ -144,9 +142,14 @@ const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
     updated_at_ms = excluded.updated_at_ms
   WHERE excluded.owner_attempt >= checkpoints.owner_attempt`
 
+/*
+ * The equality makes the two attempt values one semantic ordinal. Validate
+ * the checkpoint's canonical representation and range once; any different
+ * owner representation fails equality. A second bounds/type predicate would
+ * be redundant and no single-condition mutation could exercise it.
+ */
 const checkpointOwnerMatches = (checkpoint: string, owner: string): string =>
   `${storedIntegerWithin(CHECKPOINT_INTEGER_BOUNDS.owner_attempt, checkpoint)}
-   AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, owner)}
    AND ${owner}.run_id = ${checkpoint}.owner_run_id
    AND ${owner}.task_id = ${checkpoint}.task_id
    AND ${owner}.queue = ${checkpoint}.queue

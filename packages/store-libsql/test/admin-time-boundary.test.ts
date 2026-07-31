@@ -1,5 +1,5 @@
 import { MAX_EPOCH_MS } from '@durablerun/core'
-import { requireExpectedFailure } from '@durablerun/core/testing'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor, LibsqlStoreAdmin } from '../src/index.js'
 
@@ -40,11 +40,14 @@ describe('fake engine-time boundary', () => {
 
   it('accepts both exact epoch endpoints', async () => {
     // MUTATION-CONTROL: the fake-clock validator includes both legal endpoints.
-    await admin.setFakeNowEpochMs(0)
-    expect(
-      await admin.nowEpochMs(),
-      'mutation-verdict:behavior:admin-fake-now-exact-endpoints',
-    ).toBe(0)
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'admin-fake-now-exact-endpoints' },
+      (error) =>
+        error instanceof RangeError &&
+        error.message === `epochMs must be an integer epoch-ms in [0, ${MAX_EPOCH_MS}], got -1`,
+      () => admin.setFakeNowEpochMs(0),
+    )
+    expect(await admin.nowEpochMs()).toBe(0)
     await admin.setFakeNowEpochMs(MAX_EPOCH_MS)
     expect(await admin.nowEpochMs()).toBe(MAX_EPOCH_MS)
   })
