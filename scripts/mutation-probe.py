@@ -4002,6 +4002,20 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             None,
         ),
         (
+            "unicode prefix adjacency",
+            "// @ts-expect-error Ωmutation-verdict:construction:probe\nconsume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
+            "unicode suffix adjacency",
+            "// @ts-expect-error mutation-verdict:construction:probeΩ\nconsume(invalid)",
+            frozenset(),
+            (),
+            None,
+        ),
+        (
             "multiline marker ownership",
             "/* @ts-expect-error\n"
             "mutation-verdict:construction:probe */\n"
