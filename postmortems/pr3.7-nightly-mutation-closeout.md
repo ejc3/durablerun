@@ -6,8 +6,10 @@ audit then showed that 47 registry entries did not prove their advertised
 causal verdict: 42 failed on a different path and five survived. Those 47
 entries collapse to 21 independent machinery defects under this repository's
 site-and-cause counting rule. Repairs, mandatory re-review, and a second full
-audit found eleven more defects. The final code head `8765b33` has 206 live
-mutations, and all 206 reach their exact attributable verdict.
+audit found ten more defects. Executing the required mechanism false negative
+then found one more Unicode marker-boundary defect. The final registry has 206
+live mutations, and the last complete code-head audit proved all 206 reach
+their exact attributable verdict.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The subject is why the nightly and mutation gates could say more
@@ -68,6 +70,7 @@ causal coverage while deleting guards without their named proof failing.
 | 31 | Poison-oracle test seams leaked through `export *` in the public conformance barrel | Test-only snapshot and severity helpers unintentionally became supported API | Package export review | Wildcard export erased the distinction between contract and fixture seam | One explicit public allowlist and a package with only the `"."` export (rung 1 for current topology) |
 | 32 | The fake-clock exact-endpoint verdict accepted any `RangeError` | A different range failure could answer for the endpoint property | Administrative mutation verdict review | Error class was used as causal identity | Match the exact `requireEpochMs` `RangeError` message (rung 2) |
 | 33 | Helper ownership trusted any bare call named `requireExpectedFailure` or its siblings | A shadowed local or parameter could satisfy descriptor inventory without executing the canonical helper | Final repair review | Callee spelling stood in for symbol identity | One TypeScript `Program` and `TypeChecker` require the exact unaliased named import from the canonical testing module; shadowed cases are rejected (rung 2 using compiler symbols) |
+| 34 | Marker boundaries excluded only ASCII adjacency | Unicode identifier characters could decorate a canonical construction marker and satisfy directive ownership | Required false-negative execution of the repaired analyzer | The boundary modeled current mutation-name characters rather than ECMAScript identifier adjacency | Red `956fbb9` adds Unicode prefix and suffix attacks; green `d01f4ef` uses Unicode `ID_Continue` plus the ECMAScript identifier additions (rung 2) |
 
 ## Detection ledger
 
@@ -78,8 +81,9 @@ causal coverage while deleting guards without their named proof failing.
 | Full exact mutation audit at `47987c0`, findings 3 through 23 | 21 | **yes** |
 | Full exact mutation audit at `90cc034`, finding 24 | 1 | **yes** |
 | Mandatory repair reviews, findings 25 through 33 | 9 | no |
+| Executed mechanism false-negative probe, finding 34 | 1 | **yes** |
 
-Self-catch rate: **23 of 33, or 69.7%** (previous temporal round: **1 of
+Self-catch rate: **24 of 34, or 70.6%** (previous temporal round: **1 of
 43, or 2.3%**). This is a material improvement because the long audit found
 22 attribution defects without outside review. It is not 47 self-catches:
 `47987c0` reported 42 wrong-path entries and five survivors, but those 47
@@ -90,9 +94,9 @@ used by the preceding numeric and temporal postmortems.
 The last checked-in cumulative trailer was `review-findings: 289`. This round
 adds the previously undocumented nightly executable-enrollment finding and
 nine mutation-repair review findings, so PR metadata must declare
-`review-findings: 299`. The previously recorded 30 self-catches rise by 23 to
-53. The branch catalogue at this checkpoint is therefore **299 review-caught
-plus 53 self-caught, or 352 total findings**.
+`review-findings: 299`. The previously recorded 30 self-catches rise by 24 to
+54. The branch catalogue at this checkpoint is therefore **299 review-caught
+plus 54 self-caught, or 353 total findings**.
 
 ## Recurrence
 
@@ -113,13 +117,14 @@ checkpoint fragments, duplicate ordinal guards, redundant activation guards,
 and wildcard exports left two spellings for one property. The rule existed as
 an aspiration; the repaired shapes make the current duplicate unspellable.
 
-Findings 27 through 30 and 33 are the most important recurrence: each is a
+Findings 27 through 30, 33, and 34 are the most important recurrence: each is a
 defect in a repair mechanism added during this same closeout. The first marker
 repair used proximity, the next used an incomplete boundary, the next erased
-multiplicity, and the first helper-binding repair used spelling. Re-review
-found each proxy before the final audit. A compiler API is now used for the
-language facts, while the remaining marker-token boundary is explicitly
-classified as syntactic.
+multiplicity, the first helper-binding repair used spelling, and the first
+standalone-marker boundary modeled ASCII only. Re-review or executable
+false-negative attack found each proxy before publication. A compiler API now
+owns the language facts, while marker tokenization remains explicitly
+syntactic.
 
 ## Mechanism audit — the false negative of each
 
@@ -133,24 +138,37 @@ counterexample that remains outside its claim.
 | Shared nightly plan and execution command | 1 for the command array, 2 for hosted execution | A future line after the `plan_only` exit can make the real branch return before `"${command[@]}"` while `--plan` still prints all four commands. The focused plan suite would remain green because it executes only `--plan`; the hosted nightly itself remains the final execution proof. |
 | Exact file, full test name, and first-line marker classifier | 2 | Two guards can still feed the same assertion and marker. An executed synthetic `SuiteResult` containing the exact file, full name, and `mutation-verdict:behavior:shared-guard`, with diagnostic `sibling guard failed`, printed `caught`. Per-condition mutations and isolated fixtures, not the classifier alone, own causality. |
 | Literal executable helper closures for generated checkpoint cases | 1 for case-to-helper ownership, 2 for behavior | A closure can deliberately throw the helper's accepted error before it calls the store. Its descriptor and marker remain exact, so the source inventory and classifier pass while the checkpoint condition is untouched. The live mutation is the causal attack. |
-| Compiler-owned `@ts-expect-error` marker | 2 | One directive line can contain two independent type errors. A broad mutation that removes both makes TS2578 appear on the exact owned line even if the advertised type boundary was only one of them. Compiler ownership proves the line and directive, not semantic minimality of the mutation. |
+| Compiler-owned standalone `@ts-expect-error` marker | 2 | One directive line can contain two independent type errors. A broad mutation that removes both makes TS2578 appear on the exact owned line even if the advertised type boundary was only one of them. Compiler ownership and Unicode-aware delimiter checks prove the exact line, directive, multiplicity, and standalone marker, not semantic minimality of the mutation. |
 | TypeChecker-resolved canonical helper import | 2 | The executed analyzer accepted `requireExpectedFailure({ kind: "behavior", mutation: "probe" }, /x/, async () => { throw new Error("x") })` from the canonical import with no diagnostics and returned descriptor `["behavior","probe"]`, although the callback exercised no production code. Symbol identity prevents shadowing; it does not prove reachability. |
 | Canonical checkpoint ordinal relation | 1 where composed | A future checkpoint-writing operation can omit `checkpointOwnerMatches` entirely. The existing two operations cannot spell a second peer range guard, but completeness of future consumers remains a generated mutation-inventory property. |
 | Explicit conformance public barrel | 1 for the current exported set | Adding a new test-only symbol to the explicit allowlist is syntactically valid and widens the API. Wildcard leakage is unrepresentable; whether a deliberately named export is supported API still requires contract review. |
 | Exact fake-clock error type and message | 2 | An earlier validation can throw the same `RangeError` message before `setFakeNowEpochMs` reaches the intended endpoint check. Exact text excludes generic range failures but still does not authenticate the throwing statement. |
-| ASCII marker-token boundaries | 2, syntactic | The executed analyzer accepted `// @ts-expect-error Ωmutation-verdict:construction:probe` with no diagnostics and returned the canonical direct marker plus expect-error ownership on line 1. Current mutation names are ASCII; semantic token ownership would require deriving the marker from a parsed descriptor rather than scanning comment text. |
 | Postmortem red/green prose | Process rule only | The offline postmortem checker validates sections and arithmetic, not that every cited red hash is distinct, earlier than its fix, and test-only. A document can cite the same commit as red and green and still pass shape attestation. This closeout therefore cannot claim commit-topology enforcement. |
+
+The aggregate rows map to every mechanism claimed above: nightly ownership
+covers findings 1–2; exact classifier ownership covers 3–4, 7–11, 13–18,
+19–25, and 32; literal generated closures cover 12 and 26; compiler-owned
+standalone markers cover 6, 27–30, and 34; canonical helper symbols cover 17,
+25, and 33; the checkpoint relation covers 5, 23, and 26; the explicit barrel
+covers 31; and exact administrative errors cover 15, 17, 25, and 32. The
+shared-marker `caught` probe is also the executed false negative for every
+isolated-fixture claim in findings 4, 7, 11, 13–14, and 19–22: an unmodeled
+eligibility axis can still feed the exact assertion. The two broad checkpoint
+probes and redundant activation probe executed that same boundary for mutation
+minimality in findings 5 and 23; they were removed rather than relabeled.
 
 ## Fix-induced defects
 
-There were **seven** in the combined closeout. Finding 2 was exposed after the
-fresh-process repair: the workflow had become bounded, but its first enrollment
-proof still accepted dead execution. In the mutation repair, findings 28
-through 33 were introduced by or exposed through the first repairs for marker
-ownership, analyzer identity, package seams, admin attribution, and helper
-inventory.
+There were **nine** in the combined closeout: findings 2, 25, and 27 through
+33. Finding 2 was caused by the first fresh-process proof, whose text inventory
+still accepted dead execution. Finding 25 was the generic framework matcher
+introduced with the executable-enrollment regression. Findings 27 through 30
+were successive ownership-analyzer repairs; finding 31 was caused by exporting
+new poison test seams through a wildcard barrel; finding 32 was the broad
+matcher added to attribute the admin control; and finding 33 was caused by the
+first helper-descriptor analyzer matching spelling instead of imports.
 
-All seven were re-reviewed as new code rather than merely re-tested. That
+All nine were re-reviewed as new code rather than merely re-tested. That
 re-review is why the final long audit began only after the compiler-owned
 directive, explicit barrel, exact admin error, literal checkpoint helpers, and
 TypeChecker symbol resolution were in place.
@@ -179,6 +197,12 @@ TypeChecker symbol resolution were in place.
 
   > every mutation was caught by its attributable verdict at 8765b33365a46d028265e75c4d8b8d9a9eb0cc35
 
+- False-negative red commit `956fbb9` added Unicode prefix and suffix marker
+  attacks. The classifier self-test failed with four exact mismatches: each
+  case was harvested both as a direct marker and as expect-error ownership.
+  Green `d01f4ef` changed the boundary to Unicode `ID_Continue`; the self-test
+  passed with **16 direct-marker cases**, and `pnpm verify` passed **74 files
+  and 3,428 tests**.
 - The repair reviews reported: “Matching Vitest's ‘expected … to throw’ text
   is still a framework-message proxy”; “The split fractional-storage cases are
   still masked by equality”; “Typecheck mutations can still satisfy the
@@ -242,7 +266,7 @@ Built in this PR:
   calls, exact helper import symbols, literal descriptors, direct markers, and
   compiler-recognized directive locations. The self-test has 19
   promise-message, ten descriptor, two helper-binding, three helper-marker,
-  and fourteen direct-marker cases (rung 2).
+  and sixteen direct-marker cases (rung 2).
 - Mutation-specific helper descriptors derive their exact marker, exact
   nightly domain errors replace framework diagnostics, the conformance barrel
   is explicit, and the fake-clock control matches its exact error (rungs 1 and
@@ -266,11 +290,11 @@ complete. Two guards deliberately sharing one assertion can still let the
 sibling kill a mutation. A canonical imported helper can still be given a
 callback that fabricates its accepted error without exercising production.
 
-The compiler proves directive, line, multiplicity, and symbol identity, but it
-does not prove semantic minimality. A line with two type errors can turn unused
-for a broader reason, and comment marker boundaries remain an ASCII lexical
-check. A deliberate new public allowlist entry can expose a test seam, and a
-future validation path can reuse the exact fake-clock error.
+The compiler proves directive, line, multiplicity, symbol identity, and
+Unicode-aware standalone marker boundaries, but it does not prove semantic
+minimality. A line with two type errors can turn unused for a broader reason.
+A deliberate new public allowlist entry can expose a test seam, and a future
+validation path can reuse the exact fake-clock error.
 
 Finally, the repository still does not machine-check red/fix commit topology.
 This postmortem truthfully exposes bundled repair-review fixes, but prose is

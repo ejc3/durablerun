@@ -207,7 +207,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     contract; this item records attribution behavior without redefining it.
     The verifier runs 17 attribution cases, nineteen promise-message source
     cases, ten canonical helper-descriptor cases, two helper-binding cases,
-    three helper-marker cases, and fourteen direct-marker cases across all 206
+    three helper-marker cases, and sixteen direct-marker cases across all 206
     live mutations; seven injected classifier faults are maintained by
     `lint-selftest.py`.
     The parallel coordinator has its own generated injected faults for shard
@@ -346,7 +346,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     first-class central conformance surface, not a nested call another backend
     can omit. Sixty-four attributable temporal/admin/enrollment mutations
     brought the registry to 191. The final attribution closeout inventories
-    206 live mutations; its clean-head full audit is recorded below.
+    206 live mutations; its code-head audit is recorded in the closeout
+    postmortem, while the exact final branch-head evidence remains below.
   - **Schema and inline-ending boundaries fail closed.** A stored
     `schema_version` is a canonical nonnegative base-10 safe integer (`0`
     exactly, otherwise no leading zero), and migration success requires it to
