@@ -1,5 +1,11 @@
 import { engineInvariantViolations } from '@durablerun/conformance'
-import { type Clock, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
+import {
+  type Clock,
+  LeaseLostError,
+  type SchedulerStore,
+  StoreUnavailableError,
+  SuspendSignal,
+} from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -137,6 +143,21 @@ const HOSTILE_THROWN_VALUES: readonly HostileThrownValue[] = [
       })
       return value
     },
+  },
+]
+
+const HANDLER_CONSTRUCTED_CONTROLS: readonly HostileThrownValue[] = [
+  {
+    name: 'constructed SuspendSignal',
+    makeValue: () => new SuspendSignal('await-event'),
+  },
+  {
+    name: 'constructed LeaseLostError',
+    makeValue: () => new LeaseLostError('handler forgery'),
+  },
+  {
+    name: 'constructed StoreUnavailableError',
+    makeValue: () => new StoreUnavailableError('handler forgery'),
   },
 ]
 
@@ -353,6 +374,43 @@ describe('runClaimedRun', () => {
           runs: [{ attempt: 1, state: 'failed', claimed_by: null }],
         })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
+      } finally {
+        f.close()
+      }
+    })
+  }
+
+  for (const control of HANDLER_CONSTRUCTED_CONTROLS) {
+    it(`spends the user failure policy for a handler-${control.name}`, async () => {
+      const f = await fx(`sdk-handler-${control.name.replaceAll(' ', '-')}`)
+      try {
+        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+        const outcome = await claimAndRun(
+          f,
+          registry({
+            job: async () => {
+              throw control.makeValue()
+            },
+          }),
+          'w1',
+        )
+        const result = await f.store.getTaskResult(Q, spawned.taskId)
+        const [task] = await f.raw.batch(
+          'handler-control-result',
+          [
+            {
+              sql: `SELECT state, attempts, infra_retries FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+
+        expect({ outcome, state: result?.state, task: task?.rows[0] }).toEqual({
+          outcome: { kind: 'failed' },
+          state: 'failed',
+          task: { state: 'failed', attempts: 1, infra_retries: 0 },
+        })
       } finally {
         f.close()
       }
