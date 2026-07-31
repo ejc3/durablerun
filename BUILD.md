@@ -205,9 +205,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     wrong-path result rather than credit.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
-    The verifier runs a 17-case classifier self-test, nineteen promise-message
-    source cases, and ten canonical helper-descriptor cases, with seven
-    injected classifier faults maintained by `lint-selftest.py`.
+    The verifier runs 17 attribution cases, nineteen promise-message source
+    cases, ten canonical helper-descriptor cases, two helper-binding cases,
+    three helper-marker cases, and fourteen direct-marker cases across all 206
+    live mutations; seven injected classifier faults are maintained by
+    `lint-selftest.py`.
     The parallel coordinator has its own generated injected faults for shard
     coverage, exact head, exact result inventory, process/report agreement,
     protective memory and CPU ceilings, missing/malformed/signaled transport,
@@ -234,17 +236,25 @@ these three things; nothing else in the system does I/O, time, or randomness.
     definition now owns success-to-error, expected-error-to-success, and
     expected-error-to-replacement-error verdicts. Callers pass a structured
     kind/name descriptor; the helper alone constructs the canonical marker and
-    rejects decorated names. One TypeScript-compiler AST pass rejects every
-    custom-message argument on direct Vitest
+    rejects decorated names. One TypeScript-compiler `Program`/`TypeChecker`
+    pass rejects every custom-message argument on direct Vitest
     `expect(...).rejects`/`.resolves` chains, owns parenthesized,
-    optional-call, generic, and relational syntax, distinguishes real helper
-    calls from methods and constructors, and inventories exact marker string
-    literals rather than comments. The shared lightweight lexer remains only
-    on source-harvest surfaces; it preserves the postfix state of TypeScript
-    non-null assertions so following division cannot hide executable batch
-    calls as regex contents. Removing the mutation runner's repository-local
-    Python parser/import makes its bytecode self-dirty path unrepresentable;
-    the executable fixture still rejects any analyzer import artifact.
+    optional-call, generic, and relational syntax, and counts a helper
+    descriptor only when its bare callee resolves to the exact unaliased
+    canonical testing import; shadowed and same-spelled local helpers own
+    nothing. A mutation-specific helper descriptor owns that mutation's exact
+    canonical marker, and generated cases carry literal executable helper
+    closures rather than detached marker inventories or reconstructed mutation
+    names. Construction markers are owned by compiler-recognized
+    `@ts-expect-error` directives: exactly one exact marker must occur on
+    exactly one directive, on the line whose unused directive produces TS2578.
+    Direct runtime markers remain exact string literals. The shared lightweight
+    lexer remains only on source-harvest surfaces; it preserves the postfix
+    state of TypeScript non-null assertions so following division cannot hide
+    executable batch calls as regex contents. Removing the mutation runner's
+    repository-local Python parser/import makes its bytecode self-dirty path
+    unrepresentable; the executable fixture still rejects any analyzer import
+    artifact.
   - **A generated corrupt-pre-state ("poison") fault surface.** The 17
     classified write labels cross 54 atomic witnesses covering all 57
     invariant condition IDs: 918 generated cells, plus two inventory cases.
@@ -334,9 +344,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     direct case pins the self-catch without replacing its generated detector.
     The timestamp suite is a
     first-class central conformance surface, not a nested call another backend
-    can omit. Sixty-four attributable temporal/admin/enrollment mutations bring
-    the current registry to 191; the classifier self-test is green, while the
-    clean-head full audit remains part of the final evidence below.
+    can omit. Sixty-four attributable temporal/admin/enrollment mutations
+    brought the registry to 191. The final attribution closeout inventories
+    206 live mutations; its clean-head full audit is recorded below.
   - **Schema and inline-ending boundaries fail closed.** A stored
     `schema_version` is a canonical nonnegative base-10 safe integer (`0`
     exactly, otherwise no leading zero), and migration success requires it to
@@ -435,15 +445,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
   branches have repeatedly produced fix-induced defects.
 
 - **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory, now 109
-  IDs, makes every
-  currently declared boolean/null/type arm independently witnessable; they do
-  not prove the declaration itself is complete. One condition can still group
-  semantic alternatives — for example the `failed` and `cancelled` members of
-  a terminal-state set — and a witness for one member does not kill deletion
-  of the other. Generate one red mutation per claimed branch and enum literal,
-  and require every mutation to resolve to that condition's attributable
-  verdict. Condition-ID coverage without this attack is still a proxy for the
-  property.
+  IDs, makes every currently declared boolean/null/type arm witnessable; it
+  does not prove the declaration itself complete. The closeout already removes
+  the assertion-side proxy for checkpoint conflicts: all nine relations crossed
+  with two operations carry literal executable helper closures, and a
+  compiler-resolved mutation-specific helper descriptor must own its exact
+  marker. PR3.10 owns the remaining source-side property: generate one red
+  mutation per claimed semantic branch and enum literal across all 109 IDs, and
+  require each mutation to resolve to that condition's attributable verdict. A
+  condition ID, detached marker inventory, or one mutation per mechanism is
+  still a proxy. The same gate must verify each postmortem's cited red and green
+  hashes are distinct, ordered commits and that the red commit demonstrably
+  leaves the named probe failing; the final attribution closeout showed that
+  prose-only evidence still permits repair findings to be bundled into a green
+  commit.
 
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
