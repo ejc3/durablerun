@@ -95,23 +95,59 @@ describe('normalizeRetryStrategy', () => {
   })
 
   it('rebuilds exact frozen millisecond-canonical data', async () => {
-    const raw = { kind: 'fixed' as const, baseSeconds: 0.0005, ignored: true }
-    const normalized = await attributeExpectedFailure(
+    const rawStrategies = [
+      [
+        {
+          kind: 'none' as const,
+          ignored: true,
+          toJSON: () => {
+            throw new Error('caller toJSON escaped')
+          },
+        },
+        '{"kind":"none"}',
+      ],
+      [
+        {
+          kind: 'fixed' as const,
+          baseSeconds: 0.0005,
+          ignored: true,
+          toJSON: () => {
+            throw new Error('caller toJSON escaped')
+          },
+        },
+        '{"kind":"fixed","baseSeconds":0.001}',
+      ],
+      [
+        {
+          kind: 'exponential' as const,
+          baseSeconds: 0.0005,
+          factor: 2,
+          maxSeconds: 60,
+          ignored: true,
+          toJSON: () => {
+            throw new Error('caller toJSON escaped')
+          },
+        },
+        '{"kind":"exponential","baseSeconds":0.001,"factor":2,"maxSeconds":60}',
+      ],
+    ] as const
+
+    await attributeExpectedFailure(
       { kind: 'construction', mutation: 'retry-normalize-rebuild' },
       /retry normalization did not rebuild exact canonical data/,
       async () => {
-        const value = normalizeRetryStrategy(raw)
-        if (
-          value === raw ||
-          !Object.isFrozen(value) ||
-          JSON.stringify(value) !== '{"kind":"fixed","baseSeconds":0.001}'
-        ) {
-          throw new Error('retry normalization did not rebuild exact canonical data')
+        for (const [raw, expectedJson] of rawStrategies) {
+          const value = normalizeRetryStrategy(raw)
+          if (
+            Object.is(value, raw) ||
+            !Object.isFrozen(value) ||
+            JSON.stringify(value) !== expectedJson
+          ) {
+            throw new Error('retry normalization did not rebuild exact canonical data')
+          }
         }
-        return value
       },
     )
-    expect(normalized).toEqual({ kind: 'fixed', baseSeconds: 0.001 })
   })
 
   it('canonicalizes negative zero before serialization', async () => {
@@ -137,6 +173,32 @@ describe('normalizeRetryStrategy', () => {
         }
       },
     )
+  })
+
+  it('contains hostile getters at one field-reading boundary', async () => {
+    const hostileFields = [
+      ['kind', {}],
+      ['baseSeconds', { kind: 'fixed' }],
+      ['factor', { kind: 'exponential', baseSeconds: 1, maxSeconds: 60 }],
+      ['maxSeconds', { kind: 'exponential', baseSeconds: 1, factor: 2 }],
+    ] as const
+
+    for (const [field, partial] of hostileFields) {
+      const escaped = new Error(`raw retry ${field} getter escaped`)
+      const hostile = Object.defineProperty({ ...partial }, field, {
+        get: () => {
+          throw escaped
+        },
+      })
+      await attributeReplacedFailure(
+        { kind: 'behavior', mutation: 'retry-normalize-readable-fields' },
+        (error) =>
+          error instanceof RangeError &&
+          error.message === `retry strategy ${field} is not readable`,
+        (error) => error === escaped,
+        async () => normalizeRetryStrategy(hostile),
+      )
+    }
   })
 
   it('is the decision API boundary for hostile strategy objects', async () => {

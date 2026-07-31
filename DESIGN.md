@@ -111,7 +111,13 @@ Per-queue tables: `t_<q>` tasks, `r_<q>` runs, `c_<q>` checkpoints, `e_<q>` even
   checkpoint atomically; `await_event` checkpoints-or-registers-a-wait.
 - **Retry math is data**: `retry_strategy` jsonb (fixed/exponential/none, base,
   factor, cap), computed at fail time; a new run row (attempt+1) is inserted with
-  `available_at = now + delay`.
+  `available_at = now + delay`. One total constructor validates spawned,
+  decoded, and directly calculated strategies, canonicalizes every duration to
+  milliseconds, and returns exact frozen nominal data bounded to 100 years.
+  Only an omitted spawn policy selects the default; explicit `null` is invalid.
+  Zero-base exponential retries stay zero even after exponentiation would
+  overflow; every other overflow clamps to the validated cap before the failure
+  transition is attempted.
 - Absurd uses **no** LISTEN/NOTIFY, no triggers, no advisory locks — strictly
   pull-based. This is why it ports. The main Postgres-isms (the corpus lists 15
   categories): plpgsql itself, SKIP LOCKED + FOR SHARE/KEY SHARE row locks,

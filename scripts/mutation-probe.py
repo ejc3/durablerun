@@ -2065,6 +2065,124 @@ MUTATION_SPECS.extend(
             "runFuzzShard(30, 32)",
             "one fuzz file duplicates another shard coordinate and leaves its own seeds unexecuted",
         ),
+        (
+            "retry-normalize-base-bound",
+            "packages/core/src/retry.ts",
+            "  const canonicalBase = canonicalDurationSeconds('retry strategy baseSeconds', baseSeconds)",
+            "  const canonicalBase = baseSeconds as number // MUTATION",
+            "retry normalization accepts an unchecked base duration",
+        ),
+        (
+            "retry-normalize-max-bound",
+            "packages/core/src/retry.ts",
+            "    maxSeconds: canonicalDurationSeconds('retry strategy maxSeconds', maxSeconds),",
+            "    maxSeconds: maxSeconds as number, // MUTATION",
+            "retry normalization accepts an unchecked exponential cap",
+        ),
+        (
+            "retry-normalize-factor",
+            "packages/core/src/retry.ts",
+            "  const canonicalFactor = canonicalRetryFactor(factor)",
+            "  const canonicalFactor = factor as number // MUTATION",
+            "retry normalization accepts an unchecked exponential factor",
+        ),
+        (
+            "retry-normalize-kind",
+            "packages/core/src/retry.ts",
+            "  if (kind !== 'fixed' && kind !== 'exponential') {\n"
+            "    throw new RangeError('retry strategy kind must be none, fixed, or exponential')\n"
+            "  }",
+            "  if (kind !== 'fixed' && kind !== 'exponential') {\n"
+            "    return Object.freeze({ kind: 'none' }) as NormalizedRetryStrategy // MUTATION\n"
+            "  }",
+            "retry normalization maps an unknown strategy kind to no retries",
+        ),
+        (
+            "retry-normalize-rebuild",
+            "packages/core/src/retry.ts",
+            "function finalizeRetryStrategy(value: RetryStrategy): NormalizedRetryStrategy {\n"
+            "  return Object.freeze(value) as NormalizedRetryStrategy\n"
+            "}",
+            "function finalizeRetryStrategy(value: RetryStrategy): NormalizedRetryStrategy {\n"
+            "  return value as NormalizedRetryStrategy // MUTATION\n"
+            "}",
+            "retry normalization returns mutable canonical data",
+        ),
+        (
+            "retry-normalize-readable-fields",
+            "packages/core/src/retry.ts",
+            "function readRetryField(value: object, field: string): unknown {\n"
+            "  try {\n"
+            "    return Reflect.get(value, field)\n"
+            "  } catch {\n"
+            "    throw new RangeError(`retry strategy ${field} is not readable`)\n"
+            "  }\n"
+            "}",
+            "function readRetryField(value: object, field: string): unknown {\n"
+            "  return Reflect.get(value, field) // MUTATION\n"
+            "}",
+            "a hostile retry field getter escapes the normalization boundary",
+        ),
+        (
+            "retry-normalize-positive-zero",
+            "packages/core/src/retry.ts",
+            "  return milliseconds === 0 ? 0 : milliseconds / 1000",
+            "  return milliseconds / 1000",
+            "retry normalization returns negative zero instead of its serialized representation",
+        ),
+        (
+            "retry-decision-normalization",
+            "packages/core/src/retry.ts",
+            "  const normalizedDecision = normalizeRetryStrategy(strategy)",
+            "  const normalizedDecision = strategy as NormalizedRetryStrategy // MUTATION",
+            "the public retry decision API consumes an unchecked strategy",
+        ),
+        (
+            "retry-delay-normalization",
+            "packages/core/src/retry.ts",
+            "  const normalizedDelay = normalizeRetryStrategy(strategy)",
+            "  const normalizedDelay = strategy as NormalizedRetryStrategy // MUTATION",
+            "the public retry delay API consumes an unchecked strategy",
+        ),
+        (
+            "retry-zero-base-overflow",
+            "packages/core/src/retry.ts",
+            "      if (strategy.baseSeconds === 0) return 0",
+            "      if (false && strategy.baseSeconds === 0) return 0",
+            "zero-base exponential retry math becomes nonzero after exponent overflow",
+        ),
+        (
+            "retry-spawn-normalization",
+            "packages/store-libsql/src/store.ts",
+            "    const retry = JSON.stringify(\n"
+            "      normalizeRetryStrategy(retryInput === undefined ? DEFAULT_RETRY : retryInput),\n"
+            "    )",
+            "    const retry = JSON.stringify(\n"
+            "      retryInput === undefined ? DEFAULT_RETRY : retryInput,\n"
+            "    )",
+            "spawn persists a retry policy without normalization",
+        ),
+        (
+            "retry-spawn-null",
+            "packages/store-libsql/src/store.ts",
+            "retryInput === undefined ? DEFAULT_RETRY : retryInput",
+            "retryInput ?? DEFAULT_RETRY",
+            "spawn silently treats an explicit null retry policy as the default",
+        ),
+        (
+            "retry-persisted-normalization",
+            "packages/store-libsql/src/store.ts",
+            "    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),",
+            "    retryStrategy: JSON.parse(String(row.retry_strategy)) as ClaimedRun['retryStrategy'],",
+            "claim exposes unchecked durable retry JSON",
+        ),
+        (
+            "retry-normalized-type-is-nominal",
+            "packages/core/src/types.ts",
+            "export type NormalizedRetryStrategy = RetryStrategy & NormalizedRetryStrategyIdentity",
+            "export type NormalizedRetryStrategy = RetryStrategy",
+            "object spread can forge normalized retry data at compile time",
+        ),
     )
 )
 
@@ -2927,6 +3045,93 @@ VERDICTS.update(
             "fuzz shard batch plan derives every fuzz file coordinate from its filename",
             "mutation-verdict:construction:nightly-fuzz-file-enrollment",
         ),
+        "retry-normalize-base-bound": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy rejects a base above the durable duration bound",
+            "mutation-verdict:behavior:retry-normalize-base-bound",
+        ),
+        "retry-normalize-max-bound": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy rejects an exponential cap above the durable duration bound",
+            "mutation-verdict:behavior:retry-normalize-max-bound",
+        ),
+        "retry-normalize-factor": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy rejects a negative exponential factor",
+            "mutation-verdict:behavior:retry-normalize-factor",
+        ),
+        "retry-normalize-kind": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy rejects an unknown strategy kind",
+            "mutation-verdict:behavior:retry-normalize-kind",
+        ),
+        "retry-normalize-rebuild": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy rebuilds exact frozen millisecond-canonical data",
+            "mutation-verdict:construction:retry-normalize-rebuild",
+        ),
+        "retry-normalize-readable-fields": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy contains hostile getters at one field-reading boundary",
+            "mutation-verdict:behavior:retry-normalize-readable-fields",
+        ),
+        "retry-normalize-positive-zero": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy canonicalizes negative zero before serialization",
+            "mutation-verdict:construction:retry-normalize-positive-zero",
+        ),
+        "retry-decision-normalization": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy is the decision API boundary for hostile strategy objects",
+            "mutation-verdict:behavior:retry-decision-normalization",
+        ),
+        "retry-delay-normalization": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy is the delay API boundary for hostile strategy objects",
+            "mutation-verdict:behavior:retry-delay-normalization",
+        ),
+        "retry-zero-base-overflow": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retry.test.ts",
+            "retryDelaySeconds a zero base stays zero when exponentiation overflows",
+            "mutation-verdict:behavior:retry-zero-base-overflow",
+        ),
+        "retry-spawn-normalization": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] spawn rejects retry durations above the durable bound without writing",
+            "mutation-verdict:behavior:retry-spawn-normalization",
+            "packages/conformance/src/suite.ts",
+        ),
+        "retry-spawn-null": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] spawn rejects an explicit null retry strategy without writing",
+            "mutation-verdict:behavior:retry-spawn-null",
+            "packages/conformance/src/suite.ts",
+        ),
+        "retry-persisted-normalization": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] claim rejects a corrupt persisted retry strategy instead of exposing unchecked JSON",
+            "mutation-verdict:behavior:retry-persisted-normalization",
+            "packages/conformance/src/suite.ts",
+        ),
+        "retry-normalized-type-is-nominal": ExpectedVerdict(
+            "construction",
+            "packages/store-libsql/test/retry-strategy-types.test.ts",
+            "TypeScript construction rejects a spread-normalized retry strategy",
+            "mutation-verdict:construction:retry-normalized-type-is-nominal",
+        ),
     }
 )
 
@@ -2968,6 +3173,7 @@ TYPECHECK_MUTATION_NAMES = frozenset(
         "stored-incrementable-rejects-spread-descriptor",
         "persisted-row-rejects-spread-descriptor",
         "derived-row-rejects-spread-descriptor",
+        "retry-normalized-type-is-nominal",
     }
 )
 

@@ -23,7 +23,6 @@ import {
   REASON_RELAUNCH_CAP,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
-  type RetryStrategy,
   STAMP,
   type SchedulerStore,
   type SpawnOptions,
@@ -68,12 +67,12 @@ import {
 } from './fragments.js'
 import { NOW_MS } from './time.js'
 
-const DEFAULT_RETRY: RetryStrategy = {
+const DEFAULT_RETRY = normalizeRetryStrategy({
   kind: 'exponential',
   baseSeconds: 5,
   factor: 2,
   maxSeconds: 3600,
-}
+})
 const DEFAULT_MAX_ATTEMPTS = 5
 const TASK_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.tasks
 const RUN_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.runs
@@ -350,7 +349,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   ): Promise<SpawnResult> {
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
-    const retry = JSON.stringify(normalizeRetryStrategy(opts.retryStrategy ?? DEFAULT_RETRY))
+    const retryInput = opts.retryStrategy
+    const retry = JSON.stringify(
+      normalizeRetryStrategy(retryInput === undefined ? DEFAULT_RETRY : retryInput),
+    )
     const maxAttempts = requirePositiveInt('maxAttempts', opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)
     const delayMs = durationToMs('startDelaySeconds', opts.startDelaySeconds ?? 0)
     const maxDelayMs =
@@ -1955,7 +1957,7 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
     ),
     leaseSeconds: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.lease_ms) / 1000,
     paramsJson: String(row.params),
-    retryStrategy: JSON.parse(String(row.retry_strategy)) as RetryStrategy,
+    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),
     maxAttempts: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.max_attempts),
     headers:
       row.headers === null ? {} : (JSON.parse(String(row.headers)) as Record<string, string>),

@@ -27,9 +27,25 @@ export type RunState = TaskState
 
 /** Serialized as JSON in the `retry_strategy` column, same shape as Absurd. */
 export type RetryStrategy =
-  | { kind: 'none' }
-  | { kind: 'fixed'; baseSeconds: number }
-  | { kind: 'exponential'; baseSeconds: number; factor: number; maxSeconds: number }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'fixed'; readonly baseSeconds: number }
+  | {
+      readonly kind: 'exponential'
+      readonly baseSeconds: number
+      readonly factor: number
+      readonly maxSeconds: number
+    }
+
+declare class NormalizedRetryStrategyIdentity {
+  private readonly normalizedRetryStrategyIdentity: true
+}
+
+/**
+ * Exact, frozen, millisecond-canonical retry data produced only by
+ * normalizeRetryStrategy. Durable decoders and the scheduler store expose
+ * this type so retry math cannot consume an unchecked JSON cast.
+ */
+export type NormalizedRetryStrategy = RetryStrategy & NormalizedRetryStrategyIdentity
 
 /** Absurd's cancellation policy jsonb: both fields optional, in seconds. */
 export interface CancellationPolicy {
@@ -97,7 +113,7 @@ export interface ClaimedRun extends LaunchIdentity {
   /** The lease length this claim was granted (worker heartbeat cadence). */
   leaseSeconds: number
   paramsJson: string
-  retryStrategy: RetryStrategy
+  retryStrategy: NormalizedRetryStrategy
   maxAttempts: number
   headers: Record<string, string>
   /** Present when this claim is an event or event-timeout wake. */
