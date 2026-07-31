@@ -1,4 +1,5 @@
 import { LeaseLostError, StoreUnavailableError } from '@durablerun/core'
+import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { createTaskControlScope, trustedStoreControl } from '../src/task-control.js'
 
@@ -214,12 +215,14 @@ describe('task control scope', () => {
     }
   })
 
-  it('contains hostile values at the trusted store classifier', () => {
+  it('contains hostile values at the trusted store classifier', async () => {
     const revocable = Proxy.revocable(Object.create(null), {})
     revocable.revoke()
-    expect(
-      trustedStoreControl(revocable.proxy),
-      'mutation-verdict:behavior:task-control-store-total-fallback',
-    ).toBeUndefined()
+    const snapshot = await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'task-control-store-total-fallback' },
+      /proxy that has been revoked/,
+      async () => trustedStoreControl(revocable.proxy),
+    )
+    expect(snapshot).toBeUndefined()
   })
 })
