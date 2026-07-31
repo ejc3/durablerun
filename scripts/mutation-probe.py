@@ -2894,8 +2894,8 @@ VERDICTS.update(
         "nightly-fuzz-batch-execution": ExpectedVerdict(
             "construction",
             "packages/conformance/test/nightly-fuzz-plan.test.ts",
-            "fuzz shard batch plan executes one canonical confined command for every hosted batch",
-            "mutation-verdict:construction:nightly-fuzz-workflow-batches",
+            "fuzz shard batch plan launches every planned batch through the real hosted path",
+            "mutation-verdict:construction:nightly-fuzz-batch-execution",
         ),
         "nightly-fuzz-workflow-invocation": ExpectedVerdict(
             "construction",

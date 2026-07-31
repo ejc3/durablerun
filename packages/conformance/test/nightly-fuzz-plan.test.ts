@@ -1,6 +1,8 @@
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
@@ -44,6 +46,41 @@ function hostedFuzzPlan(shard: number): readonly HostedFuzzProcess[] {
         command: command ?? '',
       }
     })
+}
+
+function executedHostedFuzzBatches(shard: number): readonly number[] {
+  const directory = mkdtempSync(join(tmpdir(), 'durablerun-nightly-execution-'))
+  const executions = join(directory, 'executions')
+  try {
+    writeFileSync(executions, '')
+    writeFileSync(
+      join(directory, 'env'),
+      `#!/bin/sh
+for argument do
+  case "$argument" in
+    FUZZ_BATCH_INDEX=*)
+      printf '%s\\n' "\${argument#FUZZ_BATCH_INDEX=}" >> "$DURABLERUN_NIGHTLY_EXECUTION_PROBE"
+      exit 0
+      ;;
+  esac
+done
+printf 'missing\\n' >> "$DURABLERUN_NIGHTLY_EXECUTION_PROBE"
+`,
+      { mode: 0o755 },
+    )
+    execFileSync('/bin/bash', [NIGHTLY_FUZZ_SCRIPT, String(shard)], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DURABLERUN_NIGHTLY_EXECUTION_PROBE: executions,
+        PATH: `${directory}${delimiter}${process.env.PATH ?? ''}`,
+      },
+    })
+    return readFileSync(executions, 'utf8').split('\n').filter(Boolean).map(Number)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 }
 
 describe('fuzz shard batch plan', () => {
@@ -292,6 +329,26 @@ describe('fuzz shard batch plan', () => {
         expect(process.steps).toBe(150)
       }
     }
+  })
+
+  it('launches every planned batch through the real hosted path', async () => {
+    const expected = hostedFuzzPlan(0).map(({ batch }) => batch)
+    const executed = executedHostedFuzzBatches(0)
+    const mismatch =
+      `hosted batch execution mismatch: expected ${JSON.stringify(expected)}, ` +
+      `got ${JSON.stringify(executed)}`
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'nightly-fuzz-batch-execution' },
+      (error) => error instanceof Error && error.message === mismatch,
+      async () => {
+        if (
+          executed.length !== expected.length ||
+          executed.some((batch, index) => batch !== expected[index])
+        ) {
+          throw new Error(mismatch)
+        }
+      },
+    )
   })
 
   it('derives every fuzz file coordinate from its filename', async () => {
