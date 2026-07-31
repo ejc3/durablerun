@@ -96,15 +96,36 @@ function verdictDescriptor(argument) {
   return [kind, mutation]
 }
 
-function analyze(path, source) {
-  const modulePrefix = 'export {}\n'
-  const sourceFile = ts.createSourceFile(
-    path,
-    `${modulePrefix}${source}`,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  )
+function importDeclaration(node) {
+  let current = node
+  while (current && !ts.isImportDeclaration(current)) current = current.parent
+  return current
+}
+
+function isCanonicalVerdictHelper(pathName, identifier, helperName, checker) {
+  const symbol = checker.getSymbolAtLocation(identifier)
+  if (!symbol) return false
+  return (symbol.declarations ?? []).some((declaration) => {
+    if (!ts.isImportSpecifier(declaration)) return false
+    const imported = declaration.propertyName?.text ?? declaration.name.text
+    const statement = importDeclaration(declaration)
+    if (
+      imported !== helperName ||
+      declaration.name.text !== helperName ||
+      !statement ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier)
+    ) {
+      return false
+    }
+    const moduleName = statement.moduleSpecifier.text
+    return (
+      moduleName === '@durablerun/core/testing' ||
+      (pathName.startsWith('packages/core/test/') && moduleName === '../src/testing.js')
+    )
+  })
+}
+
+function analyze(path, sourceFile, checker) {
   const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
     const start = diagnostic.start ?? 0
     const location = sourceFile.getLineAndCharacterOfPosition(start)
@@ -159,7 +180,19 @@ function analyze(path, source) {
     }
     if (name && VERDICT_HELPERS.has(name) && node.arguments.length > 0) {
       const descriptor = verdictDescriptor(node.arguments[0])
-      if (descriptor) descriptors.set(descriptor.join(':'), descriptor)
+      if (descriptor) {
+        const callee = unwrap(node.expression)
+        if (ts.isIdentifier(callee) && isCanonicalVerdictHelper(path, callee, name, checker)) {
+          descriptors.set(descriptor.join(':'), descriptor)
+        } else {
+          const location = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))
+          diagnostics.push(
+            `${location.line}:${
+              location.character + 1
+            } verdict helper ${name} does not resolve to its canonical testing import`,
+          )
+        }
+      }
     }
     ts.forEachChild(node, visit)
   }
@@ -176,6 +209,57 @@ function analyze(path, source) {
       (left, right) => left[1] - right[1] || left[0].localeCompare(right[0]),
     ),
   }
+}
+
+function analyzeVerdictProgram(sources) {
+  const virtualRoot = '/__durablerun_verdict_analysis__'
+  const sourceByFile = new Map()
+  const pathByFile = new Map()
+  for (const [pathName, source] of Object.entries(sources)) {
+    if (typeof source !== 'string') throw new Error(`${pathName}: source must be a string`)
+    const fileName = path.posix.join(virtualRoot, pathName.replaceAll('\\', '/'))
+    sourceByFile.set(fileName, `export {}\n${source}`)
+    pathByFile.set(fileName, pathName)
+  }
+
+  const options = {
+    target: ts.ScriptTarget.Latest,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    skipLibCheck: true,
+    noEmit: true,
+    moduleDetection: ts.ModuleDetectionKind.Force,
+  }
+  const fallback = ts.createCompilerHost(options, true)
+  const host = {
+    ...fallback,
+    fileExists(fileName) {
+      return sourceByFile.has(fileName) || fallback.fileExists(fileName)
+    },
+    readFile(fileName) {
+      return sourceByFile.get(fileName) ?? fallback.readFile(fileName)
+    },
+    getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile) {
+      const source = sourceByFile.get(fileName)
+      if (source !== undefined) {
+        return ts.createSourceFile(fileName, source, languageVersion, true, ts.ScriptKind.TS)
+      }
+      return fallback.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+    },
+  }
+  const program = ts.createProgram({
+    rootNames: [...sourceByFile.keys()],
+    options,
+    host,
+  })
+  const checker = program.getTypeChecker()
+  const files = {}
+  for (const [fileName, pathName] of pathByFile) {
+    const sourceFile = program.getSourceFile(fileName)
+    if (!sourceFile) throw new Error(`${pathName}: compiler omitted source`)
+    files[pathName] = analyze(pathName, sourceFile, checker)
+  }
+  return { files }
 }
 
 function staticMemberName(node) {
@@ -716,12 +800,7 @@ function main() {
     process.stdout.write(`${JSON.stringify(analyzeBatchProgram(input.sources))}\n`)
     return
   }
-  const files = {}
-  for (const [path, source] of Object.entries(input.sources)) {
-    if (typeof source !== 'string') throw new Error(`${path}: source must be a string`)
-    files[path] = analyze(path, source)
-  }
-  process.stdout.write(`${JSON.stringify({ files })}\n`)
+  process.stdout.write(`${JSON.stringify(analyzeVerdictProgram(input.sources))}\n`)
 }
 
 try {

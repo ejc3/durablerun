@@ -1,4 +1,4 @@
-import { attributeExpectedFailure } from '@durablerun/core/testing'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -77,13 +77,13 @@ describe('fuzz shard batch plan', () => {
 
   it('rejects invalid plan dimensions', async () => {
     const valid = { totalSeeds: 64, shard: 0, shardCount: 32, batch: 0, batchCount: 2 }
-    await attributeExpectedFailure(
+    await requireExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-plan-dimensions' },
-      /expected .* to throw an error$/,
+      (error) =>
+        error instanceof RangeError &&
+        error.message === 'totalSeeds must be a positive integer, got 1.5',
       async () => {
-        expect(() => fuzzBatchSeeds({ ...valid, totalSeeds: 1.5 })).toThrow(
-          /totalSeeds must be a positive integer/,
-        )
+        void fuzzBatchSeeds({ ...valid, totalSeeds: 1.5 })
       },
     )
     for (const override of [
@@ -99,13 +99,13 @@ describe('fuzz shard batch plan', () => {
 
   it('rejects out-of-range shard and batch coordinates', async () => {
     const valid = { totalSeeds: 64, shard: 0, shardCount: 32, batch: 0, batchCount: 2 }
-    await attributeExpectedFailure(
+    await requireExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-plan-coordinate-range' },
-      /expected .* to throw an error$/,
+      (error) =>
+        error instanceof RangeError &&
+        error.message === 'shard must be an integer in [0, 32), got 32',
       async () => {
-        expect(() => fuzzBatchSeeds({ ...valid, shard: valid.shardCount })).toThrow(
-          /shard must be an integer in/,
-        )
+        void fuzzBatchSeeds({ ...valid, shard: valid.shardCount })
       },
     )
     for (const override of [{ shard: -1 }, { batch: -1 }, { batch: valid.batchCount }]) {
@@ -114,19 +114,19 @@ describe('fuzz shard batch plan', () => {
   })
 
   it('rejects an empty process batch', async () => {
-    await attributeExpectedFailure(
+    await requireExpectedFailure(
       { kind: 'construction', mutation: 'nightly-fuzz-plan-empty-rejected' },
-      /expected .* to throw an error$/,
+      (error) =>
+        error instanceof RangeError &&
+        error.message === 'fuzz batch 0/1 of shard 1/2 owns no seeds',
       async () => {
-        expect(() =>
-          fuzzBatchSeeds({
-            totalSeeds: 1,
-            shard: 1,
-            shardCount: 2,
-            batch: 0,
-            batchCount: 1,
-          }),
-        ).toThrow(/owns no seeds/)
+        void fuzzBatchSeeds({
+          totalSeeds: 1,
+          shard: 1,
+          shardCount: 2,
+          batch: 0,
+          batchCount: 1,
+        })
       },
     )
   })

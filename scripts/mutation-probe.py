@@ -186,6 +186,25 @@ def analyze_typescript_sources(
     return analyses
 
 
+def helper_owned_marker_diagnostic(
+    mutation_name: str,
+    verdict_kind: str,
+    marker: str,
+    descriptors: frozenset[tuple[str, str]],
+) -> str | None:
+    """A mutation-specific helper descriptor owns that mutation's exact marker."""
+    descriptor = (verdict_kind, mutation_name)
+    if descriptor not in descriptors:
+        return None
+    expected = f"mutation-verdict:{verdict_kind}:{mutation_name}"
+    if marker == expected:
+        return None
+    return (
+        f"{mutation_name}: helper descriptor {descriptor!r} owns {expected!r}, "
+        f"not {marker!r}"
+    )
+
+
 # (name, file, find, replace, what removing it should break)
 MUTATION_SPECS = [
     (
@@ -2539,7 +2558,7 @@ VERDICTS = {
         "behavior",
         "packages/conformance/test/libsql.test.ts",
         "scheduler conformance [libsql] sweep classification quiesces a terminal activated timeout despite an unrelated corrupt relaunch counter",
-        "mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption",
+        "mutation-verdict:behavior:terminal-timeout-decode-ignores-relaunch",
         "packages/conformance/src/suite.ts",
     ),
     "terminal-relaunch-cap-scan-admits-terminal-owner": ExpectedVerdict(
@@ -3849,6 +3868,58 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
     )
 
+    canonical_helper_import = (
+        "import { attributeExpectedFailure, attributeReplacedFailure, "
+        "requireExpectedFailure } from '@durablerun/core/testing'\n"
+    )
+    helper_binding_cases = (
+        (
+            "shadowed canonical import",
+            canonical_helper_import
+            + "function probe(requireExpectedFailure: (...args: unknown[]) => unknown) {\n"
+            "  return requireExpectedFailure("
+            "{kind: 'behavior', mutation: 'shadowed-helper'}, /x/, action)\n"
+            "}",
+            frozenset(),
+            "does not resolve to its canonical testing import",
+        ),
+        (
+            "same-spelled local function",
+            "function requireExpectedFailure(...args: unknown[]) { return args }\n"
+            "requireExpectedFailure("
+            "{kind: 'behavior', mutation: 'local-helper'}, /x/, action)",
+            frozenset(),
+            "does not resolve to its canonical testing import",
+        ),
+    )
+
+    helper_marker_cases = (
+        (
+            "exact owned marker",
+            "owned-mutation",
+            "behavior",
+            "mutation-verdict:behavior:owned-mutation",
+            frozenset({("behavior", "owned-mutation")}),
+            None,
+        ),
+        (
+            "shared marker cannot replace owned marker",
+            "owned-mutation",
+            "behavior",
+            "mutation-verdict:behavior:shared-assertion",
+            frozenset({("behavior", "owned-mutation")}),
+            "helper descriptor",
+        ),
+        (
+            "direct-only verdict has no helper owner",
+            "direct-mutation",
+            "behavior",
+            "mutation-verdict:behavior:shared-assertion",
+            frozenset({("behavior", "other-mutation")}),
+            None,
+        ),
+    )
+
     direct_marker_cases = (
         (
             "exact string literal",
@@ -3969,12 +4040,16 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     failures = []
     analysis_sources = {
         **{
-            f"__selftest__/promise-{index}.ts": source
+            f"__selftest__/promise-{index}.ts": source + "\n" + canonical_helper_import
             for index, (_, source, _) in enumerate(promise_message_cases)
         },
         **{
-            f"__selftest__/descriptor-{index}.ts": source
+            f"__selftest__/descriptor-{index}.ts": source + "\n" + canonical_helper_import
             for index, (_, source, _) in enumerate(descriptor_cases)
+        },
+        **{
+            f"__selftest__/helper-binding-{index}.ts": source
+            for index, (_, source, _, _) in enumerate(helper_binding_cases)
         },
         **{
             f"__selftest__/direct-marker-{index}.ts": source
@@ -4024,6 +4099,30 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         got = analysis.helper_verdict_descriptors
         if got != wanted:
             failures.append(f"verdict-descriptor {label}: expected {wanted}, got {got}")
+    for index, (label, _, wanted, wanted_diagnostic) in enumerate(helper_binding_cases):
+        key = f"__selftest__/helper-binding-{index}.ts"
+        analysis = analyses.get(key)
+        if analysis is None:
+            continue
+        if not any(wanted_diagnostic in diagnostic for diagnostic in analysis.diagnostics):
+            failures.append(
+                f"helper-binding {label}: expected diagnostic {wanted_diagnostic!r}, "
+                f"got {analysis.diagnostics}"
+            )
+        if analysis.helper_verdict_descriptors != wanted:
+            failures.append(
+                f"helper-binding {label}: expected {wanted}, "
+                f"got {analysis.helper_verdict_descriptors}"
+            )
+    for label, name, kind, marker, descriptors, wanted in helper_marker_cases:
+        got = helper_owned_marker_diagnostic(name, kind, marker, descriptors)
+        if wanted is None:
+            if got is not None:
+                failures.append(f"helper-marker {label}: expected no diagnostic, got {got}")
+        elif got is None or wanted not in got:
+            failures.append(
+                f"helper-marker {label}: expected diagnostic containing {wanted!r}, got {got!r}"
+            )
     for index, (
         label,
         _,
@@ -4113,6 +4212,14 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 if marker_analysis is not None
                 else frozenset()
             )
+            ownership_diagnostic = helper_owned_marker_diagnostic(
+                mutation.name,
+                mutation.verdict.kind,
+                mutation.verdict.marker,
+                descriptors,
+            )
+            if ownership_diagnostic is not None:
+                failures.append(ownership_diagnostic)
             if (
                 (
                     marker_analysis is None
@@ -4166,6 +4273,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         f"mutation-probe self-test: {len(cases)} attribution cases, "
         f"{len(promise_message_cases)} promise-message cases, "
         f"{len(descriptor_cases)} descriptor cases, "
+        f"{len(helper_binding_cases)} helper-binding cases, "
+        f"{len(helper_marker_cases)} helper-marker cases, "
         f"{len(direct_marker_cases)} direct-marker cases, {len(MUTATIONS)} live mutations"
     )
     return 0
