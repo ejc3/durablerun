@@ -3,6 +3,7 @@ import {
   INFRA_RETRY_CAP,
   LeaseLostError,
   MAX_COUNT,
+  MAX_DURATION_MS,
   MAX_RUN_ORDINAL,
   RELAUNCH_CAP,
   type SqlExecutor,
@@ -88,6 +89,24 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const b = await f.store.spawn('qb', 'x', '{}', { idempotencyKey: 'k' })
         expect(a.taskId).not.toBe(b.taskId)
         expect(b.created).toBe(true)
+      })
+
+      it('rejects retry durations above the durable bound without writing', async () => {
+        await expect(
+          f.store.spawn(Q, 'oversized-retry', '{}', {
+            retryStrategy: {
+              kind: 'fixed',
+              baseSeconds: MAX_DURATION_MS / 1000 + 1,
+            },
+          }),
+        ).rejects.toThrow(RangeError)
+
+        const [count] = await f.raw.batch(
+          'retry-bound-probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
       })
     })
 

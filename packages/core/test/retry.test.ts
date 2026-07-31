@@ -21,6 +21,11 @@ describe('retryDelaySeconds', () => {
     expect(retryDelaySeconds(s, 4)).toBe(100)
     expect(retryDelaySeconds(s, 20)).toBe(100)
   })
+
+  it('a zero base stays zero when exponentiation overflows', () => {
+    const s = { kind: 'exponential', baseSeconds: 0, factor: 2, maxSeconds: 3600 } as const
+    expect(retryDelaySeconds(s, 1025)).toBe(0)
+  })
 })
 
 describe('decideRetry', () => {

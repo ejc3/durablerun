@@ -183,6 +183,59 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a legal zero-base retry records the failure after exponent overflow', async () => {
+    const f = await fx('sdk-zero-base-retry-overflow')
+    const reg = registry({
+      job: async () => {
+        throw new Error('user failure at a high attempt')
+      },
+    })
+    const spawned = await f.store.spawn(Q, 'job', '{}', {
+      maxAttempts: 1026,
+      retryStrategy: {
+        kind: 'exponential',
+        baseSeconds: 0,
+        factor: 2,
+        maxSeconds: 3600,
+      },
+    })
+    if (spawned.runId === null) throw new Error('expected a created run')
+    await f.raw.batch('prepare-high-attempt', [
+      {
+        sql: `UPDATE tasks SET attempts = 1024 WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+      {
+        sql: `UPDATE runs SET attempt = 1025 WHERE run_id = ?`,
+        args: [spawned.runId],
+      },
+    ])
+
+    expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'retry-scheduled' })
+    const [task, runs] = await f.raw.batch(
+      'retry-result',
+      [
+        {
+          sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`,
+          args: [spawned.taskId],
+        },
+        {
+          sql: `SELECT attempt, state, available_at_ms
+                FROM runs WHERE task_id = ? ORDER BY attempt`,
+          args: [spawned.taskId],
+        },
+      ],
+      'read',
+    )
+    expect(task?.rows[0]).toMatchObject({ state: 'pending', attempts: 1025 })
+    expect(runs?.rows).toEqual([
+      { attempt: 1025, state: 'failed', available_at_ms: 1_000_000 },
+      { attempt: 1026, state: 'pending', available_at_ms: 1_000_000 },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
   it('FatalTaskError skips remaining retries and fails terminally', async () => {
     const f = await fx('sdk-fatal')
     const { FatalTaskError } = await import('@durablerun/core')
