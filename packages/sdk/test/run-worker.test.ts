@@ -77,6 +77,69 @@ const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
   ],
 ]
 
+const UNINSPECTABLE_FAILURE_JSON = '{"name":"Error","message":"task threw an uninspectable value"}'
+
+interface HostileThrownValue {
+  readonly name: string
+  makeValue(): unknown
+}
+
+const HOSTILE_THROWN_VALUES: readonly HostileThrownValue[] = [
+  {
+    name: 'revoked proxy',
+    makeValue() {
+      const { proxy, revoke } = Proxy.revocable(Object.create(null), {})
+      revoke()
+      return proxy
+    },
+  },
+  {
+    name: 'throwing name getter',
+    makeValue() {
+      const error = new Error('ordinary message')
+      Object.defineProperty(error, 'name', {
+        configurable: true,
+        get(): never {
+          throw new Error('hostile name getter ran')
+        },
+      })
+      return error
+    },
+  },
+  {
+    name: 'throwing message getter',
+    makeValue() {
+      const error = new Error('ordinary message')
+      Object.defineProperty(error, 'message', {
+        configurable: true,
+        get(): never {
+          throw new Error('hostile message getter ran')
+        },
+      })
+      return error
+    },
+  },
+  {
+    name: 'throwing coercion hooks',
+    makeValue() {
+      const value = Object.create(null) as Record<PropertyKey, unknown>
+      Object.defineProperties(value, {
+        [Symbol.toPrimitive]: {
+          value: (): never => {
+            throw new Error('hostile coercion hook ran')
+          },
+        },
+        toString: {
+          value: (): never => {
+            throw new Error('hostile coercion hook ran')
+          },
+        },
+      })
+      return value
+    },
+  },
+]
+
 async function claimAndRun(
   f: Awaited<ReturnType<typeof fx>>,
   reg: TaskRegistry,
@@ -251,6 +314,50 @@ describe('runClaimedRun', () => {
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
+
+  for (const hostile of HOSTILE_THROWN_VALUES) {
+    it(`records a ${hostile.name} throw as a terminal generic failure`, async () => {
+      const f = await fx(`sdk-hostile-throw-${hostile.name.replaceAll(' ', '-')}`)
+      try {
+        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+        const outcome = await claimAndRun(
+          f,
+          registry({
+            job: async () => {
+              throw hostile.makeValue()
+            },
+          }),
+          'w1',
+        )
+        const result = await f.store.getTaskResult(Q, spawned.taskId)
+        const [task, runs] = await f.raw.batch(
+          'hostile-throw-result',
+          [
+            {
+              sql: `SELECT state, attempts, infra_retries FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `SELECT attempt, state, claimed_by FROM runs
+                    WHERE task_id = ? ORDER BY attempt`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+
+        expect({ outcome, result, task: task?.rows[0], runs: runs?.rows }).toEqual({
+          outcome: { kind: 'failed' },
+          result: { state: 'failed', failureReasonJson: UNINSPECTABLE_FAILURE_JSON },
+          task: { state: 'failed', attempts: 1, infra_retries: 0 },
+          runs: [{ attempt: 1, state: 'failed', claimed_by: null }],
+        })
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      } finally {
+        f.close()
+      }
+    })
+  }
 
   for (const boundary of ['step result', 'handler result'] as const) {
     for (const [valueName, makeValue] of NON_SERIALIZABLE_VALUES) {
