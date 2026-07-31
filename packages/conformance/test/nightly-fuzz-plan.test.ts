@@ -1,5 +1,5 @@
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -292,33 +292,6 @@ describe('fuzz shard batch plan', () => {
         expect(process.steps).toBe(150)
       }
     }
-  })
-
-  it('requires a child execution receipt before crediting a hosted batch', async () => {
-    await attributeExpectedFailure(
-      { kind: 'construction', mutation: 'nightly-fuzz-runtime-execution' },
-      (error) =>
-        error instanceof Error &&
-        error.message ===
-          'nightly fuzz batch 0/4 of shard 0/32 did not emit its execution receipt',
-      async () => {
-        const result = spawnSync('bash', [NIGHTLY_FUZZ_SCRIPT, '--execution-probe', '0'], {
-          cwd: ROOT,
-          encoding: 'utf8',
-        })
-        if (result.status !== 0) {
-          throw new Error(result.stderr.trim())
-        }
-        expect(result.stderr).toBe('')
-        expect(result.stdout.trim().split('\n')).toEqual([
-          'nightly-fuzz-batch: shard=0/32 batch=0/4 walks=157 steps=150 complete',
-          'nightly-fuzz-batch: shard=0/32 batch=1/4 walks=156 steps=150 complete',
-          'nightly-fuzz-batch: shard=0/32 batch=2/4 walks=156 steps=150 complete',
-          'nightly-fuzz-batch: shard=0/32 batch=3/4 walks=156 steps=150 complete',
-          'nightly-fuzz-shard: shard=0/32 batches=4 walks=625 steps=150 complete',
-        ])
-      },
-    )
   })
 
   it('derives every fuzz file coordinate from its filename', async () => {

@@ -2021,6 +2021,13 @@ MUTATION_SPECS.extend(
             "the hosted process plan no longer executes the batch coordinate it reports",
         ),
         (
+            "nightly-fuzz-batch-execution",
+            "scripts/nightly-fuzz-shard.sh",
+            '  "${command[@]}"\n',
+            "  :\n",
+            "the nightly credits and reports a hosted batch without launching its command",
+        ),
+        (
             "nightly-fuzz-workflow-invocation",
             ".github/workflows/nightly.yml",
             '        run: bash scripts/nightly-fuzz-shard.sh "$FUZZ_SHARD"',
@@ -2883,6 +2890,12 @@ VERDICTS.update(
             "packages/conformance/test/nightly-fuzz-plan.test.ts",
             "fuzz shard batch plan executes one canonical confined command for every hosted batch",
             "mutation-verdict:construction:nightly-fuzz-runtime-environment",
+        ),
+        "nightly-fuzz-batch-execution": ExpectedVerdict(
+            "construction",
+            "packages/conformance/test/nightly-fuzz-plan.test.ts",
+            "fuzz shard batch plan executes one canonical confined command for every hosted batch",
+            "mutation-verdict:construction:nightly-fuzz-workflow-batches",
         ),
         "nightly-fuzz-workflow-invocation": ExpectedVerdict(
             "construction",
