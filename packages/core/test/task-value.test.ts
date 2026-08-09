@@ -3,7 +3,6 @@ import { FatalTaskError, serializeTaskValue, userJsonValue } from '../src/index.
 
 const ILLEGAL_VALUES: readonly (readonly [string, () => unknown])[] = [
   ['function', () => () => undefined],
-  ['symbol', () => Symbol('not-json')],
   ['bigint', () => 1n],
   [
     'cycle',
@@ -25,7 +24,6 @@ describe('serializeTaskValue', () => {
 
   for (const nesting of ['top-level', 'object member', 'array member'] as const) {
     for (const [name, makeValue] of ILLEGAL_VALUES) {
-      if (name === 'symbol' && nesting !== 'top-level') continue
       it(`rejects ${name} at the ${nesting} task-value surface`, () => {
         const illegal = makeValue()
         const value =
@@ -34,6 +32,10 @@ describe('serializeTaskValue', () => {
       })
     }
   }
+
+  it('rejects symbol at the top-level task-value surface', () => {
+    expect(() => serializeTaskValue('result', Symbol('not-json'))).toThrow(FatalTaskError)
+  })
 
   it('classifies a serialization hook whose thrown value cannot be coerced', () => {
     const hostile = {
