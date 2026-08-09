@@ -275,4 +275,17 @@ describe('trusted task-boundary intrinsics', () => {
       value: '{"at":"1970-01-01T00:00:00.000Z"}',
     })
   })
+
+  it('does not dispatch storage-safe name checks through mutable RegExp.exec', () => {
+    const observed = replaceProperty(
+      RegExp.prototype,
+      'exec',
+      () => null,
+      () => UserName.parse('step name', '\ud800'),
+    )
+    expect(
+      observed.error,
+      'mutation-verdict:behavior:user-name-captured-regexp-exec',
+    ).toBeInstanceOf(FatalTaskError)
+  })
 })
