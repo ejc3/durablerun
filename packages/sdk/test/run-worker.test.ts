@@ -1291,4 +1291,28 @@ describe('runClaimedRun', () => {
       f.close()
     }
   })
+
+  it('registry hardening preserves Map subclass dispatch', async () => {
+    const f = await fx('sdk-registry-subclass-dispatch')
+    try {
+      await f.store.spawn(Q, 'alias', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      class AliasedRegistry extends Map<string, TaskHandler> {
+        override get(name: string): TaskHandler | undefined {
+          return super.get(name === 'alias' ? 'job' : name)
+        }
+      }
+      const reg = new AliasedRegistry([['job', async () => 'done']])
+      const observed = await runClaimedRun(
+        { store: f.store, clock: f.clock, registry: reg },
+        invocation,
+      )
+      expect(
+        observed,
+        'mutation-verdict:behavior:sdk-registry-subclass-dispatch',
+      ).toEqual({ kind: 'completed' })
+    } finally {
+      f.close()
+    }
+  })
 })
