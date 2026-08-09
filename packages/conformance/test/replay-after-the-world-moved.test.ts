@@ -44,6 +44,10 @@ async function query(
   return (rows?.rows ?? []) as unknown as Record<string, unknown>[]
 }
 
+async function requireRunIdCollision(action: () => Promise<unknown>): Promise<void> {
+  await expect(action()).rejects.toThrow()
+}
+
 /**
  * Re-executes the exact statements of the first batch carrying `label`, the
  * way a retried request or a duplicated delivery would. Recording the
@@ -722,9 +726,9 @@ describe('a successor id that collides with the run being replaced', () => {
       uuidv7: () => run.runId,
       token: () => 'collide-tok',
     })
-    await expect(
+    await requireRunIdCollision(() =>
       colliding.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 }),
-    ).rejects.toThrow()
+    )
 
     // Nothing of the half-transition committed: the batch is atomic.
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
@@ -732,6 +736,20 @@ describe('a successor id that collides with the run being replaced', () => {
     const [after] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [run.runId])
     expect(after?.state).toBe('running')
     f.close()
+  })
+})
+
+describe('the successor collision rejection oracle', () => {
+  it('propagates an unrelated pre-transition failure', async () => {
+    const unrelated = new TypeError('unrelated pre-transition failure')
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'successor-collision-error-attribution' },
+      (error) => error === unrelated,
+      () =>
+        requireRunIdCollision(async () => {
+          throw unrelated
+        }),
+    )
   })
 })
 
@@ -785,7 +803,7 @@ describe('a successor id that collides with a historical run of the same task', 
     const colliding = collidingStore(f.raw, historical.runId)
     await f.admin.setFakeNowEpochMs(NOW + 100_000)
 
-    await expect(colliding.sweep(Q, 10)).rejects.toThrow(/UNIQUE constraint failed: runs\.run_id/)
+    await requireRunIdCollision(() => colliding.sweep(Q, 10))
 
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
     expect(task?.state).toBe('running')
