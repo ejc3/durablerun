@@ -230,6 +230,24 @@ async function terminalTaskLiveRunCount(raw: LibsqlExecutor, taskId: string): Pr
   return Number(row?.n)
 }
 
+async function activatedRun(f: Fixture): Promise<{
+  taskId: string
+  runId: string
+  claimToken: string
+}> {
+  const spawned = await f.store.spawn(Q, 'job', '{}')
+  const [run] = await f.store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+  if (!run) throw new Error('expected claimed run')
+  if (!(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen))) {
+    throw new Error('expected activated run')
+  }
+  return { taskId: spawned.taskId, runId: run.runId, claimToken: run.claimToken }
+}
+
+async function moveTaskToOtherQueue(f: Fixture, taskId: string): Promise<void> {
+  await exec(f.raw, `UPDATE tasks SET queue = 'other' WHERE task_id = ?`, [taskId])
+}
+
 describe('fence provenance', () => {
   it('complete does not make a task terminal while a lower live sibling remains', async () => {
     const f = await fixture()
@@ -790,6 +808,300 @@ describe('fence provenance', () => {
         claimed: 0,
         run: { state: 'pending', claimed_by: null, claim_gen: 0 },
       })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('heartbeat refuses a run whose task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      await moveTaskToOtherQueue(f, run.taskId)
+      const before = await query(
+        f.raw,
+        `SELECT state, claimed_by, claim_expires_at_ms, heartbeat_at_ms
+         FROM runs WHERE run_id = ?`,
+        [run.runId],
+      )
+
+      const lease = await f.store.heartbeat(Q, run.runId, run.claimToken, 120)
+      const after = await query(
+        f.raw,
+        `SELECT state, claimed_by, claim_expires_at_ms, heartbeat_at_ms
+         FROM runs WHERE run_id = ?`,
+        [run.runId],
+      )
+
+      expect(
+        { lease, after },
+        'mutation-verdict:behavior:heartbeat-requires-run-task-queue-ownership',
+      ).toEqual({
+        lease: { held: false, remainingMs: 0 },
+        after: before,
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('reschedule refuses a run whose task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      await moveTaskToOtherQueue(f, run.taskId)
+      const before = await query(
+        f.raw,
+        `SELECT r.state AS run_state, r.claimed_by, r.available_at_ms,
+                t.state AS task_state
+         FROM runs r JOIN tasks t ON t.task_id = r.task_id
+         WHERE r.run_id = ?`,
+        [run.runId],
+      )
+
+      const outcome = await f.store
+        .reschedule(Q, run.runId, run.claimToken, { inSeconds: 10 })
+        .then(
+          () => 'resolved' as const,
+          (error: unknown) =>
+            error instanceof LeaseLostError ? ('lease-lost' as const) : ('other-error' as const),
+        )
+      const after = await query(
+        f.raw,
+        `SELECT r.state AS run_state, r.claimed_by, r.available_at_ms,
+                t.state AS task_state
+         FROM runs r JOIN tasks t ON t.task_id = r.task_id
+         WHERE r.run_id = ?`,
+        [run.runId],
+      )
+
+      expect(
+        { outcome, after },
+        'mutation-verdict:behavior:reschedule-requires-run-task-queue-ownership',
+      ).toEqual({ outcome: 'lease-lost', after: before })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('suspendRun refuses a run whose task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      await moveTaskToOtherQueue(f, run.taskId)
+      const before = await query(
+        f.raw,
+        `SELECT r.state AS run_state, r.claimed_by, r.available_at_ms,
+                t.state AS task_state
+         FROM runs r JOIN tasks t ON t.task_id = r.task_id
+         WHERE r.run_id = ?`,
+        [run.runId],
+      )
+
+      const outcome = await f.store
+        .suspendRun(
+          Q,
+          run.runId,
+          run.claimToken,
+          { inSeconds: 10 },
+          { key: 'queue-owner', stateJson: '{"ok":true}' },
+        )
+        .then(
+          () => 'resolved' as const,
+          (error: unknown) =>
+            error instanceof LeaseLostError ? ('lease-lost' as const) : ('other-error' as const),
+        )
+      const after = await query(
+        f.raw,
+        `SELECT r.state AS run_state, r.claimed_by, r.available_at_ms,
+                t.state AS task_state
+         FROM runs r JOIN tasks t ON t.task_id = r.task_id
+         WHERE r.run_id = ?`,
+        [run.runId],
+      )
+      const checkpoints = await query(
+        f.raw,
+        `SELECT checkpoint_name FROM checkpoints WHERE task_id = ?`,
+        [run.taskId],
+      )
+
+      expect(
+        { outcome, after, checkpoints },
+        'mutation-verdict:behavior:suspend-requires-run-task-queue-ownership',
+      ).toEqual({ outcome: 'lease-lost', after: before, checkpoints: [] })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('setCheckpoint refuses a run whose task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      await moveTaskToOtherQueue(f, run.taskId)
+      const before = await query(
+        f.raw,
+        `SELECT state, claimed_by, claim_expires_at_ms, heartbeat_at_ms,
+                fence_stamp, fence_at_ms
+         FROM runs WHERE run_id = ?`,
+        [run.runId],
+      )
+
+      const outcome = await f.store
+        .setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 'queue-owner', '{"ok":true}', 120)
+        .then(
+          () => 'resolved' as const,
+          (error: unknown) =>
+            error instanceof LeaseLostError ? ('lease-lost' as const) : ('other-error' as const),
+        )
+      const after = await query(
+        f.raw,
+        `SELECT state, claimed_by, claim_expires_at_ms, heartbeat_at_ms,
+                fence_stamp, fence_at_ms
+         FROM runs WHERE run_id = ?`,
+        [run.runId],
+      )
+      const checkpoints = await query(
+        f.raw,
+        `SELECT checkpoint_name FROM checkpoints WHERE task_id = ?`,
+        [run.taskId],
+      )
+
+      expect(
+        { outcome, after, checkpoints },
+        'mutation-verdict:behavior:set-checkpoint-requires-run-task-queue-ownership',
+      ).toEqual({ outcome: 'lease-lost', after: before, checkpoints: [] })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('awaitEvent does not register or park when the task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      await moveTaskToOtherQueue(f, run.taskId)
+      const before = await query(
+        f.raw,
+        `SELECT r.state AS run_state, r.claimed_by, r.available_at_ms,
+                r.wake_event, r.wake_step, t.state AS task_state
+         FROM runs r JOIN tasks t ON t.task_id = r.task_id
+         WHERE r.run_id = ?`,
+        [run.runId],
+      )
+
+      const outcome = await f.store
+        .awaitEvent(Q, run.taskId, run.runId, run.claimToken, '$await:go', 'go', 30)
+        .then(
+          () => 'resolved' as const,
+          (error: unknown) =>
+            error instanceof LeaseLostError ? ('lease-lost' as const) : ('other-error' as const),
+        )
+      const after = await query(
+        f.raw,
+        `SELECT r.state AS run_state, r.claimed_by, r.available_at_ms,
+                r.wake_event, r.wake_step, t.state AS task_state
+         FROM runs r JOIN tasks t ON t.task_id = r.task_id
+         WHERE r.run_id = ?`,
+        [run.runId],
+      )
+      const waits = await query(f.raw, `SELECT status FROM waits WHERE run_id = ?`, [run.runId])
+
+      expect(
+        { outcome, after, waits },
+        'mutation-verdict:behavior:await-event-register-requires-run-task-queue-ownership',
+      ).toEqual({ outcome: 'lease-lost', after: before, waits: [] })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('emitEvent leaves a parked run untouched when its task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      const registration = await f.store.awaitEvent(
+        Q,
+        run.taskId,
+        run.runId,
+        run.claimToken,
+        '$await:go',
+        'go',
+        null,
+      )
+      if (registration.emitted) throw new Error('expected a newly registered wait')
+      await moveTaskToOtherQueue(f, run.taskId)
+      const before = {
+        owned: await query(
+          f.raw,
+          `SELECT r.state AS run_state, r.available_at_ms, r.wake_event, r.wake_step,
+                  t.state AS task_state
+           FROM runs r JOIN tasks t ON t.task_id = r.task_id
+           WHERE r.run_id = ?`,
+          [run.runId],
+        ),
+        waits: await query(
+          f.raw,
+          `SELECT status FROM waits WHERE run_id = ? AND step_name = '$await:go'`,
+          [run.runId],
+        ),
+      }
+
+      const outcome = await f.store.emitEvent(Q, 'go', '{"ok":true}').then(
+        () => 'resolved' as const,
+        () => 'rejected' as const,
+      )
+      const after = {
+        owned: await query(
+          f.raw,
+          `SELECT r.state AS run_state, r.available_at_ms, r.wake_event, r.wake_step,
+                  t.state AS task_state
+           FROM runs r JOIN tasks t ON t.task_id = r.task_id
+           WHERE r.run_id = ?`,
+          [run.runId],
+        ),
+        waits: await query(
+          f.raw,
+          `SELECT status FROM waits WHERE run_id = ? AND step_name = '$await:go'`,
+          [run.runId],
+        ),
+      }
+
+      expect(
+        { outcome, after },
+        'mutation-verdict:behavior:emit-event-requires-run-task-queue-ownership',
+      ).toEqual({ outcome: 'resolved', after: before })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('cancelTask refuses to cross into a run that moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      await exec(f.raw, `UPDATE runs SET queue = 'other' WHERE run_id = ?`, [run.runId])
+      const before = await query(
+        f.raw,
+        `SELECT t.state AS task_state, r.state AS run_state, r.claimed_by
+         FROM tasks t JOIN runs r ON r.task_id = t.task_id
+         WHERE t.task_id = ?`,
+        [run.taskId],
+      )
+
+      const cancelled = await f.store.cancelTask(Q, run.taskId)
+      const after = await query(
+        f.raw,
+        `SELECT t.state AS task_state, r.state AS run_state, r.claimed_by
+         FROM tasks t JOIN runs r ON r.task_id = t.task_id
+         WHERE t.task_id = ?`,
+        [run.taskId],
+      )
+
+      expect(
+        { cancelled, after },
+        'mutation-verdict:behavior:cancel-task-requires-run-task-queue-ownership',
+      ).toEqual({ cancelled: false, after: before })
     } finally {
       f.close()
     }
