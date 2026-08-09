@@ -459,6 +459,59 @@ MUTATION_SPECS = [
         "a historical attempt suppresses the claim-timeout successor",
     ),
     (
+        "testing-helper-bind-arity-brand",
+        "packages/core/src/fenced-batch.ts",
+        "  weakSetAdd(bindCompilationErrors, error)\n",
+        "  // MUTATION: leave the compiler error unauthenticated\n",
+        "the compiler bind-count failure loses its authentic brand",
+    ),
+    (
+        "testing-helper-bind-count-factory",
+        "packages/core/src/fenced-batch.ts",
+        "      throw bindCompilationError(\n"
+        "        `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,\n",
+        "      throw new TrustedTypeError(\n"
+        "        `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,\n",
+        "the bind-count failure bypasses the authenticated compiler-error factory",
+    ),
+    (
+        "testing-helper-bind-undefined-brand",
+        "packages/core/src/fenced-batch.ts",
+        "          throw bindCompilationError(\n"
+        "            `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,\n",
+        "          throw new TrustedTypeError(\n"
+        "            `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,\n",
+        "the explicit-undefined bind failure bypasses the authenticated compiler-error factory",
+    ),
+    (
+        "testing-helper-bind-error-constructor",
+        "packages/core/src/fenced-batch.ts",
+        "  const error = new TrustedTypeError(message)\n",
+        "  const error = new TypeError(message) // MUTATION\n",
+        "task-installed TypeError replaces the compiler-error constructor",
+    ),
+    (
+        "testing-helper-bind-arity-attribute",
+        "packages/core/src/testing.ts",
+        "  if (isFencedBatchBindError(error)) throw error\n",
+        "  // MUTATION: let caller matchers attribute compiler failures\n",
+        "attributeExpectedFailure credits a compiler bind-count failure",
+    ),
+    (
+        "testing-helper-bind-arity-require",
+        "packages/core/src/testing.ts",
+        "  if (isFencedBatchBindError(error)) throw error\n",
+        "  // MUTATION: let caller matchers attribute compiler failures\n",
+        "requireExpectedFailure accepts a compiler bind-count failure",
+    ),
+    (
+        "testing-helper-bind-arity-replacement",
+        "packages/core/src/testing.ts",
+        "  if (isFencedBatchBindError(error)) throw error\n",
+        "  // MUTATION: let caller matchers attribute compiler failures\n",
+        "attributeReplacedFailure credits a compiler bind-count failure",
+    ),
+    (
         "legacy-wait-step-backfill",
         "packages/store-libsql/src/store.ts",
         "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
@@ -3298,6 +3351,48 @@ VERDICTS = {
         "packages/conformance/test/replay-after-the-world-moved.test.ts",
         "a successor id that collides with a historical run of the same task rejects a claim-timeout sweep instead of committing a half-transition",
         "mutation-verdict:behavior:successor-sweep-attempt-identity",
+    ),
+    "testing-helper-bind-arity-brand": ExpectedVerdict(
+        "construction",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers recognizes authentic FencedBatch bind-arity failures",
+        "mutation-verdict:construction:testing-helper-bind-arity-brand",
+    ),
+    "testing-helper-bind-count-factory": ExpectedVerdict(
+        "construction",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers routes bind-count failures through the authenticated factory",
+        "mutation-verdict:construction:testing-helper-bind-count-factory",
+    ),
+    "testing-helper-bind-undefined-brand": ExpectedVerdict(
+        "behavior",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers does not attribute an explicit undefined bind as an expected failure",
+        "mutation-verdict:behavior:testing-helper-bind-undefined-brand",
+    ),
+    "testing-helper-bind-error-constructor": ExpectedVerdict(
+        "construction",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers uses a captured constructor for compiler bind failures",
+        "mutation-verdict:construction:testing-helper-bind-error-constructor",
+    ),
+    "testing-helper-bind-arity-attribute": ExpectedVerdict(
+        "behavior",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers does not attribute a bind-arity failure as an expected failure",
+        "mutation-verdict:behavior:testing-helper-bind-arity-attribute",
+    ),
+    "testing-helper-bind-arity-require": ExpectedVerdict(
+        "behavior",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers does not accept a bind-arity failure as the required failure",
+        "mutation-verdict:behavior:testing-helper-bind-arity-require",
+    ),
+    "testing-helper-bind-arity-replacement": ExpectedVerdict(
+        "behavior",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers does not attribute a bind-arity failure as a replacement failure",
+        "mutation-verdict:behavior:testing-helper-bind-arity-replacement",
     ),
     "legacy-wait-step-backfill": ExpectedVerdict(
         "behavior",

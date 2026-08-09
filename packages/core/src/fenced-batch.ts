@@ -10,6 +10,7 @@ import {
   type SelfFenceRelation,
   isFenceStatementName,
 } from './contract.js'
+import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from './primitives.js'
 
 /**
@@ -59,6 +60,29 @@ export const NOW = '$NOW$'
 export const FENCE_SET = `fence_stamp = ${STAMP}, fence_at_ms = ${NOW}`
 export const FENCE_COLS = `fence_stamp, fence_at_ms`
 export const FENCE_VALS = `${STAMP}, ${NOW}`
+
+const {
+  TypeError: TrustedTypeError,
+  WeakSet: TrustedWeakSet,
+  WeakSetAdd: weakSetAdd,
+  WeakSetHas: weakSetHas,
+} = TASK_INTRINSICS
+const bindCompilationErrors = new TrustedWeakSet<object>()
+
+function bindCompilationError(message: string): TypeError {
+  const error = new TrustedTypeError(message)
+  weakSetAdd(bindCompilationErrors, error)
+  return error
+}
+
+/** True only for an authentic compiler bind failure from this module. */
+export function isFencedBatchBindError(value: unknown): value is TypeError {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    weakSetHas(bindCompilationErrors, value)
+  )
+}
 
 /**
  * Re-stamp an immutable fact without moving the instant at which it became
@@ -696,7 +720,7 @@ export class FencedBatch {
         // list also reads undefined, and the count mismatch below says
         // something far more useful about that.
         if (index < s.args.length && value === undefined) {
-          throw new TypeError(
+          throw bindCompilationError(
             `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,
           )
         }
@@ -709,7 +733,7 @@ export class FencedBatch {
     }
     out += s.sql.slice(last)
     if (argIndex !== s.args.length) {
-      throw new Error(
+      throw bindCompilationError(
         `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,
       )
     }

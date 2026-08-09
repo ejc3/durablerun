@@ -1,3 +1,5 @@
+import { isFencedBatchBindError } from './fenced-batch.js'
+
 export type ExpectedError = RegExp | ((error: unknown) => boolean)
 export type MutationVerdictKind = 'behavior' | 'construction'
 export interface MutationVerdict {
@@ -15,6 +17,7 @@ function markerFor(verdict: MutationVerdict): string {
 }
 
 function matches(expected: ExpectedError, error: unknown): boolean {
+  if (isFencedBatchBindError(error)) throw error
   return expected instanceof RegExp
     ? new RegExp(expected.source, expected.flags).test(String(error))
     : expected(error)

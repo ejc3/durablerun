@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FENCE_SET, FencedBatch, type SqlExecutor } from '../src/index.js'
+import { FENCE_SET, FencedBatch, type SqlExecutor, isFencedBatchBindError } from '../src/index.js'
 import {
   attributeExpectedFailure,
   attributeReplacedFailure,
@@ -61,6 +61,32 @@ async function requireCompilerBindPropagation(
 }
 
 describe('mutation verdict promise helpers', () => {
+  it('recognizes authentic FencedBatch bind-arity failures', async () => {
+    let failure: unknown
+    try {
+      await bindArityFailure()
+    } catch (error) {
+      failure = error
+    }
+    expect(
+      isFencedBatchBindError(failure),
+      'mutation-verdict:construction:testing-helper-bind-arity-brand',
+    ).toBe(true)
+  })
+
+  it('routes bind-count failures through the authenticated factory', async () => {
+    let failure: unknown
+    try {
+      await bindArityFailure()
+    } catch (error) {
+      failure = error
+    }
+    expect(
+      isFencedBatchBindError(failure),
+      'mutation-verdict:construction:testing-helper-bind-count-factory',
+    ).toBe(true)
+  })
+
   it('does not attribute an explicit undefined bind as an expected failure', async () => {
     await requireCompilerBindPropagation(
       'mutation-verdict:behavior:testing-helper-bind-undefined-brand',
