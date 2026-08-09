@@ -147,6 +147,28 @@ describe('task control scope', () => {
     expect(Object.isFrozen(snapshot)).toBe(true)
   })
 
+  it('ignores an inherited relative-wake discriminant when snapshotting an absolute wake', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'inSeconds')
+    Object.defineProperty(Object.prototype, 'inSeconds', {
+      configurable: true,
+      value: 99,
+      writable: true,
+    })
+    let snapshot: ReturnType<ReturnType<typeof createTaskControlScope>['snapshot']> = undefined
+    try {
+      const scope = createTaskControlScope()
+      const signal = captureThrown(() => scope.issuer.suspend('sleep', { atEpochMs: 1_000_000 }))
+      snapshot = scope.snapshot(signal)
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(Object.prototype, 'inSeconds')
+      else Object.defineProperty(Object.prototype, 'inSeconds', descriptor)
+    }
+    expect(
+      snapshot?.kind === 'suspend' ? snapshot.wake : undefined,
+      'mutation-verdict:construction:task-control-absolute-wake-own-discriminant',
+    ).toEqual({ atEpochMs: 1_000_000 })
+  })
+
   it('enrolls lease loss minted by the invocation runtime', () => {
     const scope = createTaskControlScope()
     const signal = captureThrown(() => scope.issuer.leaseLost('heartbeat lost the lease'))

@@ -69,6 +69,21 @@ async function addLowerLiveSibling(
   ])
 }
 
+async function withInheritedRelativeWake<T>(action: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'inSeconds')
+  Object.defineProperty(Object.prototype, 'inSeconds', {
+    configurable: true,
+    value: 0,
+    writable: true,
+  })
+  try {
+    return await action()
+  } finally {
+    if (descriptor === undefined) delete (Object.prototype as { inSeconds?: number }).inSeconds
+    else Object.defineProperty(Object.prototype, 'inSeconds', descriptor)
+  }
+}
+
 /**
  * Red/green regression case law (repo rule: every
  * bug lands as a red-test commit first, then the fix commit). Each test
@@ -131,6 +146,80 @@ describe('transition-layer review regressions (second round)', () => {
     await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1.0007 })
     expect(await nonIntegerTemporalRows(f.raw)).toEqual([])
     f.close()
+  })
+
+  it('reschedule classifies an absolute wake by its own discriminant', async () => {
+    const f = await makeLibsqlFixture('absolute-reschedule-own-discriminant')
+    try {
+      await f.admin.setFakeNowEpochMs(1_000_000)
+      await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('claim')
+      await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await withInheritedRelativeWake(() =>
+        f.store.reschedule(Q, run.runId, run.claimToken, { atEpochMs: 1_030_000 }),
+      )
+      const [stored] = await f.raw.batch(
+        'absolute-reschedule-result',
+        [
+          {
+            sql: `SELECT available_at_ms FROM runs WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ],
+        'read',
+      )
+      expect(
+        stored?.rows[0]?.available_at_ms,
+        'mutation-verdict:behavior:reschedule-wake-own-discriminant',
+      ).toBe(1_030_000)
+    } finally {
+      f.close()
+    }
+  })
+
+  it('suspendRun keeps an absolute wake aligned with its marker', async () => {
+    const f = await makeLibsqlFixture('absolute-suspend-own-discriminant')
+    try {
+      await f.admin.setFakeNowEpochMs(1_000_000)
+      await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('claim')
+      await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await withInheritedRelativeWake(() =>
+        f.store.suspendRun(
+          Q,
+          run.runId,
+          run.claimToken,
+          { atEpochMs: 1_030_000 },
+          { key: '$sleepUntil', stateJson: '{"atEpochMs":1030000}' },
+        ),
+      )
+      const [stored, marker] = await f.raw.batch(
+        'absolute-suspend-result',
+        [
+          {
+            sql: `SELECT available_at_ms FROM runs WHERE run_id = ?`,
+            args: [run.runId],
+          },
+          {
+            sql: `SELECT state FROM checkpoints
+                  WHERE task_id = ? AND checkpoint_name = '$sleepUntil'`,
+            args: [run.taskId],
+          },
+        ],
+        'read',
+      )
+      expect(
+        {
+          availableAtMs: stored?.rows[0]?.available_at_ms,
+          marker: marker?.rows[0]?.state,
+        },
+        'mutation-verdict:behavior:suspend-wake-own-discriminant',
+      ).toEqual({ availableAtMs: 1_030_000, marker: '{"atEpochMs":1030000}' })
+    } finally {
+      f.close()
+    }
   })
 
   it('fail() at the cap under a successor-id collision books nothing foreign', async () => {

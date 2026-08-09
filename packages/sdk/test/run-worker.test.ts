@@ -500,6 +500,88 @@ describe('runClaimedRun', () => {
     }
   })
 
+  it('propagates an ordinary completion rejection without billing it as a user failure', async () => {
+    const f = await fx('sdk-complete-ordinary-rejection')
+    const rejection = new Error('ordinary completion rejection')
+    let failCalls = 0
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      const store = new Proxy(f.store, {
+        get(target, property, receiver) {
+          if (property === 'complete') return () => Promise.reject(rejection)
+          if (property === 'fail') {
+            return () => {
+              failCalls++
+              return Promise.resolve()
+            }
+          }
+          const value = Reflect.get(target, property, receiver)
+          return typeof value === 'function' ? (value as CallableFunction).bind(target) : value
+        },
+      })
+      const observed = await runClaimedRun(
+        {
+          store,
+          clock: f.clock,
+          registry: registry({ job: async () => 'done' }),
+        },
+        invocation,
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      )
+      expect(
+        { observed, failCalls },
+        'mutation-verdict:behavior:sdk-complete-ordinary-rejection-identity',
+      ).toEqual({ observed: { error: rejection }, failCalls: 0 })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('reads an awaitEvent timeout accessor once and stores that validated value', async () => {
+    const f = await fx('sdk-await-timeout-single-read')
+    let timeoutReads = 0
+    let storedTimeout: unknown
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      const store = new Proxy(f.store, {
+        get(target, property, receiver) {
+          if (property === 'awaitEvent') {
+            return (...args: unknown[]) => {
+              storedTimeout = args[6]
+              return Promise.resolve({ emitted: true, payloadJson: '{"ok":true}' })
+            }
+          }
+          const value = Reflect.get(target, property, receiver)
+          return typeof value === 'function' ? (value as CallableFunction).bind(target) : value
+        },
+      })
+      const opts = {
+        get timeoutSeconds(): number {
+          timeoutReads++
+          return timeoutReads === 1 ? 30 : 90
+        },
+      }
+      const outcome = await runClaimedRun(
+        {
+          store,
+          clock: f.clock,
+          registry: registry({ job: async (ctx) => ctx.awaitEvent('go', opts) }),
+        },
+        invocation,
+      )
+      expect(
+        { timeoutReads, storedTimeout, outcome },
+        'mutation-verdict:behavior:sdk-await-timeout-single-read',
+      ).toEqual({ timeoutReads: 1, storedTimeout: 30, outcome: { kind: 'completed' } })
+    } finally {
+      f.close()
+    }
+  })
+
   it('task initialization cannot replace replay map construction', async () => {
     const f = await fx('sdk-captured-map-constructor')
     try {

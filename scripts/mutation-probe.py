@@ -5425,6 +5425,8 @@ def classify_verdict(
     return "wrong-path"
 
 
+QUESTION_DELTA_LIVE_ENROLLMENT_FAULT = "bypass-question-delta-live-enrollment"
+
 SELF_TEST_FAULTS = (
     "ignore-file",
     "ignore-full-name",
@@ -5433,6 +5435,7 @@ SELF_TEST_FAULTS = (
     "accept-suite-error",
     "accept-incoherent-report",
     "accept-malformed-report",
+    QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
 )
 
 
@@ -5573,6 +5576,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         options["accept_incoherent"] = True
     elif fault == "accept-malformed-report":
         options["accept_malformed"] = True
+    elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
+        pass
     elif fault is not None:
         print(f"mutation-probe self-test: unknown injected fault {fault}", file=sys.stderr)
         return 2
@@ -6347,6 +6352,28 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         got = classify_verdict(result, verdict, matcher, **options)
         if got != wanted:
             failures.append(f"{label}: expected {wanted}, got {got}")
+    if not failures and fault is None and check_live_inventory:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--classifier-self-test",
+                "--self-test-fault",
+                QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        marker = (
+            "mutation-probe self-test caught injected fault "
+            f"{QUESTION_DELTA_LIVE_ENROLLMENT_FAULT}"
+        )
+        if result.returncode != 1 or marker not in (result.stdout + result.stderr):
+            failures.append(
+                "the live question-delta enrollment fault was not rejected "
+                "through its canonical CLI path"
+            )
     if failures:
         if fault is not None:
             print(
@@ -6370,7 +6397,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         f"{len(helper_binding_cases)} helper-binding cases, "
         f"{len(helper_marker_cases)} helper-marker cases, "
         f"{len(direct_marker_cases)} direct-marker cases, "
-        f"{len(question_delta_cases)} question-delta cases, {len(MUTATIONS)} live mutations"
+        f"{len(question_delta_cases)} question-delta cases, one live-enrollment fault, "
+        f"{len(MUTATIONS)} live mutations"
     )
     return 0
 

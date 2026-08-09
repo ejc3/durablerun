@@ -74,6 +74,19 @@ describe('mutation verdict promise helpers', () => {
     ).toBe(true)
   })
 
+  it('reads the private brand when recognizing compiler failures', async () => {
+    let failure: unknown
+    try {
+      await bindArityFailure()
+    } catch (error) {
+      failure = error
+    }
+    expect(
+      isFencedBatchBindError(failure),
+      'mutation-verdict:construction:testing-helper-bind-brand-read',
+    ).toBe(true)
+  })
+
   it('routes bind-count failures through the authenticated factory', async () => {
     let failure: unknown
     try {
