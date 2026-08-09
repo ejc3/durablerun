@@ -5688,6 +5688,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             expected,
             "caught",
         ),
+        (
+            "exact Vitest assertion marker without matcher detail",
+            failed(message=f"AssertionError: {expected.marker}"),
+            expected,
+            "caught",
+        ),
         ("green mutant", SuiteResult(True, True, (), (), ""), expected, "survived"),
         (
             "marker from another file",
