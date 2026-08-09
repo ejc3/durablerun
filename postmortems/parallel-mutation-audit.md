@@ -308,7 +308,9 @@ mechanism's boundary was wider than the example.
   mutation-target fault. It additionally executes 26 BAD_CASE, 20 semantic
   obligation, and 28 control-fault cardinality mutations, plus eight collision
   probes. These local results do not relabel the earlier pbox run as
-  exact-final-head evidence; the full pbox rerun remains pending.
+  exact-final-head evidence. The proposed pbox rerun was later superseded by
+  the repository's confined local clean-head audit; pbox is not part of the
+  final evidence path.
 - Disconfirmed: wrong-registry and incomplete-worker weakness switches are not
   reachable from normal audit mode; CLI routing confines them to generated
   self-test mode.

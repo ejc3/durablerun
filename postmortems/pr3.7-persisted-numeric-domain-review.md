@@ -166,7 +166,7 @@ mechanism does not own.
 | Incrementable ordinal and exact-cap guards | 1 | The red probes use `MAX_RUN_ORDINAL + 1`, a fractional run attempt, and `cap + 1`; the repaired statements refuse them while accepting the exact maximum terminal infra-cap case. Arithmetic in a future raw SQL follow-on can still bypass the helper; exact site mutations are the remaining detector. |
 | Exact checkpoint-owner relation | 1 in reads and conflict validation | The red cases forge owner id, task, queue, attempt, range, storage representation, and existence. The shared relation rejects each. A corrupt checkpoint under a different, nonconflicting name does not block an unrelated checkpoint write; reads still filter it, and global corruption remains the invariant surface's responsibility. |
 | Atomic checkpoint conflict validation plus LWW control | 1 and 2 | The corrupt-conflict set and suspend cases previously extended or parked before their follow-ons dropped. The repaired leading CAS refuses without any state delta. The valid-higher-owner control still parks and silently preserves the higher checkpoint, proving that “reject every higher ordinal” would be an overcorrection rather than the property. |
-| Attributable mutation registry for numeric consumers | 2 | Every currently registered numeric guard must fail through its exact construction or behavior marker. The self-test inventories 127 live mutations, 17 attribution cases, 19 promise cases, 10 descriptor cases, and 37 injected faults. A semantically equivalent bug that produces the same marker through another cause, or a new consumer absent from the registry, can still pass; the full exact-head audit result is pending. |
+| Attributable mutation registry for numeric consumers | 2 | Every currently registered numeric guard must fail through its exact construction or behavior marker. This round's self-test inventoried 127 live mutations, 17 attribution cases, 19 promise cases, 10 descriptor cases, and 37 injected faults. A semantically equivalent bug that produces the same marker through another cause, or a new consumer absent from the registry, can still pass; later closeouts subsumed this checkpoint into the final 339-entry registry. |
 
 ## Fix-induced defects
 
@@ -247,13 +247,13 @@ reproduced in the current repair.
 - Mutation self-test on the repaired registry passed with **127 live
   mutations, 17 attribution cases, 19 promise-message cases, 10 descriptor
   cases, and 37 injected faults**.
-- **PENDING FINAL EVIDENCE — full mutation audit:** record the exact-head
-  clean-tree attributable total and current-head binding. The self-test proves
-  registry and classifier mechanics, not that every production mutation is
-  killed.
-- **PENDING FINAL GATE EVIDENCE:** record `pnpm verify:fuzz` and
-  `pnpm verify:tla` results. `pnpm verify` and the libSQL conformance suite are
-  complete; fuzz and TLC are not claimed here.
+- The 127-entry checkpoint was not used as final merge evidence. Subsequent
+  closeouts expanded the same registry to 339 entries; PR #12's final
+  clean-head audit, rather than this historical self-test, owns the complete
+  attributable result.
+- This historical round completed `pnpm verify` and libSQL conformance at
+  `6a134e4`. Fuzz and TLC are claimed only by PR #12's final exact-head gate
+  evidence, not retroactively by this checkpoint.
 - Disconfirmed: the proposed integral-REAL claim-timeout case is not reachable
   through ordinary SQLite storage because INTEGER affinity canonicalizes
   same-value `1.0` to INTEGER. It is not counted as a finding.
@@ -547,10 +547,10 @@ There were **six**:
 All six were found while the repairs were treated as new code, and all six
 were review-caught: timestamp-store audit found T9–T11; independent inventory
 review found T12, T14, and T15. T12 has red construction commit `46b79d8`;
-the final repair removes all six proxies rather than deferring them. T16 is
-not fix-induced and appears only in the detection ledger above as the generated
-poison self-catch. **PENDING FINAL EVIDENCE:** record the green commit that
-closes T9–T15 and the exact focused results on that commit.
+green `828a95e` removes all six proxies rather than deferring them. T16 is not
+fix-induced and appears only in the detection ledger above as the generated
+poison self-catch. The final branch gate, rather than this historical section,
+owns the moving focused and full-suite totals.
 
 ### Temporal evidence
 
@@ -615,16 +615,17 @@ closes T9–T15 and the exact focused results on that commit.
   to terminalization.
 - Disconfirmed: three malformed representations of stored max-duration are
   three witnesses for one consumer omission, not three findings.
-- **PENDING TEMPORAL GREEN COMMIT:** record the commit SHA containing the
-  production consumers, 23-field inventory, 46 conditions, 69 witnesses,
-  31-field schema/nullability enrollment, observable corruption seam,
-  table-keyed snapshots, placeholder repair, rounded parity, and driver-cleanup
-  repair.
-- **PENDING FINAL CLEAN-HEAD EVIDENCE:** record the bound SHA and exact totals
-  for the focused timestamp suite, `pnpm verify`, the full attributable
-  mutation audit, fuzz, all six TLC targets, and the hosted branch nightly.
-- **PENDING POST-MERGE EVIDENCE:** record the main merge SHA and hosted nightly
-  result for that exact SHA.
+- Temporal green `828a95e` contains the production consumers, 23-field
+  inventory, 46 conditions, 69 witnesses, 31-field schema/nullability
+  enrollment, observable corruption seam, table-keyed snapshots, placeholder
+  repair, rounded parity, and driver-cleanup repair.
+- Exact final-head totals for the focused timestamp suite, `pnpm verify`, the
+  full attributable mutation audit, fuzz, and all six TLC targets belong to
+  PR #12's final review evidence. This historical postmortem does not copy a
+  moving branch-head count into a second authority.
+- Post-merge hosted-nightly status belongs to the required workflow on the
+  resulting `main` merge SHA and is monitored as deployment evidence; it is not
+  predeclared by the source-branch incident record.
 
 ### Temporal root cause
 

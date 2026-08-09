@@ -9,8 +9,11 @@ site-and-cause counting rule. Repairs, mandatory re-review, and a second full
 audit found ten more defects. Executing the required mechanism false negative
 then found one more Unicode marker-boundary defect. Final adversarial
 re-review found that the hosted loop could still credit a planned batch
-without dispatching its command. The final registry has 207 live mutations,
-including an executable subprocess-boundary attack on that dispatch.
+without dispatching its command. Subsequent closeouts followed retry and
+task-code boundaries through the worker and completed two unresolved review
+threads. The final registry has 339 live mutations, including executable
+attacks on dispatch, every declared task-realm condition, collision error
+attribution, and compiler-bind laundering.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The subject is why the nightly and mutation gates could say more
@@ -76,6 +79,38 @@ causal coverage while deleting guards without their named proof failing.
 | 33 | Helper ownership trusted any bare call named `requireExpectedFailure` or its siblings | A shadowed local or parameter could satisfy descriptor inventory without executing the canonical helper | Final repair review | Callee spelling stood in for symbol identity | One TypeScript `Program` and `TypeChecker` require the exact unaliased named import from the canonical testing module; shadowed cases are rejected (rung 2 using compiler symbols) |
 | 34 | Marker boundaries excluded only ASCII adjacency | Unicode identifier characters could decorate a canonical construction marker and satisfy directive ownership | Required false-negative execution of the repaired analyzer | The boundary modeled current mutation-name characters rather than ECMAScript identifier adjacency | Red `956fbb9` adds Unicode prefix and suffix attacks; green `d01f4ef` uses Unicode `ID_Continue` plus the ECMAScript identifier additions (rung 2) |
 | 35 | The hosted loop credited each planned batch after a separately writable `"${command[@]}"` statement; replacing that statement with `:` left every plan assertion and the nightly completion line green | A hosted nightly could report 20,000 walks while executing none, so the volume proof could silently become vacuous | Final adversarial re-review of the executable nightly mechanism | The plan proved argv shape, not external-process dispatch; walk credit was computed from the plan rather than observed execution | A generated mutation replaces the real dispatch with `:`; the focused suite sets `PATH` to a temporary directory containing a probe `env` and requires tagged stdout for shard 0's four planned batch indices (rung 2) |
+| 36 | A valid zero-base exponential retry became `NaN` after exponent overflow | Failure handling escaped before `store.fail`, so lease recovery could repeat user work without spending the attempt | Retry math, durable decode, and SDK failure conformance | Bounds were checked at individual numeric helpers, but raw policy data and the overflow product had no single total boundary | One normalizer at spawn, decode, and public math APIs; frozen nominal millisecond-canonical data; zero-base short-circuit and exact retry mutations (rungs 1 and 2) |
+| 37 | Handler failure classification read or coerced arbitrary thrown objects | A revoked proxy, accessor, or coercion hook could crash classification and strand the claim | SDK task-failure boundary | The layer below was verified, but the new JavaScript throwable boundary had no total snapshot primitive or hostile-value surface | One non-throwing owned `snapshotTaskThrowable` result, data-descriptor-only diagnostics, fixed uninspectable spelling, and exact hostile-value mutations (rungs 1 and 2) |
+| 38 | Public `SuspendSignal`, `LeaseLostError`, and `StoreUnavailableError` membership granted runtime authority | Task code could suspend without parking or claim an infrastructure outcome, bypassing user-failure accounting | Worker control-flow authority | Public construction and `instanceof` were proxies for provenance | A fresh per-invocation WeakMap pairs a private context issuer with a worker-retained classifier; public construction and forged prototypes are ordinary failures (rung 1) |
+| 39 | The first authority repair resolved the WeakMap constructor and methods when an invocation began | Task initialization could replace those intrinsics before scope creation and mint, hide, or suppress controls | New task-control authority layer | The repair made the map private but captured its machinery after untrusted initialization | Capture the constructor and bound get/set operations at module evaluation, with hostile replacement cases (rungs 1 and 2) |
+| 40 | The core throwable-classifier repair had one composite forgery verdict and only one forgery mutation | Other independently writable class-authority arms could regress while the claimed core surface stayed green | Core classifier fault surface | One example per mechanism was treated as proof of every condition | One exact mutation and attributable verdict for each public and forged error authority arm (rung 2) |
+| 41 | The SDK runtime corpus had one aggregate enrollment mutation | Hostile-value or constructed-control cases could disappear while the claimed runtime surface stayed green | SDK replay-equivalence fault surface | The new layer did not receive its own per-case fault surface at birth | One exact enrollment mutation for every currently enumerated runtime throwable case (rung 2; generation remains PR3.10) |
+| 42 | The hostile store-classifier fallback mutant failed before Vitest emitted its custom marker | A real kill was correctly refused as wrong-path, leaving one of 51 targeted mutations unattributable | Exact mutation verdict | The assertion delegated rejection attribution to framework rendering | `attributeExpectedFailure` owns the canonical marker after matching the exact revoked-proxy rejection (rung 2) |
+| 43 | Retry normalization resolved `Reflect`, `Object`, `Number`, and `Math` operations after task code ran | A valid policy could become `none`, get a forged delay, or throw before durable failure accounting | Core retry boundary | Numeric totality did not authenticate the operations performing it | Module-time captured retry operations and one exact replacement case per operation (rungs 1 and 2) |
+| 44 | Task-value parse/stringify and graph inspection resolved mutable ambient operations | A handler could forge the durable result or make deterministic bad data look retryable | Core durable task-value codec | Capturing only `JSON.stringify` still let `toJSON`, getters, prototypes, and ambient helpers decide the wire value | Snapshot the raw graph once into owned null-prototype data, reject unsupported values/cycles, and use captured parse/stringify and graph operations (rungs 1 and 2) |
+| 45 | User duration, JSON, and name classifiers used mutable `String`, array, and regular-expression dispatch | Invalid durable inputs could be admitted or classified as ordinary retryable failures | Core task-input boundary | Validation logic was total over values but not over its ambient operations | One captured core intrinsic table and exact classifier replacement cases (rungs 1 and 2) |
+| 46 | `ReplayContext` used ambient `Map` methods and JSON operations | A task could skip a step, lose a checkpoint, or return a value different from durable replay | SDK replay boundary | Single representation did not include the in-memory bookkeeping operations | Captured map construction/get/set/has and canonical JSON operations at every replay source (rungs 1 and 2) |
+| 47 | Worker orchestration used ambient abort, promise, numeric, parsing, and string operations | Heartbeats or finalization could be disabled, forged, rejected, or left pending | SDK invocation boundary | The handler and orchestration shared one realm but the worker resolved host operations late | Captured abort accessors/methods, two-input promise adoption, parse, max, and character access (rungs 1 and 2) |
+| 48 | `ReplayContext` still read `this.#leaseLost.aborted` through a mutable prototype getter | A forged false value could let work continue after lease loss | Context lease-loss boundary | The worker captured the getter, but the context retained a second read path | Route every lease-loss read through the one captured accessor (rung 1) |
+| 49 | Captured `RegExp.prototype.test` still dispatched through mutable `.exec` | A replacement could admit storage-unsafe names despite the apparent capture | Core name classifier | Capturing a composite method did not capture its transitive dispatch | Invoke captured native `RegExp.prototype.exec` directly (rung 1) |
+| 50 | Captured `Promise.race` still consulted mutable `Promise.resolve` and the input iterator | A completed invocation could reject or hang during finalization | Worker promise boundary | Capturing the outer method did not own adoption or iteration | A two-input helper attaches captured native `then` directly to both owned promises (rung 1) |
+| 51 | Event-wake classification trusted inherited `timedOut` and `payloadJson` properties | Prototype pollution could turn a payload into timeout or supply a forged payload | SDK event boundary | `in` and ordinary property reads confused inheritance with durable discriminants | Captured own-property checks select the one durable wake representation (rung 1) |
+| 52 | The first owned serializer did not define a closed JSON object model | Boxed primitives and exotic objects serialized as `{}`, while prototype `toJSON` could disguise forbidden values | Core task-value contract | “JSON-compatible” was delegated to host serialization semantics | Explicitly admit only primitives, arrays, plain objects, and authentic Dates; reject functions, symbols, bigint, cycles, and exotic objects before stringify (rung 1) |
+| 53 | Registry dispatch still called mutable `Map.prototype.get` | A task could hide an existing handler and cause a claimed run to defer | SDK task registry | `ReadonlyMap` syntax did not identify authoritative native-map storage | Captured native Map lookup for authentic maps; structural resolvers are explicitly trusted host code (rung 1) |
+| 54 | New task-value and classifier conditions were added without matching literal mutation ownership | The repair could claim a complete fault surface while several new arms were absent from the registry | Core mutation enrollment | Source conditions and mutation declarations remained separate lists | Literal per-condition markers plus exact registry reconciliation; generation remains PR3.10 (rung 2) |
+| 55 | One SDK map-method test combined `has` and `get` and never perturbed `set` | Any one replay-map operation could regress while the umbrella verdict stayed green | SDK replay mutation surface | One scenario was treated as proof of three independently writable methods | Independent has/get/set cases and exact mutations (rung 2) |
+| 56 | Captured abort signal and aborted getters had no independent mutation owners | Getter capture could disappear while adjacent abort tests stayed green | SDK worker mutation surface | Constructor and method coverage was mistaken for accessor coverage | Separate getter tests, literal markers, and mutations (rung 2) |
+| 57 | Deleting the task-value cycle guard still ended in a stack overflow reclassified as `FatalTaskError` | The mutation survived semantically while the broad fatal assertion stayed green | Core serializer mutation oracle | Failure class was a proxy for single-read cycle detection | A one-read cyclic getter distinguishes the owned guard from downstream overflow (rung 2) |
+| 58 | The first signal-getter replacement test threw before reaching its marker-bearing assertion | A real kill would be rejected as wrong-path rather than maintaining the capture | Exact mutation attribution | The poisoned operation, not the oracle, produced the failure | Return a distinct forged signal, restore the intrinsic, then assert identity at the canonical marker (rung 2) |
+| 59 | Owned serialization passed ordinary descriptor objects to captured `Object.defineProperty` | Polluted descriptor prototypes could still derail durable serialization | New serializer repair | Captured invocation did not make its argument representation owned | Build null-prototype property descriptors before the captured call (rung 1) |
+| 60 | The first captured registry lookup bypassed legitimate Map-subclass overrides | Existing custom dispatch semantics silently changed and handlers appeared missing | Registry compatibility repair | Native-map containment and arbitrary override semantics were combined without an authority policy | Make stored native Map entries authoritative; do not treat subclass overrides as grant or revocation authority (rung 1) |
+| 61 | Production `systemClock` resolved promise, abort, math, timer, and event operations after handler execution | A handler could prevent sleep/yield or worker-finalization delay from settling correctly | Core production clock | SDK capture stopped at the clock port while its implementation remained ambient | Capture the production clock operations and maintain each consumer with exact mutations (rungs 1 and 2) |
+| 62 | Preserving a Map-subclass override still let its `super.get` dispatch through a replaced `Map.prototype.get` | A valid stored handler could remain hidden under the combined conditions | Registry containment and compatibility review | Separate pollution and subclass tests never composed the two axes | The explicit authoritative-entry policy bypasses subclass dispatch for every authentic Map instance (rung 1) |
+| 63 | The clock mutation surface covered the sleep promise constructor but not `yieldTurn`'s independent constructor | Yield could regress to ambient `Promise` while all clock mutations stayed green | Core clock mutation surface | One capture source was treated as proof of two consumers | A separate literal yield verdict and consumer-site mutation (rung 2) |
+| 64 | The registry repair proved override-based revocation but not override-based grant for a missing entry | A subclass could still mint handler authority for an unregistered name | Registry authority oracle | Only the stored-entry-present direction was executable | A missing-entry denial regression and exact fallback-on-undefined mutation make authority two-sided (rungs 1 and 2) |
+| 65 | The shared expected-failure matcher could accept an authentic `FencedBatch` bind-count failure and emit the requested mutation marker | A same-count source false negative plus a broad matcher could receive exact credit without exercising the intended guard | Canonical expected-failure helper | Caller matchers had authority over compiler-integrity failures | A private compiler-bind brand is propagated before caller matching at the one `matches` chokepoint used by all three helpers (rungs 1 and 2) |
+| 66 | The first brand repair covered bind-count mismatch but omitted the compiler's explicit-undefined argument exit | One compiler bind failure could still be laundered by a broad matcher | `FencedBatch` compiler error factory | The repair branded one producer rather than the whole producer class | Both compiler bind exits use one authenticated factory, with independent mutations (rung 1) |
+| 67 | The first brand factory used ambient `Error`, lost the compiler's `TypeError` contract, and paired the brand with an object-only predicate | Replacement could create a callable branded value that the predicate missed and a broad matcher then credited | Compiler-error authentication repair | Private membership was added without capturing construction or aligning construction, error type, and brand domain | Use the module-captured native `TypeError`, one private WeakSet factory, and a predicate aligned with the brand domain (rungs 1 and 2) |
 
 ## Detection ledger
 
@@ -88,21 +123,29 @@ causal coverage while deleting guards without their named proof failing.
 | Mandatory repair reviews, findings 25 through 33 | 9 | no |
 | Executed mechanism false-negative probe, finding 34 | 1 | **yes** |
 | Final adversarial code re-review, finding 35 | 1 | no |
+| Retry/throwable whole-boundary review, findings 36 through 38 | 3 | no |
+| Retry/throwable repair review, findings 39 through 41 | 3 | no |
+| Exact targeted mutation audit, finding 42 | 1 | **yes** |
+| Task-realm whole-boundary review, findings 43 through 53 | 11 | no |
+| Task-realm repair review, findings 54 through 64 | 11 | no |
+| Bind-attribution repair review, findings 65 through 67 | 3 | no |
 
-Self-catch rate: **24 of 35, or 68.6%** (previous temporal round: **1 of
-43, or 2.3%**). This is a material improvement because the long audit found
-22 attribution defects without outside review. It is not 47 self-catches:
+Self-catch rate: **25 of 67, or 37.3%** (previous temporal round: **1 of
+43, or 2.3%**). The original 35-finding audit was **24 of 35, or 68.6%**,
+but the later boundary and repair rounds were almost entirely review-caught.
+The long audit found 22 attribution defects without outside review. It is not
+47 self-catches:
 `47987c0` reported 42 wrong-path entries and five survivors, but those 47
 witnesses collapse to 21 independent causes above. Counting every generated
 case as a defect would mix test volume with the site-and-mechanism counting
 used by the preceding numeric and temporal postmortems.
 
-The last checked-in cumulative trailer was `review-findings: 289`. This round
-adds the previously undocumented nightly executable-enrollment finding, nine
-mutation-repair review findings, and the final dispatch finding, so PR metadata
-must declare `review-findings: 300`. The previously recorded 30 self-catches
-rise by 24 to 54. The branch catalogue at this checkpoint is therefore **300
-review-caught plus 54 self-caught, or 354 total findings**.
+The last checked-in cumulative trailer before this closeout was
+`review-findings: 289`. The original nightly/mutation round raised it to 300;
+the retry/throwable, task-realm, and bind-attribution rounds raise it to
+`review-findings: 331`. The previously recorded 30 self-catches rise by 25 to
+55. The branch catalogue at final closeout is therefore **331 review-caught
+plus 55 self-caught, or 386 total findings**.
 
 ## Recurrence
 
@@ -182,8 +225,9 @@ mutation minimality.
 
 ## Fix-induced defects
 
-There were **thirteen** in the combined closeout: finding 2 and findings 24
-through 35. Finding 2 was caused by the first fresh-process proof, whose text
+There were **29 fix-induced findings across the complete closeout**. Thirteen
+were in the original nightly/mutation round: finding 2 and findings 24 through
+35. Finding 2 was caused by the first fresh-process proof, whose text
 inventory still accepted dead execution. Finding 24 was caused by the
 `47987c0`-to-`90cc034` repair adding a terminal-decode helper descriptor while
 leaving its registry marker stale. Finding 25 was the generic framework
@@ -204,7 +248,10 @@ place. The required false-negative execution then found finding 34; its
 standalone red and green commits and a complete `pnpm verify` followed that
 audit. Final code re-review then found finding 35 and forced another red,
 green, and invalidation of the earlier long evidence; the 207-entry exact
-cycle must be rerun before merge.
+cycle therefore had to be rerun before that checkpoint could merge. The three
+later addenda add four, ten, and two fix-induced findings respectively, for
+**29 across the complete 67-finding closeout**; their exact accounting and
+repair topology appear below.
 
 ## Evidence
 
@@ -341,7 +388,7 @@ Deferred (recorded in BUILD.md):
 ## What this round still would not catch
 
 A new guard or generated condition omitted from `MUTATIONS` can still ship:
-the registry now has 207 declared entries, but even a complete exact audit of
+the registry now has 339 declared entries, but even a complete exact audit of
 those entries is not proof that declaration is complete. Two guards
 deliberately sharing one assertion can still let the sibling kill a mutation.
 A canonical imported helper can still be given a callback that fabricates its
@@ -365,3 +412,364 @@ Finally, the repository still does not machine-check red/fix commit topology.
 This postmortem truthfully exposes bundled repair-review fixes, but prose is
 not prevention. Until PR3.10 closes that gate, a future author can again place
 a regression and its fix in one commit while every current build check passes.
+
+## Addendum: retry and task-throwable boundary closeout (2026-07-31)
+
+After the 207-mutation checkpoint above, whole-system review followed the
+failure path one layer above the store. It found that legal retry data could
+escape before the worker recorded a failure, arbitrary JavaScript throwables
+could crash their own classifier, and public error classes were being treated
+as runtime authority. Review of the repair found one authority flaw and two
+missing fault surfaces. The exact mutation audit then found one wrong-path
+verdict itself. This addendum records those distinct sites without rewriting
+the earlier round or its evidence.
+
+### Addendum severity
+
+The worst consequence was duplicate user work. A zero-delay exponential retry
+at a high attempt produced `NaN`, threw before `store.fail`, and left the run
+claimed; lease recovery could execute the handler again without the failed
+attempt having spent its user retry budget. Hostile thrown values could strand
+the claim the same way. Forged suspension or infrastructure controls instead
+let task code bypass normal failure accounting. The remaining findings affected
+the repair's authority boundary and the evidence claiming to maintain it.
+
+### Addendum finding detail
+
+The canonical Findings table above owns findings 36 through 42. This addendum
+keeps their focused severity, detection, recurrence, mechanism-boundary, and
+evidence analysis without a second independently writable findings table.
+
+### Addendum detection ledger
+
+| Detector | Findings | Ours? |
+|----------|----------|-------|
+| Whole-system failure-path review, findings 36 through 38 | 3 | no |
+| Mandatory review of the authority repair, findings 39 through 41 | 3 | no |
+| Exact targeted mutation audit, finding 42 | 1 | **yes** |
+
+The addendum self-catch rate is **1 of 7, or 14.3%**. Across the complete
+closeout recorded in this file, the rate becomes **25 of 42, or 59.5%**, down
+from 68.6% before this addendum. That decline matters: the new SDK layer did
+not begin with the generated fault surface the repository's own law required.
+
+The cumulative PR trailer rises from `review-findings: 300` to
+`review-findings: 306`. Self-catches rise from 54 to 55, so the branch
+catalogue is now **306 review-caught plus 55 self-caught, or 361 total
+findings**.
+
+### Addendum recurrence
+
+Finding 36 repeats the numeric-domain lesson at a new consumer. Durable
+temporal fields had complete bounds, but retry policy data crossed SDK and
+storage boundaries through casts, and multiplication introduced a value no
+field validator had seen. The mechanism protected the lower layer, not every
+entry into retry math.
+
+Findings 37 and 38 repeat the new-layer and authority-provenance failures.
+Verifying store batches said nothing about the worker's JavaScript throwable
+surface, and a public class was again used where private provenance was the
+property. Finding 39 shows the first repair still trusted ambient intrinsics
+after task initialization.
+
+Findings 40 through 42 repeat the exact-attribution proxy class documented
+throughout this postmortem. A composite marker, one representative corpus
+mutation, and a framework-rendered rejection were pictures of causal
+ownership. The first two also violate the rule that every new layer receives
+its own fault surface at birth.
+
+### Addendum mechanism audit
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Total retry normalization at every retry entry | 1/2 | The numeric representation and zero-base arithmetic are total, but the first repair still resolved JavaScript intrinsics after task modules loaded. The next addendum records the executed `Reflect.get`, `Object.freeze`, `Number`, and `Math` replacement counterexamples and the captured-operation repair. Process termination remains outside the JavaScript failure contract. |
+| Total owned throwable snapshot | 1/2 | A process-level termination such as OOM still cannot become a durable user failure; the mechanism claims totality for JavaScript thrown values, not host death. |
+| Invocation-local control authority with captured intrinsics | 1 | Code deliberately handed the private issuer by a future context API would possess real authority and would pass the classifier. The present `#private` field makes that reference unavailable; a future API leak therefore needs a new construction case. Pre-import host poisoning is likewise outside the task-code threat boundary. |
+| Per-condition core and SDK exact mutations | 2 | The earlier executed condition-completeness false negative still applies: a new case omitted from both its source inventory and `MUTATIONS` passes every declared mutation. PR3.10 owns source-generated enrollment. |
+| Canonical expected-failure attribution | 2 | A callback that deliberately throws the accepted error can still make the helper emit its marker without exercising production. This is the same executed semantic-minimality false negative already recorded above; exact attribution proves ownership of the observed failure, not that no earlier equivalent failure exists. |
+
+### Addendum fix-induced defects
+
+Four findings were introduced by the repairs themselves: 39 through 42.
+Findings 39 through 41 came from mandatory review of the first task-control
+repair; finding 42 came from running its exact mutation surface. The combined
+closeout therefore has **seventeen fix-induced findings**.
+
+The branch preserves the actual history. Findings 36 through 38 have separate
+red commits, but findings 39 through 41 were repaired inside green commit
+`23f55b0`, and finding 42's audit failure at that commit was repaired directly
+in `7fee34d`. That does not meet the two-commit rule for those repair findings.
+Rewriting the accumulated history would hide the real sequence, so this
+deviation is explicit; PR3.10 remains the mechanical prevention for red/green
+topology.
+
+### Addendum evidence
+
+- Retry red `df9643e` demonstrated the high-attempt zero-base escape;
+  `5325f69` expanded the red class surface across spawn, decode, public math,
+  hostile fields, representation, and null/default behavior. Green `db07626`
+  installed the single normalizer and total math.
+- Hostile-throw red `35c774b` exercised revoked proxies, hostile accessors, and
+  coercion. Authority red `387b263` demonstrated public constructed controls.
+  Green `23f55b0` installed owned failure snapshots and per-invocation runtime
+  authority.
+- Whole-system review verdict: “A legal zero-delay retry became NaN only after
+  exponent overflow; failure handling escaped before recording the attempt,
+  leaving lease recovery to rerun user work that never spent its retry budget.”
+- Throwable review verdict: “The handler catch treated arbitrary JavaScript
+  values as safely inspectable; a proxy trap, accessor, or coercion hook could
+  crash classification and strand the claim instead of recording a user
+  failure.”
+- Authority review verdict: “Public class membership was mistaken for runtime
+  authority, so task code could mint suspension or infrastructure outcomes and
+  bypass the user failure policy.”
+- Repair review found that invocation-time WeakMap lookup remained replaceable
+  and that the core classifier and SDK runtime corpus each lacked per-condition
+  fault enrollment. It also narrowed the completion catch; no reachable
+  serialization escape reproduced, because `serializeTaskValue` already
+  converts every such failure to `FatalTaskError`, so that change is recorded
+  as hardening rather than a finding.
+- Confined `pnpm verify` passed at `23f55b0` and again at `7fee34d`: **77 test
+  files / 3,478 tests**. The task-named targeted audit selected **51**
+  mutations: 50 were exactly attributable at `23f55b0`;
+  `task-control-store-total-fallback` was correctly rejected as wrong-path.
+  After `7fee34d`, that repaired mutation was exactly attributable. The live
+  registry contains **269 mutations**, including 14 retry and 48
+  throwable/control entries added by this closeout.
+
+### Addendum root cause and mechanisms
+
+The common cause was trusting a lower layer's guarantees across a new
+boundary. Store conformance did not make retry arithmetic total, make arbitrary
+JavaScript values inspectable, or authenticate runtime control flow. The first
+repair then treated a private map and one representative mutation as the
+properties, when capture timing and per-condition enrollment were independently
+writable.
+
+Built here: one retry representation and parser; one total task-failure
+snapshot; one fresh paired authority per invocation; module-time captured
+intrinsics; private context issuance; exact core and SDK fault arms; and
+canonical rejection attribution.
+
+Deferred to PR3.10: generate mutation enrollment from semantic conditions and
+machine-check red/fix commit topology. The present 269-entry registry proves
+every declared mutation, not declaration completeness.
+
+### What the addendum still would not catch
+
+A future throwable/control arm omitted from both its executable corpus and the
+mutation source can still ship. A future context API could leak its private
+issuer. Host code that poisons JavaScript intrinsics before these modules load,
+or a process killed below the JavaScript exception boundary, is outside the
+current task-code containment claim. Exact expected-failure attribution can
+still be satisfied by an earlier equivalent failure. Those are the boundaries
+PR3.10 and future host-isolation work must address; this addendum does not claim
+otherwise.
+
+## Addendum: task-realm durable-boundary closeout (2026-08-09)
+
+Review of the retry and throwable repair executed its own stated false
+negative: task modules and handlers run after the durable runtime modules have
+loaded, so ambient JavaScript operations can be replaced between capture and
+use. The first counterexample changed `Reflect.get` after import and made a
+valid fixed retry classify as `none`. The review then followed the same class
+through task-value encoding, replay bookkeeping, worker finalization, event
+wakes, registry dispatch, and the production clock. Repair review found both
+new production gaps and gaps in the mutation surface intended to maintain the
+repair.
+
+### Task-realm severity
+
+The highest-impact cases again stranded or mis-transitioned claimed runs.
+Changed retry arithmetic could suppress or alter a scheduled retry; changed
+serialization could persist a forged result; changed replay maps could skip a
+step or return a value different from the checkpoint; and changed worker or
+clock operations could reject, hang, or mis-time finalization. Registry lookup
+had a separate authority consequence: overridable lookup could revoke a stored
+handler or grant a handler for a name with no authoritative entry.
+
+This is durable-boundary containment, not a JavaScript security sandbox. A
+handler executes in the host process today and can terminate that process or
+mutate operations outside the explicitly captured boundary. Such host-realm
+integrity is an operational trust requirement; process/realm isolation is the
+structural answer for untrusted application code. The mechanisms below claim
+only the named durable operations and say so explicitly.
+
+### Task-realm finding detail
+
+The canonical Findings table above owns findings 43 through 64. This addendum
+keeps the task-realm round's focused severity, detection, recurrence,
+mechanism-boundary, and evidence analysis without a second independently
+writable findings table.
+
+### Task-realm detection ledger
+
+| Detector | Findings | Ours? |
+|----------|----------|-------|
+| Whole-boundary review, findings 43 through 53 | 11 | no |
+| Mandatory review of production and mutation repairs, findings 54 through 64 | 11 | no |
+
+This addendum's self-catch rate is **0 of 22**. Across the complete closeout to
+this point, the rate is **25 of 64, or 39.1%**. The cumulative trailer rises
+from `review-findings: 306` to `review-findings: 328`; self-catches remain 55,
+for **383 findings** in the branch catalogue.
+
+### Task-realm recurrence
+
+Findings 43 through 53 and 59 through 62 repeat the same proxy exposed by the
+retry repair: a function reference that looked stable at author time was not
+the operation executed after task code ran. Findings 49 and 50 are the sharper
+recurrence: even capturing a composite built-in did not capture the mutable
+operations it dispatches through. The repair therefore owns leaf operations or
+owned representations rather than trusting composite host behavior.
+
+Findings 54 through 58, 63, and 64 repeat the per-condition fault-surface and
+exact-attribution failures. An umbrella case, an adjacent case, or an exception
+of the right class remained a proxy for the independently writable condition.
+The review caught every finding in this addendum; the detection rate therefore
+regressed again despite the added machinery.
+
+### Task-realm mechanism audit
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Captured durable-boundary operations | 1/2 | A handler can still replace an operation not used through the captured core/SDK tables, or terminate the shared process directly. The mechanism owns its named retry, value, replay, worker, registry, and clock boundaries; it is not process-wide realm isolation. |
+| Owned task-value snapshot | 1 | A getter can still throw while the raw graph is being read; the codec converts that to `FatalTaskError` rather than persisting a value. The mechanism guarantees one owned canonical wire value or a permanent failure, not successful serialization of every JavaScript object. |
+| Native-Map registry authority | 1 | A non-Map structural `ReadonlyMap` can implement `get` with mutable ambient dependencies and still pass SDK dispatch. Structural resolvers are explicitly trusted host code; authentic Map stored entries alone receive SDK containment. |
+| Captured production clock | 1/2 | An injected custom `Clock` can use ambient timers and still satisfy the type. Dependency injection intentionally transfers implementation authority; the captured mechanism owns only `systemClock`. |
+| Per-condition exact mutations | 2 | A future captured operation omitted from both its test corpus and `MUTATIONS` remains invisible. The 60 new entries prove the declared conditions, not declaration completeness; PR3.10 still owns source generation. |
+
+### Task-realm fix-induced defects
+
+Ten findings were introduced by repairs in this round: 52, 54 through 60, 63,
+and 64. The explicit JSON-model hole was exposed by the first owned serializer;
+five evidence defects came from its new fault surfaces; the descriptor and
+registry compatibility defects came from the first production repairs; and the
+yield and registry-grant gaps came from incomplete repair coverage. Combined
+with the earlier seventeen, the closeout now has **27 fix-induced findings**.
+
+Findings 43 through 53 and 60 through 64 have honest cumulative red commits as
+listed below. Findings 54 through 59 were found while the green repair was
+still uncommitted and have no standalone red hash; they were fixed inside
+`4220de7`. This is another disclosed deviation from the two-commit rule, not an
+invented topology.
+
+### Task-realm evidence
+
+- Red `bd2c490` established five independent layers: retry operations, durable
+  task-value encoding, core task-input classification, replay maps/JSON, and
+  worker orchestration. Red follow-ups were `e2ad339` (context lease getter),
+  `1bc3877` (regular-expression transitive dispatch), `1eb9c3f` (promise
+  adoption/iteration), `960683d` (wake discriminants), `43f1528` (closed JSON
+  model), and `a888115` (registry dispatch).
+- Repair-review reds were `ebe1c00` (registry compatibility), `4ec98c0`
+  (production clock), `4e07b06` (composed registry containment and independent
+  yield coverage), and `8c7b74d` (missing-entry handler authority). Green
+  `4220de7` closed the production and fault-surface findings and passed **80
+  test files / 3,538 tests**.
+- Review verdict: “A handler can replace `Reflect.get` after module import and
+  make `decideRetry({kind:'fixed', baseSeconds:1}, 1, 2)` return
+  `{retry:false}`.” Follow-up review reproduced forged result serialization,
+  replay-map divergence, promise-finalization rejection, mutable regexp
+  dispatch, inherited wake discrimination, and registry authority failures.
+- The live registry grew from **269 to 329**: exactly **60** new literal
+  mutation specifications, each with one owned verdict. The marker/inventory
+  self-test and focused task-realm suites were green at `4220de7`; later
+  collision and bind-attribution work intentionally invalidated that head as
+  final merge evidence, so the final clean-head 339-entry audit is required
+  separately rather than being claimed here.
+
+### Task-realm root cause and mechanisms
+
+The common cause was treating module identity as operation identity. Modules
+were loaded before task code, but their functions still looked up mutable
+globals and prototype methods when invoked. Composite captures such as
+`RegExp.test` and `Promise.race` retained hidden second dispatch paths. The
+repair uses module-time leaf-operation captures, owned graph snapshots, native
+collection calls, and explicit authority policies at the durable boundaries.
+
+Built now: one captured core operation table; an owned JSON snapshot and closed
+object model; captured SDK replay, abort, promise, registry, and clock helpers;
+own-property event discrimination; and 60 exact condition mutations. Deferred
+to PR3.10: source-generated condition enrollment. Full isolation of untrusted
+application code is a deployment boundary, not a claim of this same-process
+SDK.
+
+### What the task-realm addendum still would not catch
+
+Same-process handlers remain trusted with host-realm integrity. They can mutate
+operations outside the named capture tables, interfere with third-party driver
+internals, or terminate the process; durable leases and idempotency recover
+process loss, but no same-realm library can sandbox that authority. A future
+boundary operation omitted from both source inventory and mutations also stays
+invisible. A structural registry or injected clock owns its own dependencies.
+These limits are explicit so the captured-intrinsic mechanism is not presented
+as general JavaScript isolation.
+
+## Addendum: unresolved-thread and bind-attribution closeout (2026-08-09)
+
+A thread-aware audit of PR #12's 53 unresolved comments found that two accepted
+findings had been counted but incompletely repaired. Final-remote finding 31's
+historical collision sweep was exact, but the self-collision sibling still
+accepted any rejection. Final-remote finding 25's runtime classifier rejected
+an unmarked bind failure, but the cheap source-inventory screen claimed by its
+postmortem did not exist.
+Their completion does not increment the finding ledger. Review of the finding
+25 repair did expose three new, independently counted attribution defects.
+
+### Late finding detail
+
+The canonical Findings table above owns findings 65 through 67. This addendum
+keeps the unresolved-thread and bind-attribution evidence without a second
+independently writable findings table.
+
+### Late detection, recurrence, and fix-induced ledger
+
+All three new findings were caught by mandatory adversarial review, so this
+addendum is **0 of 3 self-caught**. The complete closeout is now **25 of 67,
+or 37.3%** self-caught. The cumulative trailer is `review-findings: 331`;
+self-catches remain 55, for **386 total findings** and a cumulative branch
+self-catch rate of **14.2%**.
+
+Finding 65 repeats the exact-attribution proxy: an exact marker still does not
+prove that the accepted error came from the intended semantic guard. Findings
+66 and 67 repeat incomplete repair-surface and ambient-operation failures.
+Findings 66 and 67 were introduced by the first uncommitted brand repair; 65
+pre-existed it. The complete closeout therefore has **29 fix-induced findings**.
+
+### Late mechanism audit
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Reconciled raw question-token alarm | 2, syntactic | A replacement can remove a SQL `?` and add a question token in a TypeScript comment or conditional, preserving the raw count. That cancellation case is an executed self-test and intentionally passes this cheap alarm. |
+| Authenticated compiler-bind rejection | 1/2 | An unbranded driver/compiler `TypeError` with identical bind text remains caller-matchable: an executed `/.*/` probe emitted its exact mutation marker. The private brand owns only the two authenticated `FencedBatch` exits, not bind semantics elsewhere. |
+| Exact collision matchers | 2 | An unrelated operation can still emit the same SQLite unique-index text. Atomic unchanged-state assertions plus three path-specific mutations narrow that false negative, but text does not authenticate the database statement that produced it. |
+
+### Late evidence and closure
+
+- Existing final-remote finding 31: red `5d2c30c` showed the weak collision seam
+  swallowing an unrelated sentinel `TypeError`; green `8ae7fc2` added the
+  self-collision, sweep, and unrelated-error owners, completing the three-path
+  set alongside the existing worker-failure verdict. All nine successor-named
+  mutations were exactly attributable at `b2047e8`.
+- Existing final-remote finding 25: red `acb36c1` reconstructed the missing
+  `? IS NOT NULL` source alarm; green `b3fd914` added reconciled question-token
+  drift declarations and the explicit equal-count cancellation boundary.
+- New finding 65: red `915c1dc` made all three promise helpers demonstrate bind
+  failure laundering. Findings 66 and 67: red `fd5de9c` added the omitted
+  explicit-undefined producer and post-import constructor replacement cases.
+  Green `b2047e8` installed the single captured factory, private brand, and
+  pre-matcher rejection chokepoint.
+- `pnpm verify` at `b2047e8` passed **80 files / 3,546 tests**. The mutation
+  self-test enrolled **339** entries. A confined targeted audit caught all
+  seven `testing-helper-bind-*` mutations and all nine `successor-*` mutations
+  at their exact verdicts on that head.
+
+The final mechanism is deliberately two-layered. Raw source reconciliation is
+a fast construction alarm with a written cancellation boundary. Authentic
+compiler failures are separately ineligible for expected-failure attribution,
+so even a source mutation that evades the alarm cannot be credited for dying
+at either bind-validation exit. The collision repair similarly uses one shared
+error shape but independent path-owned mutations. The final merge gate must run
+the complete 339-entry audit on one clean immutable head; targeted evidence is
+not substituted for that cycle.

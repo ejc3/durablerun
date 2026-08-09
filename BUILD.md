@@ -372,15 +372,60 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Tokenless EndingFeed reconciliation remains deferred to PR6.4 because its
     heartbeat-cutoff check and expiry need one new atomic, spec-first store
     operation.
+  - **Retry and task-throwable boundaries are total.** Retry policies now cross
+    one parser at spawn, durable decode, and both public math entry points. The
+    parser snapshots hostile fields once, returns frozen millisecond-canonical
+    data with a nominal type, and makes zero-delay exponential math total even
+    after exponent overflow. The worker snapshots every JavaScript throwable
+    into owned canonical failure JSON without invoking object getters or
+    coercion. Runtime suspension, lease-loss, and store-outage authority is
+    invocation-local: public constructors and forged prototypes carry no
+    authority, context calls enroll trusted controls before they cross task
+    code, and the worker retains the paired classifier. Module-time captured
+    WeakMap and `Symbol.hasInstance` intrinsics prevent task initialization
+    from replacing the authority machinery. The core classifier and SDK
+    runtime corpus each have per-condition exact mutations; together with the
+    retry surface they bring the live registry from 207 to 269. The targeted
+    audit caught one wrong-path hostile-classifier verdict rather than
+    crediting it; the canonical expected-failure helper now owns that marker.
+    Source-side generation of those condition mutations remains PR3.10's
+    responsibility.
+  - **Task-realm durable boundaries use captured operations and owned data.**
+    Retry math, task-value encoding, user input classification, replay maps,
+    worker abort/finalization, event-wake discrimination, native-Map registry
+    authority, and the production clock resolve their safety-critical
+    JavaScript operations when the runtime modules load. Task values are first
+    copied into an owned, closed JSON model; composite built-ins whose behavior
+    dispatches through mutable peers (`RegExp.test`, `Promise.race`) are replaced
+    by leaf-operation helpers. Authentic Map entries, not subclass overrides,
+    grant handler authority; non-Map structural resolvers remain explicitly
+    trusted host code. Sixty exact mutations raised the registry from 269 to
+    329.
+
+    The unresolved-thread closeout then completed the already-counted collision
+    and bind-arity findings. Three collision paths have independent exact
+    owners. Source question-token reconciliation is only a cheap construction
+    alarm—its equal-count cancellation case is explicit—while a private
+    `FencedBatch` compiler-error brand makes both bind-validation exits
+    ineligible for all three expected-failure helpers. Those ten additions
+    bring the live registry to **339**.
+
+    This is not a same-process JavaScript sandbox. Application handlers share
+    the worker realm and are trusted not to mutate unrelated host/driver
+    infrastructure or terminate the process; the captured tables own only the
+    named durable boundaries. Deployments that execute untrusted application
+    code need process or realm isolation as a separate host boundary rather
+    than another list of captured methods.
 
   Pre-temporal closeout evidence: the clean-tree mutation audit was **37/37
   attributable**; classifier maintenance covered 17 cases and seven injected
   faults; the poison oracle carried 16 meta-tests; the focused
   review-regression run passed 56 tests; and `pnpm verify` passed 67 files /
   1,503 tests.
-  **PENDING TEMPORAL FINAL EVIDENCE:** replace this marker with the final clean
-  head SHA, focused timestamp total, full attributable mutation total,
-  `pnpm verify`, fuzz, TLC, and hosted nightly results before merge.
+  Final merge evidence is attached to PR #12 and is accepted only when
+  `pnpm verify`, the confined fuzz and TLC legs, and the complete mutation
+  registry all pass on one clean committed head. Earlier exact totals in this
+  section are historical checkpoints, not substitutes for that final cycle.
 
   The sole structural exception is **emitEvent's `wake-runs`**, the one
   follow-on that cannot be generated, because it selects from `waits` — rows an
@@ -461,11 +506,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   mutation per claimed semantic branch and enum literal across all 109 IDs, and
   require each mutation to resolve to that condition's attributable verdict. A
   condition ID, detached marker inventory, or one mutation per mechanism is
-  still a proxy. The same gate must verify each postmortem's cited red and green
-  hashes are distinct, ordered commits and that the red commit demonstrably
-  leaves the named probe failing; the final attribution closeout showed that
-  prose-only evidence still permits repair findings to be bundled into a green
-  commit.
+  still a proxy. The retry/task-control and task-realm closeouts raise the live
+  registry to 339 and give every currently enumerated classifier, codec,
+  replay, worker, clock, collision, and compiler-bind arm an exact mutation; it
+  does not prove that a future arm is enrolled. PR3.10 must derive both the
+  cases and their mutation/verdict ownership from the same layer descriptor.
+  The same gate must verify each postmortem's cited red and green hashes are
+  distinct, ordered commits and that the red commit demonstrably leaves the
+  named probe failing; the final attribution closeout showed that prose-only
+  evidence still permits repair findings to be bundled into a green commit.
 
 - **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation

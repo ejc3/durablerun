@@ -6,9 +6,12 @@ read-derived successor ordinal and invariant crashes on corrupt counters to
 conformance surfaces that ran on one dialect, vacuous tests, incomplete source
 harvesters, review evidence that could attest a different commit, and a README
 that described a CodeRabbit status-check field its custom-check schema does not
-expose. Five red commits made those gaps executable; `eafd0d0` closed findings
-1–42 and `dc10820` closed finding 43. None was found by the project's machinery
-before the outside review.
+expose. Five red commits made those gaps executable; `eafd0d0` repaired most of
+findings 1–42 and `dc10820` repaired finding 43. A later unresolved-thread audit
+proved that findings 25 and 31 had each been only partially closed; their
+eventual red/green completion is recorded below without counting either
+finding a second time. None was found by the project's machinery before the
+outside review.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The question throughout is what would have made each defect
@@ -68,13 +71,13 @@ and query-plan evidence on which the gate relies.
 | 22 | `clock-lint` did not recognize direct `meta` or `fake_now_ms` reads | Code could create a second engine-time definition without calling a known clock function | Clock lint and source harvester | It scanned clock-call spellings only | Detect direct override-table reads while preserving the one canonical clock source exemption (rung 2) |
 | 23 | `deferral-lint` ignored deferred bullets outside a recognized PR entry | Deferred work could belong to no owner and silently disappear from the plan | BUILD ownership lint | Harvest began only at exact PR bullets and skipped unmatched text | Every deferral-bearing bullet resolves to one live owner or fails, with orphan and alternate-marker fixtures (rung 2) |
 | 24 | `fragment-lint` hand-rolled root parsing and could scan zero files successfully | A bad staged root or option typo could produce a clean gate without grading store code | Shared checker root and harvest library | It duplicated weaker argument and glob logic | Route through `validated_root` and total store-source harvesting; invalid roots and options fail closed (rung 1, with rung-2 invocation fixtures) |
-| 25 | Mutation inventory self-test did not compare bind arity | A mutant could die during argument validation and be credited without exercising its intended guard | Mutation construction audit | Unique source text and marker presence did not constrain placeholder shape | Require equal placeholder counts unless the mutation explicitly declares a deliberate arity change, with paired fixtures (rung 2) |
+| 25 | Mutation inventory self-test did not compare bind arity | A mutant could die during argument validation and be credited without exercising its intended guard | Mutation construction audit | Unique source text and marker presence did not constrain placeholder shape | Reconcile source-level question-token drift as a cheap alarm, and make authentic compiler bind failures ineligible for expected-failure attribution at the shared helper chokepoint (rungs 1 and 2) |
 | 26 | Review attestation accepted a completion marker before a terminal unprefixed 429 | An aborted external review could post a successful status | Review artifact classifier | Whole-file marker presence and a narrow error prefix stood in for completed execution | Offline log classification checks exact completion evidence and terminal 429/stream-error shapes (rung 2) |
 | 27 | A malformed red-test synopsis crashed `review-bot-lint` before its intended refusal | The gate could emit a traceback instead of an attributable policy verdict | Review-rule parser self-test | Semantic parsing ran whenever the malformed body was nonempty | Run downstream policy checks only on a well-formed synopsis and pin the missing-arm rejection (rung 2) |
 | 28 | Every fault-matrix boundary seed used `claim_gen = 1` | A hard-coded or transposed generation guard could cross the advertised axis green | Generated boundary matrix | Only `activated_gen` varied | Seed reclaimed generation three and exercise both sides of the generation relation; exact mutations restore the literal-one bug (rung 2) |
 | 29 | Fault-matrix cells did not prove their seeded edge transitioned | Ordinary workload could satisfy label coverage after the edge silently no-oped | Fault-matrix progress floor | A trace label was used as a proxy for the targeted durable effect | Assert exact task/run post-state for each crossed edge and mutate each edge into a no-op (rung 2) |
 | 30 | Clock-jitter differential scenarios omitted both sweep arms | A later-statement clock read in the largest deadline batches could evade the one-instant oracle | Generated clock-jitter inventory | The scenario set covered retry, event, suspend, and cancellation only | Add an expired-lease sweep schedule and compare complete traces and protocol tables (rung 2) |
-| 31 | Two replay collision cases asserted only that something threw | Bind, lease, or schema failures could answer for refusal on successor identity | Replay error-attribution helper | Bare promise rejection discarded the cause | `requireExpectedFailure` accepts only the exact unique-identity failure and propagates every other rejection (rung 2) |
+| 31 | Two replay collision cases asserted only that something threw | Bind, lease, or schema failures could answer for refusal on successor identity | Replay error-attribution helper | Bare promise rejection discarded the cause | Each collision path owns an exact unique-identity matcher and mutation; an oracle test proves unrelated rejection propagates (rung 2) |
 | 32 | `cancelDue` returned an unparenthesized compound fragment while its complement was splice-safe | The first future OR call site could widen cancellation eligibility past the due deadline | Eligibility-fragment single representation | Current AND-only call sites made the asymmetry harmless and invisible | Both halves are self-parenthesized fragments, with a composition test (rung 1) |
 | 33 | Sweep derived a successor attempt from the advisory scan rather than the fenced row | A stale scan could produce the wrong durable successor identity and abort the tick on a uniqueness conflict | Fenced-batch successor construction | Two transition sites answered the ordinal from different sources | Generate both the insert value and `successorOwned` check as `f.attempt + 1` from the stamped row (rung 1, with rung-2 stale-scan conformance) |
 | 34 | A query-plan assertion only rejected text containing the current sibling alias | Renaming the alias or deleting the guard made the negative assertion vacuously pass | Query-plan discrimination surface | Absence of one rendered string stood in for use of the correlated index probe | Require the positive indexed sibling-search shape and execute a scanning counterexample (rung 2) |
@@ -157,7 +160,7 @@ acceptable.
 | Canonical core values, invariant counter inventory, and exact progress markers | 1 at each selected source; 2 for inventory/postconditions | A fake invariant snapshot carried a valid terminal task plus `future_counter: 1.5`; `engineInvariantFindings()` returned `{"future_counter":1.5,"findings":[]}` because the new field was not projected. Separately, a temporary `derived()` generator correctly changed task state and provenance but also wrote `failure_reason = 'corrupt'`; `generated-selection.test.ts` still passed **5/5**. Canonical helpers remove the selected second representations; they do not enumerate future values or make a partial postcondition transition-equivalent. |
 | Raw `FencedBatch` negation/upsert/reach scanner | 2, syntactic | The executed statement `WHERE CASE WHEN run_id = ? THEN 1 ELSE fence_stamp = $FENCE:win$ END` compiled and printed `accepted CASE fence that can be true without the fence`. The repaired `NOT(`, bare `NOT`, `IS NOT`, and MySQL-upsert spellings are proved; raw SQL dominance is not. Generated `derived()` selection is the structural door, and PR3.9 owns the remaining parser replacement. |
 | Clock-jitter differential oracle | 2 | The already-executed post-fix boundary probe added a jitter-only `INSERT INTO clock_audit`, a table outside `SNAPSHOT_TABLES`; all **5/5** clock-jitter tests passed. The sweep scenarios close the reviewed branch omissions, but a future side effect outside the enumerated trace/table snapshot still survives. |
-| Mutation arity and attribution checks | 2 | An executed classifier input used the right file, full test name, and exact first-line `shared-marker`; `classify_verdict(...)` returned `caught`. If two same-arity guards feed that one assertion and marker, the report carries no causal identity with which to distinguish them. Arity and exact markers close the reviewed wrong-paths, not marker reuse inside one assertion. |
+| Mutation source alarm and authenticated bind attribution | 1/2 | An equal raw-question-count mutation can delete a SQL placeholder and add `?` in a TypeScript comment or conditional; the source alarm deliberately does not claim bind proof. Runtime attribution closes only errors produced by the authenticated `FencedBatch` bind factory. An unbranded driver/compiler `TypeError` with identical text remains caller-matchable: an executed `/.*/` probe emitted its exact mutation marker. The private brand owns the two local compiler exits, not bind semantics elsewhere. |
 | Review artifact and incident attestation | 2 | A three-line fabricated log—`review-head: d8d4a68`, `tokens used`, `fabricated external verdict`—ran through `--check-codex-log` and printed `codex log complete and bound to review head d8d4a68`. Likewise, the postmortem checker accepts factual prose changes that preserve its required sections and arithmetic. These gates bind shape, head, topology, and accounting; they do not authenticate the producer or historical truth. |
 | Nightly workflow lint | 2, syntactic | A temporary nightly workflow retained read-only permissions and nonpersistent checkout, then added `uses: example/cache-credential@v1` with `token: ${{ secrets.DEPLOY_TOKEN }}`. `python3 scripts/gate-lint.py <fixture>` exited 0 and reported all **11** gate checkers clean. The lint owns checkout credentials, not arbitrary action semantics; organization policy remains the authority boundary. |
 | Removal of `FENCED_DEBT` and batch classification | 1 for the named bypass; 2 for classifications | A temporary raw `driver-heartbeat` batch performed an arbitrary `UPDATE tasks` and `DELETE runs` with no token predicate; `batch-lint.py` exited 0 with `every batch call site is classified and matches its declared shape`. `FENCED_DEBT` itself is gone, but an existing reason-bearing class can still be used dishonestly because the lint does not parse token reach. |
@@ -166,7 +169,8 @@ acceptable.
 ## Fix-induced defects
 
 **Zero of forty-three.** Findings 1–42 were accepted against the snapshot
-before `a714ce4..eafd0d0`; finding 43 was the already-open PR #12 thread
+before `a714ce4..eafd0d0`; findings 25 and 31 were incompletely repaired but
+were not caused by that repair. Finding 43 was the already-open PR #12 thread
 `PRRT_kwDOTchRjc6T1Oak`, accepted before its `cb280cb`/`dc10820` repair pair.
 No remote finding was introduced by a repair for another finding in this same
 remote round. The green changes were re-reviewed as code, not merely re-tested.
@@ -213,8 +217,10 @@ source inventory are the ratchets those audits produced.
   CodeRabbit custom-check field is rejected instead of silently ignored,” and
   “error-mode custom checks with the request-changes workflow disabled cannot
   block a PR.”
-- Fixes: `eafd0d0` closed findings 1–42; its full `pnpm verify` passed **69
-  files and 1,645 tests**. `dc10820` closed finding 43; its immutable
+- Fixes: `eafd0d0` repaired findings 1–24, 26–30, and 32–42, but the later
+  unresolved-thread audit showed that 25 and 31 remained only partially
+  closed. Its full `pnpm verify` passed **69 files and 1,645 tests**.
+  `dc10820` closed finding 43; its immutable
   post-fix lint self-test printed `105 bad inputs, 3 Git-state inputs, 1
   environment inputs, and 27 bad invocations rejected, 18 good inputs
   accepted`. The later `138120a`, `a2422a8`, and `fc5d710` parser follow-ups
@@ -224,6 +230,20 @@ source inventory are the ratchets those audits produced.
   `bash scripts/review-attest.sh --check-postmortem
   postmortems/pr3.7-final-remote-review.md`, reports `SEV rule satisfied: 43
   findings accounted for in postmortems/pr3.7-final-remote-review.md`.
+- Finding 31 completion: red `5d2c30c` routed both collision assertions through
+  the existing weak seam and proved that it swallowed an unrelated sentinel
+  `TypeError`. Green `8ae7fc2` gave self-collision, historical worker failure,
+  and claim-timeout sweep independent exact collision verdicts and mutations.
+  The sweep sibling had already been narrowed before that red; the remaining
+  defect was the self-collision path plus the false claim that both paths shared
+  one exact mechanism.
+- Finding 25 completion: red `acb36c1` reconstructed the historical
+  `? IS NOT NULL` mutation and proved the cheap registry check was absent.
+  Green `b3fd914` added a reconciled raw-question-token alarm and its explicit
+  equal-count cancellation false negative. Review then showed that a broad
+  expected-failure matcher could still launder an authentic compiler bind
+  failure; the separate findings and `915c1dc`/`fd5de9c`/`b2047e8` repair are
+  recorded as findings 65–67 in the nightly closeout postmortem.
 - Finder: CodeRabbit's PR #12 review reported “Actionable comments posted:
   47.” Thread-aware reconciliation found 53 unresolved, non-outdated threads;
   35 reproduced as defects and are findings 1–34 plus 43. Finding 43's thread

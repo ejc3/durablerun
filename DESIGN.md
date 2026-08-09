@@ -421,12 +421,32 @@ One invocation executes one claimed run to its next suspension point:
   owned canonical failure snapshot; error-like diagnostics come only from
   guarded data-string descriptors, and uninspectable objects use one fixed JSON
   spelling without invoking getters or coercion.
-  Error taxonomy on a pass: infrastructure failures from caught
-  post-activation reads and transitions are classified at the immediate catch;
-  context store failures are enrolled before they cross the handler boundary.
-  Both abort the pass with NO ADDITIONAL transition — a lost response may
-  already have committed — so recovery is the lease story and the user's retry
-  budget is never touched; only errors from user code spend user attempts.
+  The operations that implement these durable boundaries are captured when the
+  core and SDK modules load: retry arithmetic and field reads, owned JSON graph
+  construction, name classification, replay maps, abort accessors, promise
+  adoption, registry lookup, and the production clock do not re-resolve their
+  public global or prototype properties after task code runs. Authentic Map
+  entries are handler authority even for Map subclasses; overridable `get`
+  methods may neither revoke a stored entry nor grant a missing one. A non-Map
+  structural registry remains trusted host resolver code and owns its own
+  dependencies.
+
+  This captured-operation contract is not a JavaScript sandbox. Handlers share
+  the worker process and are trusted with host-realm integrity: they must not
+  mutate unrelated platform/driver machinery or terminate the process.
+  Executing untrusted application code requires a separate process or realm;
+  enumerating more captured methods cannot provide that isolation. Hostile
+  values, getters, proxies, serialization hooks, and public control
+  construction at the named boundaries remain fully in contract.
+  Error taxonomy on a pass: infrastructure failures from the caught checkpoint
+  read and defer, complete, park, or fail transitions are classified at the
+  immediate catch; context store failures are enrolled before they cross the
+  handler boundary. Activation errors still propagate to the worker caller,
+  while an advisory heartbeat error only ends that upkeep loop. A classified
+  infrastructure failure aborts the pass with NO ADDITIONAL transition — a
+  lost response may already have committed — so recovery is the lease story
+  and the user's retry budget is never touched; only errors from user code
+  spend user attempts.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
@@ -928,9 +948,16 @@ not depend on careful reading:
   or any other wrong path receives no credit. A marker matches only the
   structured failure diagnostic's first line: bare, `Error: <marker>`, or
   `AssertionError: <marker>: …`; its appearance later in rendered assertion
-  source is not evidence. The verify gate runs 17 classifier cases, nineteen
-  promise-message source cases, ten canonical helper-descriptor cases, and
-  seven injected classifier faults over all 191 live mutations. A separate
+  source is not evidence. Both `FencedBatch` compiler bind exits use one
+  module-captured `TypeError` factory and private brand. The three canonical
+  promise helpers propagate that brand before consulting a caller matcher, so
+  an argument-count or explicit-undefined failure cannot be laundered into an
+  exact semantic marker. Raw question-token reconciliation is only a cheap
+  source alarm; an executed equal-count cancellation case defines its limit.
+  The verify gate runs 17 classifier cases, nineteen promise-message source
+  cases, ten canonical helper-descriptor cases, two helper-binding cases,
+  three helper-marker cases, sixteen direct-marker cases, and seven
+  question-delta cases over all 339 live mutations. A separate
   generated coordinator surface injects shard omission and overlap, wrong
   heads, missing/duplicate/extra results, process/report disagreement, and
   non-owned cleanup targets, plus unconfined execution, an unowned worker,
