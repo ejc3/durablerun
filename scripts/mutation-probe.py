@@ -5508,6 +5508,8 @@ def classify_verdict(
     accept_suite_error: bool = False,
     accept_incoherent: bool = False,
     accept_malformed: bool = False,
+    accept_collateral_assertion: bool = False,
+    accept_collateral_message: bool = False,
 ) -> VerdictOutcome:
     if result.green:
         return "survived"
@@ -5525,6 +5527,12 @@ def classify_verdict(
         if accept_suite_error and any(expected.marker in error for error in result.suite_errors):
             return "caught"
         return "wrong-path"
+    if not accept_collateral_assertion and len(result.assertions) != 1:
+        return "wrong-path"
+    if not accept_collateral_message and any(
+        len(assertion.messages) != 1 for assertion in result.assertions
+    ):
+        return "wrong-path"
     if any(matcher(expected, assertion) for assertion in result.assertions):
         return "caught"
     return "wrong-path"
@@ -5541,6 +5549,8 @@ SELF_TEST_FAULTS = (
     "accept-suite-error",
     "accept-incoherent-report",
     "accept-malformed-report",
+    "accept-collateral-assertion",
+    "accept-collateral-message",
     VERDICT_INVENTORY_ORPHAN_FAULT,
     QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
 )
@@ -5710,6 +5720,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         options["accept_incoherent"] = True
     elif fault == "accept-malformed-report":
         options["accept_malformed"] = True
+    elif fault == "accept-collateral-assertion":
+        options["accept_collateral_assertion"] = True
+    elif fault == "accept-collateral-message":
+        options["accept_collateral_message"] = True
     elif fault == VERDICT_INVENTORY_ORPHAN_FAULT:
         pass
     elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:

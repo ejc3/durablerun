@@ -82,7 +82,7 @@ export interface TaskContext {
 
 /** One execution pass over a claimed run. */
 export class ReplayContext implements TaskContext {
-  readonly attempt: number
+  readonly #attempt: number
   readonly taskName: string
   readonly #store: SchedulerStore
   readonly #queue: string
@@ -108,18 +108,23 @@ export class ReplayContext implements TaskContext {
     checkpoints: Checkpoint[],
     leaseLost?: AbortSignal,
     controls: TaskControlIssuer = createTaskControlScope().issuer,
+    attempt: number = run.attempt - run.infraRetries,
   ) {
     this.#store = store
     this.#queue = queue
     this.#run = run
     this.#leaseLost = leaseLost
     this.#controls = controls
-    this.attempt = run.attempt - run.infraRetries
+    this.#attempt = attempt
     this.taskName = run.taskName
     this.pendingWake = run.wake
     for (const cp of checkpoints) {
       taskMapSet(this.seen, cp.checkpointName, parseTaskValueJson(cp.stateJson))
     }
+  }
+
+  get attempt(): number {
+    return this.#attempt
   }
 
   /**

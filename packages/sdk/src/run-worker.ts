@@ -14,7 +14,6 @@ import {
   abortSignalAborted,
   taskRegistryGet,
   trustedCharCodeAt,
-  trustedMax,
   trustedPromiseRace,
 } from './intrinsics.js'
 import { createTaskControlScope, trustedStoreControl } from './task-control.js'
@@ -97,6 +96,7 @@ export async function runClaimedRun(
   const run = await store.activate(queue, runId, claimToken, claimGen)
   if (run === null) return { kind: 'superseded' }
   const claimedRun = run
+  const userAttempt = claimedRun.attempt - claimedRun.infraRetries
 
   const handler = taskRegistryGet(registry, run.taskName)
   if (handler === undefined) {
@@ -131,7 +131,7 @@ export async function runClaimedRun(
   const pumpStopSignal = abortControllerSignal(pumpStop)
   const leaseLost = new TaskAbortController()
   const leaseLostSignal = abortControllerSignal(leaseLost)
-  const leaseMs = trustedMax(1000, run.leaseSeconds * 1000)
+  const leaseMs = run.leaseSeconds * 1000
   const pump = (async () => {
     for (;;) {
       await clock.sleep(leaseMs / 2, pumpStopSignal)
@@ -148,45 +148,43 @@ export async function runClaimedRun(
     }
   })()
 
-  let checkpoints: Awaited<ReturnType<SchedulerStore['getCheckpoints']>>
   try {
-    checkpoints = await store.getCheckpoints(queue, run.taskId, run.attempt)
-  } catch (error) {
-    abortControllerAbort(pumpStop)
-    await pump
-    return trustedStoreOutcome(error)
-  }
-  const taskControls = createTaskControlScope()
-  const ctx = new ReplayContext(
-    store,
-    queue,
-    run,
-    checkpoints,
-    leaseLostSignal,
-    taskControls.issuer,
-  )
-
-  async function recordUserFailure(error: unknown): Promise<WorkerOutcome> {
-    const thrown = snapshotTaskThrowable(error)
-    const userAttempt = ctx.attempt
-    const decision = thrown.fatal
-      ? ({ retry: false } as const)
-      : decideRetry(claimedRun.retryStrategy, userAttempt, claimedRun.maxAttempts)
+    let checkpoints: Awaited<ReturnType<SchedulerStore['getCheckpoints']>>
     try {
-      await store.fail(
-        queue,
-        runId,
-        claimToken,
-        thrown.failureJson,
-        decision.retry ? { delaySeconds: decision.delaySeconds } : null,
-      )
-    } catch (inner) {
-      return trustedStoreOutcome(inner)
+      checkpoints = await store.getCheckpoints(queue, run.taskId, run.attempt)
+    } catch (error) {
+      return trustedStoreOutcome(error)
     }
-    return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
-  }
+    const taskControls = createTaskControlScope()
+    const ctx = new ReplayContext(
+      store,
+      queue,
+      run,
+      checkpoints,
+      leaseLostSignal,
+      taskControls.issuer,
+      userAttempt,
+    )
 
-  try {
+    async function recordUserFailure(error: unknown): Promise<WorkerOutcome> {
+      const thrown = snapshotTaskThrowable(error)
+      const decision = thrown.fatal
+        ? ({ retry: false } as const)
+        : decideRetry(claimedRun.retryStrategy, userAttempt, claimedRun.maxAttempts)
+      try {
+        await store.fail(
+          queue,
+          runId,
+          claimToken,
+          thrown.failureJson,
+          decision.retry ? { delaySeconds: decision.delaySeconds } : null,
+        )
+      } catch (inner) {
+        return trustedStoreOutcome(inner)
+      }
+      return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
+    }
+
     let resultJson: string
     try {
       let params: unknown
