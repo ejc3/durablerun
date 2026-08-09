@@ -6151,6 +6151,14 @@ def classify_verdict(
 
 QUESTION_DELTA_LIVE_ENROLLMENT_FAULT = "bypass-question-delta-live-enrollment"
 VERDICT_INVENTORY_ORPHAN_FAULT = "accept-orphan-verdict-marker"
+FROZEN_MIGRATION_TARGET_FAULT = "accept-frozen-migration-mutation"
+
+FROZEN_MIGRATION_MUTATION_TARGETS = {
+    "packages/store-libsql/src/schema.ts": (
+        "append-only migrations are frozen by an independent hash assertion; "
+        "mutate a current consumer or test seam instead"
+    ),
+}
 
 SELF_TEST_FAULTS = (
     "ignore-file",
@@ -6163,6 +6171,7 @@ SELF_TEST_FAULTS = (
     "accept-collateral-assertion",
     "accept-collateral-message",
     VERDICT_INVENTORY_ORPHAN_FAULT,
+    FROZEN_MIGRATION_TARGET_FAULT,
     QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
 )
 
@@ -6221,6 +6230,13 @@ def mutation_question_delta_diagnostic(
     if not reason.strip():
         return f"{name}: a question-token delta requires a non-empty question-delta reason"
     return None
+
+
+def mutation_target_diagnostic(file: str) -> str | None:
+    reason = FROZEN_MIGRATION_MUTATION_TARGETS.get(file)
+    if reason is None:
+        return None
+    return f"{file}: live mutation targets frozen migration history: {reason}"
 
 
 def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
@@ -6336,6 +6352,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     elif fault == "accept-collateral-message":
         options["accept_collateral_message"] = True
     elif fault == VERDICT_INVENTORY_ORPHAN_FAULT:
+        pass
+    elif fault == FROZEN_MIGRATION_TARGET_FAULT:
         pass
     elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
         pass
@@ -6972,6 +6990,18 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             ),
         ),
     )
+    mutation_target_cases = (
+        (
+            "ordinary production source",
+            "packages/store-libsql/src/store.ts",
+            None,
+        ),
+        (
+            "frozen migration source",
+            "packages/store-libsql/src/schema.ts",
+            "live mutation targets frozen migration history",
+        ),
+    )
 
     failures = []
     inventory_checker = verdict_inventory_problems
@@ -6986,6 +7016,20 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         if got != wanted:
             failures.append(
                 f"verdict-inventory {label}: expected {wanted!r}, got {got!r}"
+            )
+    target_checker = mutation_target_diagnostic
+    if fault == FROZEN_MIGRATION_TARGET_FAULT:
+        target_checker = lambda _file: None
+    for label, file, wanted in mutation_target_cases:
+        got = target_checker(file)
+        if wanted is None:
+            if got is not None:
+                failures.append(
+                    f"mutation-target {label}: expected no diagnostic, got {got!r}"
+                )
+        elif got is None or wanted not in got:
+            failures.append(
+                f"mutation-target {label}: expected diagnostic containing {wanted!r}, got {got!r}"
             )
     for label, name, find, replace, reason, wanted in question_delta_cases:
         got = mutation_question_delta_diagnostic(name, find, replace, reason)
@@ -7163,6 +7207,9 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 failures.append(
                     f"{mutation.name}: mutation pattern occurs {occurrences} times; expected exactly one"
                 )
+            target_diagnostic = mutation_target_diagnostic(mutation.file)
+            if target_diagnostic is not None:
+                failures.append(f"{mutation.name}: {target_diagnostic}")
             question_delta_reason = QUESTION_TOKEN_DELTA_REASONS.get(mutation.name)
             if fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
                 question_delta_reason = None
