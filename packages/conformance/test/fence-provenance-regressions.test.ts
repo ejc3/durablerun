@@ -1,4 +1,6 @@
 import {
+  FENCE_SET,
+  FencedBatch,
   INFRA_RETRY_CAP,
   LeaseLostError,
   MAX_COUNT,
@@ -8,7 +10,7 @@ import {
   type SqlExecutor,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
-import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { type LibsqlExecutor, LibsqlSchedulerStore, NOW_MS } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
@@ -218,16 +220,13 @@ async function currentAttemptWithRevivedPredecessor(
   }
 }
 
-async function terminalTaskLiveRunCount(raw: LibsqlExecutor, taskId: string): Promise<number> {
-  const [row] = await query(
-    raw,
-    `SELECT COUNT(*) AS n
-     FROM tasks t JOIN runs r ON r.task_id = t.task_id
-     WHERE t.task_id = ? AND t.state NOT IN ('pending','running','sleeping')
-       AND r.state IN ('pending','running','sleeping')`,
-    [taskId],
-  )
-  return Number(row?.n)
+async function taskRunSnapshot(raw: LibsqlExecutor, taskId: string): Promise<unknown> {
+  return {
+    task: await query(raw, `SELECT * FROM tasks WHERE task_id = ?`, [taskId]),
+    runs: await query(raw, `SELECT * FROM runs WHERE task_id = ? ORDER BY attempt, run_id`, [
+      taskId,
+    ]),
+  }
 }
 
 async function activatedRun(f: Fixture): Promise<{
@@ -253,15 +252,19 @@ describe('fence provenance', () => {
     const f = await fixture()
     try {
       const current = await currentAttemptWithRevivedPredecessor(f, true)
+      const before = await taskRunSnapshot(f.raw, current.taskId)
 
-      await f.store
+      const outcome = await f.store
         .complete(Q, current.currentRunId, current.currentClaimToken, '{"ok":true}')
-        .catch(() => undefined)
+        .then(
+          () => 'resolved' as const,
+          () => 'rejected' as const,
+        )
 
       expect(
-        await terminalTaskLiveRunCount(f.raw, current.taskId),
+        { outcome, after: await taskRunSnapshot(f.raw, current.taskId) },
         'mutation-verdict:behavior:complete-terminalization-requires-sole-live-run',
-      ).toBe(0)
+      ).toEqual({ outcome: 'rejected', after: before })
     } finally {
       f.close()
     }
@@ -271,15 +274,19 @@ describe('fence provenance', () => {
     const f = await fixture()
     try {
       const current = await currentAttemptWithRevivedPredecessor(f, true)
+      const before = await taskRunSnapshot(f.raw, current.taskId)
 
-      await f.store
+      const outcome = await f.store
         .fail(Q, current.currentRunId, current.currentClaimToken, '{"name":"terminal"}', null)
-        .catch(() => undefined)
+        .then(
+          () => 'resolved' as const,
+          () => 'rejected' as const,
+        )
 
       expect(
-        await terminalTaskLiveRunCount(f.raw, current.taskId),
+        { outcome, after: await taskRunSnapshot(f.raw, current.taskId) },
         'mutation-verdict:behavior:fail-terminalization-requires-sole-live-run',
-      ).toBe(0)
+      ).toEqual({ outcome: 'rejected', after: before })
     } finally {
       f.close()
     }
@@ -296,13 +303,14 @@ describe('fence provenance', () => {
       await exec(f.raw, `UPDATE meta SET value = ? WHERE key = 'fake_now_ms'`, [
         String(NOW + 60_001),
       ])
+      const before = await taskRunSnapshot(f.raw, current.taskId)
 
-      await f.store.sweep(Q, 10)
+      const swept = await f.store.sweep(Q, 10)
 
       expect(
-        await terminalTaskLiveRunCount(f.raw, current.taskId),
+        { swept, after: await taskRunSnapshot(f.raw, current.taskId) },
         'mutation-verdict:behavior:relaunch-cap-terminalization-requires-sole-live-run',
-      ).toBe(0)
+      ).toEqual({ swept: [], after: before })
     } finally {
       f.close()
     }
@@ -1102,6 +1110,140 @@ describe('fence provenance', () => {
         { cancelled, after },
         'mutation-verdict:behavior:cancel-task-requires-run-task-queue-ownership',
       ).toEqual({ cancelled: false, after: before })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('generated cross-table relations cannot cross queue ownership', async () => {
+    const f = await fixture()
+    try {
+      await insertTask(f.raw, { id: 'runs-to-tasks', state: 'pending', queue: 'other' })
+      await insertRun(f.raw, {
+        id: 'runs-to-tasks-source',
+        taskId: 'runs-to-tasks',
+        state: 'pending',
+      })
+      const runsToTasks = new FencedBatch('relation:runs-to-tasks', 'relation-seed', {
+        now: NOW_MS,
+      })
+      runsToTasks.cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
+        'runs-to-tasks-source',
+      ])
+      runsToTasks.derived('target', {
+        relation: 'runs-to-tasks',
+        fence: 'source',
+        set: { state: `'completed'` },
+        rows: 'one',
+      })
+      await runsToTasks.run(f.raw)
+
+      await insertTask(f.raw, { id: 'tasks-to-runs', state: 'pending' })
+      await insertRun(f.raw, {
+        id: 'tasks-to-runs-target',
+        taskId: 'tasks-to-runs',
+        state: 'pending',
+        queue: 'other',
+      })
+      const tasksToRuns = new FencedBatch('relation:tasks-to-runs', 'relation-seed', {
+        now: NOW_MS,
+      })
+      tasksToRuns.cas('source', 'tasks', `UPDATE tasks SET ${FENCE_SET} WHERE task_id = ?`, [
+        'tasks-to-runs',
+      ])
+      tasksToRuns.derived('target', {
+        relation: 'tasks-to-runs',
+        fence: 'source',
+        set: { state: `'failed'` },
+        rows: 'one',
+      })
+      await tasksToRuns.run(f.raw)
+
+      await insertTask(f.raw, { id: 'waits-to-runs', state: 'pending', queue: 'other' })
+      await insertRun(f.raw, {
+        id: 'waits-to-runs-target',
+        taskId: 'waits-to-runs',
+        state: 'pending',
+        queue: 'other',
+      })
+      await exec(
+        f.raw,
+        `INSERT INTO waits
+           (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+         VALUES (?, 'step', ?, ?, 'event', 'waiting', ?)`,
+        ['waits-to-runs-target', Q, 'waits-to-runs', NOW],
+      )
+      const waitsToRuns = new FencedBatch('relation:waits-to-runs', 'relation-seed', {
+        now: NOW_MS,
+      })
+      waitsToRuns.cas(
+        'source',
+        'waits',
+        `UPDATE waits SET ${FENCE_SET} WHERE run_id = ? AND step_name = 'step'`,
+        ['waits-to-runs-target'],
+      )
+      waitsToRuns.derived('target', {
+        relation: 'waits-to-runs',
+        fence: 'source',
+        set: { state: `'failed'` },
+        rows: 'one',
+      })
+      await waitsToRuns.run(f.raw)
+
+      const observed = {
+        runsToTasks: await query(f.raw, `SELECT state FROM tasks WHERE task_id = 'runs-to-tasks'`),
+        tasksToRuns: await query(
+          f.raw,
+          `SELECT state FROM runs WHERE run_id = 'tasks-to-runs-target'`,
+        ),
+        waitsToRuns: await query(
+          f.raw,
+          `SELECT state FROM runs WHERE run_id = 'waits-to-runs-target'`,
+        ),
+      }
+      expect(observed, 'mutation-verdict:construction:generated-relation-queue-ownership').toEqual({
+        runsToTasks: [{ state: 'pending' }],
+        tasksToRuns: [{ state: 'pending' }],
+        waitsToRuns: [{ state: 'pending' }],
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('generated run cleanup follows authoritative run id through a corrupt wait queue', async () => {
+    const f = await fixture()
+    try {
+      await insertTask(f.raw, { id: 'runs-to-waits', state: 'pending' })
+      await insertRun(f.raw, {
+        id: 'runs-to-waits-source',
+        taskId: 'runs-to-waits',
+        state: 'pending',
+      })
+      await exec(
+        f.raw,
+        `INSERT INTO waits
+           (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
+         VALUES (?, 'step', 'other', ?, 'event', 'waiting', ?)`,
+        ['runs-to-waits-source', 'runs-to-waits', NOW],
+      )
+      const runsToWaits = new FencedBatch('relation:runs-to-waits', 'relation-seed', {
+        now: NOW_MS,
+      })
+      runsToWaits.cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
+        'runs-to-waits-source',
+      ])
+      runsToWaits.derived('target', {
+        relation: 'runs-to-waits',
+        fence: 'source',
+        rows: 'one',
+      })
+      await runsToWaits.run(f.raw)
+
+      expect(
+        await query(f.raw, `SELECT status FROM waits WHERE run_id = 'runs-to-waits-source'`),
+        'mutation-verdict:construction:generated-runs-to-waits-authoritative-cleanup',
+      ).toEqual([])
     } finally {
       f.close()
     }

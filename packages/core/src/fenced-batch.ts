@@ -393,7 +393,12 @@ export class FencedBatch {
     // and let every row matching `a` into the selection unstamped. The
     // caller's text lands in a boolean position, so the primitive brackets
     // it rather than trusting it to be conjunctive.
-    const src = spec.where ? `(${spec.where}) AND ` : ''
+    // The closed relation contract owns queue correlation. Task/run ownership
+    // is queue-scoped, while runs-to-waits deliberately follows authoritative
+    // run_id through a corrupt denormalized wait queue so terminal cleanup can
+    // remove the bad witness rather than strand it.
+    const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''
+    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`
     const fence = `$FENCE:${spec.fence}$`
     const sourceKeys =
       target === from

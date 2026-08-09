@@ -13,7 +13,7 @@
  * The `meta` table is created by the runner itself before any migration.
  */
 
-import { FENCED_TABLES } from '@durablerun/core'
+import { FENCED_TABLES, MAX_EPOCH_MS } from '@durablerun/core'
 
 export interface Migration {
   version: number
@@ -23,6 +23,8 @@ export interface Migration {
 /** The one read whose missing `meta` table means the database is fresh. */
 export const SCHEMA_VERSION_READ_SQL =
   `SELECT value FROM meta WHERE key = 'schema_version'` as const
+
+export const DRIVER_HEARTBEAT_INGRESS = 'driver_heartbeat_ingress'
 
 export const MIGRATIONS: Migration[] = [
   {
@@ -190,6 +192,34 @@ export const MIGRATIONS: Migration[] = [
       `ALTER TABLE ${table} ADD COLUMN fence_stamp TEXT`,
       `ALTER TABLE ${table} ADD COLUMN fence_at_ms INTEGER`,
     ]),
+  },
+  {
+    // SQLite cannot put an INSERT/UPDATE inside a CTE. Triggers keep driver
+    // cleanup in one atomic statement. An INSTEAD OF trigger on a dedicated
+    // write-only ingress is important: setup/repair writes to the durable
+    // table do not accidentally perform cleanup, while a heartbeat that
+    // passes its epoch-headroom guard necessarily runs both the upsert and
+    // cleanup from the same NEW.last_beat_ms value.
+    version: 5,
+    statements: [
+      `CREATE VIEW ${DRIVER_HEARTBEAT_INGRESS} AS
+       SELECT queue, driver_id, last_beat_ms, expires_at_ms FROM drivers`,
+      `CREATE TRIGGER driver_heartbeat_apply
+       INSTEAD OF INSERT ON ${DRIVER_HEARTBEAT_INGRESS}
+       BEGIN
+         INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
+         VALUES (NEW.queue, NEW.driver_id, NEW.last_beat_ms, NEW.expires_at_ms)
+         ON CONFLICT (queue, driver_id) DO UPDATE SET
+           last_beat_ms = excluded.last_beat_ms,
+           expires_at_ms = excluded.expires_at_ms;
+         DELETE FROM drivers
+         WHERE expires_at_ms < NEW.last_beat_ms
+           AND typeof(last_beat_ms) = 'integer'
+           AND last_beat_ms BETWEEN 0 AND ${MAX_EPOCH_MS}
+           AND typeof(expires_at_ms) = 'integer'
+           AND expires_at_ms BETWEEN 0 AND ${MAX_EPOCH_MS};
+       END`,
+    ],
   },
 ]
 

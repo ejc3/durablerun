@@ -23,15 +23,13 @@ const SURFACE_BINDINGS = [
 
 describe('shared conformance enrollment is one indivisible door', () => {
   it('exports one umbrella instead of asking dialects to select sub-suites', () => {
-    expect(conformance, 'mutation-verdict:construction:shared-conformance-umbrella').toHaveProperty(
-      'storeConformance',
-    )
+    expect(conformance, 'regression:shared-conformance-umbrella').toHaveProperty('storeConformance')
   })
 
   it('pins the complete shared behavior surface behind that umbrella', () => {
     expect(
       (conformance as Record<string, unknown>).STORE_CONFORMANCE_SURFACE_IDS,
-      'mutation-verdict:construction:shared-conformance-surface-inventory',
+      'regression:shared-conformance-surface-inventory',
     ).toEqual(SURFACES)
   })
 
@@ -57,7 +55,7 @@ describe('shared conformance enrollment is one indivisible door', () => {
     expect.soft(inventory).toContain('STORE_CONFORMANCE_SURFACES')
     expect.soft(dispatch).toContain('STORE_CONFORMANCE_SURFACES')
     expect
-      .soft(dispatch, 'mutation-verdict:construction:shared-conformance-registry-dispatch')
+      .soft(dispatch, 'regression:shared-conformance-registry-dispatch')
       .toMatch(/(?:\brun|\.run)\(\s*dialect\s*,\s*makeFixture\s*\)/)
     for (const runner of runnerNames) {
       expect.soft(dispatch).not.toContain(`${runner}(`)
@@ -65,9 +63,7 @@ describe('shared conformance enrollment is one indivisible door', () => {
   })
 
   it('enrolls every store package through one central fixture registry', () => {
-    expect(existsSync(REGISTRY), 'mutation-verdict:construction:dialect-fixture-registry').toBe(
-      true,
-    )
+    expect(existsSync(REGISTRY), 'regression:dialect-fixture-registry').toBe(true)
     if (!existsSync(REGISTRY)) return
 
     const registered = readFileSync(REGISTRY, 'utf8')
@@ -76,10 +72,9 @@ describe('shared conformance enrollment is one indivisible door', () => {
       .map((entry) => entry.name.slice('store-'.length))
       .sort()
     for (const dialect of stores) {
-      expect(
-        registered,
-        `mutation-verdict:construction:dialect-fixture-registry:${dialect}`,
-      ).toMatch(new RegExp(`dialect:\\s*['"]${dialect}['"]`))
+      expect(registered, `regression:dialect-fixture-registry:${dialect}`).toMatch(
+        new RegExp(`dialect:\\s*['"]${dialect}['"]`),
+      )
     }
   })
 })

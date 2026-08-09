@@ -46,6 +46,7 @@ import {
 import {
   LIVE,
   cancelDue,
+  durableTaskPayloadAdmissible,
   eligibleTask,
   epochAdditionFits,
   fenceFrom,
@@ -55,6 +56,7 @@ import {
   runAvailableDue,
   runClaimExpired,
   runClaimUnexpired,
+  runOwnedByTask,
   soleLiveRun,
   storedCurrentRunAccounting,
   storedHighestOwnedOrdinal,
@@ -64,7 +66,9 @@ import {
   storedIntegerWithin,
   storedPositiveClaimGeneration,
   successorOwned,
+  taskOwnsEveryRun,
 } from './fragments.js'
+import { DRIVER_HEARTBEAT_INGRESS } from './schema.js'
 import { NOW_MS } from './time.js'
 
 const DEFAULT_RETRY = normalizeRetryStrategy({
@@ -272,11 +276,12 @@ const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.clai
  */
 export const SWEEP_SCAN_CANCELS_SQL = `SELECT t.task_id,
        (SELECT r.run_id FROM runs r
-          WHERE r.task_id = t.task_id AND r.state IN ${LIVE}
+          WHERE ${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}
           ORDER BY r.attempt DESC LIMIT 1) AS run_id
 FROM tasks t
 WHERE t.queue = ? AND ${cancelDue('t', NOW_MS)}
   AND t.state IN ${LIVE}
+  AND ${taskOwnsEveryRun('t')}
 ORDER BY t.cancel_at_ms, t.task_id
 LIMIT ?`
 
@@ -312,6 +317,7 @@ const storedSweepCounters = (run: string): string =>
  */
 const sweepLiveOwnerAdmissible = (run: string, task: string): string =>
   `${storedSweepCounters(run)}
+   AND ${soleLiveRun(run)}
    AND ${storedCurrentRunAccounting(run, task)}
    AND ${storedHighestOwnedOrdinal(run)}
    AND (${run}.activated_gen < ${run}.claim_gen
@@ -337,7 +343,7 @@ const sweepScanAdmissible = (run: string, task: string): string =>
     OR (${task}.state NOT IN ${LIVE} AND ${sweepTerminalOwnerAdmissible(run)}))`
 
 export const SWEEP_SCAN_EXPIRED_SQL = `SELECT r.run_id, r.task_id, r.claim_gen, r.activated_gen, r.relaunch_count
-FROM runs r JOIN tasks t ON t.task_id = r.task_id
+FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
 WHERE r.queue = ? AND r.state = 'running'
   AND ${runClaimExpired('r', NOW_MS)}
   AND ${sweepScanAdmissible('r', 't')}
@@ -392,16 +398,32 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     )
     const maxAttempts = requirePositiveInt('maxAttempts', opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)
     const delayMs = durationToMs('startDelaySeconds', opts.startDelaySeconds ?? 0)
-    const maxDelayMs =
-      opts.cancellation?.maxDelaySeconds !== undefined
-        ? durationToMs('cancellation.maxDelaySeconds', opts.cancellation.maxDelaySeconds)
-        : null
-    // maxDurationSeconds is stored in the cancellation JSON and applied at
-    // activate — validate it HERE so garbage never reaches the column.
-    if (opts.cancellation?.maxDurationSeconds !== undefined) {
-      durationToMs('cancellation.maxDurationSeconds', opts.cancellation.maxDurationSeconds)
+    const cancellationInput = opts.cancellation
+    let cancellationJson: string | null = null
+    let maxDelayMs: number | null = null
+    if (cancellationInput !== undefined) {
+      const maxDelaySeconds = cancellationInput.maxDelaySeconds
+      const maxDurationSeconds = cancellationInput.maxDurationSeconds
+      const canonicalCancellation: {
+        maxDelaySeconds?: number
+        maxDurationSeconds?: number
+      } = {}
+      if (maxDelaySeconds !== undefined) {
+        maxDelayMs = durationToMs('cancellation.maxDelaySeconds', maxDelaySeconds)
+        canonicalCancellation.maxDelaySeconds = maxDelayMs / 1000
+      }
+      // maxDurationSeconds is applied at activate. Canonicalize it from the
+      // same one-time snapshot that was validated, so a getter cannot make
+      // the durable JSON disagree with the deadline arithmetic.
+      if (maxDurationSeconds !== undefined) {
+        canonicalCancellation.maxDurationSeconds =
+          durationToMs('cancellation.maxDurationSeconds', maxDurationSeconds) / 1000
+      }
+      cancellationJson = JSON.stringify(canonicalCancellation)
     }
 
+    const headersInput = opts.headers
+    const headersJson = headersInput === undefined ? null : JSON.stringify(headersInput)
     const key = opts.idempotencyKey ?? null
     const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
     // Idempotent task insert: loses silently when the key already exists.
@@ -435,10 +457,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         queue,
         taskName,
         paramsJson,
-        opts.headers ? JSON.stringify(opts.headers) : null,
+        headersJson,
         retry,
         maxAttempts,
-        opts.cancellation ? JSON.stringify(opts.cancellation) : null,
+        cancellationJson,
         key,
         delayMs,
         maxDelayMs,
@@ -487,14 +509,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.openTail(
       'receipt',
       'the winner is a task another caller created; the unique idempotency index is its fence, not this batch stamp',
-      `SELECT t.task_id AS task_id,
-              (SELECT r.run_id FROM runs r WHERE r.task_id = t.task_id
+      `SELECT winner.task_id AS task_id,
+              (SELECT r.run_id FROM runs r
+                 WHERE ${runOwnedByTask('r', 'winner')}
                  ORDER BY r.attempt DESC, r.run_id DESC LIMIT 1) AS run_id
-       FROM tasks t
-       WHERE t.task_id = ? OR (? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?)
-       ORDER BY CASE WHEN ? IS NOT NULL AND t.idempotency_key = ? THEN 0 ELSE 1 END, t.task_id
+       FROM (
+         SELECT t.task_id, t.queue, 1 AS priority
+         FROM tasks t WHERE t.task_id = ?
+         UNION ALL
+         SELECT t.task_id, t.queue, 0 AS priority
+         FROM tasks t
+         WHERE ? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
+           AND t.task_id <> ?
+       ) winner
+       ORDER BY winner.priority, winner.task_id
        LIMIT 1`,
-      [taskId, key, queue, key, key, key],
+      [taskId, key, queue, key, taskId],
     )
     const { won, results } = await b.run(this.db)
     if (won === 'task') return { taskId, runId, created: true }
@@ -524,20 +554,24 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // must drain via the successor-tick chain, never assume a full batch.
     const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
     const claimedWait = registeredWait('runs')
-    const candidateWait = registeredWait('r')
     // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering
     // the merged shortlist lets an earlier corrupt/ineligible run consume the
     // whole budget and permanently starve later healthy work.
-    const candidateEligibility = `${eligibleTask('t', NOW)}
-               AND ${soleLiveRun('r')}
-               AND (r.wake_step IS NOT NULL OR ${candidateWait.unambiguous})
-               AND ${candidateWait.temporallySafe}
-               AND ${storedIncrementableClaimGeneration('r')}
-               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'r')}
-               AND r.activated_gen <= r.claim_gen
-               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}
-               AND ${storedCurrentRunAccounting('r', 't')}
-               AND ${storedHighestOwnedOrdinal('r')}`
+    const claimEligibility = (run: string, task: string): string => {
+      const wait = registeredWait(run)
+      return `${eligibleTask(task, NOW)}
+               AND ${durableTaskPayloadAdmissible(task)}
+               AND ${soleLiveRun(run)}
+               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})
+               AND ${wait.temporallySafe}
+               AND ${storedIncrementableClaimGeneration(run)}
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}
+               AND ${run}.activated_gen <= ${run}.claim_gen
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}
+               AND ${storedCurrentRunAccounting(run, task)}
+               AND ${storedHighestOwnedOrdinal(run)}`
+    }
+    const candidateEligibility = claimEligibility('r', 't')
     const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS })
     // Due runs of live tasks → running, holding the caller's lease token AND
     // this batch's provenance. The two are now different things, which is the
@@ -564,7 +598,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          SELECT c.run_id FROM (
            SELECT * FROM (
              SELECT r.run_id, r.available_at_ms FROM runs r
-             JOIN tasks t ON t.task_id = r.task_id
+             JOIN tasks t ON ${runOwnedByTask('r', 't')}
              WHERE r.queue = ? AND r.state = 'pending'
                AND ${runAvailableDue('r', NOW)}
                AND ${candidateEligibility}
@@ -573,7 +607,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            UNION ALL
            SELECT * FROM (
              SELECT r.run_id, r.available_at_ms FROM runs r
-             JOIN tasks t ON t.task_id = r.task_id
+             JOIN tasks t ON ${runOwnedByTask('r', 't')}
              WHERE r.queue = ? AND r.state = 'sleeping'
                AND ${runAvailableDue('r', NOW)}
                AND ${candidateEligibility}
@@ -651,9 +685,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'picked',
       'rule 4: a same-token retry is a receipt and must return the original selection, which a previous batch stamped',
       `SELECT ${CLAIMED_RUN_COLUMNS}
-       FROM runs r JOIN tasks t ON t.task_id = r.task_id
+       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
        WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
          AND t.state IN ${LIVE}
+         AND ${durableTaskPayloadAdmissible('t')}
          AND ${soleLiveRun('r')}
          AND ${storedPositiveClaimGeneration('r')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'r')}
@@ -706,7 +741,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND ${soleLiveRun('runs')}
          AND EXISTS (
            SELECT 1 FROM tasks t
-           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}
+           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}
+             AND ${durableTaskPayloadAdmissible('t')}
              AND ${storedCurrentRunAccounting('runs', 't')}
              AND ${storedHighestOwnedOrdinal('runs')}
              AND ${activationDurationAdmissible('t', NOW)}
@@ -753,8 +789,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.tail(
       'payload',
       `SELECT ${CLAIMED_RUN_COLUMNS}
-       FROM runs r JOIN tasks t ON t.task_id = r.task_id
-       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'`,
+       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
+       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'
+         AND ${durableTaskPayloadAdmissible('t')}`,
       [runId],
     )
     const { won, results } = await b.run(this.db)
@@ -787,7 +824,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 heartbeat_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
                 AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
+                            WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})
                 AND ${epochAdditionFits(NOW_MS, '?')}
               RETURNING claim_expires_at_ms - heartbeat_at_ms AS remaining_ms`,
         args: [extendMs, runId, queue, claimToken, extendMs],
@@ -902,12 +939,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     ) * 1000`
     const liveOwner = `EXISTS (
       SELECT 1 FROM tasks t
-      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE}
+      WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE}
         AND ${sweepLiveOwnerAdmissible('runs', 't')}
     )`
     const terminalOwner = `EXISTS (
       SELECT 1 FROM tasks t
-      WHERE t.task_id = runs.task_id AND t.state NOT IN ${LIVE}
+      WHERE ${runOwnedByTask('runs', 't')} AND t.state NOT IN ${LIVE}
         AND ${sweepTerminalOwnerAdmissible('runs')}
     )`
     // The launch never activated: reopen the SAME run — no new row, no
@@ -997,7 +1034,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}
          AND EXISTS (
            SELECT 1 FROM tasks t
-           WHERE t.task_id = runs.task_id
+           WHERE ${runOwnedByTask('runs', 't')}
              AND ((t.state NOT IN ${LIVE}
                  AND ${sweepTerminalOwnerAdmissible('runs')})
                OR (t.state IN ${LIVE}
@@ -1023,7 +1060,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
               f.fence_at_ms + ${infraDelayMs},
               f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
               ${STAMP}, f.fence_at_ms
-       FROM runs f JOIN tasks t ON t.task_id = f.task_id
+       FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
          AND t.state IN ${LIVE}
          AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 't')}
@@ -1131,26 +1168,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
     await this.db.batch('driver-heartbeat', [
       {
-        sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
+        sql: `INSERT INTO ${DRIVER_HEARTBEAT_INGRESS}
+                (queue, driver_id, last_beat_ms, expires_at_ms)
               SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?
-              WHERE ${epochAdditionFits(NOW_MS, '?')}
-              ON CONFLICT (queue, driver_id) DO UPDATE SET
-                last_beat_ms = excluded.last_beat_ms,
-                expires_at_ms = excluded.expires_at_ms`,
+              WHERE ${epochAdditionFits(NOW_MS, '?')}`,
         args: [queue, driverId, ttlMs, ttlMs],
-      },
-      // Self-cleaning: every beat also buries the expired (a fresh id per
-      // process restart must not grow the table forever — bounds are
-      // invariants too). "Now" is the beat just written, not a second clock
-      // read, so the two statements cannot disagree about the time.
-      {
-        sql: `DELETE FROM drivers
-              WHERE expires_at_ms < (SELECT d.last_beat_ms FROM drivers d
-                                     WHERE d.queue = ? AND d.driver_id = ?)
-                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms)}
-                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}
-                AND ${epochAdditionFits(NOW_MS, '?')}`,
-        args: [queue, driverId, ttlMs],
       },
     ])
   }
@@ -1183,7 +1205,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `UPDATE tasks SET
          state = 'cancelled', cancelled_at_ms = ${NOW}, cancel_at_ms = NULL,
          failure_reason = ?, ${FENCE_SET}
-       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}`,
+       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}
+         AND ${taskOwnsEveryRun('tasks')}`,
       [REASON_CANCELLED, taskId, queue],
     )
     b.derived('runs', {
@@ -1252,7 +1275,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND ${storedInteger('runs.attempt')}
          AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})
+                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
          ${wakePlan.fits}`,
       [
         wakePlan.argument,
@@ -1301,7 +1324,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})
+                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
          AND ${validCheckpointConflict('runs', '?')}
          ${wakePlan.fits}`,
@@ -1351,7 +1374,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          state = 'completed', completed_at_ms = ${NOW}, result = ?,
          wake_event = NULL, event_payload = NULL, wake_step = NULL,
          claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE ${runOwnedByTask('runs', 't')}
+             AND (t.state NOT IN ${LIVE}
+               OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
+         )`,
       [resultJson, runId, queue, claimToken],
     )
     b.derived('task', {
@@ -1400,9 +1429,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND EXISTS (
            SELECT 1 FROM tasks t
-           WHERE t.task_id = runs.task_id
+           WHERE ${runOwnedByTask('runs', 't')}
              AND (t.state NOT IN ${LIVE}
                OR (t.state IN ${LIVE}
+                 AND ${soleLiveRun('runs')}
                  AND ${storedCurrentRunAccounting('runs', 't')}
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
@@ -1428,7 +1458,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                 f.fence_at_ms + ?,
                 f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
                 ${STAMP}, f.fence_at_ms
-         FROM runs f JOIN tasks t ON t.task_id = f.task_id
+         FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
          WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
            AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
            AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
@@ -1568,7 +1598,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND state = 'running'
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
          AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
+                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})
          AND ${validCheckpointConflict('runs', '?')}
          AND ${epochAdditionFits(NOW, '?')}`,
       [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],
@@ -1636,6 +1666,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * interleaved await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
+    if (typeof payloadJson !== 'string') {
+      throw new RangeError('emitEvent payloadJson must be a string')
+    }
     const b = new FencedBatch('emit-event', this.ids.token(), { now: NOW_MS })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
@@ -1650,6 +1683,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        VALUES (?, ?, ?, ${NOW}, ${FENCE_VALS})
        ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}
        WHERE events.fence_stamp IS NOT ${STAMP}
+         AND typeof(events.payload) = 'text'
          AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`,
       [queue, eventName, payloadJson],
     )
@@ -1727,7 +1761,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
               OR (runs.wake_step IS NULL AND ${runWait.step} IS NOT NULL))
          AND ${fenced('events', thisEvent, b.fence('event'))}
          AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
       [eventName, eventName, eventName, eventName, eventName, queue, eventName, eventName],
       { many: 'an emit wakes every registered waiter' },
     )
@@ -1790,7 +1824,18 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       whereArgs: [queue],
       rows: 'source-keys',
     })
-    await b.run(this.db)
+    b.openTail(
+      'stored-event',
+      'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
+      `SELECT typeof(payload) AS payload_type
+       FROM events WHERE queue = ? AND event_name = ?`,
+      [queue, eventName],
+    )
+    const { results } = await b.run(this.db)
+    const stored = results['stored-event']?.rows[0]
+    if (stored?.payload_type !== 'text') {
+      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+    }
   }
 
   /**
@@ -1839,10 +1884,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}
        WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)
          AND EXISTS (SELECT 1 FROM runs r
+                     JOIN tasks t ON ${runOwnedByTask('r', 't')}
                      WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                       AND r.claimed_by = ? AND r.state = 'running')
-         AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE t.task_id = ? AND ${eligibleTask('t', NOW)})
+                       AND r.claimed_by = ? AND r.state = 'running'
+                       AND ${eligibleTask('t', NOW)})
          AND (? IS NULL OR ${epochAdditionFits(NOW, '?')})
        ON CONFLICT (run_id, step_name) DO NOTHING`,
       [
@@ -1859,7 +1904,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         queue,
         taskId,
         claimToken,
-        taskId,
         timeoutMs,
         timeoutMs,
       ],
@@ -1889,7 +1933,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       setArgs: [runId, stepName, eventName, stepName],
       narrow: `queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
             AND EXISTS (SELECT 1 FROM tasks t
-                        WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
+                        WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
       narrowArgs: [queue, taskId, claimToken],
       rows: 'one',
     })
@@ -1908,16 +1952,21 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.openTail(
       'hit',
       'the event was written by the emitting batch, not this one; the live claim token is the fence here',
-      `SELECT payload FROM events
+      `SELECT payload, typeof(payload) AS payload_type FROM events
        WHERE queue = ? AND event_name = ?
          AND EXISTS (SELECT 1 FROM runs r
+                     JOIN tasks t ON ${runOwnedByTask('r', 't')}
                      WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                       AND r.claimed_by = ? AND r.state = 'running')`,
+                       AND r.claimed_by = ? AND r.state = 'running'
+                       AND t.state IN ${LIVE})`,
       [queue, eventName, runId, queue, taskId, claimToken],
     )
     const { won, results } = await b.run(this.db)
     const row = results.hit?.rows[0]
     if (row !== undefined) {
+      if (row.payload_type !== 'text') {
+        throw new RangeError(`awaitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+      }
       return { emitted: true, payloadJson: String(row.payload) }
     }
     if (won !== 'register') {

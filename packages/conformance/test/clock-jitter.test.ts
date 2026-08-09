@@ -327,10 +327,9 @@ describe('moving the clock between statements changes neither progress nor state
         'read',
       )
 
-      expect(
-        rows?.rows,
-        'mutation-verdict:behavior:driver-heartbeat-single-clock',
-      ).toEqual([{ driver_id: 'source' }])
+      expect(rows?.rows, 'mutation-verdict:behavior:driver-heartbeat-single-clock').toEqual([
+        { driver_id: 'source' },
+      ])
     } finally {
       raw.close()
     }

@@ -34,8 +34,9 @@ function withCas(b: FencedBatch = batch()): FencedBatch {
 }
 
 /**
- * Emit a mutation verdict only when the intended construction rejection is
- * absent. An unrelated construction error is re-thrown without the marker.
+ * Emit the caller's exact diagnostic only when the intended construction
+ * rejection is absent. Live mutation owners use the reserved mutation-verdict
+ * namespace; ordinary regressions use a regression label instead.
  */
 function missingConstructionGuard(marker: string, expected: RegExp, action: () => void): void {
   try {
@@ -65,7 +66,7 @@ describe('execution identity', () => {
   it('cannot be replaced through instance or prototype reflection', () => {
     const b = batch()
     if (!Object.isFrozen(b) || !Object.isFrozen(FencedBatch.prototype)) {
-      throw new Error('mutation-verdict:construction:fenced-batch-execution-identity-is-immutable')
+      throw new Error('regression:fenced-batch-execution-identity-is-immutable')
     }
 
     const replacement = (): never => {
@@ -213,10 +214,8 @@ describe('a CAS must write its own provenance', () => {
          ON DUPLICATE KEY UPDATE ${update}`,
         ['q'],
       )
-    missingConstructionGuard(
-      'mutation-verdict:construction:mysql-upsert-provenance-stale',
-      /preserve/,
-      () => upsert('events', `emitted_at_ms = 1`),
+    missingConstructionGuard('regression:mysql-upsert-provenance-stale', /preserve/, () =>
+      upsert('events', `emitted_at_ms = 1`),
     )
   })
 
@@ -229,10 +228,8 @@ describe('a CAS must write its own provenance', () => {
          ON DUPLICATE KEY UPDATE ${update}`,
         ['q'],
       )
-    missingConstructionGuard(
-      'mutation-verdict:construction:mysql-upsert-provenance-partial',
-      /preserve/,
-      () => upsert(`fence_stamp = ${STAMP}`),
+    missingConstructionGuard('regression:mysql-upsert-provenance-partial', /preserve/, () =>
+      upsert(`fence_stamp = ${STAMP}`),
     )
   })
 
@@ -595,7 +592,7 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
   it('rejects a fence under NOT with no separating whitespace', () => {
     const b = withCas()
     missingConstructionGuard(
-      'mutation-verdict:construction:positive-fence-not-parenthesized',
+      'regression:positive-fence-not-parenthesized',
       /no positive fence/,
       () =>
         b.followOn(
@@ -611,17 +608,14 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
 
   it('rejects a bare unary-NOT fence comparison', () => {
     const b = withCas()
-    missingConstructionGuard(
-      'mutation-verdict:construction:positive-fence-bare-not',
-      /no positive fence/,
-      () =>
-        b.followOn(
-          'x',
-          `DELETE FROM waits
+    missingConstructionGuard('regression:positive-fence-bare-not', /no positive fence/, () =>
+      b.followOn(
+        'x',
+        `DELETE FROM waits
            WHERE run_id = ? AND NOT fence_stamp = ${b.fence('win')}`,
-          ['r'],
-          'one',
-        ),
+        ['r'],
+        'one',
+      ),
     )
   })
 

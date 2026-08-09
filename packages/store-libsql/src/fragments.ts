@@ -1,9 +1,10 @@
 import {
+  MAX_DURATION_MS,
   MAX_EPOCH_MS,
   PERSISTED_INTEGER_BOUNDS,
+  POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
-  POSITIVE_CLAIM_GENERATION_BOUNDS,
   STAMP,
 } from '@durablerun/core'
 
@@ -292,6 +293,68 @@ export const storedHighestOwnedOrdinal = (run: string): string => {
  */
 export const eligibleTask = (t: string, at: string): string =>
   `${t}.state IN ${LIVE} AND ${cancelNotDue(t, at)}`
+
+/** A run belongs to a task only when both immutable ownership fields agree. */
+export const runOwnedByTask = (run: string, task: string): string =>
+  `${task}.task_id = ${run}.task_id AND ${task}.queue = ${run}.queue`
+
+/** A task transition must not strand or consume a run from another queue. */
+export const taskOwnsEveryRun = (task: string): string =>
+  `NOT EXISTS (
+    SELECT 1 FROM runs ownership_run
+    WHERE ownership_run.task_id = ${task}.task_id
+      AND ownership_run.queue <> ${task}.queue
+  )`
+
+/**
+ * Durable task data that can be decoded into a worker payload without a
+ * post-CAS exception. This is deliberately SQL: claim places it inside the
+ * UPDATE statement's candidate selection before LIMIT, while activate uses
+ * the identical definition before changing its generation latch.
+ */
+export const durableTaskPayloadAdmissible = (task: string): string => {
+  const retry = `${task}.retry_strategy`
+  const headers = `${task}.headers`
+  const kind = `json_extract(${retry}, '$.kind')`
+  const duration = (path: string): string => {
+    const value = `json_extract(${retry}, '${path}')`
+    return `(json_type(${retry}, '${path}') IN ('integer','real')
+      AND (${value}) >= 0
+      AND ROUND((${value}) * 1000) BETWEEN 0 AND ${MAX_DURATION_MS})`
+  }
+  const factor = `json_extract(${retry}, '$.factor')`
+  return `(
+    CASE
+      WHEN typeof(${retry}) <> 'text' OR NOT json_valid(${retry}) THEN 0
+      WHEN json_type(${retry}) <> 'object' THEN 0
+      WHEN EXISTS (
+        SELECT 1 FROM json_each(${retry}) r
+        GROUP BY r.key HAVING COUNT(*) > 1
+      ) THEN 0
+      WHEN json_type(${retry}, '$.kind') <> 'text' THEN 0
+      WHEN (${kind}) = 'none' THEN 1
+      WHEN (${kind}) = 'fixed' THEN CASE WHEN ${duration('$.baseSeconds')} THEN 1 ELSE 0 END
+      WHEN (${kind}) = 'exponential' THEN CASE
+        WHEN ${duration('$.baseSeconds')}
+          AND json_type(${retry}, '$.factor') IN ('integer','real')
+          AND (${factor}) BETWEEN 0 AND 1.7976931348623157e308
+          AND ${duration('$.maxSeconds')}
+        THEN 1 ELSE 0 END
+      ELSE 0
+    END = 1
+    AND CASE
+      WHEN ${headers} IS NULL THEN 1
+      WHEN typeof(${headers}) <> 'text' OR NOT json_valid(${headers}) THEN 0
+      WHEN json_type(${headers}) <> 'object' THEN 0
+      WHEN EXISTS (
+        SELECT 1 FROM json_each(${headers}) h
+        GROUP BY h.key HAVING COUNT(*) > 1
+      ) THEN 0
+      WHEN EXISTS (SELECT 1 FROM json_each(${headers}) h WHERE h.type <> 'text') THEN 0
+      ELSE 1
+    END = 1
+  )`
+}
 
 /**
  * A claim candidate is the task's only live run.

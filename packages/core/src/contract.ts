@@ -107,30 +107,38 @@ export const FENCE_RELATIONS = Object.freeze({
     key: 'task_id',
     from: 'runs',
     column: 'task_id',
+    queueScoped: true,
   }),
   'runs-to-waits': Object.freeze({
     target: 'waits',
     key: 'run_id',
     from: 'runs',
     column: 'run_id',
+    // A run is authoritative for cleaning up every wait that names it. The
+    // wait's queue is a denormalized witness and may itself be the corruption
+    // the terminal transition must remove.
+    queueScoped: false,
   }),
   'tasks-to-runs': Object.freeze({
     target: 'runs',
     key: 'task_id',
     from: 'tasks',
     column: 'task_id',
+    queueScoped: true,
   }),
   'waits-to-runs': Object.freeze({
     target: 'runs',
     key: 'run_id',
     from: 'waits',
     column: 'run_id',
+    queueScoped: true,
   }),
   'runs-to-runs': Object.freeze({
     target: 'runs',
     key: 'run_id',
     from: 'runs',
     column: 'run_id',
+    queueScoped: false,
   }),
 } as const)
 

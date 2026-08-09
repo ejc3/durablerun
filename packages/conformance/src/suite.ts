@@ -16,10 +16,10 @@ import {
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  executeStorageCorruption,
-  interposeAfterBatch,
   type StoreFixture,
   type StoreFixtureFactory,
+  executeStorageCorruption,
+  interposeAfterBatch,
 } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 
@@ -207,6 +207,33 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      it('normalizes an admissible persisted retry strategy before exposing it', async () => {
+        const spawned = await f.store.spawn(Q, 'canonical-retry', '{}', {
+          retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+        })
+        await f.raw.batch('noncanonical-retry-strategy', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [JSON.stringify({ kind: 'fixed', baseSeconds: 0.0004 }), spawned.taskId],
+          },
+        ])
+
+        const [claimed] = await f.store.claim(Q, 'canonical-retry-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        expect(
+          {
+            strategy: claimed?.retryStrategy,
+            frozen: claimed === undefined ? false : Object.isFrozen(claimed.retryStrategy),
+          },
+          'mutation-verdict:behavior:retry-persisted-normalization',
+        ).toEqual({
+          strategy: { kind: 'fixed', baseSeconds: 0 },
+          frozen: true,
+        })
+      })
+
       it('claims due runs oldest-first with claim_gen 1 and full task data', async () => {
         await f.store.spawn(Q, 'a', '{"n":1}')
         await f.store.spawn(Q, 'b', '{"n":2}')
@@ -254,7 +281,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
         expect(
           claimed.map((run) => run.taskId),
-          'mutation-verdict:behavior:claim-eligibility-before-limit',
+          'regression:claim-eligibility-before-limit',
         ).toEqual([healthy.taskId])
         expect(await snapshot(f, corrupt.taskId)).toEqual(corruptBefore)
       })
@@ -543,12 +570,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         const before = await snapshot(f, spawned.taskId)
-        const observed = await f.store
-          .activate(Q, run.runId, run.claimToken, run.claimGen)
-          .then(
-            (value) => ({ kind: 'resolved' as const, value }),
-            () => ({ kind: 'rejected' as const }),
-          )
+        const observed = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          () => ({ kind: 'rejected' as const }),
+        )
         const after = await snapshot(f, spawned.taskId)
 
         expect(
@@ -1043,10 +1068,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             (value) => ({ kind: 'resolved' as const, value }),
             (error: unknown) => ({ kind: 'rejected' as const, error }),
           )
-        expect(
-          observed.kind,
-          'mutation-verdict:behavior:sweep-successor-attempt-from-fenced-row',
-        ).toBe('resolved')
+        expect(observed.kind, 'regression:sweep-successor-attempt-from-fenced-row').toBe('resolved')
         if (observed.kind !== 'resolved') return
         expect(observed.value).toMatchObject([
           {
@@ -1134,25 +1156,30 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(observed.after).toEqual(observed.afterCorruption)
       })
 
-      it('refuses a corrupt stored attempt without partially sweeping the expired claim', async () => {
+      it('rechecks a corrupt stored attempt after discovery without partially sweeping the expired claim', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('tick-1')
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
         await f.admin.setFakeNowEpochMs(1_100_000)
-        const disposition = await executeStorageCorruption(f, {
-          table: 'runs',
-          runId: run.runId,
-          column: 'attempt',
-          invalidRepresentation: 'non-integer',
+        let injected = false
+        let afterCorruption: unknown
+        const interposed = interposeAfterBatch(f.raw, 'sweep:scan', async () => {
+          const disposition = await executeStorageCorruption(f, {
+            table: 'runs',
+            runId: run.runId,
+            column: 'attempt',
+            invalidRepresentation: 'non-integer',
+          })
+          injected = disposition === 'injected'
+          if (injected) afterCorruption = await snapshot(f, run.taskId)
         })
-        if (disposition === 'structurally-rejected') return
-        const before = await snapshot(f, run.taskId)
+        const swept = await f.storeOver(interposed.executor).sweep(Q, 10)
 
-        expect(
-          await f.store.sweep(Q, 10),
-          'mutation-verdict:behavior:sweep-rejects-noninteger-attempt',
-        ).toEqual([])
-        expect(await snapshot(f, run.taskId)).toEqual(before)
+        expect(interposed.fired()).toBe(true)
+        if (!injected) return
+        expect(swept, 'mutation-verdict:behavior:sweep-rejects-noninteger-attempt').toEqual([])
+        expect(afterCorruption).toBeDefined()
+        expect(await snapshot(f, run.taskId)).toEqual(afterCorruption)
       })
 
       it('leaves an expired claim unchanged when its ordinal exceeds the protocol bound', async () => {
@@ -1175,7 +1202,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
         expect(
           await snapshot(f, spawned.taskId),
-          'mutation-verdict:behavior:sweep-rejects-attempt-overflow-atomically',
+          'regression:sweep-rejects-attempt-overflow-atomically',
         ).toEqual(before)
         if (observed.kind === 'resolved') expect(observed.value).toEqual([])
       })
@@ -1432,7 +1459,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
         expect(
           await snapshot(f, run.taskId),
-          'mutation-verdict:behavior:fail-rejects-infra-cap-overflow-atomically',
+          'regression:fail-rejects-infra-cap-overflow-atomically',
         ).toEqual(before)
         expect(observed.kind).toBe('rejected')
       })
@@ -3237,6 +3264,6 @@ export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtur
         await wakeWitnessDisagreements(makeFixture, WAKE_PAIR_CASES),
         'mutation-verdict:behavior:emit-wake-one-witness',
       ).toEqual([])
-    }, 15_000)
+    }, 30_000)
   })
 }

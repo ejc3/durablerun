@@ -289,8 +289,8 @@ MUTATION_SPECS = [
         # the generator exists to prevent, inside the generator.
         "generated-where-parens",
         "packages/core/src/fenced-batch.ts",
-        "    const src = spec.where ? `(${spec.where}) AND ` : ''",
-        "    const src = spec.where ? `${spec.where} AND ` : ''",
+        "    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`",
+        "    const src = `${spec.where ? `${spec.where} AND ` : ''}${queueOwnership}`",
         "a disjunctive correlation lets unstamped rows into a generated selection",
     ),
     (
@@ -542,24 +542,32 @@ MUTATION_SPECS = [
     (
         "claim-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
-        "               AND ${soleLiveRun('r')}\n",
-        "               AND 1 = 1\n",
+        "               AND ${soleLiveRun(run)}\n"
+        "               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})\n",
+        "               AND 1 = 1\n"
+        "               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})\n",
         "claim advances two competing live runs for one task",
     ),
     (
         "claim-receipt-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
         "         AND t.state IN ${LIVE}\n"
+        "         AND ${durableTaskPayloadAdmissible('t')}\n"
         "         AND ${soleLiveRun('r')}\n",
         "         AND t.state IN ${LIVE}\n"
+        "         AND ${durableTaskPayloadAdmissible('t')}\n"
         "         AND 1 = 1\n",
         "a same-token receipt hands a run from a task with competing live owners back to launch",
     ),
     (
         "activate-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
-        "         AND ${soleLiveRun('runs')}\n",
-        "         AND 1 = 1\n",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
+        "         AND ${soleLiveRun('runs')}\n"
+        "         AND EXISTS (\n",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
+        "         AND 1 = 1\n"
+        "         AND EXISTS (\n",
         "activation launches a claimed run after its task acquires a competing live run",
     ),
     (
@@ -600,13 +608,15 @@ MUTATION_SPECS = [
     (
         "activate-requires-current-run-accounting",
         "packages/store-libsql/src/store.ts",
-        "           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}\n"
+        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
+        "             AND ${durableTaskPayloadAdmissible('t')}\n"
         "             AND ${storedCurrentRunAccounting('runs', 't')}\n"
         "             AND ${storedHighestOwnedOrdinal('runs')}\n"
         "             AND ${activationDurationAdmissible('t', NOW)}\n"
         "         )`,\n"
         "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
-        "           WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)}\n"
+        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
+        "             AND ${durableTaskPayloadAdmissible('t')}\n"
         "             AND 1 = 1\n"
         "             AND ${storedHighestOwnedOrdinal('runs')}\n"
         "             AND ${activationDurationAdmissible('t', NOW)}\n"
@@ -624,8 +634,12 @@ MUTATION_SPECS = [
     (
         "claim-requires-activation-generation-order",
         "packages/store-libsql/src/store.ts",
-        "               AND r.activated_gen <= r.claim_gen\n",
-        "               AND 1 = 1\n",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}\n"
+        "               AND ${run}.activated_gen <= ${run}.claim_gen\n"
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}\n",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}\n"
+        "               AND 1 = 1\n"
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}\n",
         "claim advances a run whose activation generation is ahead of its claim generation",
     ),
     (
@@ -1041,10 +1055,10 @@ MUTATION_SPECS = [
     (
         "sweep-lost-launch-rechecks-accounting",
         "packages/store-libsql/src/store.ts",
-        "      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE}\n"
+        "      WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE}\n"
         "        AND ${sweepLiveOwnerAdmissible('runs', 't')}\n"
         "    )`",
-        "      WHERE t.task_id = runs.task_id AND t.state IN ${LIVE}\n"
+        "      WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE}\n"
         "        AND ${sweepLiveOwnerAdmissible('runs', 't').replace(\n"
         "          storedCurrentRunAccounting('runs', 't'),\n"
         "          '1 = 1',\n"
@@ -1150,12 +1164,12 @@ MUTATION_SPECS = [
         "packages/store-libsql/src/store.ts",
         "    const terminalOwner = `EXISTS (\n"
         "      SELECT 1 FROM tasks t\n"
-        "      WHERE t.task_id = runs.task_id AND t.state NOT IN ${LIVE}\n"
+        "      WHERE ${runOwnedByTask('runs', 't')} AND t.state NOT IN ${LIVE}\n"
         "        AND ${sweepTerminalOwnerAdmissible('runs')}\n"
         "    )`",
         "    const terminalOwner = `EXISTS (\n"
         "      SELECT 1 FROM tasks t\n"
-        "      WHERE t.task_id = runs.task_id AND t.state NOT IN ${LIVE}\n"
+        "      WHERE ${runOwnedByTask('runs', 't')} AND t.state NOT IN ${LIVE}\n"
         "        AND ${sweepTerminalOwnerAdmissible('runs').replace(\n"
         "          `runs.activated_gen BETWEEN ${RUN_INTEGER_BOUNDS.activated_gen.min} AND ${RUN_INTEGER_BOUNDS.activated_gen.max}`,\n"
         "          `runs.activated_gen <= ${RUN_INTEGER_BOUNDS.activated_gen.max}`,\n"
@@ -1166,11 +1180,15 @@ MUTATION_SPECS = [
     (
         "fail-cas-admits-terminal-owner",
         "packages/store-libsql/src/store.ts",
+        "           WHERE ${runOwnedByTask('runs', 't')}\n"
         "             AND (t.state NOT IN ${LIVE}\n"
         "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${soleLiveRun('runs')}\n"
         "                 AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "           WHERE ${runOwnedByTask('runs', 't')}\n"
         "             AND (1 = 0\n"
         "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${soleLiveRun('runs')}\n"
         "                 AND ${storedCurrentRunAccounting('runs', 't')}\n",
         "worker failure cannot quiesce its run after another actor terminalized the task",
     ),
@@ -1233,17 +1251,21 @@ MUTATION_SPECS = [
     (
         "poison-claim-relaunch-upper",
         "packages/store-libsql/src/store.ts",
-        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}\n",
-        "               AND (${storedInteger('r.relaunch_count')}\n"
-        "                 AND r.relaunch_count >= ${RUN_INTEGER_BOUNDS.relaunch_count.min})\n",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}\n"
+        "               AND ${storedCurrentRunAccounting(run, task)}\n",
+        "               AND (${storedInteger(`${run}.relaunch_count`)}\n"
+        "                 AND ${run}.relaunch_count >= ${RUN_INTEGER_BOUNDS.relaunch_count.min})\n"
+        "               AND ${storedCurrentRunAccounting(run, task)}\n",
         "claim accepts a relaunch counter above its protocol maximum",
     ),
     (
         "poison-claim-relaunch-lower",
         "packages/store-libsql/src/store.ts",
-        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}\n",
-        "               AND (${storedInteger('r.relaunch_count')}\n"
-        "                 AND r.relaunch_count <= ${RUN_INTEGER_BOUNDS.relaunch_count.max})\n",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}\n"
+        "               AND ${storedCurrentRunAccounting(run, task)}\n",
+        "               AND (${storedInteger(`${run}.relaunch_count`)}\n"
+        "                 AND ${run}.relaunch_count <= ${RUN_INTEGER_BOUNDS.relaunch_count.max})\n"
+        "               AND ${storedCurrentRunAccounting(run, task)}\n",
         "claim accepts a relaunch counter below zero",
     ),
     (
@@ -1299,9 +1321,13 @@ MUTATION_SPECS = [
     (
         "matrix-attempt-edge-progress",
         "packages/store-libsql/src/store.ts",
+        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
         "         AND EXISTS (\n"
         "           SELECT 1 FROM tasks t\n",
+        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
         "         AND run_id <> 'edge-run'\n"
         "         AND EXISTS (\n"
@@ -1318,9 +1344,13 @@ MUTATION_SPECS = [
     (
         "provenance-fail-progress",
         "packages/store-libsql/src/store.ts",
+        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
         "         AND EXISTS (\n"
         "           SELECT 1 FROM tasks t\n",
+        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
+        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
         "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
         "         AND run_id <> 'prov-fail-run'\n"
         "         AND EXISTS (\n"
@@ -1384,6 +1414,384 @@ MUTATION_SPECS = [
         "         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)",
         "         AND ? IS NOT NULL",
         "spawn attaches a new task to a run that already claims its minted identity",
+    ),
+    (
+        "spawn-cancellation-single-read",
+        "packages/store-libsql/src/store.ts",
+        "    const cancellationInput = opts.cancellation\n"
+        "    let cancellationJson: string | null = null\n",
+        "    const cancellationInput = opts.cancellation\n"
+        "    void opts.cancellation // MUTATION: a second ambient read\n"
+        "    let cancellationJson: string | null = null\n",
+        "spawn reads a hostile cancellation accessor more than once",
+    ),
+    (
+        "claim-payload-validation-atomic",
+        "packages/store-libsql/src/store.ts",
+        "    const claimedWait = registeredWait('runs')\n"
+        "    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering\n",
+        "    const claimedWait = registeredWait('runs')\n"
+        "    const durableTaskPayloadAdmissible = (_task: string): string => '1 = 1'\n"
+        "    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering\n",
+        "claim changes durable state before discovering an undecodable task payload",
+    ),
+    (
+        "activate-payload-validation-atomic",
+        "packages/store-libsql/src/store.ts",
+        "    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS })\n"
+        "    // Per-claim latch: only this claim's first delivery passes; re-extends\n",
+        "    const durableTaskPayloadAdmissible = (_task: string): string => '1 = 1'\n"
+        "    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS })\n"
+        "    // Per-claim latch: only this claim's first delivery passes; re-extends\n",
+        "activation latches a generation before discovering an undecodable task payload",
+    ),
+    (
+        "driver-heartbeat-single-clock",
+        "packages/store-libsql/src/store.ts",
+        "    await this.db.batch('driver-heartbeat', [\n"
+        "      {\n"
+        "        sql: `INSERT INTO ${DRIVER_HEARTBEAT_INGRESS}\n"
+        "                (queue, driver_id, last_beat_ms, expires_at_ms)\n"
+        "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?\n"
+        "              WHERE ${epochAdditionFits(NOW_MS, '?')}`,\n"
+        "        args: [queue, driverId, ttlMs, ttlMs],\n"
+        "      },\n"
+        "    ])",
+        "    await this.db.batch('driver-heartbeat', [\n"
+        "      {\n"
+        "        sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)\n"
+        "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?\n"
+        "              WHERE ${epochAdditionFits(NOW_MS, '?')}\n"
+        "              ON CONFLICT (queue, driver_id) DO UPDATE SET\n"
+        "                last_beat_ms = excluded.last_beat_ms,\n"
+        "                expires_at_ms = excluded.expires_at_ms`,\n"
+        "        args: [queue, driverId, ttlMs, ttlMs],\n"
+        "      },\n"
+        "      {\n"
+        "        sql: `DELETE FROM drivers\n"
+        "              WHERE expires_at_ms < (SELECT d.last_beat_ms FROM drivers d\n"
+        "                                     WHERE d.queue = ? AND d.driver_id = ?)\n"
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms)}\n"
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}\n"
+        "                AND ${epochAdditionFits(NOW_MS, '?')}`,\n"
+        "        args: [queue, driverId, ttlMs],\n"
+        "      },\n"
+        "    ])",
+        "driver cleanup reads a second database instant after writing the heartbeat",
+    ),
+    (
+        "complete-terminalization-requires-sole-live-run",
+        "packages/store-libsql/src/store.ts",
+        "             AND (t.state NOT IN ${LIVE}\n"
+        "               OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))\n"
+        "         )`,\n"
+        "      [resultJson, runId, queue, claimToken],",
+        "             AND (t.state NOT IN ${LIVE}\n"
+        "               OR (t.state IN ${LIVE} AND 1 = 1))\n"
+        "         )`,\n"
+        "      [resultJson, runId, queue, claimToken],",
+        "complete terminalizes a task while another live run still owns it",
+    ),
+    (
+        "fail-terminalization-requires-sole-live-run",
+        "packages/store-libsql/src/store.ts",
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${soleLiveRun('runs')}\n"
+        "                 AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND 1 = 1\n"
+        "                 AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "non-retrying failure terminalizes a task while another live run still owns it",
+    ),
+    (
+        "relaunch-cap-terminalization-requires-sole-live-run",
+        "packages/store-libsql/src/store.ts",
+        "  `${storedSweepCounters(run)}\n"
+        "   AND ${soleLiveRun(run)}\n"
+        "   AND ${storedCurrentRunAccounting(run, task)}\n",
+        "  `${storedSweepCounters(run)}\n"
+        "   AND (${run}.relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
+        "     OR ${soleLiveRun(run)})\n"
+        "   AND ${storedCurrentRunAccounting(run, task)}\n",
+        "a relaunch-cap sweep terminalizes a task while another live run still owns it",
+    ),
+    (
+        "spawn-receipt-idempotency-priority-is-queue-scoped",
+        "packages/store-libsql/src/store.ts",
+        "         WHERE ? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?\n"
+        "           AND t.task_id <> ?\n",
+        "         WHERE ? IS NOT NULL AND ? IS NOT NULL AND t.idempotency_key = ?\n"
+        "           AND t.task_id <> ?\n",
+        "spawn receipt lets a foreign-queue id collision outrank the same-queue idempotency winner",
+    ),
+    (
+        "claim-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "    const claimedWait = registeredWait('runs')\n"
+        "    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering\n",
+        "    const claimedWait = registeredWait('runs')\n"
+        "    const runOwnedByTask = (run: string, task: string): string =>\n"
+        "      `${task}.task_id = ${run}.task_id`\n"
+        "    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering\n",
+        "claim treats a task id match as ownership after the immutable queues diverge",
+    ),
+    (
+        "null-event-payload-never-becomes-timeout",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE events.fence_stamp IS NOT ${STAMP}\n"
+        "         AND typeof(events.payload) = 'text'\n"
+        "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
+        "       WHERE events.fence_stamp IS NOT ${STAMP}\n"
+        "         AND 1 = 1\n"
+        "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
+        "emit launders a stored SQL NULL payload into an emitted timeout wake",
+    ),
+    (
+        "sdk-owned-retry-attempt",
+        "packages/sdk/src/run-worker.ts",
+        "    const taskControls = createTaskControlScope()\n"
+        "    const ctx = new ReplayContext(\n"
+        "      store,\n"
+        "      queue,\n"
+        "      run,\n"
+        "      checkpoints,\n"
+        "      leaseLostSignal,\n"
+        "      taskControls.issuer,\n"
+        "      userAttempt,\n"
+        "    )\n"
+        "\n"
+        "    async function recordUserFailure(error: unknown): Promise<WorkerOutcome> {\n"
+        "      const thrown = snapshotTaskThrowable(error)\n"
+        "      const decision = thrown.fatal\n"
+        "        ? ({ retry: false } as const)\n"
+        "        : decideRetry(claimedRun.retryStrategy, userAttempt, claimedRun.maxAttempts)\n",
+        "    const taskControls = createTaskControlScope()\n"
+        "    const ctx = new ReplayContext(\n"
+        "      store,\n"
+        "      queue,\n"
+        "      run,\n"
+        "      checkpoints,\n"
+        "      leaseLostSignal,\n"
+        "      taskControls.issuer,\n"
+        "      userAttempt,\n"
+        "    )\n"
+        "    Object.defineProperty(ctx, 'attempt', { value: userAttempt, writable: true })\n"
+        "\n"
+        "    async function recordUserFailure(error: unknown): Promise<WorkerOutcome> {\n"
+        "      const thrown = snapshotTaskThrowable(error)\n"
+        "      const decision = thrown.fatal\n"
+        "        ? ({ retry: false } as const)\n"
+        "        : decideRetry(claimedRun.retryStrategy, ctx.attempt, claimedRun.maxAttempts)\n",
+        "the retry decision trusts a user-mutable public context field",
+    ),
+    (
+        "sdk-malformed-checkpoint-stops-pump",
+        "packages/sdk/src/run-worker.ts",
+        "  try {\n"
+        "    let checkpoints: Awaited<ReturnType<SchedulerStore['getCheckpoints']>>\n"
+        "    try {\n"
+        "      checkpoints = await store.getCheckpoints(queue, run.taskId, run.attempt)\n"
+        "    } catch (error) {\n"
+        "      return trustedStoreOutcome(error)\n"
+        "    }\n"
+        "    const taskControls = createTaskControlScope()\n"
+        "    const ctx = new ReplayContext(\n"
+        "      store,\n"
+        "      queue,\n"
+        "      run,\n"
+        "      checkpoints,\n"
+        "      leaseLostSignal,\n"
+        "      taskControls.issuer,\n"
+        "      userAttempt,\n"
+        "    )\n",
+        "  let checkpoints: Awaited<ReturnType<SchedulerStore['getCheckpoints']>>\n"
+        "  try {\n"
+        "    checkpoints = await store.getCheckpoints(queue, run.taskId, run.attempt)\n"
+        "  } catch (error) {\n"
+        "    return trustedStoreOutcome(error)\n"
+        "  }\n"
+        "  const taskControls = createTaskControlScope()\n"
+        "  const ctx = new ReplayContext(\n"
+        "    store,\n"
+        "    queue,\n"
+        "    run,\n"
+        "    checkpoints,\n"
+        "    leaseLostSignal,\n"
+        "    taskControls.issuer,\n"
+        "    userAttempt,\n"
+        "  )\n"
+        "  try {\n",
+        "checkpoint decoding can throw before the heartbeat pump enters its cleanup scope",
+    ),
+    (
+        "sdk-subsecond-lease-upkeep-before-expiry",
+        "packages/sdk/src/run-worker.ts",
+        "  const leaseMs = run.leaseSeconds * 1000\n",
+        "  const leaseMs = Math.max(run.leaseSeconds * 1000, 1_000)\n",
+        "a legal sub-second lease waits until after expiry for its first upkeep",
+    ),
+    (
+        "suspend-rejects-noninteger-attempt",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND ${validCheckpointConflict('runs', '?')}\n"
+        "         ${wakePlan.fits}`",
+        "         AND 1 = 1\n"
+        "         AND ${validCheckpointConflict('runs', '?')}\n"
+        "         ${wakePlan.fits}`",
+        "suspend parks a run whose durable attempt is not an integer",
+    ),
+    (
+        "sweep-rejects-noninteger-attempt",
+        "packages/store-libsql/src/store.ts",
+        "      `UPDATE runs SET\n"
+        "         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,\n"
+        "         failure_reason = ?, ${FENCE_SET}\n"
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "         AND EXISTS (\n"
+        "           SELECT 1 FROM tasks t\n"
+        "           WHERE ${runOwnedByTask('runs', 't')}\n"
+        "             AND ((t.state NOT IN ${LIVE}\n"
+        "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${sweepLiveOwnerAdmissible('runs', 't')}\n",
+        "      `UPDATE runs SET\n"
+        "         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,\n"
+        "         attempt = CAST(attempt AS INTEGER),\n"
+        "         failure_reason = ?, ${FENCE_SET}\n"
+        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
+        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "         AND EXISTS (\n"
+        "           SELECT 1 FROM tasks t\n"
+        "           WHERE ${runOwnedByTask('runs', 't')}\n"
+        "             AND ((t.state NOT IN ${LIVE}\n"
+        "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
+        "               OR (t.state IN ${LIVE}\n"
+        "                 AND ${sweepLiveOwnerAdmissible('runs', 't')\n"
+        "                   .replace(storedCurrentRunAccounting('runs', 't'), '1 = 1')\n"
+        "                   .replace(storedHighestOwnedOrdinal('runs'), '1 = 1')\n"
+        "                   .replace(\n"
+        "                     `(${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "           AND runs.attempt = t.attempts + t.infra_retries + 1)`,\n"
+        "                     '1 = 1',\n"
+        "                   )}\n",
+        "the claim-timeout CAS launders a fractional attempt after bypassing all three independent attempt proofs",
+    ),
+    (
+        "heartbeat-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "                AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                            WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n"
+        "                AND ${epochAdditionFits(NOW_MS, '?')}\n",
+        "                AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})\n"
+        "                AND ${epochAdditionFits(NOW_MS, '?')}\n",
+        "heartbeat extends a run after its task crosses the immutable queue boundary",
+    ),
+    (
+        "reschedule-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedInteger('runs.attempt')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})\n",
+        "         AND ${storedInteger('runs.attempt')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})\n",
+        "reschedule parks a run after its task crosses the immutable queue boundary",
+    ),
+    (
+        "suspend-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n",
+        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})\n"
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n",
+        "suspend parks and checkpoints a run after its task crosses the immutable queue boundary",
+    ),
+    (
+        "set-checkpoint-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n"
+        "         AND ${validCheckpointConflict('runs', '?')}\n",
+        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})\n"
+        "         AND ${validCheckpointConflict('runs', '?')}\n",
+        "setCheckpoint extends and writes through a run whose task crossed the immutable queue boundary",
+    ),
+    (
+        "await-event-register-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)\n"
+        "         AND EXISTS (SELECT 1 FROM runs r\n"
+        "                     JOIN tasks t ON ${runOwnedByTask('r', 't')}\n"
+        "                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?\n",
+        "       WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)\n"
+        "         AND EXISTS (SELECT 1 FROM runs r\n"
+        "                     JOIN tasks t ON t.task_id = r.task_id\n"
+        "                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?\n",
+        "awaitEvent registers and parks after its task crosses the immutable queue boundary",
+    ),
+    (
+        "emit-event-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${fenced('events', thisEvent, b.fence('event'))}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,\n",
+        "         AND ${fenced('events', thisEvent, b.fence('event'))}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,\n",
+        "emitEvent wakes a run after its task crosses the immutable queue boundary",
+    ),
+    (
+        "cancel-task-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}\n"
+        "         AND ${taskOwnsEveryRun('tasks')}`",
+        "       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}\n"
+        "         AND 1 = 1`",
+        "cancelTask terminalizes a task while one of its runs belongs to another queue",
+    ),
+    (
+        "generated-relation-queue-ownership",
+        "packages/core/src/fenced-batch.ts",
+        "    const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''\n"
+        "    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`\n",
+        "    const queueOwnership = ''\n"
+        "    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`\n",
+        "generated cross-table relations can cross the immutable queue boundary in every direction",
+    ),
+    (
+        "generated-runs-to-waits-authoritative-cleanup",
+        "packages/core/src/contract.ts",
+        "  'runs-to-waits': Object.freeze({\n"
+        "    target: 'waits',\n"
+        "    key: 'run_id',\n"
+        "    from: 'runs',\n"
+        "    column: 'run_id',\n"
+        "    // A run is authoritative for cleaning up every wait that names it. The\n"
+        "    // wait's queue is a denormalized witness and may itself be the corruption\n"
+        "    // the terminal transition must remove.\n"
+        "    queueScoped: false,\n"
+        "  }),\n",
+        "  'runs-to-waits': Object.freeze({\n"
+        "    target: 'waits',\n"
+        "    key: 'run_id',\n"
+        "    from: 'runs',\n"
+        "    column: 'run_id',\n"
+        "    // A run is authoritative for cleaning up every wait that names it. The\n"
+        "    // wait's queue is a denormalized witness and may itself be the corruption\n"
+        "    // the terminal transition must remove.\n"
+        "    queueScoped: true,\n"
+        "  }),\n",
+        "generated runs-to-waits cleanup incorrectly trusts the denormalized wait queue",
     ),
 ]
 
@@ -1589,8 +1997,8 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "driver-heartbeat",
         "driver heartbeat deadline",
-        "              WHERE ${epochAdditionFits(NOW_MS, '?')}\n"
-        "              ON CONFLICT (queue, driver_id) DO UPDATE SET",
+        "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?\n"
+        "              WHERE ${epochAdditionFits(NOW_MS, '?')}`",
         "epochAdditionFits(NOW_MS, '?')",
         "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?\n",
         "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ? - 1\n",
@@ -1658,14 +2066,47 @@ TIMESTAMP_ADDITION_CASES = (
     ),
 )
 
+DRIVER_HEARTBEAT_STATEMENT = (
+    "        sql: `INSERT INTO ${DRIVER_HEARTBEAT_INGRESS}\n"
+    "                (queue, driver_id, last_beat_ms, expires_at_ms)\n"
+    "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?\n"
+    "              WHERE ${epochAdditionFits(NOW_MS, '?')}`,\n"
+)
+
+
+def weakened_driver_heartbeat_for_source(exists: bool) -> str:
+    """Admit overflow for exactly one ownership class without collateral credit."""
+    existence = "EXISTS" if exists else "NOT EXISTS"
+    return (
+        "        sql: `INSERT INTO ${DRIVER_HEARTBEAT_INGRESS}\n"
+        "                (queue, driver_id, last_beat_ms, expires_at_ms)\n"
+        "              WITH heartbeat(queue, driver_id) AS (VALUES (?, ?))\n"
+        "              SELECT heartbeat.queue, heartbeat.driver_id, ${NOW_MS}, ${NOW_MS} + ?\n"
+        "              FROM heartbeat\n"
+        "              WHERE ${epochAdditionFits(NOW_MS, '?').replace(\" - \", \" + \")}\n"
+        f"                 OR {existence} (\n"
+        "                   SELECT 1 FROM drivers d\n"
+        "                   WHERE d.queue = heartbeat.queue\n"
+        "                     AND d.driver_id = heartbeat.driver_id\n"
+        "                 )`,\n"
+    )
+
+
 for slug, title, guard_anchor, guard_call, exact_find, exact_replace in TIMESTAMP_ADDITION_CASES:
+    overflow_find = guard_anchor
+    overflow_replace = guard_anchor.replace(
+        guard_call, weakened_epoch_addition(guard_call), 1
+    )
+    if slug == "driver-heartbeat":
+        overflow_find = DRIVER_HEARTBEAT_STATEMENT
+        overflow_replace = weakened_driver_heartbeat_for_source(False)
     MUTATION_SPECS.extend(
         (
             (
                 f"timestamp-addition-{slug}-overflow",
                 "packages/store-libsql/src/store.ts",
-                guard_anchor,
-                guard_anchor.replace(guard_call, weakened_epoch_addition(guard_call), 1),
+                overflow_find,
+                overflow_replace,
                 f"{title} persists a derived epoch above the maximum",
             ),
             (
@@ -1730,7 +2171,9 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-claim-sleeping-timeout-lower-before-limit",
         "packages/store-libsql/src/store.ts",
-        "               AND ${candidateWait.temporallySafe}\n",
+        "               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})\n"
+        "               AND ${wait.temporallySafe}\n",
+        "               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})\n"
         "               AND 1 = 1\n",
         "skips a negative wait timeout before the sleeping claim limit",
         "a sleeping run with an invalid timed wait consumes the bounded claim shortlist",
@@ -1847,27 +2290,27 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     ),
     (
         "timestamp-driver-cleanup-requires-last-beat-bound",
-        "packages/store-libsql/src/store.ts",
-        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms)}\n",
-        "                AND 1 = 1\n",
+        "packages/store-libsql/src/schema.ts",
+        "           AND typeof(last_beat_ms) = 'integer'\n"
+        "           AND last_beat_ms BETWEEN 0 AND ${MAX_EPOCH_MS}\n",
+        "           AND 1 = 1\n",
         "driver cleanup refuses an expired row with an invalid last beat",
         "driver cleanup deletes an expired row whose last beat is invalid",
     ),
     (
         "timestamp-driver-cleanup-requires-expiry-bound",
-        "packages/store-libsql/src/store.ts",
-        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}\n",
-        "                AND 1 = 1\n",
+        "packages/store-libsql/src/schema.ts",
+        "           AND typeof(expires_at_ms) = 'integer'\n"
+        "           AND expires_at_ms BETWEEN 0 AND ${MAX_EPOCH_MS};\n",
+        "           AND 1 = 1;\n",
         "driver cleanup refuses a row with an invalid expiry",
         "driver cleanup deletes a row whose expiry is invalid",
     ),
     (
         "timestamp-driver-heartbeat-overflow-preserves-cleanup-inputs",
         "packages/store-libsql/src/store.ts",
-        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}\n"
-        "                AND ${epochAdditionFits(NOW_MS, '?')}`",
-        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}\n"
-        "                AND ${epochAdditionFits(NOW_MS, '?').replace(\" - \", \" + \")}`",
+        DRIVER_HEARTBEAT_STATEMENT,
+        weakened_driver_heartbeat_for_source(True),
         "driver-heartbeat overflow preserves its source and expired cleanup victim",
         "an overflowed heartbeat still cleans rows using a source beat it did not write",
     ),
@@ -3987,6 +4430,155 @@ VERDICTS = {
         "fence provenance spawn refuses a newly minted task id that an orphan run already owns",
         "mutation-verdict:behavior:spawn-rejects-orphan-owner",
     ),
+    "spawn-cancellation-single-read": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] spawn reads cancellation once and persists the value it validated",
+        "mutation-verdict:behavior:spawn-cancellation-single-read",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-payload-validation-atomic": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim leaves a corrupt persisted retry strategy unclaimed",
+        "mutation-verdict:behavior:claim-payload-validation-atomic",
+        "packages/conformance/src/suite.ts",
+    ),
+    "activate-payload-validation-atomic": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] activate leaves a claim unactivated when its durable payload becomes invalid",
+        "mutation-verdict:behavior:activate-payload-validation-atomic",
+        "packages/conformance/src/suite.ts",
+    ),
+    "driver-heartbeat-single-clock": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/clock-jitter.test.ts",
+        "moving the clock between statements changes neither progress nor state driver cleanup derives its decision from the heartbeat instant at the epoch ceiling",
+        "mutation-verdict:behavior:driver-heartbeat-single-clock",
+    ),
+    "complete-terminalization-requires-sole-live-run": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance complete does not make a task terminal while a lower live sibling remains",
+        "mutation-verdict:behavior:complete-terminalization-requires-sole-live-run",
+    ),
+    "fail-terminalization-requires-sole-live-run": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance non-retrying fail does not make a task terminal while a lower live sibling remains",
+        "mutation-verdict:behavior:fail-terminalization-requires-sole-live-run",
+    ),
+    "relaunch-cap-terminalization-requires-sole-live-run": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance relaunch-cap sweep does not make a task terminal while a lower live sibling remains",
+        "mutation-verdict:behavior:relaunch-cap-terminalization-requires-sole-live-run",
+    ),
+    "spawn-receipt-idempotency-priority-is-queue-scoped": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance spawn receipt prefers the same-queue idempotency winner over a same-key foreign queue id collision",
+        "mutation-verdict:behavior:spawn-receipt-idempotency-priority-is-queue-scoped",
+    ),
+    "claim-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance claim refuses a run whose task moved to a different queue",
+        "mutation-verdict:behavior:claim-requires-run-task-queue-ownership",
+    ),
+    "null-event-payload-never-becomes-timeout": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance a stored SQL NULL event payload is never delivered as a timeout",
+        "mutation-verdict:behavior:null-event-payload-never-becomes-timeout",
+    ),
+    "sdk-owned-retry-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun retry accounting cannot be changed through the public context attempt",
+        "mutation-verdict:behavior:sdk-owned-retry-attempt",
+    ),
+    "sdk-malformed-checkpoint-stops-pump": ExpectedVerdict(
+        "behavior",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun stops the heartbeat pump when checkpoint decoding fails during context construction",
+        "mutation-verdict:behavior:sdk-malformed-checkpoint-stops-pump",
+    ),
+    "sdk-subsecond-lease-upkeep-before-expiry": ExpectedVerdict(
+        "behavior",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun schedules upkeep before a legal sub-second lease expires",
+        "mutation-verdict:behavior:sdk-subsecond-lease-upkeep-before-expiry",
+    ),
+    "suspend-rejects-noninteger-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule suspendRun rejects a non-integer stored attempt atomically",
+        "mutation-verdict:behavior:suspend-rejects-noninteger-attempt",
+        "packages/conformance/src/suite.ts",
+    ),
+    "sweep-rejects-noninteger-attempt": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] sweep classification rechecks a corrupt stored attempt after discovery without partially sweeping the expired claim",
+        "mutation-verdict:behavior:sweep-rejects-noninteger-attempt",
+        "packages/conformance/src/suite.ts",
+    ),
+    "heartbeat-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance heartbeat refuses a run whose task moved to a different queue",
+        "mutation-verdict:behavior:heartbeat-requires-run-task-queue-ownership",
+    ),
+    "reschedule-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance reschedule refuses a run whose task moved to a different queue",
+        "mutation-verdict:behavior:reschedule-requires-run-task-queue-ownership",
+    ),
+    "suspend-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance suspendRun refuses a run whose task moved to a different queue",
+        "mutation-verdict:behavior:suspend-requires-run-task-queue-ownership",
+    ),
+    "set-checkpoint-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance setCheckpoint refuses a run whose task moved to a different queue",
+        "mutation-verdict:behavior:set-checkpoint-requires-run-task-queue-ownership",
+    ),
+    "await-event-register-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance awaitEvent does not register or park when the task moved to a different queue",
+        "mutation-verdict:behavior:await-event-register-requires-run-task-queue-ownership",
+    ),
+    "emit-event-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance emitEvent leaves a parked run untouched when its task moved to a different queue",
+        "mutation-verdict:behavior:emit-event-requires-run-task-queue-ownership",
+    ),
+    "cancel-task-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance cancelTask refuses to cross into a run that moved to a different queue",
+        "mutation-verdict:behavior:cancel-task-requires-run-task-queue-ownership",
+    ),
+    "generated-relation-queue-ownership": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance generated cross-table relations cannot cross queue ownership",
+        "mutation-verdict:construction:generated-relation-queue-ownership",
+    ),
+    "generated-runs-to-waits-authoritative-cleanup": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance generated run cleanup follows authoritative run id through a corrupt wait queue",
+        "mutation-verdict:construction:generated-runs-to-waits-authoritative-cleanup",
+    ),
 }
 
 for slug, title, _guard_anchor, _guard_call, _exact_find, _exact_replace in (
@@ -4233,7 +4825,7 @@ VERDICTS.update(
         "retry-persisted-normalization": ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
-            "scheduler conformance [libsql] claim rejects a corrupt persisted retry strategy instead of exposing unchecked JSON",
+            "scheduler conformance [libsql] claim normalizes an admissible persisted retry strategy before exposing it",
             "mutation-verdict:behavior:retry-persisted-normalization",
             "packages/conformance/src/suite.ts",
         ),
@@ -4956,6 +5548,12 @@ TYPECHECK_MUTATION_NAMES = frozenset(
 
 QUESTION_TOKEN_DELTA_REASONS = {
     "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
+    "driver-heartbeat-single-clock": (
+        "replacement intentionally restores the removed cleanup statement and its three explicit binds"
+    ),
+    "generated-relation-queue-ownership": (
+        "replacement removes the TypeScript conditional that distinguishes self and cross-table relations"
+    ),
     "generated-narrow-drops-all": (
         "replacement adds TypeScript conditional tokens and compares against SQL text; "
         "it does not add a generated statement bind"
