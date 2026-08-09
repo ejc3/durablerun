@@ -19,7 +19,7 @@
 set -euo pipefail
 
 TLA_VERSION="v1.8.0"
-TLA_SHA256="cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3"
+TLA_SHA256="e22f8ffb4bacdea0a871f444dd94fe5fb0d8013b3388ae39e82e26f852c735d5"
 CACHE_DIR="${TLA_CACHE_DIR:-$HOME/.cache/tla}"
 JAR="$CACHE_DIR/tla2tools.jar"
 STATES="$(mktemp -d "${TMPDIR:-/tmp}/tla-states.XXXXXX")"
