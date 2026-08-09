@@ -65,6 +65,11 @@ describe('systemClock captured intrinsics', () => {
     expect(calls, 'mutation-verdict:construction:system-clock-captured-promise').toBe(0)
   })
 
+  it('captures the Promise constructor for yieldTurn', async () => {
+    const calls = await replaceMethodAndCount(globalThis, 'Promise', () => clock.yieldTurn())
+    expect(calls, 'mutation-verdict:construction:system-clock-captured-yield-promise').toBe(0)
+  })
+
   it('captures setImmediate', async () => {
     const calls = await replaceMethodAndCount(globalThis, 'setImmediate', () => clock.yieldTurn())
     expect(calls, 'mutation-verdict:construction:system-clock-captured-set-immediate').toBe(0)

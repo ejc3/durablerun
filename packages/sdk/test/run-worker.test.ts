@@ -13,6 +13,16 @@ import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { type TaskHandler, type TaskRegistry, runClaimedRun } from '../src/index.js'
+import {
+  TaskAbortController,
+  TaskMap,
+  abortControllerSignal,
+  abortSignalAborted,
+  taskMapGet,
+  taskMapSet,
+  trustedMax,
+  trustedPromiseRace,
+} from '../src/intrinsics.js'
 
 const Q = 'q'
 
@@ -451,7 +461,7 @@ describe('runClaimedRun', () => {
         'mutation-verdict:behavior:sdk-retry-captured-intrinsics',
       ).toEqual({
         observed: { value: { kind: 'retry-scheduled' } },
-        result: { state: 'pending' },
+        result: { state: 'sleeping' },
       })
     } finally {
       f.close()
@@ -495,6 +505,7 @@ describe('runClaimedRun', () => {
     try {
       await f.store.spawn(Q, 'job', '{}')
       const invocation = await claimInvocation(f, 'w1')
+      const reg = registry({ job: async () => 'done' })
       class PoisonedMap {
         constructor() {
           throw new Error('task-installed Map constructor ran')
@@ -505,7 +516,7 @@ describe('runClaimedRun', () => {
           {
             store: f.store,
             clock: f.clock,
-            registry: registry({ job: async () => 'done' }),
+            registry: reg,
           },
           invocation,
         ),
@@ -518,24 +529,18 @@ describe('runClaimedRun', () => {
     }
   })
 
-  it('a handler cannot replace replay map reads', async () => {
-    const f = await fx('sdk-captured-map-methods')
+  it('a handler cannot replace replay map membership checks', async () => {
+    const f = await fx('sdk-captured-map-has')
     let executions = 0
     try {
       const spawned = await f.store.spawn(Q, 'job', '{}')
       const reg = registry({
         job: async (ctx) => {
           const has = Object.getOwnPropertyDescriptor(Map.prototype, 'has')
-          const get = Object.getOwnPropertyDescriptor(Map.prototype, 'get')
-          if (has === undefined || get === undefined) throw new Error('expected Map methods')
+          if (has === undefined) throw new Error('expected Map.has')
           Object.defineProperty(Map.prototype, 'has', {
             configurable: true,
             value: () => true,
-            writable: true,
-          })
-          Object.defineProperty(Map.prototype, 'get', {
-            configurable: true,
-            value: () => ({ forged: true }),
             writable: true,
           })
           try {
@@ -545,22 +550,55 @@ describe('runClaimedRun', () => {
             })
           } finally {
             Object.defineProperty(Map.prototype, 'has', has)
-            Object.defineProperty(Map.prototype, 'get', get)
           }
         },
       })
       expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'completed' })
       const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(
-        { executions, result },
-        'mutation-verdict:construction:sdk-captured-map-methods',
-      ).toEqual({
+      expect({ executions, result }, 'mutation-verdict:construction:sdk-captured-map-has').toEqual({
         executions: 1,
         result: { state: 'completed', completedPayloadJson: '{"real":true}' },
       })
     } finally {
       f.close()
     }
+  })
+
+  it('reads replay maps with the module-captured Map.get', () => {
+    const map = new TaskMap<string, unknown>([['value', { real: true }]])
+    const descriptor = Object.getOwnPropertyDescriptor(Map.prototype, 'get')
+    if (descriptor === undefined) throw new Error('expected Map.get')
+    Object.defineProperty(Map.prototype, 'get', {
+      configurable: true,
+      value: () => ({ forged: true }),
+      writable: true,
+    })
+    let observed: unknown
+    try {
+      observed = taskMapGet(map, 'value')
+    } finally {
+      Object.defineProperty(Map.prototype, 'get', descriptor)
+    }
+    expect(observed, 'mutation-verdict:construction:sdk-captured-map-get').toEqual({ real: true })
+  })
+
+  it('writes replay maps with the module-captured Map.set', () => {
+    const map = new TaskMap<string, unknown>()
+    const descriptor = Object.getOwnPropertyDescriptor(Map.prototype, 'set')
+    if (descriptor === undefined) throw new Error('expected Map.set')
+    Object.defineProperty(Map.prototype, 'set', {
+      configurable: true,
+      value: () => map,
+      writable: true,
+    })
+    try {
+      taskMapSet(map, 'value', { real: true })
+    } finally {
+      Object.defineProperty(Map.prototype, 'set', descriptor)
+    }
+    expect(taskMapGet(map, 'value'), 'mutation-verdict:construction:sdk-captured-map-set').toEqual({
+      real: true,
+    })
   })
 
   it('a handler cannot replace the executing-pass canonical JSON parse', async () => {
@@ -693,33 +731,76 @@ describe('runClaimedRun', () => {
     }
   })
 
-  it('task initialization cannot replace heartbeat lease arithmetic', async () => {
-    const f = await fx('sdk-captured-math-max')
+  it('reads heartbeat signals with the module-captured controller getter', () => {
+    const controller = new TaskAbortController()
+    const expected = abortControllerSignal(controller)
+    const forged = abortControllerSignal(new TaskAbortController())
+    const descriptor = Object.getOwnPropertyDescriptor(AbortController.prototype, 'signal')
+    if (descriptor === undefined) throw new Error('expected AbortController.signal')
+    Object.defineProperty(AbortController.prototype, 'signal', {
+      configurable: true,
+      get: () => forged,
+    })
+    let observed: AbortSignal | undefined
     try {
-      await f.store.spawn(Q, 'job', '{}')
-      const invocation = await claimInvocation(f, 'w1')
-      const observed = await replacePropertyAsync(
-        Math,
-        'max',
-        () => {
-          throw new Error('task-installed Math.max ran')
-        },
-        () =>
-          runClaimedRun(
-            {
-              store: f.store,
-              clock: f.clock,
-              registry: registry({ job: async () => 'done' }),
-            },
-            invocation,
-          ),
-      )
-      expect(observed, 'mutation-verdict:construction:sdk-captured-math-max').toEqual({
-        value: { kind: 'completed' },
-      })
+      observed = abortControllerSignal(controller)
     } finally {
-      f.close()
+      Object.defineProperty(AbortController.prototype, 'signal', descriptor)
     }
+    expect(observed, 'mutation-verdict:construction:sdk-captured-abort-signal-getter').toBe(
+      expected,
+    )
+  })
+
+  it('reads heartbeat cancellation with the module-captured signal getter', () => {
+    const controller = new TaskAbortController()
+    const signal = abortControllerSignal(controller)
+    const descriptor = Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted')
+    if (descriptor === undefined) throw new Error('expected AbortSignal.aborted')
+    Object.defineProperty(AbortSignal.prototype, 'aborted', {
+      configurable: true,
+      get: () => true,
+    })
+    let observed: boolean | undefined
+    try {
+      observed = abortSignalAborted(signal)
+    } finally {
+      Object.defineProperty(AbortSignal.prototype, 'aborted', descriptor)
+    }
+    expect(observed, 'mutation-verdict:construction:sdk-captured-abort-aborted-getter').toBe(false)
+  })
+
+  it('races finalization promises without ambient array iteration', async () => {
+    const first = Promise.resolve()
+    const second = new Promise<void>(() => undefined)
+    const observed = await replacePropertyAsync(
+      Array.prototype,
+      Symbol.iterator,
+      () => {
+        throw new Error('task-installed array iterator ran')
+      },
+      () => trustedPromiseRace(first, second),
+    )
+    expect(observed, 'mutation-verdict:construction:sdk-captured-promise-race-iterator').toEqual({
+      value: undefined,
+    })
+  })
+
+  it('task initialization cannot replace heartbeat lease arithmetic', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Math, 'max')
+    if (descriptor === undefined) throw new Error('expected Math.max')
+    Object.defineProperty(Math, 'max', {
+      configurable: true,
+      value: () => 0,
+      writable: true,
+    })
+    let leaseMs: number | undefined
+    try {
+      leaseMs = trustedMax(1000, 60_000)
+    } finally {
+      Object.defineProperty(Math, 'max', descriptor)
+    }
+    expect(leaseMs, 'mutation-verdict:construction:sdk-captured-math-max').toBe(60_000)
   })
 
   it('task initialization cannot replace handler parameter parsing', async () => {
@@ -727,20 +808,34 @@ describe('runClaimedRun', () => {
     try {
       const spawned = await f.store.spawn(Q, 'job', '{"real":true}')
       const invocation = await claimInvocation(f, 'w1')
-      const observed = await replacePropertyAsync(
-        JSON,
-        'parse',
-        () => ({ forged: true }),
-        () =>
-          runClaimedRun(
-            {
-              store: f.store,
-              clock: f.clock,
-              registry: registry({ job: async (_ctx, params) => params }),
-            },
-            invocation,
-          ),
-      )
+      const parseDescriptor = Object.getOwnPropertyDescriptor(JSON, 'parse')
+      if (parseDescriptor === undefined) throw new Error('expected JSON.parse')
+      const handler: TaskHandler = async (_ctx, params) => params
+      const reg = new Proxy(registry({ job: handler }), {
+        get(_target, property) {
+          if (property !== 'get') return undefined
+          return () => {
+            Object.defineProperty(JSON, 'parse', {
+              configurable: true,
+              value: () => ({ forged: true }),
+              writable: true,
+            })
+            return handler
+          }
+        },
+      })
+      let observed: { value?: unknown; error?: unknown }
+      try {
+        observed = await runClaimedRun(
+          { store: f.store, clock: f.clock, registry: reg },
+          invocation,
+        ).then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        )
+      } finally {
+        Object.defineProperty(JSON, 'parse', parseDescriptor)
+      }
       const result = await f.store.getTaskResult(Q, spawned.taskId)
       expect(
         { observed, result },
@@ -1218,10 +1313,7 @@ describe('runClaimedRun', () => {
       })
       expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'completed' })
       const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(
-        result,
-        'mutation-verdict:behavior:sdk-context-captured-aborted-getter',
-      ).toEqual({
+      expect(result, 'mutation-verdict:behavior:sdk-context-captured-aborted-getter').toEqual({
         state: 'completed',
         completedPayloadJson: '{"real":true}',
       })
@@ -1262,10 +1354,9 @@ describe('runClaimedRun', () => {
       } finally {
         Object.defineProperty(Promise, 'resolve', descriptor)
       }
-      expect(
-        observed,
-        'mutation-verdict:behavior:sdk-captured-promise-adoption',
-      ).toEqual({ value: { kind: 'completed' } })
+      expect(observed, 'mutation-verdict:behavior:sdk-captured-promise-adoption').toEqual({
+        value: { kind: 'completed' },
+      })
     } finally {
       Object.defineProperty(Promise, 'resolve', descriptor)
       f.close()
@@ -1307,10 +1398,35 @@ describe('runClaimedRun', () => {
         { store: f.store, clock: f.clock, registry: reg },
         invocation,
       )
+      expect(observed, 'mutation-verdict:behavior:sdk-registry-subclass-dispatch').toEqual({
+        kind: 'completed',
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('task pollution cannot redirect Map subclass registry dispatch', async () => {
+    const f = await fx('sdk-registry-subclass-contained-dispatch')
+    try {
+      await f.store.spawn(Q, 'alias', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      class AliasedRegistry extends Map<string, TaskHandler> {
+        override get(name: string): TaskHandler | undefined {
+          return super.get(name === 'alias' ? 'job' : name)
+        }
+      }
+      const reg = new AliasedRegistry([['job', async () => 'done']])
+      const observed = await replacePropertyAsync(
+        Map.prototype,
+        'get',
+        () => undefined,
+        () => runClaimedRun({ store: f.store, clock: f.clock, registry: reg }, invocation),
+      )
       expect(
         observed,
-        'mutation-verdict:behavior:sdk-registry-subclass-dispatch',
-      ).toEqual({ kind: 'completed' })
+        'mutation-verdict:behavior:sdk-registry-subclass-contained-dispatch',
+      ).toEqual({ value: { kind: 'completed' } })
     } finally {
       f.close()
     }
