@@ -4599,6 +4599,26 @@ def session_internal_evidence_problems() -> list[str]:
         pass
     else:
         problems.append("session process scanner accepted malformed /proc stat evidence")
+
+    module = load_embedded_session_scanner()
+    exiting_stat = module.Stat(ppid=7, state="X", start=11, comm="exiting-worker")
+    module.read_stat = lambda _pid: exiting_stat
+    real_os = module.os
+
+    class ExitingOS:
+        def stat(self, _path: str):
+            return types.SimpleNamespace(st_uid=1000)
+
+        def readlink(self, _path: str) -> str:
+            raise FileNotFoundError("exiting task has released its fs state")
+
+        def __getattr__(self, name: str):
+            return getattr(real_os, name)
+
+    module.os = ExitingOS()
+    module.open = lambda *_args, **_kwargs: io.BytesIO(b"python\0")
+    if module.read_process(4242, 1000) is not None:
+        problems.append("session process scanner retained a terminal X-state process")
     return problems
 
 
