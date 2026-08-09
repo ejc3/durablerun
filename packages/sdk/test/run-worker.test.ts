@@ -1271,4 +1271,24 @@ describe('runClaimedRun', () => {
       f.close()
     }
   })
+
+  it('task pollution cannot redirect a later registry lookup', async () => {
+    const f = await fx('sdk-captured-registry-get')
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      const reg = registry({ job: async () => 'done' })
+      const observed = await replacePropertyAsync(
+        Map.prototype,
+        'get',
+        () => undefined,
+        () => runClaimedRun({ store: f.store, clock: f.clock, registry: reg }, invocation),
+      )
+      expect(observed, 'mutation-verdict:behavior:sdk-captured-registry-get').toEqual({
+        value: { kind: 'completed' },
+      })
+    } finally {
+      f.close()
+    }
+  })
 })
