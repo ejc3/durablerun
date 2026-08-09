@@ -1196,4 +1196,37 @@ describe('runClaimedRun', () => {
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
   })
+
+  it('a handler cannot replace context lease-loss signal classification', async () => {
+    const f = await fx('sdk-context-captured-aborted')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const reg = registry({
+        job: async (ctx) => {
+          const descriptor = Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted')
+          if (descriptor === undefined) throw new Error('expected AbortSignal.aborted')
+          Object.defineProperty(AbortSignal.prototype, 'aborted', {
+            configurable: true,
+            get: () => true,
+          })
+          try {
+            return await ctx.step('value', () => ({ real: true }))
+          } finally {
+            Object.defineProperty(AbortSignal.prototype, 'aborted', descriptor)
+          }
+        },
+      })
+      expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'completed' })
+      const result = await f.store.getTaskResult(Q, spawned.taskId)
+      expect(
+        result,
+        'mutation-verdict:behavior:sdk-context-captured-aborted-getter',
+      ).toEqual({
+        state: 'completed',
+        completedPayloadJson: '{"real":true}',
+      })
+    } finally {
+      f.close()
+    }
+  })
 })
