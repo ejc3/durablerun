@@ -166,7 +166,7 @@ mechanism does not own.
 | Incrementable ordinal and exact-cap guards | 1 | The red probes use `MAX_RUN_ORDINAL + 1`, a fractional run attempt, and `cap + 1`; the repaired statements refuse them while accepting the exact maximum terminal infra-cap case. Arithmetic in a future raw SQL follow-on can still bypass the helper; exact site mutations are the remaining detector. |
 | Exact checkpoint-owner relation | 1 in reads and conflict validation | The red cases forge owner id, task, queue, attempt, range, storage representation, and existence. The shared relation rejects each. A corrupt checkpoint under a different, nonconflicting name does not block an unrelated checkpoint write; reads still filter it, and global corruption remains the invariant surface's responsibility. |
 | Atomic checkpoint conflict validation plus LWW control | 1 and 2 | The corrupt-conflict set and suspend cases previously extended or parked before their follow-ons dropped. The repaired leading CAS refuses without any state delta. The valid-higher-owner control still parks and silently preserves the higher checkpoint, proving that “reject every higher ordinal” would be an overcorrection rather than the property. |
-| Attributable mutation registry for numeric consumers | 2 | Every currently registered numeric guard must fail through its exact construction or behavior marker. This round's self-test inventoried 127 live mutations, 17 attribution cases, 19 promise cases, 10 descriptor cases, and 37 injected faults. A semantically equivalent bug that produces the same marker through another cause, or a new consumer absent from the registry, can still pass; later closeouts subsumed this checkpoint into the final 339-entry registry. |
+| Attributable mutation registry for numeric consumers | 2 | Every currently registered numeric guard must fail through its exact construction or behavior marker. This round's self-test inventoried 127 live mutations, 17 attribution cases, 19 promise cases, 10 descriptor cases, and 37 injected faults. A semantically equivalent bug that produces the same marker through another cause, or a new consumer absent from the registry, can still pass; later closeouts subsumed this checkpoint into the final 345-entry registry. |
 
 ## Fix-induced defects
 
@@ -248,9 +248,9 @@ reproduced in the current repair.
   mutations, 17 attribution cases, 19 promise-message cases, 10 descriptor
   cases, and 37 injected faults**.
 - The 127-entry checkpoint was not used as final merge evidence. Subsequent
-  closeouts expanded the same registry to 339 entries; PR #12's final
-  clean-head audit, rather than this historical self-test, owns the complete
-  attributable result.
+  closeouts expanded the same registry to 345 entries; PR #12's final
+  clean-head audit, rather than this historical self-test, must own the complete
+  attributable result before merge.
 - This historical round completed `pnpm verify` and libSQL conformance at
   `6a134e4`. Fuzz and TLC are claimed only by PR #12's final exact-head gate
   evidence, not retroactively by this checkpoint.

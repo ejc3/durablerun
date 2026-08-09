@@ -160,7 +160,7 @@ acceptable.
 | Canonical core values, invariant counter inventory, and exact progress markers | 1 at each selected source; 2 for inventory/postconditions | A fake invariant snapshot carried a valid terminal task plus `future_counter: 1.5`; `engineInvariantFindings()` returned `{"future_counter":1.5,"findings":[]}` because the new field was not projected. Separately, a temporary `derived()` generator correctly changed task state and provenance but also wrote `failure_reason = 'corrupt'`; `generated-selection.test.ts` still passed **5/5**. Canonical helpers remove the selected second representations; they do not enumerate future values or make a partial postcondition transition-equivalent. |
 | Raw `FencedBatch` negation/upsert/reach scanner | 2, syntactic | The executed statement `WHERE CASE WHEN run_id = ? THEN 1 ELSE fence_stamp = $FENCE:win$ END` compiled and printed `accepted CASE fence that can be true without the fence`. The repaired `NOT(`, bare `NOT`, `IS NOT`, and MySQL-upsert spellings are proved; raw SQL dominance is not. Generated `derived()` selection is the structural door, and PR3.9 owns the remaining parser replacement. |
 | Clock-jitter differential oracle | 2 | The already-executed post-fix boundary probe added a jitter-only `INSERT INTO clock_audit`, a table outside `SNAPSHOT_TABLES`; all **5/5** clock-jitter tests passed. The sweep scenarios close the reviewed branch omissions, but a future side effect outside the enumerated trace/table snapshot still survives. |
-| Mutation source alarm and authenticated bind attribution | 1/2 | An equal raw-question-count mutation can delete a SQL placeholder and add `?` in a TypeScript comment or conditional; the source alarm deliberately does not claim bind proof. Runtime attribution closes only errors produced by the authenticated `FencedBatch` bind factory. An unbranded driver/compiler `TypeError` with identical text remains caller-matchable: an executed `/.*/` probe emitted its exact mutation marker. The private brand owns the two local compiler exits, not bind semantics elsewhere. |
+| Mutation source alarm and authenticated bind attribution | 1/2 | An equal raw-question-count mutation can delete a SQL placeholder and add `?` in a TypeScript comment or conditional; the source alarm deliberately does not claim bind proof. A canonical-CLI injected fault withholds all live question-delta reasons in one traversal and requires an aggregate refusal, proving the live enrollment call is not removable but not each declaration independently. Runtime attribution closes only errors produced by the authenticated `FencedBatch` bind factory. An unbranded driver/compiler `TypeError` with identical text remains caller-matchable: an executed `/.*/` probe emitted its exact mutation marker. The private brand owns the two local compiler exits, not bind semantics elsewhere. |
 | Review artifact and incident attestation | 2 | A three-line fabricated log—`review-head: d8d4a68`, `tokens used`, `fabricated external verdict`—ran through `--check-codex-log` and printed `codex log complete and bound to review head d8d4a68`. Likewise, the postmortem checker accepts factual prose changes that preserve its required sections and arithmetic. These gates bind shape, head, topology, and accounting; they do not authenticate the producer or historical truth. |
 | Nightly workflow lint | 2, syntactic | A temporary nightly workflow retained read-only permissions and nonpersistent checkout, then added `uses: example/cache-credential@v1` with `token: ${{ secrets.DEPLOY_TOKEN }}`. `python3 scripts/gate-lint.py <fixture>` exited 0 and reported all **11** gate checkers clean. The lint owns checkout credentials, not arbitrary action semantics; organization policy remains the authority boundary. |
 | Removal of `FENCED_DEBT` and batch classification | 1 for the named bypass; 2 for classifications | A temporary raw `driver-heartbeat` batch performed an arbitrary `UPDATE tasks` and `DELETE runs` with no token predicate; `batch-lint.py` exited 0 with `every batch call site is classified and matches its declared shape`. `FENCED_DEBT` itself is gone, but an existing reason-bearing class can still be used dishonestly because the lint does not parse token reach. |
@@ -230,20 +230,28 @@ source inventory are the ratchets those audits produced.
   `bash scripts/review-attest.sh --check-postmortem
   postmortems/pr3.7-final-remote-review.md`, reports `SEV rule satisfied: 43
   findings accounted for in postmortems/pr3.7-final-remote-review.md`.
-- Finding 31 completion: red `5d2c30c` routed both collision assertions through
+- Finding 31 completion: red `5d2c30c` routed two collision assertions through
   the existing weak seam and proved that it swallowed an unrelated sentinel
-  `TypeError`. Green `8ae7fc2` gave self-collision, historical worker failure,
-  and claim-timeout sweep independent exact collision verdicts and mutations.
-  The sweep sibling had already been narrowed before that red; the remaining
-  defect was the self-collision path plus the false claim that both paths shared
-  one exact mechanism.
+  `TypeError`. Green `8ae7fc2` gave self-collision and claim-timeout sweep exact
+  collision verdicts and mutations, but the historical worker assertion still
+  owned an inline second regex. Red `3f5a487` routed that remaining assertion
+  through a deliberately weak shared oracle; green `4e54bec` removed the seam
+  so self-collision, historical worker failure, sweep, and the unrelated-error
+  control all consume the single `RUN_ID_COLLISION` representation. This
+  completes the already-counted finding without incrementing the ledger.
 - Finding 25 completion: red `acb36c1` reconstructed the historical
   `? IS NOT NULL` mutation and proved the cheap registry check was absent.
   Green `b3fd914` added a reconciled raw-question-token alarm and its explicit
   equal-count cancellation false negative. Review then showed that a broad
   expected-failure matcher could still launder an authentic compiler bind
   failure; the separate findings and `915c1dc`/`fd5de9c`/`b2047e8` repair are
-  recorded as findings 65–67 in the nightly closeout postmortem.
+  recorded as findings 65–67 in the nightly closeout postmortem. Red `3f5a487`
+  then proved the claimed live-inventory fault did not execute through the
+  canonical CLI: the synthetic question-delta cases alone were insufficient.
+  Green `4e54bec` makes that recursive fault run the real 345-entry inventory
+  and reject simultaneous removal of all declared question-delta reasons. It
+  proves the aggregate enrollment path, not each declaration independently,
+  and completes the already-counted finding without incrementing the ledger.
 - Finder: CodeRabbit's PR #12 review reported “Actionable comments posted:
   47.” Thread-aware reconciliation found 53 unresolved, non-outdated threads;
   35 reproduced as defects and are findings 1–34 plus 43. Finding 43's thread

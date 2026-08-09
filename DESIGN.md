@@ -404,7 +404,10 @@ One invocation executes one claimed run to its next suspension point:
   table) or start with `$` (reserved for engine markers); both are refused
   as permanent failures. So are invalid numeric knobs (`sleepFor`,
   `sleepUntil`, `awaitEvent` timeouts): deterministic bad inputs must never
-  loop through lease recovery. Structurally, every user input crosses the
+  loop through lease recovery. Task option properties are read once before
+  validation: `awaitEvent.timeoutSeconds` is snapshotted into one lexical, and
+  that exact validated value is the one persisted by the atomic store call.
+  Structurally, every user input crosses the
   context through ONE classified boundary (core's `UserName.parse` /
   `userDurationToMs` / `userEpochMs`, which throw `FatalTaskError`
   directly); durable replay keys are only constructible from validated
@@ -441,12 +444,16 @@ One invocation executes one claimed run to its next suspension point:
   Error taxonomy on a pass: infrastructure failures from the caught checkpoint
   read and defer, complete, park, or fail transitions are classified at the
   immediate catch; context store failures are enrolled before they cross the
-  handler boundary. Activation errors still propagate to the worker caller,
-  while an advisory heartbeat error only ends that upkeep loop. A classified
-  infrastructure failure aborts the pass with NO ADDITIONAL transition — a
-  lost response may already have committed — so recovery is the lease story
-  and the user's retry budget is never touched; only errors from user code
-  spend user attempts.
+  handler boundary. Handler execution plus result serialization and the
+  completion write are lexically separate phases. Only the former can enter
+  user-failure accounting: an ordinary completion rejection propagates and
+  never calls `fail`, while an authenticated completion-store control maps to
+  its infrastructure outcome. Activation errors still propagate to the worker
+  caller, while an advisory heartbeat error only ends that upkeep loop. A
+  classified infrastructure failure aborts the pass with NO ADDITIONAL
+  transition — a lost response may already have committed — so recovery is the
+  lease story and the user's retry budget is never touched; only errors from
+  user code spend user attempts.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
@@ -579,7 +586,9 @@ are load-bearing):
    order). The timeout branch is part of the contract: a wait with a timeout
    sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
    payload is the TimeoutError path, and that claim batch deletes the wait row
-   so a later emit cannot resurrect a timed-out wait.
+   so a later emit cannot resurrect a timed-out wait. The SDK snapshots and
+   validates the optional timeout once before this atomic call; the store never
+   receives a second read from user-owned option state.
    A timer suspension replaces an event registration: `reschedule` and
    `suspendRun` delete every wait belonging to the run their suspension CAS
    stamped, in the same batch. Cancellation likewise deletes waits through
@@ -609,7 +618,11 @@ are load-bearing):
 3. **Engine time is database time.** All absolute timestamps are computed in SQL
    (`unixepoch('subsec')` / `NOW(6)` / `statement_timestamp()`); clients pass only
    relative durations. User-supplied absolutes (`sleepUntil`) are the only
-   exception.
+   exception. A wake union selects `{inSeconds}` versus `{atEpochMs}` only with
+   a captured own-property check, once per consumer; inherited `inSeconds`
+   never converts an absolute wake to a relative one. Each store suspension
+   consumer prepares one wake snapshot that supplies its SQL expression,
+   argument, and epoch-headroom guard.
    **The clock expression must be at least statement-stable**: every occurrence
    within one statement — including inside a scalar subquery — must yield the
    same value. Measured: SQLite `unixepoch('subsec')` is (4000/4000 identical);
@@ -952,19 +965,29 @@ not depend on careful reading:
   module-captured `TypeError` factory and private brand. The three canonical
   promise helpers propagate that brand before consulting a caller matcher, so
   an argument-count or explicit-undefined failure cannot be laundered into an
-  exact semantic marker. Raw question-token reconciliation is only a cheap
-  source alarm; an executed equal-count cancellation case defines its limit.
+  exact semantic marker. An exact mutation deletes the private-brand read
+  itself, independently of both branded producers. Raw question-token
+  reconciliation is only a cheap source alarm; an executed equal-count
+  cancellation case defines its limit. A canonical-CLI injected fault withholds
+  all question-delta reasons in one live-inventory traversal and requires an
+  aggregate refusal; it proves enrollment is not a removable second call, not
+  each declaration independently.
   The verify gate runs 17 classifier cases, nineteen promise-message source
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
   three helper-marker cases, sixteen direct-marker cases, and seven
-  question-delta cases over all 339 live mutations. A separate
+  question-delta cases over all 345 live mutations. A separate
   generated coordinator surface injects shard omission and overlap, wrong
   heads, missing/duplicate/extra results, process/report disagreement, and
   non-owned cleanup targets, plus unconfined execution, an unowned worker,
   a skipped baseline barrier, an external workspace link, malformed identity
   types, an interruptible cleanup, an orphaned descendant, oversized finite
   memory and CPU ceilings, missing/malformed/signaled suite transport, and false
-  infrastructure-success classifications. The parser requires all nine
+  infrastructure-success classifications. Session-state evidence classifies
+  Linux `Z`, `X`, and `x` through one `TERMINAL_PROCESS_STATES` definition and
+  one `process_is_gone` decision for the initial observation, failure rechecks
+  after owner, argv, and cwd phases, and the final-identity observation; a
+  generated phase matrix attacks each transition.
+  The parser requires all nine
   aggregate counters to be nonnegative integers and internally consistent
   within their reporter domains. Test counters match test rows; each file
   status matches its own assertion/message rows; suite counters are not

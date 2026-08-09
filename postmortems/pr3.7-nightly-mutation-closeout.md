@@ -11,9 +11,10 @@ then found one more Unicode marker-boundary defect. Final adversarial
 re-review found that the hosted loop could still credit a planned batch
 without dispatching its command. Subsequent closeouts followed retry and
 task-code boundaries through the worker and completed two unresolved review
-threads. The final registry has 339 live mutations, including executable
+threads. The final registry has 345 live mutations, including executable
 attacks on dispatch, every declared task-realm condition, collision error
-attribution, and compiler-bind laundering.
+attribution, compiler-bind laundering, completion-error origin, single-read
+timeouts, and each absolute-wake discriminant.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The subject is why the nightly and mutation gates could say more
@@ -111,6 +112,13 @@ causal coverage while deleting guards without their named proof failing.
 | 65 | The shared expected-failure matcher could accept an authentic `FencedBatch` bind-count failure and emit the requested mutation marker | A same-count source false negative plus a broad matcher could receive exact credit without exercising the intended guard | Canonical expected-failure helper | Caller matchers had authority over compiler-integrity failures | A private compiler-bind brand is propagated before caller matching at the one `matches` chokepoint used by all three helpers (rungs 1 and 2) |
 | 66 | The first brand repair covered bind-count mismatch but omitted the compiler's explicit-undefined argument exit | One compiler bind failure could still be laundered by a broad matcher | `FencedBatch` compiler error factory | The repair branded one producer rather than the whole producer class | Both compiler bind exits use one authenticated factory, with independent mutations (rung 1) |
 | 67 | The first brand factory used ambient `Error`, lost the compiler's `TypeError` contract, and paired the brand with an object-only predicate | Replacement could create a callable branded value that the predicate missed and a broad matcher then credited | Compiler-error authentication repair | Private membership was added without capturing construction or aligning construction, error type, and brand domain | Use the module-captured native `TypeError`, one private WeakSet factory, and a predicate aligned with the brand domain (rungs 1 and 2) |
+| 68 | An ordinary rejection from `complete` was rethrown inside the outer handler catch and entered user-failure accounting | A handler that succeeded could be billed a retry or terminal failure after only finalization failed | Worker phase and error-origin boundary | An inner catch and its comment said completion was outside user classification, but the call remained lexically nested inside it | Close the handler/serialization catch before a sibling completion `try`; only the former can call `recordUserFailure`, with an exact mutation (rungs 1 and 2) |
+| 69 | `awaitEvent` read `opts.timeoutSeconds` separately for presence, validation, and persistence | A changing getter could persist a timeout different from the value that passed validation | SDK durable-input boundary | Repeated optional-property expressions were treated as a value rather than user-controlled effects | Snapshot once into a lexical, validate it, and pass that same value to the store, with an exact changing-getter mutation (rungs 1 and 2) |
+| 70 | Task-control wake copying used prototype-inclusive `'inSeconds' in wake` | An inherited property could turn an absolute suspension into a relative one before it reached the store | Invocation control snapshot | Owning the copied payload did not own the discriminant used to select its representation | Captured own-property classification in `isRelativeWake`, plus an exact prototype-pollution mutation (rungs 1 and 2) |
+| 71 | `reschedule` used prototype-inclusive wake discrimination at its independently writable store consumer | An absolute deadline could be persisted as database-now plus an inherited delay | Store suspension input boundary | The TypeScript union supplied no runtime provenance and `in` admitted inheritance | One captured own-property decision feeds one `prepareWake` snapshot at `reschedule`, with a site-owned exact mutation (rungs 1 and 2) |
+| 72 | `suspendRun` independently used the same prototype-inclusive wake discrimination | A run could park at the wrong instant while atomically writing a marker for the requested absolute instant | Atomic suspension input boundary | Sharing a type did not make the second consumer share runtime classification | The `suspendRun` call site makes its own captured own-property decision and feeds the same `prepareWake` shape, with an independent exact mutation (rungs 1 and 2) |
+| 73 | The private compiler-brand predicate had producer mutations but no mutation of the WeakSet membership read itself | Deleting consumer-side authentication could leave the advertised bind-attribution surface falsely complete | Core mutation enrollment | Producer coverage was treated as coverage of the independently writable predicate consumer | `testing-helper-bind-brand-read` deletes only `weakSetHas` and owns the exact construction verdict (rung 2) |
+| 74 | The session process scanner recognized only `Z` as terminal and treated Linux's terminal `X`/`x` states as live evidence failures | A process exiting during snapshot collection could falsely refuse a clean session and block final attestation | Session-state scanner self-test | One observed terminal spelling was used as a proxy for the kernel's terminal-state class, and phase-specific error branches respelled the decision | One `TERMINAL_PROCESS_STATES` definition and `process_is_gone` classifier own the initial observation, failure rechecks after owner/argv/cwd phases, and the final identity observation; a generated phase matrix exercises `Z`, `X`, and `x` transitions (rungs 1 and 2) |
 
 ## Detection ledger
 
@@ -129,8 +137,10 @@ causal coverage while deleting guards without their named proof failing.
 | Task-realm whole-boundary review, findings 43 through 53 | 11 | no |
 | Task-realm repair review, findings 54 through 64 | 11 | no |
 | Bind-attribution repair review, findings 65 through 67 | 3 | no |
+| Final durable-boundary and mutation-surface review, findings 68 through 73 | 6 | no |
+| Session scanner self-test, finding 74 | 1 | **yes** |
 
-Self-catch rate: **25 of 67, or 37.3%** (previous temporal round: **1 of
+Self-catch rate: **26 of 74, or 35.1%** (previous temporal round: **1 of
 43, or 2.3%**). The original 35-finding audit was **24 of 35, or 68.6%**,
 but the later boundary and repair rounds were almost entirely review-caught.
 The long audit found 22 attribution defects without outside review. It is not
@@ -143,9 +153,10 @@ used by the preceding numeric and temporal postmortems.
 The last checked-in cumulative trailer before this closeout was
 `review-findings: 289`. The original nightly/mutation round raised it to 300;
 the retry/throwable, task-realm, and bind-attribution rounds raise it to
-`review-findings: 331`. The previously recorded 30 self-catches rise by 25 to
-55. The branch catalogue at final closeout is therefore **331 review-caught
-plus 55 self-caught, or 386 total findings**.
+`review-findings: 331`; the final durable-boundary review raises it to
+`review-findings: 337`. The previously recorded 30 self-catches rise by 26 to
+56. The branch catalogue at final closeout is therefore **337 review-caught
+plus 56 self-caught, or 393 total findings**.
 
 ## Recurrence
 
@@ -225,7 +236,7 @@ mutation minimality.
 
 ## Fix-induced defects
 
-There were **29 fix-induced findings across the complete closeout**. Thirteen
+There were **32 fix-induced findings across the complete closeout**. Thirteen
 were in the original nightly/mutation round: finding 2 and findings 24 through
 35. Finding 2 was caused by the first fresh-process proof, whose text
 inventory still accepted dead execution. Finding 24 was caused by the
@@ -248,10 +259,10 @@ place. The required false-negative execution then found finding 34; its
 standalone red and green commits and a complete `pnpm verify` followed that
 audit. Final code re-review then found finding 35 and forced another red,
 green, and invalidation of the earlier long evidence; the 207-entry exact
-cycle therefore had to be rerun before that checkpoint could merge. The three
-later addenda add four, ten, and two fix-induced findings respectively, for
-**29 across the complete 67-finding closeout**; their exact accounting and
-repair topology appear below.
+cycle therefore had to be rerun before that checkpoint could merge. The four
+later addenda add four, ten, two, and three fix-induced findings respectively,
+for **32 across the complete 74-finding closeout**; their exact
+accounting and repair topology appear below.
 
 ## Evidence
 
@@ -388,7 +399,7 @@ Deferred (recorded in BUILD.md):
 ## What this round still would not catch
 
 A new guard or generated condition omitted from `MUTATIONS` can still ship:
-the registry now has 339 declared entries, but even a complete exact audit of
+the registry now has 345 declared entries, but even a complete exact audit of
 those entries is not proof that declaration is complete. Two guards
 deliberately sharing one assertion can still let the sibling kill a mutation.
 A canonical imported helper can still be given a callback that fabricates its
@@ -676,7 +687,7 @@ invented topology.
   mutation specifications, each with one owned verdict. The marker/inventory
   self-test and focused task-realm suites were green at `4220de7`; later
   collision and bind-attribution work intentionally invalidated that head as
-  final merge evidence, so the final clean-head 339-entry audit is required
+  final merge evidence, so the final clean-head 345-entry audit is required
   separately rather than being claimed here.
 
 ### Task-realm root cause and mechanisms
@@ -726,16 +737,18 @@ independently writable findings table.
 ### Late detection, recurrence, and fix-induced ledger
 
 All three new findings were caught by mandatory adversarial review, so this
-addendum is **0 of 3 self-caught**. The complete closeout is now **25 of 67,
-or 37.3%** self-caught. The cumulative trailer is `review-findings: 331`;
-self-catches remain 55, for **386 total findings** and a cumulative branch
-self-catch rate of **14.2%**.
+addendum is **0 of 3 self-caught**. At this bind-attribution checkpoint the
+closeout was **25 of 67, or 37.3%** self-caught. The cumulative trailer then
+was `review-findings: 331`; self-catches were 55, for **386 findings** in the
+branch catalogue. The later durable-boundary and scanner addendum below owns
+the final accounting.
 
 Finding 65 repeats the exact-attribution proxy: an exact marker still does not
 prove that the accepted error came from the intended semantic guard. Findings
 66 and 67 repeat incomplete repair-surface and ambient-operation failures.
 Findings 66 and 67 were introduced by the first uncommitted brand repair; 65
-pre-existed it. The complete closeout therefore has **29 fix-induced findings**.
+pre-existed it. At this checkpoint the closeout therefore had **29 fix-induced
+findings**.
 
 ### Late mechanism audit
 
@@ -748,13 +761,20 @@ pre-existed it. The complete closeout therefore has **29 fix-induced findings**.
 ### Late evidence and closure
 
 - Existing final-remote finding 31: red `5d2c30c` showed the weak collision seam
-  swallowing an unrelated sentinel `TypeError`; green `8ae7fc2` added the
-  self-collision, sweep, and unrelated-error owners, completing the three-path
-  set alongside the existing worker-failure verdict. All nine successor-named
-  mutations were exactly attributable at `b2047e8`.
+  swallowing an unrelated sentinel `TypeError`; green `8ae7fc2` added exact
+  self-collision, sweep, and unrelated-error owners. Red `3f5a487` then routed
+  the remaining historical worker assertion through a deliberately weak shared
+  oracle; green `4e54bec` removed that seam so self-collision, historical worker
+  failure, sweep, and the unrelated-error control all consume the one
+  `RUN_ID_COLLISION` representation. This completion does not add a finding.
 - Existing final-remote finding 25: red `acb36c1` reconstructed the missing
   `? IS NOT NULL` source alarm; green `b3fd914` added reconciled question-token
-  drift declarations and the explicit equal-count cancellation boundary.
+  drift declarations and the explicit equal-count cancellation boundary. Red
+  `3f5a487` then proved the claimed live-inventory injection never reached the
+  canonical CLI; green `4e54bec` runs that injected fault through the real
+  inventory and rejects simultaneous removal of all declared question-delta
+  reasons. It proves the aggregate enrollment path, not each declaration
+  independently. This completion does not add a finding.
 - New finding 65: red `915c1dc` made all three promise helpers demonstrate bind
   failure laundering. Findings 66 and 67: red `fd5de9c` added the omitted
   explicit-undefined producer and post-import constructor replacement cases.
@@ -771,5 +791,79 @@ compiler failures are separately ineligible for expected-failure attribution,
 so even a source mutation that evades the alarm cannot be credited for dying
 at either bind-validation exit. The collision repair similarly uses one shared
 error shape but independent path-owned mutations. The final merge gate must run
-the complete 339-entry audit on one clean immutable head; targeted evidence is
+the complete 345-entry audit on one clean immutable head; targeted evidence is
 not substituted for that cycle.
+
+## Final durable-boundary and session-scanner addendum
+
+Final review after the unresolved-thread repairs found six independently
+writable durable-boundary or mutation-surface defects. The session scanner's
+own generated self-test then found one repair-induced terminal-state refusal.
+The canonical Findings table above owns findings 68 through 74; the already
+counted final-remote findings 25 and 31 were completed without incrementing it.
+
+### Final detection and accounting ledger
+
+Findings 68 through 73 were caught by mandatory adversarial review. Finding 74
+was caught by the scanner's own generated self-test before final attestation.
+This addendum is therefore **1 of 7 self-caught**, and the complete closeout is
+**26 of 74, or 35.1% self-caught**. The cumulative trailer is
+`review-findings: 337`; the branch catalogue is **337 review-caught plus 56
+self-caught, or 393 total findings**, for a **14.2%** branch self-catch rate.
+
+Finding 68 repeats classification by apparent position: an inner catch did not
+make completion a different error-origin phase. Finding 69 repeats the
+single-representation rule because the validated option and persisted option
+were separate reads. Findings 70 through 72 repeat finding 51's inherited
+event-wake discrimination at three independently writable suspension
+consumers; owning one event wake did not enumerate the whole wake union.
+Finding 73 repeats findings 54 and 63's per-condition mutation-enrollment gap.
+Finding 74 recurs after finding 37 in
+`pr3.6-final-defect-review.md` and finding 39 in
+`parallel-mutation-audit.md`: a changing host object crossed several
+observations, but the classifier modeled one state spelling and the repair
+branches did not share one lifecycle decision.
+
+Findings 70 and 73 were introduced by the task-control and compiler-brand
+repairs respectively. Finding 74 was introduced by the session evidence
+scanner repair. Findings 68, 69, 71, and 72 pre-existed this final repair set.
+Together with the prior 29, the complete closeout has **32 fix-induced
+findings**.
+
+### Final mechanism audit
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Lexically separate handler and completion phases | 1/2 | A future finalization operation placed back inside the handler/serialization catch can again enter `recordUserFailure` until that new operation receives its own origin regression and mutation. The structure owns the current `complete` call, not every future phase. |
+| Single-read task options | 1/2 | `awaitEvent.timeoutSeconds` now has one lexical value, but a new option or context method can still read a getter twice if it is absent from the replay-equivalence and mutation inventories. |
+| Captured own-property wake discrimination | 1/2 | Task control, libSQL `reschedule`, and libSQL `suspendRun` each have an exact owner. A future backend or wake consumer can still use prototype-inclusive `in` until central generation makes the consumer list complete. |
+| Exact compiler-brand-read mutation | 2 | The registered `isFencedBatchBindError` predicate cannot stop reading its WeakSet unnoticed. A future authentication predicate or brand consumer omitted from `MUTATIONS` remains outside this literal registry. |
+| `TERMINAL_PROCESS_STATES`, `process_is_gone`, and the phase matrix | 1/2 | The current Linux `Z`, `X`, and `x` terminal states are one definition used around owner, argv, cwd, and final identity observations. A future kernel/platform state or a new observation phase omitted from the matrix remains outside the classifier. |
+
+Built now: lexical worker phases, one-read timeout persistence, captured
+own-property wake classification at all three current consumers, an exact
+private-brand-read mutation, and one terminal-process classifier with its phase
+matrix. PR3.10 remains the recorded deferral that derives mutation enrollment
+from semantic conditions; this addendum does not claim literal registration is
+complete for future consumers.
+
+### Final evidence and remaining gate
+
+- Red `3f5a487` made the completion-origin, timeout single-read, and three wake
+  discriminant regressions fail and exposed the missing private-brand-read
+  mutation owner. Green `4e54bec` installed the structural fixes and six exact
+  mutation/verdict pairs. The brand behavior test was green in the cumulative
+  red because finding 73 was missing mutation ownership, not broken production
+  behavior; that exception is disclosed rather than presented as a failing red.
+- Red `8b654ff` made the scanner retain an `X`-state process. Green `4e54bec`
+  installed `TERMINAL_PROCESS_STATES`, `process_is_gone`, and the nine-case
+  initial/owner/argv/cwd/final phase matrix covering `Z`, `X`, and `x`.
+- At `4e54bec`, focused mutation audits classified the **6 of 6** new entries,
+  **4 of 4** wake-timestamp entries, **8 of 8** bind entries, and **9 of 9**
+  successor entries as exact, with no wrong-path results. `pnpm verify` passed
+  **80 files / 3,550 tests**, and the mutation self-test enrolled **345** live
+  entries.
+- Those focused results are not the final mutation gate. The complete
+  **345-entry** audit, confined fuzz, and TLC runs must still pass together on
+  one clean immutable head before merge; this document does not claim that
+  full audit has run.

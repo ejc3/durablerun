@@ -207,9 +207,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     contract; this item records attribution behavior without redefining it.
     The verifier runs 17 attribution cases, nineteen promise-message source
     cases, ten canonical helper-descriptor cases, two helper-binding cases,
-    three helper-marker cases, and sixteen direct-marker cases across all 207
-    live mutations; seven injected classifier faults are maintained by
-    `lint-selftest.py`.
+    three helper-marker cases, sixteen direct-marker cases, and seven
+    question-delta cases across all 345 live mutations. Eight injected
+    classifier faults include one canonical-CLI attack that withholds all live
+    question-delta reasons in a single inventory traversal and requires an
+    aggregate refusal. It proves the live enrollment call is not a removable
+    second path, not each declaration independently; an equal-count cancellation
+    remains the source alarm's explicit boundary.
     The parallel coordinator has its own generated injected faults for shard
     coverage, exact head, exact result inventory, process/report agreement,
     protective memory and CPU ceilings, missing/malformed/signaled transport,
@@ -221,6 +225,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     25% of host memory and the host CPU reserve, while per-worker Vitest
     concurrency divides that aggregate CPU budget. The source checkout never
     contains a mutant.
+    Session evidence uses one `TERMINAL_PROCESS_STATES` definition and one
+    `process_is_gone` decision for the initial observation, failure rechecks
+    after owner, argv, and cwd phases, and the final identity observation. A
+    generated phase matrix covers Linux `Z`, `X`, and `x` transitions so an
+    exiting process cannot become a false live-process refusal merely because
+    it releases `/proc` data between reads.
     The nightly's execution proof pairs source and observation: the registry
     replaces the real `"${command[@]}"` dispatch with `:`, while the focused
     verdict runs the shipped real-mode loop with `PATH` set to a temporary
@@ -402,13 +412,28 @@ these three things; nothing else in the system does I/O, time, or randomness.
     trusted host code. Sixty exact mutations raised the registry from 269 to
     329.
 
+    Task option properties are also effects at this boundary: `awaitEvent`
+    snapshots `timeoutSeconds` once, validates that lexical value, and persists
+    the same value. Suspension wake unions use captured own-property decisions
+    independently at the task-control snapshot, `reschedule`, and `suspendRun`;
+    an inherited `inSeconds` can never convert an absolute wake. Each store
+    consumer feeds one `prepareWake` snapshot to its SQL expression, argument,
+    and headroom guard. Handler/serialization and completion are sibling lexical
+    phases, so an ordinary completion rejection propagates and cannot enter
+    user-failure accounting.
+
     The unresolved-thread closeout then completed the already-counted collision
     and bind-arity findings. Three collision paths have independent exact
     owners. Source question-token reconciliation is only a cheap construction
     alarm—its equal-count cancellation case is explicit—while a private
     `FencedBatch` compiler-error brand makes both bind-validation exits
     ineligible for all three expected-failure helpers. Those ten additions
-    bring the live registry to **339**.
+    bring the live registry to **339**. The final boundary review added exact
+    completion-origin, timeout single-read, three wake-discriminant, and
+    private-brand-read owners. Those six independently attributable additions
+    bring the current live registry from 339 to **345**. A canonical live
+    question-delta injected fault also completes the already-counted bind-arity
+    source alarm; it adds no mutation and does not change that total.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
@@ -507,8 +532,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   require each mutation to resolve to that condition's attributable verdict. A
   condition ID, detached marker inventory, or one mutation per mechanism is
   still a proxy. The retry/task-control and task-realm closeouts raise the live
-  registry to 339 and give every currently enumerated classifier, codec,
-  replay, worker, clock, collision, and compiler-bind arm an exact mutation; it
+  registry to 345 and give every currently enumerated classifier, codec,
+  replay, worker, clock, collision, compiler-bind, completion-origin,
+  task-option single-read, and wake-discriminant arm an exact mutation; it
   does not prove that a future arm is enrolled. PR3.10 must derive both the
   cases and their mutation/verdict ownership from the same layer descriptor.
   The same gate must verify each postmortem's cited red and green hashes are
