@@ -1,4 +1,10 @@
-import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
+import {
+  MAX_EPOCH_MS,
+  type SqlBatchMode,
+  type SqlExecutor,
+  type SqlResult,
+  type SqlStatement,
+} from '@durablerun/core'
 import { type LibsqlExecutor, LibsqlSchedulerStore, NOW_MS } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
@@ -294,4 +300,39 @@ describe('moving the clock between statements changes neither progress nor state
       expect(jittered).toEqual(control)
     })
   }
+
+  it('driver cleanup derives its decision from the heartbeat instant at the epoch ceiling', async () => {
+    const { raw, ids } = await openTestDb({
+      nowMs: MAX_EPOCH_MS - 1,
+      idNamespace: 'driver-heartbeat-clock',
+    })
+    try {
+      await raw.batch('seed-expired-driver', [
+        {
+          sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
+                VALUES (?, 'victim', 10, 20)`,
+          args: [Q],
+        },
+      ])
+      const store = new LibsqlSchedulerStore(new JitteringExecutor(raw, 1), ids)
+      await store.driverHeartbeat(Q, 'source', 0.001)
+      const [rows] = await raw.batch(
+        'driver-heartbeat-clock:probe',
+        [
+          {
+            sql: `SELECT driver_id FROM drivers WHERE queue = ? ORDER BY driver_id`,
+            args: [Q],
+          },
+        ],
+        'read',
+      )
+
+      expect(
+        rows?.rows,
+        'mutation-verdict:behavior:driver-heartbeat-single-clock',
+      ).toEqual([{ driver_id: 'source' }])
+    } finally {
+      raw.close()
+    }
+  })
 })

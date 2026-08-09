@@ -129,10 +129,48 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         )
         expect(Number(count?.rows[0]?.n)).toBe(0)
       })
+
+      it('reads cancellation once and persists the value it validated', async () => {
+        let reads = 0
+        const valid = { maxDelaySeconds: 30 }
+        const changed = { maxDurationSeconds: -1 }
+        const opts = Object.defineProperty({}, 'cancellation', {
+          enumerable: true,
+          get: () => {
+            reads += 1
+            return reads <= 4 ? valid : changed
+          },
+        }) as { cancellation: { maxDelaySeconds?: number; maxDurationSeconds?: number } }
+
+        const spawned = await f.store.spawn(Q, 'changing-cancellation', '{}', opts)
+        const [rows] = await f.raw.batch(
+          'changing-cancellation:probe',
+          [
+            {
+              sql: `SELECT cancellation, cancel_at_ms FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+
+        expect(
+          {
+            reads,
+            cancellation: rows?.rows[0]?.cancellation,
+            cancelAtEpochMs: rows?.rows[0]?.cancel_at_ms,
+          },
+          'mutation-verdict:behavior:spawn-cancellation-single-read',
+        ).toEqual({
+          reads: 1,
+          cancellation: JSON.stringify(valid),
+          cancelAtEpochMs: 1_030_000,
+        })
+      })
     })
 
     describe('claim', () => {
-      it('rejects a corrupt persisted retry strategy instead of exposing unchecked JSON', async () => {
+      it('leaves a corrupt persisted retry strategy unclaimed', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-retry', '{}', {
           retryStrategy: {
             kind: 'fixed',
@@ -151,12 +189,22 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             ],
           },
         ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, 'corrupt-retry-token', { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
 
-        await requireExpectedFailure(
-          { kind: 'behavior', mutation: 'retry-persisted-normalization' },
-          /exceeds the 100-year duration bound/,
-          async () => f.store.claim(Q, 'corrupt-retry-token', { leaseSeconds: 60, limit: 1 }),
-        )
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-payload-validation-atomic',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
       })
 
       it('claims due runs oldest-first with claim_gen 1 and full task data', async () => {
@@ -475,6 +523,41 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(activated?.paramsJson).toBe('{"k":1}')
         // The duplicate delivery of the SAME claim must die on the CAS.
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).toBeNull()
+      })
+
+      it('leaves a claim unactivated when its durable payload becomes invalid', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-before-activate', '{}', {
+          retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+        })
+        const run = await claimOne('tick-corrupt-before-activate')
+        await f.raw.batch('corrupt-before-activate', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [
+              JSON.stringify({
+                kind: 'fixed',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+              }),
+              spawned.taskId,
+            ],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .activate(Q, run.runId, run.claimToken, run.claimGen)
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:activate-payload-validation-atomic',
+        ).toEqual({
+          observed: { kind: 'resolved', value: null },
+          after: before,
+        })
       })
 
       // fenceTwin('Activate') — the per-claim generation CAS refuses the

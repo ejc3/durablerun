@@ -4,6 +4,7 @@ import {
   MAX_COUNT,
   MAX_RUN_ORDINAL,
   REASON_CLAIM_TIMEOUT,
+  RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
@@ -119,6 +120,7 @@ async function insertTask(
     cancelAtMs?: number | null
     cancellation?: string | null
     idempotencyKey?: string | null
+    queue?: string
   },
 ) {
   await exec(
@@ -129,7 +131,7 @@ async function insertTask(
      VALUES (?, ?, 'job', '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       task.id,
-      Q,
+      task.queue ?? Q,
       RETRY_NONE,
       task.maxAttempts ?? 5,
       task.cancellation ?? null,
@@ -156,6 +158,7 @@ async function insertRun(
     activatedGen?: number
     claimExpiresAtMs?: number | null
     availableAtMs?: number | null
+    queue?: string
   },
 ) {
   await exec(
@@ -165,7 +168,7 @@ async function insertRun(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 60000, ?, ?, ?)`,
     [
       run.id,
-      Q,
+      run.queue ?? Q,
       run.taskId,
       run.attempt ?? 1,
       run.state,
@@ -179,7 +182,114 @@ async function insertRun(
   )
 }
 
+/**
+ * Build attempt two entirely through the public protocol, then revive only
+ * its failed predecessor. This is the smallest reachable history that puts a
+ * lower live sibling beside the currently owned run.
+ */
+async function currentAttemptWithRevivedPredecessor(
+  f: Fixture,
+  activateCurrent: boolean,
+): Promise<{ taskId: string; currentRunId: string; currentClaimToken: string }> {
+  const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 3 })
+  const [first] = await f.store.claim(Q, 'first-worker', { leaseSeconds: 60, limit: 1 })
+  if (!first) throw new Error('expected first claim')
+  if (!(await f.store.activate(Q, first.runId, first.claimToken, first.claimGen))) {
+    throw new Error('expected first activation')
+  }
+  await f.store.fail(Q, first.runId, first.claimToken, '{"name":"retry"}', {
+    delaySeconds: 0,
+  })
+
+  const [current] = await f.store.claim(Q, 'current-worker', { leaseSeconds: 60, limit: 1 })
+  if (!current) throw new Error('expected successor claim')
+  if (
+    activateCurrent &&
+    !(await f.store.activate(Q, current.runId, current.claimToken, current.claimGen))
+  ) {
+    throw new Error('expected successor activation')
+  }
+
+  await exec(f.raw, `UPDATE runs SET state = 'pending' WHERE run_id = ?`, [first.runId])
+  return {
+    taskId: spawned.taskId,
+    currentRunId: current.runId,
+    currentClaimToken: current.claimToken,
+  }
+}
+
+async function terminalTaskLiveRunCount(raw: LibsqlExecutor, taskId: string): Promise<number> {
+  const [row] = await query(
+    raw,
+    `SELECT COUNT(*) AS n
+     FROM tasks t JOIN runs r ON r.task_id = t.task_id
+     WHERE t.task_id = ? AND t.state NOT IN ('pending','running','sleeping')
+       AND r.state IN ('pending','running','sleeping')`,
+    [taskId],
+  )
+  return Number(row?.n)
+}
+
 describe('fence provenance', () => {
+  it('complete does not make a task terminal while a lower live sibling remains', async () => {
+    const f = await fixture()
+    try {
+      const current = await currentAttemptWithRevivedPredecessor(f, true)
+
+      await f.store
+        .complete(Q, current.currentRunId, current.currentClaimToken, '{"ok":true}')
+        .catch(() => undefined)
+
+      expect(
+        await terminalTaskLiveRunCount(f.raw, current.taskId),
+        'mutation-verdict:behavior:complete-terminalization-requires-sole-live-run',
+      ).toBe(0)
+    } finally {
+      f.close()
+    }
+  })
+
+  it('non-retrying fail does not make a task terminal while a lower live sibling remains', async () => {
+    const f = await fixture()
+    try {
+      const current = await currentAttemptWithRevivedPredecessor(f, true)
+
+      await f.store
+        .fail(Q, current.currentRunId, current.currentClaimToken, '{"name":"terminal"}', null)
+        .catch(() => undefined)
+
+      expect(
+        await terminalTaskLiveRunCount(f.raw, current.taskId),
+        'mutation-verdict:behavior:fail-terminalization-requires-sole-live-run',
+      ).toBe(0)
+    } finally {
+      f.close()
+    }
+  })
+
+  it('relaunch-cap sweep does not make a task terminal while a lower live sibling remains', async () => {
+    const f = await fixture()
+    try {
+      const current = await currentAttemptWithRevivedPredecessor(f, false)
+      await exec(f.raw, `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`, [
+        RELAUNCH_CAP,
+        current.currentRunId,
+      ])
+      await exec(f.raw, `UPDATE meta SET value = ? WHERE key = 'fake_now_ms'`, [
+        String(NOW + 60_001),
+      ])
+
+      await f.store.sweep(Q, 10)
+
+      expect(
+        await terminalTaskLiveRunCount(f.raw, current.taskId),
+        'mutation-verdict:behavior:relaunch-cap-terminalization-requires-sole-live-run',
+      ).toBe(0)
+    } finally {
+      f.close()
+    }
+  })
+
   it('a replayed claim-timeout sweep at the infra cap leaves no live run under a terminal task', async () => {
     // The claim-timeout batch's terminal follow-on keys on "infra retries are
     // at the cap" plus the stamped dead run. On an exact replay of the same
@@ -629,6 +739,118 @@ describe('fence provenance', () => {
     const runsOfX = await query(f.raw, `SELECT run_id FROM runs WHERE task_id = 'X'`)
     expect(runsOfX).toEqual([])
     f.close()
+  })
+
+  it('spawn receipt prefers the same-queue idempotency winner over a same-key foreign queue id collision', async () => {
+    const f = await fixture(['A', 'NEW-RUN'])
+    try {
+      await insertTask(f.raw, {
+        id: 'A',
+        queue: 'other',
+        state: 'pending',
+        idempotencyKey: 'key',
+      })
+      await insertRun(f.raw, {
+        id: 'rA',
+        queue: 'other',
+        taskId: 'A',
+        state: 'pending',
+      })
+      await insertTask(f.raw, { id: 'Z', state: 'pending', idempotencyKey: 'key' })
+      await insertRun(f.raw, { id: 'rZ', taskId: 'Z', state: 'pending' })
+
+      const result = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'key' })
+
+      expect(
+        { created: result.created, taskId: result.taskId, runId: result.runId },
+        'mutation-verdict:behavior:spawn-receipt-idempotency-priority-is-queue-scoped',
+      ).toEqual({ created: false, taskId: 'Z', runId: 'rZ' })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('claim refuses a run whose task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      await exec(f.raw, `UPDATE tasks SET queue = 'other' WHERE task_id = ?`, [spawned.taskId])
+
+      const claimed = await f.store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+      const [run] = await query(
+        f.raw,
+        `SELECT state, claimed_by, claim_gen FROM runs WHERE run_id = ?`,
+        [spawned.runId],
+      )
+
+      expect(
+        { claimed: claimed.length, run },
+        'mutation-verdict:behavior:claim-requires-run-task-queue-ownership',
+      ).toEqual({
+        claimed: 0,
+        run: { state: 'pending', claimed_by: null, claim_gen: 0 },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('a stored SQL NULL event payload is never delivered as a timeout', async () => {
+    const f = await fixture()
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'waiter', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('expected waiter claim')
+      if (!(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen))) {
+        throw new Error('expected waiter activation')
+      }
+      await f.store.awaitEvent(
+        Q,
+        spawned.taskId,
+        run.runId,
+        run.claimToken,
+        '$await:go',
+        'go',
+        null,
+      )
+      await exec(
+        f.raw,
+        `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+         VALUES (?, 'go', NULL, ?)`,
+        [Q, NOW],
+      )
+
+      const emitted = await f.store.emitEvent(Q, 'go', '{"real":true}').then(
+        () => 'resolved' as const,
+        () => 'rejected' as const,
+      )
+      const [claimed] = await f.store.claim(Q, 'next-worker', {
+        leaseSeconds: 60,
+        limit: 1,
+      })
+      const [storedRun] = await query(
+        f.raw,
+        `SELECT state, event_payload FROM runs WHERE run_id = ?`,
+        [run.runId],
+      )
+      const waits = await query(
+        f.raw,
+        `SELECT status FROM waits WHERE run_id = ? AND step_name = '$await:go'`,
+        [run.runId],
+      )
+
+      expect(
+        { emitted, wake: claimed?.wake ?? null, run: storedRun, waits },
+        'mutation-verdict:behavior:null-event-payload-never-becomes-timeout',
+      ).toEqual({
+        emitted: 'rejected',
+        wake: null,
+        run: { state: 'sleeping', event_payload: null },
+        waits: [{ status: 'waiting' }],
+      })
+    } finally {
+      f.close()
+    }
   })
 
   it('awaitEvent does not park on a wait row it did not register', async () => {

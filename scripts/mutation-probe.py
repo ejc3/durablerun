@@ -5021,6 +5021,21 @@ MUTATIONS = [
     for spec in MUTATION_SPECS
 ]
 
+# These source markers exercise or annotate mutation-verdict machinery without
+# claiming a live mutation of their own. Keep the set exact and reasons local:
+# every other compiler-harvested marker must resolve to an ExpectedVerdict.
+VERDICT_MARKER_EXEMPTIONS = {
+    "mutation-verdict:behavior:emit-cleanup-follows-the-wake": (
+        "secondary state diagnostic for the construction-owned live mutation of the same name"
+    ),
+    "mutation-verdict:behavior:fault-matrix-edge-crossing:fresh": (
+        "healthy generated-matrix control; edge mutations own the non-fresh markers"
+    ),
+    "mutation-verdict:behavior:testing-helper": (
+        "unit fixture for the canonical expected-failure helpers, not a production mutation"
+    ),
+}
+
 # The suite, minus the legs whose cost dwarfs their value here: the fuzz shards
 # and the real-process chaos tests each add minutes per mutation. The real
 # audit re-execs its COORDINATOR through confine.sh once; every raw suite below
@@ -5516,6 +5531,7 @@ def classify_verdict(
 
 
 QUESTION_DELTA_LIVE_ENROLLMENT_FAULT = "bypass-question-delta-live-enrollment"
+VERDICT_INVENTORY_ORPHAN_FAULT = "accept-orphan-verdict-marker"
 
 SELF_TEST_FAULTS = (
     "ignore-file",
@@ -5525,8 +5541,33 @@ SELF_TEST_FAULTS = (
     "accept-suite-error",
     "accept-incoherent-report",
     "accept-malformed-report",
+    VERDICT_INVENTORY_ORPHAN_FAULT,
     QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
 )
+
+
+def verdict_inventory_problems(
+    source_markers: set[str],
+    live_markers: set[str],
+    exemptions: dict[str, str],
+) -> list[str]:
+    """Reconcile every compiler-harvested verdict claim with live authority."""
+    problems: list[str] = []
+    exemption_markers = set(exemptions)
+    for marker, reason in sorted(exemptions.items()):
+        if not reason.strip():
+            problems.append(f"verdict marker exemption {marker!r} has no non-empty reason")
+        if marker not in source_markers:
+            problems.append(f"verdict marker exemption {marker!r} is stale")
+        if marker in live_markers:
+            problems.append(
+                f"live ExpectedVerdict marker {marker!r} must not also be exempt"
+            )
+    for marker in sorted(source_markers - live_markers - exemption_markers):
+        problems.append(
+            f"source verdict marker {marker!r} has no live ExpectedVerdict or exact exemption"
+        )
+    return problems
 
 
 def mutation_question_delta_diagnostic(
@@ -5669,6 +5710,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         options["accept_incoherent"] = True
     elif fault == "accept-malformed-report":
         options["accept_malformed"] = True
+    elif fault == VERDICT_INVENTORY_ORPHAN_FAULT:
+        pass
     elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
         pass
     elif fault is not None:
@@ -5745,6 +5788,46 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 False,
                 failed().assertions,
                 ("unrelated file-level suite failure",),
+                "",
+            ),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "matching assertion alongside an unrelated failed assertion",
+            SuiteResult(
+                False,
+                False,
+                (
+                    *failed().assertions,
+                    FailedAssertion(
+                        "packages/other/test/unrelated.test.ts",
+                        "an unrelated test also fails",
+                        ("AssertionError: unrelated collateral failure",),
+                    ),
+                ),
+                (),
+                "",
+            ),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "matching marker alongside an unrelated failure message",
+            SuiteResult(
+                False,
+                False,
+                (
+                    FailedAssertion(
+                        expected.file,
+                        expected.full_name,
+                        (
+                            expected.marker,
+                            "AssertionError: unrelated collateral failure",
+                        ),
+                    ),
+                ),
+                (),
                 "",
             ),
             expected,
@@ -6211,7 +6294,74 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
     )
 
+    live_inventory_marker = "mutation-verdict:behavior:inventory-live"
+    orphan_inventory_marker = "mutation-verdict:behavior:inventory-orphan"
+    verdict_inventory_cases = (
+        (
+            "exact live ownership",
+            {live_inventory_marker},
+            {live_inventory_marker},
+            {},
+            (),
+        ),
+        (
+            "source marker without live ownership",
+            {live_inventory_marker, orphan_inventory_marker},
+            {live_inventory_marker},
+            {},
+            (
+                f"source verdict marker {orphan_inventory_marker!r} has no live "
+                "ExpectedVerdict or exact exemption",
+            ),
+        ),
+        (
+            "exact explained source exemption",
+            {orphan_inventory_marker},
+            set(),
+            {orphan_inventory_marker: "synthetic non-mutation fixture"},
+            (),
+        ),
+        (
+            "stale exemption",
+            set(),
+            set(),
+            {orphan_inventory_marker: "synthetic non-mutation fixture"},
+            (f"verdict marker exemption {orphan_inventory_marker!r} is stale",),
+        ),
+        (
+            "live marker cannot be exempt",
+            {live_inventory_marker},
+            {live_inventory_marker},
+            {live_inventory_marker: "invalid overlap"},
+            (
+                f"live ExpectedVerdict marker {live_inventory_marker!r} must not also be exempt",
+            ),
+        ),
+        (
+            "exemption reason is mandatory",
+            {orphan_inventory_marker},
+            set(),
+            {orphan_inventory_marker: ""},
+            (
+                f"verdict marker exemption {orphan_inventory_marker!r} has no non-empty reason",
+            ),
+        ),
+    )
+
     failures = []
+    inventory_checker = verdict_inventory_problems
+    if fault == VERDICT_INVENTORY_ORPHAN_FAULT:
+        inventory_checker = lambda source, live, exemptions: [
+            problem
+            for problem in verdict_inventory_problems(source, live, exemptions)
+            if "has no live ExpectedVerdict" not in problem
+        ]
+    for label, source, live, exemptions, wanted in verdict_inventory_cases:
+        got = tuple(inventory_checker(source, live, exemptions))
+        if got != wanted:
+            failures.append(
+                f"verdict-inventory {label}: expected {wanted!r}, got {got!r}"
+            )
     for label, name, find, replace, reason, wanted in question_delta_cases:
         got = mutation_question_delta_diagnostic(name, find, replace, reason)
         if wanted is None:
@@ -6434,11 +6584,17 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     f"{mutation.verdict.marker!r} nor canonical helper descriptor is present in "
                     f"{marker_file}"
                 )
+        source_verdict_markers: set[str] = set()
         for path in live_paths:
             relative = str(path.relative_to(ROOT))
             analysis = analyses.get(relative)
             if analysis is None:
                 continue
+            source_verdict_markers.update(analysis.direct_verdict_markers)
+            source_verdict_markers.update(
+                f"mutation-verdict:{kind}:{name}"
+                for kind, name in analysis.helper_verdict_descriptors
+            )
             if analysis.diagnostics:
                 failures.append(
                     f"{relative}: cannot inspect promise verdicts: "
@@ -6450,6 +6606,13 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     f"{relative}:{line}: Vitest promise outcomes cannot carry "
                     "a custom message; use an explicit attribution helper"
                 )
+        failures.extend(
+            inventory_checker(
+                source_verdict_markers,
+                {mutation.verdict.marker for mutation in MUTATIONS},
+                VERDICT_MARKER_EXEMPTIONS,
+            )
+        )
     for label, result, verdict, wanted in cases:
         got = classify_verdict(result, verdict, matcher, **options)
         if got != wanted:
@@ -6499,6 +6662,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         f"{len(helper_binding_cases)} helper-binding cases, "
         f"{len(helper_marker_cases)} helper-marker cases, "
         f"{len(direct_marker_cases)} direct-marker cases, "
+        f"{len(verdict_inventory_cases)} verdict-inventory cases, "
         f"{len(question_delta_cases)} question-delta cases, one live-enrollment fault, "
         f"{len(MUTATIONS)} live mutations"
     )

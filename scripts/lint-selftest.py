@@ -3544,6 +3544,7 @@ BAD_INVOCATIONS = [
         "accept-suite-error",
         "accept-incoherent-report",
         "accept-malformed-report",
+        "accept-orphan-verdict-marker",
     )
 ]
 

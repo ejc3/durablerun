@@ -376,6 +376,29 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('retry accounting cannot be changed through the public context attempt', async () => {
+    const f = await fx('sdk-owned-retry-attempt')
+    try {
+      const reg = registry({
+        job: async (ctx) => {
+          ;(ctx as unknown as { attempt: number }).attempt = 999
+          throw new Error('ordinary first-attempt failure')
+        },
+      })
+      await f.store.spawn(Q, 'job', '{}', {
+        maxAttempts: 3,
+        retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+      })
+
+      const outcome = await claimAndRun(f, reg, 'w1')
+      expect(outcome, 'mutation-verdict:behavior:sdk-owned-retry-attempt').toEqual({
+        kind: 'retry-scheduled',
+      })
+    } finally {
+      f.close()
+    }
+  })
+
   it('a legal zero-base retry records the failure after exponent overflow', async () => {
     const f = await fx('sdk-zero-base-retry-overflow')
     const reg = registry({
@@ -1372,6 +1395,102 @@ describe('runClaimedRun', () => {
     expect(beats).toBeGreaterThanOrEqual(2)
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
+  })
+
+  it('stops the heartbeat pump when checkpoint replay construction rejects', async () => {
+    const f = await fx('sdk-malformed-checkpoint-pump')
+    let beats = 0
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      if (spawned.runId === null) throw new Error('expected an initial run')
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('claim')
+      await f.raw.batch('malformed-checkpoint', [
+        {
+          sql: `INSERT INTO checkpoints
+                  (task_id, checkpoint_name, queue, state, status,
+                   owner_run_id, owner_attempt, updated_at_ms)
+                VALUES (?, 'broken', ?, '{', 'committed', ?, ?, ?)`,
+          args: [spawned.taskId, Q, run.runId, run.attempt, f.clock.now],
+        },
+      ])
+      const counting = new Proxy(f.store, {
+        get(target, prop, receiver) {
+          if (prop === 'heartbeat') {
+            return async (..._args: Parameters<SchedulerStore['heartbeat']>) => {
+              beats++
+              // End the leaked pump after observing the one call, so the red
+              // test itself leaves no live upkeep loop behind.
+              return { held: false, remainingMs: 0 }
+            }
+          }
+          const value = Reflect.get(target, prop, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+
+      let rejected: unknown
+      try {
+        await runClaimedRun(
+          {
+            store: counting as SchedulerStore,
+            clock: f.clock,
+            registry: registry({ job: async () => null }),
+          },
+          { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+        )
+      } catch (error) {
+        rejected = error
+      }
+      expect(rejected).toBeInstanceOf(SyntaxError)
+
+      await f.advance(30_000)
+      await f.clock.yieldTurn()
+      expect(beats, 'mutation-verdict:behavior:sdk-malformed-checkpoint-stops-pump').toBe(0)
+    } finally {
+      f.close()
+    }
+  })
+
+  it('schedules upkeep before a legal sub-second lease expires', async () => {
+    const f = await fx('sdk-subsecond-lease-upkeep')
+    let releaseHandler: (() => void) | undefined
+    const handlerBlocked = new Promise<void>((resolve) => {
+      releaseHandler = resolve
+    })
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 0.001, limit: 1 })
+      if (!run) throw new Error('claim')
+      const pass = runClaimedRun(
+        {
+          store: f.store,
+          clock: f.clock,
+          registry: registry({
+            job: async () => {
+              await handlerBlocked
+              return 'done'
+            },
+          }),
+        },
+        { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      )
+
+      while (f.clock.fired.length < 1) {
+        await f.clock.yieldTurn()
+      }
+      const firstUpkeepDelay =
+        (f.clock.fired[0]?.deadline ?? Number.POSITIVE_INFINITY) - f.clock.now
+      releaseHandler?.()
+      expect(await pass).toEqual({ kind: 'completed' })
+      expect(
+        firstUpkeepDelay,
+        'mutation-verdict:behavior:sdk-subsecond-lease-upkeep-before-expiry',
+      ).toBeLessThan(1)
+    } finally {
+      releaseHandler?.()
+      f.close()
+    }
   })
 
   it('a handler cannot replace context lease-loss signal classification', async () => {
