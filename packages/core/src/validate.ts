@@ -12,6 +12,37 @@
 
 import { INFRA_RETRY_CAP, RELAUNCH_CAP } from './contract.js'
 import { FatalTaskError } from './errors.js'
+import { TASK_INTRINSICS } from './intrinsics.js'
+
+const {
+  ArrayIsArray: isArray,
+  BigIntFrom: toBigInt,
+  DateGetTime: dateGetTime,
+  DateToISOString: dateToISOString,
+  JSONParse: parseJson,
+  JSONStringify: stringifyJson,
+  MathRound: round,
+  NumberFrom: toNumber,
+  NumberIsFinite: isFiniteNumber,
+  NumberIsSafeInteger: isSafeInteger,
+  ObjectCreate: createObject,
+  ObjectDefineProperty: defineProperty,
+  ObjectFreeze: freeze,
+  ObjectGetPrototypeOf: getPrototypeOf,
+  ObjectKeys: objectKeys,
+  ObjectPrototype: objectPrototype,
+  RangeError: TrustedRangeError,
+  ReflectGet: reflectGet,
+  RegExpExec: regexpExec,
+  StringFrom: stringFrom,
+  StringIncludes: stringIncludes,
+  StringStartsWith: stringStartsWith,
+  TypeError: TrustedTypeError,
+  WeakSet: TrustedWeakSet,
+  WeakSetAdd: weakSetAdd,
+  WeakSetDelete: weakSetDelete,
+  WeakSetHas: weakSetHas,
+} = TASK_INTRINSICS
 
 /** 9999-12-31T23:59:59Z — no legitimate engine timestamp lies beyond it. */
 export const MAX_EPOCH_MS = 253_402_300_799_000
@@ -29,23 +60,25 @@ export function durationToMs(
   seconds: number,
   opts: { positive?: boolean } = {},
 ): number {
-  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
-    throw new RangeError(`${name} must be a finite non-negative number of seconds, got ${seconds}`)
+  if (typeof seconds !== 'number' || !isFiniteNumber(seconds) || seconds < 0) {
+    throw new TrustedRangeError(
+      `${name} must be a finite non-negative number of seconds, got ${seconds}`,
+    )
   }
-  const ms = Math.round(seconds * 1000)
+  const ms = round(seconds * 1000)
   if (ms > MAX_DURATION_MS) {
-    throw new RangeError(`${name} exceeds the 100-year duration bound: ${seconds}s`)
+    throw new TrustedRangeError(`${name} exceeds the 100-year duration bound: ${seconds}s`)
   }
   if (opts.positive && ms < 1) {
-    throw new RangeError(`${name} must be at least 1ms, got ${seconds}s`)
+    throw new TrustedRangeError(`${name} must be at least 1ms, got ${seconds}s`)
   }
   return ms
 }
 
 /** An absolute epoch-ms instant (ctx.sleepUntil — the one sanctioned user absolute). */
 export function requireEpochMs(name: string, epochMs: number): number {
-  if (!Number.isSafeInteger(epochMs) || epochMs < 0 || epochMs > MAX_EPOCH_MS) {
-    throw new RangeError(
+  if (!isSafeInteger(epochMs) || epochMs < 0 || epochMs > MAX_EPOCH_MS) {
+    throw new TrustedRangeError(
       `${name} must be an integer epoch-ms in [0, ${MAX_EPOCH_MS}], got ${epochMs}`,
     )
   }
@@ -72,8 +105,10 @@ export const MAX_RUN_ORDINAL = MAX_COUNT + INFRA_RETRY_CAP
 
 /** Counts: maxAttempts, claim limits. */
 export function requirePositiveInt(name: string, value: number, min = 1): number {
-  if (!Number.isSafeInteger(value) || value < min || value > MAX_COUNT) {
-    throw new RangeError(`${name} must be an integer in [${min}, ${MAX_COUNT}], got ${value}`)
+  if (!isSafeInteger(value) || value < min || value > MAX_COUNT) {
+    throw new TrustedRangeError(
+      `${name} must be an integer in [${min}, ${MAX_COUNT}], got ${value}`,
+    )
   }
   return value
 }
@@ -116,7 +151,7 @@ const integerBounds = <const Domain extends string>(
   max: number,
 ): BrandedIntegerBounds<Domain> => {
   const bounds = new IntegerBoundsDescriptor(domain, min, max)
-  Object.freeze(bounds)
+  freeze(bounds)
   return bounds
 }
 
@@ -131,13 +166,13 @@ function refineIntegerBounds<const Domain extends string>(
   const min = refinement.min ?? bounds.min
   const max = refinement.max ?? bounds.max
   if (
-    !Number.isSafeInteger(min) ||
-    !Number.isSafeInteger(max) ||
+    !isSafeInteger(min) ||
+    !isSafeInteger(max) ||
     min < bounds.min ||
     max > bounds.max ||
     min > max
   ) {
-    throw new RangeError(
+    throw new TrustedRangeError(
       `integer refinement must stay inside [${bounds.min}, ${bounds.max}], got [${min}, ${max}]`,
     )
   }
@@ -153,8 +188,8 @@ function refineIntegerBounds<const Domain extends string>(
  * against MAX_COUNT, treat a nullable positive lease as a zero-based duration,
  * or decode checkpoint ownership as a user-attempt count.
  */
-export const PERSISTED_INTEGER_BOUNDS = Object.freeze({
-  tasks: Object.freeze({
+export const PERSISTED_INTEGER_BOUNDS = freeze({
+  tasks: freeze({
     attempts: integerBounds('tasks.attempts', 0, MAX_COUNT),
     max_attempts: integerBounds('tasks.max_attempts', 1, MAX_COUNT),
     infra_retries: integerBounds('tasks.infra_retries', 0, INFRA_RETRY_CAP),
@@ -165,7 +200,7 @@ export const PERSISTED_INTEGER_BOUNDS = Object.freeze({
     created_at_ms: integerBounds('tasks.created_at_ms', 0, MAX_EPOCH_MS),
     fence_at_ms: integerBounds('tasks.fence_at_ms', 0, MAX_EPOCH_MS),
   }),
-  runs: Object.freeze({
+  runs: freeze({
     attempt: integerBounds('runs.attempt', 1, MAX_RUN_ORDINAL),
     claim_gen: integerBounds('runs.claim_gen', 0, MAX_COUNT),
     activated_gen: integerBounds('runs.activated_gen', 0, MAX_COUNT),
@@ -180,20 +215,20 @@ export const PERSISTED_INTEGER_BOUNDS = Object.freeze({
     created_at_ms: integerBounds('runs.created_at_ms', 0, MAX_EPOCH_MS),
     fence_at_ms: integerBounds('runs.fence_at_ms', 0, MAX_EPOCH_MS),
   }),
-  checkpoints: Object.freeze({
+  checkpoints: freeze({
     owner_attempt: integerBounds('checkpoints.owner_attempt', 1, MAX_RUN_ORDINAL),
     updated_at_ms: integerBounds('checkpoints.updated_at_ms', 0, MAX_EPOCH_MS),
   }),
-  events: Object.freeze({
+  events: freeze({
     emitted_at_ms: integerBounds('events.emitted_at_ms', 0, MAX_EPOCH_MS),
     fence_at_ms: integerBounds('events.fence_at_ms', 0, MAX_EPOCH_MS),
   }),
-  waits: Object.freeze({
+  waits: freeze({
     timeout_at_ms: integerBounds('waits.timeout_at_ms', 0, MAX_EPOCH_MS),
     created_at_ms: integerBounds('waits.created_at_ms', 0, MAX_EPOCH_MS),
     fence_at_ms: integerBounds('waits.fence_at_ms', 0, MAX_EPOCH_MS),
   }),
-  drivers: Object.freeze({
+  drivers: freeze({
     last_beat_ms: integerBounds('drivers.last_beat_ms', 0, MAX_EPOCH_MS),
     expires_at_ms: integerBounds('drivers.expires_at_ms', 0, MAX_EPOCH_MS),
   }),
@@ -268,50 +303,50 @@ type PersistedCounterFieldContract =
  * inventory surfaces iterate this list instead of maintaining table-specific
  * copies.
  */
-export const PERSISTED_COUNTER_FIELDS = Object.freeze([
-  Object.freeze({
+export const PERSISTED_COUNTER_FIELDS = freeze([
+  freeze({
     id: 'task-attempts',
     table: 'tasks',
     column: 'attempts',
     bounds: PERSISTED_INTEGER_BOUNDS.tasks.attempts,
   }),
-  Object.freeze({
+  freeze({
     id: 'task-max-attempts',
     table: 'tasks',
     column: 'max_attempts',
     bounds: PERSISTED_INTEGER_BOUNDS.tasks.max_attempts,
   }),
-  Object.freeze({
+  freeze({
     id: 'task-infra-retries',
     table: 'tasks',
     column: 'infra_retries',
     bounds: PERSISTED_INTEGER_BOUNDS.tasks.infra_retries,
   }),
-  Object.freeze({
+  freeze({
     id: 'run-attempt',
     table: 'runs',
     column: 'attempt',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.attempt,
   }),
-  Object.freeze({
+  freeze({
     id: 'run-claim-gen',
     table: 'runs',
     column: 'claim_gen',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.claim_gen,
   }),
-  Object.freeze({
+  freeze({
     id: 'run-activated-gen',
     table: 'runs',
     column: 'activated_gen',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.activated_gen,
   }),
-  Object.freeze({
+  freeze({
     id: 'run-relaunch-count',
     table: 'runs',
     column: 'relaunch_count',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.relaunch_count,
   }),
-  Object.freeze({
+  freeze({
     id: 'checkpoint-owner-attempt',
     table: 'checkpoints',
     column: 'owner_attempt',
@@ -344,7 +379,7 @@ function persistedTemporalField<
   kind: Kind,
   nullable: Nullable,
 ) {
-  return Object.freeze({ id: bounds.field, table, column, bounds, kind, nullable })
+  return freeze({ id: bounds.field, table, column, bounds, kind, nullable })
 }
 
 /**
@@ -356,7 +391,7 @@ function persistedTemporalField<
  * `nullable` records the migrated schema contract rather than whichever
  * lifecycle state happens to populate a field.
  */
-export const PERSISTED_TEMPORAL_FIELDS = Object.freeze([
+export const PERSISTED_TEMPORAL_FIELDS = freeze([
   persistedTemporalField(
     'tasks',
     'enqueue_at_ms',
@@ -525,7 +560,7 @@ export type PersistedTemporalFieldId = PersistedTemporalFieldDescriptor['id']
 export type PersistedTemporalTable = PersistedTemporalFieldDescriptor['table']
 
 /** Numeric results computed from several persisted sources, never one column. */
-export const DERIVED_INTEGER_BOUNDS = Object.freeze({
+export const DERIVED_INTEGER_BOUNDS = freeze({
   epoch_ms: integerBounds('derived.epoch_ms', 0, MAX_EPOCH_MS),
   duration_ms: integerBounds('derived.duration_ms', 0, MAX_DURATION_MS),
 })
@@ -556,27 +591,23 @@ export function storageValueKind(value: unknown): string {
  * `Number(9007199254740993n)` silently become a different protocol value.
  */
 export function decodeBoundedInteger(value: unknown, bounds: IntegerBounds): BoundedIntegerDecode {
-  if (
-    !Number.isSafeInteger(bounds.min) ||
-    !Number.isSafeInteger(bounds.max) ||
-    bounds.min > bounds.max
-  ) {
-    throw new RangeError(
+  if (!isSafeInteger(bounds.min) || !isSafeInteger(bounds.max) || bounds.min > bounds.max) {
+    throw new TrustedRangeError(
       `integer decoder bounds must be ordered safe integers, got [${bounds.min}, ${bounds.max}]`,
     )
   }
   let exact: bigint
   if (typeof value === 'bigint') {
     exact = value
-  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
-    exact = BigInt(value)
+  } else if (typeof value === 'number' && isSafeInteger(value)) {
+    exact = toBigInt(value)
   } else {
     return { ok: false, reason: 'not-an-exact-integer' }
   }
-  if (exact < BigInt(bounds.min) || exact > BigInt(bounds.max)) {
+  if (exact < toBigInt(bounds.min) || exact > toBigInt(bounds.max)) {
     return { ok: false, reason: 'out-of-range', exact }
   }
-  return { ok: true, value: Number(exact), exact }
+  return { ok: true, value: toNumber(exact), exact }
 }
 
 function requireBrandedInteger(
@@ -586,7 +617,7 @@ function requireBrandedInteger(
 ): number {
   const decoded = decodeBoundedInteger(value, bounds)
   if (decoded.ok) return decoded.value
-  throw new RangeError(
+  throw new TrustedRangeError(
     `${name} (${bounds.field}) must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (${decoded.reason})`,
   )
 }
@@ -602,7 +633,7 @@ function requireClientBrandedInteger(
   bounds: BrandedIntegerBounds<string>,
 ): number {
   if (typeof value !== 'number') {
-    throw new RangeError(
+    throw new TrustedRangeError(
       `${name} (${bounds.field}) must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (not-an-exact-integer)`,
     )
   }
@@ -646,8 +677,80 @@ export function requirePositiveClaimGeneration(name: string, value: unknown): nu
 /** What a bad value IS, for an error message that saves a debugging session. */
 function describe(value: unknown): string {
   if (value === null) return 'null'
-  if (Array.isArray(value)) return 'an array'
+  if (isArray(value)) return 'an array'
   return typeof value
+}
+
+function dataProperty(value: unknown, enumerable: boolean): PropertyDescriptor {
+  const descriptor = createObject(null) as PropertyDescriptor
+  descriptor.configurable = true
+  descriptor.enumerable = enumerable
+  descriptor.value = value
+  descriptor.writable = true
+  return descriptor
+}
+
+/**
+ * Copy one task value into data owned by the runtime. The copy has no
+ * attacker-controlled prototype or toJSON hook, and every source field is
+ * read once. This is the representation JSON.stringify receives.
+ */
+function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown {
+  if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
+    throw new TrustedTypeError(`${typeof value} is not a JSON value`)
+  }
+  if (typeof value !== 'object' || value === null) return value
+
+  // Brand-check with the captured native operation instead of instanceof.
+  // Invalid Dates have JSON's canonical null representation.
+  try {
+    const epochMs = dateGetTime(value)
+    return isFiniteNumber(epochMs) ? dateToISOString(value) : null
+  } catch {
+    // Not a Date: continue with raw enumerable data.
+  }
+
+  if (weakSetHas(ancestors, value)) {
+    throw new TrustedTypeError('cyclic task value')
+  }
+  weakSetAdd(ancestors, value)
+  try {
+    if (isArray(value)) {
+      const owned: unknown[] = []
+      // JSON.stringify consults an inherited toJSON before visiting array
+      // members. An own undefined value makes the owned array independent of
+      // later Array/Object prototype changes.
+      defineProperty(owned, 'toJSON', dataProperty(undefined, false))
+      const length = reflectGet(value, 'length')
+      if (typeof length !== 'number' || !isSafeInteger(length) || length < 0) {
+        throw new TrustedTypeError('array length is not a non-negative safe integer')
+      }
+      for (let index = 0; index < length; index++) {
+        const key = stringFrom(index)
+        const item = snapshotTaskValue(reflectGet(value, key), ancestors)
+        defineProperty(owned, key, dataProperty(item === undefined ? null : item, true))
+      }
+      return owned
+    }
+
+    const prototype = getPrototypeOf(value)
+    if (prototype !== null && prototype !== objectPrototype) {
+      throw new TrustedTypeError('task value must use the JSON data model')
+    }
+    const owned = createObject(null) as Record<string, unknown>
+    const keys = objectKeys(value)
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index]
+      if (key === undefined) continue
+      const item = snapshotTaskValue(reflectGet(value, key), ancestors)
+      if (item !== undefined) {
+        defineProperty(owned, key, dataProperty(item, true))
+      }
+    }
+    return owned
+  } finally {
+    weakSetDelete(ancestors, value)
+  }
 }
 
 /**
@@ -663,18 +766,9 @@ function describe(value: unknown): string {
 export function serializeTaskValue(what: string, value: unknown): string {
   const root = value === undefined ? null : value
   try {
-    const serialized = JSON.stringify(root, (_key, candidate: unknown) => {
-      if (
-        typeof candidate === 'function' ||
-        typeof candidate === 'symbol' ||
-        typeof candidate === 'bigint'
-      ) {
-        throw new TypeError(`${typeof candidate} is not a JSON value`)
-      }
-      return candidate
-    })
+    const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))
     if (serialized === undefined) {
-      throw new TypeError(`${describe(root)} has no JSON representation`)
+      throw new TrustedTypeError(`${describe(root)} has no JSON representation`)
     }
     return serialized
   } catch {
@@ -683,6 +777,11 @@ export function serializeTaskValue(what: string, value: unknown): string {
     // coercion throws; diagnostics must not reopen the permanent-error gate.
     throw new FatalTaskError(`${what} is not a JSON value`)
   }
+}
+
+/** Parse with the JSON operation captured before task initialization. */
+export function parseTaskValueJson(json: string): unknown {
+  return parseJson(json)
 }
 
 /*
@@ -720,7 +819,7 @@ export class UserName {
     if (typeof raw !== 'string') {
       throw new FatalTaskError(`${what} must be a string, got ${describe(raw)}`)
     }
-    if (raw.includes('#') || raw.startsWith('$')) {
+    if (stringIncludes(raw, '#') || stringStartsWith(raw, '$')) {
       throw new FatalTaskError(
         `${what} '${raw}' uses reserved characters ('#' anywhere, '$' prefix)`,
       )
@@ -730,7 +829,7 @@ export class UserName {
     // (not well-formed UTF-16) is re-encoded to U+FFFD — either way two
     // distinct JS names collide or a name silently changes, and its wake
     // never matches. Reject both at the single mint point.
-    if (raw.includes('\u0000') || /\p{Surrogate}/u.test(raw)) {
+    if (stringIncludes(raw, '\u0000') || regexpExec(/\p{Surrogate}/u, raw) !== null) {
       throw new FatalTaskError(
         `${what} '${raw}' contains characters that do not round-trip through storage (NUL or a lone surrogate)`,
       )
@@ -747,8 +846,8 @@ export function userDurationToMs(
 ): number {
   try {
     return durationToMs(name, seconds, opts)
-  } catch (error) {
-    throw new FatalTaskError(String(error))
+  } catch {
+    throw new FatalTaskError(`${name} is not a valid task duration`)
   }
 }
 
@@ -778,19 +877,20 @@ export function userJsonValue(what: string, json: string): string {
       `${what} is ${describe(json)}, not a JSON string — JSON.stringify returns undefined for undefined, functions and symbols`,
     )
   }
+  let parsed: unknown
   try {
-    return serializeTaskValue(what, JSON.parse(json))
-  } catch (error) {
-    if (error instanceof FatalTaskError) throw error
-    throw new FatalTaskError(`${what} is not valid JSON: ${String(error)}`)
+    parsed = parseTaskValueJson(json)
+  } catch {
+    throw new FatalTaskError(`${what} is not valid JSON`)
   }
+  return serializeTaskValue(what, parsed)
 }
 
 /** requireEpochMs, classified for the task boundary. */
 export function userEpochMs(name: string, epochMs: number): number {
   try {
     return requireEpochMs(name, epochMs)
-  } catch (error) {
-    throw new FatalTaskError(String(error))
+  } catch {
+    throw new FatalTaskError(`${name} is not a valid task epoch`)
   }
 }

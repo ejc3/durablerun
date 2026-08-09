@@ -5,17 +5,22 @@
  * ctx.sleepFor / ctx.awaitEvent and caught by the worker runtime.
  */
 
+import { TASK_INTRINSICS } from './intrinsics.js'
+
 export type TaskThrowableSnapshot = Readonly<{
   kind: 'failure'
   fatal: boolean
   failureJson: string
 }>
 
-const freeze = Object.freeze
-const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor
-const getPrototypeOf = Object.getPrototypeOf
-const stringifyPrimitive = String
-const stringifyJson = JSON.stringify
+const {
+  JSONStringify: stringifyJson,
+  ObjectFreeze: freeze,
+  ObjectGetOwnPropertyDescriptor: getOwnPropertyDescriptor,
+  ObjectGetPrototypeOf: getPrototypeOf,
+  ObjectHasOwn: hasOwn,
+  StringFrom: stringifyPrimitive,
+} = TASK_INTRINSICS
 const AUTHENTIC_FATAL_FAILURES = new WeakMap<object, TaskThrowableSnapshot>()
 const getAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.get.bind(AUTHENTIC_FATAL_FAILURES)
 const setAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.set.bind(AUTHENTIC_FATAL_FAILURES)
@@ -56,7 +61,7 @@ function errorDataString(value: object, field: 'name' | 'message'): DataString {
   for (let depth = 0; depth < 8 && current !== null; depth++) {
     const descriptor = getOwnPropertyDescriptor(current, field)
     if (descriptor !== undefined) {
-      return 'value' in descriptor && typeof descriptor.value === 'string'
+      return hasOwn(descriptor, 'value') && typeof descriptor.value === 'string'
         ? { kind: 'value', value: descriptor.value }
         : { kind: 'unsafe' }
     }
@@ -184,7 +189,9 @@ export class FatalTaskError extends Error {
     super(message, options)
     const descriptor = getOwnPropertyDescriptor(this, 'message')
     const ownedMessage =
-      descriptor !== undefined && 'value' in descriptor && typeof descriptor.value === 'string'
+      descriptor !== undefined &&
+      hasOwn(descriptor, 'value') &&
+      typeof descriptor.value === 'string'
         ? descriptor.value
         : ''
     authenticateFatalFailure(

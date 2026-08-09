@@ -219,27 +219,42 @@ describe('trusted task-boundary intrinsics', () => {
     ).toBeInstanceOf(FatalTaskError)
   })
 
-  for (const [name, target, value] of [
-    ['function', Function.prototype, () => undefined],
-    ['bigint', BigInt.prototype, 1n],
-  ] as const) {
-    it(`rejects a ${name} before a prototype toJSON can disguise it`, () => {
-      const observed = replaceProperty(
-        target,
-        'toJSON',
-        () => 7,
-        () => serializeTaskValue('result', value),
-      )
-      expect(
-        observed.error,
-        `mutation-verdict:behavior:task-value-raw-${name}-before-to-json`,
-      ).toBeInstanceOf(FatalTaskError)
-    })
-  }
+  it('rejects a function before a prototype toJSON can disguise it', () => {
+    const observed = replaceProperty(
+      Function.prototype,
+      'toJSON',
+      () => 7,
+      () => serializeTaskValue('result', () => undefined),
+    )
+    expect(
+      observed.error,
+      'mutation-verdict:behavior:task-value-raw-function-before-to-json',
+    ).toBeInstanceOf(FatalTaskError)
+  })
+
+  it('rejects a bigint before a prototype toJSON can disguise it', () => {
+    const observed = replaceProperty(
+      BigInt.prototype,
+      'toJSON',
+      () => 7,
+      () => serializeTaskValue('result', 1n),
+    )
+    expect(
+      observed.error,
+      'mutation-verdict:behavior:task-value-raw-bigint-before-to-json',
+    ).toBeInstanceOf(FatalTaskError)
+  })
 
   it('rejects a cycle before Object.prototype.toJSON can disguise it', () => {
-    const cyclic: { self?: unknown } = {}
-    cyclic.self = cyclic
+    let reads = 0
+    const cyclic: { readonly self?: unknown } = {}
+    Object.defineProperty(cyclic, 'self', {
+      enumerable: true,
+      get: () => {
+        reads++
+        return reads === 1 ? cyclic : null
+      },
+    })
     const observed = replaceProperty(
       Object.prototype,
       'toJSON',
@@ -247,9 +262,16 @@ describe('trusted task-boundary intrinsics', () => {
       () => serializeTaskValue('result', cyclic),
     )
     expect(
-      observed.error,
+      { fatal: observed.error instanceof FatalTaskError, reads },
       'mutation-verdict:behavior:task-value-raw-cycle-before-to-json',
-    ).toBeInstanceOf(FatalTaskError)
+    ).toEqual({ fatal: true, reads: 1 })
+  })
+
+  it('rejects a nested symbol before JSON can silently drop it', () => {
+    expect(
+      () => serializeTaskValue('result', { value: Symbol('hidden') }),
+      'mutation-verdict:behavior:task-value-raw-nested-symbol',
+    ).toThrow(FatalTaskError)
   })
 
   it('snapshots plain objects before Object.prototype.toJSON can forge them', () => {
@@ -273,6 +295,55 @@ describe('trusted task-boundary intrinsics', () => {
     )
     expect(observed, 'mutation-verdict:behavior:task-value-owned-date-snapshot').toEqual({
       value: '{"at":"1970-01-01T00:00:00.000Z"}',
+    })
+  })
+
+  it('snapshots arrays before Array.prototype.toJSON can forge them', () => {
+    const observed = replaceProperty(
+      Array.prototype,
+      'toJSON',
+      () => [{ forged: true }],
+      () => serializeTaskValue('result', [{ real: true }]),
+    )
+    expect(observed, 'mutation-verdict:behavior:task-value-owned-array-snapshot').toEqual({
+      value: '[{"real":true}]',
+    })
+  })
+
+  it('uses the captured Date.getTime brand check', () => {
+    const observed = replaceProperty(
+      Date.prototype,
+      'getTime',
+      () => Number.NaN,
+      () => serializeTaskValue('result', new Date(0)),
+    )
+    expect(observed, 'mutation-verdict:construction:task-value-captured-date-get-time').toEqual({
+      value: '"1970-01-01T00:00:00.000Z"',
+    })
+  })
+
+  it('uses the captured Date.toISOString conversion', () => {
+    const observed = replaceProperty(
+      Date.prototype,
+      'toISOString',
+      () => 'forged',
+      () => serializeTaskValue('result', new Date(0)),
+    )
+    expect(
+      observed,
+      'mutation-verdict:construction:task-value-captured-date-to-iso-string',
+    ).toEqual({ value: '"1970-01-01T00:00:00.000Z"' })
+  })
+
+  it('builds owned property descriptors without Object.prototype accessors', () => {
+    const observed = replaceProperty(
+      Object.prototype,
+      'get',
+      () => undefined,
+      () => serializeTaskValue('result', { real: true }),
+    )
+    expect(observed, 'mutation-verdict:construction:task-value-owned-descriptors').toEqual({
+      value: '{"real":true}',
     })
   })
 

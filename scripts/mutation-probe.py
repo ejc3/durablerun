@@ -782,7 +782,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-task-attempts",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'task-attempts',\n"
         "    table: 'tasks',\n"
         "    column: 'attempts',\n"
@@ -794,7 +794,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-task-max-attempts",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'task-max-attempts',\n"
         "    table: 'tasks',\n"
         "    column: 'max_attempts',\n"
@@ -806,7 +806,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-task-infra-retries",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'task-infra-retries',\n"
         "    table: 'tasks',\n"
         "    column: 'infra_retries',\n"
@@ -818,7 +818,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-run-attempt",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'run-attempt',\n"
         "    table: 'runs',\n"
         "    column: 'attempt',\n"
@@ -830,7 +830,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-run-claim-gen",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'run-claim-gen',\n"
         "    table: 'runs',\n"
         "    column: 'claim_gen',\n"
@@ -842,7 +842,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-run-activated-gen",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'run-activated-gen',\n"
         "    table: 'runs',\n"
         "    column: 'activated_gen',\n"
@@ -854,7 +854,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-run-relaunch-count",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'run-relaunch-count',\n"
         "    table: 'runs',\n"
         "    column: 'relaunch_count',\n"
@@ -866,7 +866,7 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-checkpoint-owner-attempt",
         "packages/core/src/validate.ts",
-        "  Object.freeze({\n"
+        "  freeze({\n"
         "    id: 'checkpoint-owner-attempt',\n"
         "    table: 'checkpoints',\n"
         "    column: 'owner_attempt',\n"
@@ -1906,8 +1906,8 @@ MUTATION_SPECS.extend(
         (
             "temporal-field-id-is-bounds-field",
             "packages/core/src/validate.ts",
-            "  return Object.freeze({ id: bounds.field, table, column, bounds, kind, nullable })",
-            "  return Object.freeze({ id: column, table, column, bounds, kind, nullable })",
+            "  return freeze({ id: bounds.field, table, column, bounds, kind, nullable })",
+            "  return freeze({ id: column, table, column, bounds, kind, nullable })",
             "a temporal descriptor derives its identity from the column spelling instead of its nominal bounds",
         ),
         (
@@ -2090,10 +2090,10 @@ MUTATION_SPECS.extend(
             "retry-normalize-kind",
             "packages/core/src/retry.ts",
             "  if (kind !== 'fixed' && kind !== 'exponential') {\n"
-            "    throw new RangeError('retry strategy kind must be none, fixed, or exponential')\n"
+            "    throw new TrustedRangeError('retry strategy kind must be none, fixed, or exponential')\n"
             "  }",
             "  if (kind !== 'fixed' && kind !== 'exponential') {\n"
-            "    return Object.freeze({ kind: 'none' }) as NormalizedRetryStrategy // MUTATION\n"
+            "    return freeze({ kind: 'none' }) as NormalizedRetryStrategy // MUTATION\n"
             "  }",
             "retry normalization maps an unknown strategy kind to no retries",
         ),
@@ -2101,7 +2101,7 @@ MUTATION_SPECS.extend(
             "retry-normalize-rebuild",
             "packages/core/src/retry.ts",
             "function finalizeRetryStrategy(value: RetryStrategy): NormalizedRetryStrategy {\n"
-            "  return Object.freeze(value) as NormalizedRetryStrategy\n"
+            "  return freeze(value) as NormalizedRetryStrategy\n"
             "}",
             "function finalizeRetryStrategy(value: RetryStrategy): NormalizedRetryStrategy {\n"
             "  return value as NormalizedRetryStrategy // MUTATION\n"
@@ -2113,13 +2113,13 @@ MUTATION_SPECS.extend(
             "packages/core/src/retry.ts",
             "function readRetryField(value: object, field: string): unknown {\n"
             "  try {\n"
-            "    return Reflect.get(value, field)\n"
+            "    return reflectGet(value, field)\n"
             "  } catch {\n"
-            "    throw new RangeError(`retry strategy ${field} is not readable`)\n"
+            "    throw new TrustedRangeError(`retry strategy ${field} is not readable`)\n"
             "  }\n"
             "}",
             "function readRetryField(value: object, field: string): unknown {\n"
-            "  return Reflect.get(value, field) // MUTATION\n"
+            "  return reflectGet(value, field) // MUTATION\n"
             "}",
             "a hostile retry field getter escapes the normalization boundary",
         ),
@@ -2599,6 +2599,491 @@ MUTATION_SPECS.extend(
             "  'forged-fatal',\n",
             "",
             "the SDK throwable corpus silently omits forged fatal-error prototypes",
+        ),
+        (
+            "retry-captured-reflect-get",
+            "packages/core/src/retry.ts",
+            "    return reflectGet(value, field)",
+            "    return Reflect.get(value, field) // MUTATION",
+            "retry field reads resolve the mutable ambient Reflect.get after task initialization",
+        ),
+        (
+            "retry-captured-freeze",
+            "packages/core/src/retry.ts",
+            "  return freeze(value) as NormalizedRetryStrategy",
+            "  return Object.freeze(value) as NormalizedRetryStrategy // MUTATION",
+            "retry normalization resolves the mutable ambient Object.freeze after task initialization",
+        ),
+        (
+            "retry-captured-is-finite",
+            "packages/core/src/validate.ts",
+            "  if (typeof seconds !== 'number' || !isFiniteNumber(seconds) || seconds < 0) {",
+            "  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {",
+            "retry duration validation resolves the mutable ambient Number.isFinite after task initialization",
+        ),
+        (
+            "retry-captured-is-safe-integer",
+            "packages/core/src/validate.ts",
+            "  if (!isSafeInteger(value) || value < min || value > MAX_COUNT) {",
+            "  if (!Number.isSafeInteger(value) || value < min || value > MAX_COUNT) {",
+            "retry ordinal validation resolves mutable ambient Number.isSafeInteger after task initialization",
+        ),
+        (
+            "retry-captured-round",
+            "packages/core/src/validate.ts",
+            "  const ms = round(seconds * 1000)",
+            "  const ms = Math.round(seconds * 1000) // MUTATION",
+            "retry duration rounding resolves the mutable ambient Math.round after task initialization",
+        ),
+        (
+            "retry-captured-min",
+            "packages/core/src/retry.ts",
+            "      else delay = min(delay, strategy.maxSeconds)",
+            "      else delay = Math.min(delay, strategy.maxSeconds) // MUTATION",
+            "retry capping resolves the mutable ambient Math.min after task initialization",
+        ),
+        (
+            "retry-captured-range-error",
+            "packages/core/src/retry.ts",
+            "    throw new TrustedRangeError('retry strategy kind must be none, fixed, or exponential')",
+            "    throw new RangeError('retry strategy kind must be none, fixed, or exponential') // MUTATION",
+            "retry validation constructs a task-installed ambient RangeError",
+        ),
+        (
+            "task-value-captured-stringify",
+            "packages/core/src/validate.ts",
+            "    const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))",
+            "    const serialized = JSON.stringify(snapshotTaskValue(root, new TrustedWeakSet())) // MUTATION",
+            "task-value serialization resolves mutable ambient JSON.stringify after task initialization",
+        ),
+        (
+            "task-value-captured-parse",
+            "packages/core/src/validate.ts",
+            "  return parseJson(json)",
+            "  return JSON.parse(json) // MUTATION",
+            "task-value parsing resolves mutable ambient JSON.parse after task initialization",
+        ),
+        (
+            "task-value-captured-is-array",
+            "packages/core/src/validate.ts",
+            "  if (isArray(value)) return 'an array'",
+            "  if (Array.isArray(value)) return 'an array' // MUTATION",
+            "task-value diagnostics resolve mutable ambient Array.isArray after task initialization",
+        ),
+        (
+            "task-value-captured-string",
+            "packages/core/src/validate.ts",
+            "    throw new FatalTaskError(`${name} is not a valid task duration`)",
+            "    throw new FatalTaskError(String(`${name} is not a valid task duration`)) // MUTATION",
+            "task duration classification consults the mutable ambient String constructor",
+        ),
+        (
+            "task-value-no-fatal-instanceof",
+            "packages/core/src/validate.ts",
+            "  } catch {\n"
+            "    throw new FatalTaskError(`${what} is not valid JSON`)\n"
+            "  }",
+            "  } catch (error) {\n"
+            "    if (error instanceof FatalTaskError) throw error // MUTATION\n"
+            "    throw new FatalTaskError(`${what} is not valid JSON`)\n"
+            "  }",
+            "mutable FatalTaskError instanceof authority lets a parse failure escape permanent classification",
+        ),
+        (
+            "user-name-captured-includes",
+            "packages/core/src/validate.ts",
+            "    if (stringIncludes(raw, '#') || stringStartsWith(raw, '$')) {",
+            "    if (raw.includes('#') || stringStartsWith(raw, '$')) { // MUTATION",
+            "user-name validation resolves mutable String.prototype.includes after task initialization",
+        ),
+        (
+            "user-name-captured-starts-with",
+            "packages/core/src/validate.ts",
+            "    if (stringIncludes(raw, '#') || stringStartsWith(raw, '$')) {",
+            "    if (stringIncludes(raw, '#') || raw.startsWith('$')) { // MUTATION",
+            "user-name validation resolves mutable String.prototype.startsWith after task initialization",
+        ),
+        (
+            "task-value-raw-function-before-to-json",
+            "packages/core/src/validate.ts",
+            "  if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {",
+            "  if (typeof value === 'symbol' || typeof value === 'bigint') { // MUTATION",
+            "a function reaches prototype toJSON before raw-value rejection",
+        ),
+        (
+            "task-value-raw-bigint-before-to-json",
+            "packages/core/src/validate.ts",
+            "  if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {",
+            "  if (typeof value === 'function' || typeof value === 'symbol') { // MUTATION",
+            "a bigint reaches prototype toJSON before raw-value rejection",
+        ),
+        (
+            "task-value-raw-cycle-before-to-json",
+            "packages/core/src/validate.ts",
+            "  if (weakSetHas(ancestors, value)) {\n"
+            "    throw new TrustedTypeError('cyclic task value')\n"
+            "  }",
+            "",
+            "a cycle guard disappears and the same source object is read recursively",
+        ),
+        (
+            "task-value-raw-nested-symbol",
+            "packages/core/src/validate.ts",
+            "  if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {",
+            "  if (typeof value === 'function' || typeof value === 'bigint') { // MUTATION",
+            "a nested symbol reaches JSON.stringify and is silently dropped",
+        ),
+        (
+            "task-value-owned-object-snapshot",
+            "packages/core/src/validate.ts",
+            "    const owned = createObject(null) as Record<string, unknown>",
+            "    const owned = {} as Record<string, unknown> // MUTATION",
+            "the owned task-value snapshot inherits Object.prototype.toJSON",
+        ),
+        (
+            "task-value-owned-date-snapshot",
+            "packages/core/src/validate.ts",
+            "    return isFiniteNumber(epochMs) ? dateToISOString(value) : null",
+            "    return isFiniteNumber(epochMs) ? value : null // MUTATION",
+            "a Date remains attacker-controlled until JSON.stringify consults its replaced toJSON",
+        ),
+        (
+            "task-value-owned-array-snapshot",
+            "packages/core/src/validate.ts",
+            "      defineProperty(owned, 'toJSON', dataProperty(undefined, false))",
+            "      void 0 // MUTATION",
+            "an owned task-value array inherits a task-installed Array.prototype.toJSON",
+        ),
+        (
+            "task-value-captured-date-get-time",
+            "packages/core/src/validate.ts",
+            "    const epochMs = dateGetTime(value)",
+            "    const epochMs = (value as Date).getTime() // MUTATION",
+            "Date brand checking resolves mutable Date.prototype.getTime after task initialization",
+        ),
+        (
+            "task-value-captured-date-to-iso-string",
+            "packages/core/src/validate.ts",
+            "    return isFiniteNumber(epochMs) ? dateToISOString(value) : null",
+            "    return isFiniteNumber(epochMs) ? (value as Date).toISOString() : null // MUTATION",
+            "Date conversion resolves mutable Date.prototype.toISOString after task initialization",
+        ),
+        (
+            "task-value-owned-descriptors",
+            "packages/core/src/validate.ts",
+            "  const descriptor = createObject(null) as PropertyDescriptor",
+            "  const descriptor = {} as PropertyDescriptor // MUTATION",
+            "owned property descriptors inherit task-installed Object.prototype descriptor fields",
+        ),
+        (
+            "user-name-captured-regexp-exec",
+            "packages/core/src/validate.ts",
+            "    if (stringIncludes(raw, '\\u0000') || regexpExec(/\\p{Surrogate}/u, raw) !== null) {",
+            "    if (stringIncludes(raw, '\\u0000') || /\\p{Surrogate}/u.exec(raw) !== null) { // MUTATION",
+            "user-name validation resolves mutable RegExp.prototype.exec after task initialization",
+        ),
+        (
+            "user-name-captured-regexp-test",
+            "packages/core/src/validate.ts",
+            "    if (stringIncludes(raw, '\\u0000') || regexpExec(/\\p{Surrogate}/u, raw) !== null) {",
+            "    if (stringIncludes(raw, '\\u0000') || /\\p{Surrogate}/u.test(raw)) { // MUTATION",
+            "user-name validation regresses to mutable RegExp.prototype.test dispatch",
+        ),
+        (
+            "task-value-rejects-exotic-objects",
+            "packages/core/src/validate.ts",
+            "    if (prototype !== null && prototype !== objectPrototype) {",
+            "    if (false && prototype !== null && prototype !== objectPrototype) { // MUTATION",
+            "boxed and exotic objects are silently reinterpreted as plain JSON records",
+        ),
+        (
+            "sdk-retry-captured-intrinsics",
+            "packages/core/src/intrinsics.ts",
+            "  ReflectGet: Reflect.get,",
+            "  ReflectGet: (target: object, key: PropertyKey) => Reflect.get(target, key), // MUTATION",
+            "the shared retry capability resolves ambient Reflect.get after task initialization",
+        ),
+        (
+            "sdk-result-captured-stringify",
+            "packages/sdk/src/run-worker.ts",
+            "    const resultJson = serializeTaskValue('task result', result)",
+            "    const resultJson = JSON.stringify(result) as string // MUTATION",
+            "the final-result boundary bypasses the captured task-value serializer",
+        ),
+        (
+            "sdk-captured-map-constructor",
+            "packages/sdk/src/context.ts",
+            "  private readonly seen = new TaskMap<string, unknown>()",
+            "  private readonly seen = new Map<string, unknown>() // MUTATION",
+            "the replay-value map constructor resolves the mutable ambient Map after task initialization",
+        ),
+        (
+            "sdk-captured-map-has",
+            "packages/sdk/src/context.ts",
+            "    if (taskMapHas(this.seen, key)) {\n"
+            "      return taskMapGet(this.seen, key) as T\n"
+            "    }",
+            "    if (this.seen.has(key)) { // MUTATION\n"
+            "      return taskMapGet(this.seen, key) as T\n"
+            "    }",
+            "step replay membership resolves mutable Map.prototype.has after task initialization",
+        ),
+        (
+            "sdk-captured-map-get",
+            "packages/sdk/src/intrinsics.ts",
+            "export const taskMapGet = Map.prototype.get.call.bind(Map.prototype.get) as <K, V>(\n"
+            "  map: Map<K, V>,\n"
+            "  key: K,\n"
+            ") => V | undefined",
+            "export const taskMapGet = <K, V>(map: Map<K, V>, key: K): V | undefined =>\n"
+            "  map.get(key) // MUTATION",
+            "replay-map reads resolve mutable Map.prototype.get at invocation time",
+        ),
+        (
+            "sdk-captured-map-set",
+            "packages/sdk/src/intrinsics.ts",
+            "export const taskMapSet = Map.prototype.set.call.bind(Map.prototype.set) as <K, V>(\n"
+            "  map: Map<K, V>,\n"
+            "  key: K,\n"
+            "  value: V,\n"
+            ") => Map<K, V>",
+            "export const taskMapSet = <K, V>(map: Map<K, V>, key: K, value: V): Map<K, V> =>\n"
+            "  map.set(key, value) // MUTATION",
+            "replay-map writes resolve mutable Map.prototype.set at invocation time",
+        ),
+        (
+            "sdk-context-captured-json-parse",
+            "packages/sdk/src/context.ts",
+            "    const result = parseTaskValueJson(stateJson) as T",
+            "    const result = JSON.parse(stateJson) as T // MUTATION",
+            "the executing step path resolves mutable ambient JSON.parse after task initialization",
+        ),
+        (
+            "sdk-context-captured-json-stringify",
+            "packages/sdk/src/context.ts",
+            "      stateJson: serializeTaskValue('sleep marker', wake),",
+            "      stateJson: JSON.stringify(wake), // MUTATION",
+            "the sleep checkpoint resolves mutable ambient JSON.stringify after task initialization",
+        ),
+        (
+            "sdk-context-captured-aborted-getter",
+            "packages/sdk/src/context.ts",
+            "    if (this.#leaseLost !== undefined && abortSignalAborted(this.#leaseLost)) {",
+            "    if (this.#leaseLost !== undefined && this.#leaseLost.aborted) { // MUTATION",
+            "context lease-loss classification resolves the mutable AbortSignal.aborted getter",
+        ),
+        (
+            "sdk-captured-promise-race",
+            "packages/sdk/src/intrinsics.ts",
+            "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
+            "  return new TaskPromise<void>((resolve, reject) => {\n"
+            "    taskPromiseThen(left, resolve, reject)\n"
+            "    taskPromiseThen(right, resolve, reject)\n"
+            "  })\n"
+            "}",
+            "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
+            "  return Promise.race([left, right]) as Promise<void> // MUTATION\n"
+            "}",
+            "worker finalization resolves mutable ambient Promise.race after task initialization",
+        ),
+        (
+            "sdk-captured-promise-race-iterator",
+            "packages/sdk/src/intrinsics.ts",
+            "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
+            "  return new TaskPromise<void>((resolve, reject) => {\n"
+            "    taskPromiseThen(left, resolve, reject)\n"
+            "    taskPromiseThen(right, resolve, reject)\n"
+            "  })\n"
+            "}",
+            "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
+            "  return new TaskPromise<void>((resolve, reject) => {\n"
+            "    for (const promise of [left, right]) {\n"
+            "      taskPromiseThen(promise, resolve, reject)\n"
+            "    }\n"
+            "  })\n"
+            "}",
+            "worker finalization dispatches through a task-installed array iterator",
+        ),
+        (
+            "sdk-captured-promise-adoption",
+            "packages/sdk/src/intrinsics.ts",
+            "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
+            "  return new TaskPromise<void>((resolve, reject) => {\n"
+            "    taskPromiseThen(left, resolve, reject)\n"
+            "    taskPromiseThen(right, resolve, reject)\n"
+            "  })\n"
+            "}",
+            "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
+            "  return new TaskPromise<void>((resolve, reject) => {\n"
+            "    TaskPromise.resolve(left).then(resolve, reject) // MUTATION\n"
+            "    TaskPromise.resolve(right).then(resolve, reject)\n"
+            "  })\n"
+            "}",
+            "worker finalization adopts inputs through mutable Promise.resolve",
+        ),
+        (
+            "sdk-captured-abort-controller",
+            "packages/sdk/src/run-worker.ts",
+            "  const pumpStop = new TaskAbortController()",
+            "  const pumpStop = new AbortController() // MUTATION",
+            "the heartbeat stop controller resolves mutable ambient AbortController after task initialization",
+        ),
+        (
+            "sdk-captured-abort-signal-getter",
+            "packages/sdk/src/intrinsics.ts",
+            "export const abortControllerSignal = controllerSignalGetter.call.bind(controllerSignalGetter) as (\n"
+            "  controller: AbortController,\n"
+            ") => AbortSignal",
+            "export const abortControllerSignal = (controller: AbortController): AbortSignal =>\n"
+            "  controller.signal // MUTATION",
+            "heartbeat signal reads resolve the mutable AbortController.signal getter at invocation time",
+        ),
+        (
+            "sdk-captured-abort-aborted-getter",
+            "packages/sdk/src/intrinsics.ts",
+            "export const abortSignalAborted = signalAbortedGetter.call.bind(signalAbortedGetter) as (\n"
+            "  signal: AbortSignal,\n"
+            ") => boolean",
+            "export const abortSignalAborted = (signal: AbortSignal): boolean =>\n"
+            "  signal.aborted // MUTATION",
+            "heartbeat cancellation reads resolve the mutable AbortSignal.aborted getter at invocation time",
+        ),
+        (
+            "sdk-captured-math-max",
+            "packages/sdk/src/intrinsics.ts",
+            "export const trustedMax = Math.max",
+            "export const trustedMax = (...values: number[]): number => Math.max(...values) // MUTATION",
+            "the trusted maximum operation resolves mutable ambient Math.max at invocation time",
+        ),
+        (
+            "sdk-worker-captured-json-parse",
+            "packages/sdk/src/run-worker.ts",
+            "      params = parseTaskValueJson(run.paramsJson)",
+            "      params = JSON.parse(run.paramsJson) // MUTATION",
+            "worker parameter parsing resolves mutable ambient JSON.parse after task initialization",
+        ),
+        (
+            "sdk-captured-abort-method",
+            "packages/sdk/src/intrinsics.ts",
+            "export const abortControllerAbort = AbortController.prototype.abort.call.bind(\n"
+            "  AbortController.prototype.abort,\n"
+            ") as (controller: AbortController, reason?: unknown) => void",
+            "export const abortControllerAbort = (\n"
+            "  controller: AbortController,\n"
+            "  reason?: unknown,\n"
+            "): void => controller.abort(reason) // MUTATION",
+            "heartbeat shutdown resolves mutable AbortController.prototype.abort at invocation time",
+        ),
+        (
+            "sdk-captured-char-code-at",
+            "packages/sdk/src/intrinsics.ts",
+            "export const trustedCharCodeAt = String.prototype.charCodeAt.call.bind(\n"
+            "  String.prototype.charCodeAt,\n"
+            ") as (value: string, index: number) => number",
+            "export const trustedCharCodeAt = (value: string, index: number): number =>\n"
+            "  value.charCodeAt(index) // MUTATION",
+            "unknown-task jitter resolves mutable String.prototype.charCodeAt at invocation time",
+        ),
+        (
+            "sdk-owned-event-timeout-discriminant",
+            "packages/sdk/src/context.ts",
+            "      await this.commitMarker(key, serializeTaskValue('event wake marker', memo))\n"
+            "      if (taskHasOwn(memo, 'timedOut') && memo.timedOut === true) {",
+            "      await this.commitMarker(key, serializeTaskValue('event wake marker', memo))\n"
+            "      if (memo.timedOut === true) { // MUTATION",
+            "an inherited timedOut property turns an emitted event into a timeout",
+        ),
+        (
+            "sdk-owned-event-payload-discriminant",
+            "packages/sdk/src/context.ts",
+            "      const memo = taskHasOwn(wake, 'payloadJson')",
+            "      const memo = 'payloadJson' in wake // MUTATION",
+            "an inherited payloadJson property turns a timeout into a forged delivery",
+        ),
+        (
+            "sdk-captured-registry-get",
+            "packages/sdk/src/intrinsics.ts",
+            "    return taskMapGet(registry as Map<K, V>, key)",
+            "    return registry.get(key) // MUTATION",
+            "an authentic Map lookup resolves mutable Map.prototype.get after task initialization",
+        ),
+        (
+            "sdk-registry-map-entry-authority",
+            "packages/sdk/src/intrinsics.ts",
+            "    return taskMapGet(registry as Map<K, V>, key)",
+            "    const stored = taskMapGet(registry as Map<K, V>, key)\n"
+            "    return stored ?? registry.get(key) // MUTATION",
+            "a Map subclass override grants handler authority for a missing stored entry",
+        ),
+        (
+            "system-clock-captured-date-now",
+            "packages/core/src/system-clock.ts",
+            "      return nowEpochMs()",
+            "      return Date.now() // MUTATION",
+            "SystemClock resolves mutable Date.now after module initialization",
+        ),
+        (
+            "system-clock-captured-promise",
+            "packages/core/src/system-clock.ts",
+            "      return new TrustedPromise((resolve) => {",
+            "      return new Promise((resolve) => { // MUTATION",
+            "SystemClock sleep resolves the mutable Promise constructor",
+        ),
+        (
+            "system-clock-captured-yield-promise",
+            "packages/core/src/system-clock.ts",
+            "      return new TrustedPromise((resolve) => scheduleImmediate(resolve))",
+            "      return new Promise((resolve) => scheduleImmediate(resolve)) // MUTATION",
+            "SystemClock yield resolves the mutable Promise constructor",
+        ),
+        (
+            "system-clock-captured-set-immediate",
+            "packages/core/src/system-clock.ts",
+            "      return new TrustedPromise((resolve) => scheduleImmediate(resolve))",
+            "      return new TrustedPromise((resolve) => setImmediate(resolve)) // MUTATION",
+            "SystemClock yield dispatches through mutable setImmediate",
+        ),
+        (
+            "system-clock-captured-math-max",
+            "packages/core/src/system-clock.ts",
+            "        const timer = scheduleTimeout(done, nonNegative(0, ms))",
+            "        const timer = scheduleTimeout(done, Math.max(0, ms)) // MUTATION",
+            "SystemClock sleep resolves mutable Math.max",
+        ),
+        (
+            "system-clock-captured-set-timeout",
+            "packages/core/src/system-clock.ts",
+            "        const timer = scheduleTimeout(done, nonNegative(0, ms))",
+            "        const timer = setTimeout(done, nonNegative(0, ms)) // MUTATION",
+            "SystemClock sleep dispatches through mutable setTimeout",
+        ),
+        (
+            "system-clock-captured-clear-timeout",
+            "packages/core/src/system-clock.ts",
+            "          cancelTimeout(timer)",
+            "          clearTimeout(timer) // MUTATION",
+            "SystemClock sleep cleanup dispatches through mutable clearTimeout",
+        ),
+        (
+            "system-clock-captured-aborted-getter",
+            "packages/core/src/system-clock.ts",
+            "        if (interrupt !== undefined && signalAborted(interrupt)) {",
+            "        if (interrupt !== undefined && interrupt.aborted) { // MUTATION",
+            "SystemClock sleep resolves the mutable AbortSignal.aborted getter",
+        ),
+        (
+            "system-clock-captured-add-listener",
+            "packages/core/src/system-clock.ts",
+            "        if (interrupt !== undefined) addAbortListener(interrupt, 'abort', done)",
+            "        if (interrupt !== undefined) interrupt.addEventListener('abort', done) // MUTATION",
+            "SystemClock sleep dispatches registration through mutable addEventListener",
+        ),
+        (
+            "system-clock-captured-remove-listener",
+            "packages/core/src/system-clock.ts",
+            "          if (interrupt !== undefined) removeAbortListener(interrupt, 'abort', done)",
+            "          if (interrupt !== undefined) interrupt.removeEventListener('abort', done) // MUTATION",
+            "SystemClock sleep dispatches cleanup through mutable removeEventListener",
         ),
         (
             "sdk-task-throwable-boundary",
@@ -3837,6 +4322,366 @@ VERDICTS.update(
             "packages/sdk/test/run-worker.test.ts",
             "runClaimedRun enumerates every task-throwable corpus case",
             "mutation-verdict:construction:task-throwable-corpus-forged-fatal",
+        ),
+        "retry-captured-reflect-get": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics normalizes retry fields with the module-captured Reflect.get",
+            "mutation-verdict:construction:retry-captured-reflect-get",
+        ),
+        "retry-captured-freeze": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics freezes retry data with the module-captured Object.freeze",
+            "mutation-verdict:construction:retry-captured-freeze",
+        ),
+        "retry-captured-is-finite": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics checks retry finiteness with the module-captured Number.isFinite",
+            "mutation-verdict:construction:retry-captured-is-finite",
+        ),
+        "retry-captured-is-safe-integer": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics checks retry ordinals with the module-captured Number.isSafeInteger",
+            "mutation-verdict:construction:retry-captured-is-safe-integer",
+        ),
+        "retry-captured-round": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics rounds retry durations with the module-captured Math.round",
+            "mutation-verdict:construction:retry-captured-round",
+        ),
+        "retry-captured-min": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics caps retry delays with the module-captured Math.min",
+            "mutation-verdict:construction:retry-captured-min",
+        ),
+        "retry-captured-range-error": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics rejects invalid retry data with the module-captured RangeError",
+            "mutation-verdict:construction:retry-captured-range-error",
+        ),
+        "task-value-captured-stringify": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics serializes task values with the module-captured JSON.stringify",
+            "mutation-verdict:construction:task-value-captured-stringify",
+        ),
+        "task-value-captured-parse": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics parses task JSON with the module-captured JSON.parse",
+            "mutation-verdict:construction:task-value-captured-parse",
+        ),
+        "task-value-captured-is-array": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics classifies invalid task JSON with the module-captured Array.isArray",
+            "mutation-verdict:construction:task-value-captured-is-array",
+        ),
+        "task-value-captured-string": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics classifies invalid task durations with the module-captured String",
+            "mutation-verdict:construction:task-value-captured-string",
+        ),
+        "task-value-no-fatal-instanceof": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics does not use mutable FatalTaskError instanceof classification",
+            "mutation-verdict:construction:task-value-no-fatal-instanceof",
+        ),
+        "user-name-captured-includes": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics checks reserved name characters with the module-captured String.includes",
+            "mutation-verdict:construction:user-name-captured-includes",
+        ),
+        "user-name-captured-starts-with": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics checks reserved name prefixes with the module-captured String.startsWith",
+            "mutation-verdict:construction:user-name-captured-starts-with",
+        ),
+        "task-value-raw-function-before-to-json": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics rejects a function before a prototype toJSON can disguise it",
+            "mutation-verdict:behavior:task-value-raw-function-before-to-json",
+        ),
+        "task-value-raw-bigint-before-to-json": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics rejects a bigint before a prototype toJSON can disguise it",
+            "mutation-verdict:behavior:task-value-raw-bigint-before-to-json",
+        ),
+        "task-value-raw-cycle-before-to-json": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics rejects a cycle before Object.prototype.toJSON can disguise it",
+            "mutation-verdict:behavior:task-value-raw-cycle-before-to-json",
+        ),
+        "task-value-raw-nested-symbol": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics rejects a nested symbol before JSON can silently drop it",
+            "mutation-verdict:behavior:task-value-raw-nested-symbol",
+        ),
+        "task-value-owned-object-snapshot": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics snapshots plain objects before Object.prototype.toJSON can forge them",
+            "mutation-verdict:behavior:task-value-owned-object-snapshot",
+        ),
+        "task-value-owned-date-snapshot": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics serializes dates with the captured Date operation instead of a replaced toJSON",
+            "mutation-verdict:behavior:task-value-owned-date-snapshot",
+        ),
+        "task-value-owned-array-snapshot": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics snapshots arrays before Array.prototype.toJSON can forge them",
+            "mutation-verdict:behavior:task-value-owned-array-snapshot",
+        ),
+        "task-value-captured-date-get-time": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics uses the captured Date.getTime brand check",
+            "mutation-verdict:construction:task-value-captured-date-get-time",
+        ),
+        "task-value-captured-date-to-iso-string": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics uses the captured Date.toISOString conversion",
+            "mutation-verdict:construction:task-value-captured-date-to-iso-string",
+        ),
+        "task-value-owned-descriptors": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics builds owned property descriptors without Object.prototype accessors",
+            "mutation-verdict:construction:task-value-owned-descriptors",
+        ),
+        "user-name-captured-regexp-exec": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics does not dispatch storage-safe name checks through mutable RegExp.exec",
+            "mutation-verdict:behavior:user-name-captured-regexp-exec",
+        ),
+        "user-name-captured-regexp-test": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics checks storage-unsafe names with the module-captured RegExp.test",
+            "mutation-verdict:construction:user-name-captured-regexp-test",
+        ),
+        "task-value-rejects-exotic-objects": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/task-value.test.ts",
+            "serializeTaskValue rejects objects outside the explicit JSON data model instead of changing their meaning",
+            "mutation-verdict:behavior:task-value-rejects-exotic-objects",
+        ),
+        "sdk-retry-captured-intrinsics": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun task initialization cannot replace retry field classification",
+            "mutation-verdict:behavior:sdk-retry-captured-intrinsics",
+        ),
+        "sdk-result-captured-stringify": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace final-result JSON serialization",
+            "mutation-verdict:behavior:sdk-result-captured-stringify",
+        ),
+        "sdk-captured-map-constructor": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun task initialization cannot replace replay map construction",
+            "mutation-verdict:construction:sdk-captured-map-constructor",
+        ),
+        "sdk-captured-map-has": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace replay map membership checks",
+            "mutation-verdict:construction:sdk-captured-map-has",
+        ),
+        "sdk-captured-map-get": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun reads replay maps with the module-captured Map.get",
+            "mutation-verdict:construction:sdk-captured-map-get",
+        ),
+        "sdk-captured-map-set": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun writes replay maps with the module-captured Map.set",
+            "mutation-verdict:construction:sdk-captured-map-set",
+        ),
+        "sdk-context-captured-json-parse": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace the executing-pass canonical JSON parse",
+            "mutation-verdict:construction:sdk-context-captured-json-parse",
+        ),
+        "sdk-context-captured-json-stringify": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace durable sleep-marker serialization",
+            "mutation-verdict:construction:sdk-context-captured-json-stringify",
+        ),
+        "sdk-context-captured-aborted-getter": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace context lease-loss signal classification",
+            "mutation-verdict:behavior:sdk-context-captured-aborted-getter",
+        ),
+        "sdk-captured-promise-race": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace bounded worker finalization",
+            "mutation-verdict:construction:sdk-captured-promise-race",
+        ),
+        "sdk-captured-promise-race-iterator": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun races finalization promises without ambient array iteration",
+            "mutation-verdict:construction:sdk-captured-promise-race-iterator",
+        ),
+        "sdk-captured-promise-adoption": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace promise adoption during worker finalization",
+            "mutation-verdict:behavior:sdk-captured-promise-adoption",
+        ),
+        "sdk-captured-abort-controller": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun task initialization cannot replace the heartbeat controller constructor",
+            "mutation-verdict:construction:sdk-captured-abort-controller",
+        ),
+        "sdk-captured-abort-signal-getter": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun reads heartbeat signals with the module-captured controller getter",
+            "mutation-verdict:construction:sdk-captured-abort-signal-getter",
+        ),
+        "sdk-captured-abort-aborted-getter": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun reads heartbeat cancellation with the module-captured signal getter",
+            "mutation-verdict:construction:sdk-captured-abort-aborted-getter",
+        ),
+        "sdk-captured-math-max": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun task initialization cannot replace heartbeat lease arithmetic",
+            "mutation-verdict:construction:sdk-captured-math-max",
+        ),
+        "sdk-worker-captured-json-parse": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun task initialization cannot replace handler parameter parsing",
+            "mutation-verdict:construction:sdk-worker-captured-json-parse",
+        ),
+        "sdk-captured-abort-method": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a handler cannot replace heartbeat shutdown",
+            "mutation-verdict:construction:sdk-captured-abort-method",
+        ),
+        "sdk-captured-char-code-at": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun task initialization cannot replace unknown-task jitter character reads",
+            "mutation-verdict:construction:sdk-captured-char-code-at",
+        ),
+        "sdk-owned-event-timeout-discriminant": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/event-regressions.test.ts",
+            "event regressions prototype pollution cannot turn an event delivery into a timeout",
+            "mutation-verdict:behavior:sdk-owned-event-timeout-discriminant",
+        ),
+        "sdk-owned-event-payload-discriminant": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/event-regressions.test.ts",
+            "event regressions prototype pollution cannot turn an event timeout into a payload",
+            "mutation-verdict:behavior:sdk-owned-event-payload-discriminant",
+        ),
+        "sdk-captured-registry-get": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun uses stored Map entries under subclass and prototype pollution",
+            "mutation-verdict:behavior:sdk-captured-registry-get",
+        ),
+        "sdk-registry-map-entry-authority": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/registry-authority.test.ts",
+            "a Map subclass override cannot grant missing handler authority",
+            "mutation-verdict:construction:sdk-registry-map-entry-authority",
+        ),
+        "system-clock-captured-date-now": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures Date.now",
+            "mutation-verdict:construction:system-clock-captured-date-now",
+        ),
+        "system-clock-captured-promise": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures the Promise constructor",
+            "mutation-verdict:construction:system-clock-captured-promise",
+        ),
+        "system-clock-captured-yield-promise": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures the Promise constructor for yieldTurn",
+            "mutation-verdict:construction:system-clock-captured-yield-promise",
+        ),
+        "system-clock-captured-set-immediate": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures setImmediate",
+            "mutation-verdict:construction:system-clock-captured-set-immediate",
+        ),
+        "system-clock-captured-math-max": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures Math.max",
+            "mutation-verdict:construction:system-clock-captured-math-max",
+        ),
+        "system-clock-captured-set-timeout": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures setTimeout",
+            "mutation-verdict:construction:system-clock-captured-set-timeout",
+        ),
+        "system-clock-captured-clear-timeout": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures clearTimeout",
+            "mutation-verdict:construction:system-clock-captured-clear-timeout",
+        ),
+        "system-clock-captured-aborted-getter": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures AbortSignal.aborted",
+            "mutation-verdict:construction:system-clock-captured-aborted-getter",
+        ),
+        "system-clock-captured-add-listener": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures abort listener registration",
+            "mutation-verdict:construction:system-clock-captured-add-listener",
+        ),
+        "system-clock-captured-remove-listener": ExpectedVerdict(
+            "construction",
+            "packages/core/test/system-clock-intrinsics.test.ts",
+            "systemClock captured intrinsics captures abort listener cleanup",
+            "mutation-verdict:construction:system-clock-captured-remove-listener",
         ),
         "sdk-task-throwable-boundary": ExpectedVerdict(
             "behavior",

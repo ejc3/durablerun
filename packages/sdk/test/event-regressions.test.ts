@@ -204,7 +204,7 @@ describe('event regressions', () => {
           try {
             return await ctx.awaitEvent('go')
           } finally {
-            if (descriptor === undefined) delete (Object.prototype as { timedOut?: unknown }).timedOut
+            if (descriptor === undefined) Reflect.deleteProperty(Object.prototype, 'timedOut')
             else Object.defineProperty(Object.prototype, 'timedOut', descriptor)
           }
         },
@@ -247,7 +247,7 @@ describe('event regressions', () => {
             return 'timed-out'
           } finally {
             if (descriptor === undefined) {
-              delete (Object.prototype as { payloadJson?: unknown }).payloadJson
+              Reflect.deleteProperty(Object.prototype, 'payloadJson')
             } else Object.defineProperty(Object.prototype, 'payloadJson', descriptor)
           }
         },

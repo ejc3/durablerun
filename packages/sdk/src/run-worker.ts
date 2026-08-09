@@ -2,14 +2,30 @@ import {
   type Clock,
   type SchedulerStore,
   decideRetry,
+  parseTaskValueJson,
   serializeTaskValue,
   snapshotTaskThrowable,
 } from '@durablerun/core'
 import { ReplayContext, type TaskContext } from './context.js'
+import {
+  TaskAbortController,
+  abortControllerAbort,
+  abortControllerSignal,
+  abortSignalAborted,
+  taskRegistryGet,
+  trustedCharCodeAt,
+  trustedMax,
+  trustedPromiseRace,
+} from './intrinsics.js'
 import { createTaskControlScope, trustedStoreControl } from './task-control.js'
 
 /** A registered durable task function. Params arrive parsed from JSON. */
 export type TaskHandler = (ctx: TaskContext, params: unknown) => Promise<unknown>
+/**
+ * A Map's stored entries are authoritative; Map-subclass `get` overrides are
+ * not dispatch authority. A non-Map structural implementation is trusted host
+ * resolver code and owns the safety of its own ambient dependencies.
+ */
 export type TaskRegistry = ReadonlyMap<string, TaskHandler>
 
 /** What one worker invocation did with its run (DESIGN.md §3.2). */
@@ -81,12 +97,16 @@ export async function runClaimedRun(
   const run = await store.activate(queue, runId, claimToken, claimGen)
   if (run === null) return { kind: 'superseded' }
 
-  const handler = registry.get(run.taskName)
+  const handler = taskRegistryGet(registry, run.taskName)
   if (handler === undefined) {
     // Rolling-deploy rule: defer, consume nothing. The jitter is derived
     // from the run id (no ambient randomness in engine code) so a fleet of
     // stale workers spreads its retries instead of thundering.
-    const jitterSeconds = [...run.runId].reduce((a, c) => a + c.charCodeAt(0), 0) % 10
+    let jitterTotal = 0
+    for (let index = 0; index < run.runId.length; index++) {
+      jitterTotal += trustedCharCodeAt(run.runId, index)
+    }
+    const jitterSeconds = jitterTotal % 10
     try {
       await store.reschedule(
         queue,
@@ -106,17 +126,19 @@ export async function runClaimedRun(
   // lease-lost signal — the fences already refuse a zombie's writes; the
   // leaseLost signal additionally stops the HANDLER at its next context
   // call, so a zombie stops burning side effects too.
-  const pumpStop = new AbortController()
-  const leaseLost = new AbortController()
-  const leaseMs = Math.max(1000, run.leaseSeconds * 1000)
+  const pumpStop = new TaskAbortController()
+  const pumpStopSignal = abortControllerSignal(pumpStop)
+  const leaseLost = new TaskAbortController()
+  const leaseLostSignal = abortControllerSignal(leaseLost)
+  const leaseMs = trustedMax(1000, run.leaseSeconds * 1000)
   const pump = (async () => {
     for (;;) {
-      await clock.sleep(leaseMs / 2, pumpStop.signal)
-      if (pumpStop.signal.aborted) return
+      await clock.sleep(leaseMs / 2, pumpStopSignal)
+      if (abortSignalAborted(pumpStopSignal)) return
       try {
         const lease = await store.heartbeat(queue, runId, claimToken, run.leaseSeconds)
         if (!lease.held) {
-          leaseLost.abort()
+          abortControllerAbort(leaseLost)
           return
         }
       } catch {
@@ -129,7 +151,7 @@ export async function runClaimedRun(
   try {
     checkpoints = await store.getCheckpoints(queue, run.taskId, run.attempt)
   } catch (error) {
-    pumpStop.abort()
+    abortControllerAbort(pumpStop)
     await pump
     return trustedStoreOutcome(error)
   }
@@ -139,14 +161,14 @@ export async function runClaimedRun(
     queue,
     run,
     checkpoints,
-    leaseLost.signal,
+    leaseLostSignal,
     taskControls.issuer,
   )
 
   try {
     let params: unknown
     try {
-      params = JSON.parse(run.paramsJson)
+      params = parseTaskValueJson(run.paramsJson)
     } catch {
       params = run.paramsJson // legacy/opaque payloads pass through as text
     }
@@ -209,10 +231,10 @@ export async function runClaimedRun(
     }
     return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
   } finally {
-    pumpStop.abort()
+    abortControllerAbort(pumpStop)
     // Bounded finalization: a heartbeat call that never settles must not
     // retain this pass (and its HTTP request) forever after the run's
     // transition already committed.
-    await Promise.race([pump, clock.sleep(5_000)])
+    await trustedPromiseRace(pump, clock.sleep(5_000))
   }
 }

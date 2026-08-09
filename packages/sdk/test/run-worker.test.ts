@@ -1363,12 +1363,17 @@ describe('runClaimedRun', () => {
     }
   })
 
-  it('task pollution cannot redirect a later registry lookup', async () => {
+  it('uses stored Map entries under subclass and prototype pollution', async () => {
     const f = await fx('sdk-captured-registry-get')
     try {
       await f.store.spawn(Q, 'job', '{}')
       const invocation = await claimInvocation(f, 'w1')
-      const reg = registry({ job: async () => 'done' })
+      class RedirectingRegistry extends Map<string, TaskHandler> {
+        override get(name: string): TaskHandler | undefined {
+          return super.get(name === 'job' ? 'missing' : name)
+        }
+      }
+      const reg = new RedirectingRegistry([['job', async () => 'done']])
       const observed = await replacePropertyAsync(
         Map.prototype,
         'get',
@@ -1378,55 +1383,6 @@ describe('runClaimedRun', () => {
       expect(observed, 'mutation-verdict:behavior:sdk-captured-registry-get').toEqual({
         value: { kind: 'completed' },
       })
-    } finally {
-      f.close()
-    }
-  })
-
-  it('registry hardening preserves Map subclass dispatch', async () => {
-    const f = await fx('sdk-registry-subclass-dispatch')
-    try {
-      await f.store.spawn(Q, 'alias', '{}')
-      const invocation = await claimInvocation(f, 'w1')
-      class AliasedRegistry extends Map<string, TaskHandler> {
-        override get(name: string): TaskHandler | undefined {
-          return super.get(name === 'alias' ? 'job' : name)
-        }
-      }
-      const reg = new AliasedRegistry([['job', async () => 'done']])
-      const observed = await runClaimedRun(
-        { store: f.store, clock: f.clock, registry: reg },
-        invocation,
-      )
-      expect(observed, 'mutation-verdict:behavior:sdk-registry-subclass-dispatch').toEqual({
-        kind: 'completed',
-      })
-    } finally {
-      f.close()
-    }
-  })
-
-  it('task pollution cannot redirect Map subclass registry dispatch', async () => {
-    const f = await fx('sdk-registry-subclass-contained-dispatch')
-    try {
-      await f.store.spawn(Q, 'alias', '{}')
-      const invocation = await claimInvocation(f, 'w1')
-      class AliasedRegistry extends Map<string, TaskHandler> {
-        override get(name: string): TaskHandler | undefined {
-          return super.get(name === 'alias' ? 'job' : name)
-        }
-      }
-      const reg = new AliasedRegistry([['job', async () => 'done']])
-      const observed = await replacePropertyAsync(
-        Map.prototype,
-        'get',
-        () => undefined,
-        () => runClaimedRun({ store: f.store, clock: f.clock, registry: reg }, invocation),
-      )
-      expect(
-        observed,
-        'mutation-verdict:behavior:sdk-registry-subclass-contained-dispatch',
-      ).toEqual({ value: { kind: 'completed' } })
     } finally {
       f.close()
     }

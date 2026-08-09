@@ -5,11 +5,20 @@ import {
   FatalTaskError,
   type SchedulerStore,
   UserName,
+  parseTaskValueJson,
   serializeTaskValue,
   userDurationToMs,
   userEpochMs,
   userJsonValue,
 } from '@durablerun/core'
+import {
+  TaskMap,
+  abortSignalAborted,
+  taskHasOwn,
+  taskMapGet,
+  taskMapHas,
+  taskMapSet,
+} from './intrinsics.js'
 import { type TaskControlIssuer, createTaskControlScope } from './task-control.js'
 
 /**
@@ -80,8 +89,8 @@ export class ReplayContext implements TaskContext {
   readonly #run: ClaimedRun
   readonly #leaseLost: AbortSignal | undefined
   readonly #controls: TaskControlIssuer
-  private readonly seen = new Map<string, unknown>()
-  private readonly nameUses = new Map<string, number>()
+  private readonly seen = new TaskMap<string, unknown>()
+  private readonly nameUses = new TaskMap<string, number>()
   private inStep = false
   /**
    * The claim's carried wake, held as the ONLY mutable reference to it —
@@ -109,7 +118,7 @@ export class ReplayContext implements TaskContext {
     this.taskName = run.taskName
     this.pendingWake = run.wake
     for (const cp of checkpoints) {
-      this.seen.set(cp.checkpointName, JSON.parse(cp.stateJson))
+      taskMapSet(this.seen, cp.checkpointName, parseTaskValueJson(cp.stateJson))
     }
   }
 
@@ -135,8 +144,8 @@ export class ReplayContext implements TaskContext {
    */
   private storageName(name: UserName | EngineKey): string {
     const raw = name.value
-    const use = (this.nameUses.get(raw) ?? 0) + 1
-    this.nameUses.set(raw, use)
+    const use = (taskMapGet(this.nameUses, raw) ?? 0) + 1
+    taskMapSet(this.nameUses, raw, use)
     return use === 1 ? raw : `${raw}#${use}`
   }
 
@@ -161,7 +170,7 @@ export class ReplayContext implements TaskContext {
     // The pump observed the lease gone: stop the handler at the next
     // context call — the fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
-    if (this.#leaseLost?.aborted) {
+    if (this.#leaseLost !== undefined && abortSignalAborted(this.#leaseLost)) {
       this.#controls.leaseLost(`lease lost during pass (run ${this.#run.runId})`)
     }
   }
@@ -170,8 +179,8 @@ export class ReplayContext implements TaskContext {
     const parsed = UserName.parse('step name', name)
     this.enterDurableOp(`ctx.step('${name}')`)
     const key = this.storageName(parsed)
-    if (this.seen.has(key)) {
-      return this.seen.get(key) as T
+    if (taskMapHas(this.seen, key)) {
+      return taskMapGet(this.seen, key) as T
     }
     // Execute, then commit. A throwing step checkpoints NOTHING — the next
     // attempt re-executes it (retries are the failure story, not replay).
@@ -187,7 +196,7 @@ export class ReplayContext implements TaskContext {
     // CANONICAL value on the executing pass too, so NaN, Dates, dropped
     // undefined fields, and -0 read identically on every pass of every
     // schedule (there is no second path for divergence to live in).
-    const result = JSON.parse(stateJson) as T
+    const result = parseTaskValueJson(stateJson) as T
     await this.#controls.storeCall(() =>
       this.#store.setCheckpoint(
         this.#queue,
@@ -199,7 +208,7 @@ export class ReplayContext implements TaskContext {
         this.#run.leaseSeconds,
       ),
     )
-    this.seen.set(key, result)
+    taskMapSet(this.seen, key, result)
     return result
   }
 
@@ -241,13 +250,15 @@ export class ReplayContext implements TaskContext {
       userDurationToMs('awaitEvent timeoutSeconds', opts.timeoutSeconds, { positive: true })
     }
     const key = this.storageName(EngineKey.awaitEvent(parsed))
-    if (this.seen.has(key)) {
+    if (taskMapHas(this.seen, key)) {
       // A memo already covers THIS await (matched by its step key) — retire
       // its carried wake so it cannot be re-read; a wake for a different
       // await (same event name, different step) is left untouched.
       this.takeWake(key)
-      const memo = this.seen.get(key) as { timedOut?: boolean; payloadJson?: string }
-      if (memo.timedOut) throw new EventTimeoutError(name)
+      const memo = taskMapGet(this.seen, key) as { timedOut?: boolean; payloadJson?: string }
+      if (taskHasOwn(memo, 'timedOut') && memo.timedOut === true) {
+        throw new EventTimeoutError(name)
+      }
       return memo.payloadJson as string
     }
     // A wake delivered with this claim resolves the await, consumed once:
@@ -256,9 +267,13 @@ export class ReplayContext implements TaskContext {
     // await from stealing this one's wake.
     const wake = this.takeWake(key)
     if (wake) {
-      const memo = 'payloadJson' in wake ? { payloadJson: wake.payloadJson } : { timedOut: true }
-      await this.commitMarker(key, JSON.stringify(memo))
-      if (memo.timedOut) throw new EventTimeoutError(name)
+      const memo = taskHasOwn(wake, 'payloadJson')
+        ? { payloadJson: (wake as { payloadJson: string }).payloadJson }
+        : { timedOut: true }
+      await this.commitMarker(key, serializeTaskValue('event wake marker', memo))
+      if (taskHasOwn(memo, 'timedOut') && memo.timedOut === true) {
+        throw new EventTimeoutError(name)
+      }
       return memo.payloadJson as string
     }
     const outcome = await this.#controls.storeCall(() =>
@@ -280,7 +295,10 @@ export class ReplayContext implements TaskContext {
       ),
     )
     if (outcome.emitted) {
-      await this.commitMarker(key, JSON.stringify({ payloadJson: outcome.payloadJson }))
+      await this.commitMarker(
+        key,
+        serializeTaskValue('event wake marker', { payloadJson: outcome.payloadJson }),
+      )
       return outcome.payloadJson
     }
     // The store batch ALREADY parked the run: signal without a wake so the
@@ -301,7 +319,7 @@ export class ReplayContext implements TaskContext {
         this.#run.leaseSeconds,
       ),
     )
-    this.seen.set(key, JSON.parse(stateJson))
+    taskMapSet(this.seen, key, parseTaskValueJson(stateJson))
   }
 
   /**
@@ -318,7 +336,10 @@ export class ReplayContext implements TaskContext {
     wake: { inSeconds: number } | { atEpochMs: number },
   ): Promise<void> {
     const key = this.storageName(kind)
-    if (this.seen.has(key)) return // the wake already happened: continue
-    this.#controls.suspend('sleep', wake, { key, stateJson: JSON.stringify(wake) })
+    if (taskMapHas(this.seen, key)) return // the wake already happened: continue
+    this.#controls.suspend('sleep', wake, {
+      key,
+      stateJson: serializeTaskValue('sleep marker', wake),
+    })
   }
 }

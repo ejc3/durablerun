@@ -1,5 +1,14 @@
+import { TASK_INTRINSICS } from './intrinsics.js'
 import type { NormalizedRetryStrategy, RetryStrategy } from './types.js'
 import { durationToMs, requirePositiveInt } from './validate.js'
+
+const {
+  MathMin: min,
+  NumberIsFinite: isFiniteNumber,
+  ObjectFreeze: freeze,
+  RangeError: TrustedRangeError,
+  ReflectGet: reflectGet,
+} = TASK_INTRINSICS
 
 /**
  * Retry math, ported from Absurd's fail_run (absurd.sql): exponential delay =
@@ -31,7 +40,7 @@ export function retryDelaySeconds(
 ): number {
   const normalizedDelay = normalizeRetryStrategy(strategy)
   if (normalizedDelay.kind === 'none') {
-    throw new RangeError('retry delay requires a fixed or exponential strategy')
+    throw new TrustedRangeError('retry delay requires a fixed or exponential strategy')
   }
   return normalizedRetryDelaySeconds(
     normalizedDelay,
@@ -51,8 +60,8 @@ function normalizedRetryDelaySeconds(
     case 'exponential':
       if (strategy.baseSeconds === 0) return 0
       delay = strategy.baseSeconds * strategy.factor ** (failedAttempt - 1)
-      if (!Number.isFinite(delay)) delay = strategy.maxSeconds
-      else delay = Math.min(delay, strategy.maxSeconds)
+      if (!isFiniteNumber(delay)) delay = strategy.maxSeconds
+      else delay = min(delay, strategy.maxSeconds)
       break
   }
   // The strategy fields are already millisecond-canonical, but multiplication
@@ -70,7 +79,7 @@ function normalizedRetryDelaySeconds(
  */
 export function normalizeRetryStrategy(value: unknown): NormalizedRetryStrategy {
   if (typeof value !== 'object' || value === null) {
-    throw new RangeError('retry strategy must be an object')
+    throw new TrustedRangeError('retry strategy must be an object')
   }
 
   const kind = readRetryField(value, 'kind')
@@ -79,7 +88,7 @@ export function normalizeRetryStrategy(value: unknown): NormalizedRetryStrategy 
     return finalizeRetryStrategy({ kind: 'none' })
   }
   if (kind !== 'fixed' && kind !== 'exponential') {
-    throw new RangeError('retry strategy kind must be none, fixed, or exponential')
+    throw new TrustedRangeError('retry strategy kind must be none, fixed, or exponential')
   }
 
   const baseSeconds = readRetryField(value, 'baseSeconds')
@@ -106,27 +115,27 @@ export function normalizeRetryStrategy(value: unknown): NormalizedRetryStrategy 
 
 function readRetryField(value: object, field: string): unknown {
   try {
-    return Reflect.get(value, field)
+    return reflectGet(value, field)
   } catch {
-    throw new RangeError(`retry strategy ${field} is not readable`)
+    throw new TrustedRangeError(`retry strategy ${field} is not readable`)
   }
 }
 
 function finalizeRetryStrategy(value: RetryStrategy): NormalizedRetryStrategy {
-  return Object.freeze(value) as NormalizedRetryStrategy
+  return freeze(value) as NormalizedRetryStrategy
 }
 
 function canonicalDurationSeconds(name: string, value: unknown): number {
   if (typeof value !== 'number') {
-    throw new RangeError(`${name} must be a number`)
+    throw new TrustedRangeError(`${name} must be a number`)
   }
   const milliseconds = durationToMs(name, value)
   return milliseconds === 0 ? 0 : milliseconds / 1000
 }
 
 function canonicalRetryFactor(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new RangeError('retry strategy factor must be a finite non-negative number')
+  if (typeof value !== 'number' || !isFiniteNumber(value) || value < 0) {
+    throw new TrustedRangeError('retry strategy factor must be a finite non-negative number')
   }
   return value === 0 ? 0 : value
 }
