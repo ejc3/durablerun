@@ -2080,6 +2080,57 @@ DRIVER_HEARTBEAT_STATEMENT = (
     "              WHERE ${epochAdditionFits(NOW_MS, '?')}`,\n"
 )
 
+DRIVER_HEARTBEAT_BATCH = (
+    "    await this.db.batch('driver-heartbeat', [\n"
+    "      {\n"
+    + DRIVER_HEARTBEAT_STATEMENT
+    + "        args: [queue, driverId, ttlMs, ttlMs],\n"
+    "      },\n"
+    "    ])"
+)
+
+
+def driver_cleanup_bound_mutation(omit: str) -> str:
+    """Add a source-proven mutation-only cleanup without editing frozen DDL."""
+    last_beat_guard = (
+        "                AND typeof(last_beat_ms) = 'integer'\n"
+        "                AND last_beat_ms BETWEEN 0 AND ${MAX_EPOCH_MS}\n"
+    )
+    expiry_guard = (
+        "                AND typeof(expires_at_ms) = 'integer'\n"
+        "                AND expires_at_ms BETWEEN 0 AND ${MAX_EPOCH_MS}`\n"
+    )
+    if omit == "last-beat":
+        last_beat_guard = "                AND 1 = 1\n"
+    elif omit == "expiry":
+        expiry_guard = "                AND 1 = 1`\n"
+    else:
+        raise ValueError(f"unknown driver cleanup bound {omit!r}")
+    return (
+        "    await this.db.batch('driver-heartbeat', [\n"
+        "      {\n"
+        + DRIVER_HEARTBEAT_STATEMENT
+        + "        args: [queue, driverId, ttlMs, ttlMs],\n"
+        "      },\n"
+        "      ...(ttlMs === 1\n"
+        "        ? [\n"
+        "            {\n"
+        "              sql: `DELETE FROM drivers\n"
+        "              WHERE queue = ? AND driver_id <> ?\n"
+        "                AND expires_at_ms < (\n"
+        "                  SELECT source.last_beat_ms FROM drivers source\n"
+        "                  WHERE source.queue = ? AND source.driver_id = ?\n"
+        "                    AND source.expires_at_ms = source.last_beat_ms + ?\n"
+        "                )\n"
+        + last_beat_guard
+        + expiry_guard
+        + "              args: [queue, driverId, queue, driverId, ttlMs],\n"
+        "            },\n"
+        "          ]\n"
+        "        : []),\n"
+        "    ])"
+    )
+
 
 def weakened_driver_heartbeat_for_source(exists: bool) -> str:
     """Admit overflow for exactly one ownership class without collateral credit."""
@@ -2297,19 +2348,17 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     ),
     (
         "timestamp-driver-cleanup-requires-last-beat-bound",
-        "packages/store-libsql/src/schema.ts",
-        "           AND typeof(last_beat_ms) = 'integer'\n"
-        "           AND last_beat_ms BETWEEN 0 AND ${MAX_EPOCH_MS}\n",
-        "           AND 1 = 1\n",
+        "packages/store-libsql/src/store.ts",
+        DRIVER_HEARTBEAT_BATCH,
+        driver_cleanup_bound_mutation("last-beat"),
         "driver cleanup refuses an expired row with an invalid last beat",
         "driver cleanup deletes an expired row whose last beat is invalid",
     ),
     (
         "timestamp-driver-cleanup-requires-expiry-bound",
-        "packages/store-libsql/src/schema.ts",
-        "           AND typeof(expires_at_ms) = 'integer'\n"
-        "           AND expires_at_ms BETWEEN 0 AND ${MAX_EPOCH_MS};\n",
-        "           AND 1 = 1;\n",
+        "packages/store-libsql/src/store.ts",
+        DRIVER_HEARTBEAT_BATCH,
+        driver_cleanup_bound_mutation("expiry"),
         "driver cleanup refuses a row with an invalid expiry",
         "driver cleanup deletes a row whose expiry is invalid",
     ),
@@ -5563,6 +5612,12 @@ QUESTION_TOKEN_DELTA_REASONS = {
     "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
     "driver-heartbeat-single-clock": (
         "replacement intentionally restores the removed cleanup statement and its three explicit binds"
+    ),
+    "timestamp-driver-cleanup-requires-last-beat-bound": (
+        "replacement adds a mutation-only statement with five balanced SQL binds and one TypeScript conditional"
+    ),
+    "timestamp-driver-cleanup-requires-expiry-bound": (
+        "replacement adds a mutation-only statement with five balanced SQL binds and one TypeScript conditional"
     ),
     "generated-relation-queue-ownership": (
         "replacement removes the TypeScript conditional that distinguishes self and cross-table relations"
