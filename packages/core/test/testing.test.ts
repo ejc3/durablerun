@@ -27,38 +27,99 @@ async function bindArityFailure(): Promise<never> {
   throw new Error('bind-arity failure unexpectedly returned')
 }
 
-async function requireBindArityPropagation(
-  mutation: string,
+async function bindUndefinedFailure(): Promise<never> {
+  const unreachable: SqlExecutor = {
+    batch: async () => {
+      throw new Error('undefined-bind failure reached the executor')
+    },
+  }
+  const batch = new FencedBatch('testing-helper', 'seed', { now: 'CURRENT_TIMESTAMP' }).cas(
+    'win',
+    'runs',
+    `UPDATE runs SET ${FENCE_SET} WHERE run_id = ? AND queue = ?`,
+    ['run', undefined as unknown as string],
+  )
+  await batch.run(unreachable)
+  throw new Error('undefined-bind failure unexpectedly returned')
+}
+
+async function requireCompilerBindPropagation(
+  failureMarker: string,
+  expectedFailure: RegExp,
   action: () => Promise<unknown>,
 ): Promise<void> {
   try {
     await action()
   } catch (error) {
-    if (/binds 2 of 1 explicit args/.test(String(error))) return
+    if (expectedFailure.test(String(error))) return
     if (error instanceof Error && error.message === marker) {
-      throw new Error(`mutation-verdict:behavior:${mutation}`)
+      throw new Error(failureMarker)
     }
     throw error
   }
-  throw new Error(`mutation-verdict:behavior:${mutation}`)
+  throw new Error(failureMarker)
 }
 
 describe('mutation verdict promise helpers', () => {
+  it('does not attribute an explicit undefined bind as an expected failure', async () => {
+    await requireCompilerBindPropagation(
+      'mutation-verdict:behavior:testing-helper-bind-undefined-brand',
+      /argument 1 is undefined/,
+      () => attributeExpectedFailure(verdict, /.*/, bindUndefinedFailure),
+    )
+  })
+
+  it('uses a captured constructor for compiler bind failures', async () => {
+    const originalError = Object.getOwnPropertyDescriptor(globalThis, 'Error')
+    const originalTypeError = Object.getOwnPropertyDescriptor(globalThis, 'TypeError')
+    if (originalError === undefined || originalTypeError === undefined) {
+      throw new Error('expected Error constructors on globalThis')
+    }
+    function PoisonedError(): object {
+      return function taskInstalledError() {}
+    }
+
+    let observed: unknown
+    try {
+      Object.defineProperty(globalThis, 'Error', { ...originalError, value: PoisonedError })
+      Object.defineProperty(globalThis, 'TypeError', { ...originalTypeError, value: PoisonedError })
+      try {
+        await attributeExpectedFailure(verdict, /.*/, bindArityFailure)
+      } catch (error) {
+        observed = error
+      }
+    } finally {
+      Object.defineProperty(globalThis, 'TypeError', originalTypeError)
+      Object.defineProperty(globalThis, 'Error', originalError)
+    }
+
+    expect(
+      observed,
+      'mutation-verdict:construction:testing-helper-bind-error-constructor',
+    ).toBeInstanceOf(originalTypeError.value as ErrorConstructor)
+  })
+
   it('does not attribute a bind-arity failure as an expected failure', async () => {
-    await requireBindArityPropagation('testing-helper-bind-arity-attribute', () =>
-      attributeExpectedFailure(verdict, /.*/, bindArityFailure),
+    await requireCompilerBindPropagation(
+      'mutation-verdict:behavior:testing-helper-bind-arity-attribute',
+      /binds 2 of 1 explicit args/,
+      () => attributeExpectedFailure(verdict, /.*/, bindArityFailure),
     )
   })
 
   it('does not accept a bind-arity failure as the required failure', async () => {
-    await requireBindArityPropagation('testing-helper-bind-arity-require', () =>
-      requireExpectedFailure(verdict, /.*/, bindArityFailure),
+    await requireCompilerBindPropagation(
+      'mutation-verdict:behavior:testing-helper-bind-arity-require',
+      /binds 2 of 1 explicit args/,
+      () => requireExpectedFailure(verdict, /.*/, bindArityFailure),
     )
   })
 
   it('does not attribute a bind-arity failure as a replacement failure', async () => {
-    await requireBindArityPropagation('testing-helper-bind-arity-replacement', () =>
-      attributeReplacedFailure(verdict, /expected healthy failure/, /.*/, bindArityFailure),
+    await requireCompilerBindPropagation(
+      'mutation-verdict:behavior:testing-helper-bind-arity-replacement',
+      /binds 2 of 1 explicit args/,
+      () => attributeReplacedFailure(verdict, /expected healthy failure/, /.*/, bindArityFailure),
     )
   })
 
