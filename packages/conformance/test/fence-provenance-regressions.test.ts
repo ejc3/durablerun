@@ -796,6 +796,53 @@ describe('fence provenance', () => {
     }
   })
 
+  it('spawn rejects a task-id collision owned by a foreign queue without a same-queue idempotency winner', async () => {
+    const f = await fixture(['A', 'NEW-RUN'])
+    try {
+      await insertTask(f.raw, {
+        id: 'A',
+        queue: 'other',
+        state: 'pending',
+        idempotencyKey: 'key',
+      })
+      await insertRun(f.raw, {
+        id: 'rA',
+        queue: 'other',
+        taskId: 'A',
+        state: 'pending',
+      })
+
+      const outcome = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'key' }).then(
+        (value) => ({ kind: 'resolved' as const, value }),
+        (error: unknown) => ({
+          kind: 'rejected' as const,
+          type: error instanceof Error ? error.constructor : null,
+          message: error instanceof Error ? error.message : null,
+        }),
+      )
+      const tasks = await query(f.raw, `SELECT task_id, queue FROM tasks ORDER BY queue, task_id`)
+      const runs = await query(
+        f.raw,
+        `SELECT run_id, queue, task_id FROM runs ORDER BY queue, run_id`,
+      )
+
+      expect(
+        { outcome, tasks, runs },
+        'mutation-verdict:behavior:spawn-receipt-task-id-collision-is-queue-scoped',
+      ).toEqual({
+        outcome: {
+          kind: 'rejected',
+          type: Error,
+          message: 'spawn: the task insert lost but no existing task explains it',
+        },
+        tasks: [{ task_id: 'A', queue: 'other' }],
+        runs: [{ run_id: 'rA', queue: 'other', task_id: 'A' }],
+      })
+    } finally {
+      f.close()
+    }
+  })
+
   it('claim refuses a run whose task moved to a different queue', async () => {
     const f = await fixture()
     try {
