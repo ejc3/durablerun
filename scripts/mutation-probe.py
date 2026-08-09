@@ -5286,6 +5286,15 @@ SELF_TEST_FAULTS = (
 )
 
 
+def mutation_question_delta_diagnostic(
+    name: str,
+    find: str,
+    replace: str,
+    reason: str | None,
+) -> str | None:
+    return None
+
+
 def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     """Generated false-positive surface for the verdict classifier itself."""
     expected = ExpectedVerdict(
@@ -5866,7 +5875,69 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ),
     )
 
+    question_delta_cases = (
+        (
+            "same SQL bind shape",
+            "same-arity",
+            "AND step_name = ?",
+            "AND step_name = ? AND status = 'waiting'",
+            None,
+            None,
+        ),
+        (
+            "historical bind-arity mutation",
+            "changed-arity",
+            "AND w.step_name = ${run}.wake_step)",
+            "AND ? IS NOT NULL)",
+            None,
+            "changes raw question-token count",
+        ),
+        (
+            "declared non-SQL question syntax",
+            "typescript-ternary",
+            "return value",
+            "return value ? left : right",
+            "replacement adds a TypeScript ternary, not a SQL placeholder",
+            None,
+        ),
+        (
+            "undeclared non-SQL question syntax",
+            "undeclared-ternary",
+            "return value",
+            "return value ? left : right",
+            None,
+            "changes raw question-token count",
+        ),
+        (
+            "empty question-delta reason",
+            "empty-reason",
+            "return value",
+            "return value ? left : right",
+            "  ",
+            "non-empty question-delta reason",
+        ),
+        (
+            "stale question-delta reason",
+            "stale-reason",
+            "return value",
+            "return other",
+            "no question-token delta remains",
+            "stale question-delta reason",
+        ),
+    )
+
     failures = []
+    for label, name, find, replace, reason, wanted in question_delta_cases:
+        got = mutation_question_delta_diagnostic(name, find, replace, reason)
+        if wanted is None:
+            if got is not None:
+                failures.append(
+                    f"question-delta {label}: expected no diagnostic, got {got!r}"
+                )
+        elif got is None or wanted not in got:
+            failures.append(
+                f"question-delta {label}: expected diagnostic containing {wanted!r}, got {got!r}"
+            )
     analysis_sources = {
         **{
             f"__selftest__/promise-{index}.ts": source + "\n" + canonical_helper_import
@@ -6104,7 +6175,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         f"{len(descriptor_cases)} descriptor cases, "
         f"{len(helper_binding_cases)} helper-binding cases, "
         f"{len(helper_marker_cases)} helper-marker cases, "
-        f"{len(direct_marker_cases)} direct-marker cases, {len(MUTATIONS)} live mutations"
+        f"{len(direct_marker_cases)} direct-marker cases, "
+        f"{len(question_delta_cases)} question-delta cases, {len(MUTATIONS)} live mutations"
     )
     return 0
 
