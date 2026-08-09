@@ -4773,6 +4773,61 @@ TYPECHECK_MUTATION_NAMES = frozenset(
     }
 )
 
+QUESTION_TOKEN_DELTA_REASONS = {
+    "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
+    "generated-narrow-drops-all": (
+        "replacement adds TypeScript conditional tokens and compares against SQL text; "
+        "it does not add a generated statement bind"
+    ),
+    "stored-within-rejects-spread-descriptor": (
+        "replacement adds an optional TypeScript field declaration"
+    ),
+    "stored-incrementable-rejects-spread-descriptor": (
+        "replacement adds an optional TypeScript field declaration"
+    ),
+    "persisted-row-rejects-spread-descriptor": (
+        "replacement adds an optional TypeScript field declaration"
+    ),
+    "derived-row-rejects-spread-descriptor": (
+        "replacement adds an optional TypeScript field declaration"
+    ),
+    "poison-relational-target-inventory": (
+        "replacement removes TypeScript optional-chaining and nullish-coalescing tokens"
+    ),
+    "schema-version-row-required": (
+        "replacement removes TypeScript optional-chaining and nullish-coalescing tokens"
+    ),
+    "timestamp-boundary-oracle-rejects-text": (
+        "replacement adds a TypeScript conditional expression"
+    ),
+    "timestamp-boundary-oracle-rejects-fractional": (
+        "replacement adds a TypeScript conditional expression"
+    ),
+    "admin-fake-now-exact-endpoints": "replacement adds a TypeScript conditional expression",
+    "retry-normalize-positive-zero": "replacement removes a TypeScript conditional expression",
+    "retry-spawn-null": (
+        "replacement swaps a TypeScript conditional token for nullish-coalescing syntax"
+    ),
+    "task-control-scope-isolation": (
+        "replacement adds an optional TypeScript field and nullish assignment"
+    ),
+    "task-throwable-forged-suspend": (
+        "replacement adds TypeScript nullish-coalescing and conditional syntax"
+    ),
+    "task-throwable-forged-lease-lost": (
+        "replacement adds TypeScript nullish-coalescing and conditional syntax"
+    ),
+    "task-throwable-forged-store-unavailable": (
+        "replacement adds TypeScript nullish-coalescing and conditional syntax"
+    ),
+    "task-throwable-forged-fatal": (
+        "replacement adds TypeScript nullish-coalescing and conditional syntax"
+    ),
+    "sdk-registry-map-entry-authority": (
+        "replacement adds TypeScript nullish-coalescing syntax"
+    ),
+}
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -5292,6 +5347,29 @@ def mutation_question_delta_diagnostic(
     replace: str,
     reason: str | None,
 ) -> str | None:
+    """Screen raw `?` drift cheaply; this is not a bind-correctness proof.
+
+    Equal raw counts can still exchange a SQL placeholder for TypeScript or
+    comment syntax. The self-test below preserves that explicit false negative.
+    Its separate classifier case proves only that an unmatched binder failure
+    is wrong-path; caller matchers are a distinct attribution boundary.
+    """
+    before = find.count("?")
+    after = replace.count("?")
+    if before == after:
+        if reason is not None:
+            return (
+                f"{name}: stale question-delta reason: raw question-token counts "
+                f"are both {before}"
+            )
+        return None
+    if reason is None:
+        return (
+            f"{name}: replacement changes raw question-token count ({before} -> {after}); "
+            "declare a non-empty question-delta reason for non-bind syntax"
+        )
+    if not reason.strip():
+        return f"{name}: a question-token delta requires a non-empty question-delta reason"
     return None
 
 
@@ -5885,6 +5963,14 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             None,
         ),
         (
+            "equal-count SQL/comment cancellation",
+            "cancelled-bind-delta",
+            "const sql = flag ? `AND id = ?` : ''",
+            "const sql = flag ? `AND 1 = 1` : '' // ?",
+            None,
+            None,
+        ),
+        (
             "historical bind-arity mutation",
             "changed-arity",
             "AND w.step_name = ${run}.wake_step)",
@@ -6091,6 +6177,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             )
         if "scripts/confine.sh" in TEST_CMD:
             failures.append("worker suites create nested confinement scopes")
+        mutation_names = {mutation.name for mutation in MUTATIONS}
+        for stale_name in sorted(set(QUESTION_TOKEN_DELTA_REASONS) - mutation_names):
+            failures.append(
+                f"{stale_name}: question-delta reason names no live mutation"
+            )
         for mutation in MUTATIONS:
             source = (ROOT / mutation.file).read_text()
             occurrences = source.count(mutation.find)
@@ -6098,6 +6189,14 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 failures.append(
                     f"{mutation.name}: mutation pattern occurs {occurrences} times; expected exactly one"
                 )
+            question_delta_diagnostic = mutation_question_delta_diagnostic(
+                mutation.name,
+                mutation.find,
+                mutation.replace,
+                QUESTION_TOKEN_DELTA_REASONS.get(mutation.name),
+            )
+            if question_delta_diagnostic is not None:
+                failures.append(question_delta_diagnostic)
             marker_file = mutation.verdict.marker_file or mutation.verdict.file
             verdict_source = (ROOT / marker_file).read_text()
             marker_parts = mutation.verdict.marker.split(":", 2)
