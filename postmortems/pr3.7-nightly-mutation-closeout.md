@@ -119,6 +119,9 @@ causal coverage while deleting guards without their named proof failing.
 | 72 | `suspendRun` independently used the same prototype-inclusive wake discrimination | A run could park at the wrong instant while atomically writing a marker for the requested absolute instant | Atomic suspension input boundary | Sharing a type did not make the second consumer share runtime classification | The `suspendRun` call site makes its own captured own-property decision and feeds the same `prepareWake` shape, with an independent exact mutation (rungs 1 and 2) |
 | 73 | The private compiler-brand predicate had producer mutations but no mutation of the WeakSet membership read itself | Deleting consumer-side authentication could leave the advertised bind-attribution surface falsely complete | Core mutation enrollment | Producer coverage was treated as coverage of the independently writable predicate consumer | `testing-helper-bind-brand-read` deletes only `weakSetHas` and owns the exact construction verdict (rung 2) |
 | 74 | The session process scanner recognized only `Z` as terminal and treated Linux's terminal `X`/`x` states as live evidence failures | A process exiting during snapshot collection could falsely refuse a clean session and block final attestation | Session-state scanner self-test | One observed terminal spelling was used as a proxy for the kernel's terminal-state class, and phase-specific error branches respelled the decision | One `TERMINAL_PROCESS_STATES` definition and `process_is_gone` classifier own the initial observation, failure rechecks after owner/argv/cwd phases, and the final identity observation; a generated phase matrix exercises `Z`, `X`, and `x` transitions (rungs 1 and 2) |
+| 75 | `task-value-raw-nested-symbol` reached its exact marker but also failed two unmarked generic nested-symbol cases | The full audit rejected a real serializer guard kill as wrong-path | Core task-value mutation oracle | A generic value matrix and the intrinsic-containment case were two decisive owners for one nested-symbol condition | Keep top-level symbol coverage in the generic matrix and make one combined object/array assertion the sole nested-symbol owner (rung 2) |
+| 76 | The verdict classifier rejected an exact `AssertionError: <marker>` first line when Vitest emitted no trailing matcher detail | A correctly killed exotic-object mutant was reported wrong-path despite an exact diagnostic | Mutation verdict classifier | The accepted first-line grammar assumed every assertion diagnostic appended `: …` | Recognize the exact no-detail assertion form without permitting substring/source-context credit, and maintain it with a classifier self-test (rung 2) |
+| 77 | The context lease-loss getter marker was attached to the persisted-result assertion after an earlier unmarked worker-outcome assertion | The captured-getter mutant failed for the intended reason but could not receive exact credit | SDK worker mutation oracle | One scenario had two sequential decisive assertions and registered the later one | The mutation marker owns the first observable `claimAndRun` outcome; the persisted result remains a healthy-path control (rung 2) |
 
 ## Detection ledger
 
@@ -139,8 +142,9 @@ causal coverage while deleting guards without their named proof failing.
 | Bind-attribution repair review, findings 65 through 67 | 3 | no |
 | Final durable-boundary and mutation-surface review, findings 68 through 73 | 6 | no |
 | Session scanner self-test, finding 74 | 1 | **yes** |
+| Full exact mutation audit at `cd719f1`, findings 75 through 77 | 3 | **yes** |
 
-Self-catch rate: **26 of 74, or 35.1%** (previous temporal round: **1 of
+Self-catch rate: **29 of 77, or 37.7%** (previous temporal round: **1 of
 43, or 2.3%**). The original 35-finding audit was **24 of 35, or 68.6%**,
 but the later boundary and repair rounds were almost entirely review-caught.
 The long audit found 22 attribution defects without outside review. It is not
@@ -154,9 +158,9 @@ The last checked-in cumulative trailer before this closeout was
 `review-findings: 289`. The original nightly/mutation round raised it to 300;
 the retry/throwable, task-realm, and bind-attribution rounds raise it to
 `review-findings: 331`; the final durable-boundary review raises it to
-`review-findings: 337`. The previously recorded 30 self-catches rise by 26 to
-56. The branch catalogue at final closeout is therefore **337 review-caught
-plus 56 self-caught, or 393 total findings**.
+`review-findings: 337`. The previously recorded 30 self-catches rise by 29 to
+59. The branch catalogue at final closeout is therefore **337 review-caught
+plus 59 self-caught, or 396 total findings**.
 
 ## Recurrence
 
@@ -236,7 +240,7 @@ mutation minimality.
 
 ## Fix-induced defects
 
-There were **32 fix-induced findings across the complete closeout**. Thirteen
+There were **34 fix-induced findings across the complete closeout**. Thirteen
 were in the original nightly/mutation round: finding 2 and findings 24 through
 35. Finding 2 was caused by the first fresh-process proof, whose text
 inventory still accepted dead execution. Finding 24 was caused by the
@@ -259,9 +263,9 @@ place. The required false-negative execution then found finding 34; its
 standalone red and green commits and a complete `pnpm verify` followed that
 audit. Final code re-review then found finding 35 and forced another red,
 green, and invalidation of the earlier long evidence; the 207-entry exact
-cycle therefore had to be rerun before that checkpoint could merge. The four
-later addenda add four, ten, two, and three fix-induced findings respectively,
-for **32 across the complete 74-finding closeout**; their exact
+cycle therefore had to be rerun before that checkpoint could merge. The five
+later addenda add four, ten, two, three, and two fix-induced findings
+respectively, for **34 across the complete 77-finding closeout**; their exact
 accounting and repair topology appear below.
 
 ## Evidence
@@ -807,9 +811,11 @@ counted final-remote findings 25 and 31 were completed without incrementing it.
 Findings 68 through 73 were caught by mandatory adversarial review. Finding 74
 was caught by the scanner's own generated self-test before final attestation.
 This addendum is therefore **1 of 7 self-caught**, and the complete closeout is
-**26 of 74, or 35.1% self-caught**. The cumulative trailer is
+**26 of 74, or 35.1% self-caught at this checkpoint**. The cumulative trailer
+at this checkpoint is
 `review-findings: 337`; the branch catalogue is **337 review-caught plus 56
 self-caught, or 393 total findings**, for a **14.2%** branch self-catch rate.
+The clean-head mutation-attribution addendum below owns the final totals.
 
 Finding 68 repeats classification by apparent position: an inner catch did not
 make completion a different error-origin phase. Finding 69 repeats the
@@ -827,8 +833,7 @@ branches did not share one lifecycle decision.
 Findings 70 and 73 were introduced by the task-control and compiler-brand
 repairs respectively. Finding 74 was introduced by the session evidence
 scanner repair. Findings 68, 69, 71, and 72 pre-existed this final repair set.
-Together with the prior 29, the complete closeout has **32 fix-induced
-findings**.
+Together with the prior 29, this checkpoint had **32 fix-induced findings**.
 
 ### Final mechanism audit
 
@@ -863,7 +868,70 @@ complete for future consumers.
   successor entries as exact, with no wrong-path results. `pnpm verify` passed
   **80 files / 3,550 tests**, and the mutation self-test enrolled **345** live
   entries.
-- Those focused results are not the final mutation gate. The complete
-  **345-entry** audit, confined fuzz, and TLC runs must still pass together on
-  one clean immutable head before merge; this document does not claim that
-  full audit has run.
+- Those focused results were not the final mutation gate. The first complete
+  **345-entry** audit and the attribution defects it found are recorded below.
+
+## Final clean-head mutation-attribution addendum
+
+The first complete 345-entry audit on immutable head `cd719f1` caught 342
+mutations exactly, rejected three real kills as wrong-path, and reported no
+survivors. Those three failures are independently writable evidence-mechanism
+defects, not three production regressions. The canonical Findings table above
+owns findings 75 through 77.
+
+### Clean-head detection and accounting ledger
+
+All three findings were caught by the repository's full exact mutation audit,
+so this addendum is **3 of 3 self-caught**. The complete closeout is **29 of
+77, or 37.7% self-caught**. The cumulative trailer remains
+`review-findings: 337`; the branch catalogue is **337 review-caught plus 59
+self-caught, or 396 total findings**, for a **14.9%** branch self-catch rate.
+
+Findings 75 and 77 recur after the one-condition/one-assertion ownership rule:
+the nested-symbol mutation had a second generic test representation, while the
+SDK marker sat after another decisive assertion. Finding 76 recurs after exact
+first-line marker matching: the classifier rejected a framework diagnostic
+that was exactly the marker but omitted the assumed trailing matcher detail.
+
+Findings 75 and 77 were introduced by the task-realm attribution repair in
+`4220de7`. Finding 76's no-detail classifier false negative predated that
+repair and was merely reached by its exotic-object mutation. Adding the two
+repair-induced findings to the prior 32 yields **34 fix-induced findings** in
+the complete closeout.
+
+### Clean-head mechanism audit
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| One combined nested-symbol owner | 2 | A different serializer condition can still have both a generic matrix case and a mutation-specific case; only executing its mutation exposes the collateral failure. PR3.10's generated condition ownership remains the rung-1 target. |
+| Exact no-detail assertion diagnostic | 2 | A future reporter can emit a different exact prefix or move the marker off the first line. That path remains wrong-path until its structured transport is explicitly modeled; source-context substrings still receive no credit. |
+| First-observable SDK mutation owner | 2 | A future setup or intermediate assertion can become decisive before an existing marker. The live mutation audit, not marker presence alone, proves the current control flow. |
+
+Built now: the generic task-value matrix owns only the top-level symbol case;
+one combined assertion owns object- and array-member symbol rejection; the
+classifier recognizes exact `AssertionError: <marker>` without loosening to
+substrings; and the context lease-loss mutation owns the first worker outcome.
+The registry remains 345 because these repairs correct ownership rather than
+add conditions.
+
+### Clean-head evidence and remaining gate
+
+- At `cd719f1`, `pnpm verify` passed **80 files / 3,550 tests**; confined TLC
+  completed all five liveness groups and exhaustive safety with 111,832,051
+  generated and 22,093,378 distinct states; the 2,000-seed x 100-step confined
+  fuzz gate passed **44 files / 3,119 tests**.
+- The complete audit at `cd719f1` reported **342 exact catches, three
+  wrong-path results, and zero survivors**. The wrong-paths were
+  `task-value-raw-nested-symbol`, `task-value-rejects-exotic-objects`, and
+  `sdk-context-captured-aborted-getter`.
+- Red `d87bc53` made the classifier self-test reproduce Vitest's exact
+  no-detail assertion form. The other two failures were already executable in
+  the complete audit. Green `5f420c0` consolidated nested-symbol ownership,
+  accepted only the exact first-line diagnostic, and moved SDK ownership to
+  the first observable outcome.
+- At `5f420c0`, all three formerly wrong-path mutations were caught by their
+  exact attributable verdicts. `pnpm verify` passed **80 files / 3,548 tests**,
+  and the mutation self-test retained **345** live entries.
+- Targeted repair evidence is not the final mutation gate. The complete
+  **345-entry** audit, confined fuzz, TLC, and verify gates must still pass
+  together on one later clean immutable head before merge.

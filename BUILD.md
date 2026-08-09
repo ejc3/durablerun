@@ -198,14 +198,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     each carry an exact behavioral or construction verdict: test file, full
     test name, and marker.
     The marker must be the structured failure diagnostic's first line: bare,
-    `Error: <marker>`, or `AssertionError: <marker>: …`; an arbitrary substring
-    in rendered source context is not evidence.
+    `Error: <marker>`, exact `AssertionError: <marker>`, or
+    `AssertionError: <marker>: …`; an arbitrary substring in rendered source
+    context is not evidence.
     Structured valid Vitest output makes a green survivor, bind/compile error,
     different failing assertion, suite error, or process/report disagreement a
     wrong-path result rather than credit.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
-    The verifier runs 17 attribution cases, nineteen promise-message source
+    The verifier runs 18 attribution cases, nineteen promise-message source
     cases, ten canonical helper-descriptor cases, two helper-binding cases,
     three helper-marker cases, sixteen direct-marker cases, and seven
     question-delta cases across all 345 live mutations. Eight injected
@@ -434,6 +435,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     bring the current live registry from 339 to **345**. A canonical live
     question-delta injected fault also completes the already-counted bind-arity
     source alarm; it adds no mutation and does not change that total.
+    The first complete 345-entry run then rejected three real kills as
+    wrong-path: a nested-symbol guard had two collateral generic tests, an
+    exact no-detail Vitest assertion diagnostic was outside the classifier,
+    and the context lease-loss marker sat after an earlier decisive assertion.
+    One combined nested-symbol owner, exact first-line diagnostic recognition,
+    and first-observable SDK ownership make all three targeted reruns exact;
+    the final immutable 345-entry cycle remains the merge evidence.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver

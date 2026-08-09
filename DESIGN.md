@@ -959,9 +959,12 @@ not depend on careful reading:
   or bind failure, a different assertion, any suite-level error, malformed or
   internally contradictory structured output, process/report disagreement,
   or any other wrong path receives no credit. A marker matches only the
-  structured failure diagnostic's first line: bare, `Error: <marker>`, or
-  `AssertionError: <marker>: …`; its appearance later in rendered assertion
-  source is not evidence. Both `FencedBatch` compiler bind exits use one
+  structured failure diagnostic's first line: bare, `Error: <marker>`, exact
+  `AssertionError: <marker>`, or `AssertionError: <marker>: …`; its appearance
+  later in rendered assertion source is not evidence. One mutation condition
+  has one decisive assertion owner: broader controls may remain in the test,
+  but they cannot fail before or alongside the registered owner. Both
+  `FencedBatch` compiler bind exits use one
   module-captured `TypeError` factory and private brand. The three canonical
   promise helpers propagate that brand before consulting a caller matcher, so
   an argument-count or explicit-undefined failure cannot be laundered into an
@@ -972,7 +975,7 @@ not depend on careful reading:
   all question-delta reasons in one live-inventory traversal and requires an
   aggregate refusal; it proves enrollment is not a removable second call, not
   each declaration independently.
-  The verify gate runs 17 classifier cases, nineteen promise-message source
+  The verify gate runs 18 classifier cases, nineteen promise-message source
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
   three helper-marker cases, sixteen direct-marker cases, and seven
   question-delta cases over all 345 live mutations. A separate
