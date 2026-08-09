@@ -515,7 +515,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                  ORDER BY r.attempt DESC, r.run_id DESC LIMIT 1) AS run_id
        FROM (
          SELECT t.task_id, t.queue, 1 AS priority
-         FROM tasks t WHERE t.task_id = ?
+         FROM tasks t WHERE t.task_id = ? AND t.queue = ?
          UNION ALL
          SELECT t.task_id, t.queue, 0 AS priority
          FROM tasks t
@@ -524,7 +524,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        ) winner
        ORDER BY winner.priority, winner.task_id
        LIMIT 1`,
-      [taskId, key, queue, key, taskId],
+      [taskId, queue, key, queue, key, taskId],
     )
     const { won, results } = await b.run(this.db)
     if (won === 'task') return { taskId, runId, created: true }

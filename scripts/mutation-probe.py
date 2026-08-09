@@ -1525,6 +1525,13 @@ MUTATION_SPECS = [
         "spawn receipt lets a foreign-queue id collision outrank the same-queue idempotency winner",
     ),
     (
+        "spawn-receipt-task-id-collision-is-queue-scoped",
+        "packages/store-libsql/src/store.ts",
+        "         FROM tasks t WHERE t.task_id = ? AND t.queue = ?\n",
+        "         FROM tasks t WHERE t.task_id = ? AND ? IS NOT NULL\n",
+        "spawn receipt returns a task-id collision owned by another queue",
+    ),
+    (
         "claim-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
         "    const claimedWait = registeredWait('runs')\n"
@@ -4480,6 +4487,12 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance spawn receipt prefers the same-queue idempotency winner over a same-key foreign queue id collision",
         "mutation-verdict:behavior:spawn-receipt-idempotency-priority-is-queue-scoped",
+    ),
+    "spawn-receipt-task-id-collision-is-queue-scoped": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance spawn rejects a task-id collision owned by a foreign queue without a same-queue idempotency winner",
+        "mutation-verdict:behavior:spawn-receipt-task-id-collision-is-queue-scoped",
     ),
     "claim-requires-run-task-queue-ownership": ExpectedVerdict(
         "behavior",
