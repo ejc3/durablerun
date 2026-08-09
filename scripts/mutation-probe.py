@@ -438,6 +438,27 @@ MUTATION_SPECS = [
         "a historical run of the same task answers for the intended successor",
     ),
     (
+        "successor-collision-error-attribution",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "const RUN_ID_COLLISION = /UNIQUE constraint failed: runs\\.run_id/",
+        "const RUN_ID_COLLISION = /.*/",
+        "the successor collision oracle accepts an unrelated pre-transition failure",
+    ),
+    (
+        "successor-self-collision-identity",
+        "packages/store-libsql/src/fragments.ts",
+        " AND s.task_id = ${task}\n             AND s.attempt = ${attempt})`",
+        " AND s.task_id = ${task}\n             AND ${attempt} IS NOT NULL)`",
+        "the run being replaced answers for its own intended successor identity",
+    ),
+    (
+        "successor-sweep-attempt-identity",
+        "packages/store-libsql/src/fragments.ts",
+        " AND s.task_id = ${task}\n             AND s.attempt = ${attempt})`",
+        " AND s.task_id = ${task}\n             AND ${attempt} IS NOT NULL)`",
+        "a historical attempt suppresses the claim-timeout successor",
+    ),
+    (
         "legacy-wait-step-backfill",
         "packages/store-libsql/src/store.ts",
         "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
@@ -3259,6 +3280,24 @@ VERDICTS = {
         "packages/conformance/test/replay-after-the-world-moved.test.ts",
         "a successor id that collides with a historical run of the same task rejects a worker failure instead of committing a half-transition",
         "mutation-verdict:behavior:successor-attempt-identity",
+    ),
+    "successor-collision-error-attribution": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "the successor collision rejection oracle propagates an unrelated pre-transition failure",
+        "mutation-verdict:behavior:successor-collision-error-attribution",
+    ),
+    "successor-self-collision-identity": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "a successor id that collides with the run being replaced fails loudly instead of committing a half-transition",
+        "mutation-verdict:behavior:successor-self-collision-identity",
+    ),
+    "successor-sweep-attempt-identity": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/replay-after-the-world-moved.test.ts",
+        "a successor id that collides with a historical run of the same task rejects a claim-timeout sweep instead of committing a half-transition",
+        "mutation-verdict:behavior:successor-sweep-attempt-identity",
     ),
     "legacy-wait-step-backfill": ExpectedVerdict(
         "behavior",
