@@ -1229,4 +1229,46 @@ describe('runClaimedRun', () => {
       f.close()
     }
   })
+
+  it('a handler cannot replace promise adoption during worker finalization', async () => {
+    const f = await fx('sdk-finalize-captured-promise-adoption')
+    const descriptor = Object.getOwnPropertyDescriptor(Promise, 'resolve')
+    if (descriptor === undefined) throw new Error('expected Promise.resolve')
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      let observed: { value?: unknown; error?: unknown }
+      try {
+        observed = await runClaimedRun(
+          {
+            store: f.store,
+            clock: f.clock,
+            registry: registry({
+              job: async () => {
+                Object.defineProperty(Promise, 'resolve', {
+                  configurable: true,
+                  value: () => Promise.reject(new Error('task-installed Promise.resolve ran')),
+                  writable: true,
+                })
+                return 'done'
+              },
+            }),
+          },
+          invocation,
+        ).then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        )
+      } finally {
+        Object.defineProperty(Promise, 'resolve', descriptor)
+      }
+      expect(
+        observed,
+        'mutation-verdict:behavior:sdk-captured-promise-adoption',
+      ).toEqual({ value: { kind: 'completed' } })
+    } finally {
+      Object.defineProperty(Promise, 'resolve', descriptor)
+      f.close()
+    }
+  })
 })
