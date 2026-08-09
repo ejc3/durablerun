@@ -55,4 +55,15 @@ describe('serializeTaskValue', () => {
   it('is also the canonical serializer behind JSON-text event payloads', () => {
     expect(userJsonValue('event payload', `{ "a": 1, "b": null }`)).toBe('{"a":1,"b":null}')
   })
+
+  it('rejects objects outside the explicit JSON data model instead of changing their meaning', () => {
+    expect(
+      () => serializeTaskValue('result', new Number(7)),
+      'mutation-verdict:behavior:task-value-rejects-exotic-objects',
+    ).toThrow(FatalTaskError)
+    for (const value of [new Boolean(true), new String('ab'), Object(1n)]) {
+      expect(() => serializeTaskValue('result', value)).toThrow(FatalTaskError)
+    }
+    expect(serializeTaskValue('result', new Date(0))).toBe('"1970-01-01T00:00:00.000Z"')
+  })
 })
