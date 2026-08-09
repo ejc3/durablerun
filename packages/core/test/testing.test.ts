@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { FENCE_SET, FencedBatch, type SqlExecutor } from '../src/index.js'
 import {
   attributeExpectedFailure,
   attributeReplacedFailure,
@@ -10,7 +11,57 @@ const verdict = { kind: 'behavior', mutation: 'testing-helper' } as const
 const expected = new Error('expected')
 const unrelated = new Error('unrelated')
 
+async function bindArityFailure(): Promise<never> {
+  const unreachable: SqlExecutor = {
+    batch: async () => {
+      throw new Error('bind-arity failure reached the executor')
+    },
+  }
+  const batch = new FencedBatch('testing-helper', 'seed', { now: 'CURRENT_TIMESTAMP' }).cas(
+    'win',
+    'runs',
+    `UPDATE runs SET ${FENCE_SET} WHERE run_id = ? AND queue = ?`,
+    ['only-one'],
+  )
+  await batch.run(unreachable)
+  throw new Error('bind-arity failure unexpectedly returned')
+}
+
+async function requireBindArityPropagation(
+  mutation: string,
+  action: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await action()
+  } catch (error) {
+    if (/binds 2 of 1 explicit args/.test(String(error))) return
+    if (error instanceof Error && error.message === marker) {
+      throw new Error(`mutation-verdict:behavior:${mutation}`)
+    }
+    throw error
+  }
+  throw new Error(`mutation-verdict:behavior:${mutation}`)
+}
+
 describe('mutation verdict promise helpers', () => {
+  it('does not attribute a bind-arity failure as an expected failure', async () => {
+    await requireBindArityPropagation('testing-helper-bind-arity-attribute', () =>
+      attributeExpectedFailure(verdict, /.*/, bindArityFailure),
+    )
+  })
+
+  it('does not accept a bind-arity failure as the required failure', async () => {
+    await requireBindArityPropagation('testing-helper-bind-arity-require', () =>
+      requireExpectedFailure(verdict, /.*/, bindArityFailure),
+    )
+  })
+
+  it('does not attribute a bind-arity failure as a replacement failure', async () => {
+    await requireBindArityPropagation('testing-helper-bind-arity-replacement', () =>
+      attributeReplacedFailure(verdict, /expected healthy failure/, /.*/, bindArityFailure),
+    )
+  })
+
   it('returns an operation that succeeds as expected', async () => {
     await expect(attributeExpectedFailure(verdict, /expected/, async () => 1)).resolves.toBe(1)
   })
