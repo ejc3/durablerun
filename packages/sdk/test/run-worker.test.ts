@@ -1393,9 +1393,12 @@ describe('runClaimedRun', () => {
           }
         },
       })
-      expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'completed' })
+      expect(
+        await claimAndRun(f, reg, 'w1'),
+        'mutation-verdict:behavior:sdk-context-captured-aborted-getter',
+      ).toEqual({ kind: 'completed' })
       const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(result, 'mutation-verdict:behavior:sdk-context-captured-aborted-getter').toEqual({
+      expect(result).toEqual({
         state: 'completed',
         completedPayloadJson: '{"real":true}',
       })

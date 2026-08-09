@@ -268,10 +268,15 @@ describe('trusted task-boundary intrinsics', () => {
   })
 
   it('rejects a nested symbol before JSON can silently drop it', () => {
-    expect(
-      () => serializeTaskValue('result', { value: Symbol('hidden') }),
-      'mutation-verdict:behavior:task-value-raw-nested-symbol',
-    ).toThrow(FatalTaskError)
+    const rejected = [{ value: Symbol('hidden') }, [Symbol('hidden')]].map((value) => {
+      try {
+        serializeTaskValue('result', value)
+        return false
+      } catch (error) {
+        return error instanceof FatalTaskError
+      }
+    })
+    expect(rejected, 'mutation-verdict:behavior:task-value-raw-nested-symbol').toEqual([true, true])
   })
 
   it('snapshots plain objects before Object.prototype.toJSON can forge them', () => {

@@ -5472,6 +5472,7 @@ def message_has_exact_marker(marker: str, message: str) -> bool:
     return (
         first_line == marker
         or first_line == f"Error: {marker}"
+        or first_line == f"AssertionError: {marker}"
         or first_line.startswith(f"AssertionError: {marker}:")
     )
 
