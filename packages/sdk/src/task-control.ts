@@ -1,4 +1,5 @@
 import { LeaseLostError, StoreUnavailableError, SuspendSignal } from '@durablerun/core'
+import { taskHasOwn } from './intrinsics.js'
 
 type SuspendControlSnapshot = {
   readonly kind: 'suspend'
@@ -52,6 +53,12 @@ const hasInstance = ordinaryHasInstance.call.bind(ordinaryHasInstance) as (
 const LEASE_LOST = freeze({ kind: 'lease-lost' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
 
+function isRelativeWake(
+  wake: { inSeconds: number } | { atEpochMs: number },
+): wake is { inSeconds: number } {
+  return taskHasOwn(wake, 'inSeconds')
+}
+
 export function trustedStoreControl(error: unknown): InfrastructureControlSnapshot | undefined {
   try {
     if (hasInstance(LeaseLostError, error)) return LEASE_LOST
@@ -83,7 +90,7 @@ export function createTaskControlScope(): TaskControlScope {
       const ownedWake =
         wake === undefined
           ? undefined
-          : 'inSeconds' in wake
+          : isRelativeWake(wake)
             ? freeze({ inSeconds: wake.inSeconds })
             : freeze({ atEpochMs: wake.atEpochMs })
       const ownedCheckpoint =

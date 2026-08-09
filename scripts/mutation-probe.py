@@ -466,6 +466,13 @@ MUTATION_SPECS = [
         "the compiler bind-count failure loses its authentic brand",
     ),
     (
+        "testing-helper-bind-brand-read",
+        "packages/core/src/fenced-batch.ts",
+        "    weakSetHas(bindCompilationErrors, value)\n",
+        "    false // MUTATION: ignore the private compiler-error brand\n",
+        "the compiler-error predicate stops reading its private brand",
+    ),
+    (
         "testing-helper-bind-count-factory",
         "packages/core/src/fenced-batch.ts",
         "      throw bindCompilationError(\n"
@@ -735,19 +742,41 @@ MUTATION_SPECS = [
         "suspend-preserves-valid-higher-lww",
         "packages/store-libsql/src/store.ts",
         "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         ${wakeFits}`,\n"
+        "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakeArg,\n"
-        "        wakeArg,",
+        "        wakePlan.argument,\n"
+        "        wakePlan.argument,",
         "         AND ${validCheckpointConflict('runs', '?').replace(\n"
         "           'AND EXISTS (',\n"
         "           'AND c.owner_attempt <= runs.attempt AND EXISTS (',\n"
         "         )}\n"
-        "         ${wakeFits}`,\n"
+        "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakeArg,\n"
-        "        wakeArg,",
+        "        wakePlan.argument,\n"
+        "        wakePlan.argument,",
         "suspendRun mistakes a valid higher LWW owner for corrupt ownership",
+    ),
+    (
+        "reschedule-wake-own-discriminant",
+        "packages/store-libsql/src/store.ts",
+        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
+        "    // ONE SQL shape for both dispositions",
+        "    const relativeWake = 'inSeconds' in wake // MUTATION\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
+        "    // ONE SQL shape for both dispositions",
+        "reschedule mistakes an inherited relative-wake property for its durable discriminant",
+    ),
+    (
+        "suspend-wake-own-discriminant",
+        "packages/store-libsql/src/store.ts",
+        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
+        "    const b = new FencedBatch('suspend'",
+        "    const relativeWake = 'inSeconds' in wake // MUTATION\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
+        "    const b = new FencedBatch('suspend'",
+        "suspendRun mistakes an inherited relative-wake property for its durable discriminant",
     ),
     (
         "checkpoint-read-validates-run-attempt-input",
@@ -1369,10 +1398,10 @@ CHECKPOINT_CONFLICT_CONSUMERS = (
     (
         "suspend",
         "\n"
-        "         ${wakeFits}`,\n"
+        "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakeArg,\n"
-        "        wakeArg,",
+        "        wakePlan.argument,\n"
+        "        wakePlan.argument,",
     ),
 )
 
@@ -1569,48 +1598,36 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "reschedule-wake",
         "reschedule wake deadline",
-        "    const wakeFits = 'inSeconds' in wake ? `AND ${epochAdditionFits(NOW_MS, '?')}` : ''\n"
+        "         ${wakePlan.fits}`,\n"
+        "      [\n"
+        "        wakePlan.argument,\n"
+        "        wakePlan.argument,\n"
+        "        wakeDisposition,",
+        "wakePlan.fits",
+        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
         "    // ONE SQL shape for both dispositions",
-        "epochAdditionFits(NOW_MS, '?')",
-        "  async reschedule(\n"
-        "    queue: string,\n"
-        "    runId: string,\n"
-        "    claimToken: string,\n"
-        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
-        "    wakeDisposition: 'consume' | 'preserve' = 'consume',\n"
-        "  ): Promise<void> {\n"
-        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`",
-        "  async reschedule(\n"
-        "    queue: string,\n"
-        "    runId: string,\n"
-        "    claimToken: string,\n"
-        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
-        "    wakeDisposition: 'consume' | 'preserve' = 'consume',\n"
-        "  ): Promise<void> {\n"
-        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ? - 1` : `?`",
+        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
+        "    if (relativeWake) wakePlan.argument -= 1 // MUTATION\n"
+        "    // ONE SQL shape for both dispositions",
     ),
     (
         "suspend-wake",
         "suspend wake deadline",
-        "    const wakeFits = 'inSeconds' in wake ? `AND ${epochAdditionFits(NOW_MS, '?')}` : ''\n"
+        "         ${wakePlan.fits}`,\n"
+        "      [\n"
+        "        wakePlan.argument,\n"
+        "        wakePlan.argument,\n"
+        "        runId,",
+        "wakePlan.fits",
+        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
         "    const b = new FencedBatch('suspend'",
-        "epochAdditionFits(NOW_MS, '?')",
-        "  async suspendRun(\n"
-        "    queue: string,\n"
-        "    runId: string,\n"
-        "    claimToken: string,\n"
-        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
-        "    checkpoint: { key: string; stateJson: string },\n"
-        "  ): Promise<void> {\n"
-        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`",
-        "  async suspendRun(\n"
-        "    queue: string,\n"
-        "    runId: string,\n"
-        "    claimToken: string,\n"
-        "    wake: { inSeconds: number } | { atEpochMs: number },\n"
-        "    checkpoint: { key: string; stateJson: string },\n"
-        "  ): Promise<void> {\n"
-        "    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ? - 1` : `?`",
+        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
+        "    const wakePlan = prepareWake(wake, relativeWake)\n"
+        "    if (relativeWake) wakePlan.argument -= 1 // MUTATION\n"
+        "    const b = new FencedBatch('suspend'",
     ),
     (
         "user-retry-successor",
@@ -2370,6 +2387,13 @@ MUTATION_SPECS.extend(
             "the suspension snapshot retains a handler-mutable absolute wake",
         ),
         (
+            "task-control-absolute-wake-own-discriminant",
+            "packages/sdk/src/task-control.ts",
+            "  return taskHasOwn(wake, 'inSeconds')",
+            "  return 'inSeconds' in wake // MUTATION",
+            "the suspension snapshot accepts an inherited relative-wake discriminant",
+        ),
+        (
             "task-control-suspend-checkpoint-key-owned",
             "packages/sdk/src/task-control.ts",
             "          : freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })",
@@ -2880,9 +2904,35 @@ MUTATION_SPECS.extend(
         (
             "sdk-result-captured-stringify",
             "packages/sdk/src/run-worker.ts",
-            "    const resultJson = serializeTaskValue('task result', result)",
-            "    const resultJson = JSON.stringify(result) as string // MUTATION",
+            "      resultJson = serializeTaskValue('task result', result)",
+            "      resultJson = JSON.stringify(result) as string // MUTATION",
             "the final-result boundary bypasses the captured task-value serializer",
+        ),
+        (
+            "sdk-complete-ordinary-rejection-identity",
+            "packages/sdk/src/run-worker.ts",
+            "    try {\n"
+            "      await store.complete(queue, runId, claimToken, resultJson)\n"
+            "    } catch (error) {\n"
+            "      return trustedStoreOutcome(error)\n"
+            "    }",
+            "    try {\n"
+            "      await store.complete(queue, runId, claimToken, resultJson)\n"
+            "    } catch (error) {\n"
+            "      try {\n"
+            "        return trustedStoreOutcome(error)\n"
+            "      } catch (ordinaryError) {\n"
+            "        return await recordUserFailure(ordinaryError) // MUTATION\n"
+            "      }\n"
+            "    }",
+            "an ordinary completion rejection is billed as a user failure",
+        ),
+        (
+            "sdk-await-timeout-single-read",
+            "packages/sdk/src/context.ts",
+            "        timeoutSeconds ?? null,",
+            "        opts?.timeoutSeconds ?? null, // MUTATION: re-read the task accessor",
+            "awaitEvent persists a second read instead of the value it validated",
         ),
         (
             "sdk-captured-map-constructor",
@@ -3355,14 +3405,20 @@ VERDICTS = {
     "testing-helper-bind-arity-brand": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers recognizes authentic FencedBatch bind-arity failures",
-        "mutation-verdict:construction:testing-helper-bind-arity-brand",
+        "mutation verdict promise helpers reads the private brand when recognizing compiler failures",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
+    ),
+    "testing-helper-bind-brand-read": ExpectedVerdict(
+        "construction",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers reads the private brand when recognizing compiler failures",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-count-factory": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers routes bind-count failures through the authenticated factory",
-        "mutation-verdict:construction:testing-helper-bind-count-factory",
+        "mutation verdict promise helpers reads the private brand when recognizing compiler failures",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-undefined-brand": ExpectedVerdict(
         "behavior",
@@ -3556,6 +3612,18 @@ VERDICTS = {
         "scheduler conformance [libsql] checkpoints suspends under a valid higher LWW owner without replacing its checkpoint",
         "mutation-verdict:behavior:suspend-preserves-valid-higher-lww",
         "packages/conformance/src/suite.ts",
+    ),
+    "reschedule-wake-own-discriminant": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/regressions.test.ts",
+        "transition-layer review regressions (second round) reschedule classifies an absolute wake by its own discriminant",
+        "mutation-verdict:behavior:reschedule-wake-own-discriminant",
+    ),
+    "suspend-wake-own-discriminant": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/regressions.test.ts",
+        "transition-layer review regressions (second round) suspendRun keeps an absolute wake aligned with its marker",
+        "mutation-verdict:behavior:suspend-wake-own-discriminant",
     ),
     "checkpoint-read-validates-run-attempt-input": ExpectedVerdict(
         "behavior",
@@ -4241,6 +4309,12 @@ VERDICTS.update(
             "task control scope owns suspension data and grants authority only to its paired classifier",
             "mutation-verdict:construction:task-control-suspend-absolute-wake-owned",
         ),
+        "task-control-absolute-wake-own-discriminant": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope ignores an inherited relative-wake discriminant when snapshotting an absolute wake",
+            "mutation-verdict:construction:task-control-absolute-wake-own-discriminant",
+        ),
         "task-control-suspend-checkpoint-key-owned": ExpectedVerdict(
             "construction",
             "packages/sdk/test/task-control.test.ts",
@@ -4631,6 +4705,18 @@ VERDICTS.update(
             "runClaimedRun a handler cannot replace final-result JSON serialization",
             "mutation-verdict:behavior:sdk-result-captured-stringify",
         ),
+        "sdk-complete-ordinary-rejection-identity": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun propagates an ordinary completion rejection without billing it as a user failure",
+            "mutation-verdict:behavior:sdk-complete-ordinary-rejection-identity",
+        ),
+        "sdk-await-timeout-single-read": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun reads an awaitEvent timeout accessor once and stores that validated value",
+            "mutation-verdict:behavior:sdk-await-timeout-single-read",
+        ),
         "sdk-captured-map-constructor": ExpectedVerdict(
             "construction",
             "packages/sdk/test/run-worker.test.ts",
@@ -4920,6 +5006,9 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "sdk-registry-map-entry-authority": (
         "replacement adds TypeScript nullish-coalescing syntax"
+    ),
+    "sdk-await-timeout-single-read": (
+        "replacement adds a TypeScript optional-chaining token while re-reading the task accessor"
     ),
 }
 
@@ -5473,6 +5562,9 @@ def mutation_question_delta_diagnostic(
 
 def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     """Generated false-positive surface for the verdict classifier itself."""
+    check_live_inventory = (
+        check_live_inventory or fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT
+    )
     expected = ExpectedVerdict(
         "behavior",
         "packages/example/test/protocol.test.ts",
@@ -6289,11 +6381,14 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 failures.append(
                     f"{mutation.name}: mutation pattern occurs {occurrences} times; expected exactly one"
                 )
+            question_delta_reason = QUESTION_TOKEN_DELTA_REASONS.get(mutation.name)
+            if fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
+                question_delta_reason = None
             question_delta_diagnostic = mutation_question_delta_diagnostic(
                 mutation.name,
                 mutation.find,
                 mutation.replace,
-                QUESTION_TOKEN_DELTA_REASONS.get(mutation.name),
+                question_delta_reason,
             )
             if question_delta_diagnostic is not None:
                 failures.append(question_delta_diagnostic)

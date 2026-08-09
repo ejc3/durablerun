@@ -61,19 +61,6 @@ async function requireCompilerBindPropagation(
 }
 
 describe('mutation verdict promise helpers', () => {
-  it('recognizes authentic FencedBatch bind-arity failures', async () => {
-    let failure: unknown
-    try {
-      await bindArityFailure()
-    } catch (error) {
-      failure = error
-    }
-    expect(
-      isFencedBatchBindError(failure),
-      'mutation-verdict:construction:testing-helper-bind-arity-brand',
-    ).toBe(true)
-  })
-
   it('reads the private brand when recognizing compiler failures', async () => {
     let failure: unknown
     try {
@@ -84,19 +71,6 @@ describe('mutation verdict promise helpers', () => {
     expect(
       isFencedBatchBindError(failure),
       'mutation-verdict:construction:testing-helper-bind-brand-read',
-    ).toBe(true)
-  })
-
-  it('routes bind-count failures through the authenticated factory', async () => {
-    let failure: unknown
-    try {
-      await bindArityFailure()
-    } catch (error) {
-      failure = error
-    }
-    expect(
-      isFencedBatchBindError(failure),
-      'mutation-verdict:construction:testing-helper-bind-count-factory',
     ).toBe(true)
   })
 

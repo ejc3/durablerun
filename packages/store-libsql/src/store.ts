@@ -14,9 +14,9 @@ import {
   MAX_DURATION_MS,
   NOW,
   PERSISTED_INTEGER_BOUNDS,
+  POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
-  POSITIVE_CLAIM_GENERATION_BOUNDS,
   REASON_CANCELLED,
   REASON_CLAIM_TIMEOUT,
   REASON_INFRA_CAP,
@@ -77,6 +77,43 @@ const DEFAULT_MAX_ATTEMPTS = 5
 const TASK_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.tasks
 const RUN_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.runs
 const CHECKPOINT_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.checkpoints
+const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.hasOwnProperty) as (
+  value: object,
+  key: PropertyKey,
+) => boolean
+
+type Wake = { inSeconds: number } | { atEpochMs: number }
+
+/**
+ * Classify and read a wake once before constructing its SQL shape.
+ *
+ * Task code shares this realm and may add an inherited `inSeconds` property
+ * or expose accessors with changing values. The captured own-property check
+ * makes the discriminant durable, and returning the complete shape keeps both
+ * suspension paths on the same snapshot.
+ */
+function prepareWake(
+  wake: Wake,
+  relative: boolean,
+): {
+  expression: string
+  argument: number
+  fits: string
+  fitArgs: number[]
+} {
+  const value = relative
+    ? (wake as { inSeconds: number }).inSeconds
+    : (wake as { atEpochMs: number }).atEpochMs
+  const argument = relative
+    ? durationToMs('wake.inSeconds', value)
+    : requireEpochMs('wake.atEpochMs', value)
+  return {
+    expression: relative ? `${NOW_MS} + ?` : `?`,
+    argument,
+    fits: relative ? `AND ${epochAdditionFits(NOW_MS, '?')}` : '',
+    fitArgs: relative ? [argument] : [],
+  }
+}
 
 /**
  * The persisted cancellation JSON is an untyped serialization boundary.
@@ -1183,15 +1220,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: { inSeconds: number } | { atEpochMs: number },
+    wake: Wake,
     wakeDisposition: 'consume' | 'preserve' = 'consume',
   ): Promise<void> {
-    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`
-    const wakeArg =
-      'inSeconds' in wake
-        ? durationToMs('wake.inSeconds', wake.inSeconds)
-        : requireEpochMs('wake.atEpochMs', wake.atEpochMs)
-    const wakeFits = 'inSeconds' in wake ? `AND ${epochAdditionFits(NOW_MS, '?')}` : ''
+    const relativeWake = wakeHasOwn(wake, 'inSeconds')
+    const wakePlan = prepareWake(wake, relativeWake)
     // ONE SQL shape for both dispositions (a label is a crash-injection
     // address; the CASE keeps 'reschedule' one shape). 'preserve' is the
     // §3.8.2 deferral path: an undispatchable claim consumes nothing.
@@ -1209,8 +1242,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'suspend',
       'runs',
       `UPDATE runs SET
-         state = CASE WHEN ${wakeExpr} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
-         available_at_ms = ${wakeExpr},
+         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
+         available_at_ms = ${wakePlan.expression},
          wake_event = CASE WHEN ? = 'preserve' THEN wake_event ELSE NULL END,
          event_payload = CASE WHEN ? = 'preserve' THEN event_payload ELSE NULL END,
          wake_step = CASE WHEN ? = 'preserve' THEN wake_step ELSE NULL END,
@@ -1220,17 +1253,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND ${storedInteger('runs.attempt')}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})
-         ${wakeFits}`,
+         ${wakePlan.fits}`,
       [
-        wakeArg,
-        wakeArg,
+        wakePlan.argument,
+        wakePlan.argument,
         wakeDisposition,
         wakeDisposition,
         wakeDisposition,
         runId,
         queue,
         claimToken,
-        ...('inSeconds' in wake ? [wakeArg] : []),
+        ...wakePlan.fitArgs,
       ],
     )
     // A timer/deferral replaces any event wait attached to this run. Drive the
@@ -1251,22 +1284,18 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: { inSeconds: number } | { atEpochMs: number },
+    wake: Wake,
     checkpoint: { key: string; stateJson: string },
   ): Promise<void> {
-    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`
-    const wakeArg =
-      'inSeconds' in wake
-        ? durationToMs('wake.inSeconds', wake.inSeconds)
-        : requireEpochMs('wake.atEpochMs', wake.atEpochMs)
-    const wakeFits = 'inSeconds' in wake ? `AND ${epochAdditionFits(NOW_MS, '?')}` : ''
+    const relativeWake = wakeHasOwn(wake, 'inSeconds')
+    const wakePlan = prepareWake(wake, relativeWake)
     const b = new FencedBatch('suspend', this.ids.token(), { now: NOW_MS })
     b.cas(
       'suspend',
       'runs',
       `UPDATE runs SET
-         state = CASE WHEN ${wakeExpr} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
-         available_at_ms = ${wakeExpr},
+         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
+         available_at_ms = ${wakePlan.expression},
          wake_event = NULL, event_payload = NULL, wake_step = NULL,
          claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
          ${FENCE_SET}
@@ -1275,15 +1304,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                      WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
          AND ${validCheckpointConflict('runs', '?')}
-         ${wakeFits}`,
+         ${wakePlan.fits}`,
       [
-        wakeArg,
-        wakeArg,
+        wakePlan.argument,
+        wakePlan.argument,
         runId,
         queue,
         claimToken,
         checkpoint.key,
-        ...('inSeconds' in wake ? [wakeArg] : []),
+        ...wakePlan.fitArgs,
       ],
     )
     // The marker's timestamp is the park's instant, taken from the row the

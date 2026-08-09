@@ -96,6 +96,7 @@ export async function runClaimedRun(
 
   const run = await store.activate(queue, runId, claimToken, claimGen)
   if (run === null) return { kind: 'superseded' }
+  const claimedRun = run
 
   const handler = taskRegistryGet(registry, run.taskName)
   if (handler === undefined) {
@@ -165,59 +166,12 @@ export async function runClaimedRun(
     taskControls.issuer,
   )
 
-  try {
-    let params: unknown
-    try {
-      params = parseTaskValueJson(run.paramsJson)
-    } catch {
-      params = run.paramsJson // legacy/opaque payloads pass through as text
-    }
-    const result = await handler(ctx, params)
-    const resultJson = serializeTaskValue('task result', result)
-    // The completion write sits OUTSIDE the user-failure classification: a
-    // transient store error here is infrastructure, and billing it as a
-    // user failure would terminally fail a task whose handler succeeded.
-    try {
-      await store.complete(queue, runId, claimToken, resultJson)
-    } catch (inner) {
-      return trustedStoreOutcome(inner)
-    }
-    return { kind: 'completed' }
-  } catch (error) {
-    const control = taskControls.snapshot(error)
-    if (control?.kind === 'suspend') {
-      // awaitEvent parks the run INSIDE its own atomic batch — a second
-      // park here would overwrite the registered wait.
-      if (control.reason === 'await-event') return { kind: 'suspended' }
-      try {
-        // The park and its marker are ONE transition (or neither happens):
-        // a marker without a park would lie on the next pass.
-        if (control.checkpoint) {
-          await store.suspendRun(queue, runId, claimToken, control.wake ?? { inSeconds: 0 }, {
-            key: control.checkpoint.key,
-            stateJson: control.checkpoint.stateJson,
-          })
-        } else {
-          await store.reschedule(queue, runId, claimToken, control.wake ?? { inSeconds: 0 })
-        }
-        return { kind: 'suspended' }
-      } catch (inner) {
-        return trustedStoreOutcome(inner)
-      }
-    }
-    // An invocation-authenticated infrastructure control (a lost lease, or a
-    // store outage crossing the context boundary): abort with no additional
-    // transition — the lease story recovers and the user's retry budget is
-    // untouched.
-    if (control?.kind === 'lease-lost') return { kind: 'lease-lost' }
-    if (control?.kind === 'store-unavailable') return { kind: 'aborted' }
-
-    // A user failure: core decides retry over the USER ordinal.
+  async function recordUserFailure(error: unknown): Promise<WorkerOutcome> {
     const thrown = snapshotTaskThrowable(error)
     const userAttempt = ctx.attempt
     const decision = thrown.fatal
       ? ({ retry: false } as const)
-      : decideRetry(run.retryStrategy, userAttempt, run.maxAttempts)
+      : decideRetry(claimedRun.retryStrategy, userAttempt, claimedRun.maxAttempts)
     try {
       await store.fail(
         queue,
@@ -230,6 +184,61 @@ export async function runClaimedRun(
       return trustedStoreOutcome(inner)
     }
     return decision.retry ? { kind: 'retry-scheduled' } : { kind: 'failed' }
+  }
+
+  try {
+    let resultJson: string
+    try {
+      let params: unknown
+      try {
+        params = parseTaskValueJson(run.paramsJson)
+      } catch {
+        params = run.paramsJson // legacy/opaque payloads pass through as text
+      }
+      const result = await handler(ctx, params)
+      resultJson = serializeTaskValue('task result', result)
+    } catch (error) {
+      const control = taskControls.snapshot(error)
+      if (control?.kind === 'suspend') {
+        // awaitEvent parks the run INSIDE its own atomic batch — a second
+        // park here would overwrite the registered wait.
+        if (control.reason === 'await-event') return { kind: 'suspended' }
+        try {
+          // The park and its marker are ONE transition (or neither happens):
+          // a marker without a park would lie on the next pass.
+          if (control.checkpoint) {
+            await store.suspendRun(queue, runId, claimToken, control.wake ?? { inSeconds: 0 }, {
+              key: control.checkpoint.key,
+              stateJson: control.checkpoint.stateJson,
+            })
+          } else {
+            await store.reschedule(queue, runId, claimToken, control.wake ?? { inSeconds: 0 })
+          }
+          return { kind: 'suspended' }
+        } catch (inner) {
+          return trustedStoreOutcome(inner)
+        }
+      }
+      // An invocation-authenticated infrastructure control (a lost lease, or a
+      // store outage crossing the context boundary): abort with no additional
+      // transition — the lease story recovers and the user's retry budget is
+      // untouched.
+      if (control?.kind === 'lease-lost') return { kind: 'lease-lost' }
+      if (control?.kind === 'store-unavailable') return { kind: 'aborted' }
+
+      // A user failure: core decides retry over the USER ordinal.
+      return await recordUserFailure(error)
+    }
+
+    // The completion write is lexically outside the user-failure classifier:
+    // an ordinary rejection must propagate, while authenticated store control
+    // still maps to the worker's infrastructure outcomes.
+    try {
+      await store.complete(queue, runId, claimToken, resultJson)
+    } catch (error) {
+      return trustedStoreOutcome(error)
+    }
+    return { kind: 'completed' }
   } finally {
     abortControllerAbort(pumpStop)
     // Bounded finalization: a heartbeat call that never settles must not

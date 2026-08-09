@@ -4600,25 +4600,70 @@ def session_internal_evidence_problems() -> list[str]:
     else:
         problems.append("session process scanner accepted malformed /proc stat evidence")
 
-    module = load_embedded_session_scanner()
-    exiting_stat = module.Stat(ppid=7, state="X", start=11, comm="exiting-worker")
-    module.read_stat = lambda _pid: exiting_stat
-    real_os = module.os
+    terminal_cases = (
+        ("initial-Z", ("Z",), None),
+        ("initial-X", ("X",), None),
+        ("initial-x", ("x",), None),
+        ("owner-error", ("S", "X"), "owner-error"),
+        ("cmdline-missing", ("S", "X"), "cmdline-missing"),
+        ("cmdline-error", ("S", "X"), "cmdline-error"),
+        ("cwd-missing", ("S", "X"), "cwd-missing"),
+        ("cwd-error", ("S", "X"), "cwd-error"),
+        ("final-bracket", ("S", "X"), None),
+    )
+    for case_id, states, fault in terminal_cases:
+        module = load_embedded_session_scanner()
+        reads = 0
 
-    class ExitingOS:
-        def stat(self, _path: str):
-            return types.SimpleNamespace(st_uid=1000)
+        def transition_stat(_pid: int):
+            nonlocal reads
+            state = states[min(reads, len(states) - 1)]
+            reads += 1
+            return module.Stat(ppid=7, state=state, start=11, comm="exiting-worker")
 
-        def readlink(self, _path: str) -> str:
-            raise FileNotFoundError("exiting task has released its fs state")
+        module.read_stat = transition_stat
+        real_os = module.os
 
-        def __getattr__(self, name: str):
-            return getattr(real_os, name)
+        class ExitingOS:
+            def stat(self, _path: str):
+                if fault == "owner-error":
+                    raise PermissionError("exiting task released its owner record")
+                return types.SimpleNamespace(st_uid=1000)
 
-    module.os = ExitingOS()
-    module.open = lambda *_args, **_kwargs: io.BytesIO(b"python\0")
-    if module.read_process(4242, 1000) is not None:
-        problems.append("session process scanner retained a terminal X-state process")
+            def readlink(self, path: str) -> str:
+                if path.endswith("/cwd"):
+                    if fault == "cwd-missing":
+                        raise FileNotFoundError("exiting task released its fs state")
+                    if fault == "cwd-error":
+                        raise PermissionError("exiting task hid its fs state")
+                    return "/fixture/repo"
+                if path.endswith("/exe"):
+                    return "/fixture/python"
+                raise AssertionError(f"unexpected process link {path}")
+
+            def __getattr__(self, name: str):
+                return getattr(real_os, name)
+
+        def transition_open(_path: str, _mode: str = "rb"):
+            if fault == "cmdline-missing":
+                raise FileNotFoundError("exiting task released its argv")
+            if fault == "cmdline-error":
+                raise PermissionError("exiting task hid its argv")
+            return io.BytesIO(b"python\0")
+
+        module.os = ExitingOS()
+        module.open = transition_open
+        try:
+            observed = module.read_process(4242, 1000)
+        except module.EvidenceError as exc:
+            problems.append(
+                f"session process scanner rejected terminal {case_id} state: {exc}"
+            )
+        else:
+            if observed is not None:
+                problems.append(
+                    f"session process scanner retained terminal {case_id} state"
+                )
     return problems
 
 

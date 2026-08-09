@@ -246,8 +246,9 @@ export class ReplayContext implements TaskContext {
   async awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string> {
     const parsed = UserName.parse('event name', name)
     this.enterDurableOp('ctx.awaitEvent')
-    if (opts?.timeoutSeconds !== undefined) {
-      userDurationToMs('awaitEvent timeoutSeconds', opts.timeoutSeconds, { positive: true })
+    const timeoutSeconds = opts?.timeoutSeconds
+    if (timeoutSeconds !== undefined) {
+      userDurationToMs('awaitEvent timeoutSeconds', timeoutSeconds, { positive: true })
     }
     const key = this.storageName(EngineKey.awaitEvent(parsed))
     if (taskMapHas(this.seen, key)) {
@@ -291,7 +292,7 @@ export class ReplayContext implements TaskContext {
         // validated value is the canonical one, so nothing downstream should
         // read the raw one again.
         parsed.value,
-        opts?.timeoutSeconds ?? null,
+        timeoutSeconds ?? null,
       ),
     )
     if (outcome.emitted) {

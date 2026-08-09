@@ -125,13 +125,18 @@ def same_identity(left: Stat | None, right: Stat | None) -> bool:
 
 
 RETRY_OBSERVATION = object()
+TERMINAL_PROCESS_STATES = frozenset({"Z", "X", "x"})
+
+
+def process_is_gone(observation: Stat | None) -> bool:
+    return observation is None or observation.state in TERMINAL_PROCESS_STATES
 
 
 def read_process_once(
     pid: int, own_uid: int
 ) -> Process | None | object:
     before = read_stat(pid)
-    if before is None or before.state == "Z":
+    if process_is_gone(before):
         return None
     try:
         if os.stat(f"/proc/{pid}").st_uid != own_uid:
@@ -140,6 +145,8 @@ def read_process_once(
         return None
     except OSError as exc:
         after = read_stat(pid)
+        if process_is_gone(after):
+            return None
         if not same_identity(before, after):
             return RETRY_OBSERVATION
         raise EvidenceError(f"cannot identify /proc/{pid}: {exc}") from exc
@@ -149,13 +156,15 @@ def read_process_once(
             argv = tuple(part for part in handle.read().split(b"\0") if part)
     except (FileNotFoundError, ProcessLookupError):
         after = read_stat(pid)
-        if after is None or after.state == "Z":
+        if process_is_gone(after):
             return None
         if not same_identity(before, after):
             return RETRY_OBSERVATION
         raise EvidenceError(f"live same-user process {pid} has unreadable argv")
     except OSError as exc:
         after = read_stat(pid)
+        if process_is_gone(after):
+            return None
         if not same_identity(before, after):
             return RETRY_OBSERVATION
         raise EvidenceError(
@@ -169,7 +178,7 @@ def read_process_once(
         cwd: str | None = cwd_link.removesuffix(" (deleted)")
     except (FileNotFoundError, ProcessLookupError):
         after = read_stat(pid)
-        if after is None or after.state == "Z":
+        if process_is_gone(after):
             return None
         if not same_identity(before, after):
             return RETRY_OBSERVATION
@@ -185,7 +194,7 @@ def read_process_once(
     except OSError:
         exe = ""
     after = read_stat(pid)
-    if after is None or after.state == "Z":
+    if process_is_gone(after):
         return None
     if not same_identity(before, after):
         return RETRY_OBSERVATION

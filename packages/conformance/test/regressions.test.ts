@@ -79,7 +79,7 @@ async function withInheritedRelativeWake<T>(action: () => Promise<T>): Promise<T
   try {
     return await action()
   } finally {
-    if (descriptor === undefined) delete (Object.prototype as { inSeconds?: number }).inSeconds
+    if (descriptor === undefined) Reflect.deleteProperty(Object.prototype, 'inSeconds')
     else Object.defineProperty(Object.prototype, 'inSeconds', descriptor)
   }
 }

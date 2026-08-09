@@ -46,10 +46,6 @@ async function query(
 
 const RUN_ID_COLLISION = /UNIQUE constraint failed: runs\.run_id/
 
-function runIdCollisionOracle(expectedError: RegExp = RUN_ID_COLLISION): RegExp {
-  return expectedError
-}
-
 /**
  * Re-executes the exact statements of the first batch carrying `label`, the
  * way a retried request or a duplicated delivery would. Recording the
@@ -730,7 +726,7 @@ describe('a successor id that collides with the run being replaced', () => {
     })
     await requireExpectedFailure(
       { kind: 'behavior', mutation: 'successor-self-collision-identity' },
-      runIdCollisionOracle(),
+      RUN_ID_COLLISION,
       () =>
         colliding.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', {
           delaySeconds: 0,
@@ -755,7 +751,7 @@ describe('the successor collision rejection oracle', () => {
       () =>
         requireExpectedFailure(
           { kind: 'behavior', mutation: 'successor-self-collision-identity' },
-          runIdCollisionOracle(/.*/),
+          RUN_ID_COLLISION,
           async () => {
             throw unrelated
           },
@@ -794,7 +790,7 @@ describe('a successor id that collides with a historical run of the same task', 
 
     await requireExpectedFailure(
       { kind: 'behavior', mutation: 'successor-attempt-identity' },
-      runIdCollisionOracle(),
+      RUN_ID_COLLISION,
       () =>
         colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
           delaySeconds: 0,
@@ -816,7 +812,7 @@ describe('a successor id that collides with a historical run of the same task', 
 
     await requireExpectedFailure(
       { kind: 'behavior', mutation: 'successor-sweep-attempt-identity' },
-      runIdCollisionOracle(),
+      RUN_ID_COLLISION,
       () => colliding.sweep(Q, 10),
     )
 
