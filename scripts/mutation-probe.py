@@ -6388,60 +6388,260 @@ SUITE_TIMEOUT_SELF_TEST_READY = (
 SUITE_TIMEOUT_SELF_TEST_PASSED = (
     "mutation-probe suite-timeout self-test observed the suite wall-time limit"
 )
+SUITE_TIMEOUT_SELF_TEST_REJECTED = (
+    "mutation-probe suite-timeout self-test rejected unauthenticated verifier"
+)
+SUITE_TIMEOUT_SELF_TEST_FAULTS = ("immediate-magic-error",)
+SUITE_SELF_TEST_DEADLINE_SECONDS = 0.1
+SUITE_SELF_TEST_SLEEP_PROGRAM = (
+    "import json,os,pathlib,subprocess,sys,time; "
+    "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+    "stream=pathlib.Path(sys.argv[2]).open('a'); "
+    "stream.write(json.dumps({'label':sys.argv[1],"
+    "'leader':os.getpid(),'descendant':child.pid})+'\\n'); "
+    "stream.flush(); os.fsync(stream.fileno()); stream.close(); "
+    "time.sleep(30)"
+)
+SUITE_SELF_TEST_LINGER_PROGRAM = (
+    "import json,os,pathlib,subprocess,sys; "
+    "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+    "stream=pathlib.Path(sys.argv[2]).open('a'); "
+    "stream.write(json.dumps({'label':sys.argv[1],"
+    "'leader':os.getpid(),'descendant':child.pid})+'\\n'); "
+    "stream.flush(); os.fsync(stream.fileno()); stream.close()"
+)
 
 
-def suite_timeout_self_test_child() -> int:
+def suite_self_test_command(label: str, state_path: Path, *, linger: bool = False) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        SUITE_SELF_TEST_LINGER_PROGRAM if linger else SUITE_SELF_TEST_SLEEP_PROGRAM,
+        label,
+        str(state_path),
+    ]
+
+
+def suite_self_test_records(state_path: Path) -> list[dict[str, object]]:
+    if not state_path.exists():
+        return []
+    records: list[dict[str, object]] = []
+    for line in state_path.read_text().splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def suite_self_test_record(
+    state_path: Path,
+    label: str,
+) -> tuple[tuple[int, int] | None, str | None]:
+    matches = [
+        record
+        for record in suite_self_test_records(state_path)
+        if record.get("label") == label
+    ]
+    if len(matches) != 1:
+        return None, f"{label} verifier wrote {len(matches)} authenticated PID records"
+    leader = matches[0].get("leader")
+    descendant = matches[0].get("descendant")
+    if (
+        not isinstance(leader, int)
+        or isinstance(leader, bool)
+        or leader <= 1
+        or not isinstance(descendant, int)
+        or isinstance(descendant, bool)
+        or descendant <= 1
+        or leader == descendant
+    ):
+        return None, f"{label} verifier wrote malformed process identities"
+    return (leader, descendant), None
+
+
+def cleanup_suite_self_test_records(state_path: Path) -> None:
+    groups: set[int] = set()
+    processes: set[int] = set()
+    for record in suite_self_test_records(state_path):
+        leader = record.get("leader")
+        descendant = record.get("descendant")
+        if not isinstance(leader, int) or isinstance(leader, bool) or leader <= 1:
+            continue
+        if leader == os.getpgrp():
+            continue
+        if isinstance(descendant, int) and not isinstance(descendant, bool):
+            processes.add(descendant)
+            try:
+                if os.getpgid(descendant) == leader:
+                    groups.add(leader)
+            except ProcessLookupError:
+                pass
+        try:
+            if os.getpgid(leader) == leader:
+                groups.add(leader)
+        except ProcessLookupError:
+            pass
+    for group in groups:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 2
+    while any(process_id_is_live(process) for process in processes) and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+def suite_self_test_fixture() -> tuple[ConfinedScope, IsolatedWorkspace, WorkerAuthority]:
+    return (
+        ConfinedScope("suite-timeout-self-test", 1, 1, 1),
+        IsolatedWorkspace(ROOT.resolve()),
+        WorkerAuthority(
+            ROOT.resolve(),
+            ROOT.resolve(),
+            0,
+            "a" * 40,
+            "suite-timeout-self-test",
+        ),
+    )
+
+
+def suite_timeout_self_test_child(
+    state_path: Path,
+    fault: str | None,
+) -> int:
     """Exercise the real suite subprocess under a deliberately short deadline.
 
     An outer watchdog in lint-selftest owns this RED's wall time. The optional
     run_suite argument is the hidden test seam; the production implementation
     intentionally does not consume it yet.
     """
+    original_test_command = TEST_CMD[:]
+    original_typecheck_command = TYPECHECK_CMD[:]
+    suite_defaults = run_suite.__kwdefaults__
+    typecheck_defaults = run_typecheck.__kwdefaults__
+    original_process_runner = run_suite_process
+    problems: list[str] = []
+    if (
+        suite_defaults is None
+        or suite_defaults.get("suite_wall_time_seconds")
+        != MUTATION_SUITE_WALL_TIME_SECONDS
+        or typecheck_defaults is None
+        or typecheck_defaults.get("suite_wall_time_seconds")
+        != MUTATION_SUITE_WALL_TIME_SECONDS
+        or MUTATION_SUITE_WALL_TIME_SECONDS != 300.0
+    ):
+        problems.append("Vitest and typecheck do not share the production 300s default")
+    if suite_defaults is not None:
+        suite_defaults["suite_wall_time_seconds"] = SUITE_SELF_TEST_DEADLINE_SECONDS
+    if typecheck_defaults is not None:
+        typecheck_defaults["suite_wall_time_seconds"] = SUITE_SELF_TEST_DEADLINE_SECONDS
+    if fault == "immediate-magic-error":
+        def immediate_magic_error(*_args: object, **_kwargs: object) -> int:
+            raise SuiteInfrastructureError("suite wall-time limit exceeded")
+
+        globals()["run_suite_process"] = immediate_magic_error
+    fixture_scope, fixture_workspace, fixture_authority = suite_self_test_fixture()
+    try:
+        runners = (
+            (
+                "vitest",
+                TEST_CMD,
+                lambda: run_suite(
+                    1,
+                    scope=fixture_scope,
+                    workspace=fixture_workspace,
+                    authority=fixture_authority,
+                ),
+            ),
+            (
+                "typecheck",
+                TYPECHECK_CMD,
+                lambda: run_typecheck(
+                    None,
+                    scope=fixture_scope,
+                    workspace=fixture_workspace,
+                    authority=fixture_authority,
+                ),
+            ),
+        )
+        for label, command, run in runners:
+            command[:] = suite_self_test_command(label, state_path)
+            try:
+                run()
+            except SuiteInfrastructureError as error:
+                if "suite wall-time limit" not in str(error):
+                    problems.append(f"{label} raised the wrong infrastructure failure: {error}")
+            except Exception as error:
+                problems.append(f"{label} raised the wrong exception: {error}")
+            else:
+                problems.append(f"{label} sleeping verifier returned without its deadline")
+            identity, identity_problem = suite_self_test_record(state_path, label)
+            if identity_problem is not None:
+                problems.append(identity_problem)
+            elif identity is not None and any(process_id_is_live(pid) for pid in identity):
+                problems.append(f"{label} deadline left its verifier process group live")
+    finally:
+        cleanup_suite_self_test_records(state_path)
+        TEST_CMD[:] = original_test_command
+        TYPECHECK_CMD[:] = original_typecheck_command
+        globals()["run_suite_process"] = original_process_runner
+        if suite_defaults is not None:
+            suite_defaults["suite_wall_time_seconds"] = MUTATION_SUITE_WALL_TIME_SECONDS
+        if typecheck_defaults is not None:
+            typecheck_defaults["suite_wall_time_seconds"] = MUTATION_SUITE_WALL_TIME_SECONDS
+    if problems:
+        print(f"{SUITE_TIMEOUT_SELF_TEST_REJECTED}: {problems[0]}", file=sys.stderr)
+        return 1
+    print(SUITE_TIMEOUT_SELF_TEST_PASSED)
+    return 0
+
+
+def suite_linger_self_test_child(state_path: Path) -> int:
+    problems: list[str] = []
+    command = suite_self_test_command("linger", state_path, linger=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="durablerun-suite-linger-") as temporary:
+            with (Path(temporary) / "suite.log").open("wb") as output:
+                try:
+                    run_suite_process(command, output=output, wall_time_seconds=1.0)
+                except SuiteInfrastructureError:
+                    pass
+                except Exception as error:
+                    problems.append(f"lingering verifier raised the wrong exception: {error}")
+                else:
+                    problems.append("exited verifier leader was accepted with a live descendant")
+        identity, identity_problem = suite_self_test_record(state_path, "linger")
+        if identity_problem is not None:
+            problems.append(identity_problem)
+        elif identity is not None and any(process_id_is_live(pid) for pid in identity):
+            problems.append("exited verifier leader left its descendant live")
+    finally:
+        cleanup_suite_self_test_records(state_path)
+    if problems:
+        print(f"mutation-probe suite-linger self-test: {problems[0]}", file=sys.stderr)
+        return 1
+    print("mutation-probe suite-linger self-test reaped the exited leader's group")
+    return 0
+
+
+def suite_interrupt_self_test_child(state_path: Path) -> int:
     original_command = TEST_CMD[:]
-    TEST_CMD[:] = [sys.executable, "-c", "import time; time.sleep(30)"]
-    fixture_scope = ConfinedScope("suite-timeout-self-test", 1, 1, 1)
-    fixture_workspace = IsolatedWorkspace(ROOT.resolve())
-    fixture_authority = WorkerAuthority(
-        ROOT.resolve(),
-        ROOT.resolve(),
-        0,
-        "a" * 40,
-        "suite-timeout-self-test",
-    )
-    print(SUITE_TIMEOUT_SELF_TEST_READY, flush=True)
+    TEST_CMD[:] = suite_self_test_command("interrupt", state_path)
+    fixture_scope, fixture_workspace, fixture_authority = suite_self_test_fixture()
     try:
         run_suite(
             1,
             scope=fixture_scope,
             workspace=fixture_workspace,
             authority=fixture_authority,
-            suite_wall_time_seconds=0.1,
         )
-    except SuiteInfrastructureError as error:
-        if "suite wall-time limit" in str(error):
-            print(SUITE_TIMEOUT_SELF_TEST_PASSED)
-            return 0
-        print(
-            "mutation-probe suite-timeout self-test observed the wrong "
-            f"infrastructure failure: {error}",
-            file=sys.stderr,
-        )
-        return 1
-    except Exception as error:
-        print(
-            "mutation-probe suite-timeout self-test raised the wrong "
-            f"exception: {error}",
-            file=sys.stderr,
-        )
-        return 1
-    else:
-        print(
-            "mutation-probe suite-timeout self-test let the sleeping suite return",
-            file=sys.stderr,
-        )
-        return 1
     finally:
         TEST_CMD[:] = original_command
+    print("mutation-probe suite-interrupt self-test returned without its external signal")
+    return 1
 
 
 def run_typecheck(
@@ -10447,6 +10647,26 @@ def main() -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    ap.add_argument(
+        "--suite-linger-self-test-child",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--suite-interrupt-self-test-child",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--suite-self-test-state",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--suite-timeout-self-test-fault",
+        choices=SUITE_TIMEOUT_SELF_TEST_FAULTS,
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--self-test-fault", choices=SELF_TEST_FAULTS, help=argparse.SUPPRESS)
     ap.add_argument(
         "--orchestration-self-test-fault",
@@ -10469,20 +10689,44 @@ def main() -> int:
         args.classifier_self_test,
         args.orchestration_self_test,
         args.suite_timeout_self_test_child,
+        args.suite_linger_self_test_child,
+        args.suite_interrupt_self_test_child,
     )
     if sum(bool(mode) for mode in self_test_modes) > 1:
         ap.error("self-test modes are mutually exclusive")
     if any(self_test_modes):
         if args.k or args.jobs != "auto" or args.worker_phase is not None:
             ap.error("self-tests cannot be combined with audit or worker options")
-        if args.suite_timeout_self_test_child:
+        suite_process_self_test = (
+            args.suite_timeout_self_test_child
+            or args.suite_linger_self_test_child
+            or args.suite_interrupt_self_test_child
+        )
+        if suite_process_self_test:
+            if args.suite_self_test_state is None:
+                ap.error("suite process self-tests require --suite-self-test-state")
             if args.self_test_fault is not None:
                 ap.error("--self-test-fault requires --classifier-self-test")
             if args.orchestration_self_test_fault is not None:
                 ap.error(
                     "--orchestration-self-test-fault requires --orchestration-self-test"
                 )
-            return suite_timeout_self_test_child()
+            if (
+                args.suite_timeout_self_test_fault is not None
+                and not args.suite_timeout_self_test_child
+            ):
+                ap.error(
+                    "--suite-timeout-self-test-fault requires "
+                    "--suite-timeout-self-test-child"
+                )
+            if args.suite_timeout_self_test_child:
+                return suite_timeout_self_test_child(
+                    args.suite_self_test_state,
+                    args.suite_timeout_self_test_fault,
+                )
+            if args.suite_linger_self_test_child:
+                return suite_linger_self_test_child(args.suite_self_test_state)
+            return suite_interrupt_self_test_child(args.suite_self_test_state)
         if args.orchestration_self_test:
             if args.self_test_fault is not None:
                 ap.error("--self-test-fault requires --classifier-self-test")
@@ -10503,6 +10747,12 @@ def main() -> int:
         ap.error("--self-test-fault requires --classifier-self-test")
     if args.orchestration_self_test_fault is not None:
         ap.error("--orchestration-self-test-fault requires --orchestration-self-test")
+    if args.suite_self_test_state is not None:
+        ap.error("--suite-self-test-state requires a suite process self-test")
+    if args.suite_timeout_self_test_fault is not None:
+        ap.error(
+            "--suite-timeout-self-test-fault requires --suite-timeout-self-test-child"
+        )
 
     if args.worker_phase is not None:
         required_worker = (

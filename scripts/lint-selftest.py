@@ -35,6 +35,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -4719,74 +4720,297 @@ def session_process_problems() -> list[str]:
     return problems
 
 
-MUTATION_SUITE_TIMEOUT_READY = (
-    "mutation-probe suite-timeout self-test entered real run_suite"
-)
 MUTATION_SUITE_TIMEOUT_PASSED = (
     "mutation-probe suite-timeout self-test observed the suite wall-time limit"
 )
+MUTATION_SUITE_TIMEOUT_REJECTED = (
+    "mutation-probe suite-timeout self-test rejected unauthenticated verifier"
+)
+
+
+@dataclass(frozen=True)
+class MutationSuiteChildObservation:
+    returncode: int
+    output: str
+    records: tuple[dict[str, object], ...]
+    live_processes: tuple[int, ...]
+    watchdog_problem: str | None
+
+
+def mutation_suite_process_is_live(process_id: int) -> bool:
+    try:
+        fields = Path(f"/proc/{process_id}/stat").read_text().split()
+    except OSError:
+        return False
+    return len(fields) > 2 and fields[2] != "Z"
+
+
+def mutation_suite_records(state_path: Path) -> tuple[dict[str, object], ...]:
+    if not state_path.exists():
+        return ()
+    records: list[dict[str, object]] = []
+    for line in state_path.read_text().splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return tuple(records)
+
+
+def mutation_suite_record_pids(
+    records: tuple[dict[str, object], ...],
+) -> tuple[int, ...]:
+    pids: set[int] = set()
+    for record in records:
+        for key in ("leader", "descendant"):
+            process_id = record.get(key)
+            if (
+                isinstance(process_id, int)
+                and not isinstance(process_id, bool)
+                and process_id > 1
+            ):
+                pids.add(process_id)
+    return tuple(sorted(pids))
+
+
+def cleanup_mutation_suite_records(
+    records: tuple[dict[str, object], ...],
+) -> tuple[int, ...]:
+    groups: set[int] = set()
+    pids = mutation_suite_record_pids(records)
+    for record in records:
+        leader = record.get("leader")
+        descendant = record.get("descendant")
+        if (
+            not isinstance(leader, int)
+            or isinstance(leader, bool)
+            or leader <= 1
+            or leader == os.getpgrp()
+        ):
+            continue
+        candidates = [leader]
+        if isinstance(descendant, int) and not isinstance(descendant, bool):
+            candidates.append(descendant)
+        for process_id in candidates:
+            try:
+                if os.getpgid(process_id) == leader:
+                    groups.add(leader)
+                    break
+            except ProcessLookupError:
+                continue
+    for group in groups:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 2
+    while any(mutation_suite_process_is_live(pid) for pid in pids) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return tuple(pid for pid in pids if mutation_suite_process_is_live(pid))
+
+
+def run_mutation_suite_child(
+    mode: str,
+    *,
+    fault: str | None = None,
+    signal_after_label: str | None = None,
+) -> MutationSuiteChildObservation:
+    with tempfile.TemporaryDirectory(prefix="durablerun-suite-self-test-") as temporary:
+        state_path = Path(temporary) / "verifiers.jsonl"
+        command = [
+            sys.executable,
+            str(SCRIPTS / "mutation-probe.py"),
+            mode,
+            "--suite-self-test-state",
+            str(state_path),
+        ]
+        if fault is not None:
+            command.extend(("--suite-timeout-self-test-fault", fault))
+        process = subprocess.Popen(
+            command,
+            cwd=SCRIPTS.parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        watchdog_problem: str | None = None
+        stdout = ""
+        stderr = ""
+        try:
+            if signal_after_label is not None:
+                launch_deadline = time.monotonic() + 1.0
+                authenticated = False
+                while process.poll() is None and time.monotonic() < launch_deadline:
+                    authenticated = any(
+                        record.get("label") == signal_after_label
+                        for record in mutation_suite_records(state_path)
+                    )
+                    if authenticated:
+                        break
+                    time.sleep(0.01)
+                if not authenticated:
+                    watchdog_problem = (
+                        f"{signal_after_label} verifier did not write its authenticated "
+                        "PID record before the launch watchdog"
+                    )
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        watchdog_problem = (
+                            f"{signal_after_label} self-test exited before SIGTERM"
+                        )
+            try:
+                stdout, stderr = process.communicate(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                watchdog_problem = watchdog_problem or (
+                    f"{mode} exceeded its external 1.5s completion watchdog"
+                )
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                stdout, stderr = process.communicate(timeout=2)
+            records = mutation_suite_records(state_path)
+            pids = mutation_suite_record_pids(records)
+            live_processes = tuple(
+                pid for pid in pids if mutation_suite_process_is_live(pid)
+            )
+            returncode = process.returncode if process.returncode is not None else -1
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=2)
+            records = mutation_suite_records(state_path)
+            cleanup_failures = cleanup_mutation_suite_records(records)
+            if cleanup_failures:
+                raise RuntimeError(
+                    "suite self-test cleanup left live processes "
+                    f"{cleanup_failures}"
+                )
+        return MutationSuiteChildObservation(
+            returncode,
+            "\n".join((stdout, stderr)).strip(),
+            records,
+            live_processes,
+            watchdog_problem,
+        )
+
+
+def mutation_suite_record_problem(
+    observation: MutationSuiteChildObservation,
+    expected_labels: set[str],
+) -> str | None:
+    labels = [record.get("label") for record in observation.records]
+    if len(labels) != len(expected_labels) or set(labels) != expected_labels:
+        return (
+            "verifier-created PID records do not match the expected surfaces: "
+            f"observed {labels}, expected {sorted(expected_labels)}"
+        )
+    for record in observation.records:
+        leader = record.get("leader")
+        descendant = record.get("descendant")
+        if (
+            not isinstance(leader, int)
+            or isinstance(leader, bool)
+            or leader <= 1
+            or not isinstance(descendant, int)
+            or isinstance(descendant, bool)
+            or descendant <= 1
+            or leader == descendant
+        ):
+            return f"verifier-created PID record is malformed: {record}"
+    return None
 
 
 def mutation_suite_timeout_problem() -> str | None:
-    """Bound this RED outside the child whose missing deadline it exercises."""
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            str(SCRIPTS / "mutation-probe.py"),
-            "--suite-timeout-self-test-child",
-        ],
-        cwd=SCRIPTS.parent,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+    """Prove both production defaults with verifier-authenticated processes."""
+    observation = run_mutation_suite_child("--suite-timeout-self-test-child")
+    if observation.watchdog_problem is not None:
+        return observation.watchdog_problem
+    record_problem = mutation_suite_record_problem(
+        observation,
+        {"vitest", "typecheck"},
     )
-    try:
-        if process.stdout is None:
-            return "mutation-probe.py suite-timeout probe has no stdout pipe"
-        readable, _, _ = select.select([process.stdout], [], [], 5)
-        if not readable:
-            return (
-                "mutation-probe.py suite-timeout probe did not enter the real "
-                "run_suite before its readiness watchdog"
-            )
-        ready = process.stdout.readline().strip()
-        if ready != MUTATION_SUITE_TIMEOUT_READY:
-            return (
-                "mutation-probe.py suite-timeout probe did not authenticate its "
-                f"real run_suite boundary; observed {ready!r}"
-            )
-        try:
-            stdout, stderr = process.communicate(timeout=0.75)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.communicate(timeout=5)
-            return (
-                "mutation-probe.py real run_suite exceeded the outer 0.75s "
-                "watchdog after entering a sleeping TEST_CMD; no per-suite "
-                "wall-time limit stopped it"
-            )
-        output = "\n".join((ready, stdout, stderr))
-        if process.returncode != 0 or MUTATION_SUITE_TIMEOUT_PASSED not in output:
-            return (
-                "mutation-probe.py suite-timeout probe exited without proving "
-                f"the wall-time limit: {output.strip()[:300]}"
-            )
-        return None
-    finally:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                process.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate(timeout=5)
+    if record_problem is not None:
+        return record_problem
+    if observation.live_processes:
+        return (
+            "production deadline left verifier processes live: "
+            f"{observation.live_processes}"
+        )
+    if (
+        observation.returncode != 0
+        or MUTATION_SUITE_TIMEOUT_PASSED not in observation.output
+    ):
+        return (
+            "production default deadline probe failed: "
+            f"{observation.output[:300]}"
+        )
+
+    false_negative = run_mutation_suite_child(
+        "--suite-timeout-self-test-child",
+        fault="immediate-magic-error",
+    )
+    if false_negative.watchdog_problem is not None:
+        return false_negative.watchdog_problem
+    if false_negative.records:
+        return "immediate magic exception unexpectedly launched a verifier"
+    if (
+        false_negative.returncode == 0
+        or MUTATION_SUITE_TIMEOUT_REJECTED not in false_negative.output
+    ):
+        return (
+            "suite deadline regression accepted an immediate magic exception "
+            f"without verifier evidence: {false_negative.output[:300]}"
+        )
+    return None
+
+
+def mutation_suite_linger_problem() -> str | None:
+    observation = run_mutation_suite_child("--suite-linger-self-test-child")
+    if observation.watchdog_problem is not None:
+        return observation.watchdog_problem
+    record_problem = mutation_suite_record_problem(observation, {"linger"})
+    if record_problem is not None:
+        return record_problem
+    if observation.live_processes:
+        return (
+            "exited verifier leader left live descendants: "
+            f"{observation.live_processes}"
+        )
+    if observation.returncode != 0:
+        return (
+            "normal verifier leader exit with a descendant was not rejected and "
+            f"reaped as infrastructure: {observation.output[:300]}"
+        )
+    return None
+
+
+def mutation_suite_interrupt_problem() -> str | None:
+    observation = run_mutation_suite_child(
+        "--suite-interrupt-self-test-child",
+        signal_after_label="interrupt",
+    )
+    if observation.watchdog_problem is not None:
+        return observation.watchdog_problem
+    record_problem = mutation_suite_record_problem(observation, {"interrupt"})
+    if record_problem is not None:
+        return record_problem
+    if observation.live_processes:
+        return (
+            "SIGTERM killed the worker without reaping nested verifier processes: "
+            f"{observation.live_processes}"
+        )
+    if observation.returncode == 0:
+        return "SIGTERM interruption returned successful verifier status"
+    return None
 
 
 if sys.argv[1:] == ["--mutation-suite-timeout-case"]:
@@ -4795,6 +5019,24 @@ if sys.argv[1:] == ["--mutation-suite-timeout-case"]:
         print(f"lint-selftest: {focused_problem}")
         sys.exit(1)
     print("lint-selftest: mutation suite wall-time limit accepted")
+    sys.exit(0)
+
+
+if sys.argv[1:] == ["--mutation-suite-linger-case"]:
+    focused_problem = mutation_suite_linger_problem()
+    if focused_problem is not None:
+        print(f"lint-selftest: {focused_problem}")
+        sys.exit(1)
+    print("lint-selftest: mutation suite lingering descendants rejected")
+    sys.exit(0)
+
+
+if sys.argv[1:] == ["--mutation-suite-interrupt-case"]:
+    focused_problem = mutation_suite_interrupt_problem()
+    if focused_problem is not None:
+        print(f"lint-selftest: {focused_problem}")
+        sys.exit(1)
+    print("lint-selftest: mutation suite interrupt cleanup accepted")
     sys.exit(0)
 
 
@@ -4820,6 +5062,12 @@ failures.extend(process_fixture_control_enrollment_surface_problems())
 suite_timeout_problem = mutation_suite_timeout_problem()
 if suite_timeout_problem is not None:
     failures.append(suite_timeout_problem)
+suite_linger_problem = mutation_suite_linger_problem()
+if suite_linger_problem is not None:
+    failures.append(suite_linger_problem)
+suite_interrupt_problem = mutation_suite_interrupt_problem()
+if suite_interrupt_problem is not None:
+    failures.append(suite_interrupt_problem)
 for fault in PROCESS_FIXTURE_ISOLATION_FAULTS:
     injected_fault = fault.fault_id
     try:
