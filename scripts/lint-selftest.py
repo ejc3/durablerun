@@ -4816,6 +4816,8 @@ def run_mutation_suite_child(
     *,
     fault: str | None = None,
     signal_after_label: str | None = None,
+    signal_count: int = 1,
+    signal_settle_seconds: float = 0.0,
 ) -> MutationSuiteChildObservation:
     with tempfile.TemporaryDirectory(prefix="durablerun-suite-self-test-") as temporary:
         state_path = Path(temporary) / "verifiers.jsonl"
@@ -4857,12 +4859,19 @@ def run_mutation_suite_child(
                         "PID record before the launch watchdog"
                     )
                 else:
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        watchdog_problem = (
-                            f"{signal_after_label} self-test exited before SIGTERM"
-                        )
+                    if signal_settle_seconds > 0:
+                        time.sleep(signal_settle_seconds)
+                    for signal_index in range(signal_count):
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            watchdog_problem = (
+                                f"{signal_after_label} self-test exited before SIGTERM "
+                                f"{signal_index + 1} of {signal_count}"
+                            )
+                            break
+                        if signal_index + 1 < signal_count:
+                            time.sleep(0.05)
             try:
                 stdout, stderr = process.communicate(timeout=1.5)
             except subprocess.TimeoutExpired:
@@ -4997,6 +5006,8 @@ def mutation_suite_interrupt_problem() -> str | None:
     observation = run_mutation_suite_child(
         "--suite-interrupt-self-test-child",
         signal_after_label="interrupt",
+        signal_count=2,
+        signal_settle_seconds=0.2,
     )
     if observation.watchdog_problem is not None:
         return observation.watchdog_problem
@@ -5005,7 +5016,7 @@ def mutation_suite_interrupt_problem() -> str | None:
         return record_problem
     if observation.live_processes:
         return (
-            "SIGTERM killed the worker without reaping nested verifier processes: "
+            "repeated SIGTERM interrupted cleanup without reaping nested verifier processes: "
             f"{observation.live_processes}"
         )
     if observation.returncode == 0:
