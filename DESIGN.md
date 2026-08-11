@@ -416,7 +416,12 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. At the user-handler catch boundary, only controls minted
+  `FatalTaskError`s. Scheduler payloads obey the same source rule: spawn routes
+  normalized retry, an own-data-property cancellation snapshot, and headers
+  through the module-captured `serializeTaskValue`; claim decodes admitted retry
+  and headers through the matching captured parser. The canonical wire value,
+  not a second ambient JSON path, is the durable representation. At the
+  user-handler catch boundary, only controls minted
   by that invocation's private runtime authority can suspend or abort; a public
   `SuspendSignal`, `LeaseLostError`, or `StoreUnavailableError` constructed by
   task code is an ordinary task failure. `FatalTaskError` is the intentionally
@@ -444,12 +449,17 @@ One invocation executes one claimed run to its next suspension point:
   Error taxonomy on a pass: infrastructure failures from the caught checkpoint
   read and defer, complete, park, or fail transitions are classified at the
   immediate catch; context store failures are enrolled before they cross the
-  handler boundary. Handler execution plus result serialization and the
-  completion write are lexically separate phases. Only the former can enter
-  user-failure accounting: an ordinary completion rejection propagates and
-  never calls `fail`, while an authenticated completion-store control maps to
-  its infrastructure outcome. Activation errors still propagate to the worker
-  caller, while an advisory heartbeat error only ends that upkeep loop. A
+  handler boundary. Once the heartbeat pump starts, one outer cleanup scope
+  covers checkpoint loading, context construction, handler execution, and
+  finalization; every exit stops and joins the pump. Retry accounting uses the
+  worker-owned lexical attempt snapshot taken before task code and never
+  rereads the public context after the handler. Handler execution plus result
+  serialization and the completion write are lexically separate phases. Only
+  the former can enter user-failure accounting: an ordinary completion
+  rejection propagates and never calls `fail`, while an authenticated
+  completion-store control maps to its infrastructure outcome. Activation
+  errors still propagate to the worker caller, while an advisory heartbeat
+  error only ends that upkeep loop. A
   classified infrastructure failure aborts the pass with NO ADDITIONAL
   transition — a lost response may already have committed — so recovery is the
   lease story and the user's retry budget is never touched; only errors from
@@ -457,7 +467,9 @@ One invocation executes one claimed run to its next suspension point:
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
-  throttled, so shard-DB write rate stays transitions + throttled heartbeats. A
+  throttled, so shard-DB write rate stays transitions + throttled heartbeats.
+  The cadence is derived from the exact lease milliseconds, including legal
+  subsecond leases; no one-second floor may outlive the lease it protects. A
   zero-row `heartbeat` is the AB002 equivalent (lease gone): abort the handler
   immediately.
 - On completion/failure: `complete_run` / `fail_run` — the leading CAS checks
@@ -572,7 +584,11 @@ are load-bearing):
    Spawn therefore admits its task insert only when no pre-existing run already
    names the newly minted task id. Losing that ownership guard aborts with no
    task or run written; it may never create a task after an orphan run and then
-   report a different, never-inserted run as the receipt.
+   report a different, never-inserted run as the receipt. Its receipt has two
+   closed queue-scoped legs: the task-id leg may return only the inserted task,
+   and otherwise the idempotency leg may return only the same-queue winner. A
+   foreign task-id collision with no same-queue winner is an unexplained loss
+   and aborts rather than becoming a receipt.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:
@@ -588,7 +604,10 @@ are load-bearing):
    payload is the TimeoutError path, and that claim batch deletes the wait row
    so a later emit cannot resurrect a timed-out wait. The SDK snapshots and
    validates the optional timeout once before this atomic call; the store never
-   receives a second read from user-owned option state.
+   receives a second read from user-owned option state. That run-level NULL is
+   protocol branch state, not an event fact: an emitted `events.payload` must be
+   stored as TEXT. A SQL NULL or other non-TEXT event payload is corruption and
+   fails closed; it may never be decoded as the legitimate timeout sentinel.
    A timer suspension replaces an event registration: `reschedule` and
    `suspendRun` delete every wait belonging to the run their suspension CAS
    stamped, in the same batch. Cancellation likewise deletes waits through
@@ -650,11 +669,15 @@ are load-bearing):
    after an advisory scan, and before copying or comparing it into another
    durable value. A negative or over-ceiling deadline therefore cannot starve
    healthy work, become due through comparison, or be laundered by a write.
-   Driver heartbeat is one atomic transition for this purpose: if its derived
-   expiry is unrepresentable, neither the heartbeat row nor its expired-row
-   cleanup may change. Cleanup also validates the stored last-beat and expiry
-   fields of both its source heartbeat and each deletion candidate; corrupt
-   observability rows are refused, not compared into authority or deleted.
+   Driver heartbeat is one atomic, one-statement transition for this purpose:
+   its upsert and expired-row cleanup derive from the same statement-stable
+   instant. If its derived expiry is unrepresentable, neither the heartbeat row
+   nor its cleanup may change. Cleanup also validates the stored last-beat and
+   expiry fields of both its source heartbeat and each deletion candidate;
+   corrupt observability rows are refused, not compared into authority or
+   deleted. `expireLeaseNow` likewise consumes only a native integer expiry
+   that is within range and strictly after the statement's instant; an invalid,
+   fractional, or already-expired value may not be rewritten into validity.
 4. **Claim is a fenced batch, not a lone statement.** It has two identities:
    `claimed_by = :claim_token` is the durable lease and idempotent receipt,
    while the FencedBatch invocation seed gives the claim CAS its fresh
@@ -672,7 +695,13 @@ are load-bearing):
    pending and sleeping ordered candidate legs before each `LIMIT`. A late
    outer join or filter is not equivalent: an earlier corrupt row can consume
    the bounded budget before being refused and permanently starve later
-   healthy work. Every newly claimed or
+   healthy work. Durable worker payload admission is field-specific and shared:
+   `durableTaskRetryAdmissible` and `durableTaskHeadersAdmissible` both gate
+   each ordered candidate leg before its `LIMIT`, the same-token receipt before
+   it returns durable authority, and the activation CAS before it latches the
+   generation. Only after those store doors win may the captured parser decode
+   retry and headers; a stamped tail is not a substitute for gating the CAS.
+   Every newly claimed or
    receipt-returned run must also be the task's sole live run: the canonical
    `soleLiveRun(run)` eligibility fragment gates both the candidate CAS and the
    final `picked` receipt tail. It rejects every run with another live sibling,
@@ -709,7 +738,11 @@ are load-bearing):
    reopen, heartbeat's extension, checkpoint's lease extension, successor
    inserts) additionally require the owning task live; run-TERMINALIZING
    CASes (complete/fail/sweep failure) stay valid under a terminal task —
-   they only quiesce. A refused suspension surfaces as AB002.
+   they only quiesce. When the owner task is still live, `complete`, `fail`, and
+   the sweep relaunch-cap arm may terminalize it only if the winning run is its
+   sole live run. An already-terminal owner may still let a matching live run
+   quiesce, because that cannot amplify task state. A refused suspension
+   surfaces as AB002.
 7. **Client numbers are validated at the port; SQL never multiplies them.**
    Every relative duration crosses the boundary through `durationToMs`
    (finite, ≥ 0, rounded to integer milliseconds, ≤ 100 years; leases and
@@ -784,7 +817,11 @@ are load-bearing):
    relations: `runs.task_id → tasks.task_id`, `runs.run_id → waits.run_id`,
    `tasks.task_id → runs.task_id`, `waits.run_id → runs.run_id`, or the exact
    self relation `runs.run_id → runs.run_id`. Callers name the relation; they
-   cannot spell either key independently. Construction also requires the
+   cannot spell either key independently. Queue policy is part of each closed
+   entry: runs→tasks, tasks→runs, and waits→runs require queue equality;
+   authoritative runs→waits cleanup deliberately ignores the wait's corrupt
+   denormalized queue; and the exact runs→runs self relation needs no additional
+   queue comparison. Construction also requires the
    named fence to have stamped the relation's source table, and sealing
    requires both source table and logical key to be identical. A
    `rows: 'source-keys'` follow-on is therefore bounded structurally: its
@@ -975,11 +1012,13 @@ not depend on careful reading:
   all question-delta reasons in one live-inventory traversal and requires an
   aggregate refusal; it proves enrollment is not a removable second call, not
   each declaration independently.
-  The verify gate runs 18 classifier cases, nineteen promise-message source
+  The verify gate runs 20 classifier cases, nineteen promise-message source
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
-  three helper-marker cases, sixteen direct-marker cases, and seven
-  question-delta cases over all 345 live mutations. A separate
-  generated coordinator surface injects shard omission and overlap, wrong
+  three helper-marker cases, sixteen direct-marker cases, six verdict-inventory
+  cases, and seven question-delta cases over all 385 live mutations. One
+  live-enrollment fault attacks the canonical registry path. A separate
+  generated coordinator surface injects 37 faults covering shard omission and
+  overlap, wrong
   heads, missing/duplicate/extra results, process/report disagreement, and
   non-owned cleanup targets, plus unconfined execution, an unowned worker,
   a skipped baseline barrier, an external workspace link, malformed identity
@@ -1325,8 +1364,13 @@ safe: **the scheduler lease is the only source of truth for execution rights;
 every other signal is advisory** — it may be lost (lease timer recovers),
 duplicated (fences no-op), late, or wrong under split-brain (fences reject
 stale tokens) — and advisory signals get exactly one write:
-`expireLeaseNow(runId, claimToken)`, i.e. they may only *accelerate* what the
-lease timer would do anyway, never directly complete or fail a run.
+`expireLeaseNow(queue, runId, claimToken)`, i.e. they may only *accelerate* what
+the lease timer would do anyway, never directly complete or fail a run. It
+returns true only when that exact queue/run/token still names a running lease,
+the stored expiry is a native integer strictly in the future, and a task with
+the same id and queue owns the run; the write then shortens the lease to the
+database instant. Every mismatch, invalid expiry, or already-expired lease
+stutters.
 
 1. **SchedulerStore** (dialect port: Postgres | MySQL | SQLite/Turso) —
    scheduling only, every method one fenced idempotent tx/statement, DB-side
@@ -1335,12 +1379,12 @@ lease timer would do anyway, never directly complete or fail a run.
    `heartbeat` (returns lease state so zombies learn they're dead),
    `reschedule`, `complete`, `fail` (retry policy in core, applied fenced),
    `sweep` (expired leases + cancellation, classified by activation state),
-   `expireLeaseNow`, `emitEvent`/`registerWait` (worker-initiated
-   registration is claim-fenced like every worker write), `nextWakeAt`, and
-   `driverHeartbeat` — an observability-only upsert of the driver's liveness
-   row (`drivers` table: queue+driver id, last beat, expiry at twice the
-   beat cadence; each beat also deletes expired rows so the registry is
-   self-cleaning). Nothing in the protocol reads it; a failed beat costs
+   `expireLeaseNow(queue, runId, claimToken)`, `emitEvent`/`registerWait`
+   (worker-initiated registration is claim-fenced like every worker write),
+   `nextWakeAt`, and `driverHeartbeat` — an observability-only upsert of the
+   driver's liveness row (`drivers` table: queue+driver id, last beat, expiry at
+   twice the beat cadence; each beat also deletes expired rows so the registry
+   is self-cleaning). Nothing in the protocol reads it; a failed beat costs
    nothing but visibility.
 2. **Launcher** (execution transport, agnostic on "how"):
    `launch({runId, attempt, claimToken, claimGen, shard, deadlineHint}) →`
@@ -1355,13 +1399,13 @@ lease timer would do anyway, never directly complete or fail a run.
    claim, not a guarantee).
 3. **EndingFeed** (runner-termination log; honest contract: at-most-once,
    duplicated, delayed, split-brain-capable): events
-   `{runId, claimToken?, endedAtEpochMs, kind:
+   `{queue, runId, claimToken?, endedAtEpochMs, kind:
    completed|failed|crashed|timeout|unknown}`. A token-bearing consumer calls
-   `expireLeaseNow` only for that exact `(runId, claimToken)`; a mismatched
-   signal stutters. Tokenless signals make no write until PR6.4 adds the
-   spec-first atomic heartbeat-cutoff operation: it must read the run's current
-   token, prove no heartbeat landed after the ending's cutoff, and expire that
-   same claim in one store action. A separate read followed by
+   `expireLeaseNow` only for that exact `(queue, runId, claimToken)`; a
+   mismatched signal stutters. Tokenless signals make no write until PR6.4 adds
+   the spec-first atomic heartbeat-cutoff operation: it must read the run's
+   current token, prove no heartbeat landed after the ending's cutoff, and
+   expire that same claim in one store action. A separate read followed by
    `expireLeaseNow` races a new claim or heartbeat and is forbidden. Feed loss
    therefore costs only acceleration, never correctness.
 4. **RunStateStore** (data plane, §3.8): `load`, attempt-guarded

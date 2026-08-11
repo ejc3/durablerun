@@ -11,10 +11,11 @@ then found one more Unicode marker-boundary defect. Final adversarial
 re-review found that the hosted loop could still credit a planned batch
 without dispatching its command. Subsequent closeouts followed retry and
 task-code boundaries through the worker and completed two unresolved review
-threads. The final registry has 345 live mutations, including executable
+threads. The current registry has 385 declared live mutations, including
 attacks on dispatch, every declared task-realm condition, collision error
 attribution, compiler-bind laundering, completion-error origin, single-read
-timeouts, and each absolute-wake discriminant.
+timeouts, each absolute-wake discriminant, every current task/run ownership
+door, durable worker-payload admission, and sole-live terminalization.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The subject is why the nightly and mutation gates could say more
@@ -122,6 +123,52 @@ causal coverage while deleting guards without their named proof failing.
 | 75 | `task-value-raw-nested-symbol` reached its exact marker but also failed two unmarked generic nested-symbol cases | The full audit rejected a real serializer guard kill as wrong-path | Core task-value mutation oracle | A generic value matrix and the intrinsic-containment case were two decisive owners for one nested-symbol condition | Keep top-level symbol coverage in the generic matrix and make one combined object/array assertion the sole nested-symbol owner (rung 2) |
 | 76 | The verdict classifier rejected an exact `AssertionError: <marker>` first line when Vitest emitted no trailing matcher detail | A correctly killed exotic-object mutant was reported wrong-path despite an exact diagnostic | Mutation verdict classifier | The accepted first-line grammar assumed every assertion diagnostic appended `: …` | Recognize the exact no-detail assertion form without permitting substring/source-context credit, and maintain it with a classifier self-test (rung 2) |
 | 77 | The context lease-loss getter marker was attached to the persisted-result assertion after an earlier unmarked worker-outcome assertion | The captured-getter mutant failed for the intended reason but could not receive exact credit | SDK worker mutation oracle | One scenario had two sequential decisive assertions and registered the later one | The mutation marker owns the first observable `claimAndRun` outcome; the persisted result remains a healthy-path control (rung 2) |
+| 78 | The mutation classifier could credit an exact owned marker while the same test also emitted a collateral failed assertion or diagnostic | A broad mutant could delete more than the advertised condition and still receive exact credit | Mutation verdict classifier | Marker identity was treated as sufficient even when the structured report proved more than one decisive failure | Require exactly one failed assertion and exactly one assertion message, with injected multi-assertion and multi-message faults (rung 2) |
+| 79 | The live mutation registry no longer contained the exact non-integer-attempt attack for `suspendRun` | A durable ordinal guard could disappear while the branch still claimed exact coverage | Mutation ownership inventory | Historical marker text survived after its live source mutation was dropped | Restore the exact CAS-site mutation and require every reserved marker to have one live owner (rung 2) |
+| 80 | The sweep non-integer-attempt owner had been dropped, and a naive restored mutant was masked by another attempt proof before reaching the winning CAS | Sweep could consume a corrupt attempt after discovery while an advertised mutation remained non-discriminating | Sweep scan-to-CAS mutation surface | A source-shaped deletion was mistaken for a causal attack on a guard composed in several terminal arms | One CAS-local composite mutation removes all three masking attempt proofs, paired with the post-scan corruption regression and exact verdict (rung 2) |
+| 81 | Checkpoint replay and `ReplayContext` construction occurred outside the heartbeat pump's cleanup scope | A malformed checkpoint could reject construction and leave lease upkeep running after the worker returned | Worker pass lifecycle | Cleanup covered handler execution but not every fallible setup step after pump launch | One outer `try`/`finally` owns checkpoint read, context construction, handler execution, and finalization, and always stops and joins the pump (rung 1) |
+| 82 | Retry accounting reread the public `ctx.attempt` property after user code ran | Task code could assign a forged attempt and suppress or accelerate durable retry exhaustion | Worker retry authority | A public context view was reused as trusted bookkeeping after crossing task code | Snapshot `attempt - infra_retries` before task code, store a private read-only context value, and use only the worker-owned lexical for retry decisions (rung 1) |
+| 83 | The worker clamped every heartbeat cadence to at least one second | A legal subsecond lease could expire before its first upkeep call | Worker lease upkeep | A convenience floor silently overrode the claimed lease duration | Derive cadence from the exact lease milliseconds, with a subsecond fake-clock progress case and exact mutation (rungs 1 and 2) |
+| 84 | Spawn read `opts.cancellation` and its fields repeatedly across validation, deadline construction, and JSON persistence | A changing getter could persist policy different from the value used to compute the cancellation deadline | Spawn durable-input boundary | User-owned option state was treated as a stable record rather than effects | Snapshot cancellation and each field once, canonicalize the validated milliseconds, and serialize that owned value (rung 1) |
+| 85 | Claim changed durable state before decoding the selected task's retry policy and headers | A corrupt payload could acquire a lease and then make the client throw, stranding work behind a transition whose receipt could not be decoded | Claim mutation boundary | Payload admissibility was checked only on the post-CAS read path | The SQL `durableTaskRetryAdmissible` and `durableTaskHeadersAdmissible` predicates gate both ordered candidate legs and the receipt tail before mutation authority; decode then canonicalizes the admitted values (rung 1) |
+| 86 | Activate latched `activated_gen` before decoding the task payload returned to the worker | Corrupt durable JSON could consume activation while returning no runnable payload | Activation mutation boundary | The generation CAS and payload decode were separately authoritative | The same split retry/header admissibility definitions gate the activation CAS and its stamped payload tail (rung 1) |
+| 87 | Spawn's receipt query let a foreign-queue task-id collision outrank the same-queue idempotency winner | A successful idempotent spawn could return a task or run from another queue | Spawn receipt ownership | An `OR` plus ordering mixed globally unique task-id lookup with queue-scoped idempotency lookup | A closed two-leg receipt relation gives the inserted task priority only when it exists and otherwise selects the same-queue idempotency winner; its run subquery also composes queue ownership (rung 1) |
+| 88 | `complete` could make a live task terminal while another live run still belonged to it | One sibling could terminalize the task underneath another active attempt | Terminal task/run cardinality | Sole-live ownership guarded launch doors, not the terminal CAS that changed the task book | A live owner may complete only through the canonical `soleLiveRun` relation; already-terminal owners may still be quiesced (rung 1) |
+| 89 | `fail` could terminalize a live task while a lower live sibling remained | A user failure in one run could strand or invalidate a separately live attempt | Terminal task/run cardinality | Retry-accounting guards did not prove the failing run was the sole live authority | The live-task fail arm composes `soleLiveRun` before terminalization and successor bookkeeping (rung 1) |
+| 90 | The sweep relaunch-cap arm could terminalize a live task while another live run remained | Infrastructure recovery could convert a corrupt multiple-live state into task-wide terminal failure | Sweep terminalization authority | Cap and generation predicates were treated as sufficient terminal authority | The relaunch-cap CAS recomposes sole-live ownership at the winning statement (rung 1) |
+| 91 | Driver heartbeat wrote its beat and cleanup in two statements with independently evaluated database time | Clock movement could make cleanup disagree with the beat that supposedly authorized it | Driver observability transition | Passing through one client call was mistaken for one database instant | Migration v5 exposes a write-only ingress view whose `INSTEAD OF INSERT` trigger performs upsert and cleanup from one `NEW.last_beat_ms` in one statement (rung 1) |
+| 92 | Claim joined a run to a task by `task_id` alone | A run whose immutable queue diverged from its task could be claimed through the wrong ownership relation | Claim ownership boundary | Existence was used as a proxy for full task/run ownership | One `runOwnedByTask` fragment requires both task id and queue at the claim candidate, receipt, and activation doors (rung 1) |
+| 93 | Heartbeat checked task identity but not task/run queue agreement | A worker could extend a lease after its task crossed the immutable queue boundary | Heartbeat ownership boundary | Each direct door respelled only the relation fields it happened to need | `runOwnedByTask` is the sole ownership relation and gates the heartbeat CAS (rung 1) |
+| 94 | `reschedule` could park a run whose task had the same id in another queue | A cross-queue corrupt relation could gain a new durable wake | Reschedule ownership boundary | Task liveness did not establish queue ownership | The shared ownership fragment gates the reschedule CAS (rung 1) |
+| 95 | `suspendRun` could park and checkpoint across a task/run queue mismatch | One atomic batch could amplify cross-queue corruption into both scheduler and checkpoint state | Suspension ownership boundary | Full lease fencing did not also prove the stored run-to-task relation | The shared ownership fragment gates the suspension CAS before either follow-on can write (rung 1) |
+| 96 | `setCheckpoint` could extend a lease and write through a run whose task queue diverged | Progress data could be attached through a corrupt cross-queue owner | Checkpoint ownership boundary | Caller queue/task/token equality did not prove the durable task row owned the run | The shared ownership fragment is part of the checkpoint lease CAS (rung 1) |
+| 97 | `awaitEvent` could register and park after task/run queue divergence | A foreign task relation could acquire a durable wait and sleeping state | Await ownership boundary | Run arguments were checked, but the joined task relation was only by id | The event-registration existence proof joins through `runOwnedByTask` (rung 1) |
+| 98 | `emitEvent` could wake a run whose task had moved to another queue | Event delivery could amplify a corrupt ownership edge into runnable work | Emit ownership boundary | Run and task liveness were checked independently of immutable queue agreement | The wake predicate joins through the shared task/run ownership fragment (rung 1) |
+| 99 | `cancelTask` could terminalize a task while one of its runs carried a different queue | Cancellation could cross or strand the reverse side of a corrupt ownership relation | Cancellation ownership boundary | Forward run-to-task guards did not establish that every run named by the task remained in its queue | `taskOwnsEveryRun` refuses the task CAS unless every reverse-owned run agrees on queue (rung 1) |
+| 100 | `FencedBatch`'s closed relation contract did not say which generated cross-table edges require queue equality | A generated follow-on could cross a queue boundary, while globally applying equality would strand corrupt waits that terminal cleanup must remove | Core relation primitive | Column pairing owned identity but not the distinct queue semantics of each relation direction | Each frozen relation declares `queueScoped`; task/run and wait/run ownership compose queue equality, while authoritative `runs`→`waits` cleanup deliberately follows `run_id` through a corrupt denormalized wait queue (rung 1) |
+| 101 | A stored SQL NULL event payload was indistinguishable from the timeout sentinel | Emit/await could launder corrupt event storage into a legitimate timeout instead of failing closed | Event serialization boundary | Nullability was overloaded as both payload corruption and protocol branch state | Emit accepts and preserves only TEXT payloads; await returns a payload only after checking `typeof(payload) = 'text'`, and non-TEXT storage raises instead of timing out (rung 1) |
+| 102 | Reserved `mutation-verdict:` markers were not checked in the reverse direction against the live registry | Historical or copied marker text could advertise exact ownership without any executable mutation | Mutation source inventory | The registry proved mutation-to-marker mapping but not marker-to-mutation ownership | A reverse inventory requires each reserved marker to have at least one live mutation owner or explicit machinery exemption, and every mutation sharing a marker must declare the same semantic verdict; non-owned regressions use the separate `regression:` namespace (rung 2) |
+| 103 | The first relation-mutation surface attacked required queue scoping only by deleting it globally | The surface could stay green if authoritative `runs`→`waits` cleanup were incorrectly changed from unscoped to scoped | Relation-policy mutation surface | One example per mechanism was again treated as coverage of both policy values | Add a distinct false-to-true mutation and semantic construction verdict for authoritative cleanup (rung 2); this repair-review finding has no standalone red commit |
+| 104 | The first ownership repair set `runs`→`waits` cleanup to queue-scoped | Terminal and cancellation cleanup could strand a corrupt wait whose authoritative run id was already known | Generated cleanup relation | “Every cross-table edge is queue-scoped” overgeneralized the forward ownership property to a denormalized cleanup witness | The explicit relation ledger marks this direction unscoped, and the full libSQL poison matrix proves cleanup follows the authoritative run id (rung 1); the failing repair state is the red evidence |
+| 105 | The first spawn-receipt repair still admitted a task-id collision from another queue when no same-queue idempotency winner existed | A losing spawn could return a foreign task and run instead of rejecting the unexplained loss | Spawn receipt ownership | Only the idempotency leg was queue-scoped; the task-id leg remained global | Queue-scope the task-id leg and give it an independent exact mutation (rungs 1 and 2) |
+| 106 | Live mutations edited frozen migration DDL directly | A mutant could die at the migration hash/frozen-history guard instead of exercising current behavior | Mutation target policy | Mutation enrollment did not distinguish current source from append-only migration history | Reject frozen migration targets and express both driver-cleanup attacks through a current source-proven seam (rung 2) |
+| 107 | Spawn resolved ambient `JSON.stringify` after hostile retry getters ran | A validated retry policy could be persisted as a forged policy | Retry serialization boundary | Retry normalization owned the value but not the serializer subsequently invoked | Serialize through the core module-captured task-value codec (rung 1) |
+| 108 | Canonical cancellation construction assigned into an ordinary `{}` | An inherited setter could discard a validated cancellation field while deadline arithmetic used it | Cancellation snapshot construction | “Fresh object” was treated as “owned data properties” | Construct both fields as own data properties in one object literal, then serialize the owned snapshot (rung 1) |
+| 109 | Spawn resolved ambient `JSON.stringify` after the cancellation getter ran | Durable cancellation JSON could disagree with the validated deadline inputs | Cancellation serialization boundary | One-read input ownership stopped before serialization | Use the captured task-value serializer for the canonical cancellation value (rung 1) |
+| 110 | Spawn resolved ambient `JSON.stringify` after the headers getter ran | A task could persist forged worker headers | Header serialization boundary | The header reference was snapshotted, but the serializer remained ambient | Use the captured task-value serializer for headers (rung 1) |
+| 111 | Claimed retry decoding used ambient `JSON.parse` | A poisoned parser could replace an admitted durable retry strategy before worker launch | Retry decode boundary | SQL admission authenticated the stored bytes, not the ambient parser consuming them | Decode through the core module-captured parser (rung 1) |
+| 112 | Claimed header decoding independently used ambient `JSON.parse` | A poisoned parser could forge the headers exposed to a worker | Header decode boundary | The second parser call site remained independently writable | Route it through the same captured parser, with its own exact mutation (rungs 1 and 2) |
+| 113 | Claim candidate header admissibility had no independent mutation owner | The header predicate could disappear while the combined retry-payload proof still appeared enrolled | Claim candidate mutation surface | One combined payload mutation stood in for two independently writable fields | Split retry/header definitions and add a candidate-header mutation and verdict (rung 2) |
+| 114 | Same-token receipt retry admissibility had no door-specific mutation owner | A receipt could decode corrupt retry JSON while candidate coverage stayed green | Claim receipt mutation surface | Candidate and receipt calls were treated as one claim property | Add an exact receipt-retry mutation and isolated receipt fixture (rung 2) |
+| 115 | Same-token receipt header admissibility had no door-specific mutation owner | A receipt could expose corrupt headers while the other claim doors remained protected | Claim receipt mutation surface | Neither the receipt site nor header condition had independent ownership | Add an exact receipt-header mutation and fixture (rung 2) |
+| 116 | Activate header admissibility had no independent mutation owner | Activation could latch before exposing corrupt headers while retry coverage stayed green | Activation mutation surface | One combined payload mutation represented both fields | Add an activate-header mutation; keep payload admission solely at the atomic CAS rather than duplicating it in the stamped tail (rung 2) |
+| 117 | `runs-to-tasks.queueScoped` lacked an entry-local mutation | Its policy literal could flip while the global generator mutation still claimed relation coverage | Relation-policy mutation surface | Generator behavior was treated as ownership of every independently writable ledger entry | Add a compiler-owned exact true-to-false mutation for this literal (rung 2) |
+| 118 | `tasks-to-runs.queueScoped` independently lacked an entry-local mutation | Generated task-to-run writes could lose queue ownership without a site-owned verdict | Relation-policy mutation surface | Another true-valued relation stood in for this entry | Add its own compiler-owned true-to-false mutation (rung 2) |
+| 119 | `waits-to-runs.queueScoped` independently lacked an entry-local mutation | A wait-to-run follow-on could cross queues without invalidating another relation’s proof | Relation-policy mutation surface | The relation ledger was closed structurally but its true entries were not individually attacked | Add its own compiler-owned true-to-false mutation (rung 2) |
+| 120 | The cancel queue-ownership mutation was attributed to a narrow regression instead of its generated corruption-class failure | A real guard kill could become collateral/wrong-path rather than exact evidence of invariant amplification | Cancellation mutation attribution | The first observable direct snapshot was used instead of the generated poison-matrix class owner | Attribute the exact ownership-mismatch poison failure; retain the direct case as an ordinary regression (rung 2) |
+| 121 | `expireLeaseNow`’s future-expiry condition had no exact mutation owner | The advisory write could stop meaning “shorten” and rewrite an already-expired lease unnoticed by the mutation inventory | Advisory-lease mutation surface | The composite unexpired fragment’s upper-bound attack was mistaken for ownership of every constituent | Add an exact deletion of only `expiry > database-now` (rung 2) |
+| 122 | `expireLeaseNow`’s integer-storage premise independently lacked an exact owner | A fractional stored expiry could be laundered into an integer instant | Advisory-lease mutation surface | Range coverage did not prove representation coverage | Add a fractional-storage fixture and exact integer-premise mutation (rung 2) |
+| 123 | `expireLeaseNow`’s task/run queue-ownership premise lacked an exact owner | The ownership breadth surface could regress at this advisory door while all enrolled direct transitions stayed green | Advisory ownership mutation surface | The already-correct relation was hand-spelled and omitted from the new per-door inventory | Compose `runOwnedByTask` and add the exact queue-removal mutation (rungs 1 and 2) |
 
 ## Detection ledger
 
@@ -143,8 +190,13 @@ causal coverage while deleting guards without their named proof failing.
 | Final durable-boundary and mutation-surface review, findings 68 through 73 | 6 | no |
 | Session scanner self-test, finding 74 | 1 | **yes** |
 | Full exact mutation audit at `cd719f1`, findings 75 through 77 | 3 | **yes** |
+| Exact-head durable-boundary review, findings 78 through 92 and 101 through 102 | 17 | no |
+| Ownership breadth review, findings 93 through 100 | 8 | no |
+| Mandatory relation-repair review, finding 103 | 1 | no |
+| Full libSQL poison matrix against the first repair, finding 104 | 1 | **yes** |
+| Final tranche review, findings 105 through 123 | 19 | no |
 
-Self-catch rate: **29 of 77, or 37.7%** (previous temporal round: **1 of
+Self-catch rate: **30 of 123, or 24.4%** (previous temporal round: **1 of
 43, or 2.3%**). The original 35-finding audit was **24 of 35, or 68.6%**,
 but the later boundary and repair rounds were almost entirely review-caught.
 The long audit found 22 attribution defects without outside review. It is not
@@ -158,9 +210,12 @@ The last checked-in cumulative trailer before this closeout was
 `review-findings: 289`. The original nightly/mutation round raised it to 300;
 the retry/throwable, task-realm, and bind-attribution rounds raise it to
 `review-findings: 331`; the final durable-boundary review raises it to
-`review-findings: 337`. The previously recorded 30 self-catches rise by 29 to
-59. The branch catalogue at final closeout is therefore **337 review-caught
-plus 59 self-caught, or 396 total findings**.
+`review-findings: 337`. The preceding closeout raised the previously recorded
+30 self-catches by 29 to 59. The durable-boundary ownership round adds 45
+review catches and one self-catch, so the cumulative trailer is
+`review-findings: 382` and the branch catalogue is **382 review-caught plus 60
+self-caught, or 442 total findings**. The branch self-catch rate is **13.6%**;
+outside review found **86.4%**.
 
 ## Recurrence
 
@@ -240,9 +295,10 @@ mutation minimality.
 
 ## Fix-induced defects
 
-There were **34 fix-induced findings across the complete closeout**. Thirteen
-were in the original nightly/mutation round: finding 2 and findings 24 through
-35. Finding 2 was caused by the first fresh-process proof, whose text
+There were **53 fix-induced findings across the complete closeout**. The first
+34 occurred through finding 77. Thirteen were in the original
+nightly/mutation round: finding 2 and findings 24 through 35. Finding 2 was
+caused by the first fresh-process proof, whose text
 inventory still accepted dead execution. Finding 24 was caused by the
 `47987c0`-to-`90cc034` repair adding a terminal-decode helper descriptor while
 leaving its registry marker stale. Finding 25 was the generic framework
@@ -265,8 +321,10 @@ audit. Final code re-review then found finding 35 and forced another red,
 green, and invalidation of the earlier long evidence; the 207-entry exact
 cycle therefore had to be rerun before that checkpoint could merge. The five
 later addenda add four, ten, two, three, and two fix-induced findings
-respectively, for **34 across the complete 77-finding closeout**; their exact
-accounting and repair topology appear below.
+respectively, for **34 through the 77-finding checkpoint**. The final
+durable-boundary addendum adds eight: findings 78 through 80, 91, 100, and 102
+through 104. The final tranche review adds eleven: 106, 108, 113 through
+120, and 123. Their exact accounting and repair topology appear below.
 
 ## Evidence
 
@@ -403,8 +461,8 @@ Deferred (recorded in BUILD.md):
 ## What this round still would not catch
 
 A new guard or generated condition omitted from `MUTATIONS` can still ship:
-the registry now has 345 declared entries, but even a complete exact audit of
-those entries is not proof that declaration is complete. Two guards
+the current registry has 385 declared entries, but even a complete exact audit
+of those entries is not proof that declaration is complete. Two guards
 deliberately sharing one assertion can still let the sibling kill a mutation.
 A canonical imported helper can still be given a callback that fabricates its
 accepted error without exercising production.
@@ -691,8 +749,8 @@ invented topology.
   mutation specifications, each with one owned verdict. The marker/inventory
   self-test and focused task-realm suites were green at `4220de7`; later
   collision and bind-attribution work intentionally invalidated that head as
-  final merge evidence, so the final clean-head 345-entry audit is required
-  separately rather than being claimed here.
+  final merge evidence, so that checkpoint required a later clean-head
+  345-entry audit rather than claiming one here.
 
 ### Task-realm root cause and mechanisms
 
@@ -794,9 +852,9 @@ a fast construction alarm with a written cancellation boundary. Authentic
 compiler failures are separately ineligible for expected-failure attribution,
 so even a source mutation that evades the alarm cannot be credited for dying
 at either bind-validation exit. The collision repair similarly uses one shared
-error shape but independent path-owned mutations. The final merge gate must run
-the complete 345-entry audit on one clean immutable head; targeted evidence is
-not substituted for that cycle.
+error shape but independent path-owned mutations. At that checkpoint the merge
+gate still required the complete 345-entry audit on one clean immutable head;
+targeted evidence was not substituted for that cycle.
 
 ## Final durable-boundary and session-scanner addendum
 
@@ -932,6 +990,193 @@ add conditions.
 - At `5f420c0`, all three formerly wrong-path mutations were caught by their
   exact attributable verdicts. `pnpm verify` passed **80 files / 3,548 tests**,
   and the mutation self-test retained **345** live entries.
-- Targeted repair evidence is not the final mutation gate. The complete
-  **345-entry** audit, confined fuzz, TLC, and verify gates must still pass
-  together on one later clean immutable head before merge.
+- Targeted repair evidence was not the final mutation gate. At that checkpoint,
+  the complete **345-entry** audit, confined fuzz, TLC, and verify gates still
+  had to pass together on one later clean immutable head; the following
+  addendum records the superseding evidence and current 385-entry requirement.
+
+## Final durable-boundary ownership addendum
+
+Review of the repaired worker and every direct scheduler mutation door found
+26 defects; the full libSQL poison matrix then found one defect in the first
+relation repair. Final tranche review found 19 more defects in receipt
+ownership, migration-target policy, durable serialization, door-specific
+mutation ownership, relation-policy ownership, cancellation attribution, and
+the advisory lease door. The canonical Findings table owns findings 78 through
+123. This addendum does not rewrite findings 75 through 77 or their completed
+345-entry audit: it begins from that checked-in 337-review / 59-self checkpoint.
+
+### Detection ledger and recurrence
+
+Outside review found findings 78 through 103 and 105 through 123. The repository
+found finding 104 when the complete libSQL conformance run exercised the
+generated poison matrix against the first repair. The round is therefore **1
+of 46 self-caught, or 2.2%**. Cumulatively the branch has **382 review-caught
+and 60 self-caught findings, 442 total**, for a **13.6%** self-catch rate;
+outside review found **86.4%**. The required PR trailer is
+`review-findings: 382`.
+
+Findings 78 through 80, 102, and 103 recur after the exact-attribution and
+per-condition mutation rules. The existing machinery proved each declared
+mutation's path, but it did not require one decisive structured assertion, did
+not prove the reverse marker inventory, and initially represented only the
+`queueScoped: true` half of a two-valued relation policy. These are the same
+proxy class as findings 24, 40 through 42, 54, 63, 73, and 75 through 77: a
+named example stood in for the complete property.
+
+Findings 81 through 84 recur after the task-realm single-representation rule.
+The handler itself used captured operations, but setup fell outside the pump's
+lifetime scope, retry authority crossed task code through a public view, lease
+cadence silently substituted a one-second policy, and spawn reread a user-owned
+option. The new outer worker scope and source-owned lexicals close the current
+paths; they do not constitute a JavaScript sandbox.
+
+Findings 85, 86, and 101 recur after the serialize-then-parse-at-source rule.
+Claim and activation let the write happen before discovering an unreadable
+payload, while event NULL overloaded corruption and timeout. SQL admissibility
+now precedes mutation authority and TEXT is a distinct durable event premise.
+
+Findings 107 through 112 recur at the same single-representation boundary.
+Retry, cancellation, and headers had been snapshotted or admitted, but their
+later serialization and parsing still resolved ambient JSON operations. The
+captured task-value codec now owns both directions, and canonical cancellation
+is constructed with own data properties before it crosses that codec.
+
+Findings 87 through 100 and 104 recur after the standing total-ownership and
+sole-live rules. Identity joins repeatedly proved only `task_id`, each direct
+door independently omitted `queue`, terminal doors did not recheck the
+cardinality they were about to collapse, and the first structural repair
+overgeneralized queue scope to an authoritative cleanup edge. The explicit
+relation ledger is important precisely because “all edges are scoped” is as
+wrong as “no edges are scoped.”
+
+Finding 91 also recurs after the one-statement clock rule: client-level
+atomicity did not make two SQL statements share an instant. Migration v5 moves
+the libSQL heartbeat and cleanup behind a one-statement ingress trigger.
+
+Finding 105 is a second receipt-ownership defect after finding 87: the first
+repair scoped the same-queue idempotency winner but left the losing task-id leg
+global. Finding 106 recurs after exact mutation attribution because frozen
+migration history could answer instead of current production behavior.
+
+Findings 113 through 123 recur after the per-condition mutation rule. Combined
+payload, relation, ownership, and range mechanisms stood in for independently
+writable field-by-door or ledger-entry conditions, and cancellation pointed at
+a narrow example rather than the generated corruption-class verdict. The new
+entries declare those exact current owners; only a completed mutation audit can
+establish their kills.
+
+### Mechanism audit — written false negatives
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Exactly one failed assertion and one message | 2 | One assertion can still combine two independently writable semantic guards and emit one message. The classifier proves report cardinality, not mutation minimality; PR3.10 still owns source-generated condition attacks. |
+| Reserved-marker reverse inventory | 2 | A new condition with neither a reserved marker nor a mutation is absent from both sides and passes. Requiring at least one live owner or explicit machinery exemption, plus one shared semantic verdict for mutations that reuse a marker, proves ownership of present claims—not completeness of future claims. |
+| Worker-owned pass scope and retry attempt | 1 for current flow | A future fallible operation inserted after pump creation but before the outer `try`, or a new accounting decision that rereads another public context field after task code, recreates the bug. The current lexical topology owns only the enumerated setup and retry paths. |
+| Exact lease-derived cadence | 1/2 | Scheduling from the real lease removes the one-second substitution, but a heartbeat call whose latency itself exceeds the lease can still lose ownership. Lease loss and recovery, not the cadence formula, own that operational boundary. |
+| SQL durable-payload admissibility | 1 for retry policy and headers | A future worker-payload column omitted from both `durableTaskRetryAdmissible` and `durableTaskHeadersAdmissible` can again be decoded after the CAS. The two field-specific definitions are composed at the current candidate, receipt, and activation doors; the enrolled mutations declare those current field-by-door conditions, while contract generation remains the rung-1 destination. |
+| Captured durable scheduler codec | 1 for retry, cancellation, and headers | A future durable field can still normalize through an owned snapshot and then use an ambient serializer or parser. The current spawn and claim paths route through the captured core codec; this is not automatic enrollment of future fields. |
+| Canonical task/run ownership fragments | 1 for current direct doors | A newly added raw SQL door that never composes `runOwnedByTask` remains possible until door enrollment is generated. The enrolled mutations declare current consumers, but their kills and future completeness require the exact audit and generated enrollment respectively. |
+| `taskOwnsEveryRun` reverse cancellation guard | 1 | A future task-wide transition can omit the reverse guard, and a run orphaned from every task is outside this task-selected predicate. The poison/invariant surfaces own those adjacent cases. |
+| Closed `FENCE_RELATIONS.queueScoped` policy | 1 | The current five relations cannot omit their policy, but adding a semantically wrong Boolean still typechecks. Entry-local true-to-false mutations and the authoritative-cleanup false-to-true mutation declare the current meanings; conformance and the pending exact audit remain their semantic and execution owners. |
+| Current-source mutation targets | 2 | A mutation can still target a generated or current seam whose test failure occurs before the intended behavior. Frozen migration rejection removes one known class of dead evidence; exact attributable execution remains necessary for every accepted target. |
+| Exact advisory-lease composition | 1/2 | A future advisory method can hand-spell only part of the running/token/queue, future-integer-expiry, or task/run ownership contract. `expireLeaseNow` composes the shared fragments and has condition-local declarations; their current kills remain pending. |
+| Sole-live terminalization | 1 for complete, fail, and relaunch cap | A future terminalizing CAS is outside the guarantee until it composes the shared fragment and receives an exact mutation. The current chokepoints are closed; the set of future doors is not generated. |
+| One-statement libSQL driver-heartbeat ingress | 1 | A future dialect can implement heartbeat and cleanup as two statements while the SQLite trigger remains correct. Identical cross-dialect conformance, not migration v5 alone, owns portability. |
+| TEXT event-payload premise | 1 | A TEXT value that violates a future higher-level payload encoding remains TEXT and passes this storage premise. This repair distinguishes SQL NULL corruption from timeout; it does not broaden the event wire-format contract. |
+
+### Fix-induced defects and red/green topology
+
+Nineteen findings were caused by repairs in this branch: 78 through 80, 91,
+100, 102 through 104, 106, 108, 113 through 120, and 123. Added to the
+preceding 34, the complete closeout has **53 fix-induced findings**.
+
+Red `963e66d` exposed findings 78 through 92 and 101 through 102. Green
+`643dfe7` closed classifier cardinality and the worker lifecycle, retry, and
+subsecond-lease boundaries. Green `2619b64` closed the remaining store and
+mutation-inventory findings. Red `e8a4558` exposed the independently writable
+ownership doors in findings 93 through 99; green `2619b64` routed them through
+the shared ownership definitions.
+
+Finding 100 has no standalone failing red commit: review found that the
+construction primitive had no per-relation queue policy while the cumulative
+red was already open, and the explicit ledger and construction cases landed in
+`2619b64`. Finding 103 likewise has no standalone red: mandatory repair review
+found that the first new fault surface exercised only deletion of required
+queue scope, so the false-to-true authoritative-cleanup mutation landed in the
+cumulative green. These exceptions are disclosed rather than represented as
+red executions that did not occur.
+
+Finding 104 was found in the first repair state, which incorrectly set
+`runs`→`waits` cleanup to `queueScoped: true`. The full libSQL run failed the
+cancel/wait queue-mismatch poison cells with wait-on-dead and
+wait-on-non-sleeping invariant violations. That failing repair state is the
+honest red evidence; `2619b64` makes the authoritative cleanup relation
+unscoped and adds the inverse construction mutation.
+
+Red `f010a7f` exposes finding 105; green `dd61820` confines both receipt legs to
+the caller's queue. Red `9a549f3` exposes finding 106; green `7671e67` rejects
+frozen migration targets and rehomes the driver-cleanup mutations in current
+source. Red `2e95237` exposes findings 107 through 110; green `80cafa2` routes
+retry, cancellation, and headers through the captured serializer and constructs
+the cancellation snapshot with own data properties. Red `83376a8` exposes
+findings 111 and 112; green `80cafa2` routes claimed retry and headers through
+the captured parser.
+
+Findings 113 through 123 have no standalone red commit. Review found these
+machinery and enrollment defects while the cumulative red was open, and their
+exact declarations and fixtures landed in `80cafa2`. They are disclosed rather
+than assigning red status to that green commit. Removing the now-unused
+`trustedMax` helper, direct test, mutation, and verdict is ordinary cleanup: it
+is zero findings, adds nothing to the fix-induced total, and has no invented
+red.
+
+### Evidence and remaining gate
+
+- `pnpm verify` at `2619b64` passed **80 files / 3,570 tests**, including the
+  full libSQL conformance run (**2,827 tests**) and the generated poison cells.
+  The mutation self-test enrolled **369 live entries**, 20 attribution cases,
+  and 37 orchestration faults. This is the historical 369-entry checkpoint,
+  not evidence for the current registry.
+- The registry historically grew from 345 to 369: 23 new or restored exact
+  condition owners plus the inverse authoritative-cleanup relation mutation.
+  Historical
+  non-owned `mutation-verdict:` strings moved to `regression:`; three explicit
+  machinery fixtures remain exempt.
+- At `80cafa2`, the bounded focused ledger passed **80 of 80 assertions**:
+  six serializer/parser, six payload-door, two relation/cancellation, six
+  `expireLeaseNow`, and sixty SDK worker assertions. The store-libSQL and SDK
+  package typechecks passed, and Biome accepted the nine changed TypeScript
+  source/test files without fixes.
+- The confined full `pnpm verify` at `80cafa2` passed all **81 files / 3,583
+  tests**, all eleven lints, format-check, and typecheck. The mutation self-test
+  enrolled **385 live entries** and passed 20 attribution, 19 promise-message,
+  10 descriptor, two helper-binding, three helper-marker, 16 direct-marker, six
+  verdict-inventory, and seven question-delta cases, plus one live-enrollment
+  fault and 37 orchestration faults.
+- Registry arithmetic is exact: the queue-scoped foreign-receipt owner moves
+  369 to 370; frozen-migration work rehomes two existing entries without
+  changing the count; `80cafa2` adds 16 exact owners and removes the dead
+  `trustedMax` entry, reaching **385**.
+- The shared wake-pair test timeout changed from 15 seconds to 30 seconds after
+  the new durable SQL guards made isolated runs take 13.8–14.3 seconds. The
+  generated case count and assertions are unchanged. This is a disclosed gate
+  timing change, not a correctness finding or a reduction in coverage.
+- No targeted mutation audit of the new entries and no complete 385-entry audit
+  is claimed for this addendum. Current-head fuzz and TLC, the exact-final-head
+  remote review, and the complete confined **385-entry** exact audit remain
+  pending final-merge evidence. The completed verify and mutation self-test do
+  not substitute for those gates.
+
+Built now: one worker-owned lifetime scope; immutable retry authority; exact
+subsecond lease cadence; one-read, own-property spawn cancellation; captured
+retry/cancellation/header serialization and retry/header parsing; field-specific
+pre-CAS durable payload admission; queue-scoped spawn receipts; sole-live
+terminalization; one-clock driver heartbeat; shared forward and reverse
+task/run ownership; an explicit per-relation queue policy with authoritative
+corrupt-wait cleanup and entry-local mutation declarations; fail-closed event
+payload typing; exact advisory-lease composition; frozen-migration target
+rejection; classifier cardinality; reverse marker ownership; and **385 live
+mutations**. Deferred to PR3.10: generate condition and consumer enrollment
+from the authoritative sources rather than declaring only the current 385
+entries.

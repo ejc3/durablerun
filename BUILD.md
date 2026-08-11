@@ -206,15 +206,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     wrong-path result rather than credit.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
-    The verifier runs 18 attribution cases, nineteen promise-message source
+    The verifier runs 20 attribution cases, nineteen promise-message source
     cases, ten canonical helper-descriptor cases, two helper-binding cases,
-    three helper-marker cases, sixteen direct-marker cases, and seven
-    question-delta cases across all 345 live mutations. Eight injected
-    classifier faults include one canonical-CLI attack that withholds all live
-    question-delta reasons in a single inventory traversal and requires an
-    aggregate refusal. It proves the live enrollment call is not a removable
-    second path, not each declaration independently; an equal-count cancellation
-    remains the source alarm's explicit boundary.
+    three helper-marker cases, sixteen direct-marker cases, six verdict-inventory
+    cases, and seven question-delta cases across all 385 live mutations. One
+    live-enrollment fault and 37 generated orchestration faults attack the
+    classifier and parallel coordinator, including a canonical-CLI attack that
+    withholds all live question-delta reasons in one inventory traversal and
+    requires an aggregate refusal. It proves the live enrollment call is not a
+    removable second path, not each declaration independently; an equal-count
+    cancellation remains the source alarm's explicit boundary.
     The parallel coordinator has its own generated injected faults for shard
     coverage, exact head, exact result inventory, process/report agreement,
     protective memory and CPU ceilings, missing/malformed/signaled transport,
@@ -441,7 +442,28 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and the context lease-loss marker sat after an earlier decisive assertion.
     One combined nested-symbol owner, exact first-line diagnostic recognition,
     and first-observable SDK ownership make all three targeted reruns exact;
-    the final immutable 345-entry cycle remains the merge evidence.
+    the completed immutable 345-entry cycle is a historical checkpoint.
+
+    The durable-boundary ownership tranche then moved the registry from 345 to
+    369 at `2619b64`, queue-scoped the remaining spawn-receipt collision at
+    370, rehomed two driver-cleanup attacks away from frozen migration history
+    without changing the count, and added sixteen current-source owners while
+    removing the dead `trustedMax` entry. The current total is **385**. Spawn
+    now uses the captured core codec for owned retry, cancellation, and header
+    values; claim uses the captured parser for admitted retry and headers. The
+    split `durableTaskRetryAdmissible` and `durableTaskHeadersAdmissible`
+    predicates gate the current candidate, same-token receipt, and activation
+    doors. Exact declarations are also enrolled for each true-valued generated
+    relation policy and `expireLeaseNow`'s future-integer-expiry and task/run
+    queue ownership conditions; frozen migration DDL is not a live mutation
+    target.
+
+    At `80cafa2`, the bounded focused ledger passed **80/80 assertions** and the
+    confined full verify passed **81 files / 3,583 tests**, all eleven lints,
+    format-check, and typecheck. The mutation self-test enrolled all 385 entries
+    with the inventories above. No targeted audit of the new entries or full
+    385-entry audit is claimed; current-head fuzz, TLC, and final-head review
+    also remain final-merge gates.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
@@ -539,12 +561,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   mutation per claimed semantic branch and enum literal across all 109 IDs, and
   require each mutation to resolve to that condition's attributable verdict. A
   condition ID, detached marker inventory, or one mutation per mechanism is
-  still a proxy. The retry/task-control and task-realm closeouts raise the live
-  registry to 345 and give every currently enumerated classifier, codec,
-  replay, worker, clock, collision, compiler-bind, completion-origin,
-  task-option single-read, and wake-discriminant arm an exact mutation; it
-  does not prove that a future arm is enrolled. PR3.10 must derive both the
-  cases and their mutation/verdict ownership from the same layer descriptor.
+  still a proxy. The subsequent durable-boundary ownership tranche raises the
+  live registry to 385 and declares exact owners for the currently enumerated
+  classifier, codec, replay, worker, clock, collision, compiler-bind,
+  completion-origin, task-option single-read, wake-discriminant, payload
+  field-by-door, relation-policy, and advisory-expiry arms. This inventory does
+  not prove the new mutations killed their targets until the pending exact
+  audit, nor that a future arm is enrolled. PR3.10 must derive both the cases
+  and their mutation/verdict ownership from the same layer descriptor.
   The same gate must verify each postmortem's cited red and green hashes are
   distinct, ordered commits and that the red commit demonstrably leaves the
   named probe failing; the final attribution closeout showed that prose-only
