@@ -129,6 +129,59 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
     }
 
     describe('branch-reachable counter containment', () => {
+      const highestOwnedOrdinalTargets = POISON_TARGET_CASES.filter(
+        (target) =>
+          target.label === 'claim' && target.witness.id === 'accounting/below-top-minus-one',
+      )
+
+      it('contains accounting/below-top-minus-one across both claim profiles', async () => {
+        const observations: unknown[] = []
+        for (const target of highestOwnedOrdinalTargets) {
+          observations.push(
+            await runPoisonTargetCase(makeFixture, target).then(
+              (result) => ({
+                profile: target.profile,
+                kind: 'resolved',
+                result: {
+                  label: result.label,
+                  witness: result.witness,
+                  profile: result.profile,
+                },
+              }),
+              (error: unknown) => ({
+                profile: target.profile,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+
+        expect(
+          observations,
+          'mutation-verdict:behavior:claim-requires-highest-owned-ordinal',
+        ).toEqual([
+          {
+            profile: 'claim-pending',
+            kind: 'resolved',
+            result: {
+              label: 'claim',
+              witness: 'accounting/below-top-minus-one',
+              profile: 'claim-pending',
+            },
+          },
+          {
+            profile: 'claim-sleeping',
+            kind: 'resolved',
+            result: {
+              label: 'claim',
+              witness: 'accounting/below-top-minus-one',
+              profile: 'claim-sleeping',
+            },
+          },
+        ])
+      })
+
       for (const target of POISON_TARGET_CASES) {
         it(`${target.profile} contains ${target.witness.id}`, async () => {
           await expect(runPoisonTargetCase(makeFixture, target)).resolves.toMatchObject({
