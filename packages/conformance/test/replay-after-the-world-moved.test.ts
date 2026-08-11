@@ -308,69 +308,6 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     f.close()
   })
 
-  it('does not wake a run whose evidence is split across two wait rows', async () => {
-    // The wake predicate asks two separate questions of the `waits` table: an
-    // `IN` that lists the run ids waiting in this queue for this event, and an
-    // `EXISTS` that checks the step and the deadline. Nothing requires the two
-    // to be answered by the SAME ROW. The `IN` never looks at the step; the
-    // `EXISTS` never looks at the queue. So two rows that are each individually
-    // wrong combine into a wake that no single registration justifies:
-    //
-    //   row 1  (this queue, this event, WRONG step)   satisfies the IN
-    //   row 2  (WRONG queue, this event, right step)  satisfies the EXISTS
-    //
-    // The run wakes, and the delete then removes only row 1 -- it filters on
-    // the queue -- so the leftover row 2 stays waiting under a run that is now
-    // pending, which is the `wait-on-non-sleeping-run` violation.
-    //
-    // Each condition was added against a specific counterexample, and each was
-    // correct about its own; the hole is that "a legitimate registration
-    // exists" was never expressed as one row having all of the properties.
-    const f = await fixture()
-    const spawned = await f.store.spawn(Q, 'job', '{}')
-    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected a claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:go', 'go', null)
-
-    await f.raw.batch('t', [
-      // Its real registration, moved to another step: still in this queue, so
-      // it still answers the IN, but it no longer answers the step check.
-      {
-        sql: `UPDATE waits SET step_name = '$await:go#stale' WHERE run_id = ?`,
-        args: [run.runId],
-      },
-      // A row in a DIFFERENT queue at the right step: answers the EXISTS,
-      // which never constrains the queue.
-      {
-        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
-              VALUES (?, '$await:go', 'elsewhere', ?, 'go', 'waiting', ?)`,
-        args: [run.runId, spawned.taskId, NOW],
-      },
-    ])
-
-    // The state is already inconsistent -- that is what makes it a
-    // counterexample -- so the question is not whether violations exist but
-    // what the emit does to them. Declining to wake is only half of right:
-    // an emit that also erased the rows proving why would leave a database
-    // that looks clean and has silently dropped a wakeup. So nothing may
-    // disappear, and the declined registration must show up as the alarm for
-    // a wait outliving its event.
-    const before = await engineInvariantViolations(f.raw)
-
-    await f.store.emitEvent(Q, 'go', '{"x":1}')
-
-    const [after] = await query(f.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
-      run.runId,
-    ])
-    expect(after?.state).toBe('sleeping')
-    expect(after?.event_payload).toBeNull()
-    const now = await engineInvariantViolations(f.raw)
-    expect(now).toEqual(expect.arrayContaining(before))
-    expect(now).toContain(`wait-for-fired-event: ${run.runId}/$await:go#stale`)
-    f.close()
-  })
-
   it('keeps the registration of a waiter it did not wake', async () => {
     // The old cleanup deleted every waiting row for the event, whether or not
     // its run was woken. Those two sets were kept in step by nothing but the

@@ -3174,6 +3174,7 @@ export interface WakeWitnessCase {
   owner: WakeOwner
   park: WakePark
   rows: WakeRow[]
+  preserveSplitRowEvidence?: boolean
 }
 
 const WAKE_DEADLINES: readonly WakeDeadline[] = [
@@ -3268,20 +3269,16 @@ export const WAKE_SINGLE_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
 )
 
 const WAKE_AT_STEP = WAKE_SUBSETS.filter((fields) => !fields.includes('step_name'))
-// A row differing only at the step makes removal of the step correlation
-// independently observable, so it belongs to the single-row matrix. Pair
-// cases retain another disagreement: one row can then drive the emit index
-// while the other answers the registered-wait witness, without duplicating
-// the step mutation's owner.
-const WAKE_AT_OTHER = WAKE_SUBSETS.filter(
-  (fields) => fields.includes('step_name') && fields.length > 1,
-)
+// Pair every row whose step agrees with every row whose step differs. The
+// exact queue-only | step-only pair is the historical counterexample: two
+// individually disqualified registrations must never combine into one wake.
+const WAKE_AT_OTHER = WAKE_SUBSETS.filter((fields) => fields.includes('step_name'))
 
 // Legacy parks have no step to correlate. Two otherwise identical matching
 // registrations at different steps are therefore their own pair dimension:
 // the scalar must decline to invent either step. Keeping this separate from
-// WAKE_AT_OTHER makes the legacy cardinality mutation observable here without
-// making the current-step mutation fail the pair matrix too.
+// WAKE_AT_OTHER keeps the legacy null-step cardinality rule explicit in the
+// same correlated-witness surface.
 const WAKE_LEGACY_AMBIGUITY_CASES: readonly WakeWitnessCase[] = WAKE_AXES.filter(
   ({ owner, park }) => owner.live && park.state === 'sleeping' && park.wake_step === null,
 ).map(({ deadline, owner, parkLabel, park }) => ({
@@ -3299,6 +3296,14 @@ export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = [
         owner,
         park,
         rows: [corruptWakeRow(deadline, left), corruptWakeRow(deadline, right)],
+        preserveSplitRowEvidence:
+          deadline.label === 'untimed' &&
+          owner.live &&
+          parkLabel === 'parked' &&
+          left.length === 1 &&
+          left[0] === 'queue' &&
+          right.length === 1 &&
+          right[0] === 'step_name',
       })),
     ),
   ),
@@ -3311,7 +3316,16 @@ async function wakeWitnessWrote(
   owner: WakeOwner,
   park: WakePark,
   rows: readonly WakeRow[],
-): Promise<boolean> {
+  preserveSplitRowEvidence = false,
+): Promise<{
+  wrote: boolean
+  splitRowEvidence?: {
+    state: unknown
+    eventPayload: unknown
+    priorViolationsPreserved: boolean
+    firedEventViolation: boolean
+  }
+}> {
   const id = queue
   await fixture.raw.batch('setup', [
     {
@@ -3371,8 +3385,37 @@ async function wakeWitnessWrote(
   }
 
   const before = await snapshot()
+  const priorViolations = preserveSplitRowEvidence
+    ? await engineInvariantViolations(fixture.raw)
+    : undefined
   await fixture.store.emitEvent(queue, WAKE_EVENT, '{"x":1}')
-  return (await snapshot()) !== before
+  const after = await snapshot()
+  if (priorViolations === undefined) return { wrote: after !== before }
+
+  const [run] = await fixture.raw.batch(
+    'split-row-evidence',
+    [
+      {
+        sql: `SELECT state, event_payload FROM runs WHERE run_id = ?`,
+        args: [id],
+      },
+    ],
+    'read',
+  )
+  const currentViolations = await engineInvariantViolations(fixture.raw)
+  return {
+    wrote: after !== before,
+    splitRowEvidence: {
+      state: run?.rows[0]?.state,
+      eventPayload: run?.rows[0]?.event_payload,
+      priorViolationsPreserved: priorViolations.every((violation) =>
+        currentViolations.includes(violation),
+      ),
+      firedEventViolation: currentViolations.includes(
+        `wait-for-fired-event: ${id}/${WAKE_STEP}#stale`,
+      ),
+    },
+  }
 }
 
 export async function wakeWitnessDisagreements(
@@ -3384,15 +3427,27 @@ export async function wakeWitnessDisagreements(
     await fixture.admin.setFakeNowEpochMs(WAKE_NOW)
     const wrong: string[] = []
     for (const [index, testCase] of cases.entries()) {
-      const wrote = await wakeWitnessWrote(
+      const observation = await wakeWitnessWrote(
         fixture,
         `${Q}-wake-${index}`,
         testCase.owner,
         testCase.park,
         testCase.rows,
+        testCase.preserveSplitRowEvidence,
       )
-      if (wrote !== shouldWake(testCase.owner, testCase.park, testCase.rows)) {
-        wrong.push(`${testCase.label}: woke=${wrote}`)
+      if (observation.wrote !== shouldWake(testCase.owner, testCase.park, testCase.rows)) {
+        wrong.push(`${testCase.label}: woke=${observation.wrote}`)
+      }
+      if (
+        testCase.preserveSplitRowEvidence &&
+        (observation.splitRowEvidence?.state !== 'sleeping' ||
+          observation.splitRowEvidence.eventPayload !== null ||
+          !observation.splitRowEvidence.priorViolationsPreserved ||
+          !observation.splitRowEvidence.firedEventViolation)
+      ) {
+        wrong.push(
+          `${testCase.label}: split-row evidence=${JSON.stringify(observation.splitRowEvidence)}`,
+        )
       }
     }
     return wrong
@@ -3403,18 +3458,14 @@ export async function wakeWitnessDisagreements(
 
 export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`wake witness conformance [${dialect}]`, () => {
-    it('decides every park against every single-row corruption', async () => {
+    it('decides every park through one correlated wait witness', async () => {
       expect(
-        await wakeWitnessDisagreements(makeFixture, WAKE_SINGLE_CASES),
-        'mutation-verdict:behavior:emit-wake-step-correlation',
-      ).toEqual([])
-    })
-
-    it('decides every park against every pair of corruptions', async () => {
-      expect(
-        await wakeWitnessDisagreements(makeFixture, WAKE_PAIR_CASES),
+        {
+          single: await wakeWitnessDisagreements(makeFixture, WAKE_SINGLE_CASES),
+          pairs: await wakeWitnessDisagreements(makeFixture, WAKE_PAIR_CASES),
+        },
         'mutation-verdict:behavior:emit-wake-one-witness',
-      ).toEqual([])
+      ).toEqual({ single: [], pairs: [] })
     }, 30_000)
   })
 }
