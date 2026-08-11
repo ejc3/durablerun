@@ -4,6 +4,7 @@ import {
   FENCE_SET,
   FENCE_VALS,
   FencedBatch,
+  type GeneratedUpdateTarget,
   NOW,
   STAMP,
   type SqlBatchMode,
@@ -48,17 +49,22 @@ function missingConstructionGuard(marker: string, expected: RegExp, action: () =
   throw new Error(marker)
 }
 
-/** Normal construction succeeds; only the mutant's exact rejection is attributed. */
-function unexpectedConstructionGuard(
-  marker: string,
-  mutantError: RegExp,
-  action: () => void,
-): void {
-  try {
-    action()
-  } catch (error) {
-    if (mutantError.test(String(error))) throw new Error(marker)
-    throw error
+interface MissingConstructionGuardCase {
+  marker: string
+  expected: RegExp
+  action: () => void
+}
+
+/** Exercise every spelling owned by one construction rule in one verdict. */
+function missingConstructionGuards(cases: readonly MissingConstructionGuardCase[]): void {
+  for (const { marker, expected, action } of cases) {
+    try {
+      action()
+    } catch (error) {
+      expect(String(error)).toMatch(expected)
+      continue
+    }
+    throw new Error(marker)
   }
 }
 
@@ -143,41 +149,45 @@ describe('a CAS must write its own provenance', () => {
     expect(() => insert(`a, b`, FENCE_VALS)).toThrow(/must insert/)
   })
 
-  it('rejects a follow-on that writes a fenced table without stamping it', () => {
+  it('rejects every follow-on write that omits complete provenance', () => {
     // The CAS side of this check had tests; the follow-on side had none, and
     // deleting it broke nothing — found by mutation probe, not by review.
     // A follow-on that writes a provenance-carrying table and leaves the
     // provenance alone produces rows whose fence_stamp still names whatever
     // batch touched them last, so the next batch to fence on that value acts
     // on rows it did not write.
-    const b = withCas()
-    missingConstructionGuard(
-      'mutation-verdict:construction:followon-provenance-check',
-      /does not stamp it/,
-      () =>
-        b.followOn(
-          'x',
-          'tasks',
-          `UPDATE tasks SET state = 'pending'
-         WHERE task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
-          [],
-          'one',
-        ),
-    )
-  })
-
-  it('rejects a follow-on INSERT into a fenced table that omits the columns', () => {
-    const b = withCas()
-    expect(() =>
-      b.followOn(
-        'x',
-        'runs',
-        `INSERT INTO runs (run_id, task_id)
-         SELECT ?, f.task_id FROM runs f WHERE f.fence_stamp = ${b.fence('win')}`,
-        ['r'],
-        'one',
-      ),
-    ).toThrow(/must insert/)
+    missingConstructionGuards([
+      {
+        marker: 'mutation-verdict:construction:followon-provenance-check',
+        expected: /does not stamp it/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            'tasks',
+            `UPDATE tasks SET state = 'pending'
+           WHERE task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
+            [],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'mutation-verdict:construction:followon-provenance-check',
+        expected: /must insert/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            'runs',
+            `INSERT INTO runs (run_id, task_id)
+           SELECT ?, f.task_id FROM runs f WHERE f.fence_stamp = ${b.fence('win')}`,
+            ['r'],
+            'one',
+          )
+        },
+      },
+    ])
   })
 
   it('rejects an upsert whose DO UPDATE branch leaves provenance stale', () => {
@@ -317,11 +327,17 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       set: { state: `'pending'` },
       rows: 'one',
     })
-    unexpectedConstructionGuard(
-      'mutation-verdict:construction:generated-update-fence-source',
-      /writes no stamp/,
-      () => b.fence('mirror'),
-    )
+    expect(() => b.fence('mirror')).not.toThrow()
+  })
+
+  it('requires a generated UPDATE to retain a stamped target structurally', () => {
+    const compileOnly = (): GeneratedUpdateTarget => {
+      // @ts-expect-error a generated UPDATE target cannot become absent — mutation-verdict:construction:generated-update-requires-target
+      const target: GeneratedUpdateTarget = null
+      return target
+    }
+
+    expect(compileOnly).toBeTypeOf('function')
   })
 
   it('does not let a generated UPDATE caller overwrite generated provenance', () => {
@@ -374,14 +390,17 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       })
     void typecheckPrimaryKey
 
-    expect(() =>
-      withTaskCas().derived('forged-primary-key', {
-        relation: 'tasks-to-runs',
-        fence: 'win',
-        set: { run_id: `'replacement'` } as never,
-        rows: 'one',
-      }),
-    ).toThrow(/column 'run_id' is not writable/)
+    missingConstructionGuard(
+      'mutation-verdict:construction:generated-set-column-guard',
+      /column 'run_id' is not writable/,
+      () =>
+        withTaskCas().derived('forged-primary-key', {
+          relation: 'tasks-to-runs',
+          fence: 'win',
+          set: { run_id: `'replacement'` } as never,
+          rows: 'one',
+        }),
+    )
   })
 
   it('seals an intermediate fence with a fresh stamp at the source instant', async () => {
@@ -551,88 +570,103 @@ describe('fence() names a statement, and the primitive supplies the value', () =
 })
 
 describe('a follow-on must filter on a fence, positively, in the WHERE side', () => {
-  it('rejects a follow-on with no fence at all', () => {
-    missingConstructionGuard(
-      'mutation-verdict:construction:positive-fence-required',
-      /no positive fence/,
-      () => withCas().followOn('x', `DELETE FROM waits WHERE run_id = ?`, ['r'], 'one'),
-    )
-  })
-
-  it('rejects a fence that appears ONLY in the SET clause', () => {
-    // The self-defeat: the statement still matches every row and merely
-    // writes a value derived from a fence into all of them.
-    const b = withCas()
-    expect(() =>
-      b.followOn(
-        'x',
-        'tasks',
-        `UPDATE tasks SET fence_stamp = ${STAMP},
-           fence_at_ms = (SELECT r.fence_at_ms FROM runs r WHERE r.fence_stamp = ${b.fence('win')})
-         WHERE state = 'pending'`,
-        [],
-        'one',
-      ),
-    ).toThrow(/no positive fence/)
-  })
-
-  it('rejects a fence that appears ONLY under NOT', () => {
-    const b = withCas()
-    expect(() =>
-      b.followOn(
-        'x',
-        `DELETE FROM waits
-         WHERE run_id = ? AND NOT EXISTS (SELECT 1 FROM runs WHERE fence_stamp = ${b.fence('win')})`,
-        ['r'],
-        'one',
-      ),
-    ).toThrow(/no positive fence/)
-  })
-
-  it('rejects a fence under NOT with no separating whitespace', () => {
-    const b = withCas()
-    missingConstructionGuard(
-      'regression:positive-fence-not-parenthesized',
-      /no positive fence/,
-      () =>
-        b.followOn(
-          'x',
-          `DELETE FROM waits
+  it('rejects every non-authoritative fence spelling', () => {
+    missingConstructionGuards([
+      {
+        marker: 'mutation-verdict:construction:positive-fence-required',
+        expected: /no positive fence/,
+        action: () => withCas().followOn('x', `DELETE FROM waits WHERE run_id = ?`, ['r'], 'one'),
+      },
+      {
+        marker: 'regression:positive-fence-in-write-clause',
+        expected: /no positive fence/,
+        action: () => {
+          // The self-defeat: the statement still matches every row and merely
+          // writes a value derived from a fence into all of them.
+          const b = withCas()
+          b.followOn(
+            'x',
+            'tasks',
+            `UPDATE tasks SET fence_stamp = ${STAMP},
+             fence_at_ms = (SELECT r.fence_at_ms FROM runs r WHERE r.fence_stamp = ${b.fence('win')})
+           WHERE state = 'pending'`,
+            [],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'regression:positive-fence-negated',
+        expected: /no positive fence/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            `DELETE FROM waits
+           WHERE run_id = ? AND NOT EXISTS (SELECT 1 FROM runs WHERE fence_stamp = ${b.fence('win')})`,
+            ['r'],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'regression:positive-fence-not-parenthesized',
+        expected: /no positive fence/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            `DELETE FROM waits
            WHERE run_id = ? AND NOT(EXISTS (SELECT 1 FROM runs
                                              WHERE fence_stamp = ${b.fence('win')}))`,
-          ['r'],
-          'one',
-        ),
-    )
-  })
-
-  it('rejects a bare unary-NOT fence comparison', () => {
-    const b = withCas()
-    missingConstructionGuard('regression:positive-fence-bare-not', /no positive fence/, () =>
-      b.followOn(
-        'x',
-        `DELETE FROM waits
+            ['r'],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'regression:positive-fence-bare-not',
+        expected: /no positive fence/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            `DELETE FROM waits
            WHERE run_id = ? AND NOT fence_stamp = ${b.fence('win')}`,
-        ['r'],
-        'one',
-      ),
-    )
-  })
-
-  it('rejects a fence in the negated right-hand side of IS NOT', () => {
-    const b = withCas()
-    missingConstructionGuard(
-      'mutation-verdict:construction:positive-fence-is-not',
-      /no positive fence/,
-      () =>
-        b.followOn(
-          'x',
-          `DELETE FROM waits
+            ['r'],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'mutation-verdict:construction:positive-fence-is-not',
+        expected: /no positive fence/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            `DELETE FROM waits
            WHERE 1 IS NOT (fence_stamp = ${b.fence('win')})`,
-          [],
-          'one',
-        ),
-    )
+            [],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'regression:positive-fence-in-nested-where',
+        expected: /no positive fence/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            `UPDATE tasks SET state = (SELECT state FROM runs WHERE fence_stamp = ${b.fence('win')})
+           WHERE task_id = ?`,
+            ['t'],
+            'one',
+          )
+        },
+      },
+    ])
   })
 
   it('accepts a statement carrying both a positive and a negative fence', () => {
@@ -718,19 +752,6 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
     ).not.toThrow()
   })
 
-  it('does not mistake a WHERE inside a subquery for the top-level one', () => {
-    const b = withCas()
-    expect(() =>
-      b.followOn(
-        'x',
-        `UPDATE tasks SET state = (SELECT state FROM runs WHERE fence_stamp = ${b.fence('win')})
-         WHERE task_id = ?`,
-        ['t'],
-        'one',
-      ),
-    ).toThrow(/no positive fence/)
-  })
-
   it('is not fooled by the word WHERE inside a string literal', () => {
     const b = withCas()
     expect(() =>
@@ -746,42 +767,59 @@ describe('a follow-on must filter on a fence, positively, in the WHERE side', ()
 })
 
 describe('only a CAS may read the clock', () => {
-  it('rejects $NOW$ in a follow-on', () => {
-    const b = withCas()
-    missingConstructionGuard(
-      'mutation-verdict:construction:clock-ban-in-followon',
-      /reads the clock/,
-      () =>
-        b.followOn(
-          'x',
-          `UPDATE runs SET available_at_ms = ${NOW} WHERE fence_stamp = ${b.fence('win')}`,
-          [],
-          'one',
-        ),
-    )
-  })
-
-  it('rejects $NOW$ in a comparison, not just an assignment', () => {
-    // A re-evaluated deadline in a follow-on is the same bug wearing a
-    // different hat: the CAS can pass the comparison and the follow-on fail
-    // it a millisecond later.
-    const b = withCas()
-    expect(() =>
-      b.followOn(
-        'x',
-        `UPDATE tasks SET state = 'running'
-         WHERE cancel_at_ms > ${NOW} AND task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
-        [],
-        'one',
-      ),
-    ).toThrow(/reads the clock/)
-  })
-
-  it('rejects $NOW$ in a tail', () => {
-    const b = withCas()
-    expect(() =>
-      b.tail('t', `SELECT ${NOW} AS n FROM runs WHERE fence_stamp = ${b.fence('win')}`),
-    ).toThrow(/reads the clock/)
+  it('rejects token and raw dialect clock reads in every downstream position', () => {
+    missingConstructionGuards([
+      {
+        marker: 'mutation-verdict:construction:clock-ban-in-followon',
+        expected: /reads the clock/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            `UPDATE runs SET available_at_ms = ${NOW} WHERE fence_stamp = ${b.fence('win')}`,
+            [],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'mutation-verdict:construction:clock-ban-in-followon',
+        expected: /reads the clock/,
+        action: () => {
+          const b = withCas()
+          b.followOn(
+            'x',
+            `UPDATE runs SET available_at_ms = ${CLOCK} WHERE fence_stamp = ${b.fence('win')}`,
+            [],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'mutation-verdict:construction:clock-ban-in-followon',
+        expected: /reads the clock/,
+        action: () => {
+          // A re-evaluated deadline in a follow-on is the same bug wearing a
+          // different hat: the CAS can pass and this comparison fail later.
+          const b = withCas()
+          b.followOn(
+            'x',
+            `UPDATE tasks SET state = 'running'
+           WHERE cancel_at_ms > ${NOW} AND task_id IN (SELECT task_id FROM runs WHERE fence_stamp = ${b.fence('win')})`,
+            [],
+            'one',
+          )
+        },
+      },
+      {
+        marker: 'mutation-verdict:construction:clock-ban-in-followon',
+        expected: /reads the clock/,
+        action: () => {
+          const b = withCas()
+          b.tail('t', `SELECT ${NOW} AS n FROM runs WHERE fence_stamp = ${b.fence('win')}`)
+        },
+      },
+    ])
   })
 
   it('rejects a clock expression containing a bind parameter', () => {

@@ -120,6 +120,16 @@ interface DerivedSelection<R extends FenceRelation = FenceRelation> {
 }
 
 type RelationTarget<R extends FenceRelation> = (typeof FENCE_RELATIONS)[R]['target']
+
+/**
+ * The non-null target carried by the generated-UPDATE construction path.
+ *
+ * Raw follow-ons and generated DELETEs may deliberately carry no stamped
+ * target. Keeping the generated UPDATE's target in its own type prevents
+ * that broader representation from making `null` an expressible UPDATE.
+ */
+export type GeneratedUpdateTarget = RelationTarget<FenceRelation>
+
 type DerivedSet<R extends FenceRelation> = Partial<
   Record<DerivedWritableColumn<RelationTarget<R>>, string>
 >
@@ -155,6 +165,14 @@ interface Named {
   fence: { target: FenceTable; sealedBy: string | null } | null
   rows: RowBound | null
   max: number | null
+}
+
+interface GeneratedUpdate {
+  name: string
+  target: GeneratedUpdateTarget
+  sql: string
+  args: SqlStatement['args']
+  rows: RowBound
 }
 
 /**
@@ -380,11 +398,15 @@ export class FencedBatch {
     const allowedColumns = new Set<string>(DERIVED_WRITABLE_COLUMNS[target])
     if (sealedSelfKey !== null) allowedColumns.add(sealedSelfKey)
     for (const [column, expression] of assignments) {
+      if (/fence_(?:stamp|at_ms)/i.test(column)) {
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') caller set controls provenance`,
+        )
+      }
       if (!allowedColumns.has(column)) {
-        const reason = /fence_(?:stamp|at_ms)/i.test(column)
-          ? 'caller set controls provenance'
-          : `column '${column}' is not writable for ${target}`
-        throw new Error(`FencedBatch[${this.label}] derived('${name}') ${reason}`)
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') column '${column}' is not writable for ${target}`,
+        )
       }
       assertSetExpression(`FencedBatch[${this.label}] derived('${name}')`, column, expression)
     }
@@ -442,9 +464,8 @@ export class FencedBatch {
                         WHERE ${src}f.fence_stamp = ${fence}`
     const provenance = `,\n         fence_stamp = ${STAMP},
          fence_at_ms = (${sourceInstant})`
-    return this.add({
+    return this.addGeneratedUpdate({
       name,
-      kind: 'followOn',
       target,
       sql: `UPDATE ${target} SET ${setSql}${provenance}\n       WHERE ${selection}${narrow}`,
       // UPDATE always emits provenance, so the correlation occurs once in its
@@ -452,8 +473,11 @@ export class FencedBatch {
       // write and returned through the branch above.
       args: [...(spec.setArgs ?? []), ...w, ...w, ...(spec.narrowArgs ?? [])],
       rows: spec.rows === 'one' ? 'one' : { many: 'generated source-key bound' },
-      max: null,
     })
+  }
+
+  private addGeneratedUpdate(update: GeneratedUpdate): this {
+    return this.add({ ...update, kind: 'followOn', max: null })
   }
 
   private relation(name: FenceRelation, at: string): (typeof FENCE_RELATIONS)[FenceRelation] {
