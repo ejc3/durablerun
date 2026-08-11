@@ -10037,20 +10037,9 @@ def worker_phase(
                 worker_id=worker_id,
                 assigned=assigned,
                 results=rows,
-                complete=False,
+                complete=len(rows) == len(assigned),
             ),
         )
-    atomic_json(
-        report_path,
-        mutation_report_payload(
-            head=head,
-            nonce=nonce,
-            worker_id=worker_id,
-            assigned=assigned,
-            results=rows,
-            complete=True,
-        ),
-    )
     return 0 if all(row["outcome"] == "caught" for row in rows) else 1
 
 
