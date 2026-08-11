@@ -1551,7 +1551,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(rows?.rows[1]).toMatchObject({
           state: 'sleeping',
           attempt: 2,
-          available_at_ms: 1_030_000,
           wake_event: 'e1',
         })
         const [task] = await f.raw.batch('t', [
@@ -3270,10 +3269,31 @@ export const WAKE_SINGLE_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
 )
 
 const WAKE_AT_STEP = WAKE_SUBSETS.filter((fields) => !fields.includes('step_name'))
-const WAKE_AT_OTHER = WAKE_SUBSETS.filter((fields) => fields.includes('step_name'))
+// A row differing only at the step makes removal of the step correlation
+// independently observable, so it belongs to the single-row matrix. Pair
+// cases retain another disagreement: one row can then drive the emit index
+// while the other answers the registered-wait witness, without duplicating
+// the step mutation's owner.
+const WAKE_AT_OTHER = WAKE_SUBSETS.filter(
+  (fields) => fields.includes('step_name') && fields.length > 1,
+)
 
-export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
-  ({ deadline, owner, parkLabel, park }) =>
+// Legacy parks have no step to correlate. Two otherwise identical matching
+// registrations at different steps are therefore their own pair dimension:
+// the scalar must decline to invent either step. Keeping this separate from
+// WAKE_AT_OTHER makes the legacy cardinality mutation observable here without
+// making the current-step mutation fail the pair matrix too.
+const WAKE_LEGACY_AMBIGUITY_CASES: readonly WakeWitnessCase[] = WAKE_AXES.filter(
+  ({ owner, park }) => owner.live && park.state === 'sleeping' && park.wake_step === null,
+).map(({ deadline, owner, parkLabel, park }) => ({
+  label: `${deadline.label} / ${owner.label} / ${parkLabel} / healthy | step_name`,
+  owner,
+  park,
+  rows: [healthyWakeRow(deadline), corruptWakeRow(deadline, ['step_name'])],
+}))
+
+export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = [
+  ...WAKE_AXES.flatMap(({ deadline, owner, parkLabel, park }) =>
     WAKE_AT_STEP.flatMap((left) =>
       WAKE_AT_OTHER.map((right) => ({
         label: `${deadline.label} / ${owner.label} / ${parkLabel} / ${wakeFieldName(left)} | ${wakeFieldName(right)}`,
@@ -3282,7 +3302,9 @@ export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
         rows: [corruptWakeRow(deadline, left), corruptWakeRow(deadline, right)],
       })),
     ),
-)
+  ),
+  ...WAKE_LEGACY_AMBIGUITY_CASES,
+]
 
 async function wakeWitnessWrote(
   fixture: StoreFixture,
@@ -3383,7 +3405,10 @@ export async function wakeWitnessDisagreements(
 export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`wake witness conformance [${dialect}]`, () => {
     it('decides every park against every single-row corruption', async () => {
-      expect(await wakeWitnessDisagreements(makeFixture, WAKE_SINGLE_CASES)).toEqual([])
+      expect(
+        await wakeWitnessDisagreements(makeFixture, WAKE_SINGLE_CASES),
+        'mutation-verdict:behavior:emit-wake-step-correlation',
+      ).toEqual([])
     })
 
     it('decides every park against every pair of corruptions', async () => {

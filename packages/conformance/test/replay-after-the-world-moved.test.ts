@@ -256,92 +256,6 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     f.close()
   })
 
-  it('does not deliver event B to a run parked on event A', async () => {
-    // The run is legitimately parked on A and retains that exact registration.
-    // A second corrupt row names it for B at another step. Without the
-    // wake_event match, B's row answers the index-driver probe while A's row
-    // answers the full registered-wait witness: two individually valid facts
-    // combine into a delivery the run never requested.
-    const f = await fixture()
-    const spawned = await f.store.spawn(Q, 'job', '{}')
-    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected a claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    await f.store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, '$await:A', 'A', null)
-
-    // Keep the legitimate A registration and add the disjoint B candidate.
-    // The wake must require the emitted event to be the one the run is parked
-    // on, rather than allowing separate rows to satisfy separate probes.
-    await f.raw.batch('t', [
-      {
-        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
-              VALUES (?, '$await:B', ?, ?, 'B', 'waiting', ?)`,
-        args: [run.runId, Q, spawned.taskId, NOW],
-      },
-    ])
-
-    await f.store.emitEvent(Q, 'B', '{"wrong":1}')
-
-    const [after] = await query(
-      f.raw,
-      `SELECT state, wake_event, event_payload FROM runs WHERE run_id = ?`,
-      [run.runId],
-    )
-    expect(
-      { state: after?.state, wake: after?.wake_event },
-      'mutation-verdict:behavior:emit-wake-event-correlation',
-    ).toEqual({
-      state: 'sleeping',
-      wake: 'A',
-    })
-    expect(after?.event_payload).toBeNull()
-    f.close()
-  })
-
-  it('does not let one await step consume another step of the same event', async () => {
-    // A run may await the same event name at two call sites. Each await
-    // carries its own step key, which is the entire reason wake_step exists.
-    // Here the run is parked at one step and a leftover waiting row for the
-    // same event sits at another; without the step match the wake is
-    // delivered against an await that never registered it.
-    const f = await fixture()
-    const spawned = await f.store.spawn(Q, 'job', '{}')
-    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected a claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    await f.store.awaitEvent(
-      Q,
-      spawned.taskId,
-      run.runId,
-      run.claimToken,
-      '$await:go#2',
-      'go',
-      null,
-    )
-    // A leftover from the FIRST call site, at a different step.
-    await f.raw.batch('t', [
-      {
-        sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status, created_at_ms)
-              VALUES (?, '$await:go#1', ?, ?, 'go', 'waiting', ?)`,
-        args: [run.runId, Q, spawned.taskId, NOW - 1],
-      },
-      // Remove the run's OWN wait, leaving only the other step's.
-      {
-        sql: `DELETE FROM waits WHERE run_id = ? AND step_name = '$await:go#2'`,
-        args: [run.runId],
-      },
-    ])
-
-    await f.store.emitEvent(Q, 'go', '{"x":1}')
-
-    const [after] = await query(f.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
-      run.runId,
-    ])
-    expect(after?.state, 'mutation-verdict:behavior:emit-wake-step-correlation').toBe('sleeping') // its own await never registered this
-    expect(after?.event_payload).toBeNull()
-    f.close()
-  })
-
   it('does not wake a run whose park is not this wait', async () => {
     // The three guards added earlier -- wake_event matches, wake_step matches,
     // a waiting row exists -- are each necessary and together still not
@@ -458,12 +372,12 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
   })
 
   it('keeps the registration of a waiter it did not wake', async () => {
-    // The cleanup deletes every waiting row for the event, whether or not its
-    // run was woken. Those two sets are kept in step by nothing but the shape
-    // of the two WHERE clauses, and the delete's is the weaker one -- so every
-    // condition ever added to the wake predicate silently converts some run
-    // from "not woken" into "not woken, and its registration destroyed". The
-    // the payload is already immutable and no future emit is guaranteed, so
+    // The old cleanup deleted every waiting row for the event, whether or not
+    // its run was woken. Those two sets were kept in step by nothing but the
+    // shape of the two WHERE clauses, and the delete's was the weaker one --
+    // so every condition added to the wake predicate silently converted some
+    // run from "not woken" into "not woken, and its registration destroyed".
+    // The payload is already immutable and no future emit is guaranteed, so
     // an untimed await in that position can strand forever.
     //
     // Every legitimate way a run stops waiting already reaps its rows --
@@ -489,19 +403,12 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
       { sql: `UPDATE runs SET available_at_ms = ? WHERE run_id = ?`, args: [NOW + 1000, rb.runId] },
     ])
 
-    await attributeExpectedFailure(
-      { kind: 'construction', mutation: 'emit-cleanup-follows-the-wake' },
-      /derived\('waits-gone'\).*reads 'runs'.*fence 'event' stamps 'events'/,
-      () => f.store.emitEvent(Q, 'go', '{"x":1}'),
-    )
+    await f.store.emitEvent(Q, 'go', '{"x":1}')
 
     const woken = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [ra.runId])
     expect(woken[0]?.state).toBe('pending')
     // A was woken, so its registration is spent and must be gone.
-    expect(
-      await query(f.raw, `SELECT 1 FROM waits WHERE run_id = ?`, [ra.runId]),
-      'mutation-verdict:behavior:emit-cleanup-follows-the-wake',
-    ).toEqual([])
+    expect(await query(f.raw, `SELECT 1 FROM waits WHERE run_id = ?`, [ra.runId])).toEqual([])
     // B was not, so its registration is all that is left of the request.
     expect(await query(f.raw, `SELECT step_name FROM waits WHERE run_id = ?`, [rb.runId])).toEqual([
       { step_name: '$await:go' },

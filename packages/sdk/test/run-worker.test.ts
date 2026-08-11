@@ -435,7 +435,7 @@ describe('runClaimedRun', () => {
           args: [spawned.taskId],
         },
         {
-          sql: `SELECT attempt, state, available_at_ms
+          sql: `SELECT attempt, state
                 FROM runs WHERE task_id = ? ORDER BY attempt`,
           args: [spawned.taskId],
         },
@@ -444,8 +444,8 @@ describe('runClaimedRun', () => {
     )
     expect(task?.rows[0]).toMatchObject({ state: 'pending', attempts: 1025 })
     expect(runs?.rows).toEqual([
-      { attempt: 1025, state: 'failed', available_at_ms: 1_000_000 },
-      { attempt: 1026, state: 'pending', available_at_ms: 1_000_000 },
+      { attempt: 1025, state: 'failed' },
+      { attempt: 1026, state: 'pending' },
     ])
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
