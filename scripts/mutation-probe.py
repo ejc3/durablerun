@@ -6395,7 +6395,8 @@ SUITE_TIMEOUT_SELF_TEST_FAULTS = ("immediate-magic-error",)
 SUITE_SELF_TEST_DEADLINE_SECONDS = 0.1
 SUITE_SELF_TEST_SLEEP_PROGRAM = (
     "import json,os,pathlib,subprocess,sys,time; "
-    "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+    "child=subprocess.Popen([sys.executable,'-c',"
+    "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']); "
     "stream=pathlib.Path(sys.argv[2]).open('a'); "
     "stream.write(json.dumps({'label':sys.argv[1],"
     "'leader':os.getpid(),'descendant':child.pid})+'\\n'); "
@@ -6404,7 +6405,8 @@ SUITE_SELF_TEST_SLEEP_PROGRAM = (
 )
 SUITE_SELF_TEST_LINGER_PROGRAM = (
     "import json,os,pathlib,subprocess,sys; "
-    "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+    "child=subprocess.Popen([sys.executable,'-c',"
+    "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']); "
     "stream=pathlib.Path(sys.argv[2]).open('a'); "
     "stream.write(json.dumps({'label':sys.argv[1],"
     "'leader':os.getpid(),'descendant':child.pid})+'\\n'); "
