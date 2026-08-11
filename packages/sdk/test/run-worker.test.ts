@@ -660,8 +660,55 @@ describe('runClaimedRun', () => {
         }
       }
 
+      const handlerResults: unknown[] = []
+      for (const [valueName, makeValue] of NON_SERIALIZABLE_VALUES) {
+        const resultFixture = await fx(
+          `sdk-stringify-handler-result-${valueName.replaceAll(' ', '-')}`,
+        )
+        try {
+          let executions = 0
+          const spawned = await resultFixture.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+          const settled = await claimAndRun(
+            resultFixture,
+            registry({
+              job: async () => {
+                executions++
+                return makeValue()
+              },
+            }),
+            'w1',
+          ).then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+          const [task, runs] = await resultFixture.raw.batch(
+            'captured-stringify-handler-result',
+            [
+              {
+                sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`,
+                args: [spawned.taskId],
+              },
+              {
+                sql: `SELECT state FROM runs WHERE task_id = ? ORDER BY attempt`,
+                args: [spawned.taskId],
+              },
+            ],
+            'read',
+          )
+          handlerResults.push({
+            valueName,
+            settled,
+            executions,
+            task: task?.rows[0],
+            runStates: runs?.rows.map((row) => row.state),
+          })
+        } finally {
+          resultFixture.close()
+        }
+      }
+
       expect(
-        { observed, retryPrototype },
+        { observed, retryPrototype, handlerResults },
         'mutation-verdict:construction:task-value-captured-stringify',
       ).toEqual({
         observed: {
@@ -678,6 +725,13 @@ describe('runClaimedRun', () => {
           },
         },
         retryPrototype: '{"kind":"fixed","baseSeconds":1.234}',
+        handlerResults: NON_SERIALIZABLE_VALUES.map(([valueName]) => ({
+          valueName,
+          settled: { kind: 'resolved', value: { kind: 'failed' } },
+          executions: 1,
+          task: { state: 'failed', attempts: 1 },
+          runStates: ['failed'],
+        })),
       })
     } finally {
       f.close()
