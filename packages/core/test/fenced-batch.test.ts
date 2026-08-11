@@ -783,7 +783,7 @@ describe('only a CAS may read the clock', () => {
         },
       },
       {
-        marker: 'mutation-verdict:construction:clock-ban-in-followon',
+        marker: 'mutation-verdict:construction:clock-ban-raw-dialect-in-followon',
         expected: /reads the clock/,
         action: () => {
           const b = withCas()

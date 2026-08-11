@@ -242,8 +242,15 @@ MUTATION_SPECS = [
         "clock-ban-in-followon",
         "packages/core/src/fenced-batch.ts",
         "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
-        "    if (false && !isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
-        "a follow-on may read the clock a second time",
+        "    if (!isCas && (false || sql.includes(this.now))) { // MUTATION",
+        "a follow-on may resolve the clock token a second time",
+    ),
+    (
+        "clock-ban-raw-dialect-in-followon",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
+        "    if (!isCas && (sql.includes(NOW) || false)) { // MUTATION",
+        "a follow-on may embed the dialect clock expression directly",
     ),
     (
         "raw-fence-token-check",
@@ -309,18 +316,23 @@ MUTATION_SPECS = [
     (
         "generated-set-provenance-guard",
         "packages/core/src/fenced-batch.ts",
-        "      if (!allowedColumns.has(column)) {",
-        "      if (false && !allowedColumns.has(column)) {",
+        "      if (/fence_(?:stamp|at_ms)/i.test(column)) {",
+        "      if (false && /fence_(?:stamp|at_ms)/i.test(column)) {",
         "a generated UPDATE caller can compete with the primitive's provenance assignment",
     ),
     (
-        "generated-update-fence-source",
+        "generated-set-column-guard",
         "packages/core/src/fenced-batch.ts",
-        "      target,\n"
-        "      sql: `UPDATE ${target} SET ${setSql}${provenance}",
-        "      target: null,\n"
-        "      sql: `UPDATE ${target} SET ${setSql}${provenance}",
-        "a generated UPDATE is no longer available as a fence source",
+        "      if (!allowedColumns.has(column)) {",
+        "      if (false && !allowedColumns.has(column)) {",
+        "a generated UPDATE caller can assign a contract-forbidden column",
+    ),
+    (
+        "generated-update-requires-target",
+        "packages/core/src/fenced-batch.ts",
+        "export type GeneratedUpdateTarget = RelationTarget<FenceRelation>",
+        "export type GeneratedUpdateTarget = RelationTarget<FenceRelation> | null",
+        "a generated UPDATE may lose its required stamped target",
     ),
     (
         "derived-source-table",
@@ -3923,19 +3935,19 @@ VERDICTS = {
     "followon-provenance-check": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch.test.ts",
-        "a CAS must write its own provenance rejects a follow-on that writes a fenced table without stamping it",
+        "a CAS must write its own provenance rejects every follow-on write that omits complete provenance",
         "mutation-verdict:construction:followon-provenance-check",
     ),
     "positive-fence-required": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects a follow-on with no fence at all",
+        "a follow-on must filter on a fence, positively, in the WHERE side rejects every non-authoritative fence spelling",
         "mutation-verdict:construction:positive-fence-required",
     ),
     "positive-fence-is-not": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects a fence in the negated right-hand side of IS NOT",
+        "a follow-on must filter on a fence, positively, in the WHERE side rejects every non-authoritative fence spelling",
         "mutation-verdict:construction:positive-fence-is-not",
     ),
     "top-level-or-reach": ExpectedVerdict(
@@ -3947,8 +3959,14 @@ VERDICTS = {
     "clock-ban-in-followon": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch.test.ts",
-        "only a CAS may read the clock rejects $NOW$ in a follow-on",
+        "only a CAS may read the clock rejects token and raw dialect clock reads in every downstream position",
         "mutation-verdict:construction:clock-ban-in-followon",
+    ),
+    "clock-ban-raw-dialect-in-followon": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "only a CAS may read the clock rejects token and raw dialect clock reads in every downstream position",
+        "mutation-verdict:construction:clock-ban-raw-dialect-in-followon",
     ),
     "raw-fence-token-check": ExpectedVerdict(
         "construction",
@@ -3992,11 +4010,17 @@ VERDICTS = {
         "fence() names a statement, and the primitive supplies the value does not let a generated UPDATE caller overwrite generated provenance",
         "mutation-verdict:construction:generated-set-provenance",
     ),
-    "generated-update-fence-source": ExpectedVerdict(
+    "generated-set-column-guard": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch.test.ts",
-        "fence() names a statement, and the primitive supplies the value accepts a generated UPDATE as a fence source",
-        "mutation-verdict:construction:generated-update-fence-source",
+        "fence() names a statement, and the primitive supplies the value keeps primary identity out of the public generated assignment surface",
+        "mutation-verdict:construction:generated-set-column-guard",
+    ),
+    "generated-update-requires-target": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch.test.ts",
+        "fence() names a statement, and the primitive supplies the value requires a generated UPDATE to retain a stamped target structurally",
+        "mutation-verdict:construction:generated-update-requires-target",
     ),
     "derived-source-table": ExpectedVerdict(
         "construction",
@@ -5904,6 +5928,7 @@ TYPECHECK_MUTATION_NAMES = frozenset(
         "generated-runs-to-tasks-queue-ownership",
         "generated-tasks-to-runs-queue-ownership",
         "generated-waits-to-runs-queue-ownership",
+        "generated-update-requires-target",
     }
 )
 
