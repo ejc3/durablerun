@@ -12067,23 +12067,34 @@ def main() -> int:
     )
     if sum(bool(mode) for mode in self_test_modes) > 1:
         ap.error("self-test modes are mutually exclusive")
+    verifier_lock_assignment = (
+        args.verifier_lock_self_test_state,
+        args.verifier_lock_self_test_release,
+        args.verifier_lock_self_test_nonce,
+        args.verifier_lock_self_test_fd,
+        args.verifier_lock_self_test_device,
+        args.verifier_lock_self_test_inode,
+    )
+    if args.verifier_lock_self_test_child:
+        if any(value is None for value in verifier_lock_assignment):
+            ap.error(
+                "verifier-lock self-test child requires its complete assignment"
+            )
+    else:
+        if any(value is not None for value in verifier_lock_assignment):
+            ap.error(
+                "verifier-lock self-test options require "
+                "--verifier-lock-self-test-child"
+            )
+        if args.verifier_lock_self_test_drop_inheritance:
+            ap.error(
+                "--verifier-lock-self-test-drop-inheritance requires "
+                "--verifier-lock-self-test-child"
+            )
     if any(self_test_modes):
         if args.k or args.jobs != "auto" or args.worker_phase is not None:
             ap.error("self-tests cannot be combined with audit or worker options")
         if args.verifier_lock_self_test_child:
-            required_verifier_lock = (
-                args.verifier_lock_self_test_state,
-                args.verifier_lock_self_test_release,
-                args.verifier_lock_self_test_nonce,
-                args.verifier_lock_self_test_fd,
-                args.verifier_lock_self_test_device,
-                args.verifier_lock_self_test_inode,
-                args.verifier_lock_self_test_drop_inheritance,
-            )
-            if any(value is None for value in required_verifier_lock):
-                ap.error(
-                    "verifier-lock self-test child requires its complete assignment"
-                )
             return verifier_lock_self_test_child(
                 args.verifier_lock_self_test_state,
                 args.verifier_lock_self_test_release,
@@ -12148,25 +12159,6 @@ def main() -> int:
     if args.suite_timeout_self_test_fault is not None:
         ap.error(
             "--suite-timeout-self-test-fault requires --suite-timeout-self-test-child"
-        )
-    if any(
-        value is not None
-        for value in (
-            args.verifier_lock_self_test_state,
-            args.verifier_lock_self_test_release,
-            args.verifier_lock_self_test_nonce,
-            args.verifier_lock_self_test_fd,
-            args.verifier_lock_self_test_device,
-            args.verifier_lock_self_test_inode,
-        )
-    ):
-        ap.error(
-            "verifier-lock self-test options require --verifier-lock-self-test-child"
-        )
-    if args.verifier_lock_self_test_drop_inheritance:
-        ap.error(
-            "--verifier-lock-self-test-drop-inheritance requires "
-            "--verifier-lock-self-test-child"
         )
 
     if args.worker_phase is not None:
