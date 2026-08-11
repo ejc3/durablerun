@@ -8097,6 +8097,7 @@ class BaselineBarrier:
 ORCHESTRATION_SELF_TEST_FAULTS = (
     "drop-assignment",
     "duplicate-assignment",
+    "drop-audit-lock-inheritance",
     "accept-wrong-head",
     "accept-wrong-nonce",
     "accept-missing-result",
@@ -9155,8 +9156,13 @@ def orchestration_self_test(fault: str | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="durablerun-orchestration-selftest-") as tmp:
         temporary = Path(tmp)
-        if fault is None:
-            failures.extend(audit_lock_inheritance_problems(temporary))
+        if fault in (None, "drop-audit-lock-inheritance"):
+            failures.extend(
+                audit_lock_inheritance_problems(
+                    temporary,
+                    drop_inheritance=fault == "drop-audit-lock-inheritance",
+                )
+            )
         canonical_store = temporary / "canonical-pnpm-store"
         canonical_store.mkdir()
         valid_store_result = subprocess.CompletedProcess(
@@ -9278,6 +9284,9 @@ def orchestration_self_test(fault: str | None = None) -> int:
             temporary / "mutations.log",
             (),
         )
+        fixture_audit_lock = (temporary / "fixture-audit.lock").open("a+")
+        fcntl.flock(fixture_audit_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fixture_audit_lock_fd = fixture_audit_lock.fileno()
         install_faults = (
             "use-worker-local-pnpm-store",
             "allow-online-worker-install",
@@ -9288,6 +9297,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
             install_launch = worker_install_launch(
                 environment_plan,
                 canonical_store,
+                audit_lock_fd=fixture_audit_lock_fd,
                 use_worker_default=fault == "use-worker-local-pnpm-store",
                 allow_online=fault == "allow-online-worker-install",
                 allow_unfrozen=fault == "allow-unfrozen-worker-install",
@@ -9306,6 +9316,10 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "dependency store: worker install launch does not use "
                     "the exact offline frozen canonical-store command"
                 )
+            if install_launch.inherited_fds != (fixture_audit_lock_fd,):
+                failures.append(
+                    "dependency store: install worker does not inherit audit ownership"
+                )
 
         launch_environment_faults = (
             "allow-host-sized-tokio-pools",
@@ -9317,8 +9331,9 @@ def orchestration_self_test(fault: str | None = None) -> int:
             os.environ["TOKIO_WORKER_THREADS"] = "1"
             os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
             try:
-                environment = worker_launch(
+                environment_launch = worker_launch(
                     environment_plan,
+                    audit_lock_fd=fixture_audit_lock_fd,
                     phase="baseline",
                     head="a" * 40,
                     max_workers=1,
@@ -9331,7 +9346,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     allow_python_bytecode=(
                         fault == "allow-worker-bytecode-artifacts"
                     ),
-                ).environment
+                )
+                environment = environment_launch.environment
             finally:
                 if inherited_tokio_threads is None:
                     os.environ.pop("TOKIO_WORKER_THREADS", None)
@@ -9351,6 +9367,11 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "worker cleanliness: Python imports can create bytecode "
                     "artifacts before mutation"
                 )
+            if environment_launch.inherited_fds != (fixture_audit_lock_fd,):
+                failures.append(
+                    "worker launch does not inherit repository audit ownership"
+                )
+        fixture_audit_lock.close()
         source_root = temporary / "source"
         source_root.mkdir()
         (source_root / ".git").mkdir()
@@ -10719,6 +10740,7 @@ def run_launches(
                     stderr=subprocess.STDOUT,
                     env=launch.environment,
                     start_new_session=True,
+                    pass_fds=launch.inherited_fds,
                 )
             except BaseException:
                 handle.close()
@@ -10769,7 +10791,11 @@ def run_launches(
             handle.close()
 
 
-def audit_lock_inheritance_problems(temporary: Path) -> list[str]:
+def audit_lock_inheritance_problems(
+    temporary: Path,
+    *,
+    drop_inheritance: bool = False,
+) -> list[str]:
     """Prove an active child keeps the audit lock after its coordinator dies."""
     failures: list[str] = []
     lock_path = temporary / "audit-lock-inheritance.lock"
@@ -10805,7 +10831,7 @@ def audit_lock_inheritance_problems(temporary: Path) -> list[str]:
         temporary,
         child_log,
         os.environ.copy(),
-        (lock.fileno(),),
+        () if drop_inheritance else (lock.fileno(),),
     )
     launch_errors: list[BaseException] = []
 
@@ -10939,6 +10965,7 @@ def worker_install_launch(
     plan: WorkerPlan,
     store: Path,
     *,
+    audit_lock_fd: int,
     use_worker_default: bool = False,
     allow_online: bool = False,
     allow_unfrozen: bool = False,
@@ -10956,12 +10983,14 @@ def worker_install_launch(
         plan.path,
         plan.install_log,
         worker_environment(plan),
+        (audit_lock_fd,),
     )
 
 
 def worker_launch(
     plan: WorkerPlan,
     *,
+    audit_lock_fd: int,
     phase: str,
     head: str,
     max_workers: int,
@@ -11016,6 +11045,7 @@ def worker_launch(
             allow_host_sized_tokio=allow_host_sized_tokio,
             allow_python_bytecode=allow_python_bytecode,
         ),
+        (audit_lock_fd,),
     )
 
 
@@ -11338,7 +11368,11 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
                 baseline_barrier=None,
             )
             install_launches = [
-                worker_install_launch(plan, pnpm_store)
+                worker_install_launch(
+                    plan,
+                    pnpm_store,
+                    audit_lock_fd=lock.fileno(),
+                )
                 for plan in plans
             ]
             run_launches(
@@ -11361,6 +11395,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             baseline_launches = [
                 worker_launch(
                     plan,
+                    audit_lock_fd=lock.fileno(),
                     phase="baseline",
                     head=head,
                     max_workers=max_workers,
@@ -11398,6 +11433,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             mutation_launches = [
                 worker_launch(
                     plan,
+                    audit_lock_fd=lock.fileno(),
                     phase="mutations",
                     head=head,
                     max_workers=max_workers,
