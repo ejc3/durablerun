@@ -10102,6 +10102,20 @@ def mutation_checkpoint_problems() -> list[str]:
         emitted_report_paths: list[Path] = []
         executed_names: list[str] = []
         execution_mode = ["interrupt"]
+        production_atomic_json = atomic_json
+
+        def fixture_atomic_json(path: Path, payload: object) -> None:
+            production_atomic_json(path, payload)
+            if not isinstance(payload, dict):
+                return
+            results = payload.get("results")
+            if (
+                execution_mode[0] == "interrupt-after-last-checkpoint"
+                and payload.get("phase") == "mutations"
+                and isinstance(results, list)
+                and len(results) == len(fixture_mutations)
+            ):
+                raise AuditSignal(signal.SIGTERM)
 
         def command_value(command: tuple[str, ...], option: str) -> str:
             return command[command.index(option) + 1]
@@ -10216,6 +10230,7 @@ def mutation_checkpoint_problems() -> list[str]:
         patched = {
             "ROOT": fixture_source,
             "assert_clean": lambda _root: None,
+            "atomic_json": fixture_atomic_json,
             "execute_mutation": fixture_execute,
             "git_output": fixture_git_output,
             "git_result": fixture_git_result,
@@ -10443,6 +10458,62 @@ def mutation_checkpoint_problems() -> list[str]:
                         failures.append(
                             f"authenticated complete resume report was rejected: {error}"
                         )
+
+            atomic_json(durable_report, authenticated)
+            executed_names.clear()
+            execution_mode[0] = "interrupt-after-last-checkpoint"
+            try:
+                invoke_worker()
+            except AuditSignal as error:
+                if error.signum != signal.SIGTERM:
+                    failures.append(
+                        "last-row checkpoint seam raised the wrong interrupt"
+                    )
+            except Exception as error:
+                failures.append(
+                    f"last-row checkpoint seam raised the wrong error: {error}"
+                )
+            else:
+                failures.append("last-row checkpoint seam did not interrupt the worker")
+
+            final_row_checkpoint = read_json(durable_report)
+            if (
+                not isinstance(final_row_checkpoint, dict)
+                or not isinstance(final_row_checkpoint.get("results"), list)
+                or len(final_row_checkpoint["results"]) != len(expected)
+            ):
+                failures.append(
+                    "last-row interruption did not preserve the complete result prefix"
+                )
+            executed_names.clear()
+            execution_mode[0] = "resume"
+            try:
+                finalization_code = invoke_worker()
+            except Exception as error:
+                failures.append(
+                    "last-row checkpoint could not finalize without re-execution: "
+                    f"{error}"
+                )
+            else:
+                if finalization_code != 0:
+                    failures.append("last-row checkpoint finalization returned nonzero")
+                if executed_names:
+                    failures.append(
+                        "last-row checkpoint finalization re-executed a completed mutation"
+                    )
+                try:
+                    validate_mutation_report(
+                        read_json(durable_report),
+                        head=head,
+                        nonce=nonce,
+                        worker_id=0,
+                        expected=expected,
+                        process_returncode=0,
+                    )
+                except ValueError as error:
+                    failures.append(
+                        f"last-row checkpoint final report was incomplete: {error}"
+                    )
 
             try:
                 validate_mutation_report(
