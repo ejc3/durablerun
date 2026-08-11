@@ -6288,10 +6288,14 @@ def run_suite_process(
     *,
     output: object,
     wall_time_seconds: float,
+    audit_lock: InheritedAuditLock,
+    drop_audit_lock_inheritance: bool = False,
 ) -> int:
     """Run one verifier suite with a deadline that owns its whole process group."""
     if not math.isfinite(wall_time_seconds) or wall_time_seconds <= 0:
         raise ValueError("suite wall-time limit must be finite and positive")
+    if prove_inherited_audit_lock(audit_lock.path, audit_lock.fd) != audit_lock:
+        raise ValueError("mutation verifier audit-lock capability changed")
     previous_handlers = {
         signum: signal.getsignal(signum)
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -6325,6 +6329,7 @@ def run_suite_process(
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            pass_fds=() if drop_audit_lock_inheritance else (audit_lock.fd,),
         )
         try:
             returncode = process.wait(timeout=wall_time_seconds)
@@ -6373,6 +6378,7 @@ def run_suite(
             returncode = run_suite_process(
                 command,
                 output=output,
+                audit_lock=authority.audit_lock,
                 wall_time_seconds=(
                     MUTATION_SUITE_WALL_TIME_SECONDS
                     if suite_wall_time_seconds is None
@@ -6528,7 +6534,22 @@ def cleanup_suite_self_test_records(state_path: Path) -> None:
         time.sleep(0.02)
 
 
-def suite_self_test_fixture() -> tuple[ConfinedScope, IsolatedWorkspace, WorkerAuthority]:
+def suite_self_test_fixture() -> tuple[
+    ConfinedScope,
+    IsolatedWorkspace,
+    WorkerAuthority,
+    object,
+]:
+    audit_lock_stream = tempfile.NamedTemporaryFile(
+        mode="a+",
+        prefix="durablerun-suite-audit-lock-",
+    )
+    fcntl.flock(audit_lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.set_inheritable(audit_lock_stream.fileno(), True)
+    audit_lock = prove_inherited_audit_lock(
+        Path(audit_lock_stream.name),
+        audit_lock_stream.fileno(),
+    )
     return (
         ConfinedScope("suite-timeout-self-test", 1, 1, 1),
         IsolatedWorkspace(ROOT.resolve()),
@@ -6538,7 +6559,9 @@ def suite_self_test_fixture() -> tuple[ConfinedScope, IsolatedWorkspace, WorkerA
             0,
             "a" * 40,
             "suite-timeout-self-test",
+            audit_lock,
         ),
+        audit_lock_stream,
     )
 
 
@@ -6569,7 +6592,12 @@ def suite_timeout_self_test_child(
             raise SuiteInfrastructureError("suite wall-time limit exceeded")
 
         globals()["run_suite_process"] = immediate_magic_error
-    fixture_scope, fixture_workspace, fixture_authority = suite_self_test_fixture()
+    (
+        fixture_scope,
+        fixture_workspace,
+        fixture_authority,
+        fixture_audit_lock,
+    ) = suite_self_test_fixture()
     try:
         runners = (
             (
@@ -6615,6 +6643,7 @@ def suite_timeout_self_test_child(
         TYPECHECK_CMD[:] = original_typecheck_command
         globals()["run_suite_process"] = original_process_runner
         MUTATION_SUITE_WALL_TIME_SECONDS = original_wall_time
+        fixture_audit_lock.close()
     if problems:
         print(f"{SUITE_TIMEOUT_SELF_TEST_REJECTED}: {problems[0]}", file=sys.stderr)
         return 1
@@ -6625,11 +6654,17 @@ def suite_timeout_self_test_child(
 def suite_linger_self_test_child(state_path: Path) -> int:
     problems: list[str] = []
     command = suite_self_test_command("linger", state_path, linger=True)
+    _, _, fixture_authority, fixture_audit_lock = suite_self_test_fixture()
     try:
         with tempfile.TemporaryDirectory(prefix="durablerun-suite-linger-") as temporary:
             with (Path(temporary) / "suite.log").open("wb") as output:
                 try:
-                    run_suite_process(command, output=output, wall_time_seconds=1.0)
+                    run_suite_process(
+                        command,
+                        output=output,
+                        wall_time_seconds=1.0,
+                        audit_lock=fixture_authority.audit_lock,
+                    )
                 except SuiteInfrastructureError:
                     pass
                 except Exception as error:
@@ -6643,6 +6678,7 @@ def suite_linger_self_test_child(state_path: Path) -> int:
             problems.append("exited verifier leader left its descendant live")
     finally:
         cleanup_suite_self_test_records(state_path)
+        fixture_audit_lock.close()
     if problems:
         print(f"mutation-probe suite-linger self-test: {problems[0]}", file=sys.stderr)
         return 1
@@ -6653,7 +6689,12 @@ def suite_linger_self_test_child(state_path: Path) -> int:
 def suite_interrupt_self_test_child(state_path: Path) -> int:
     original_command = TEST_CMD[:]
     TEST_CMD[:] = suite_self_test_command("interrupt", state_path)
-    fixture_scope, fixture_workspace, fixture_authority = suite_self_test_fixture()
+    (
+        fixture_scope,
+        fixture_workspace,
+        fixture_authority,
+        fixture_audit_lock,
+    ) = suite_self_test_fixture()
     try:
         run_suite(
             1,
@@ -6663,6 +6704,7 @@ def suite_interrupt_self_test_child(state_path: Path) -> int:
         )
     finally:
         TEST_CMD[:] = original_command
+        fixture_audit_lock.close()
     print("mutation-probe suite-interrupt self-test returned without its external signal")
     return 1
 
@@ -6687,6 +6729,7 @@ def run_typecheck(
             returncode = run_suite_process(
                 TYPECHECK_CMD,
                 output=output,
+                audit_lock=authority.audit_lock,
                 wall_time_seconds=(
                     MUTATION_SUITE_WALL_TIME_SECONDS
                     if suite_wall_time_seconds is None
@@ -8079,12 +8122,21 @@ class IsolatedWorkspace:
 
 
 @dataclass(frozen=True)
+class InheritedAuditLock:
+    path: Path
+    fd: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
 class WorkerAuthority:
     run_root: Path
     worker_root: Path
     worker_id: int
     head: str
     nonce: str
+    audit_lock: InheritedAuditLock
 
 
 @dataclass(frozen=True)
@@ -8098,6 +8150,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "drop-assignment",
     "duplicate-assignment",
     "drop-audit-lock-inheritance",
+    "drop-verifier-lock-inheritance",
     "accept-wrong-head",
     "accept-wrong-nonce",
     "accept-missing-result",
@@ -8818,6 +8871,55 @@ def prove_workspace_links(
     return IsolatedWorkspace(resolved_root)
 
 
+def prove_inherited_audit_lock(
+    lock_path: Path,
+    audit_lock_fd: int,
+) -> InheritedAuditLock:
+    """Authenticate the exact inherited open-file description that owns the lock."""
+    if type(audit_lock_fd) is not int or audit_lock_fd < 0:
+        raise ValueError("worker audit-lock descriptor is invalid")
+    resolved_path = lock_path.resolve()
+    try:
+        descriptor_stat = os.fstat(audit_lock_fd)
+        path_stat = resolved_path.stat()
+        inheritable = os.get_inheritable(audit_lock_fd)
+    except OSError as error:
+        raise ValueError("worker audit-lock descriptor is not open") from error
+    if (
+        descriptor_stat.st_dev != path_stat.st_dev
+        or descriptor_stat.st_ino != path_stat.st_ino
+    ):
+        raise ValueError("worker audit-lock descriptor names the wrong file")
+    if not inheritable:
+        raise ValueError("worker audit-lock descriptor was not inherited across exec")
+
+    contender = resolved_path.open("a+")
+    try:
+        try:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            fcntl.flock(contender, fcntl.LOCK_UN)
+            raise ValueError("worker audit-lock file is not held")
+    finally:
+        contender.close()
+    try:
+        # This succeeds only for the inherited locked open-file description;
+        # a second descriptor for a lock held elsewhere would conflict.
+        fcntl.flock(audit_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        raise ValueError(
+            "worker audit-lock descriptor does not own the held lock"
+        ) from error
+    return InheritedAuditLock(
+        resolved_path,
+        audit_lock_fd,
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+    )
+
+
 def prove_worker_authority(
     *,
     worker_root: Path,
@@ -8829,8 +8931,14 @@ def prove_worker_authority(
     phase: str,
     baseline_barrier: str | None,
     mutation_names: list[str],
+    audit_lock_fd: int,
+    audit_lock_path: Path,
     accept_unowned: bool = False,
 ) -> WorkerAuthority:
+    audit_lock = prove_inherited_audit_lock(
+        audit_lock_path,
+        audit_lock_fd,
+    )
     if accept_unowned:
         return WorkerAuthority(
             run_root.resolve(),
@@ -8838,6 +8946,7 @@ def prove_worker_authority(
             worker_id,
             head,
             nonce,
+            audit_lock,
         )
     validate_owned_worktree_path(run_root, worker_root)
     if not (worker_root / ".git").is_file():
@@ -8904,6 +9013,7 @@ def prove_worker_authority(
         worker_id,
         head,
         nonce,
+        audit_lock,
     )
 
 
@@ -9163,8 +9273,14 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     drop_inheritance=fault == "drop-audit-lock-inheritance",
                 )
             )
-        if fault is None:
-            failures.extend(verifier_lock_inheritance_problems(temporary))
+        if fault in (None, "drop-verifier-lock-inheritance"):
+            failures.extend(
+                verifier_lock_inheritance_problems(
+                    temporary,
+                    drop_inheritance=fault
+                    == "drop-verifier-lock-inheritance",
+                )
+            )
         canonical_store = temporary / "canonical-pnpm-store"
         canonical_store.mkdir()
         valid_store_result = subprocess.CompletedProcess(
@@ -9288,6 +9404,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
         )
         fixture_audit_lock = (temporary / "fixture-audit.lock").open("a+")
         fcntl.flock(fixture_audit_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.set_inheritable(fixture_audit_lock.fileno(), True)
         fixture_audit_lock_fd = fixture_audit_lock.fileno()
         install_faults = (
             "use-worker-local-pnpm-store",
@@ -9373,7 +9490,17 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 failures.append(
                     "worker launch does not inherit repository audit ownership"
                 )
-        fixture_audit_lock.close()
+            audit_lock_option = "--worker-audit-lock-fd"
+            if (
+                environment_launch.command.count(audit_lock_option) != 1
+                or environment_launch.command[
+                    environment_launch.command.index(audit_lock_option) + 1
+                ]
+                != str(fixture_audit_lock_fd)
+            ):
+                failures.append(
+                    "worker launch does not assign its inherited audit-lock descriptor"
+                )
         source_root = temporary / "source"
         source_root.mkdir()
         (source_root / ".git").mkdir()
@@ -9401,6 +9528,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 phase="baseline",
                 baseline_barrier=None,
                 mutation_names=["mutation-0"],
+                audit_lock_fd=fixture_audit_lock_fd,
+                audit_lock_path=Path(fixture_audit_lock.name),
             )
         except ValueError as error:
             failures.append(f"valid worker authority rejected: {error}")
@@ -9415,12 +9544,15 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 phase="baseline",
                 baseline_barrier=None,
                 mutation_names=["mutation-0"],
+                audit_lock_fd=fixture_audit_lock_fd,
+                audit_lock_path=Path(fixture_audit_lock.name),
                 accept_unowned=fault == "accept-unowned-worker",
             )
         except ValueError:
             pass
         else:
             failures.append("unowned worker: primary-style checkout was authorized")
+        fixture_audit_lock.close()
 
         workspace = temporary / "workspace"
         inside_target = workspace / "packages" / "core"
@@ -9697,15 +9829,12 @@ def orchestration_self_test(fault: str | None = None) -> int:
             "classify-structural-report-as-domain",
         ),
     )
-    fixture_scope = ConfinedScope("self-test", 1, 1, 1)
-    fixture_workspace = IsolatedWorkspace(ROOT.resolve())
-    fixture_authority = WorkerAuthority(
-        ROOT.resolve(),
-        ROOT.resolve(),
-        0,
-        "a" * 40,
-        "self-test",
-    )
+    (
+        fixture_scope,
+        fixture_workspace,
+        fixture_authority,
+        transport_audit_lock,
+    ) = suite_self_test_fixture()
     for label, program, fault_name in transport_failures:
         original_command = TEST_CMD[:]
         TEST_CMD[:] = [sys.executable, "-c", program]
@@ -9735,6 +9864,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 )
         finally:
             TEST_CMD[:] = original_command
+    transport_audit_lock.close()
 
     if fault is None:
         failures.extend(mutation_checkpoint_problems())
@@ -9939,6 +10069,7 @@ def execute_mutation(
 def worker_phase(
     *,
     phase: str,
+    audit_lock_fd: int,
     report_path: Path,
     head: str,
     worker_id: int,
@@ -9962,6 +10093,10 @@ def worker_phase(
         phase=phase,
         baseline_barrier=baseline_barrier,
         mutation_names=mutation_names,
+        audit_lock_fd=audit_lock_fd,
+        audit_lock_path=(
+            git_common_directory(ROOT) / "durablerun-mutation.lock"
+        ),
     )
     actual_head = git_output(ROOT, "rev-parse", "HEAD^{commit}")
     if actual_head != head:
@@ -10091,6 +10226,11 @@ def mutation_checkpoint_problems() -> list[str]:
         common_dir.mkdir()
         pnpm_store.mkdir()
         fixture_source.mkdir()
+        worker_audit_lock_path = temporary / "worker-audit.lock"
+        worker_audit_lock = worker_audit_lock_path.open("a+")
+        fcntl.flock(worker_audit_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.set_inheritable(worker_audit_lock.fileno(), True)
+        worker_audit_lock_fd = worker_audit_lock.fileno()
         fixture_mutations = []
         for ordinal in range(2):
             relative_source = f"mutation-{ordinal}.ts"
@@ -10167,6 +10307,10 @@ def mutation_checkpoint_problems() -> list[str]:
                 int(arguments["worker_id"]),
                 str(arguments["head"]),
                 str(arguments["nonce"]),
+                prove_inherited_audit_lock(
+                    worker_audit_lock_path,
+                    int(arguments["audit_lock_fd"]),
+                ),
             )
 
         def fixture_execute(
@@ -10224,6 +10368,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 try:
                     codes[launch.label] = worker_phase(
                         phase="mutations",
+                        audit_lock_fd=worker_audit_lock_fd,
                         report_path=report_path,
                         head=command_value(command, "--worker-head"),
                         worker_id=int(command_value(command, "--worker-id")),
@@ -10363,6 +10508,7 @@ def mutation_checkpoint_problems() -> list[str]:
             def invoke_worker() -> int:
                 return worker_phase(
                     phase="mutations",
+                    audit_lock_fd=worker_audit_lock_fd,
                     report_path=durable_report,
                     head=head,
                     worker_id=0,
@@ -10546,6 +10692,7 @@ def mutation_checkpoint_problems() -> list[str]:
                     "an interrupted partial checkpoint was accepted as final success"
                 )
         finally:
+            worker_audit_lock.close()
             MUTATIONS[:] = original_mutations
             globals().update(originals)
             secrets.token_hex = original_token_hex
@@ -10947,6 +11094,7 @@ def verifier_lock_self_test_child(
     audit_lock_fd: int,
     lock_device: int,
     lock_inode: int,
+    drop_inheritance: bool,
 ) -> int:
     """Exercise the real verifier launcher from an expendable worker process."""
     try:
@@ -10967,6 +11115,10 @@ def verifier_lock_self_test_child(
             file=sys.stderr,
         )
         return 2
+    audit_lock = prove_inherited_audit_lock(
+        Path(f"/proc/self/fd/{audit_lock_fd}").resolve(),
+        audit_lock_fd,
+    )
     verifier_code = (
         "import json,os,pathlib,sys,time; "
         "state=pathlib.Path(sys.argv[1]); "
@@ -11004,10 +11156,16 @@ def verifier_lock_self_test_child(
         ],
         output=sys.stdout.buffer,
         wall_time_seconds=9.0,
+        audit_lock=audit_lock,
+        drop_audit_lock_inheritance=drop_inheritance,
     )
 
 
-def verifier_lock_inheritance_problems(temporary: Path) -> list[str]:
+def verifier_lock_inheritance_problems(
+    temporary: Path,
+    *,
+    drop_inheritance: bool = False,
+) -> list[str]:
     """Prove a verifier retains audit ownership after its worker is killed."""
     failures: list[str] = []
     lock_path = temporary / "verifier-lock-inheritance.lock"
@@ -11041,6 +11199,11 @@ def verifier_lock_inheritance_problems(temporary: Path) -> list[str]:
                     str(descriptor_stat.st_dev),
                     "--verifier-lock-self-test-inode",
                     str(descriptor_stat.st_ino),
+                    *(
+                        ("--verifier-lock-self-test-drop-inheritance",)
+                        if drop_inheritance
+                        else ()
+                    ),
                 ],
                 cwd=ROOT,
                 stdout=worker_log,
@@ -11247,6 +11410,8 @@ def worker_launch(
         str(plan.path / "scripts" / "mutation-probe.py"),
         "--worker-phase",
         phase,
+        "--worker-audit-lock-fd",
+        str(audit_lock_fd),
         "--worker-result",
         str(report),
         "--worker-head",
@@ -11859,6 +12024,11 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     ap.add_argument(
+        "--verifier-lock-self-test-drop-inheritance",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
         "--suite-self-test-state",
         type=Path,
         help=argparse.SUPPRESS,
@@ -11875,6 +12045,7 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     ap.add_argument("--worker-phase", choices=("baseline", "mutations"), help=argparse.SUPPRESS)
+    ap.add_argument("--worker-audit-lock-fd", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--worker-result", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--worker-head", help=argparse.SUPPRESS)
     ap.add_argument("--worker-id", type=int, help=argparse.SUPPRESS)
@@ -11907,6 +12078,7 @@ def main() -> int:
                 args.verifier_lock_self_test_fd,
                 args.verifier_lock_self_test_device,
                 args.verifier_lock_self_test_inode,
+                args.verifier_lock_self_test_drop_inheritance,
             )
             if any(value is None for value in required_verifier_lock):
                 ap.error(
@@ -11919,6 +12091,7 @@ def main() -> int:
                 args.verifier_lock_self_test_fd,
                 args.verifier_lock_self_test_device,
                 args.verifier_lock_self_test_inode,
+                args.verifier_lock_self_test_drop_inheritance,
             )
         suite_process_self_test = (
             args.suite_timeout_self_test_child
@@ -11990,9 +12163,15 @@ def main() -> int:
         ap.error(
             "verifier-lock self-test options require --verifier-lock-self-test-child"
         )
+    if args.verifier_lock_self_test_drop_inheritance:
+        ap.error(
+            "--verifier-lock-self-test-drop-inheritance requires "
+            "--verifier-lock-self-test-child"
+        )
 
     if args.worker_phase is not None:
         required_worker = (
+            args.worker_audit_lock_fd,
             args.worker_result,
             args.worker_head,
             args.worker_id,
@@ -12013,6 +12192,7 @@ def main() -> int:
         try:
             return worker_phase(
                 phase=args.worker_phase,
+                audit_lock_fd=args.worker_audit_lock_fd,
                 report_path=args.worker_result,
                 head=args.worker_head,
                 worker_id=args.worker_id,
@@ -12031,6 +12211,7 @@ def main() -> int:
         value is not None
         for value in (
             args.worker_result,
+            args.worker_audit_lock_fd,
             args.worker_head,
             args.worker_id,
             args.max_workers,
