@@ -322,14 +322,14 @@ MUTATION_SPECS = [
     (
         "generated-set-provenance-guard",
         "packages/core/src/fenced-batch.ts",
-        "      if (/fence_(?:stamp|at_ms)/i.test(column)) {",
-        "      if (false && /fence_(?:stamp|at_ms)/i.test(column)) {",
+        "      if (isProvenanceColumn) {",
+        "      if (false && isProvenanceColumn) {",
         "a generated UPDATE caller can compete with the primitive's provenance assignment",
     ),
     (
         "generated-set-column-guard",
         "packages/core/src/fenced-batch.ts",
-        "      if (!allowedColumns.has(column)) {",
+        "      if (!isProvenanceColumn && !allowedColumns.has(column)) {",
         "      if (false && !allowedColumns.has(column)) {",
         "a generated UPDATE caller can assign a contract-forbidden column",
     ),
@@ -3960,7 +3960,7 @@ VERDICTS = {
     "generated-narrow-drops-all": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/generated-selection.test.ts",
-        "a generated selection restricts to rows this batch stamped never lets narrow widen the target set",
+        "a generated selection restricts to rows this batch stamped never lets narrow silently drop every matching row",
         "mutation-verdict:behavior:generated-narrow-progress",
     ),
     "generated-where-parens": ExpectedVerdict(
@@ -3989,8 +3989,8 @@ VERDICTS = {
     ),
     "generated-update-requires-target": ExpectedVerdict(
         "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "fence() names a statement, and the primitive supplies the value requires a generated UPDATE to retain a stamped target structurally",
+        "packages/store-libsql/test/fence-relation-types.test.ts",
+        "requires a generated UPDATE to retain a stamped target structurally",
         "mutation-verdict:construction:generated-update-requires-target",
     ),
     "derived-source-table": ExpectedVerdict(
