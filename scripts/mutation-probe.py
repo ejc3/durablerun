@@ -2845,23 +2845,23 @@ MUTATION_SPECS.extend(
         ),
         (
             "retry-normalize-base-bound",
-            "packages/core/src/retry.ts",
-            "  const canonicalBase = canonicalDurationSeconds('retry strategy baseSeconds', baseSeconds)",
-            "  const canonicalBase = baseSeconds as number // MUTATION",
+            "packages/core/src/validate.ts",
+            "  if (ms > MAX_DURATION_MS) {",
+            "  if (name !== 'retry strategy baseSeconds' && ms > MAX_DURATION_MS) {",
             "retry normalization accepts an unchecked base duration",
         ),
         (
             "retry-normalize-max-bound",
-            "packages/core/src/retry.ts",
-            "    maxSeconds: canonicalDurationSeconds('retry strategy maxSeconds', maxSeconds),",
-            "    maxSeconds: maxSeconds as number, // MUTATION",
+            "packages/core/src/validate.ts",
+            "  if (ms > MAX_DURATION_MS) {",
+            "  if (name !== 'retry strategy maxSeconds' && ms > MAX_DURATION_MS) {",
             "retry normalization accepts an unchecked exponential cap",
         ),
         (
             "retry-normalize-factor",
             "packages/core/src/retry.ts",
-            "  const canonicalFactor = canonicalRetryFactor(factor)",
-            "  const canonicalFactor = factor as number // MUTATION",
+            "  if (typeof value !== 'number' || !isFiniteNumber(value) || value < 0) {",
+            "  if (typeof value !== 'number' || !isFiniteNumber(value) || false) {",
             "retry normalization accepts an unchecked exponential factor",
         ),
         (
@@ -2905,8 +2905,24 @@ MUTATION_SPECS.extend(
             "retry-normalize-positive-zero",
             "packages/core/src/retry.ts",
             "  return milliseconds === 0 ? 0 : milliseconds / 1000",
-            "  return milliseconds / 1000",
-            "retry normalization returns negative zero instead of its serialized representation",
+            "  if (name === 'retry strategy baseSeconds') return milliseconds / 1000 // MUTATION\n"
+            "  return milliseconds === 0 ? 0 : milliseconds / 1000",
+            "retry base normalization returns negative zero instead of its serialized representation",
+        ),
+        (
+            "retry-normalize-max-positive-zero",
+            "packages/core/src/retry.ts",
+            "  return milliseconds === 0 ? 0 : milliseconds / 1000",
+            "  if (name === 'retry strategy maxSeconds') return milliseconds / 1000 // MUTATION\n"
+            "  return milliseconds === 0 ? 0 : milliseconds / 1000",
+            "retry cap normalization returns negative zero instead of its serialized representation",
+        ),
+        (
+            "retry-normalize-factor-positive-zero",
+            "packages/core/src/retry.ts",
+            "  return value === 0 ? 0 : value",
+            "  return value",
+            "retry factor normalization returns negative zero instead of its serialized representation",
         ),
         (
             "retry-decision-normalization",
@@ -2938,7 +2954,11 @@ MUTATION_SPECS.extend(
             "    )",
             "    const retry = serializeTaskValue(\n"
             "      'retry strategy',\n"
-            "      retryInput === undefined ? DEFAULT_RETRY : retryInput,\n"
+            "      retryInput === null\n"
+            "        ? normalizeRetryStrategy(retryInput)\n"
+            "        : retryInput === undefined\n"
+            "          ? DEFAULT_RETRY\n"
+            "          : retryInput,\n"
             "    )",
             "spawn persists a retry policy without normalization",
         ),
@@ -3432,8 +3452,8 @@ MUTATION_SPECS.extend(
         (
             "retry-captured-range-error",
             "packages/core/src/retry.ts",
-            "    throw new TrustedRangeError('retry strategy kind must be none, fixed, or exponential')",
-            "    throw new RangeError('retry strategy kind must be none, fixed, or exponential') // MUTATION",
+            "    throw new TrustedRangeError('retry strategy must be an object')",
+            "    throw new RangeError('retry strategy must be an object') // MUTATION",
             "retry validation constructs a task-installed ambient RangeError",
         ),
         (
@@ -3584,7 +3604,7 @@ MUTATION_SPECS.extend(
             "boxed and exotic objects are silently reinterpreted as plain JSON records",
         ),
         (
-            "sdk-retry-captured-intrinsics",
+            "retry-intrinsics-captured-reflect-get",
             "packages/core/src/intrinsics.ts",
             "  ReflectGet: Reflect.get,",
             "  ReflectGet: (target: object, key: PropertyKey) => Reflect.get(target, key), // MUTATION",
@@ -5121,16 +5141,28 @@ VERDICTS.update(
             "normalizeRetryStrategy canonicalizes negative zero before serialization",
             "mutation-verdict:construction:retry-normalize-positive-zero",
         ),
+        "retry-normalize-max-positive-zero": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy canonicalizes a negative-zero exponential maxSeconds before serialization",
+            "mutation-verdict:construction:retry-normalize-max-positive-zero",
+        ),
+        "retry-normalize-factor-positive-zero": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retry.test.ts",
+            "normalizeRetryStrategy canonicalizes a negative-zero exponential factor before serialization",
+            "mutation-verdict:construction:retry-normalize-factor-positive-zero",
+        ),
         "retry-decision-normalization": ExpectedVerdict(
             "behavior",
             "packages/core/test/retry.test.ts",
-            "normalizeRetryStrategy is the decision API boundary for hostile strategy objects",
+            "normalizeRetryStrategy is the decision API boundary for invalid strategy objects",
             "mutation-verdict:behavior:retry-decision-normalization",
         ),
         "retry-delay-normalization": ExpectedVerdict(
             "behavior",
             "packages/core/test/retry.test.ts",
-            "normalizeRetryStrategy is the delay API boundary for hostile strategy objects",
+            "normalizeRetryStrategy is the delay API boundary for invalid strategy objects",
             "mutation-verdict:behavior:retry-delay-normalization",
         ),
         "retry-zero-base-overflow": ExpectedVerdict(
@@ -5457,7 +5489,7 @@ VERDICTS.update(
         "retry-captured-reflect-get": ExpectedVerdict(
             "construction",
             "packages/core/test/intrinsic-containment.test.ts",
-            "trusted task-boundary intrinsics normalizes retry fields with the module-captured Reflect.get",
+            "trusted task-boundary intrinsics normalizes retry fields with one module-captured Reflect.get capability",
             "mutation-verdict:construction:retry-captured-reflect-get",
         ),
         "retry-captured-freeze": ExpectedVerdict(
@@ -5616,11 +5648,11 @@ VERDICTS.update(
             "serializeTaskValue rejects objects outside the explicit JSON data model instead of changing their meaning",
             "mutation-verdict:behavior:task-value-rejects-exotic-objects",
         ),
-        "sdk-retry-captured-intrinsics": ExpectedVerdict(
-            "behavior",
-            "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun task initialization cannot replace retry field classification",
-            "mutation-verdict:behavior:sdk-retry-captured-intrinsics",
+        "retry-intrinsics-captured-reflect-get": ExpectedVerdict(
+            "construction",
+            "packages/core/test/intrinsic-containment.test.ts",
+            "trusted task-boundary intrinsics normalizes retry fields with one module-captured Reflect.get capability",
+            "mutation-verdict:construction:retry-captured-reflect-get",
         ),
         "sdk-result-captured-stringify": ExpectedVerdict(
             "behavior",
@@ -5925,7 +5957,12 @@ QUESTION_TOKEN_DELTA_REASONS = {
         "replacement adds a TypeScript conditional expression"
     ),
     "admin-fake-now-exact-endpoints": "replacement adds a TypeScript conditional expression",
-    "retry-normalize-positive-zero": "replacement removes a TypeScript conditional expression",
+    "retry-normalize-factor-positive-zero": (
+        "replacement removes a TypeScript conditional expression"
+    ),
+    "retry-spawn-normalization": (
+        "replacement adds a TypeScript conditional while preserving explicit-null validation"
+    ),
     "retry-spawn-null": (
         "replacement swaps a TypeScript conditional token for nullish-coalescing syntax"
     ),
@@ -6000,7 +6037,8 @@ TYPECHECK_CMD = [
     "--noEmit",
 ]
 CONFINEMENT_ENV = "DURABLERUN_MUTATION_SCOPE"
-REPORT_VERSION = 1
+REPORT_VERSION = 2
+MUTATION_CHECKPOINT_DIRECTORY = "durablerun-mutation-checkpoints"
 MAX_AUTO_JOBS = 16
 MIN_CORES_PER_AUTO_JOB = 8
 
@@ -8059,6 +8097,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "drop-assignment",
     "duplicate-assignment",
     "accept-wrong-head",
+    "accept-wrong-nonce",
     "accept-missing-result",
     "accept-duplicate-result",
     "accept-extra-result",
@@ -8205,6 +8244,7 @@ def mutation_result_row(
 def mutation_report_payload(
     *,
     head: str,
+    nonce: str,
     worker_id: int,
     assigned: list[ExpectedMutationResult],
     results: list[dict[str, object]],
@@ -8215,6 +8255,7 @@ def mutation_report_payload(
         "phase": "mutations",
         "head": head,
         "registry_digest": mutation_registry_digest(),
+        "nonce": nonce,
         "worker_id": worker_id,
         "assigned": [item.name for item in assigned],
         "complete": complete,
@@ -8226,10 +8267,13 @@ def validate_mutation_report(
     payload: object,
     *,
     head: str,
+    nonce: str,
     worker_id: int,
     expected: list[ExpectedMutationResult],
-    process_returncode: int,
+    process_returncode: int | None,
+    allow_partial: bool = False,
     accept_wrong_head: bool = False,
+    accept_wrong_nonce: bool = False,
     accept_missing_result: bool = False,
     accept_duplicate_result: bool = False,
     accept_extra_result: bool = False,
@@ -8245,6 +8289,7 @@ def validate_mutation_report(
         "phase",
         "head",
         "registry_digest",
+        "nonce",
         "worker_id",
         "assigned",
         "complete",
@@ -8265,6 +8310,11 @@ def validate_mutation_report(
     if not accept_wrong_head and payload["head"] != head:
         raise ValueError("worker mutation report names the wrong commit")
     if (
+        not accept_wrong_nonce
+        and (not isinstance(payload["nonce"], str) or payload["nonce"] != nonce)
+    ):
+        raise ValueError("worker mutation report names the wrong coordinator nonce")
+    if (
         payload["registry_digest"] != mutation_registry_digest()
         and not accept_wrong_registry
     ):
@@ -8276,7 +8326,13 @@ def validate_mutation_report(
         raise ValueError("worker mutation report names the wrong worker")
     if payload["assigned"] != [item.name for item in expected]:
         raise ValueError("worker mutation report names the wrong shard")
-    if payload["complete"] is not True and not accept_incomplete:
+    if not isinstance(payload["complete"], bool):
+        raise ValueError("worker mutation report has a non-boolean completion state")
+    if (
+        payload["complete"] is not True
+        and not allow_partial
+        and not accept_incomplete
+    ):
         raise ValueError("worker mutation report is incomplete")
     rows = payload["results"]
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
@@ -8301,7 +8357,7 @@ def validate_mutation_report(
     )
     if duplicates and not accept_duplicate_result:
         raise ValueError(f"worker mutation report duplicates results: {duplicates}")
-    if missing and not accept_missing_result:
+    if missing and not allow_partial and not accept_missing_result:
         raise ValueError(f"worker mutation report omits results: {missing}")
     if extra and not accept_extra_result:
         raise ValueError(f"worker mutation report adds results: {extra}")
@@ -8370,17 +8426,179 @@ def validate_mutation_report(
             observed_order.append(name)
     if observed_order != wanted_order:
         raise ValueError("worker mutation results are not in shard order")
+    if allow_partial:
+        expected_prefix = [item.name for item in expected[: len(observed_order)]]
+        if observed_order != expected_prefix:
+            raise ValueError("worker mutation checkpoint is not a completed shard prefix")
+        should_be_complete = len(observed_order) == len(expected)
+        if payload["complete"] is not should_be_complete:
+            raise ValueError(
+                "worker mutation checkpoint completion disagrees with its result prefix"
+            )
     expected_returncode = (
         0
         if len(seen) == len(expected) and all(row["outcome"] == "caught" for row in known_rows)
         else 1
     )
-    if not accept_process_disagreement and process_returncode != expected_returncode:
+    if (
+        process_returncode is not None
+        and not accept_process_disagreement
+        and process_returncode != expected_returncode
+    ):
         raise ValueError(
             "worker process/report disagreement: "
             f"exit={process_returncode}, report expects {expected_returncode}"
         )
     return rows
+
+
+def git_common_directory(root: Path) -> Path:
+    common_dir = Path(git_output(root, "rev-parse", "--git-common-dir"))
+    if not common_dir.is_absolute():
+        common_dir = root / common_dir
+    return common_dir.resolve()
+
+
+def mutation_checkpoint_identity(
+    head: str,
+    shards: list[list[str]],
+) -> dict[str, object]:
+    return {
+        "version": REPORT_VERSION,
+        "head": head,
+        "registry_digest": mutation_registry_digest(),
+        "shards": shards,
+    }
+
+
+def mutation_checkpoint_key(
+    head: str,
+    shards: list[list[str]],
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            mutation_checkpoint_identity(head, shards),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
+def mutation_checkpoint_report_path(
+    common_dir: Path,
+    checkpoint_key: str,
+    worker_id: int,
+) -> Path:
+    if re.fullmatch(r"[0-9a-f]{64}", checkpoint_key) is None or worker_id < 0:
+        raise ValueError("mutation checkpoint has an invalid deterministic identity")
+    return (
+        common_dir.resolve()
+        / MUTATION_CHECKPOINT_DIRECTORY
+        / checkpoint_key
+        / f"mutations-{worker_id:02}.json"
+    )
+
+
+def prepare_mutation_checkpoint_directory(
+    common_dir: Path,
+    checkpoint_key: str,
+) -> Path:
+    report = mutation_checkpoint_report_path(common_dir, checkpoint_key, 0)
+    checkpoint_root = report.parent.parent
+    checkpoint_directory = report.parent
+    for path in (checkpoint_root, checkpoint_directory):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f"mutation checkpoint directory is not owned storage: {path}")
+        path.mkdir(mode=0o700, exist_ok=True)
+        if path.resolve() != path:
+            raise ValueError(f"mutation checkpoint directory escapes Git storage: {path}")
+    return checkpoint_directory
+
+
+def validate_mutation_checkpoint_path(
+    common_dir: Path,
+    checkpoint_key: str,
+    worker_id: int,
+    report_path: Path,
+) -> None:
+    expected = mutation_checkpoint_report_path(
+        common_dir,
+        checkpoint_key,
+        worker_id,
+    )
+    checkpoint_root = expected.parent.parent
+    checkpoint_directory = expected.parent
+    if (
+        checkpoint_root.is_symlink()
+        or checkpoint_directory.is_symlink()
+        or report_path.is_symlink()
+        or checkpoint_root.resolve() != checkpoint_root
+        or checkpoint_directory.resolve() != checkpoint_directory
+        or report_path.resolve() != expected.resolve()
+    ):
+        raise ValueError("worker mutation checkpoint path is not coordinator-owned")
+
+
+def discover_mutation_checkpoint_nonce(
+    checkpoint_directory: Path,
+    report_paths: list[Path],
+    shards: list[list[ExpectedMutationResult]],
+    *,
+    head: str,
+) -> str:
+    if len(report_paths) != len(shards):
+        raise ValueError("mutation checkpoint inventory differs from its shards")
+    shard_names = [[item.name for item in shard] for shard in shards]
+    identity = mutation_checkpoint_identity(head, shard_names)
+    manifest_path = checkpoint_directory / "audit.json"
+    if manifest_path.is_symlink():
+        raise ValueError("mutation checkpoint manifest cannot be a symbolic link")
+    if manifest_path.exists():
+        manifest = read_json(manifest_path)
+        required = {*identity, "kind", "nonce"}
+        if (
+            not isinstance(manifest, dict)
+            or set(manifest) != required
+            or manifest.get("kind") != "durablerun-mutation-checkpoint"
+            or any(manifest.get(field) != value for field, value in identity.items())
+            or not isinstance(manifest.get("nonce"), str)
+            or not manifest["nonce"]
+        ):
+            raise ValueError("mutation checkpoint manifest has the wrong identity")
+        nonce = str(manifest["nonce"])
+    else:
+        if any(report_path.exists() for report_path in report_paths):
+            raise ValueError("mutation checkpoint results have no ownership manifest")
+        nonce = secrets.token_hex(16)
+        atomic_json(
+            manifest_path,
+            {
+                **identity,
+                "kind": "durablerun-mutation-checkpoint",
+                "nonce": nonce,
+            },
+        )
+    for worker_id, (report_path, shard) in enumerate(zip(report_paths, shards)):
+        if not report_path.exists():
+            continue
+        if report_path.is_symlink():
+            raise ValueError("worker mutation checkpoint cannot be a symbolic link")
+        payload = read_json(report_path)
+        candidate = payload.get("nonce") if isinstance(payload, dict) else None
+        if not isinstance(candidate, str) or not candidate:
+            raise ValueError("worker mutation checkpoint has no coordinator nonce")
+        validate_mutation_report(
+            payload,
+            head=head,
+            nonce=candidate,
+            worker_id=worker_id,
+            expected=shard,
+            process_returncode=None,
+            allow_partial=True,
+        )
+        if nonce != candidate:
+            raise ValueError("worker mutation checkpoint has the wrong coordinator nonce")
+    return nonce
 
 
 def validate_baseline_report(
@@ -8620,9 +8838,6 @@ def prove_worker_authority(
             nonce,
         )
     validate_owned_worktree_path(run_root, worker_root)
-    expected_report = run_root / f"{phase}-{worker_id:02}.json"
-    if report_path.resolve() != expected_report.resolve():
-        raise ValueError("worker result path is not coordinator-owned")
     if not (worker_root / ".git").is_file():
         raise ValueError("worker root is not a linked Git worktree")
     manifest_path = run_root / "manifest.json"
@@ -8656,6 +8871,11 @@ def prove_worker_authority(
         or payload["baseline_barrier"] != baseline_barrier
         or not isinstance(worktrees, list)
         or not isinstance(shards, list)
+        or any(
+            not isinstance(shard, list)
+            or any(not isinstance(name, str) for name in shard)
+            for shard in shards
+        )
         or worker_id < 0
         or worker_id >= len(worktrees)
         or worker_id >= len(shards)
@@ -8664,6 +8884,18 @@ def prove_worker_authority(
         or Path(str(payload["source_root"])).resolve() == worker_root.resolve()
     ):
         raise ValueError("worker ownership manifest does not authorize this process")
+    if phase == "baseline":
+        expected_report = run_root / f"baseline-{worker_id:02}.json"
+        if report_path.resolve() != expected_report.resolve():
+            raise ValueError("worker baseline result path is not coordinator-owned")
+    else:
+        checkpoint_key = mutation_checkpoint_key(head, shards)
+        validate_mutation_checkpoint_path(
+            git_common_directory(worker_root),
+            checkpoint_key,
+            worker_id,
+            report_path,
+        )
     return WorkerAuthority(
         run_root.resolve(),
         worker_root.resolve(),
@@ -8780,6 +9012,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
     good_rows = [mutation_result_row(item, "caught", "attributable") for item in assigned]
     good = mutation_report_payload(
         head="a" * 40,
+        nonce="fixture-nonce",
         worker_id=2,
         assigned=assigned,
         results=good_rows,
@@ -8789,6 +9022,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
         validate_mutation_report(
             good,
             head="a" * 40,
+            nonce="fixture-nonce",
             worker_id=2,
             expected=assigned,
             process_returncode=0,
@@ -8807,6 +9041,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
             validate_mutation_report(
                 payload,
                 head="a" * 40,
+                nonce="fixture-nonce",
                 worker_id=2,
                 expected=assigned,
                 process_returncode=returncode,
@@ -8822,6 +9057,13 @@ def orchestration_self_test(fault: str | None = None) -> int:
         "wrong head",
         wrong_head,
         accept_wrong_head=fault == "accept-wrong-head",
+    )
+    wrong_nonce = json.loads(json.dumps(good))
+    wrong_nonce["nonce"] = "wrong-nonce"
+    expect_rejected(
+        "wrong nonce",
+        wrong_nonce,
+        accept_wrong_nonce=fault == "accept-wrong-nonce",
     )
     wrong_registry = json.loads(json.dumps(good))
     wrong_registry["registry_digest"] = "f" * 64
@@ -9753,18 +9995,30 @@ def worker_phase(
         print(f"mutation-probe worker {worker_id}: unknown phase {phase}", file=sys.stderr)
         return 2
 
-    rows: list[dict[str, object]] = []
-    atomic_json(
-        report_path,
-        mutation_report_payload(
+    if report_path.exists():
+        rows = validate_mutation_report(
+            read_json(report_path),
             head=head,
+            nonce=nonce,
             worker_id=worker_id,
-            assigned=assigned,
-            results=rows,
-            complete=False,
-        ),
-    )
-    for item in assigned:
+            expected=assigned,
+            process_returncode=None,
+            allow_partial=True,
+        )
+    else:
+        rows = []
+        atomic_json(
+            report_path,
+            mutation_report_payload(
+                head=head,
+                nonce=nonce,
+                worker_id=worker_id,
+                assigned=assigned,
+                results=rows,
+                complete=False,
+            ),
+        )
+    for item in assigned[len(rows) :]:
         mutation = by_name[item.name][1]
         row = execute_mutation(
             mutation,
@@ -9779,6 +10033,7 @@ def worker_phase(
             report_path,
             mutation_report_payload(
                 head=head,
+                nonce=nonce,
                 worker_id=worker_id,
                 assigned=assigned,
                 results=rows,
@@ -9789,6 +10044,7 @@ def worker_phase(
         report_path,
         mutation_report_payload(
             head=head,
+            nonce=nonce,
             worker_id=worker_id,
             assigned=assigned,
             results=rows,
@@ -9800,14 +10056,9 @@ def worker_phase(
 
 def mutation_checkpoint_problems() -> list[str]:
     """Exercise checkpoint survival across the coordinator's owned cleanup."""
-    fixture_mutations = MUTATIONS[:2]
-    if len(fixture_mutations) != 2:
-        return ["checkpoint resume fixture requires two registered mutations"]
-
     head = "a" * 40
     nonce = "checkpoint-fixture-nonce"
     barrier_digest = "b" * 64
-    mutation_names = [mutation.name for mutation in fixture_mutations]
     failures: list[str] = []
     captured_run_roots: list[Path] = []
 
@@ -9821,8 +10072,31 @@ def mutation_checkpoint_problems() -> list[str]:
         common_dir = temporary / "git-common"
         checkpoint_root = common_dir / "durablerun-mutation-checkpoints"
         pnpm_store = temporary / "pnpm-store"
+        fixture_source = temporary / "source"
         common_dir.mkdir()
         pnpm_store.mkdir()
+        fixture_source.mkdir()
+        fixture_mutations = []
+        for ordinal in range(2):
+            relative_source = f"mutation-{ordinal}.ts"
+            guard = f"checkpoint-guard-{ordinal}"
+            (fixture_source / relative_source).write_text(f"{guard}\n")
+            fixture_mutations.append(
+                Mutation(
+                    f"checkpoint-mutation-{ordinal}",
+                    relative_source,
+                    guard,
+                    f"removed-{ordinal}",
+                    f"checkpoint break {ordinal}",
+                    ExpectedVerdict(
+                        "behavior",
+                        relative_source,
+                        f"checkpoint verdict {ordinal}",
+                        f"mutation-verdict:behavior:checkpoint-mutation-{ordinal}",
+                    ),
+                )
+            )
+        mutation_names = [mutation.name for mutation in fixture_mutations]
 
         emitted_payload: list[object] = []
         emitted_report_paths: list[Path] = []
@@ -9940,6 +10214,7 @@ def mutation_checkpoint_problems() -> list[str]:
             return codes
 
         patched = {
+            "ROOT": fixture_source,
             "assert_clean": lambda _root: None,
             "execute_mutation": fixture_execute,
             "git_output": fixture_git_output,
@@ -9955,10 +10230,12 @@ def mutation_checkpoint_problems() -> list[str]:
         originals = {name: globals()[name] for name in patched}
         original_mutations = MUTATIONS[:]
         original_scope = os.environ.get(CONFINEMENT_ENV)
+        original_token_hex = secrets.token_hex
         try:
             globals().update(patched)
             MUTATIONS[:] = fixture_mutations
             os.environ[CONFINEMENT_ENV] = "1"
+            secrets.token_hex = lambda _size=None: nonce
 
             result_code = coordinate_audit("", "1")
             if result_code != 128 + signal.SIGTERM:
@@ -10004,18 +10281,54 @@ def mutation_checkpoint_problems() -> list[str]:
                     "durable mutation checkpoint is not bound to its coordinator nonce"
                 )
 
-            # Preserve independent evidence for authentication and resume even
-            # while the first red assertion proves the current coordinator lost
-            # its in-run report during cleanup.
+            # Keep testing authentication and resume independently so one
+            # persistence failure cannot hide the rest of the contract.
             authenticated = json.loads(json.dumps(partial))
             authenticated["nonce"] = nonce
-            checkpoint_root.mkdir(parents=True, exist_ok=True)
-            durable_report = checkpoint_root / "mutations-00.json"
+            durable_report = report_path
 
             expected = [
                 expected_result(ordinal, mutation, root=ROOT)
                 for ordinal, mutation in enumerate(fixture_mutations)
             ]
+            try:
+                resumed_nonce = discover_mutation_checkpoint_nonce(
+                    report_path.parent,
+                    [report_path],
+                    [expected],
+                    head=head,
+                )
+            except ValueError as error:
+                failures.append(
+                    f"fresh coordinator could not discover its checkpoint: {error}"
+                )
+            else:
+                if resumed_nonce != nonce:
+                    failures.append(
+                        "fresh coordinator did not reuse the checkpoint nonce"
+                    )
+            manifest_path = report_path.parent / "audit.json"
+            manifest_payload = read_json(manifest_path)
+            if isinstance(manifest_payload, dict):
+                wrong_manifest = json.loads(json.dumps(manifest_payload))
+                wrong_manifest["head"] = "c" * 40
+                atomic_json(manifest_path, wrong_manifest)
+                try:
+                    discover_mutation_checkpoint_nonce(
+                        report_path.parent,
+                        [report_path],
+                        [expected],
+                        head=head,
+                    )
+                except ValueError:
+                    pass
+                else:
+                    failures.append(
+                        "fresh coordinator accepted a stale checkpoint manifest"
+                    )
+                atomic_json(manifest_path, manifest_payload)
+            else:
+                failures.append("durable checkpoint manifest was not an object")
 
             def invoke_worker() -> int:
                 return worker_phase(
@@ -10051,6 +10364,19 @@ def mutation_checkpoint_problems() -> list[str]:
             for label, mismatch in mismatches:
                 atomic_json(durable_report, mismatch)
                 executed_names.clear()
+                try:
+                    discover_mutation_checkpoint_nonce(
+                        durable_report.parent,
+                        [durable_report],
+                        [expected],
+                        head=head,
+                    )
+                except ValueError:
+                    pass
+                else:
+                    failures.append(
+                        f"fresh coordinator accepted the {label} checkpoint"
+                    )
                 rejected = False
                 try:
                     mismatch_code = invoke_worker()
@@ -10108,6 +10434,7 @@ def mutation_checkpoint_problems() -> list[str]:
                         validate_mutation_report(
                             final_payload,
                             head=head,
+                            nonce=nonce,
                             worker_id=0,
                             expected=expected,
                             process_returncode=0,
@@ -10121,6 +10448,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 validate_mutation_report(
                     partial,
                     head=head,
+                    nonce=nonce,
                     worker_id=0,
                     expected=expected,
                     process_returncode=0,
@@ -10134,6 +10462,7 @@ def mutation_checkpoint_problems() -> list[str]:
         finally:
             MUTATIONS[:] = original_mutations
             globals().update(originals)
+            secrets.token_hex = original_token_hex
             if original_scope is None:
                 os.environ.pop(CONFINEMENT_ENV, None)
             else:
@@ -10684,10 +11013,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
     validate_shards(shards, expected)
     max_workers = max(1, usable_cores() // jobs)
 
-    common_dir_text = git_output(ROOT, "rev-parse", "--git-common-dir")
-    common_dir = Path(common_dir_text)
-    if not common_dir.is_absolute():
-        common_dir = (ROOT / common_dir).resolve()
+    common_dir = git_common_directory(ROOT)
     lock_path = common_dir / "durablerun-mutation.lock"
     lock = lock_path.open("a+")
     try:
@@ -10707,13 +11033,28 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
         if git_output(ROOT, "rev-parse", "HEAD^{commit}") != head:
             print("mutation-probe: HEAD moved while acquiring the audit lock", file=sys.stderr)
             return 2
+        shard_names = [[item.name for item in shard] for shard in shards]
+        checkpoint_key = mutation_checkpoint_key(head, shard_names)
+        checkpoint_directory = prepare_mutation_checkpoint_directory(
+            common_dir,
+            checkpoint_key,
+        )
+        checkpoint_reports = [
+            mutation_checkpoint_report_path(common_dir, checkpoint_key, worker_id)
+            for worker_id in range(len(shards))
+        ]
+        nonce = discover_mutation_checkpoint_nonce(
+            checkpoint_directory,
+            checkpoint_reports,
+            shards,
+            head=head,
+        )
         pnpm_store = resolve_pnpm_store(ROOT)
 
         run_root = Path(
             tempfile.mkdtemp(prefix="durablerun-mutation-worktrees-")
         ).resolve()
         manifest_path = run_root / "manifest.json"
-        nonce = secrets.token_hex(16)
         baseline_barrier: BaselineBarrier | None = None
         plans = [
             WorkerPlan(
@@ -10721,7 +11062,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
                 run_root / f"worker-{worker_id:02}",
                 run_root / f"tmp-{worker_id:02}",
                 run_root / f"baseline-{worker_id:02}.json",
-                run_root / f"mutations-{worker_id:02}.json",
+                checkpoint_reports[worker_id],
                 run_root / f"install-{worker_id:02}.log",
                 run_root / f"baseline-{worker_id:02}.log",
                 run_root / f"mutations-{worker_id:02}.log",
@@ -10744,6 +11085,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             flush=True,
         )
         print(f"mutation audit run root: {run_root}", flush=True)
+        print(f"mutation audit checkpoint root: {checkpoint_directory}", flush=True)
 
         result_code = 2
         rows: list[dict[str, object]] = []
@@ -10867,6 +11209,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
                     validate_mutation_report(
                         read_json(plan.mutation_report),
                         head=head,
+                        nonce=nonce,
                         worker_id=plan.worker_id,
                         expected=list(plan.expected),
                         process_returncode=mutation_codes[
