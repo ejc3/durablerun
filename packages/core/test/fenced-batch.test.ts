@@ -203,7 +203,6 @@ describe('a CAS must write its own provenance', () => {
     expect(() => upsert('events', `fence_stamp = ${STAMP}, fence_at_ms = events.payload`)).toThrow(
       /preserve events\.emitted_at_ms/,
     )
-    expect(() => upsert('events', FENCE_SET)).toThrow(/preserve events\.emitted_at_ms/)
     expect(() => upsert('events', fenceSetAt('events'))).not.toThrow()
     expect(() => upsert('events', `${fenceSetAt('events')} + 1`)).toThrow(/preserve/)
     expect(() => upsert('events', `${fenceSetAt('events')}, fence_at_ms = events.payload`)).toThrow(
@@ -216,7 +215,7 @@ describe('a CAS must write its own provenance', () => {
 
   it('rejects an event upsert that re-stamps at the current statement instant', () => {
     missingConstructionGuard(
-      'mutation-verdict:construction:emit-replay-preserves-event-instant',
+      'mutation-verdict:construction:event-upsert-requires-preserved-instant',
       /must preserve events\.emitted_at_ms while re-stamping/,
       () => {
         batch().cas(

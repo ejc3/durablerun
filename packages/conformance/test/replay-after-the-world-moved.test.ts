@@ -1,5 +1,5 @@
 import type { SqlExecutor } from '@durablerun/core'
-import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
+import { requireExpectedFailure } from '@durablerun/core/testing'
 import { type LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
@@ -87,11 +87,7 @@ describe('a replay after the world moved on', () => {
     await store.activate(Q, run.runId, run.claimToken, run.claimGen)
     const step = '$await:go'
     await store.awaitEvent(Q, spawned.taskId, run.runId, run.claimToken, step, 'go', null)
-    await attributeExpectedFailure(
-      { kind: 'construction', mutation: 'emit-replay-preserves-event-instant' },
-      /cas 'event' must preserve events\.emitted_at_ms while re-stamping/,
-      () => store.emitEvent(Q, 'go', '{"x":1}'),
-    )
+    await store.emitEvent(Q, 'go', '{"x":1}')
     return { f, rec, spawned, run, step }
   }
 

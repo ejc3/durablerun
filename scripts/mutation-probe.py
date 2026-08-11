@@ -394,11 +394,12 @@ MUTATION_SPECS = [
         "two wait rows, each disqualifying, combine into a wake",
     ),
     (
-        "emit-replay-preserves-event-instant",
-        "packages/store-libsql/src/store.ts",
-        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}",
-        "       ON CONFLICT (queue, event_name) DO UPDATE SET ${FENCE_SET}",
-        "an older emit replayed after a fresh emit moves its seed to a second instant",
+        "event-upsert-requires-preserved-instant",
+        "packages/core/src/fenced-batch.ts",
+        "        !containsCompleteSet(conflictUpdate, required)",
+        "        !containsCompleteSet(conflictUpdate, required) &&\n"
+        "        !containsCompleteSet(conflictUpdate, FENCE_SET)",
+        "the event upsert primitive accepts the current statement instant",
     ),
     (
         # Not correctness: the emit's access path. Correlating the driver is
@@ -4057,11 +4058,11 @@ VERDICTS = {
         "mutation-verdict:behavior:emit-wake-one-witness",
         "packages/conformance/src/suite.ts",
     ),
-    "emit-replay-preserves-event-instant": ExpectedVerdict(
+    "event-upsert-requires-preserved-instant": ExpectedVerdict(
         "construction",
-        "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "a replay after the world moved on does not reuse one emit provenance seed at a later instant",
-        "mutation-verdict:construction:emit-replay-preserves-event-instant",
+        "packages/core/test/fenced-batch.test.ts",
+        "a CAS must write its own provenance rejects an event upsert that re-stamps at the current statement instant",
+        "mutation-verdict:construction:event-upsert-requires-preserved-instant",
     ),
     "emit-index-driver": ExpectedVerdict(
         "behavior",
