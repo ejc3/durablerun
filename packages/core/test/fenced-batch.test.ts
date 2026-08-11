@@ -214,6 +214,22 @@ describe('a CAS must write its own provenance', () => {
     expect(() => fenceSetAt('runs')).toThrow(/no contract-preserved fence instant/)
   })
 
+  it('rejects an event upsert that re-stamps at the current statement instant', () => {
+    missingConstructionGuard(
+      'mutation-verdict:construction:emit-replay-preserves-event-instant',
+      /must preserve events\.emitted_at_ms while re-stamping/,
+      () => {
+        batch().cas(
+          'win',
+          'events',
+          `INSERT INTO events (queue, ${FENCE_COLS}) VALUES (?, ${FENCE_VALS})
+           ON CONFLICT (queue) DO UPDATE SET ${FENCE_SET}`,
+          ['q'],
+        )
+      },
+    )
+  })
+
   it('rejects a MySQL upsert whose conflict branch leaves provenance stale', () => {
     const upsert = (target: 'events' | 'runs', update: string) =>
       batch().cas(
