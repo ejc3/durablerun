@@ -113,30 +113,6 @@ describe('trusted task-boundary intrinsics', () => {
     ).toBeInstanceOf(RangeError)
   })
 
-  it('serializes task values with the module-captured JSON.stringify', () => {
-    const observed = replaceProperty(
-      JSON,
-      'stringify',
-      () => '{"forged":true}',
-      () => serializeTaskValue('result', { real: true }),
-    )
-    expect(observed, 'mutation-verdict:construction:task-value-captured-stringify').toEqual({
-      value: '{"real":true}',
-    })
-  })
-
-  it('parses task JSON with the module-captured JSON.parse', () => {
-    const observed = replaceProperty(
-      JSON,
-      'parse',
-      () => ({ forged: true }),
-      () => userJsonValue('payload', '{"real":true}'),
-    )
-    expect(observed, 'mutation-verdict:construction:task-value-captured-parse').toEqual({
-      value: '{"real":true}',
-    })
-  })
-
   it('classifies invalid task JSON with the module-captured Array.isArray', () => {
     const observed = replaceProperty(
       Array,
@@ -219,17 +195,31 @@ describe('trusted task-boundary intrinsics', () => {
     ).toBeInstanceOf(FatalTaskError)
   })
 
-  it('rejects a function before a prototype toJSON can disguise it', () => {
+  it('rejects functions at every task-value surface before prototype toJSON can disguise them', () => {
     const observed = replaceProperty(
       Function.prototype,
       'toJSON',
       () => 7,
-      () => serializeTaskValue('result', () => undefined),
+      () => {
+        const rejected = (value: unknown): boolean => {
+          try {
+            serializeTaskValue('result', value)
+            return false
+          } catch (error) {
+            return error instanceof FatalTaskError
+          }
+        }
+        const illegal = () => undefined
+        return {
+          topLevel: rejected(illegal),
+          objectMember: rejected({ illegal }),
+          arrayMember: rejected([illegal]),
+        }
+      },
     )
-    expect(
-      observed.error,
-      'mutation-verdict:behavior:task-value-raw-function-before-to-json',
-    ).toBeInstanceOf(FatalTaskError)
+    expect(observed, 'mutation-verdict:behavior:task-value-raw-function-before-to-json').toEqual({
+      value: { topLevel: true, objectMember: true, arrayMember: true },
+    })
   })
 
   it('rejects a bigint before a prototype toJSON can disguise it', () => {
@@ -291,16 +281,33 @@ describe('trusted task-boundary intrinsics', () => {
     })
   })
 
-  it('serializes dates with the captured Date operation instead of a replaced toJSON', () => {
-    const observed = replaceProperty(
+  it('isolates owned Date snapshots from the captured Date conversion', () => {
+    const owned = replaceProperty(
       Date.prototype,
       'toJSON',
       () => 'forged',
       () => serializeTaskValue('result', { at: new Date(0) }),
     )
-    expect(observed, 'mutation-verdict:behavior:task-value-owned-date-snapshot').toEqual({
+    expect(owned, 'mutation-verdict:behavior:task-value-owned-date-snapshot').toEqual({
       value: '{"at":"1970-01-01T00:00:00.000Z"}',
     })
+
+    const date = new Date(0)
+    Object.defineProperty(date, 'toJSON', {
+      configurable: true,
+      value: () => '1970-01-01T00:00:00.000Z',
+      writable: true,
+    })
+    const converted = replaceProperty(
+      Date.prototype,
+      'toISOString',
+      () => 'forged',
+      () => serializeTaskValue('result', date),
+    )
+    expect(
+      converted,
+      'mutation-verdict:construction:task-value-captured-date-to-iso-string',
+    ).toEqual({ value: '"1970-01-01T00:00:00.000Z"' })
   })
 
   it('snapshots arrays before Array.prototype.toJSON can forge them', () => {
@@ -325,19 +332,6 @@ describe('trusted task-boundary intrinsics', () => {
     expect(observed, 'mutation-verdict:construction:task-value-captured-date-get-time').toEqual({
       value: '"1970-01-01T00:00:00.000Z"',
     })
-  })
-
-  it('uses the captured Date.toISOString conversion', () => {
-    const observed = replaceProperty(
-      Date.prototype,
-      'toISOString',
-      () => 'forged',
-      () => serializeTaskValue('result', new Date(0)),
-    )
-    expect(
-      observed,
-      'mutation-verdict:construction:task-value-captured-date-to-iso-string',
-    ).toEqual({ value: '"1970-01-01T00:00:00.000Z"' })
   })
 
   it('builds owned property descriptors without Object.prototype accessors', () => {

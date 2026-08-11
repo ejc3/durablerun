@@ -451,32 +451,170 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
-  it('a handler cannot replace final-result JSON serialization', async () => {
-    const f = await fx('sdk-captured-result-stringify')
+  it('protects every task-value JSON parse boundary with one captured capability', async () => {
+    const f = await fx('sdk-captured-json-parse-boundaries')
+    const parseDescriptor = Object.getOwnPropertyDescriptor(JSON, 'parse')
+    if (typeof parseDescriptor?.value !== 'function') {
+      f.close()
+      throw new Error('JSON.parse must be an own data property')
+    }
+    const authenticParse = parseDescriptor.value as (...args: unknown[]) => unknown
     try {
-      const spawned = await f.store.spawn(Q, 'job', '{}')
-      const invocation = await claimInvocation(f, 'w1')
+      const spawned = await f.store.spawn(Q, 'job', '{"param":"authentic"}', {
+        retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+        headers: { trace: 'authentic' },
+      })
       const observed = await replacePropertyAsync(
         JSON,
-        'stringify',
-        () => '{"forged":true}',
-        () =>
-          runClaimedRun(
+        'parse',
+        (...args: unknown[]) => {
+          const source = args[0]
+          if (source === '{"kind":"fixed","baseSeconds":1}') return { kind: 'none' }
+          if (source === '{"trace":"authentic"}') return { trace: 'forged' }
+          if (source === '{"param":"authentic"}') return { param: 'forged' }
+          if (source === '{"step":"authentic"}') return { step: 'forged' }
+          return Reflect.apply(authenticParse, JSON, args)
+        },
+        async () => {
+          const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+          if (!run) throw new Error('expected a claimable run')
+          const outcome = await runClaimedRun(
             {
               store: f.store,
               clock: f.clock,
-              registry: registry({ job: async () => ({ real: true }) }),
+              registry: registry({
+                job: async (ctx, params) => ({
+                  params,
+                  step: await ctx.step('value', () => ({ step: 'authentic' })),
+                }),
+              }),
             },
-            invocation,
-          ),
+            { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+          )
+          const result = await f.store.getTaskResult(Q, spawned.taskId)
+          return {
+            claim: { retryStrategy: run.retryStrategy, headers: run.headers },
+            outcome,
+            result,
+          }
+        },
       )
-      const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(
-        { observed, result },
-        'mutation-verdict:behavior:sdk-result-captured-stringify',
-      ).toEqual({
-        observed: { value: { kind: 'completed' } },
-        result: { state: 'completed', completedPayloadJson: '{"real":true}' },
+      expect(observed, 'mutation-verdict:construction:task-value-captured-parse').toEqual({
+        value: {
+          claim: {
+            retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+            headers: { trace: 'authentic' },
+          },
+          outcome: { kind: 'completed' },
+          result: {
+            state: 'completed',
+            completedPayloadJson: '{"params":{"param":"authentic"},"step":{"step":"authentic"}}',
+          },
+        },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('protects every task-value JSON stringify boundary with one captured capability', async () => {
+    const f = await fx('sdk-captured-json-stringify-boundaries')
+    const stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify')
+    if (typeof stringifyDescriptor?.value !== 'function') {
+      f.close()
+      throw new Error('JSON.stringify must be an own data property')
+    }
+    const authenticStringify = stringifyDescriptor.value as (...args: unknown[]) => unknown
+    try {
+      const observed = await replacePropertyAsync(
+        JSON,
+        'stringify',
+        (...args: unknown[]) => {
+          const candidate = args[0]
+          if (typeof candidate === 'object' && candidate !== null) {
+            if (
+              Reflect.get(candidate, 'kind') === 'fixed' &&
+              Reflect.get(candidate, 'baseSeconds') === 1.234
+            ) {
+              return '{"kind":"none"}'
+            }
+            if (
+              Reflect.get(candidate, 'maxDelaySeconds') === 30 &&
+              Reflect.get(candidate, 'maxDurationSeconds') === 60
+            ) {
+              return '{"maxDelaySeconds":999,"maxDurationSeconds":999}'
+            }
+            if (Reflect.get(candidate, 'trace') === 'authentic') {
+              return '{"trace":"forged"}'
+            }
+            if (Reflect.get(candidate, 'inSeconds') === 10) {
+              return '{"inSeconds":999}'
+            }
+            if (Reflect.get(candidate, 'real') === true) {
+              return '{"forged":true}'
+            }
+          }
+          return Reflect.apply(authenticStringify, JSON, args)
+        },
+        async () => {
+          const spawned = await f.store.spawn(Q, 'job', '{}', {
+            retryStrategy: { kind: 'fixed', baseSeconds: 1.234 },
+            cancellation: { maxDelaySeconds: 30, maxDurationSeconds: 60 },
+            headers: { trace: 'authentic' },
+          })
+          const [task] = await f.raw.batch(
+            'captured-stringify-task',
+            [
+              {
+                sql: `SELECT retry_strategy, cancellation, headers
+                      FROM tasks WHERE task_id = ?`,
+                args: [spawned.taskId],
+              },
+            ],
+            'read',
+          )
+          const reg = registry({
+            job: async (ctx) => {
+              await ctx.sleepFor(10)
+              return { real: true }
+            },
+          })
+          const first = await claimAndRun(f, reg, 'w1')
+          const [checkpoint] = await f.raw.batch(
+            'captured-stringify-checkpoint',
+            [
+              {
+                sql: `SELECT state FROM checkpoints
+                      WHERE task_id = ? AND checkpoint_name = '$sleep'`,
+                args: [spawned.taskId],
+              },
+            ],
+            'read',
+          )
+          await f.advance(10_000)
+          const second = await claimAndRun(f, reg, 'w2')
+          const result = await f.store.getTaskResult(Q, spawned.taskId)
+          return {
+            task: task?.rows[0],
+            first,
+            checkpoint: checkpoint?.rows[0],
+            second,
+            result,
+          }
+        },
+      )
+      expect(observed, 'mutation-verdict:construction:task-value-captured-stringify').toEqual({
+        value: {
+          task: {
+            retry_strategy: '{"kind":"fixed","baseSeconds":1.234}',
+            cancellation: '{"maxDelaySeconds":30,"maxDurationSeconds":60}',
+            headers: '{"trace":"authentic"}',
+          },
+          first: { kind: 'suspended' },
+          checkpoint: { state: '{"inSeconds":10}' },
+          second: { kind: 'completed' },
+          result: { state: 'completed', completedPayloadJson: '{"real":true}' },
+        },
       })
     } finally {
       f.close()
@@ -666,77 +804,6 @@ describe('runClaimedRun', () => {
     })
   })
 
-  it('a handler cannot replace the executing-pass canonical JSON parse', async () => {
-    const f = await fx('sdk-captured-context-parse')
-    try {
-      const spawned = await f.store.spawn(Q, 'job', '{}')
-      const reg = registry({
-        job: async (ctx) => {
-          const descriptor = Object.getOwnPropertyDescriptor(JSON, 'parse')
-          if (descriptor === undefined) throw new Error('expected JSON.parse')
-          Object.defineProperty(JSON, 'parse', {
-            configurable: true,
-            value: () => ({ forged: true }),
-            writable: true,
-          })
-          try {
-            return await ctx.step('value', () => ({ real: true }))
-          } finally {
-            Object.defineProperty(JSON, 'parse', descriptor)
-          }
-        },
-      })
-      expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'completed' })
-      const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(result, 'mutation-verdict:construction:sdk-context-captured-json-parse').toEqual({
-        state: 'completed',
-        completedPayloadJson: '{"real":true}',
-      })
-    } finally {
-      f.close()
-    }
-  })
-
-  it('a handler cannot replace durable sleep-marker serialization', async () => {
-    const f = await fx('sdk-captured-context-stringify')
-    try {
-      const spawned = await f.store.spawn(Q, 'job', '{}')
-      const reg = registry({
-        job: async (ctx) => {
-          const descriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify')
-          if (descriptor === undefined) throw new Error('expected JSON.stringify')
-          Object.defineProperty(JSON, 'stringify', {
-            configurable: true,
-            value: () => '{"forged":true}',
-            writable: true,
-          })
-          try {
-            await ctx.sleepFor(10)
-          } finally {
-            Object.defineProperty(JSON, 'stringify', descriptor)
-          }
-        },
-      })
-      expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'suspended' })
-      const [checkpoint] = await f.raw.batch(
-        'sleep-marker',
-        [
-          {
-            sql: `SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = '$sleep'`,
-            args: [spawned.taskId],
-          },
-        ],
-        'read',
-      )
-      expect(
-        checkpoint?.rows,
-        'mutation-verdict:construction:sdk-context-captured-json-stringify',
-      ).toEqual([{ state: '{"inSeconds":10}' }])
-    } finally {
-      f.close()
-    }
-  })
-
   it('a handler cannot replace bounded worker finalization', async () => {
     const f = await fx('sdk-captured-promise-race')
     try {
@@ -849,52 +916,6 @@ describe('runClaimedRun', () => {
     expect(observed, 'mutation-verdict:construction:sdk-captured-promise-race-iterator').toEqual({
       value: undefined,
     })
-  })
-
-  it('task initialization cannot replace handler parameter parsing', async () => {
-    const f = await fx('sdk-captured-params-parse')
-    try {
-      const spawned = await f.store.spawn(Q, 'job', '{"real":true}')
-      const invocation = await claimInvocation(f, 'w1')
-      const parseDescriptor = Object.getOwnPropertyDescriptor(JSON, 'parse')
-      if (parseDescriptor === undefined) throw new Error('expected JSON.parse')
-      const handler: TaskHandler = async (_ctx, params) => params
-      const reg = new Proxy(registry({ job: handler }), {
-        get(_target, property) {
-          if (property !== 'get') return undefined
-          return () => {
-            Object.defineProperty(JSON, 'parse', {
-              configurable: true,
-              value: () => ({ forged: true }),
-              writable: true,
-            })
-            return handler
-          }
-        },
-      })
-      let observed: { value?: unknown; error?: unknown }
-      try {
-        observed = await runClaimedRun(
-          { store: f.store, clock: f.clock, registry: reg },
-          invocation,
-        ).then(
-          (value) => ({ value }),
-          (error: unknown) => ({ error }),
-        )
-      } finally {
-        Object.defineProperty(JSON, 'parse', parseDescriptor)
-      }
-      const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(
-        { observed, result },
-        'mutation-verdict:construction:sdk-worker-captured-json-parse',
-      ).toEqual({
-        observed: { value: { kind: 'completed' } },
-        result: { state: 'completed', completedPayloadJson: '{"real":true}' },
-      })
-    } finally {
-      f.close()
-    }
   })
 
   it('a handler cannot replace heartbeat shutdown', async () => {

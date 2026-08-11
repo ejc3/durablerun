@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { FatalTaskError, serializeTaskValue, userJsonValue } from '../src/index.js'
 
 const ILLEGAL_VALUES: readonly (readonly [string, () => unknown])[] = [
-  ['function', () => () => undefined],
   ['bigint', () => 1n],
   [
     'cycle',
