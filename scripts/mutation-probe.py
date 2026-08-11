@@ -9468,6 +9468,9 @@ def orchestration_self_test(fault: str | None = None) -> int:
         finally:
             TEST_CMD[:] = original_command
 
+    if fault is None:
+        failures.extend(mutation_checkpoint_problems())
+
     if failures:
         if fault is not None:
             print(
@@ -9793,6 +9796,358 @@ def worker_phase(
         ),
     )
     return 0 if all(row["outcome"] == "caught" for row in rows) else 1
+
+
+def mutation_checkpoint_problems() -> list[str]:
+    """Exercise checkpoint survival across the coordinator's owned cleanup."""
+    fixture_mutations = MUTATIONS[:2]
+    if len(fixture_mutations) != 2:
+        return ["checkpoint resume fixture requires two registered mutations"]
+
+    head = "a" * 40
+    nonce = "checkpoint-fixture-nonce"
+    barrier_digest = "b" * 64
+    mutation_names = [mutation.name for mutation in fixture_mutations]
+    failures: list[str] = []
+    captured_run_roots: list[Path] = []
+
+    class UnexpectedCheckpointExecution(RuntimeError):
+        pass
+
+    with tempfile.TemporaryDirectory(
+        prefix="durablerun-checkpoint-selftest-"
+    ) as temporary_text:
+        temporary = Path(temporary_text)
+        common_dir = temporary / "git-common"
+        checkpoint_root = common_dir / "durablerun-mutation-checkpoints"
+        pnpm_store = temporary / "pnpm-store"
+        common_dir.mkdir()
+        pnpm_store.mkdir()
+
+        emitted_payload: list[object] = []
+        emitted_report_paths: list[Path] = []
+        executed_names: list[str] = []
+        execution_mode = ["interrupt"]
+
+        def command_value(command: tuple[str, ...], option: str) -> str:
+            return command[command.index(option) + 1]
+
+        def command_values(command: tuple[str, ...], option: str) -> list[str]:
+            return [
+                command[index + 1]
+                for index, value in enumerate(command[:-1])
+                if value == option
+            ]
+
+        def fixture_git_output(_root: Path, *arguments: str) -> str:
+            if arguments == ("rev-parse", "HEAD^{commit}"):
+                return head
+            if arguments == ("rev-parse", "--git-common-dir"):
+                return str(common_dir)
+            if arguments == ("status", "--porcelain"):
+                return ""
+            return ""
+
+        def fixture_git_result(
+            _root: Path, *arguments: str
+        ) -> subprocess.CompletedProcess[str]:
+            if arguments[:4] == ("worktree", "add", "--detach", "--quiet"):
+                worker_root = Path(arguments[4])
+                worker_root.mkdir(parents=True)
+                (worker_root / ".git").write_text("gitdir: fixture\n")
+            return subprocess.CompletedProcess(("git", *arguments), 0, "", "")
+
+        def fixture_authority(**arguments: object) -> WorkerAuthority:
+            return WorkerAuthority(
+                Path(str(arguments["run_root"])).resolve(),
+                Path(str(arguments["worker_root"])).resolve(),
+                int(arguments["worker_id"]),
+                str(arguments["head"]),
+                str(arguments["nonce"]),
+            )
+
+        def fixture_execute(
+            _mutation: Mutation,
+            expected: ExpectedMutationResult,
+            **_arguments: object,
+        ) -> dict[str, object]:
+            executed_names.append(expected.name)
+            if execution_mode[0] == "interrupt" and len(executed_names) == 2:
+                raise AuditSignal(signal.SIGTERM)
+            if execution_mode[0] == "reject":
+                raise UnexpectedCheckpointExecution(expected.name)
+            return mutation_result_row(expected, "caught", "attributable")
+
+        def baseline_report(launch: ProcessLaunch) -> None:
+            command = launch.command
+            worker_id = int(command_value(command, "--worker-id"))
+            assigned_names = command_values(command, "--worker-mutation")
+            atomic_json(
+                Path(command_value(command, "--worker-result")),
+                {
+                    "version": REPORT_VERSION,
+                    "phase": "baseline",
+                    "head": head,
+                    "registry_digest": mutation_registry_digest(),
+                    "worker_id": worker_id,
+                    "assigned": assigned_names,
+                    "complete": True,
+                    "green": True,
+                    "diagnostic": "",
+                },
+            )
+
+        def fixture_run_launches(
+            launches: list[ProcessLaunch],
+            *,
+            allowed_returncodes: frozenset[int],
+            omit_exited_groups: bool = False,
+        ) -> dict[str, int]:
+            del allowed_returncodes, omit_exited_groups
+            if all(launch.label.startswith("install ") for launch in launches):
+                return {launch.label: 0 for launch in launches}
+            if all(launch.label.startswith("baseline ") for launch in launches):
+                for launch in launches:
+                    baseline_report(launch)
+                return {launch.label: 0 for launch in launches}
+
+            codes: dict[str, int] = {}
+            for launch in launches:
+                command = launch.command
+                report_path = Path(command_value(command, "--worker-result"))
+                run_root = Path(command_value(command, "--worker-run-root"))
+                emitted_report_paths.append(report_path)
+                captured_run_roots.append(run_root)
+                try:
+                    codes[launch.label] = worker_phase(
+                        phase="mutations",
+                        report_path=report_path,
+                        head=command_value(command, "--worker-head"),
+                        worker_id=int(command_value(command, "--worker-id")),
+                        mutation_names=command_values(
+                            command, "--worker-mutation"
+                        ),
+                        max_workers=int(command_value(command, "--max-workers")),
+                        run_root=run_root,
+                        nonce=command_value(command, "--worker-nonce"),
+                        baseline_barrier=command_value(
+                            command, "--worker-baseline-barrier"
+                        ),
+                    )
+                finally:
+                    if report_path.exists():
+                        emitted_payload.append(read_json(report_path))
+            return codes
+
+        patched = {
+            "assert_clean": lambda _root: None,
+            "execute_mutation": fixture_execute,
+            "git_output": fixture_git_output,
+            "git_result": fixture_git_result,
+            "prove_confined_scope": lambda: ConfinedScope("self-test", 1, 1, 1),
+            "prove_worker_authority": fixture_authority,
+            "prove_workspace_links": lambda root: IsolatedWorkspace(root.resolve()),
+            "registered_worktrees": lambda: set(),
+            "resolve_pnpm_store": lambda _root: pnpm_store,
+            "run_launches": fixture_run_launches,
+            "usable_cores": lambda: 1,
+        }
+        originals = {name: globals()[name] for name in patched}
+        original_mutations = MUTATIONS[:]
+        original_scope = os.environ.get(CONFINEMENT_ENV)
+        try:
+            globals().update(patched)
+            MUTATIONS[:] = fixture_mutations
+            os.environ[CONFINEMENT_ENV] = "1"
+
+            result_code = coordinate_audit("", "1")
+            if result_code != 128 + signal.SIGTERM:
+                failures.append(
+                    "checkpoint cleanup fixture did not preserve the worker interrupt status"
+                )
+            if len(emitted_report_paths) != 1 or len(emitted_payload) != 1:
+                failures.append(
+                    "checkpoint cleanup fixture did not observe one partial worker report"
+                )
+                return failures
+
+            run_root = captured_run_roots[0]
+            report_path = emitted_report_paths[0]
+            partial = emitted_payload[0]
+            if run_root.exists():
+                failures.append("owned cleanup left the interrupted run root behind")
+            try:
+                report_path.resolve().relative_to(checkpoint_root.resolve())
+            except ValueError:
+                failures.append(
+                    "coordinator kept the mutation checkpoint inside its disposable run root"
+                )
+            if not report_path.exists():
+                failures.append(
+                    "completed mutation row disappeared when owned run-root cleanup finished"
+                )
+            if not isinstance(partial, dict):
+                failures.append("interrupted worker checkpoint was not an object")
+                return failures
+            rows = partial.get("results")
+            if (
+                partial.get("complete") is not False
+                or not isinstance(rows, list)
+                or [row.get("name") for row in rows if isinstance(row, dict)]
+                != mutation_names[:1]
+            ):
+                failures.append(
+                    "interrupted worker did not atomically retain exactly its completed prefix"
+                )
+            if partial.get("nonce") != nonce:
+                failures.append(
+                    "durable mutation checkpoint is not bound to its coordinator nonce"
+                )
+
+            # Preserve independent evidence for authentication and resume even
+            # while the first red assertion proves the current coordinator lost
+            # its in-run report during cleanup.
+            authenticated = json.loads(json.dumps(partial))
+            authenticated["nonce"] = nonce
+            checkpoint_root.mkdir(parents=True, exist_ok=True)
+            durable_report = checkpoint_root / "mutations-00.json"
+
+            expected = [
+                expected_result(ordinal, mutation, root=ROOT)
+                for ordinal, mutation in enumerate(fixture_mutations)
+            ]
+
+            def invoke_worker() -> int:
+                return worker_phase(
+                    phase="mutations",
+                    report_path=durable_report,
+                    head=head,
+                    worker_id=0,
+                    mutation_names=mutation_names,
+                    max_workers=1,
+                    run_root=checkpoint_root,
+                    nonce=nonce,
+                    baseline_barrier=barrier_digest,
+                )
+
+            mismatches: list[tuple[str, dict[str, object]]] = []
+            wrong_head = json.loads(json.dumps(authenticated))
+            wrong_head["head"] = "c" * 40
+            mismatches.append(("head", wrong_head))
+            wrong_nonce = json.loads(json.dumps(authenticated))
+            wrong_nonce["nonce"] = "stale-nonce"
+            mismatches.append(("nonce", wrong_nonce))
+            wrong_registry = json.loads(json.dumps(authenticated))
+            wrong_registry["registry_digest"] = "d" * 64
+            mismatches.append(("registry", wrong_registry))
+            wrong_selection = json.loads(json.dumps(authenticated))
+            wrong_selection["assigned"] = list(reversed(mutation_names))
+            mismatches.append(("selection", wrong_selection))
+            wrong_row = json.loads(json.dumps(authenticated))
+            wrong_row["results"][0]["mutated_sha256"] = "e" * 64
+            mismatches.append(("row metadata", wrong_row))
+
+            execution_mode[0] = "reject"
+            for label, mismatch in mismatches:
+                atomic_json(durable_report, mismatch)
+                executed_names.clear()
+                rejected = False
+                try:
+                    mismatch_code = invoke_worker()
+                    rejected = mismatch_code == worker_infrastructure_returncode()
+                except ValueError:
+                    rejected = True
+                except UnexpectedCheckpointExecution:
+                    pass
+                except Exception as error:
+                    failures.append(
+                        f"{label} checkpoint raised the wrong rejection: {error}"
+                    )
+                if executed_names or not rejected:
+                    failures.append(
+                        f"{label} checkpoint reached mutation execution instead of rejection"
+                    )
+
+            atomic_json(durable_report, authenticated)
+            executed_names.clear()
+            execution_mode[0] = "resume"
+            try:
+                resume_code = invoke_worker()
+            except Exception as error:
+                failures.append(f"authenticated checkpoint could not resume: {error}")
+            else:
+                if resume_code != 0:
+                    failures.append("authenticated complete resume returned nonzero")
+                if executed_names != mutation_names[1:]:
+                    failures.append(
+                        "authenticated resume did not skip exactly the completed mutation prefix"
+                    )
+                final_payload = read_json(durable_report)
+                if not isinstance(final_payload, dict):
+                    failures.append("resumed worker final report was not an object")
+                else:
+                    final_rows = final_payload.get("results")
+                    final_names = (
+                        [
+                            row.get("name")
+                            for row in final_rows
+                            if isinstance(row, dict)
+                        ]
+                        if isinstance(final_rows, list)
+                        else []
+                    )
+                    if (
+                        final_payload.get("complete") is not True
+                        or final_payload.get("nonce") != nonce
+                        or final_names != mutation_names
+                    ):
+                        failures.append(
+                            "resume published success without the authenticated complete set"
+                        )
+                    try:
+                        validate_mutation_report(
+                            final_payload,
+                            head=head,
+                            worker_id=0,
+                            expected=expected,
+                            process_returncode=0,
+                        )
+                    except ValueError as error:
+                        failures.append(
+                            f"authenticated complete resume report was rejected: {error}"
+                        )
+
+            try:
+                validate_mutation_report(
+                    partial,
+                    head=head,
+                    worker_id=0,
+                    expected=expected,
+                    process_returncode=0,
+                )
+            except ValueError:
+                pass
+            else:
+                failures.append(
+                    "an interrupted partial checkpoint was accepted as final success"
+                )
+        finally:
+            MUTATIONS[:] = original_mutations
+            globals().update(originals)
+            if original_scope is None:
+                os.environ.pop(CONFINEMENT_ENV, None)
+            else:
+                os.environ[CONFINEMENT_ENV] = original_scope
+            temporary_root = Path(tempfile.gettempdir()).resolve()
+            for run_root in captured_run_roots:
+                resolved = run_root.resolve()
+                if (
+                    resolved.exists()
+                    and resolved.parent == temporary_root
+                    and resolved.name.startswith("durablerun-mutation-worktrees-")
+                ):
+                    shutil.rmtree(resolved)
+    return failures
 
 
 def usable_cores() -> int:
