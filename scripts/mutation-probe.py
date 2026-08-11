@@ -712,11 +712,11 @@ MUTATION_SPECS = [
     (
         "checkpoint-read-requires-owner-attempt-relation",
         "packages/store-libsql/src/store.ts",
-        "          WHERE ${checkpointOwnerMatches('c', 'owner')}",
-        "          WHERE ${checkpointOwnerMatches('c', 'owner').replace(\n"
-        "            'AND owner.attempt = c.owner_attempt',\n"
-        "            'AND 1 = 1',\n"
-        "          )}",
+        "                  ON ${checkpointOwnerMatches('c', 'owner')}",
+        "                  ON ${checkpointOwnerMatches('c', 'owner').replace(\n"
+        "                    'AND owner.attempt = c.owner_attempt',\n"
+        "                    'AND 1 = 1',\n"
+        "                  )}",
         "checkpoint reads surface a forged owner ordinal",
     ),
     (
