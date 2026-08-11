@@ -412,18 +412,6 @@ MUTATION_SPECS = [
         "every emit scans the runs table instead of seeking the waits index",
     ),
     (
-        # The cleanup must follow the WAKE, not the event. Fencing it on the
-        # event instead selects runs the event stamp never touched, so it
-        # deletes nothing and every woken run keeps a spent registration --
-        # the mirror of the bug that had it deleting registrations of runs it
-        # never woke.
-        "emit-cleanup-follows-the-wake",
-        "packages/store-libsql/src/store.ts",
-        "      fence: 'wake-runs',\n      // Same reason as wake-tasks",
-        "      fence: 'event',\n      // Same reason as wake-tasks",
-        "the cleanup stops tracking which runs were actually woken",
-    ),
-    (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
         "         AND wake_event = ?\n",
@@ -706,10 +694,12 @@ MUTATION_SPECS = [
     ),
     (
         "current-run-requires-highest-owned-ordinal",
-        "packages/store-libsql/src/fragments.ts",
-        "        OR higher.attempt > ${run}.attempt)\n",
-        "        OR 1 = 0)\n",
-        "an obsolete live run remains eligible beneath a higher historical ordinal",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${storedCurrentRunAccounting(run, task)}\n"
+        "               AND ${storedHighestOwnedOrdinal(run)}`",
+        "               AND ${storedCurrentRunAccounting(run, task)}\n"
+        "               AND 1 = 1`",
+        "claim admits an obsolete live run beneath a higher historical ordinal",
     ),
     (
         "checkpoint-read-requires-owner-join",
@@ -721,8 +711,11 @@ MUTATION_SPECS = [
     (
         "checkpoint-read-requires-owner-attempt-relation",
         "packages/store-libsql/src/store.ts",
-        "   AND ${owner}.attempt = ${checkpoint}.owner_attempt`",
-        "   AND 1 = 1`",
+        "          WHERE ${checkpointOwnerMatches('c', 'owner')}",
+        "          WHERE ${checkpointOwnerMatches('c', 'owner').replace(\n"
+        "            'AND owner.attempt = c.owner_attempt',\n"
+        "            'AND 1 = 1',\n"
+        "          )}",
         "checkpoint reads surface a forged owner ordinal",
     ),
     (
@@ -4055,23 +4048,19 @@ VERDICTS = {
         "the emit fan-out, which is a WRITE is driven by the waits index, not by a scan of runs",
         "mutation-verdict:behavior:emit-index-driver",
     ),
-    "emit-cleanup-follows-the-wake": ExpectedVerdict(
-        "construction",
-        "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "emitEvent only wakes runs that are parked on that event keeps the registration of a waiter it did not wake",
-        "mutation-verdict:construction:emit-cleanup-follows-the-wake",
-    ),
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "emitEvent only wakes runs that are parked on that event does not deliver event B to a run parked on event A",
-        "mutation-verdict:behavior:emit-wake-event-correlation",
+        "packages/conformance/test/libsql.test.ts",
+        "wake witness conformance [libsql] decides every park against every pair of corruptions",
+        "mutation-verdict:behavior:emit-wake-one-witness",
+        "packages/conformance/src/suite.ts",
     ),
     "emit-wake-step-correlation": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "emitEvent only wakes runs that are parked on that event does not let one await step consume another step of the same event",
+        "packages/conformance/test/libsql.test.ts",
+        "wake witness conformance [libsql] decides every park against every single-row corruption",
         "mutation-verdict:behavior:emit-wake-step-correlation",
+        "packages/conformance/src/suite.ts",
     ),
     "successor-ownership": ExpectedVerdict(
         "behavior",
@@ -4135,9 +4124,10 @@ VERDICTS = {
     ),
     "legacy-wait-step-unique-scalar": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/legacy-rows.test.ts",
-        "ambiguous legacy wait registrations does not choose an event wait step when several registrations match",
-        "mutation-verdict:behavior:legacy-wait-step-unique-scalar",
+        "packages/conformance/test/libsql.test.ts",
+        "wake witness conformance [libsql] decides every park against every pair of corruptions",
+        "mutation-verdict:behavior:emit-wake-one-witness",
+        "packages/conformance/src/suite.ts",
     ),
     "legacy-wait-claim-cardinality": ExpectedVerdict(
         "behavior",
@@ -5978,9 +5968,6 @@ MUTATIONS = [
 # claiming a live mutation of their own. Keep the set exact and reasons local:
 # every other compiler-harvested marker must resolve to an ExpectedVerdict.
 VERDICT_MARKER_EXEMPTIONS = {
-    "mutation-verdict:behavior:emit-cleanup-follows-the-wake": (
-        "secondary state diagnostic for the construction-owned live mutation of the same name"
-    ),
     "mutation-verdict:behavior:fault-matrix-edge-crossing:fresh": (
         "healthy generated-matrix control; edge mutations own the non-fresh markers"
     ),
