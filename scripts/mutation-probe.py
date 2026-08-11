@@ -28,6 +28,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -43,6 +44,7 @@ from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
+MUTATION_SUITE_WALL_TIME_SECONDS = 300.0
 
 
 VerdictKind = Literal["behavior", "construction"]
@@ -6270,6 +6272,34 @@ def require_verifier_capabilities(
         raise RuntimeError("mutation verifier lacks its runtime safety capabilities")
 
 
+def run_suite_process(
+    command: list[str],
+    *,
+    output: object,
+    wall_time_seconds: float,
+) -> int:
+    """Run one verifier suite with a deadline that owns its whole process group."""
+    if not math.isfinite(wall_time_seconds) or wall_time_seconds <= 0:
+        raise ValueError("suite wall-time limit must be finite and positive")
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdout=output,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        return process.wait(timeout=wall_time_seconds)
+    except subprocess.TimeoutExpired as error:
+        terminate_process_groups([process])
+        raise SuiteInfrastructureError(
+            f"suite wall-time limit of {wall_time_seconds:g}s exceeded"
+        ) from error
+    except BaseException:
+        terminate_process_groups([process])
+        raise
+
+
 def run_suite(
     max_workers: int,
     *,
@@ -6277,7 +6307,7 @@ def run_suite(
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
     return_transport_as_domain: bool = False,
-    suite_wall_time_seconds: float | None = None,
+    suite_wall_time_seconds: float = MUTATION_SUITE_WALL_TIME_SECONDS,
 ) -> SuiteResult:
     require_verifier_capabilities(
         scope=scope,
@@ -6292,11 +6322,10 @@ def run_suite(
             command.extend(("--maxWorkers", str(max_workers)))
         command.extend(("--reporter=json", "--outputFile", str(report)))
         with log.open("wb") as output:
-            result = subprocess.run(
+            returncode = run_suite_process(
                 command,
-                cwd=ROOT,
-                stdout=output,
-                stderr=subprocess.STDOUT,
+                output=output,
+                wall_time_seconds=suite_wall_time_seconds,
             )
         diagnostic = diagnostic_tail(log)
         if not report.exists():
@@ -6304,7 +6333,7 @@ def run_suite(
             return reject_suite_transport(
                 message,
                 SuiteResult(
-                    result.returncode == 0,
+                    returncode == 0,
                     False,
                     (),
                     (message,),
@@ -6314,13 +6343,13 @@ def run_suite(
             )
         parsed = parse_report(
             report.read_text(),
-            result.returncode == 0,
+            returncode == 0,
             diagnostic,
             return_transport_as_domain=return_transport_as_domain,
         )
-        if result.returncode >= 0:
+        if returncode >= 0:
             return parsed
-        message = f"Vitest terminated by signal {-result.returncode}"
+        message = f"Vitest terminated by signal {-returncode}"
         return reject_suite_transport(
             message,
             parsed,
@@ -6396,6 +6425,7 @@ def run_typecheck(
     scope: ConfinedScope,
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
+    suite_wall_time_seconds: float = MUTATION_SUITE_WALL_TIME_SECONDS,
 ) -> SuiteResult:
     """Run the compiler leg and attribute only the intended unused-error directive."""
     require_verifier_capabilities(
@@ -6406,15 +6436,14 @@ def run_typecheck(
     with tempfile.TemporaryDirectory(prefix="durablerun-mutation-typecheck-") as temporary:
         log = Path(temporary) / "tsc.log"
         with log.open("wb") as output:
-            result = subprocess.run(
+            returncode = run_suite_process(
                 TYPECHECK_CMD,
-                cwd=ROOT,
-                stdout=output,
-                stderr=subprocess.STDOUT,
+                output=output,
+                wall_time_seconds=suite_wall_time_seconds,
             )
         compiler_output = log.read_text(errors="replace")
         diagnostic = diagnostic_tail(log)
-    if result.returncode == 0:
+    if returncode == 0:
         return SuiteResult(True, True, (), (), diagnostic)
     if expected is None:
         return SuiteResult(
