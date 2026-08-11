@@ -807,6 +807,86 @@ describe('fence provenance', () => {
     }
   })
 
+  it('claim retry parsing cannot be redirected after the durable guard', async () => {
+    const f = await fixture()
+    const parseDescriptor = Object.getOwnPropertyDescriptor(JSON, 'parse')
+    if (typeof parseDescriptor?.value !== 'function') {
+      f.close()
+      throw new Error('JSON.parse must be an own data property')
+    }
+    const authenticParse = parseDescriptor.value as (...args: unknown[]) => unknown
+    try {
+      await f.store.spawn(Q, 'parser-retry', '{}', {
+        retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+      })
+
+      let claimed: Awaited<ReturnType<LibsqlSchedulerStore['claim']>>
+      try {
+        Object.defineProperty(JSON, 'parse', {
+          ...parseDescriptor,
+          value: (...args: unknown[]) =>
+            args[0] === '{"kind":"fixed","baseSeconds":1}'
+              ? { kind: 'none' }
+              : Reflect.apply(authenticParse, JSON, args),
+        })
+        claimed = await f.store.claim(Q, 'parser-retry-worker', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+      } finally {
+        restoreOwnProperty(JSON, 'parse', parseDescriptor)
+      }
+
+      expect(
+        claimed[0]?.retryStrategy,
+        'mutation-verdict:behavior:claim-retry-captured-parser',
+      ).toEqual({ kind: 'fixed', baseSeconds: 1 })
+    } finally {
+      restoreOwnProperty(JSON, 'parse', parseDescriptor)
+      f.close()
+    }
+  })
+
+  it('claim header parsing cannot be redirected after the durable guard', async () => {
+    const f = await fixture()
+    const parseDescriptor = Object.getOwnPropertyDescriptor(JSON, 'parse')
+    if (typeof parseDescriptor?.value !== 'function') {
+      f.close()
+      throw new Error('JSON.parse must be an own data property')
+    }
+    const authenticParse = parseDescriptor.value as (...args: unknown[]) => unknown
+    try {
+      await f.store.spawn(Q, 'parser-headers', '{}', {
+        headers: { trace: 'authentic' },
+      })
+
+      let claimed: Awaited<ReturnType<LibsqlSchedulerStore['claim']>>
+      try {
+        Object.defineProperty(JSON, 'parse', {
+          ...parseDescriptor,
+          value: (...args: unknown[]) =>
+            args[0] === '{"trace":"authentic"}'
+              ? { trace: 'forged-by-ambient-parser' }
+              : Reflect.apply(authenticParse, JSON, args),
+        })
+        claimed = await f.store.claim(Q, 'parser-headers-worker', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+      } finally {
+        restoreOwnProperty(JSON, 'parse', parseDescriptor)
+      }
+
+      expect(
+        claimed[0]?.headers,
+        'mutation-verdict:behavior:claim-headers-captured-parser',
+      ).toEqual({ trace: 'authentic' })
+    } finally {
+      restoreOwnProperty(JSON, 'parse', parseDescriptor)
+      f.close()
+    }
+  })
+
   it('spawn never reports a run id that does not exist', async () => {
     // spawn resolves its answer with a read that cannot tell "the run I just
     // inserted" from "whatever run this task already had" — and when the
