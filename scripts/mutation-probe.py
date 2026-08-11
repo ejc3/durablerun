@@ -37,6 +37,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -9154,6 +9155,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="durablerun-orchestration-selftest-") as tmp:
         temporary = Path(tmp)
+        if fault is None:
+            failures.extend(audit_lock_inheritance_problems(temporary))
         canonical_store = temporary / "canonical-pnpm-store"
         canonical_store.mkdir()
         valid_store_result = subprocess.CompletedProcess(
@@ -10614,6 +10617,7 @@ class ProcessLaunch:
     cwd: Path
     log: Path
     environment: dict[str, str]
+    inherited_fds: tuple[int, ...] = ()
 
 
 def process_id_is_live(process_id: int) -> bool:
@@ -10763,6 +10767,149 @@ def run_launches(
     finally:
         for handle in handles.values():
             handle.close()
+
+
+def audit_lock_inheritance_problems(temporary: Path) -> list[str]:
+    """Prove an active child keeps the audit lock after its coordinator dies."""
+    failures: list[str] = []
+    lock_path = temporary / "audit-lock-inheritance.lock"
+    state_path = temporary / "audit-lock-inheritance-state.json"
+    release_path = temporary / "audit-lock-inheritance-release"
+    child_log = temporary / "audit-lock-inheritance-child.log"
+    nonce = secrets.token_hex(16)
+    child_code = (
+        "import json,os,pathlib,sys,time; "
+        "state=pathlib.Path(sys.argv[1]); "
+        "release=pathlib.Path(sys.argv[2]); "
+        "nonce=sys.argv[3]; "
+        "state.write_text(json.dumps({"
+        "'kind':'durablerun-audit-lock-child',"
+        "'nonce':nonce,'pid':os.getpid(),'parent_pid':os.getppid()})); "
+        "deadline=time.monotonic()+3.0; "
+        "\nwhile not release.exists() and time.monotonic() < deadline: time.sleep(0.01)"
+        "\nraise SystemExit(0 if release.exists() else 3)"
+    )
+    lock = lock_path.open("a+")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    launch = ProcessLaunch(
+        "audit-lock-inheritance-child",
+        (
+            sys.executable,
+            "-B",
+            "-c",
+            child_code,
+            str(state_path),
+            str(release_path),
+            nonce,
+        ),
+        temporary,
+        child_log,
+        os.environ.copy(),
+        (lock.fileno(),),
+    )
+    launch_errors: list[BaseException] = []
+
+    def launch_child() -> None:
+        try:
+            run_launches([launch], allowed_returncodes=frozenset((0,)))
+        except BaseException as error:
+            launch_errors.append(error)
+
+    child_thread = threading.Thread(
+        target=launch_child,
+        name="audit-lock-inheritance-selftest",
+        daemon=True,
+    )
+    child_thread.start()
+    child_pid: int | None = None
+    parent_descriptor_open = True
+    try:
+        deadline = time.monotonic() + 2.0
+        authenticated = False
+        while time.monotonic() < deadline:
+            if state_path.exists():
+                try:
+                    payload = read_json(state_path)
+                except ValueError:
+                    time.sleep(0.01)
+                    continue
+                if (
+                    isinstance(payload, dict)
+                    and set(payload) == {"kind", "nonce", "pid", "parent_pid"}
+                    and payload.get("kind") == "durablerun-audit-lock-child"
+                    and payload.get("nonce") == nonce
+                    and type(payload.get("pid")) is int
+                    and type(payload.get("parent_pid")) is int
+                    and payload.get("parent_pid") == os.getpid()
+                ):
+                    child_pid = int(payload["pid"])
+                    authenticated = process_id_is_live(child_pid)
+                    if authenticated:
+                        break
+            if not child_thread.is_alive():
+                break
+            time.sleep(0.01)
+        if not authenticated:
+            failures.append(
+                "audit lock inheritance: child did not publish authenticated readiness"
+            )
+        else:
+            # Closing the coordinator's only descriptor models SIGKILL: the
+            # active child must retain the same locked open-file description.
+            lock.close()
+            parent_descriptor_open = False
+            contender = lock_path.open("a+")
+            acquired = False
+            try:
+                try:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except BlockingIOError:
+                    pass
+            finally:
+                contender.close()
+            child_remained_active = process_id_is_live(child_pid)
+            if not child_remained_active:
+                failures.append(
+                    "audit lock inheritance: authenticated child exited before contention"
+                )
+            elif acquired:
+                failures.append(
+                    "audit lock inheritance: a fresh coordinator acquired the lock "
+                    "while an orphan child was still active"
+                )
+    finally:
+        if parent_descriptor_open:
+            lock.close()
+        release_path.touch()
+        child_thread.join(timeout=4.0)
+        if child_thread.is_alive():
+            failures.append("audit lock inheritance: child launcher did not terminate")
+            if child_pid is not None and process_id_is_live(child_pid):
+                try:
+                    os.killpg(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            child_thread.join(timeout=1.0)
+        if launch_errors:
+            failures.append(
+                "audit lock inheritance: child launch failed: "
+                f"{launch_errors[0]}"
+            )
+
+    contender = lock_path.open("a+")
+    try:
+        try:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            failures.append(
+                "audit lock inheritance: lock remained held after child reap"
+            )
+    finally:
+        contender.close()
+    if child_pid is not None and process_id_is_live(child_pid):
+        failures.append("audit lock inheritance: authenticated child leaked after reap")
+    return failures
 
 
 def worker_environment(
