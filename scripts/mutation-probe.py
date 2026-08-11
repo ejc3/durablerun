@@ -20,6 +20,7 @@ Usage: mutation-probe.py [-k substring] [--jobs auto|N]
        mutation-probe.py --classifier-self-test [--self-test-fault FAULT]
        mutation-probe.py --orchestration-self-test
                          [--orchestration-self-test-fault FAULT]
+       mutation-probe.py --suite-timeout-self-test-child
 """
 from __future__ import annotations
 
@@ -6276,6 +6277,7 @@ def run_suite(
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
     return_transport_as_domain: bool = False,
+    suite_wall_time_seconds: float | None = None,
 ) -> SuiteResult:
     require_verifier_capabilities(
         scope=scope,
@@ -6324,6 +6326,68 @@ def run_suite(
             parsed,
             return_as_domain=return_transport_as_domain,
         )
+
+
+SUITE_TIMEOUT_SELF_TEST_READY = (
+    "mutation-probe suite-timeout self-test entered real run_suite"
+)
+SUITE_TIMEOUT_SELF_TEST_PASSED = (
+    "mutation-probe suite-timeout self-test observed the suite wall-time limit"
+)
+
+
+def suite_timeout_self_test_child() -> int:
+    """Exercise the real suite subprocess under a deliberately short deadline.
+
+    An outer watchdog in lint-selftest owns this RED's wall time. The optional
+    run_suite argument is the hidden test seam; the production implementation
+    intentionally does not consume it yet.
+    """
+    original_command = TEST_CMD[:]
+    TEST_CMD[:] = [sys.executable, "-c", "import time; time.sleep(30)"]
+    fixture_scope = ConfinedScope("suite-timeout-self-test", 1, 1, 1)
+    fixture_workspace = IsolatedWorkspace(ROOT.resolve())
+    fixture_authority = WorkerAuthority(
+        ROOT.resolve(),
+        ROOT.resolve(),
+        0,
+        "a" * 40,
+        "suite-timeout-self-test",
+    )
+    print(SUITE_TIMEOUT_SELF_TEST_READY, flush=True)
+    try:
+        run_suite(
+            1,
+            scope=fixture_scope,
+            workspace=fixture_workspace,
+            authority=fixture_authority,
+            suite_wall_time_seconds=0.1,
+        )
+    except SuiteInfrastructureError as error:
+        if "suite wall-time limit" in str(error):
+            print(SUITE_TIMEOUT_SELF_TEST_PASSED)
+            return 0
+        print(
+            "mutation-probe suite-timeout self-test observed the wrong "
+            f"infrastructure failure: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as error:
+        print(
+            "mutation-probe suite-timeout self-test raised the wrong "
+            f"exception: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    else:
+        print(
+            "mutation-probe suite-timeout self-test let the sleeping suite return",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        TEST_CMD[:] = original_command
 
 
 def run_typecheck(
@@ -10324,6 +10388,11 @@ def main() -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    ap.add_argument(
+        "--suite-timeout-self-test-child",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--self-test-fault", choices=SELF_TEST_FAULTS, help=argparse.SUPPRESS)
     ap.add_argument(
         "--orchestration-self-test-fault",
@@ -10345,12 +10414,21 @@ def main() -> int:
         args.self_test,
         args.classifier_self_test,
         args.orchestration_self_test,
+        args.suite_timeout_self_test_child,
     )
     if sum(bool(mode) for mode in self_test_modes) > 1:
         ap.error("self-test modes are mutually exclusive")
     if any(self_test_modes):
         if args.k or args.jobs != "auto" or args.worker_phase is not None:
             ap.error("self-tests cannot be combined with audit or worker options")
+        if args.suite_timeout_self_test_child:
+            if args.self_test_fault is not None:
+                ap.error("--self-test-fault requires --classifier-self-test")
+            if args.orchestration_self_test_fault is not None:
+                ap.error(
+                    "--orchestration-self-test-fault requires --orchestration-self-test"
+                )
+            return suite_timeout_self_test_child()
         if args.orchestration_self_test:
             if args.self_test_fault is not None:
                 ap.error("--self-test-fault requires --classifier-self-test")

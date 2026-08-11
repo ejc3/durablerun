@@ -4719,6 +4719,85 @@ def session_process_problems() -> list[str]:
     return problems
 
 
+MUTATION_SUITE_TIMEOUT_READY = (
+    "mutation-probe suite-timeout self-test entered real run_suite"
+)
+MUTATION_SUITE_TIMEOUT_PASSED = (
+    "mutation-probe suite-timeout self-test observed the suite wall-time limit"
+)
+
+
+def mutation_suite_timeout_problem() -> str | None:
+    """Bound this RED outside the child whose missing deadline it exercises."""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SCRIPTS / "mutation-probe.py"),
+            "--suite-timeout-self-test-child",
+        ],
+        cwd=SCRIPTS.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        if process.stdout is None:
+            return "mutation-probe.py suite-timeout probe has no stdout pipe"
+        readable, _, _ = select.select([process.stdout], [], [], 5)
+        if not readable:
+            return (
+                "mutation-probe.py suite-timeout probe did not enter the real "
+                "run_suite before its readiness watchdog"
+            )
+        ready = process.stdout.readline().strip()
+        if ready != MUTATION_SUITE_TIMEOUT_READY:
+            return (
+                "mutation-probe.py suite-timeout probe did not authenticate its "
+                f"real run_suite boundary; observed {ready!r}"
+            )
+        try:
+            stdout, stderr = process.communicate(timeout=0.75)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=5)
+            return (
+                "mutation-probe.py real run_suite exceeded the outer 0.75s "
+                "watchdog after entering a sleeping TEST_CMD; no per-suite "
+                "wall-time limit stopped it"
+            )
+        output = "\n".join((ready, stdout, stderr))
+        if process.returncode != 0 or MUTATION_SUITE_TIMEOUT_PASSED not in output:
+            return (
+                "mutation-probe.py suite-timeout probe exited without proving "
+                f"the wall-time limit: {output.strip()[:300]}"
+            )
+        return None
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+
+
+if sys.argv[1:] == ["--mutation-suite-timeout-case"]:
+    focused_problem = mutation_suite_timeout_problem()
+    if focused_problem is not None:
+        print(f"lint-selftest: {focused_problem}")
+        sys.exit(1)
+    print("lint-selftest: mutation suite wall-time limit accepted")
+    sys.exit(0)
+
+
 if sys.argv[1:] == ["--session-process-cases"]:
     focused_problems = session_process_problems()
     for focused_problem in focused_problems:
@@ -4738,6 +4817,9 @@ failures.extend(hidden_process_enrollment_surface_problems(BAD_CASES))
 failures.extend(hidden_process_obligation_surface_problems())
 failures.extend(process_fixture_control_collision_problems())
 failures.extend(process_fixture_control_enrollment_surface_problems())
+suite_timeout_problem = mutation_suite_timeout_problem()
+if suite_timeout_problem is not None:
+    failures.append(suite_timeout_problem)
 for fault in PROCESS_FIXTURE_ISOLATION_FAULTS:
     injected_fault = fault.fault_id
     try:
