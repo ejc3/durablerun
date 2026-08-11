@@ -33,7 +33,7 @@ function replaceProperty<T>(
 }
 
 describe('trusted task-boundary intrinsics', () => {
-  it('normalizes retry fields with the module-captured Reflect.get', () => {
+  it('normalizes retry fields with one module-captured Reflect.get capability', () => {
     const observed = replaceProperty(
       Reflect,
       'get',
@@ -105,7 +105,7 @@ describe('trusted task-boundary intrinsics', () => {
   it('rejects invalid retry data with the module-captured RangeError', () => {
     class PoisonedRangeError extends Error {}
     const observed = replaceProperty(globalThis, 'RangeError', PoisonedRangeError, () =>
-      normalizeRetryStrategy({ kind: 'future' }),
+      normalizeRetryStrategy(null),
     )
     expect(
       observed.error,

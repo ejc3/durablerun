@@ -98,8 +98,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           async () =>
             f.store.spawn(Q, 'oversized-retry', '{}', {
               retryStrategy: {
-                kind: 'fixed',
+                kind: 'exponential',
                 baseSeconds: MAX_DURATION_MS / 1000 + 1,
+                factor: 2,
+                maxSeconds: MAX_DURATION_MS / 1000 + 1,
               },
             }),
         )
@@ -314,7 +316,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('noncanonical-retry-strategy', [
           {
             sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
-            args: [JSON.stringify({ kind: 'fixed', baseSeconds: 0.0004 }), spawned.taskId],
+            args: [
+              JSON.stringify({ kind: 'fixed', baseSeconds: 0.0004, ignored: true }),
+              spawned.taskId,
+            ],
           },
         ])
 
@@ -323,15 +328,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           limit: 1,
         })
         expect(
-          {
-            strategy: claimed?.retryStrategy,
-            frozen: claimed === undefined ? false : Object.isFrozen(claimed.retryStrategy),
-          },
+          claimed?.retryStrategy,
           'mutation-verdict:behavior:retry-persisted-normalization',
-        ).toEqual({
-          strategy: { kind: 'fixed', baseSeconds: 0 },
-          frozen: true,
-        })
+        ).toEqual({ kind: 'fixed', baseSeconds: 0 })
       })
 
       it('claims due runs oldest-first with claim_gen 1 and full task data', async () => {

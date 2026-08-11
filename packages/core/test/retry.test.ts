@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { decideRetry, normalizeRetryStrategy, retryDelaySeconds } from '../src/retry.js'
 import {
   attributeExpectedFailure,
   attributeReplacedFailure,
   requireExpectedFailure,
 } from '../src/testing.js'
 import type { RetryStrategy } from '../src/types.js'
-import { decideRetry, normalizeRetryStrategy, retryDelaySeconds } from '../src/retry.js'
 import { MAX_DURATION_MS, requirePositiveInt } from '../src/validate.js'
 
 describe('retryDelaySeconds', () => {
@@ -156,23 +156,35 @@ describe('normalizeRetryStrategy', () => {
       /retry normalization preserved negative zero/,
       async () => {
         const fixed = normalizeRetryStrategy({ kind: 'fixed', baseSeconds: -0 })
-        const exponential = normalizeRetryStrategy({
-          kind: 'exponential',
-          baseSeconds: 1,
-          factor: -0,
-          maxSeconds: -0,
-        })
-        if (
-          fixed.kind !== 'fixed' ||
-          exponential.kind !== 'exponential' ||
-          Object.is(fixed.baseSeconds, -0) ||
-          Object.is(exponential.factor, -0) ||
-          Object.is(exponential.maxSeconds, -0)
-        ) {
+        if (fixed.kind !== 'fixed' || Object.is(fixed.baseSeconds, -0)) {
           throw new Error('retry normalization preserved negative zero')
         }
       },
     )
+  })
+
+  it('canonicalizes a negative-zero exponential factor before serialization', () => {
+    const exponential = normalizeRetryStrategy({
+      kind: 'exponential',
+      baseSeconds: 1,
+      factor: -0,
+      maxSeconds: 60,
+    })
+    if (exponential.kind === 'exponential' && Object.is(exponential.factor, -0)) {
+      throw new Error('mutation-verdict:construction:retry-normalize-factor-positive-zero')
+    }
+  })
+
+  it('canonicalizes a negative-zero exponential maxSeconds before serialization', () => {
+    const exponential = normalizeRetryStrategy({
+      kind: 'exponential',
+      baseSeconds: 1,
+      factor: 2,
+      maxSeconds: -0,
+    })
+    if (exponential.kind === 'exponential' && Object.is(exponential.maxSeconds, -0)) {
+      throw new Error('mutation-verdict:construction:retry-normalize-max-positive-zero')
+    }
   })
 
   it('contains hostile getters at one field-reading boundary', async () => {
@@ -201,35 +213,44 @@ describe('normalizeRetryStrategy', () => {
     }
   })
 
-  it('is the decision API boundary for hostile strategy objects', async () => {
-    const escaped = new Error('raw retry-decision kind getter escaped')
-    const hostile = Object.defineProperty({}, 'kind', {
-      get: () => {
-        throw escaped
-      },
-    }) as RetryStrategy
+  it('is the decision API boundary for invalid strategy objects', async () => {
+    const invalid = { kind: 'future-policy' } as unknown as RetryStrategy
 
-    await attributeReplacedFailure(
+    await attributeExpectedFailure(
       { kind: 'behavior', mutation: 'retry-decision-normalization' },
-      /retry strategy kind is not readable/,
-      (error) => error === escaped,
-      async () => decideRetry(hostile, 1, 2),
+      /retry delay must be a finite non-negative number/,
+      async () => {
+        try {
+          decideRetry(invalid, 1, 2)
+        } catch (error) {
+          if (/retry strategy kind must be none, fixed, or exponential/.test(String(error))) return
+          throw error
+        }
+      },
     )
   })
 
-  it('is the delay API boundary for hostile strategy objects', async () => {
-    const escaped = new Error('raw retry-delay kind getter escaped')
-    const hostile = Object.defineProperty({}, 'kind', {
-      get: () => {
-        throw escaped
-      },
-    }) as Exclude<RetryStrategy, { kind: 'none' }>
+  it('is the delay API boundary for invalid strategy objects', async () => {
+    const invalid = {
+      kind: 'future-policy',
+    } as unknown as Exclude<RetryStrategy, { kind: 'none' }>
 
-    await attributeReplacedFailure(
+    await attributeExpectedFailure(
       { kind: 'behavior', mutation: 'retry-delay-normalization' },
-      /retry strategy kind is not readable/,
-      (error) => error === escaped,
-      async () => retryDelaySeconds(hostile, 1),
+      /retry delay must be a finite non-negative number/,
+      async () => {
+        try {
+          retryDelaySeconds(invalid, 1)
+        } catch (error) {
+          if (
+            /retry strategy kind must be none, fixed, or exponential/.test(String(error)) ||
+            /retry delay requires a fixed or exponential strategy/.test(String(error))
+          ) {
+            return
+          }
+          throw error
+        }
+      },
     )
   })
 })

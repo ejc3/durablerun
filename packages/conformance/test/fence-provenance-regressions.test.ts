@@ -707,7 +707,7 @@ describe('fence provenance', () => {
               return this
             },
           })
-          return 1.2344
+          return 1.234
         },
       }
 

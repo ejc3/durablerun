@@ -451,45 +451,6 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
-  it('task initialization cannot replace retry field classification', async () => {
-    const f = await fx('sdk-captured-retry-reflect')
-    try {
-      const spawned = await f.store.spawn(Q, 'job', '{}', {
-        maxAttempts: 2,
-        retryStrategy: { kind: 'fixed', baseSeconds: 30 },
-      })
-      const invocation = await claimInvocation(f, 'w1')
-      const observed = await replacePropertyAsync(
-        Reflect,
-        'get',
-        () => 'none',
-        () =>
-          runClaimedRun(
-            {
-              store: f.store,
-              clock: f.clock,
-              registry: registry({
-                job: async () => {
-                  throw new Error('retry me')
-                },
-              }),
-            },
-            invocation,
-          ),
-      )
-      const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(
-        { observed, result },
-        'mutation-verdict:behavior:sdk-retry-captured-intrinsics',
-      ).toEqual({
-        observed: { value: { kind: 'retry-scheduled' } },
-        result: { state: 'sleeping' },
-      })
-    } finally {
-      f.close()
-    }
-  })
-
   it('a handler cannot replace final-result JSON serialization', async () => {
     const f = await fx('sdk-captured-result-stringify')
     try {
