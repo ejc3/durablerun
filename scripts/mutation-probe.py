@@ -552,10 +552,12 @@ MUTATION_SPECS = [
         "claim-receipt-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
         "         AND t.state IN ${LIVE}\n"
-        "         AND ${durableTaskPayloadAdmissible('t')}\n"
+        "         AND ${durableTaskRetryAdmissible('t')}\n"
+        "         AND ${durableTaskHeadersAdmissible('t')}\n"
         "         AND ${soleLiveRun('r')}\n",
         "         AND t.state IN ${LIVE}\n"
-        "         AND ${durableTaskPayloadAdmissible('t')}\n"
+        "         AND ${durableTaskRetryAdmissible('t')}\n"
+        "         AND ${durableTaskHeadersAdmissible('t')}\n"
         "         AND 1 = 1\n",
         "a same-token receipt hands a run from a task with competing live owners back to launch",
     ),
@@ -609,14 +611,16 @@ MUTATION_SPECS = [
         "activate-requires-current-run-accounting",
         "packages/store-libsql/src/store.ts",
         "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskPayloadAdmissible('t')}\n"
+        "             AND ${durableTaskRetryAdmissible('t')}\n"
+        "             AND ${durableTaskHeadersAdmissible('t')}\n"
         "             AND ${storedCurrentRunAccounting('runs', 't')}\n"
         "             AND ${storedHighestOwnedOrdinal('runs')}\n"
         "             AND ${activationDurationAdmissible('t', NOW)}\n"
         "         )`,\n"
         "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
         "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskPayloadAdmissible('t')}\n"
+        "             AND ${durableTaskRetryAdmissible('t')}\n"
+        "             AND ${durableTaskHeadersAdmissible('t')}\n"
         "             AND 1 = 1\n"
         "             AND ${storedHighestOwnedOrdinal('runs')}\n"
         "             AND ${activationDurationAdmissible('t', NOW)}\n"
@@ -1426,24 +1430,163 @@ MUTATION_SPECS = [
         "spawn reads a hostile cancellation accessor more than once",
     ),
     (
+        "spawn-retry-captured-serializer",
+        "packages/store-libsql/src/store.ts",
+        "    const retry = serializeTaskValue(\n"
+        "      'retry strategy',\n"
+        "      normalizeRetryStrategy(retryInput === undefined ? DEFAULT_RETRY : retryInput),\n"
+        "    )\n",
+        "    const retry = JSON.stringify(\n"
+        "      normalizeRetryStrategy(retryInput === undefined ? DEFAULT_RETRY : retryInput),\n"
+        "    )\n",
+        "spawn serializes the owned retry strategy through an ambient JSON hook",
+    ),
+    (
+        "spawn-cancellation-owned-snapshot",
+        "packages/store-libsql/src/store.ts",
+        "      const canonicalCancellation = {\n"
+        "        maxDelaySeconds: maxDelayMs === null ? undefined : maxDelayMs / 1000,\n"
+        "        maxDurationSeconds:\n"
+        "          maxDurationSeconds === undefined\n"
+        "            ? undefined\n"
+        "            : durationToMs('cancellation.maxDurationSeconds', maxDurationSeconds) / 1000,\n"
+        "      }\n",
+        "      const canonicalCancellation: {\n"
+        "        maxDelaySeconds?: number\n"
+        "        maxDurationSeconds?: number\n"
+        "      } = {}\n"
+        "      canonicalCancellation.maxDelaySeconds =\n"
+        "        maxDelayMs === null ? undefined : maxDelayMs / 1000\n"
+        "      canonicalCancellation.maxDurationSeconds =\n"
+        "        maxDurationSeconds === undefined\n"
+        "          ? undefined\n"
+        "          : durationToMs('cancellation.maxDurationSeconds', maxDurationSeconds) / 1000\n",
+        "spawn constructs canonical cancellation through inherited setters",
+    ),
+    (
+        "spawn-cancellation-captured-serializer",
+        "packages/store-libsql/src/store.ts",
+        "      cancellationJson = serializeTaskValue('cancellation policy', canonicalCancellation)",
+        "      cancellationJson = JSON.stringify(canonicalCancellation)",
+        "spawn serializes the owned cancellation policy through an ambient JSON hook",
+    ),
+    (
+        "spawn-headers-captured-serializer",
+        "packages/store-libsql/src/store.ts",
+        "      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)",
+        "      headersInput === undefined ? null : JSON.stringify(headersInput)",
+        "spawn serializes headers through an ambient JSON hook",
+    ),
+    (
+        "claim-retry-captured-parser",
+        "packages/store-libsql/src/store.ts",
+        "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
+        "    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),",
+        "claim retry decoding resolves ambient JSON.parse after the durable guard",
+    ),
+    (
+        "claim-headers-captured-parser",
+        "packages/store-libsql/src/store.ts",
+        "      row.headers === null\n"
+        "        ? {}\n"
+        "        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),",
+        "      row.headers === null\n"
+        "        ? {}\n"
+        "        : (JSON.parse(String(row.headers)) as Record<string, string>),",
+        "claim header decoding resolves ambient JSON.parse after the durable guard",
+    ),
+    (
         "claim-payload-validation-atomic",
         "packages/store-libsql/src/store.ts",
-        "    const claimedWait = registeredWait('runs')\n"
-        "    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering\n",
-        "    const claimedWait = registeredWait('runs')\n"
-        "    const durableTaskPayloadAdmissible = (_task: string): string => '1 = 1'\n"
-        "    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering\n",
-        "claim changes durable state before discovering an undecodable task payload",
+        "      return `${eligibleTask(task, NOW)}\n"
+        "               AND ${durableTaskRetryAdmissible(task)}\n"
+        "               AND ${durableTaskHeadersAdmissible(task)}\n",
+        "      return `${eligibleTask(task, NOW)}\n"
+        "               AND 1 = 1\n"
+        "               AND ${durableTaskHeadersAdmissible(task)}\n",
+        "claim changes candidate state before discovering an undecodable retry strategy",
+    ),
+    (
+        "claim-candidate-headers-admissible",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${durableTaskRetryAdmissible(task)}\n"
+        "               AND ${durableTaskHeadersAdmissible(task)}\n"
+        "               AND ${soleLiveRun(run)}\n",
+        "               AND ${durableTaskRetryAdmissible(task)}\n"
+        "               AND 1 = 1\n"
+        "               AND ${soleLiveRun(run)}\n",
+        "claim changes candidate state before discovering undecodable headers",
+    ),
+    (
+        "claim-receipt-retry-admissible",
+        "packages/store-libsql/src/store.ts",
+        "         AND t.state IN ${LIVE}\n"
+        "         AND ${durableTaskRetryAdmissible('t')}\n"
+        "         AND ${durableTaskHeadersAdmissible('t')}\n",
+        "         AND t.state IN ${LIVE}\n"
+        "         AND 1 = 1\n"
+        "         AND ${durableTaskHeadersAdmissible('t')}\n",
+        "a same-token receipt decodes an inadmissible durable retry strategy",
+    ),
+    (
+        "claim-receipt-headers-admissible",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${durableTaskRetryAdmissible('t')}\n"
+        "         AND ${durableTaskHeadersAdmissible('t')}\n"
+        "         AND ${soleLiveRun('r')}\n",
+        "         AND ${durableTaskRetryAdmissible('t')}\n"
+        "         AND 1 = 1\n"
+        "         AND ${soleLiveRun('r')}\n",
+        "a same-token receipt exposes inadmissible durable headers",
     ),
     (
         "activate-payload-validation-atomic",
         "packages/store-libsql/src/store.ts",
-        "    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS })\n"
-        "    // Per-claim latch: only this claim's first delivery passes; re-extends\n",
-        "    const durableTaskPayloadAdmissible = (_task: string): string => '1 = 1'\n"
-        "    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS })\n"
-        "    // Per-claim latch: only this claim's first delivery passes; re-extends\n",
-        "activation latches a generation before discovering an undecodable task payload",
+        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
+        "             AND ${durableTaskRetryAdmissible('t')}\n"
+        "             AND ${durableTaskHeadersAdmissible('t')}\n",
+        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
+        "             AND 1 = 1\n"
+        "             AND ${durableTaskHeadersAdmissible('t')}\n",
+        "activation latches a generation before discovering an undecodable retry strategy",
+    ),
+    (
+        "activate-headers-admissible",
+        "packages/store-libsql/src/store.ts",
+        "             AND ${durableTaskRetryAdmissible('t')}\n"
+        "             AND ${durableTaskHeadersAdmissible('t')}\n"
+        "             AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "             AND ${durableTaskRetryAdmissible('t')}\n"
+        "             AND 1 = 1\n"
+        "             AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "activation exposes inadmissible durable headers after latching its generation",
+    ),
+    (
+        "expire-lease-requires-future-expiry",
+        "packages/store-libsql/src/store.ts",
+        "    const unexpired = runClaimUnexpired('runs', NOW_MS)\n",
+        "    const unexpired = runClaimUnexpired('runs', NOW_MS).replace(\n"
+        "      `AND runs.claim_expires_at_ms > ${NOW_MS}`,\n"
+        "      'AND 1 = 1',\n"
+        "    )\n",
+        "expireLeaseNow shortens a lease that had already expired",
+    ),
+    (
+        "expire-lease-requires-integer-expiry",
+        "packages/store-libsql/src/store.ts",
+        "    const unexpired = runClaimUnexpired('runs', NOW_MS)\n",
+        "    const unexpired = runClaimUnexpired('runs', NOW_MS).replace(\n"
+        "      `typeof(runs.claim_expires_at_ms) = 'integer' AND `,\n"
+        "      '',\n"
+        "    )\n",
+        "expireLeaseNow launders a fractional stored expiry into an integer instant",
+    ),
+    (
+        "expire-lease-requires-run-task-queue-ownership",
+        "packages/store-libsql/src/store.ts",
+        "    const owner = runOwnedByTask('runs', 't')\n",
+        "    const owner = 't.task_id = runs.task_id' // MUTATION\n",
+        "expireLeaseNow shortens a run after its task crosses the immutable queue boundary",
     ),
     (
         "driver-heartbeat-single-clock",
@@ -1799,6 +1942,63 @@ MUTATION_SPECS = [
         "    queueScoped: true,\n"
         "  }),\n",
         "generated runs-to-waits cleanup incorrectly trusts the denormalized wait queue",
+    ),
+    (
+        "generated-runs-to-tasks-queue-ownership",
+        "packages/core/src/contract.ts",
+        "  'runs-to-tasks': Object.freeze({\n"
+        "    target: 'tasks',\n"
+        "    key: 'task_id',\n"
+        "    from: 'runs',\n"
+        "    column: 'task_id',\n"
+        "    queueScoped: true,\n"
+        "  }),\n",
+        "  'runs-to-tasks': Object.freeze({\n"
+        "    target: 'tasks',\n"
+        "    key: 'task_id',\n"
+        "    from: 'runs',\n"
+        "    column: 'task_id',\n"
+        "    queueScoped: false,\n"
+        "  }),\n",
+        "generated runs-to-tasks updates can cross the immutable queue boundary",
+    ),
+    (
+        "generated-tasks-to-runs-queue-ownership",
+        "packages/core/src/contract.ts",
+        "  'tasks-to-runs': Object.freeze({\n"
+        "    target: 'runs',\n"
+        "    key: 'task_id',\n"
+        "    from: 'tasks',\n"
+        "    column: 'task_id',\n"
+        "    queueScoped: true,\n"
+        "  }),\n",
+        "  'tasks-to-runs': Object.freeze({\n"
+        "    target: 'runs',\n"
+        "    key: 'task_id',\n"
+        "    from: 'tasks',\n"
+        "    column: 'task_id',\n"
+        "    queueScoped: false,\n"
+        "  }),\n",
+        "generated tasks-to-runs updates can cross the immutable queue boundary",
+    ),
+    (
+        "generated-waits-to-runs-queue-ownership",
+        "packages/core/src/contract.ts",
+        "  'waits-to-runs': Object.freeze({\n"
+        "    target: 'runs',\n"
+        "    key: 'run_id',\n"
+        "    from: 'waits',\n"
+        "    column: 'run_id',\n"
+        "    queueScoped: true,\n"
+        "  }),\n",
+        "  'waits-to-runs': Object.freeze({\n"
+        "    target: 'runs',\n"
+        "    key: 'run_id',\n"
+        "    from: 'waits',\n"
+        "    column: 'run_id',\n"
+        "    queueScoped: false,\n"
+        "  }),\n",
+        "generated waits-to-runs updates can cross the immutable queue boundary",
     ),
 ]
 
@@ -2331,8 +2531,10 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-expire-lease-validates-expiry-upper",
         "packages/store-libsql/src/store.ts",
-        "                AND ${runClaimUnexpired('runs', NOW_MS)}\n",
-        '                AND ${runClaimUnexpired(\'runs\', NOW_MS).replace(/ BETWEEN 0 AND [0-9]+/, " >= 0")}\n',
+        "    const unexpired = runClaimUnexpired('runs', NOW_MS)\n",
+        "    const unexpired = runClaimUnexpired('runs', NOW_MS).replace(\n"
+        '      / BETWEEN 0 AND [0-9]+/, " >= 0",\n'
+        "    )\n",
         "expireLeaseNow refuses to launder an out-of-range stored expiry",
         "expireLeaseNow launders an oversized expiry into a valid instant",
     ),
@@ -2744,10 +2946,12 @@ MUTATION_SPECS.extend(
         (
             "retry-spawn-normalization",
             "packages/store-libsql/src/store.ts",
-            "    const retry = JSON.stringify(\n"
+            "    const retry = serializeTaskValue(\n"
+            "      'retry strategy',\n"
             "      normalizeRetryStrategy(retryInput === undefined ? DEFAULT_RETRY : retryInput),\n"
             "    )",
-            "    const retry = JSON.stringify(\n"
+            "    const retry = serializeTaskValue(\n"
+            "      'retry strategy',\n"
             "      retryInput === undefined ? DEFAULT_RETRY : retryInput,\n"
             "    )",
             "spawn persists a retry policy without normalization",
@@ -2762,8 +2966,8 @@ MUTATION_SPECS.extend(
         (
             "retry-persisted-normalization",
             "packages/store-libsql/src/store.ts",
-            "    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),",
-            "    retryStrategy: JSON.parse(String(row.retry_strategy)) as ClaimedRun['retryStrategy'],",
+            "    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),",
+            "    retryStrategy: parseTaskValueJson(String(row.retry_strategy)) as ClaimedRun['retryStrategy'],",
             "claim exposes unchecked durable retry JSON",
         ),
         (
@@ -3570,13 +3774,6 @@ MUTATION_SPECS.extend(
             "export const abortSignalAborted = (signal: AbortSignal): boolean =>\n"
             "  signal.aborted // MUTATION",
             "heartbeat cancellation reads resolve the mutable AbortSignal.aborted getter at invocation time",
-        ),
-        (
-            "sdk-captured-math-max",
-            "packages/sdk/src/intrinsics.ts",
-            "export const trustedMax = Math.max",
-            "export const trustedMax = (...values: number[]): number => Math.max(...values) // MUTATION",
-            "the trusted maximum operation resolves mutable ambient Math.max at invocation time",
         ),
         (
             "sdk-worker-captured-json-parse",
@@ -4493,19 +4690,101 @@ VERDICTS = {
         "mutation-verdict:behavior:spawn-cancellation-single-read",
         "packages/conformance/src/suite.ts",
     ),
+    "spawn-retry-captured-serializer": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance spawn retry serialization cannot be redirected after normalization",
+        "mutation-verdict:behavior:spawn-retry-captured-serializer",
+    ),
+    "spawn-cancellation-owned-snapshot": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance spawn cancellation construction owns the validated snapshot",
+        "mutation-verdict:behavior:spawn-cancellation-owned-snapshot",
+    ),
+    "spawn-cancellation-captured-serializer": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance spawn cancellation serialization cannot be redirected by its getter",
+        "mutation-verdict:behavior:spawn-cancellation-captured-serializer",
+    ),
+    "spawn-headers-captured-serializer": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance spawn headers serialization cannot be redirected by its getter",
+        "mutation-verdict:behavior:spawn-headers-captured-serializer",
+    ),
+    "claim-retry-captured-parser": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance claim retry parsing cannot be redirected after the durable guard",
+        "mutation-verdict:behavior:claim-retry-captured-parser",
+    ),
+    "claim-headers-captured-parser": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance claim header parsing cannot be redirected after the durable guard",
+        "mutation-verdict:behavior:claim-headers-captured-parser",
+    ),
     "claim-payload-validation-atomic": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] claim leaves a corrupt persisted retry strategy unclaimed",
+        "scheduler conformance [libsql] claim leaves a candidate with a corrupt persisted retry strategy unclaimed",
         "mutation-verdict:behavior:claim-payload-validation-atomic",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-candidate-headers-admissible": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim leaves a candidate with corrupt persisted headers unclaimed",
+        "mutation-verdict:behavior:claim-candidate-headers-admissible",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-receipt-retry-admissible": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim same-token receipt refuses a corrupt persisted retry strategy",
+        "mutation-verdict:behavior:claim-receipt-retry-admissible",
+        "packages/conformance/src/suite.ts",
+    ),
+    "claim-receipt-headers-admissible": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claim same-token receipt refuses corrupt persisted headers",
+        "mutation-verdict:behavior:claim-receipt-headers-admissible",
         "packages/conformance/src/suite.ts",
     ),
     "activate-payload-validation-atomic": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] activate leaves a claim unactivated when its durable payload becomes invalid",
+        "scheduler conformance [libsql] activate leaves a claim unactivated when its persisted retry strategy becomes invalid",
         "mutation-verdict:behavior:activate-payload-validation-atomic",
         "packages/conformance/src/suite.ts",
+    ),
+    "activate-headers-admissible": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] activate leaves a claim unactivated when its persisted headers become invalid",
+        "mutation-verdict:behavior:activate-headers-admissible",
+        "packages/conformance/src/suite.ts",
+    ),
+    "expire-lease-requires-future-expiry": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/regressions.test.ts",
+        "transition-layer review regressions (second round) expireLeaseNow returns false for an already-expired lease",
+        "mutation-verdict:behavior:expire-lease-requires-future-expiry",
+    ),
+    "expire-lease-requires-integer-expiry": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/regressions.test.ts",
+        "transition-layer review regressions (second round) expireLeaseNow refuses to launder a fractional stored expiry",
+        "mutation-verdict:behavior:expire-lease-requires-integer-expiry",
+    ),
+    "expire-lease-requires-run-task-queue-ownership": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance expireLeaseNow refuses a run whose task moved to a different queue",
+        "mutation-verdict:behavior:expire-lease-requires-run-task-queue-ownership",
     ),
     "driver-heartbeat-single-clock": ExpectedVerdict(
         "behavior",
@@ -4625,9 +4904,10 @@ VERDICTS = {
     ),
     "cancel-task-requires-run-task-queue-ownership": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance cancelTask refuses to cross into a run that moved to a different queue",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) cancel-task does not amplify ownership/run-task-queue-mismatch",
         "mutation-verdict:behavior:cancel-task-requires-run-task-queue-ownership",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "generated-relation-queue-ownership": ExpectedVerdict(
         "construction",
@@ -4637,9 +4917,27 @@ VERDICTS = {
     ),
     "generated-runs-to-waits-authoritative-cleanup": ExpectedVerdict(
         "construction",
-        "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance generated run cleanup follows authoritative run id through a corrupt wait queue",
+        "packages/store-libsql/test/fence-relation-types.test.ts",
+        "TypeScript construction pins runs-to-waits as authoritative cleanup",
         "mutation-verdict:construction:generated-runs-to-waits-authoritative-cleanup",
+    ),
+    "generated-runs-to-tasks-queue-ownership": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/fence-relation-types.test.ts",
+        "TypeScript construction pins runs-to-tasks queue ownership",
+        "mutation-verdict:construction:generated-runs-to-tasks-queue-ownership",
+    ),
+    "generated-tasks-to-runs-queue-ownership": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/fence-relation-types.test.ts",
+        "TypeScript construction pins tasks-to-runs queue ownership",
+        "mutation-verdict:construction:generated-tasks-to-runs-queue-ownership",
+    ),
+    "generated-waits-to-runs-queue-ownership": ExpectedVerdict(
+        "construction",
+        "packages/store-libsql/test/fence-relation-types.test.ts",
+        "TypeScript construction pins waits-to-runs queue ownership",
+        "mutation-verdict:construction:generated-waits-to-runs-queue-ownership",
     ),
 }
 
@@ -5449,12 +5747,6 @@ VERDICTS.update(
             "runClaimedRun reads heartbeat cancellation with the module-captured signal getter",
             "mutation-verdict:construction:sdk-captured-abort-aborted-getter",
         ),
-        "sdk-captured-math-max": ExpectedVerdict(
-            "construction",
-            "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun task initialization cannot replace heartbeat lease arithmetic",
-            "mutation-verdict:construction:sdk-captured-math-max",
-        ),
         "sdk-worker-captured-json-parse": ExpectedVerdict(
             "construction",
             "packages/sdk/test/run-worker.test.ts",
@@ -5605,6 +5897,10 @@ TYPECHECK_MUTATION_NAMES = frozenset(
         "persisted-row-rejects-spread-descriptor",
         "derived-row-rejects-spread-descriptor",
         "retry-normalized-type-is-nominal",
+        "generated-runs-to-waits-authoritative-cleanup",
+        "generated-runs-to-tasks-queue-ownership",
+        "generated-tasks-to-runs-queue-ownership",
+        "generated-waits-to-runs-queue-ownership",
     }
 )
 
@@ -5669,6 +5965,9 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "task-throwable-forged-fatal": (
         "replacement adds TypeScript nullish-coalescing and conditional syntax"
+    ),
+    "spawn-cancellation-owned-snapshot": (
+        "replacement adds TypeScript optional-property declarations; it does not change SQL binds"
     ),
     "sdk-registry-map-entry-authority": (
         "replacement adds TypeScript nullish-coalescing syntax"

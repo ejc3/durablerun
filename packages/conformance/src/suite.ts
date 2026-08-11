@@ -170,7 +170,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     describe('claim', () => {
-      it('leaves a corrupt persisted retry strategy unclaimed', async () => {
+      it('leaves a candidate with a corrupt persisted retry strategy unclaimed', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-retry', '{}', {
           retryStrategy: {
             kind: 'fixed',
@@ -201,6 +201,106 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(
           { observed, after },
           'mutation-verdict:behavior:claim-payload-validation-atomic',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
+      })
+
+      it('leaves a candidate with corrupt persisted headers unclaimed', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-candidate-headers', '{}', {
+          headers: { trace: 'valid' },
+        })
+        await f.raw.batch('corrupt-candidate-headers', [
+          {
+            sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
+            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, 'corrupt-candidate-headers-token', { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-candidate-headers-admissible',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
+      })
+
+      it('same-token receipt refuses a corrupt persisted retry strategy', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-receipt-retry', '{}', {
+          retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+        })
+        const [run] = await f.store.claim(Q, 'corrupt-receipt-retry-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        if (!run) throw new Error('expected a claimable run')
+        await f.raw.batch('corrupt-receipt-retry', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [
+              JSON.stringify({
+                kind: 'fixed',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+              }),
+              spawned.taskId,
+            ],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, run.claimToken, { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-receipt-retry-admissible',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
+      })
+
+      it('same-token receipt refuses corrupt persisted headers', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-receipt-headers', '{}', {
+          headers: { trace: 'valid' },
+        })
+        const [run] = await f.store.claim(Q, 'corrupt-receipt-headers-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        if (!run) throw new Error('expected a claimable run')
+        await f.raw.batch('corrupt-receipt-headers', [
+          {
+            sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
+            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, run.claimToken, { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-receipt-headers-admissible',
         ).toEqual({
           observed: { kind: 'resolved', value: [] },
           after: before,
@@ -552,7 +652,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).toBeNull()
       })
 
-      it('leaves a claim unactivated when its durable payload becomes invalid', async () => {
+      it('leaves a claim unactivated when its persisted retry strategy becomes invalid', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-before-activate', '{}', {
           retryStrategy: { kind: 'fixed', baseSeconds: 1 },
         })
@@ -579,6 +679,33 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(
           { observed, after },
           'mutation-verdict:behavior:activate-payload-validation-atomic',
+        ).toEqual({
+          observed: { kind: 'resolved', value: null },
+          after: before,
+        })
+      })
+
+      it('leaves a claim unactivated when its persisted headers become invalid', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-headers-before-activate', '{}', {
+          headers: { trace: 'valid' },
+        })
+        const run = await claimOne('tick-corrupt-headers-before-activate')
+        await f.raw.batch('corrupt-headers-before-activate', [
+          {
+            sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
+            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          () => ({ kind: 'rejected' as const }),
+        )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:activate-headers-admissible',
         ).toEqual({
           observed: { kind: 'resolved', value: null },
           after: before,

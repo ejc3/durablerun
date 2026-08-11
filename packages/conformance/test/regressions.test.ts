@@ -777,7 +777,42 @@ describe('sweep and cancellation review regressions', () => {
     if (!run) throw new Error('expected claim')
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     await f.admin.setFakeNowEpochMs(1_100_000) // lease already past
-    expect(await f.store.expireLeaseNow(Q, run.runId, run.claimToken)).toBe(false)
+    expect(
+      await f.store.expireLeaseNow(Q, run.runId, run.claimToken),
+      'mutation-verdict:behavior:expire-lease-requires-future-expiry',
+    ).toBe(false)
+    f.close()
+  })
+
+  it('expireLeaseNow refuses to launder a fractional stored expiry', async () => {
+    const f = await makeLibsqlFixture('expire-fractional')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 't1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.raw.batch('fractional-expiry', [
+      {
+        sql: `UPDATE runs SET claim_expires_at_ms = 1000000.5 WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+
+    const expired = await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
+    const [state] = await f.raw.batch('fractional-expiry-state', [
+      {
+        sql: `SELECT claim_expires_at_ms, typeof(claim_expires_at_ms) AS storage_type
+              FROM runs WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+    expect(
+      { expired, row: state?.rows[0] },
+      'mutation-verdict:behavior:expire-lease-requires-integer-expiry',
+    ).toEqual({
+      expired: false,
+      row: { claim_expires_at_ms: 1_000_000.5, storage_type: 'real' },
+    })
     f.close()
   })
 

@@ -59,7 +59,6 @@ export function taskRegistryGet<K, V>(registry: ReadonlyMap<K, V>, key: K): V | 
 }
 export const taskHasOwn = hasOwn
 
-export const trustedMax = Math.max
 const TaskPromise = Promise
 const taskPromiseThen = Promise.prototype.then.call.bind(Promise.prototype.then) as <T>(
   promise: Promise<T>,

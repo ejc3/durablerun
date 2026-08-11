@@ -20,7 +20,6 @@ import {
   abortSignalAborted,
   taskMapGet,
   taskMapSet,
-  trustedMax,
   trustedPromiseRace,
 } from '../src/intrinsics.js'
 
@@ -889,23 +888,6 @@ describe('runClaimedRun', () => {
     expect(observed, 'mutation-verdict:construction:sdk-captured-promise-race-iterator').toEqual({
       value: undefined,
     })
-  })
-
-  it('task initialization cannot replace heartbeat lease arithmetic', () => {
-    const descriptor = Object.getOwnPropertyDescriptor(Math, 'max')
-    if (descriptor === undefined) throw new Error('expected Math.max')
-    Object.defineProperty(Math, 'max', {
-      configurable: true,
-      value: () => 0,
-      writable: true,
-    })
-    let leaseMs: number | undefined
-    try {
-      leaseMs = trustedMax(1000, 60_000)
-    } finally {
-      Object.defineProperty(Math, 'max', descriptor)
-    }
-    expect(leaseMs, 'mutation-verdict:construction:sdk-captured-math-max').toBe(60_000)
   })
 
   it('task initialization cannot replace handler parameter parsing', async () => {

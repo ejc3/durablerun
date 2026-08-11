@@ -1178,6 +1178,33 @@ describe('fence provenance', () => {
     }
   })
 
+  it('expireLeaseNow refuses a run whose task moved to a different queue', async () => {
+    const f = await fixture()
+    try {
+      const run = await activatedRun(f)
+      await moveTaskToOtherQueue(f, run.taskId)
+      const before = await query(
+        f.raw,
+        `SELECT state, claimed_by, claim_expires_at_ms FROM runs WHERE run_id = ?`,
+        [run.runId],
+      )
+
+      const expired = await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
+      const after = await query(
+        f.raw,
+        `SELECT state, claimed_by, claim_expires_at_ms FROM runs WHERE run_id = ?`,
+        [run.runId],
+      )
+
+      expect(
+        { expired, after },
+        'mutation-verdict:behavior:expire-lease-requires-run-task-queue-ownership',
+      ).toEqual({ expired: false, after: before })
+    } finally {
+      f.close()
+    }
+  })
+
   it('reschedule refuses a run whose task moved to a different queue', async () => {
     const f = await fixture()
     try {
@@ -1433,7 +1460,7 @@ describe('fence provenance', () => {
 
       expect(
         { cancelled, after },
-        'mutation-verdict:behavior:cancel-task-requires-run-task-queue-ownership',
+        'regression:cancel-task-requires-run-task-queue-ownership',
       ).toEqual({ cancelled: false, after: before })
     } finally {
       f.close()
@@ -1567,7 +1594,7 @@ describe('fence provenance', () => {
 
       expect(
         await query(f.raw, `SELECT status FROM waits WHERE run_id = 'runs-to-waits-source'`),
-        'mutation-verdict:construction:generated-runs-to-waits-authoritative-cleanup',
+        'regression:generated-runs-to-waits-authoritative-cleanup',
       ).toEqual([])
     } finally {
       f.close()

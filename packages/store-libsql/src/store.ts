@@ -36,17 +36,20 @@ import {
   fenceSetAt,
   neverBuggify,
   normalizeRetryStrategy,
+  parseTaskValueJson,
   requireDerivedInteger,
   requireEpochMs,
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
+  serializeTaskValue,
   storageValueKind,
 } from '@durablerun/core'
 import {
   LIVE,
   cancelDue,
-  durableTaskPayloadAdmissible,
+  durableTaskHeadersAdmissible,
+  durableTaskRetryAdmissible,
   eligibleTask,
   epochAdditionFits,
   fenceFrom,
@@ -393,7 +396,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
     const retryInput = opts.retryStrategy
-    const retry = JSON.stringify(
+    const retry = serializeTaskValue(
+      'retry strategy',
       normalizeRetryStrategy(retryInput === undefined ? DEFAULT_RETRY : retryInput),
     )
     const maxAttempts = requirePositiveInt('maxAttempts', opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)
@@ -404,26 +408,25 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     if (cancellationInput !== undefined) {
       const maxDelaySeconds = cancellationInput.maxDelaySeconds
       const maxDurationSeconds = cancellationInput.maxDurationSeconds
-      const canonicalCancellation: {
-        maxDelaySeconds?: number
-        maxDurationSeconds?: number
-      } = {}
       if (maxDelaySeconds !== undefined) {
         maxDelayMs = durationToMs('cancellation.maxDelaySeconds', maxDelaySeconds)
-        canonicalCancellation.maxDelaySeconds = maxDelayMs / 1000
       }
       // maxDurationSeconds is applied at activate. Canonicalize it from the
       // same one-time snapshot that was validated, so a getter cannot make
       // the durable JSON disagree with the deadline arithmetic.
-      if (maxDurationSeconds !== undefined) {
-        canonicalCancellation.maxDurationSeconds =
-          durationToMs('cancellation.maxDurationSeconds', maxDurationSeconds) / 1000
+      const canonicalCancellation = {
+        maxDelaySeconds: maxDelayMs === null ? undefined : maxDelayMs / 1000,
+        maxDurationSeconds:
+          maxDurationSeconds === undefined
+            ? undefined
+            : durationToMs('cancellation.maxDurationSeconds', maxDurationSeconds) / 1000,
       }
-      cancellationJson = JSON.stringify(canonicalCancellation)
+      cancellationJson = serializeTaskValue('cancellation policy', canonicalCancellation)
     }
 
     const headersInput = opts.headers
-    const headersJson = headersInput === undefined ? null : JSON.stringify(headersInput)
+    const headersJson =
+      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)
     const key = opts.idempotencyKey ?? null
     const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
     // Idempotent task insert: loses silently when the key already exists.
@@ -560,7 +563,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const claimEligibility = (run: string, task: string): string => {
       const wait = registeredWait(run)
       return `${eligibleTask(task, NOW)}
-               AND ${durableTaskPayloadAdmissible(task)}
+               AND ${durableTaskRetryAdmissible(task)}
+               AND ${durableTaskHeadersAdmissible(task)}
                AND ${soleLiveRun(run)}
                AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})
                AND ${wait.temporallySafe}
@@ -688,7 +692,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
        FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
        WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
          AND t.state IN ${LIVE}
-         AND ${durableTaskPayloadAdmissible('t')}
+         AND ${durableTaskRetryAdmissible('t')}
+         AND ${durableTaskHeadersAdmissible('t')}
          AND ${soleLiveRun('r')}
          AND ${storedPositiveClaimGeneration('r')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'r')}
@@ -742,7 +747,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND EXISTS (
            SELECT 1 FROM tasks t
            WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}
-             AND ${durableTaskPayloadAdmissible('t')}
+             AND ${durableTaskRetryAdmissible('t')}
+             AND ${durableTaskHeadersAdmissible('t')}
              AND ${storedCurrentRunAccounting('runs', 't')}
              AND ${storedHighestOwnedOrdinal('runs')}
              AND ${activationDurationAdmissible('t', NOW)}
@@ -790,8 +796,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'payload',
       `SELECT ${CLAIMED_RUN_COLUMNS}
        FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
-       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'
-         AND ${durableTaskPayloadAdmissible('t')}`,
+       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'`,
       [runId],
     )
     const { won, results } = await b.run(this.db)
@@ -1144,14 +1149,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * sole authority and advisory signals never revoke it.
    */
   async expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean> {
+    const unexpired = runClaimUnexpired('runs', NOW_MS)
+    const owner = runOwnedByTask('runs', 't')
     const [expired] = await this.db.batch('expire-lease-now', [
       {
         sql: `UPDATE runs SET claim_expires_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-                AND ${runClaimUnexpired('runs', NOW_MS)}
+                AND ${unexpired}
                 AND EXISTS (
                   SELECT 1 FROM tasks t
-                  WHERE t.task_id = runs.task_id AND t.queue = runs.queue
+                  WHERE ${owner}
                 )`,
         args: [runId, queue, claimToken],
       },
@@ -2035,10 +2042,12 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
     ),
     leaseSeconds: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.lease_ms) / 1000,
     paramsJson: String(row.params),
-    retryStrategy: normalizeRetryStrategy(JSON.parse(String(row.retry_strategy))),
+    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),
     maxAttempts: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.max_attempts),
     headers:
-      row.headers === null ? {} : (JSON.parse(String(row.headers)) as Record<string, string>),
+      row.headers === null
+        ? {}
+        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),
   }
   if (row.wake_event !== null && row.wake_step !== null) {
     // The SDK matches on the exact step key. Rows parked before schema v3

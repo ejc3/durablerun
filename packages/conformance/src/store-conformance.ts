@@ -99,11 +99,22 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         it(`${label} does not amplify ${witness.id}`, async () => {
           const hasClaimCardinalityVerdict =
             label === 'claim' && witness.id === 'cardinality/two-live-runs'
+          const hasCancelQueueOwnershipVerdict =
+            label === 'cancel-task' && witness.id === 'ownership/run-task-queue-mismatch'
           const run = () => runPoisonMatrixCase(makeFixture, label, witness)
           if (hasClaimCardinalityVerdict) {
             const result = await attributeExpectedFailure(
               { kind: 'behavior', mutation: 'claim-requires-sole-live-run' },
               /^Error: claim\/cardinality\/two-live-runs: .*poisoned live run .* changed without quiescing/,
+              run,
+            )
+            expect(result).toMatchObject({ label, witness: witness.id })
+            return
+          }
+          if (hasCancelQueueOwnershipVerdict) {
+            const result = await attributeExpectedFailure(
+              { kind: 'behavior', mutation: 'cancel-task-requires-run-task-queue-ownership' },
+              /^Error: cancel-task\/ownership\/run-task-queue-mismatch: new invariant violation: terminal-task-with-live-run: poison-task\/poison-run$/,
               run,
             )
             expect(result).toMatchObject({ label, witness: witness.id })

@@ -306,15 +306,9 @@ export const taskOwnsEveryRun = (task: string): string =>
       AND ownership_run.queue <> ${task}.queue
   )`
 
-/**
- * Durable task data that can be decoded into a worker payload without a
- * post-CAS exception. This is deliberately SQL: claim places it inside the
- * UPDATE statement's candidate selection before LIMIT, while activate uses
- * the identical definition before changing its generation latch.
- */
-export const durableTaskPayloadAdmissible = (task: string): string => {
+/** Durable retry JSON that can be decoded into a worker payload. */
+export const durableTaskRetryAdmissible = (task: string): string => {
   const retry = `${task}.retry_strategy`
-  const headers = `${task}.headers`
   const kind = `json_extract(${retry}, '$.kind')`
   const duration = (path: string): string => {
     const value = `json_extract(${retry}, '${path}')`
@@ -342,7 +336,14 @@ export const durableTaskPayloadAdmissible = (task: string): string => {
         THEN 1 ELSE 0 END
       ELSE 0
     END = 1
-    AND CASE
+  )`
+}
+
+/** Durable header JSON that can be decoded into a worker payload. */
+export const durableTaskHeadersAdmissible = (task: string): string => {
+  const headers = `${task}.headers`
+  return `(
+    CASE
       WHEN ${headers} IS NULL THEN 1
       WHEN typeof(${headers}) <> 'text' OR NOT json_valid(${headers}) THEN 0
       WHEN json_type(${headers}) <> 'object' THEN 0
