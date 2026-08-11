@@ -7,12 +7,18 @@ import {
   StoreUnavailableError,
   SuspendSignal,
   UNINSPECTABLE_TASK_FAILURE_JSON,
+  snapshotTaskThrowable,
 } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { type TaskHandler, type TaskRegistry, runClaimedRun } from '../src/index.js'
+import {
+  type TaskContext,
+  type TaskHandler,
+  type TaskRegistry,
+  runClaimedRun,
+} from '../src/index.js'
 import {
   TaskAbortController,
   TaskMap,
@@ -92,6 +98,42 @@ const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
       return value
     },
   ],
+]
+
+const INVALID_CONTEXT_CALLS: readonly {
+  readonly title: string
+  readonly call: (ctx: TaskContext) => Promise<unknown>
+}[] = [
+  { title: "step name '#x'", call: (ctx) => ctx.step('#x', () => 1) },
+  { title: "step name 'a#b'", call: (ctx) => ctx.step('a#b', () => 1) },
+  { title: "step name '$x'", call: (ctx) => ctx.step('$x', () => 1) },
+  { title: "awaitEvent name 'x#y'", call: (ctx) => ctx.awaitEvent('x#y') },
+  { title: "awaitEvent name '$go'", call: (ctx) => ctx.awaitEvent('$go') },
+  { title: "emitEvent name 'x#y'", call: (ctx) => ctx.emitEvent('x#y', '{}') },
+  { title: "emitEvent name '$go'", call: (ctx) => ctx.emitEvent('$go', '{}') },
+  {
+    title: 'awaitEvent timeout NaN',
+    call: (ctx) => ctx.awaitEvent('go', { timeoutSeconds: Number.NaN }),
+  },
+  { title: 'awaitEvent timeout -1', call: (ctx) => ctx.awaitEvent('go', { timeoutSeconds: -1 }) },
+  { title: 'awaitEvent timeout 0', call: (ctx) => ctx.awaitEvent('go', { timeoutSeconds: 0 }) },
+  {
+    title: 'awaitEvent timeout Infinity',
+    call: (ctx) => ctx.awaitEvent('go', { timeoutSeconds: Number.POSITIVE_INFINITY }),
+  },
+  { title: 'sleepFor NaN', call: (ctx) => ctx.sleepFor(Number.NaN) },
+  { title: 'sleepFor -1', call: (ctx) => ctx.sleepFor(-1) },
+  { title: 'sleepFor Infinity', call: (ctx) => ctx.sleepFor(Number.POSITIVE_INFINITY) },
+  { title: 'sleepUntil NaN', call: (ctx) => ctx.sleepUntil(Number.NaN) },
+  { title: 'sleepUntil fractional', call: (ctx) => ctx.sleepUntil(1.5) },
+  { title: 'sleepUntil -1', call: (ctx) => ctx.sleepUntil(-1) },
+  {
+    title: 'emitEvent payload undefined',
+    call: (ctx) => {
+      const missing: { value?: object } = {}
+      return ctx.emitEvent('go', JSON.stringify(missing.value))
+    },
+  },
 ]
 
 const TASK_THROWABLE_CASE_IDS = [
@@ -707,8 +749,84 @@ describe('runClaimedRun', () => {
         }
       }
 
+      const fatal = new FatalTaskError('fatal original')
+      Object.defineProperty(fatal, 'message', { value: 'mutated after construction' })
+      const fatalSnapshot = snapshotTaskThrowable(fatal)
+      const fatalObservation = {
+        snapshot: fatalSnapshot,
+        frozen: Object.isFrozen(fatalSnapshot),
+      }
+
+      const permanentCases: { readonly title: string; readonly handler: TaskHandler }[] = [
+        {
+          title: 'explicit FatalTaskError',
+          handler: async () => {
+            throw new FatalTaskError('unrecoverable input')
+          },
+        },
+        ...NON_SERIALIZABLE_VALUES.map(([valueName, makeValue]) => ({
+          title: `step result ${valueName}`,
+          handler: async (ctx: TaskContext) => ctx.step('not-json', () => makeValue()),
+        })),
+        {
+          title: 'durable operation nested inside a step',
+          handler: async (ctx) =>
+            ctx.step('outer', () => ctx.awaitEvent('go', { timeoutSeconds: 30 })),
+        },
+        ...INVALID_CONTEXT_CALLS.map(({ title, call }) => ({
+          title: `invalid context input: ${title}`,
+          handler: async (ctx: TaskContext) => call(ctx),
+        })),
+      ]
+      const permanentResults: unknown[] = []
+      for (const { title, handler } of permanentCases) {
+        const permanentFixture = await fx(
+          `sdk-fatal-policy-${title.replaceAll(/[^a-zA-Z0-9]+/g, '-').toLowerCase()}`,
+        )
+        try {
+          let executions = 0
+          const spawned = await permanentFixture.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+          const settled = await claimAndRun(
+            permanentFixture,
+            registry({
+              job: async (ctx, params) => {
+                executions++
+                return handler(ctx, params)
+              },
+            }),
+            'w1',
+          ).then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+          const [task, runs] = await permanentFixture.raw.batch(
+            'fatal-policy-result',
+            [
+              {
+                sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`,
+                args: [spawned.taskId],
+              },
+              {
+                sql: `SELECT state FROM runs WHERE task_id = ? ORDER BY attempt`,
+                args: [spawned.taskId],
+              },
+            ],
+            'read',
+          )
+          permanentResults.push({
+            title,
+            settled,
+            executions,
+            task: task?.rows[0],
+            runStates: runs?.rows.map((row) => row.state),
+          })
+        } finally {
+          permanentFixture.close()
+        }
+      }
+
       expect(
-        { observed, retryPrototype, handlerResults },
+        { observed, retryPrototype, handlerResults, fatalObservation, permanentResults },
         'mutation-verdict:construction:task-value-captured-stringify',
       ).toEqual({
         observed: {
@@ -727,6 +845,21 @@ describe('runClaimedRun', () => {
         retryPrototype: '{"kind":"fixed","baseSeconds":1.234}',
         handlerResults: NON_SERIALIZABLE_VALUES.map(([valueName]) => ({
           valueName,
+          settled: { kind: 'resolved', value: { kind: 'failed' } },
+          executions: 1,
+          task: { state: 'failed', attempts: 1 },
+          runStates: ['failed'],
+        })),
+        fatalObservation: {
+          snapshot: {
+            kind: 'failure',
+            fatal: true,
+            failureJson: '{"name":"FatalTaskError","message":"fatal original"}',
+          },
+          frozen: true,
+        },
+        permanentResults: permanentCases.map(({ title }) => ({
+          title,
           settled: { kind: 'resolved', value: { kind: 'failed' } },
           executions: 1,
           task: { state: 'failed', attempts: 1 },
