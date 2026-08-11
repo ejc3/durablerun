@@ -527,7 +527,13 @@ MUTATION_SPECS = [
         "packages/store-libsql/src/store.ts",
         "               AND ${soleLiveRun(run)}\n"
         "               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})\n",
-        "               AND 1 = 1\n"
+        # Make the sibling witness contradictory while preserving both
+        # correlated probes. The shipped query-plan regression owns that
+        # independent topology; this mutation owns only sole-live semantics.
+        "               AND ${soleLiveRun(run).replace(\n"
+        "                 `AND sibling.run_id <> ${run}.run_id`,\n"
+        "                 `AND sibling.run_id <> ${run}.run_id AND sibling.run_id = ${run}.run_id`,\n"
+        "               )}\n"
         "               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})\n",
         "claim advances two competing live runs for one task",
     ),
