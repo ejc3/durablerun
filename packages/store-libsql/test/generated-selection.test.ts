@@ -58,8 +58,8 @@ async function stateOf(raw: LibsqlExecutor, taskId: string): Promise<string> {
  * whole point: it lands in a boolean position, and unbracketed it binds as
  * `a OR (b AND fence)`.
  */
-async function spread(raw: LibsqlExecutor): Promise<void> {
-  const b = new FencedBatch('probe', 'seed', { now: NOW_MS })
+async function spread(raw: LibsqlExecutor, label = 'probe'): Promise<void> {
+  const b = new FencedBatch(label, 'seed', { now: NOW_MS })
   b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
     'run-stamped',
   ])
@@ -97,7 +97,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
     await insert(f.raw, 'untouched', 'run-untouched', 'a')
 
-    await spread(f.raw)
+    await spread(f.raw, 'mutation:generated-selection-fence')
 
     expect(await stateOf(f.raw, 'stamped')).toBe('cancelled')
     expect(
@@ -120,16 +120,26 @@ describe('a generated selection restricts to rows this batch stamped', () => {
       relation: 'runs-to-tasks',
       fence: 'win',
       set: { state: `'cancelled'` },
-      narrow: `task_id = ?`,
-      narrowArgs: ['untouched'],
+      // Without the generated parentheses this becomes
+      // `(fenced selection AND stamped) OR untouched`, so the second arm can
+      // escape the fence and widen the write to a row this batch never owned.
+      narrow: `task_id = ? OR task_id = ?`,
+      narrowArgs: ['stamped', 'untouched'],
       rows: 'source-keys',
     })
 
     await b.run(f.raw)
+    expect(await stateOf(f.raw, 'stamped')).toBe('cancelled')
     expect(
-      await stateOf(f.raw, 'stamped'),
+      await stateOf(f.raw, 'untouched'),
       'mutation-verdict:behavior:generated-narrow-widens',
     ).toBe('running')
+    f.close()
+  })
+
+  it('never lets narrow silently drop every matching row', async () => {
+    const f = await fixture()
+    await insert(f.raw, 'stamped', 'run-stamped', 'b')
 
     const matching = new FencedBatch('narrow-positive', 'narrow-positive-seed', { now: NOW_MS })
     matching.cas(
@@ -152,10 +162,6 @@ describe('a generated selection restricts to rows this batch stamped', () => {
       await stateOf(f.raw, 'stamped'),
       'mutation-verdict:behavior:generated-narrow-progress',
     ).toBe('cancelled')
-    expect(
-      await stateOf(f.raw, 'untouched'),
-      'mutation-verdict:behavior:generated-narrow-widens',
-    ).toBe('running')
     f.close()
   })
 
@@ -166,7 +172,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     const f = await fixture()
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
 
-    await spread(f.raw)
+    await spread(f.raw, 'mutation:generated-update-provenance-assignment')
 
     const [row] = (
       await f.raw.batch(

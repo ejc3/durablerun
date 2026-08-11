@@ -170,9 +170,27 @@ interface Named {
 interface GeneratedUpdate {
   name: string
   target: GeneratedUpdateTarget
-  sql: string
+  setSql: string
+  sourceInstant: string
+  selection: string
+  narrow: string
   args: SqlStatement['args']
   rows: RowBound
+}
+
+/**
+ * Closed builders receive the batch label as their stable executable mutation
+ * address. Live output never branches on it; the mutation probe may inject a
+ * label-scoped semantic defect without poisoning every generated transition.
+ */
+function generatedFencePredicate(prefix: string, fence: string, _batchLabel: string): string {
+  return `${prefix}f.fence_stamp = ${fence}`
+}
+
+function generatedUpdateSql(update: GeneratedUpdate, _batchLabel: string): string {
+  const provenance = `,\n         fence_stamp = ${STAMP},
+         fence_at_ms = (${update.sourceInstant})`
+  return `UPDATE ${update.target} SET ${update.setSql}${provenance}\n       WHERE (${update.selection}${update.narrow})`
 }
 
 /**
@@ -422,14 +440,15 @@ export class FencedBatch {
     const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''
     const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`
     const fence = `$FENCE:${spec.fence}$`
+    const fencedSource = generatedFencePredicate(src, fence, this.label)
     const sourceKeys =
       target === from
         ? `SELECT source_key FROM (
                          SELECT DISTINCT f.${column} AS source_key FROM ${from} f
-                          WHERE ${src}f.fence_stamp = ${fence}
+                          WHERE ${fencedSource}
                        ) AS fenced_source`
         : `SELECT f.${column} FROM ${from} f
-                       WHERE ${src}f.fence_stamp = ${fence}`
+                       WHERE ${fencedSource}`
     const selection = `${key} IN (${sourceKeys})`
     const narrow = spec.narrow ? `\n         AND (${spec.narrow})` : ''
     const w = spec.whereArgs ?? []
@@ -439,7 +458,7 @@ export class FencedBatch {
         name,
         kind: 'followOn',
         target: null,
-        sql: `DELETE FROM ${target}\n       WHERE ${selection}${narrow}`,
+        sql: `DELETE FROM ${target}\n       WHERE (${selection}${narrow})`,
         args: [...w, ...(spec.narrowArgs ?? [])],
         rows: spec.rows === 'one' ? 'one' : { many: 'generated source-key bound' },
         max: null,
@@ -458,16 +477,17 @@ export class FencedBatch {
       target === from
         ? `SELECT MIN(source_fence_at_ms) FROM (
                           SELECT DISTINCT f.fence_at_ms AS source_fence_at_ms FROM ${from} f
-                           WHERE ${src}f.fence_stamp = ${fence}
+                           WHERE ${fencedSource}
                         ) AS fenced_source_instant`
         : `SELECT MIN(f.fence_at_ms) FROM ${from} f
-                        WHERE ${src}f.fence_stamp = ${fence}`
-    const provenance = `,\n         fence_stamp = ${STAMP},
-         fence_at_ms = (${sourceInstant})`
+                        WHERE ${fencedSource}`
     return this.addGeneratedUpdate({
       name,
       target,
-      sql: `UPDATE ${target} SET ${setSql}${provenance}\n       WHERE ${selection}${narrow}`,
+      setSql,
+      sourceInstant,
+      selection,
+      narrow,
       // UPDATE always emits provenance, so the correlation occurs once in its
       // instant subquery and once in its row selection. DELETE has no stamp to
       // write and returned through the branch above.
@@ -477,7 +497,15 @@ export class FencedBatch {
   }
 
   private addGeneratedUpdate(update: GeneratedUpdate): this {
-    return this.add({ ...update, kind: 'followOn', max: null })
+    return this.add({
+      name: update.name,
+      target: update.target,
+      sql: generatedUpdateSql(update, this.label),
+      args: update.args,
+      rows: update.rows,
+      kind: 'followOn',
+      max: null,
+    })
   }
 
   private relation(name: FenceRelation, at: string): (typeof FENCE_RELATIONS)[FenceRelation] {

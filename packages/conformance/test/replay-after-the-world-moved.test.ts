@@ -95,56 +95,6 @@ describe('a replay after the world moved on', () => {
     return { f, rec, spawned, run, step }
   }
 
-  it('does not terminalize a task whose successor has since been claimed', async () => {
-    // 1. Run 1 of a two-attempt task fails with a retry, creating run 2.
-    // 2. The response is lost, so the caller does not know it committed.
-    // 3. A tick claims run 2 — which overwrites run 2's provenance, because
-    //    claiming is itself a transition that stamps the row.
-    // 4. The original batch is delivered again.
-    //
-    // The failure arm asks "did I create the successor" by looking for its
-    // stamp. Step 3 removed that stamp, so the answer flips from yes to no
-    // and the terminal arm fires: the task is failed permanently while its
-    // successor is running under a live worker. The run cannot activate under
-    // a terminal task, so a perfectly good retry is lost and the task reports
-    // a failure that never happened.
-    const f = await fixture()
-    const rec = recorder(f.raw)
-    const store = f.storeOver(rec.db)
-
-    const spawned = await store.spawn(Q, 'job', '{}', { maxAttempts: 3 })
-    const [run] = await store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected a claim')
-    await store.activate(Q, run.runId, run.claimToken, run.claimGen)
-    await store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
-
-    const [successor] = await query(
-      f.raw,
-      `SELECT run_id FROM runs WHERE task_id = ? AND attempt = 2`,
-      [spawned.taskId],
-    )
-    const successorId = String(successor?.run_id)
-
-    // The world moves on: the successor is claimed by another tick.
-    const [claimed] = await store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
-    expect(claimed?.runId).toBe(successorId)
-
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'successor-ownership' },
-      /UNIQUE constraint failed: runs\.task_id, runs\.attempt/,
-      () => rec.replay('fail'),
-    )
-
-    const [task] = await query(f.raw, `SELECT state, failure_reason FROM tasks WHERE task_id = ?`, [
-      spawned.taskId,
-    ])
-    expect(task?.state, 'mutation-verdict:behavior:successor-ownership').toBe('running') // NOT failed — its successor is live
-    const [after] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [successorId])
-    expect(after?.state).toBe('running')
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
-  })
-
   it('does not terminalize when an infrastructure successor has since been claimed', async () => {
     // The same shape through the sweep's claim-timeout path.
     const f = await fixture()
@@ -698,50 +648,6 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
   })
 })
 
-describe('a successor id that collides with the run being replaced', () => {
-  /**
-   * The insert's "a run of my task already sits at that id" guard treats the
-   * PARENT as such a run, so a self-collision makes it write nothing — and
-   * then every arm keyed on the successor writes nothing too. What commits is
-   * a half-transition: in the sweep, a failed run under a task still marked
-   * running, which no later claim or sweep can rediscover; in a worker
-   * failure with budget remaining, a permanently failed task the caller asked
-   * to retry.
-   *
-   * A collision with a FOREIGN row fails loudly. This one must too: it is an
-   * id-generation failure, and committing either outcome is worse than
-   * raising.
-   */
-  it('fails loudly instead of committing a half-transition', async () => {
-    const f = await fixture()
-    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
-    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected a claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-
-    // An id source that hands back the id of the run being replaced.
-    const colliding = new LibsqlSchedulerStore(f.raw, {
-      uuidv7: () => run.runId,
-      token: () => 'collide-tok',
-    })
-    await requireExpectedFailure(
-      { kind: 'behavior', mutation: 'successor-self-collision-identity' },
-      RUN_ID_COLLISION,
-      () =>
-        colliding.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', {
-          delaySeconds: 0,
-        }),
-    )
-
-    // Nothing of the half-transition committed: the batch is atomic.
-    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
-    expect(task?.state).toBe('running')
-    const [after] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [run.runId])
-    expect(after?.state).toBe('running')
-    f.close()
-  })
-})
-
 describe('the successor collision rejection oracle', () => {
   it('propagates an unrelated pre-transition failure', async () => {
     const unrelated = new TypeError('unrelated pre-transition failure')
@@ -750,7 +656,7 @@ describe('the successor collision rejection oracle', () => {
       (error) => error === unrelated,
       () =>
         requireExpectedFailure(
-          { kind: 'behavior', mutation: 'successor-self-collision-identity' },
+          { kind: 'behavior', mutation: 'successor-attempt-identity' },
           RUN_ID_COLLISION,
           async () => {
             throw unrelated
@@ -760,10 +666,10 @@ describe('the successor collision rejection oracle', () => {
   })
 })
 
-describe('a successor id that collides with a historical run of the same task', () => {
-  async function runningRetry() {
+describe('successor identity includes its task and intended attempt', () => {
+  async function runningRetry(maxAttempts = 5) {
     const f = await fixture()
-    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts })
     const [historical] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
     if (!historical) throw new Error('expected the first claim')
     await f.store.activate(Q, historical.runId, historical.claimToken, historical.claimGen)
@@ -784,44 +690,174 @@ describe('a successor id that collides with a historical run of the same task', 
     })
   }
 
-  it('rejects a worker failure instead of committing a half-transition', async () => {
-    const { f, spawned, historical, current } = await runningRetry()
-    const colliding = collidingStore(f.raw, historical.runId)
+  async function transitionOutcome(action: () => Promise<unknown>) {
+    try {
+      await action()
+      return 'resolved' as const
+    } catch (error) {
+      return RUN_ID_COLLISION.test(String(error))
+        ? ('run-id-collision' as const)
+        : (`unexpected:${String(error)}` as const)
+    }
+  }
 
-    await requireExpectedFailure(
-      { kind: 'behavior', mutation: 'successor-attempt-identity' },
-      RUN_ID_COLLISION,
-      () =>
+  async function observeSelfCollision() {
+    const f = await fixture()
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
+      const [current] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!current) throw new Error('expected a claim')
+      await f.store.activate(Q, current.runId, current.claimToken, current.claimGen)
+      const colliding = collidingStore(f.raw, current.runId)
+      const outcome = await transitionOutcome(() =>
+        colliding.fail(Q, current.runId, current.claimToken, '{"name":"Boom"}', {
+          delaySeconds: 0,
+        }),
+      )
+      const [task] = await query(
+        f.raw,
+        `SELECT state, failure_reason FROM tasks WHERE task_id = ?`,
+        [spawned.taskId],
+      )
+      const [run] = await query(f.raw, `SELECT state, failure_reason FROM runs WHERE run_id = ?`, [
+        current.runId,
+      ])
+      const [count] = await query(f.raw, `SELECT COUNT(*) AS count FROM runs WHERE task_id = ?`, [
+        spawned.taskId,
+      ])
+      return {
+        outcome,
+        task: { state: task?.state, failureReason: task?.failure_reason },
+        current: { state: run?.state, failureReason: run?.failure_reason },
+        runCount: Number(count?.count),
+        invariants: await engineInvariantViolations(f.raw),
+      }
+    } finally {
+      f.close()
+    }
+  }
+
+  async function observeHistoricalCollision(transition: 'fail' | 'sweep') {
+    const { f, spawned, historical, current } = await runningRetry()
+    try {
+      const colliding = collidingStore(f.raw, historical.runId)
+      if (transition === 'sweep') await f.admin.setFakeNowEpochMs(NOW + 100_000)
+      const outcome = await transitionOutcome(() =>
+        transition === 'fail'
+          ? colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
+              delaySeconds: 0,
+            })
+          : colliding.sweep(Q, 10),
+      )
+      const [task] = await query(
+        f.raw,
+        `SELECT state, failure_reason FROM tasks WHERE task_id = ?`,
+        [spawned.taskId],
+      )
+      const [prior] = await query(
+        f.raw,
+        `SELECT state, failure_reason FROM runs WHERE run_id = ?`,
+        [historical.runId],
+      )
+      const [run] = await query(f.raw, `SELECT state, failure_reason FROM runs WHERE run_id = ?`, [
+        current.runId,
+      ])
+      const [count] = await query(f.raw, `SELECT COUNT(*) AS count FROM runs WHERE task_id = ?`, [
+        spawned.taskId,
+      ])
+      return {
+        outcome,
+        task: { state: task?.state, failureReason: task?.failure_reason },
+        historical: { state: prior?.state, failureReason: prior?.failure_reason },
+        current: { state: run?.state, failureReason: run?.failure_reason },
+        runCount: Number(count?.count),
+        invariants: await engineInvariantViolations(f.raw),
+      }
+    } finally {
+      f.close()
+    }
+  }
+
+  async function observeAtCapSelfCollision() {
+    const { f, spawned, historical, current } = await runningRetry(2)
+    try {
+      const colliding = collidingStore(f.raw, current.runId)
+      const outcome = await transitionOutcome(() =>
         colliding.fail(Q, current.runId, current.claimToken, '{"name":"Second"}', {
           delaySeconds: 0,
         }),
-    )
+      )
+      const [task] = await query(
+        f.raw,
+        `SELECT state, failure_reason FROM tasks WHERE task_id = ?`,
+        [spawned.taskId],
+      )
+      const [prior] = await query(
+        f.raw,
+        `SELECT state, failure_reason FROM runs WHERE run_id = ?`,
+        [historical.runId],
+      )
+      const [run] = await query(f.raw, `SELECT state, failure_reason FROM runs WHERE run_id = ?`, [
+        current.runId,
+      ])
+      const [count] = await query(f.raw, `SELECT COUNT(*) AS count FROM runs WHERE task_id = ?`, [
+        spawned.taskId,
+      ])
+      return {
+        outcome,
+        task: { state: task?.state, failureReason: task?.failure_reason },
+        historical: { state: prior?.state, failureReason: prior?.failure_reason },
+        current: { state: run?.state, failureReason: run?.failure_reason },
+        runCount: Number(count?.count),
+        invariants: await engineInvariantViolations(f.raw),
+      }
+    } finally {
+      f.close()
+    }
+  }
 
-    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
-    expect(task?.state).toBe('running')
-    const [run] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [current.runId])
-    expect(run?.state).toBe('running')
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
-  })
-
-  it('rejects a claim-timeout sweep instead of committing a half-transition', async () => {
-    const { f, spawned, historical, current } = await runningRetry()
-    const colliding = collidingStore(f.raw, historical.runId)
-    await f.admin.setFakeNowEpochMs(NOW + 100_000)
-
-    await requireExpectedFailure(
-      { kind: 'behavior', mutation: 'successor-sweep-attempt-identity' },
-      RUN_ID_COLLISION,
-      () => colliding.sweep(Q, 10),
-    )
-
-    const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
-    expect(task?.state).toBe('running')
-    const [run] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [current.runId])
-    expect(run?.state).toBe('running')
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+  it('rejects self and historical collisions while terminalizing an at-cap failure', async () => {
+    expect(
+      {
+        self: await observeSelfCollision(),
+        historicalFail: await observeHistoricalCollision('fail'),
+        historicalSweep: await observeHistoricalCollision('sweep'),
+        atCapSelf: await observeAtCapSelfCollision(),
+      },
+      'mutation-verdict:behavior:successor-attempt-identity',
+    ).toEqual({
+      self: {
+        outcome: 'run-id-collision',
+        task: { state: 'running', failureReason: null },
+        current: { state: 'running', failureReason: null },
+        runCount: 1,
+        invariants: [],
+      },
+      historicalFail: {
+        outcome: 'run-id-collision',
+        task: { state: 'running', failureReason: null },
+        historical: { state: 'failed', failureReason: '{"name":"First"}' },
+        current: { state: 'running', failureReason: null },
+        runCount: 2,
+        invariants: [],
+      },
+      historicalSweep: {
+        outcome: 'run-id-collision',
+        task: { state: 'running', failureReason: null },
+        historical: { state: 'failed', failureReason: '{"name":"First"}' },
+        current: { state: 'running', failureReason: null },
+        runCount: 2,
+        invariants: [],
+      },
+      atCapSelf: {
+        outcome: 'resolved',
+        task: { state: 'failed', failureReason: '{"name":"Second"}' },
+        historical: { state: 'failed', failureReason: '{"name":"First"}' },
+        current: { state: 'failed', failureReason: '{"name":"Second"}' },
+        runCount: 2,
+        invariants: [],
+      },
+    })
   })
 })
 

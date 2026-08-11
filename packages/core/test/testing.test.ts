@@ -43,46 +43,34 @@ async function bindUndefinedFailure(): Promise<never> {
   throw new Error('undefined-bind failure unexpectedly returned')
 }
 
-async function requireCompilerBindPropagation(
-  failureMarker: string,
+async function observeCompilerBindPropagation(
   expectedFailure: RegExp,
   action: () => Promise<unknown>,
-): Promise<void> {
+): Promise<'propagated' | 'attributed' | 'returned' | `unexpected:${string}`> {
   try {
     await action()
+    return 'returned'
   } catch (error) {
-    if (expectedFailure.test(String(error))) return
+    if (expectedFailure.test(String(error))) return 'propagated'
     if (error instanceof Error && error.message === marker) {
-      throw new Error(failureMarker)
+      return 'attributed'
     }
-    throw error
+    return `unexpected:${String(error)}`
   }
-  throw new Error(failureMarker)
 }
 
 describe('mutation verdict promise helpers', () => {
-  it('reads the private brand when recognizing compiler failures', async () => {
-    let failure: unknown
+  it('authenticates both compiler bind producers before every caller matcher', async () => {
+    let arityFailure: unknown
     try {
       await bindArityFailure()
     } catch (error) {
-      failure = error
+      arityFailure = error
     }
-    expect(
-      isFencedBatchBindError(failure),
-      'mutation-verdict:construction:testing-helper-bind-brand-read',
-    ).toBe(true)
-  })
-
-  it('does not attribute an explicit undefined bind as an expected failure', async () => {
-    await requireCompilerBindPropagation(
-      'mutation-verdict:behavior:testing-helper-bind-undefined-brand',
-      /argument 1 is undefined/,
-      () => attributeExpectedFailure(verdict, /.*/, bindUndefinedFailure),
+    const undefinedProducer = await observeCompilerBindPropagation(/argument 1 is undefined/, () =>
+      attributeExpectedFailure(verdict, /.*/, bindUndefinedFailure),
     )
-  })
 
-  it('uses a captured constructor for compiler bind failures', async () => {
     const originalError = Object.getOwnPropertyDescriptor(globalThis, 'Error')
     const originalTypeError = Object.getOwnPropertyDescriptor(globalThis, 'TypeError')
     if (originalError === undefined || originalTypeError === undefined) {
@@ -107,33 +95,39 @@ describe('mutation verdict promise helpers', () => {
     }
 
     expect(
-      observed,
-      'mutation-verdict:construction:testing-helper-bind-error-constructor',
-    ).toBeInstanceOf(originalTypeError.value as ErrorConstructor)
-  })
-
-  it('does not attribute a bind-arity failure as an expected failure', async () => {
-    await requireCompilerBindPropagation(
-      'mutation-verdict:behavior:testing-helper-bind-arity-attribute',
-      /binds 2 of 1 explicit args/,
-      () => attributeExpectedFailure(verdict, /.*/, bindArityFailure),
-    )
-  })
-
-  it('does not accept a bind-arity failure as the required failure', async () => {
-    await requireCompilerBindPropagation(
-      'mutation-verdict:behavior:testing-helper-bind-arity-require',
-      /binds 2 of 1 explicit args/,
-      () => requireExpectedFailure(verdict, /.*/, bindArityFailure),
-    )
-  })
-
-  it('does not attribute a bind-arity failure as a replacement failure', async () => {
-    await requireCompilerBindPropagation(
-      'mutation-verdict:behavior:testing-helper-bind-arity-replacement',
-      /binds 2 of 1 explicit args/,
-      () => attributeReplacedFailure(verdict, /expected healthy failure/, /.*/, bindArityFailure),
-    )
+      {
+        producers: {
+          arityBrand: isFencedBatchBindError(arityFailure),
+          undefined: undefinedProducer,
+          capturedConstructor: observed instanceof (originalTypeError.value as ErrorConstructor),
+          poisonedConstructorBrand: isFencedBatchBindError(observed),
+        },
+        consumers: {
+          attribute: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>
+            attributeExpectedFailure(verdict, /.*/, bindArityFailure),
+          ),
+          require: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>
+            requireExpectedFailure(verdict, /.*/, bindArityFailure),
+          ),
+          replacement: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>
+            attributeReplacedFailure(verdict, /expected healthy failure/, /.*/, bindArityFailure),
+          ),
+        },
+      },
+      'mutation-verdict:construction:testing-helper-bind-brand-read',
+    ).toEqual({
+      producers: {
+        arityBrand: true,
+        undefined: 'propagated',
+        capturedConstructor: true,
+        poisonedConstructorBrand: true,
+      },
+      consumers: {
+        attribute: 'propagated',
+        require: 'propagated',
+        replacement: 'propagated',
+      },
+    })
   })
 
   it('returns an operation that succeeds as expected', async () => {

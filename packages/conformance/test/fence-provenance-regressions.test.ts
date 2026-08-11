@@ -81,6 +81,30 @@ async function query(
   return (rows?.rows ?? []) as unknown as Record<string, unknown>[]
 }
 
+function recorder(raw: LibsqlExecutor) {
+  const seen: { label: string; statements: { sql: string; args: unknown[] }[] }[] = []
+  const db: SqlExecutor = {
+    batch: (label, statements, mode) => {
+      seen.push({
+        label,
+        statements: statements.map((statement) => ({
+          sql: statement.sql,
+          args: [...statement.args],
+        })),
+      })
+      return raw.batch(label, statements, mode)
+    },
+  }
+  return {
+    db,
+    replay: (label: string) => {
+      const call = seen.find((candidate) => candidate.label === label)
+      if (!call) throw new Error(`no batch labelled ${label} was recorded`)
+      return raw.batch(label, call.statements as { sql: string; args: never[] }[], 'write')
+    },
+  }
+}
+
 function restoreOwnProperty(
   target: object,
   key: PropertyKey,
@@ -468,96 +492,132 @@ describe('fence provenance', () => {
     f.close()
   })
 
-  it('a replayed retrying failure does not reject', async () => {
-    // The same shape in `fail`: the retry successor is guarded on the failing
-    // run carrying this batch's stamp, which the batch itself wrote, so an
-    // exact replay inserts the same successor id at the same attempt ordinal
-    // a second time and the call rejects.
+  async function immediateRetryFailureReplay() {
     const f = await fixture(['successor-1'], ['fail-stamp'])
-    await insertTask(f.raw, { id: 'T', state: 'running', attempts: 0, maxAttempts: 5 })
-    await insertRun(f.raw, {
-      id: 'prov-fail-run',
-      taskId: 'T',
-      attempt: 1,
-      state: 'running',
-      claimedBy: 'worker',
-      claimExpiresAtMs: NOW + 60_000,
-    })
+    try {
+      await insertTask(f.raw, { id: 'T', state: 'running', attempts: 0, maxAttempts: 5 })
+      await insertRun(f.raw, {
+        id: 'prov-fail-run',
+        taskId: 'T',
+        attempt: 1,
+        state: 'running',
+        claimedBy: 'worker',
+        claimExpiresAtMs: NOW + 60_000,
+      })
 
-    const world = new SimWorld(f.raw, 'fail-retry-replay')
-    world.injectDuplicate({ label: 'fail' })
-    let rejection: unknown = null
-    world.actor('worker', async (db) => {
-      await f
-        .storeOver(db)
-        .fail(Q, 'prov-fail-run', 'worker', '{"name":"Boom"}', { delaySeconds: 0 })
-        // Losing the fence on the duplicate is the documented contract; a
-        // constraint violation from the store is not.
-        .catch((e) => {
-          if (!(e instanceof LeaseLostError)) rejection = e
-        })
-    })
-    await world.run()
+      const world = new SimWorld(f.raw, 'fail-retry-replay')
+      world.injectDuplicate({ label: 'fail' })
+      let rejection: string | null = null
+      world.actor('worker', async (db) => {
+        await f
+          .storeOver(db)
+          .fail(Q, 'prov-fail-run', 'worker', '{"name":"Boom"}', { delaySeconds: 0 })
+          .catch((error) => {
+            if (!(error instanceof LeaseLostError)) rejection = String(error)
+          })
+      })
+      await world.run()
 
-    expect(rejection, 'mutation-verdict:behavior:provenance-fail-progress').toBeNull()
+      return {
+        rejection,
+        progress: await taskRunProgress(f.raw, 'T'),
+        invariants: await engineInvariantViolations(f.raw),
+      }
+    } finally {
+      f.close()
+    }
+  }
+
+  async function claimedSuccessorRetryFailureReplay() {
+    const f = await fixture(['successor-1'], ['fail-stamp'])
+    try {
+      await insertTask(f.raw, { id: 'T', state: 'running', attempts: 0, maxAttempts: 3 })
+      await insertRun(f.raw, {
+        id: 'claimed-fail-run',
+        taskId: 'T',
+        attempt: 1,
+        state: 'running',
+        claimedBy: 'worker',
+        claimExpiresAtMs: NOW + 60_000,
+      })
+      const rec = recorder(f.raw)
+      const store = f.storeOver(rec.db)
+      await store.fail(Q, 'claimed-fail-run', 'worker', '{"name":"Boom"}', {
+        delaySeconds: 0,
+      })
+
+      const [successor] = await query(
+        f.raw,
+        `SELECT run_id FROM runs WHERE task_id = 'T' AND attempt = 2`,
+      )
+      const successorId = String(successor?.run_id)
+      const [claimed] = await store.claim(Q, 'next-worker', { leaseSeconds: 60, limit: 1 })
+      let rejection: string | null = null
+      await rec.replay('fail').catch((error) => {
+        rejection = String(error)
+      })
+
+      const [task] = await query(
+        f.raw,
+        `SELECT state, failure_reason FROM tasks WHERE task_id = 'T'`,
+      )
+      const [after] = await query(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [successorId])
+      return {
+        rejection,
+        claimedSuccessor: claimed?.runId === successorId,
+        task: { state: task?.state, failureReason: task?.failure_reason },
+        successor: { state: after?.state },
+        invariants: await engineInvariantViolations(f.raw),
+      }
+    } finally {
+      f.close()
+    }
+  }
+
+  it('retry failure replay preserves progress before and after the successor is claimed', async () => {
     expect(
-      await taskRunProgress(f.raw, 'T'),
-      'mutation-verdict:behavior:provenance-fail-progress',
-    ).toEqual({
-      task: {
-        state: 'pending',
-        attempts: 1,
-        infraRetries: 0,
-        failureReason: null,
+      {
+        immediate: await immediateRetryFailureReplay(),
+        claimedSuccessor: await claimedSuccessorRetryFailureReplay(),
       },
-      runs: [
-        {
-          runId: 'prov-fail-run',
-          attempt: 1,
-          state: 'failed',
-          claimedBy: null,
-          failureReason: '{"name":"Boom"}',
+      'mutation-verdict:behavior:successor-ownership',
+    ).toEqual({
+      immediate: {
+        rejection: null,
+        progress: {
+          task: {
+            state: 'pending',
+            attempts: 1,
+            infraRetries: 0,
+            failureReason: null,
+          },
+          runs: [
+            {
+              runId: 'prov-fail-run',
+              attempt: 1,
+              state: 'failed',
+              claimedBy: null,
+              failureReason: '{"name":"Boom"}',
+            },
+            {
+              runId: 'successor-1',
+              attempt: 2,
+              state: 'pending',
+              claimedBy: null,
+              failureReason: null,
+            },
+          ],
         },
-        {
-          runId: 'successor-1',
-          attempt: 2,
-          state: 'pending',
-          claimedBy: null,
-          failureReason: null,
-        },
-      ],
+        invariants: [],
+      },
+      claimedSuccessor: {
+        rejection: null,
+        claimedSuccessor: true,
+        task: { state: 'running', failureReason: null },
+        successor: { state: 'running' },
+        invariants: [],
+      },
     })
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
-  })
-
-  it('a failing run whose successor id collides with its own id still records the failure reason', async () => {
-    // The two task follow-ons of `fail` discriminate on "does a run with the
-    // successor id carry this batch's stamp". When the minted successor id
-    // collides with the FAILING run's id, the stamped parent answers yes: the
-    // retry arm fires even though the attempt cap refused the successor, and
-    // the terminal arm — the only writer of the task's failure reason — is
-    // skipped, so the task ends failed with no reason recorded.
-    const f = await fixture(['R'], ['fail-stamp']) // successor id == parent id
-    await insertTask(f.raw, { id: 'T', state: 'running', attempts: 1, maxAttempts: 2 })
-    await insertRun(f.raw, {
-      id: 'R',
-      taskId: 'T',
-      attempt: 2,
-      state: 'running',
-      claimedBy: 'worker',
-      claimExpiresAtMs: NOW + 60_000,
-    })
-
-    await f.store.fail(Q, 'R', 'worker', '{"name":"Boom"}', { delaySeconds: 0 })
-
-    const [task] = await query(f.raw, `SELECT state, failure_reason FROM tasks WHERE task_id = 'T'`)
-    expect({ state: task?.state, reason: task?.failure_reason }).toEqual({
-      state: 'failed',
-      reason: '{"name":"Boom"}',
-    })
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
   })
 
   it('an invalid activation generation cannot disarm the cancellation deadline', async () => {
