@@ -81,6 +81,20 @@ async function query(
   return (rows?.rows ?? []) as unknown as Record<string, unknown>[]
 }
 
+function restoreOwnProperty(
+  target: object,
+  key: PropertyKey,
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor !== undefined) {
+    Object.defineProperty(target, key, descriptor)
+    return
+  }
+  if (!Reflect.deleteProperty(target, key)) {
+    throw new Error(`could not restore ${String(key)}`)
+  }
+}
+
 async function taskRunProgress(raw: LibsqlExecutor, taskId: string) {
   const [task] = await query(
     raw,
@@ -605,6 +619,190 @@ describe('fence provenance', () => {
         runs: [{ run_id: 'ORPHAN', task_id: 'NEW-TASK' }],
       })
     } finally {
+      f.close()
+    }
+  })
+
+  it('spawn retry serialization cannot be redirected after normalization', async () => {
+    const f = await fixture()
+    const inheritedToJson = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON')
+    try {
+      const strategy = {
+        kind: 'fixed' as const,
+        get baseSeconds(): number {
+          Object.defineProperty(Object.prototype, 'toJSON', {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value(this: unknown): unknown {
+              if (
+                typeof this === 'object' &&
+                this !== null &&
+                Object.isFrozen(this) &&
+                Reflect.get(this, 'kind') === 'fixed' &&
+                Reflect.get(this, 'baseSeconds') === 1.234
+              ) {
+                return { kind: 'none' }
+              }
+              return this
+            },
+          })
+          return 1.2344
+        },
+      }
+
+      let pending!: ReturnType<LibsqlSchedulerStore['spawn']>
+      try {
+        pending = f.store.spawn(Q, 'serializer-retry', '{}', { retryStrategy: strategy })
+      } finally {
+        restoreOwnProperty(Object.prototype, 'toJSON', inheritedToJson)
+      }
+      const spawned = await pending
+      const [task] = await query(f.raw, `SELECT retry_strategy FROM tasks WHERE task_id = ?`, [
+        spawned.taskId,
+      ])
+
+      expect(
+        task?.retry_strategy,
+        'mutation-verdict:behavior:spawn-retry-captured-serializer',
+      ).toBe('{"kind":"fixed","baseSeconds":1.234}')
+    } finally {
+      restoreOwnProperty(Object.prototype, 'toJSON', inheritedToJson)
+      f.close()
+    }
+  })
+
+  it('spawn cancellation construction owns the validated snapshot', async () => {
+    const f = await fixture()
+    const inheritedMaxDelay = Object.getOwnPropertyDescriptor(Object.prototype, 'maxDelaySeconds')
+    try {
+      const cancellation = { maxDelaySeconds: 30, maxDurationSeconds: 60 }
+      Object.defineProperty(Object.prototype, 'maxDelaySeconds', {
+        configurable: true,
+        enumerable: false,
+        set(_value: unknown) {},
+      })
+
+      let pending!: ReturnType<LibsqlSchedulerStore['spawn']>
+      try {
+        pending = f.store.spawn(Q, 'owned-cancellation', '{}', { cancellation })
+      } finally {
+        restoreOwnProperty(Object.prototype, 'maxDelaySeconds', inheritedMaxDelay)
+      }
+      const spawned = await pending
+      const [task] = await query(
+        f.raw,
+        `SELECT cancellation, cancel_at_ms FROM tasks WHERE task_id = ?`,
+        [spawned.taskId],
+      )
+
+      expect(task?.cancel_at_ms).toBe(NOW + 30_000)
+      expect(
+        task?.cancellation,
+        'mutation-verdict:behavior:spawn-cancellation-owned-snapshot',
+      ).toBe('{"maxDelaySeconds":30,"maxDurationSeconds":60}')
+    } finally {
+      restoreOwnProperty(Object.prototype, 'maxDelaySeconds', inheritedMaxDelay)
+      f.close()
+    }
+  })
+
+  it('spawn cancellation serialization cannot be redirected by its getter', async () => {
+    const f = await fixture()
+    const stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify')
+    if (typeof stringifyDescriptor?.value !== 'function') {
+      f.close()
+      throw new Error('JSON.stringify must be an own data property')
+    }
+    const authenticStringify = stringifyDescriptor.value as (...args: unknown[]) => unknown
+    try {
+      const cancellation = { maxDelaySeconds: 30, maxDurationSeconds: 60 }
+      const options = Object.defineProperty({}, 'cancellation', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          Object.defineProperty(JSON, 'stringify', {
+            ...stringifyDescriptor,
+            value: (...args: unknown[]) => {
+              const candidate = args[0]
+              return candidate !== cancellation &&
+                typeof candidate === 'object' &&
+                candidate !== null &&
+                Reflect.get(candidate, 'maxDelaySeconds') === 30 &&
+                Reflect.get(candidate, 'maxDurationSeconds') === 60
+                ? '{"maxDelaySeconds":999,"maxDurationSeconds":999}'
+                : Reflect.apply(authenticStringify, JSON, args)
+            },
+          })
+          return cancellation
+        },
+      }) as { cancellation: typeof cancellation }
+
+      let pending!: ReturnType<LibsqlSchedulerStore['spawn']>
+      try {
+        pending = f.store.spawn(Q, 'serializer-cancellation', '{}', options)
+      } finally {
+        restoreOwnProperty(JSON, 'stringify', stringifyDescriptor)
+      }
+      const spawned = await pending
+      const [task] = await query(
+        f.raw,
+        `SELECT cancellation, cancel_at_ms FROM tasks WHERE task_id = ?`,
+        [spawned.taskId],
+      )
+
+      expect(task?.cancel_at_ms).toBe(NOW + 30_000)
+      expect(
+        task?.cancellation,
+        'mutation-verdict:behavior:spawn-cancellation-captured-serializer',
+      ).toBe('{"maxDelaySeconds":30,"maxDurationSeconds":60}')
+    } finally {
+      restoreOwnProperty(JSON, 'stringify', stringifyDescriptor)
+      f.close()
+    }
+  })
+
+  it('spawn headers serialization cannot be redirected by its getter', async () => {
+    const f = await fixture()
+    const stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify')
+    if (typeof stringifyDescriptor?.value !== 'function') {
+      f.close()
+      throw new Error('JSON.stringify must be an own data property')
+    }
+    const authenticStringify = stringifyDescriptor.value as (...args: unknown[]) => unknown
+    try {
+      const headers = { trace: 'authentic' }
+      const options = Object.defineProperty({}, 'headers', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          Object.defineProperty(JSON, 'stringify', {
+            ...stringifyDescriptor,
+            value: (...args: unknown[]) =>
+              args[0] === headers
+                ? '{"trace":"forged-by-ambient-serializer"}'
+                : Reflect.apply(authenticStringify, JSON, args),
+          })
+          return headers
+        },
+      }) as { headers: typeof headers }
+
+      let pending!: ReturnType<LibsqlSchedulerStore['spawn']>
+      try {
+        pending = f.store.spawn(Q, 'serializer-headers', '{}', options)
+      } finally {
+        restoreOwnProperty(JSON, 'stringify', stringifyDescriptor)
+      }
+      const spawned = await pending
+      const [task] = await query(f.raw, `SELECT headers FROM tasks WHERE task_id = ?`, [
+        spawned.taskId,
+      ])
+
+      expect(task?.headers, 'mutation-verdict:behavior:spawn-headers-captured-serializer').toBe(
+        '{"trace":"authentic"}',
+      )
+    } finally {
+      restoreOwnProperty(JSON, 'stringify', stringifyDescriptor)
       f.close()
     }
   })
