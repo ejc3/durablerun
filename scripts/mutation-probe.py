@@ -4683,10 +4683,10 @@ VERDICTS = {
         "packages/conformance/src/suite.ts",
     ),
     "spawn-retry-captured-serializer": ExpectedVerdict(
-        "construction",
+        "behavior",
         "packages/sdk/test/run-worker.test.ts",
-        "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
-        "mutation-verdict:construction:task-value-captured-stringify",
+        "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+        "mutation-verdict:behavior:task-boundary-aggregate",
     ),
     "spawn-cancellation-owned-snapshot": ExpectedVerdict(
         "behavior",
@@ -4695,16 +4695,16 @@ VERDICTS = {
         "mutation-verdict:behavior:spawn-cancellation-owned-snapshot",
     ),
     "spawn-cancellation-captured-serializer": ExpectedVerdict(
-        "construction",
+        "behavior",
         "packages/sdk/test/run-worker.test.ts",
-        "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
-        "mutation-verdict:construction:task-value-captured-stringify",
+        "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+        "mutation-verdict:behavior:task-boundary-aggregate",
     ),
     "spawn-headers-captured-serializer": ExpectedVerdict(
-        "construction",
+        "behavior",
         "packages/sdk/test/run-worker.test.ts",
-        "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
-        "mutation-verdict:construction:task-value-captured-stringify",
+        "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+        "mutation-verdict:behavior:task-boundary-aggregate",
     ),
     "claim-retry-captured-parser": ExpectedVerdict(
         "construction",
@@ -5368,16 +5368,16 @@ VERDICTS.update(
             "mutation-verdict:construction:task-throwable-public-store-unavailable",
         ),
         "task-throwable-fatal-auth": ExpectedVerdict(
-            "construction",
-            "packages/core/test/errors.test.ts",
-            "snapshotTaskThrowable authenticates the intentionally public fatal policy at construction",
-            "mutation-verdict:construction:task-throwable-fatal-auth",
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+            "mutation-verdict:behavior:task-boundary-aggregate",
         ),
         "task-throwable-fatal-flag": ExpectedVerdict(
             "behavior",
-            "packages/core/test/errors.test.ts",
-            "snapshotTaskThrowable authenticates the intentionally public fatal policy at construction",
-            "mutation-verdict:behavior:task-throwable-fatal-flag",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+            "mutation-verdict:behavior:task-boundary-aggregate",
         ),
         "task-throwable-forged-suspend": ExpectedVerdict(
             "construction",
@@ -5530,10 +5530,10 @@ VERDICTS.update(
             "mutation-verdict:construction:retry-captured-range-error",
         ),
         "task-value-captured-stringify": ExpectedVerdict(
-            "construction",
+            "behavior",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
-            "mutation-verdict:construction:task-value-captured-stringify",
+            "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+            "mutation-verdict:behavior:task-boundary-aggregate",
         ),
         "task-value-captured-parse": ExpectedVerdict(
             "construction",
@@ -5656,10 +5656,10 @@ VERDICTS.update(
             "mutation-verdict:construction:retry-captured-reflect-get",
         ),
         "sdk-result-captured-stringify": ExpectedVerdict(
-            "construction",
+            "behavior",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
-            "mutation-verdict:construction:task-value-captured-stringify",
+            "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+            "mutation-verdict:behavior:task-boundary-aggregate",
         ),
         "sdk-complete-ordinary-rejection-identity": ExpectedVerdict(
             "behavior",
@@ -5704,10 +5704,10 @@ VERDICTS.update(
             "mutation-verdict:construction:task-value-captured-parse",
         ),
         "sdk-context-captured-json-stringify": ExpectedVerdict(
-            "construction",
+            "behavior",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
-            "mutation-verdict:construction:task-value-captured-stringify",
+            "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+            "mutation-verdict:behavior:task-boundary-aggregate",
         ),
         "sdk-context-captured-aborted-getter": ExpectedVerdict(
             "behavior",
@@ -5856,8 +5856,8 @@ VERDICTS.update(
         "sdk-task-throwable-boundary": ExpectedVerdict(
             "behavior",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun snapshots the raw handler throw exactly once at the worker boundary",
-            "mutation-verdict:behavior:sdk-task-throwable-boundary",
+            "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
+            "mutation-verdict:behavior:task-boundary-aggregate",
         ),
     }
 )

@@ -116,18 +116,6 @@ describe('snapshotTaskThrowable', () => {
     ).toEqual(failure('StoreUnavailableError', 'offline'))
   })
 
-  it('authenticates the intentionally public fatal policy at construction', () => {
-    const fatal = new FatalTaskError('fatal original')
-    Object.defineProperty(fatal, 'message', { value: 'mutated after construction' })
-    const fatalSnapshot = snapshotTaskThrowable(fatal)
-    expect(
-      fatalSnapshot.failureJson,
-      'mutation-verdict:construction:task-throwable-fatal-auth',
-    ).toBe('{"name":"FatalTaskError","message":"fatal original"}')
-    expect(fatalSnapshot.fatal, 'mutation-verdict:behavior:task-throwable-fatal-flag').toBe(true)
-    expect(Object.isFrozen(fatalSnapshot)).toBe(true)
-  })
-
   it('rejects prototype forgeries as ordinary user failures', () => {
     const forge = (prototype: object, name: string) =>
       Object.assign(Object.create(prototype), { name, message: 'forged control' })

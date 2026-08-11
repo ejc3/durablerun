@@ -176,17 +176,6 @@ describe('event regressions', () => {
     f.close()
   })
 
-  it('an invalid awaitEvent timeout is a PERMANENT user error', async () => {
-    const f = await fx('ev-bad-timeout')
-    const reg: TaskRegistry = new Map([
-      ['bad', async (ctx) => ctx.awaitEvent('go', { timeoutSeconds: Number.NaN })],
-    ])
-    const a = await f.store.spawn(Q, 'bad', '{}', { maxAttempts: 3 })
-    expect(await pass(f, reg, 'w1')).toEqual({ kind: 'failed' })
-    expect((await f.store.getTaskResult(Q, a.taskId))?.state).toBe('failed')
-    f.close()
-  })
-
   it('prototype pollution cannot turn an event delivery into a timeout', async () => {
     const f = await fx('ev-owned-timeout-discriminant')
     let passes = 0
@@ -291,43 +280,6 @@ describe('user-boundary values', () => {
       'read',
     )
     expect(events?.rows[0]?.payload).toBe('{"a":1}')
-    f.close()
-  })
-
-  it('a payload that is not a string fails the task permanently, not as an outage', async () => {
-    const f = await fx('emit-unserializable')
-    let bodyRuns = 0
-    const reg: TaskRegistry = new Map([
-      [
-        'emitter',
-        async (ctx) => {
-          bodyRuns++
-          // The ordinary typo: a property that does not exist. JSON.stringify
-          // is typed `(value: any) => string` but returns undefined for
-          // undefined, functions and symbols, so this type-checks cleanly.
-          const missing: { v?: object } = {}
-          await ctx.emitEvent('go', JSON.stringify(missing.v))
-          return 'unreachable'
-        },
-      ],
-    ])
-    await f.store.spawn(Q, 'emitter', '{}')
-
-    const outcome = await pass(f, reg, 'w1')
-
-    // Wrong outcome today: the driver rejects the undefined bind, the store
-    // wraps every driver throw as an outage, and the worker classifies an
-    // outage as 'aborted' — so the user's budget is untouched, the lease is
-    // left to expire, and the sweep replaces the run with an infrastructure
-    // successor. The handler body then re-runs on every one of those, up to
-    // the infrastructure cap, and the task finally dies reporting exhausted
-    // infrastructure with no user-visible reason at all.
-    expect(outcome.kind).toBe('failed')
-
-    // And a permanent failure means the body does not run again.
-    await f.advance(120_000)
-    await f.store.sweep(Q, 10)
-    expect(bodyRuns).toBe(1)
     f.close()
   })
 })

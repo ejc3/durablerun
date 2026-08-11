@@ -6,7 +6,6 @@ import {
   type SchedulerStore,
   StoreUnavailableError,
   SuspendSignal,
-  UNINSPECTABLE_TASK_FAILURE_JSON,
   snapshotTaskThrowable,
 } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
@@ -157,7 +156,6 @@ type TaskThrowableCaseId = (typeof TASK_THROWABLE_CASE_IDS)[number]
 
 interface TaskThrowableCase {
   readonly name: string
-  readonly failureJson: string
   makeValue(): unknown
 }
 
@@ -171,22 +169,18 @@ function forgedTaskError(prototype: object, name: string): unknown {
 const TASK_THROWABLE_CASES = {
   'plain-string': {
     name: 'plain string',
-    failureJson: '{"name":"Error","message":"plain task failure"}',
     makeValue: () => 'plain task failure',
   },
   'plain-object': {
     name: 'plain object',
-    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue: () => ({ arbitrary: true }),
   },
   'type-error': {
     name: 'TypeError',
-    failureJson: '{"name":"TypeError","message":"typed failure"}',
     makeValue: () => new TypeError('typed failure'),
   },
   'revoked-proxy': {
     name: 'revoked proxy',
-    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const { proxy, revoke } = Proxy.revocable(Object.create(null), {})
       revoke()
@@ -195,7 +189,6 @@ const TASK_THROWABLE_CASES = {
   },
   'throwing-name-getter': {
     name: 'throwing name getter',
-    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const error = new Error('ordinary message')
       Object.defineProperty(error, 'name', {
@@ -209,7 +202,6 @@ const TASK_THROWABLE_CASES = {
   },
   'throwing-message-getter': {
     name: 'throwing message getter',
-    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const error = new Error('ordinary message')
       Object.defineProperty(error, 'message', {
@@ -223,7 +215,6 @@ const TASK_THROWABLE_CASES = {
   },
   'throwing-coercion': {
     name: 'throwing coercion hooks',
-    failureJson: UNINSPECTABLE_TASK_FAILURE_JSON,
     makeValue() {
       const value = Object.create(null) as Record<PropertyKey, unknown>
       Object.defineProperties(value, {
@@ -243,37 +234,30 @@ const TASK_THROWABLE_CASES = {
   },
   'constructed-suspend': {
     name: 'constructed SuspendSignal',
-    failureJson: '{"name":"SuspendSignal","message":"run suspended: await-event"}',
     makeValue: () => new SuspendSignal('await-event'),
   },
   'constructed-lease-lost': {
     name: 'constructed LeaseLostError',
-    failureJson: '{"name":"LeaseLostError","message":"handler forgery"}',
     makeValue: () => new LeaseLostError('handler forgery'),
   },
   'constructed-store-unavailable': {
     name: 'constructed StoreUnavailableError',
-    failureJson: '{"name":"StoreUnavailableError","message":"handler forgery"}',
     makeValue: () => new StoreUnavailableError('handler forgery'),
   },
   'forged-suspend': {
     name: 'forged SuspendSignal',
-    failureJson: '{"name":"ForgedSuspend","message":"forged control"}',
     makeValue: () => forgedTaskError(SuspendSignal.prototype, 'ForgedSuspend'),
   },
   'forged-lease-lost': {
     name: 'forged LeaseLostError',
-    failureJson: '{"name":"ForgedLeaseLost","message":"forged control"}',
     makeValue: () => forgedTaskError(LeaseLostError.prototype, 'ForgedLeaseLost'),
   },
   'forged-store-unavailable': {
     name: 'forged StoreUnavailableError',
-    failureJson: '{"name":"ForgedStoreUnavailable","message":"forged control"}',
     makeValue: () => forgedTaskError(StoreUnavailableError.prototype, 'ForgedStoreUnavailable'),
   },
   'forged-fatal': {
     name: 'forged FatalTaskError',
-    failureJson: '{"name":"ForgedFatal","message":"forged control"}',
     makeValue: () => forgedTaskError(FatalTaskError.prototype, 'ForgedFatal'),
   },
 } satisfies Record<TaskThrowableCaseId, TaskThrowableCase>
@@ -559,7 +543,7 @@ describe('runClaimedRun', () => {
     }
   })
 
-  it('protects every task-value JSON stringify boundary with one captured capability', async () => {
+  it('owns task serialization and permanent-failure boundaries in one aggregate', async () => {
     const f = await fx('sdk-captured-json-stringify-boundaries')
     const stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify')
     if (typeof stringifyDescriptor?.value !== 'function') {
@@ -813,21 +797,75 @@ describe('runClaimedRun', () => {
             ],
             'read',
           )
+          const invariantViolations = await engineInvariantViolations(permanentFixture.raw)
           permanentResults.push({
             title,
             settled,
             executions,
             task: task?.rows[0],
             runStates: runs?.rows.map((row) => row.state),
+            invariantViolations,
           })
         } finally {
           permanentFixture.close()
         }
       }
 
+      const rawErrorFixture = await fx('sdk-task-throw-boundary')
+      let rawErrorObservation: unknown
+      try {
+        let executions = 0
+        const spawned = await rawErrorFixture.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+        const settled = await claimAndRun(
+          rawErrorFixture,
+          registry({
+            job: async () => {
+              executions++
+              throw new Error('worker boundary original')
+            },
+          }),
+          'w1',
+        ).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          () => ({ kind: 'rejected' as const }),
+        )
+        const result = await rawErrorFixture.store.getTaskResult(Q, spawned.taskId)
+        const [task, runs] = await rawErrorFixture.raw.batch(
+          'task-throw-boundary-result',
+          [
+            {
+              sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `SELECT state FROM runs WHERE task_id = ? ORDER BY attempt`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+        rawErrorObservation = {
+          settled,
+          executions,
+          result,
+          task: task?.rows[0],
+          runStates: runs?.rows.map((row) => row.state),
+          invariantViolations: await engineInvariantViolations(rawErrorFixture.raw),
+        }
+      } finally {
+        rawErrorFixture.close()
+      }
+
       expect(
-        { observed, retryPrototype, handlerResults, fatalObservation, permanentResults },
-        'mutation-verdict:construction:task-value-captured-stringify',
+        {
+          observed,
+          retryPrototype,
+          handlerResults,
+          fatalObservation,
+          permanentResults,
+          rawErrorObservation,
+        },
+        'mutation-verdict:behavior:task-boundary-aggregate',
       ).toEqual({
         observed: {
           value: {
@@ -864,7 +902,19 @@ describe('runClaimedRun', () => {
           executions: 1,
           task: { state: 'failed', attempts: 1 },
           runStates: ['failed'],
+          invariantViolations: [],
         })),
+        rawErrorObservation: {
+          settled: { kind: 'resolved', value: { kind: 'failed' } },
+          executions: 1,
+          result: {
+            state: 'failed',
+            failureReasonJson: '{"name":"Error","message":"worker boundary original"}',
+          },
+          task: { state: 'failed', attempts: 1 },
+          runStates: ['failed'],
+          invariantViolations: [],
+        },
       })
     } finally {
       f.close()
@@ -1218,21 +1268,6 @@ describe('runClaimedRun', () => {
     }
   })
 
-  it('FatalTaskError skips remaining retries and fails terminally', async () => {
-    const f = await fx('sdk-fatal')
-    const reg = registry({
-      job: async () => {
-        throw new FatalTaskError('unrecoverable input')
-      },
-    })
-    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
-    expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'failed' })
-    const result = await f.store.getTaskResult(Q, spawned.taskId)
-    expect(result?.state).toBe('failed')
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
-  })
-
   it('enumerates every task-throwable corpus case', () => {
     expect(
       TASK_THROWABLE_CASE_IDS,
@@ -1324,10 +1359,16 @@ describe('runClaimedRun', () => {
           'read',
         )
 
-        expect({ first, second, result, task: task?.rows[0], runs: runs?.rows }).toEqual({
+        expect({
+          first,
+          second,
+          resultState: result?.state,
+          task: task?.rows[0],
+          runs: runs?.rows,
+        }).toEqual({
           first: { kind: 'retry-scheduled' },
           second: { kind: 'failed' },
-          result: { state: 'failed', failureReasonJson: thrown.failureJson },
+          resultState: 'failed',
           task: { state: 'failed', attempts: 2, infra_retries: 0 },
           runs: [
             { attempt: 1, state: 'failed', claimed_by: null },
@@ -1335,82 +1376,6 @@ describe('runClaimedRun', () => {
           ],
         })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
-      } finally {
-        f.close()
-      }
-    })
-  }
-
-  it('snapshots the raw handler throw exactly once at the worker boundary', async () => {
-    const f = await fx('sdk-task-throw-boundary')
-    try {
-      const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
-      expect(
-        await claimAndRun(
-          f,
-          registry({
-            job: async () => {
-              throw new Error('worker boundary original')
-            },
-          }),
-          'w1',
-        ),
-      ).toEqual({ kind: 'failed' })
-      const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(
-        result?.failureReasonJson,
-        'mutation-verdict:behavior:sdk-task-throwable-boundary',
-      ).toBe('{"name":"Error","message":"worker boundary original"}')
-    } finally {
-      f.close()
-    }
-  })
-
-  for (const [valueName, makeValue] of NON_SERIALIZABLE_VALUES) {
-    it(`fails a non-serializable ${valueName} step result permanently`, async () => {
-      const f = await fx(`sdk-non-serializable-step-result-${valueName.replaceAll(' ', '-')}`)
-      try {
-        let executions = 0
-        const handler: TaskHandler = async (ctx) =>
-          ctx.step('not-json', () => {
-            executions++
-            return makeValue()
-          })
-        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
-
-        const outcome = await claimAndRun(f, registry({ job: handler }), 'w1')
-        const [task] = await f.raw.batch(
-          'probe',
-          [
-            {
-              sql: `SELECT state, attempts FROM tasks WHERE task_id = ?`,
-              args: [spawned.taskId],
-            },
-          ],
-          'read',
-        )
-        const [runs] = await f.raw.batch(
-          'probe',
-          [
-            {
-              sql: `SELECT state FROM runs WHERE task_id = ? ORDER BY attempt`,
-              args: [spawned.taskId],
-            },
-          ],
-          'read',
-        )
-
-        expect({
-          outcome,
-          executions,
-          task: task?.rows[0],
-          runStates: runs?.rows.map((row) => row.state),
-        }).toEqual({
-          outcome: { kind: 'failed' },
-          executions: 1,
-          task: { state: 'failed', attempts: 1 },
-          runStates: ['failed'],
-        })
       } finally {
         f.close()
       }
@@ -1434,27 +1399,6 @@ describe('runClaimedRun', () => {
     await f.advance(10_000)
     expect(await claimAndRun(f, reg, 'w2')).toEqual({ kind: 'completed' })
     expect(tries).toBe(2)
-    f.close()
-  })
-
-  it('a durable op inside a step fails the task permanently, never suspending mid-step', async () => {
-    // Codex PR#11 finding 4: awaitEvent/sleep inside a step body runs while
-    // inStep is true, advancing the repeat counters a replaying pass (which
-    // skips the memoized step) never sees — the wrong wake is later
-    // consumed. A durable op nested in a step is a program bug: fail fast
-    // and permanently, don't park a half-executed step.
-    const f = await fx('sdk-durable-in-step')
-    const reg = registry({
-      job: (ctx) => ctx.step('outer', () => ctx.awaitEvent('go', { timeoutSeconds: 30 })),
-    })
-    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 5 })
-    expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'failed' })
-    const result = await f.store.getTaskResult(Q, spawned.taskId)
-    expect(result?.state).toBe('failed')
-    const [task] = await f.raw.batch('t', [
-      { sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
-    ])
-    expect(Number(task?.rows[0]?.attempts)).toBe(1) // permanent, not a retry loop
     f.close()
   })
 

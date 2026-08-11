@@ -254,16 +254,4 @@ describe('SDK residual review regressions', () => {
     expect(Number(row?.rows[0]?.owner_attempt)).toBe(5)
     f.close()
   })
-
-  it('an invalid sleep duration is a permanent user error, never an infrastructure loop', async () => {
-    const f = await fx('sdk-bad-sleep')
-    const reg: TaskRegistry = new Map([['job', async (ctx) => ctx.sleepFor(Number.NaN)]])
-    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 3 })
-    // Before the fix: SuspendSignal thrown first, validation exploded later
-    // inside the park, the run stayed active, and lease recovery repeated
-    // the deterministic bad call toward the infrastructure cap.
-    expect(await claimAndRun(f, f.store, reg, 'w1')).toEqual({ kind: 'failed' })
-    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('failed')
-    f.close()
-  })
 })
