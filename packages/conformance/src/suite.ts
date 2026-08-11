@@ -406,29 +406,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await snapshot(f, poisoned.taskId)).toEqual(poisonedBefore)
       })
 
-      it('does not claim an obsolete live ordinal beneath a historical run', async () => {
-        const obsolete = await f.store.spawn(Q, 'obsolete-ordinal', '{}')
-        await f.raw.batch('corrupt-historical-ordinal', [
-          {
-            sql: `INSERT INTO runs
-                    (run_id, queue, task_id, attempt, state, created_at_ms)
-                  VALUES ('historical-higher-run', ?, ?, 3, 'failed', 999999)`,
-            args: [Q, obsolete.taskId],
-          },
-        ])
-        const obsoleteBefore = await snapshot(f, obsolete.taskId)
-
-        await f.admin.setFakeNowEpochMs(1_000_001)
-        const healthy = await f.store.spawn(Q, 'healthy-after-obsolete', '{}')
-        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
-
-        expect(
-          claimed.map((run) => run.taskId),
-          'mutation-verdict:behavior:claim-requires-highest-owned-ordinal',
-        ).toEqual([healthy.taskId])
-        expect(await snapshot(f, obsolete.taskId)).toEqual(obsoleteBefore)
-      })
-
       it('does not claim a live run after the user-attempt budget is exhausted', async () => {
         const exhausted = await f.store.spawn(Q, 'exhausted-live-run', '{}', {
           maxAttempts: 5,

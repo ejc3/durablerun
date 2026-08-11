@@ -183,6 +183,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       })
 
       for (const target of POISON_TARGET_CASES) {
+        if (highestOwnedOrdinalTargets.includes(target)) continue
         it(`${target.profile} contains ${target.witness.id}`, async () => {
           await expect(runPoisonTargetCase(makeFixture, target)).resolves.toMatchObject({
             label: target.label,

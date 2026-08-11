@@ -4262,9 +4262,9 @@ VERDICTS = {
     "current-run-requires-highest-owned-ordinal": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] claim does not claim an obsolete live ordinal beneath a historical run",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains accounting/below-top-minus-one across both claim profiles",
         "mutation-verdict:behavior:claim-requires-highest-owned-ordinal",
-        "packages/conformance/src/suite.ts",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "checkpoint-read-requires-owner-join": ExpectedVerdict(
         "behavior",
