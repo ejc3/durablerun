@@ -604,16 +604,62 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           observed.push({ name, rejectedBeforeSql: error instanceof RangeError })
         }
 
+        await f.raw.batch('invalid-activation-generation:seed', [
+          {
+            sql: `INSERT INTO tasks
+                    (task_id, queue, task_name, params, retry_strategy, max_attempts,
+                     cancellation, state, cancel_at_ms, enqueue_at_ms, created_at_ms)
+                  VALUES ('invalid-activation-task', ?, 'job', '{}', '{"kind":"none"}', 3,
+                    '{"maxDelaySeconds":30}', 'running', 1030000, 1000000, 1000000)`,
+            args: [Q],
+          },
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, claimed_by, claim_gen,
+                     activated_gen, claim_expires_at_ms, lease_ms, created_at_ms)
+                  VALUES ('invalid-activation-run', ?, 'invalid-activation-task', 1, 'running',
+                    'invalid-activation-token', 1, 0, 1060000, 60000, 1000000)`,
+            args: [Q],
+          },
+        ])
+        const deadlineError = await f.store
+          .activate(Q, 'invalid-activation-run', 'invalid-activation-token', 0)
+          .then(
+            () => null,
+            (reason: unknown) => reason,
+          )
+        const [deadline] = await f.raw.batch(
+          'invalid-activation-generation:deadline',
+          [
+            {
+              sql: `SELECT cancel_at_ms FROM tasks WHERE task_id = 'invalid-activation-task'`,
+              args: [],
+            },
+          ],
+          'read',
+        )
+
         expect(
-          observed,
+          {
+            invalidInputs: observed,
+            executorCalls,
+            deadline: {
+              rejectedBeforeSql: deadlineError instanceof RangeError,
+              cancelAtEpochMs: deadline?.rows[0]?.cancel_at_ms,
+            },
+          },
           'mutation-verdict:behavior:activate-validates-claim-generation-input',
-        ).toEqual(
-          invalidClaimGenerations.map(({ name }) => ({
+        ).toEqual({
+          invalidInputs: invalidClaimGenerations.map(({ name }) => ({
             name,
             rejectedBeforeSql: true,
           })),
-        )
-        expect(executorCalls).toBe(0)
+          executorCalls: 0,
+          deadline: {
+            rejectedBeforeSql: true,
+            cancelAtEpochMs: 1_030_000,
+          },
+        })
       })
 
       it('passes exactly once per claim generation and returns the worker payload', async () => {
