@@ -603,18 +603,81 @@ describe('runClaimedRun', () => {
           }
         },
       )
-      expect(observed, 'mutation-verdict:construction:task-value-captured-stringify').toEqual({
-        value: {
-          task: {
-            retry_strategy: '{"kind":"fixed","baseSeconds":1.234}',
-            cancellation: '{"maxDelaySeconds":30,"maxDurationSeconds":60}',
-            headers: '{"trace":"authentic"}',
+
+      const inheritedToJson = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON')
+      let retryPrototype: unknown
+      try {
+        const strategy = {
+          kind: 'fixed' as const,
+          get baseSeconds(): number {
+            Object.defineProperty(Object.prototype, 'toJSON', {
+              configurable: true,
+              enumerable: false,
+              writable: true,
+              value(this: unknown): unknown {
+                if (
+                  typeof this === 'object' &&
+                  this !== null &&
+                  Object.isFrozen(this) &&
+                  Reflect.get(this, 'kind') === 'fixed' &&
+                  Reflect.get(this, 'baseSeconds') === 1.234
+                ) {
+                  return { kind: 'none' }
+                }
+                return this
+              },
+            })
+            return 1.234
           },
-          first: { kind: 'suspended' },
-          checkpoint: { state: '{"inSeconds":10}' },
-          second: { kind: 'completed' },
-          result: { state: 'completed', completedPayloadJson: '{"real":true}' },
+        }
+        let pending!: ReturnType<LibsqlSchedulerStore['spawn']>
+        try {
+          pending = f.store.spawn(Q, 'prototype-retry', '{}', { retryStrategy: strategy })
+        } finally {
+          if (inheritedToJson === undefined) {
+            Reflect.deleteProperty(Object.prototype, 'toJSON')
+          } else {
+            Object.defineProperty(Object.prototype, 'toJSON', inheritedToJson)
+          }
+        }
+        const spawned = await pending
+        const [task] = await f.raw.batch(
+          'captured-stringify-prototype-retry',
+          [
+            {
+              sql: `SELECT retry_strategy FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+        retryPrototype = task?.rows[0]?.retry_strategy
+      } finally {
+        if (inheritedToJson === undefined) {
+          Reflect.deleteProperty(Object.prototype, 'toJSON')
+        } else {
+          Object.defineProperty(Object.prototype, 'toJSON', inheritedToJson)
+        }
+      }
+
+      expect(
+        { observed, retryPrototype },
+        'mutation-verdict:construction:task-value-captured-stringify',
+      ).toEqual({
+        observed: {
+          value: {
+            task: {
+              retry_strategy: '{"kind":"fixed","baseSeconds":1.234}',
+              cancellation: '{"maxDelaySeconds":30,"maxDurationSeconds":60}',
+              headers: '{"trace":"authentic"}',
+            },
+            first: { kind: 'suspended' },
+            checkpoint: { state: '{"inSeconds":10}' },
+            second: { kind: 'completed' },
+            result: { state: 'completed', completedPayloadJson: '{"real":true}' },
+          },
         },
+        retryPrototype: '{"kind":"fixed","baseSeconds":1.234}',
       })
     } finally {
       f.close()

@@ -288,10 +288,6 @@ describe('trusted task-boundary intrinsics', () => {
       () => 'forged',
       () => serializeTaskValue('result', { at: new Date(0) }),
     )
-    expect(owned, 'mutation-verdict:behavior:task-value-owned-date-snapshot').toEqual({
-      value: '{"at":"1970-01-01T00:00:00.000Z"}',
-    })
-
     const date = new Date(0)
     Object.defineProperty(date, 'toJSON', {
       configurable: true,
@@ -304,6 +300,9 @@ describe('trusted task-boundary intrinsics', () => {
       () => 'forged',
       () => serializeTaskValue('result', date),
     )
+    expect(owned, 'mutation-verdict:behavior:task-value-owned-date-snapshot').toEqual({
+      value: '{"at":"1970-01-01T00:00:00.000Z"}',
+    })
     expect(
       converted,
       'mutation-verdict:construction:task-value-captured-date-to-iso-string',

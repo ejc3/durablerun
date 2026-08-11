@@ -4683,10 +4683,10 @@ VERDICTS = {
         "packages/conformance/src/suite.ts",
     ),
     "spawn-retry-captured-serializer": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance spawn retry serialization cannot be redirected after normalization",
-        "mutation-verdict:behavior:spawn-retry-captured-serializer",
+        "construction",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
+        "mutation-verdict:construction:task-value-captured-stringify",
     ),
     "spawn-cancellation-owned-snapshot": ExpectedVerdict(
         "behavior",
@@ -4695,28 +4695,28 @@ VERDICTS = {
         "mutation-verdict:behavior:spawn-cancellation-owned-snapshot",
     ),
     "spawn-cancellation-captured-serializer": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance spawn cancellation serialization cannot be redirected by its getter",
-        "mutation-verdict:behavior:spawn-cancellation-captured-serializer",
+        "construction",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
+        "mutation-verdict:construction:task-value-captured-stringify",
     ),
     "spawn-headers-captured-serializer": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance spawn headers serialization cannot be redirected by its getter",
-        "mutation-verdict:behavior:spawn-headers-captured-serializer",
+        "construction",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
+        "mutation-verdict:construction:task-value-captured-stringify",
     ),
     "claim-retry-captured-parser": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance claim retry parsing cannot be redirected after the durable guard",
-        "mutation-verdict:behavior:claim-retry-captured-parser",
+        "construction",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun protects every task-value JSON parse boundary with one captured capability",
+        "mutation-verdict:construction:task-value-captured-parse",
     ),
     "claim-headers-captured-parser": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance claim header parsing cannot be redirected after the durable guard",
-        "mutation-verdict:behavior:claim-headers-captured-parser",
+        "construction",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun protects every task-value JSON parse boundary with one captured capability",
+        "mutation-verdict:construction:task-value-captured-parse",
     ),
     "claim-payload-validation-atomic": ExpectedVerdict(
         "behavior",
@@ -5531,14 +5531,14 @@ VERDICTS.update(
         ),
         "task-value-captured-stringify": ExpectedVerdict(
             "construction",
-            "packages/core/test/intrinsic-containment.test.ts",
-            "trusted task-boundary intrinsics serializes task values with the module-captured JSON.stringify",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
             "mutation-verdict:construction:task-value-captured-stringify",
         ),
         "task-value-captured-parse": ExpectedVerdict(
             "construction",
-            "packages/core/test/intrinsic-containment.test.ts",
-            "trusted task-boundary intrinsics parses task JSON with the module-captured JSON.parse",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun protects every task-value JSON parse boundary with one captured capability",
             "mutation-verdict:construction:task-value-captured-parse",
         ),
         "task-value-captured-is-array": ExpectedVerdict(
@@ -5574,7 +5574,7 @@ VERDICTS.update(
         "task-value-raw-function-before-to-json": ExpectedVerdict(
             "behavior",
             "packages/core/test/intrinsic-containment.test.ts",
-            "trusted task-boundary intrinsics rejects a function before a prototype toJSON can disguise it",
+            "trusted task-boundary intrinsics rejects functions at every task-value surface before prototype toJSON can disguise them",
             "mutation-verdict:behavior:task-value-raw-function-before-to-json",
         ),
         "task-value-raw-bigint-before-to-json": ExpectedVerdict(
@@ -5604,7 +5604,7 @@ VERDICTS.update(
         "task-value-owned-date-snapshot": ExpectedVerdict(
             "behavior",
             "packages/core/test/intrinsic-containment.test.ts",
-            "trusted task-boundary intrinsics serializes dates with the captured Date operation instead of a replaced toJSON",
+            "trusted task-boundary intrinsics isolates owned Date snapshots from the captured Date conversion",
             "mutation-verdict:behavior:task-value-owned-date-snapshot",
         ),
         "task-value-owned-array-snapshot": ExpectedVerdict(
@@ -5622,7 +5622,7 @@ VERDICTS.update(
         "task-value-captured-date-to-iso-string": ExpectedVerdict(
             "construction",
             "packages/core/test/intrinsic-containment.test.ts",
-            "trusted task-boundary intrinsics uses the captured Date.toISOString conversion",
+            "trusted task-boundary intrinsics isolates owned Date snapshots from the captured Date conversion",
             "mutation-verdict:construction:task-value-captured-date-to-iso-string",
         ),
         "task-value-owned-descriptors": ExpectedVerdict(
@@ -5656,10 +5656,10 @@ VERDICTS.update(
             "mutation-verdict:construction:retry-captured-reflect-get",
         ),
         "sdk-result-captured-stringify": ExpectedVerdict(
-            "behavior",
+            "construction",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun a handler cannot replace final-result JSON serialization",
-            "mutation-verdict:behavior:sdk-result-captured-stringify",
+            "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
+            "mutation-verdict:construction:task-value-captured-stringify",
         ),
         "sdk-complete-ordinary-rejection-identity": ExpectedVerdict(
             "behavior",
@@ -5700,14 +5700,14 @@ VERDICTS.update(
         "sdk-context-captured-json-parse": ExpectedVerdict(
             "construction",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun a handler cannot replace the executing-pass canonical JSON parse",
-            "mutation-verdict:construction:sdk-context-captured-json-parse",
+            "runClaimedRun protects every task-value JSON parse boundary with one captured capability",
+            "mutation-verdict:construction:task-value-captured-parse",
         ),
         "sdk-context-captured-json-stringify": ExpectedVerdict(
             "construction",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun a handler cannot replace durable sleep-marker serialization",
-            "mutation-verdict:construction:sdk-context-captured-json-stringify",
+            "runClaimedRun protects every task-value JSON stringify boundary with one captured capability",
+            "mutation-verdict:construction:task-value-captured-stringify",
         ),
         "sdk-context-captured-aborted-getter": ExpectedVerdict(
             "behavior",
@@ -5754,8 +5754,8 @@ VERDICTS.update(
         "sdk-worker-captured-json-parse": ExpectedVerdict(
             "construction",
             "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun task initialization cannot replace handler parameter parsing",
-            "mutation-verdict:construction:sdk-worker-captured-json-parse",
+            "runClaimedRun protects every task-value JSON parse boundary with one captured capability",
+            "mutation-verdict:construction:task-value-captured-parse",
         ),
         "sdk-captured-abort-method": ExpectedVerdict(
             "construction",
