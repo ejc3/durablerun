@@ -416,12 +416,13 @@ export class FencedBatch {
     const allowedColumns = new Set<string>(DERIVED_WRITABLE_COLUMNS[target])
     if (sealedSelfKey !== null) allowedColumns.add(sealedSelfKey)
     for (const [column, expression] of assignments) {
-      if (/fence_(?:stamp|at_ms)/i.test(column)) {
+      const isProvenanceColumn = /fence_(?:stamp|at_ms)/i.test(column)
+      if (isProvenanceColumn) {
         throw new Error(
           `FencedBatch[${this.label}] derived('${name}') caller set controls provenance`,
         )
       }
-      if (!allowedColumns.has(column)) {
+      if (!isProvenanceColumn && !allowedColumns.has(column)) {
         throw new Error(
           `FencedBatch[${this.label}] derived('${name}') column '${column}' is not writable for ${target}`,
         )

@@ -4,7 +4,6 @@ import {
   FENCE_SET,
   FENCE_VALS,
   FencedBatch,
-  type GeneratedUpdateTarget,
   NOW,
   STAMP,
   type SqlBatchMode,
@@ -328,16 +327,6 @@ describe('fence() names a statement, and the primitive supplies the value', () =
       rows: 'one',
     })
     expect(() => b.fence('mirror')).not.toThrow()
-  })
-
-  it('requires a generated UPDATE to retain a stamped target structurally', () => {
-    const compileOnly = (): GeneratedUpdateTarget => {
-      // @ts-expect-error a generated UPDATE target cannot become absent — mutation-verdict:construction:generated-update-requires-target
-      const target: GeneratedUpdateTarget = null
-      return target
-    }
-
-    expect(compileOnly).toBeTypeOf('function')
   })
 
   it('does not let a generated UPDATE caller overwrite generated provenance', () => {

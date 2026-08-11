@@ -1,5 +1,15 @@
-import { FENCE_RELATIONS } from '@durablerun/core'
+import { FENCE_RELATIONS, type GeneratedUpdateTarget } from '@durablerun/core'
 import { expect, it } from 'vitest'
+
+it('requires a generated UPDATE to retain a stamped target structurally', () => {
+  const compileOnly = (): GeneratedUpdateTarget => {
+    // @ts-expect-error a generated UPDATE target cannot become absent — mutation-verdict:construction:generated-update-requires-target
+    const target: GeneratedUpdateTarget = null
+    return target
+  }
+
+  expect(compileOnly).toBeTypeOf('function')
+})
 
 it('pins every cross-table relation to its exact queue-ownership policy', () => {
   const compileOnly = (): void => {
