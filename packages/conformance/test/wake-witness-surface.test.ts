@@ -1,7 +1,11 @@
 import type { SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixtureFactory } from '../src/fixture.js'
-import { WAKE_SINGLE_CASES, wakeWitnessDisagreements } from '../src/suite.js'
+import {
+  WAKE_PAIR_CASES,
+  WAKE_SINGLE_CASES,
+  wakeWitnessDisagreements,
+} from '../src/suite.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 type StatementMutator = (
@@ -46,6 +50,11 @@ function mutatingFixture(mutate: StatementMutator): StoreFixtureFactory {
 }
 
 describe('libsql wake predicate mutation probes', () => {
+  it('enumerates every generated wake witness case exactly once', () => {
+    const labels = [...WAKE_SINGLE_CASES, ...WAKE_PAIR_CASES].map(({ label }) => label)
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+
   it('rejects a predicate that accepts only NULL timeout pairs', async () => {
     expect(
       await wakeWitnessDisagreements(mutatingFixture(NULL_ONLY_TIMEOUT), WAKE_SINGLE_CASES),
