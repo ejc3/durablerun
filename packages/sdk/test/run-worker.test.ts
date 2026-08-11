@@ -411,7 +411,7 @@ describe('runClaimedRun', () => {
         kind: 'exponential',
         baseSeconds: 0,
         factor: 2,
-        maxSeconds: 3600,
+        maxSeconds: 0,
       },
     })
     if (spawned.runId === null) throw new Error('expected a created run')
