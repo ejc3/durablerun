@@ -9163,6 +9163,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     drop_inheritance=fault == "drop-audit-lock-inheritance",
                 )
             )
+        if fault is None:
+            failures.extend(verifier_lock_inheritance_problems(temporary))
         canonical_store = temporary / "canonical-pnpm-store"
         canonical_store.mkdir()
         valid_store_result = subprocess.CompletedProcess(
@@ -10938,6 +10940,233 @@ def audit_lock_inheritance_problems(
     return failures
 
 
+def verifier_lock_self_test_child(
+    state_path: Path,
+    release_path: Path,
+    nonce: str,
+    audit_lock_fd: int,
+    lock_device: int,
+    lock_inode: int,
+) -> int:
+    """Exercise the real verifier launcher from an expendable worker process."""
+    try:
+        descriptor_stat = os.fstat(audit_lock_fd)
+    except OSError as error:
+        print(
+            f"mutation-probe verifier-lock self-test lacks its inherited lock: {error}",
+            file=sys.stderr,
+        )
+        return 2
+    if (
+        descriptor_stat.st_dev != lock_device
+        or descriptor_stat.st_ino != lock_inode
+        or not os.get_inheritable(audit_lock_fd)
+    ):
+        print(
+            "mutation-probe verifier-lock self-test inherited the wrong descriptor",
+            file=sys.stderr,
+        )
+        return 2
+    verifier_code = (
+        "import json,os,pathlib,sys,time; "
+        "state=pathlib.Path(sys.argv[1]); "
+        "release=pathlib.Path(sys.argv[2]); "
+        "nonce=sys.argv[3]; fd=int(sys.argv[4]); "
+        "expected_device=int(sys.argv[5]); expected_inode=int(sys.argv[6]); "
+        "lock_identity=False; inheritable=False; "
+        "\ntry:"
+        "\n descriptor=os.fstat(fd)"
+        "\n lock_identity=(descriptor.st_dev==expected_device and "
+        "descriptor.st_ino==expected_inode)"
+        "\n inheritable=os.get_inheritable(fd)"
+        "\nexcept OSError: pass"
+        "\npayload={'kind':'durablerun-verifier-lock-child','nonce':nonce,"
+        "'pid':os.getpid(),'parent_pid':os.getppid(),"
+        "'lock_identity':lock_identity,'inheritable':inheritable}; "
+        "temporary=state.with_name(state.name+'.tmp'); "
+        "temporary.write_text(json.dumps(payload)); temporary.replace(state); "
+        "deadline=time.monotonic()+8.0; "
+        "\nwhile not release.exists() and time.monotonic() < deadline: time.sleep(0.01)"
+        "\nraise SystemExit(0 if release.exists() else 3)"
+    )
+    return run_suite_process(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            verifier_code,
+            str(state_path),
+            str(release_path),
+            nonce,
+            str(audit_lock_fd),
+            str(lock_device),
+            str(lock_inode),
+        ],
+        output=sys.stdout.buffer,
+        wall_time_seconds=9.0,
+    )
+
+
+def verifier_lock_inheritance_problems(temporary: Path) -> list[str]:
+    """Prove a verifier retains audit ownership after its worker is killed."""
+    failures: list[str] = []
+    lock_path = temporary / "verifier-lock-inheritance.lock"
+    state_path = temporary / "verifier-lock-inheritance-state.json"
+    release_path = temporary / "verifier-lock-inheritance-release"
+    worker_log_path = temporary / "verifier-lock-inheritance-worker.log"
+    nonce = secrets.token_hex(16)
+    lock = lock_path.open("a+")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    descriptor_stat = os.fstat(lock.fileno())
+    worker: subprocess.Popen[bytes] | None = None
+    verifier_pid: int | None = None
+    parent_descriptor_open = True
+    with worker_log_path.open("wb") as worker_log:
+        try:
+            worker = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-B",
+                    str(Path(__file__).resolve()),
+                    "--verifier-lock-self-test-child",
+                    "--verifier-lock-self-test-state",
+                    str(state_path),
+                    "--verifier-lock-self-test-release",
+                    str(release_path),
+                    "--verifier-lock-self-test-nonce",
+                    nonce,
+                    "--verifier-lock-self-test-fd",
+                    str(lock.fileno()),
+                    "--verifier-lock-self-test-device",
+                    str(descriptor_stat.st_dev),
+                    "--verifier-lock-self-test-inode",
+                    str(descriptor_stat.st_ino),
+                ],
+                cwd=ROOT,
+                stdout=worker_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                pass_fds=(lock.fileno(),),
+            )
+            deadline = time.monotonic() + 2.0
+            authenticated = False
+            while time.monotonic() < deadline:
+                if state_path.exists():
+                    try:
+                        payload = read_json(state_path)
+                    except ValueError:
+                        time.sleep(0.01)
+                        continue
+                    if (
+                        isinstance(payload, dict)
+                        and set(payload)
+                        == {
+                            "kind",
+                            "nonce",
+                            "pid",
+                            "parent_pid",
+                            "lock_identity",
+                            "inheritable",
+                        }
+                        and payload.get("kind")
+                        == "durablerun-verifier-lock-child"
+                        and payload.get("nonce") == nonce
+                        and type(payload.get("pid")) is int
+                        and type(payload.get("parent_pid")) is int
+                        and payload.get("parent_pid") == worker.pid
+                        and type(payload.get("lock_identity")) is bool
+                        and type(payload.get("inheritable")) is bool
+                    ):
+                        verifier_pid = int(payload["pid"])
+                        authenticated = process_id_is_live(verifier_pid)
+                        if authenticated:
+                            break
+                if worker.poll() is not None:
+                    break
+                time.sleep(0.01)
+            if not authenticated:
+                failures.append(
+                    "verifier lock inheritance: verifier did not publish "
+                    "authenticated readiness"
+                )
+            else:
+                lock.close()
+                parent_descriptor_open = False
+                os.kill(worker.pid, signal.SIGKILL)
+                try:
+                    worker.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    failures.append(
+                        "verifier lock inheritance: killed worker was not reaped"
+                    )
+                if not process_id_is_live(verifier_pid):
+                    failures.append(
+                        "verifier lock inheritance: verifier exited with its worker"
+                    )
+                else:
+                    contender = lock_path.open("a+")
+                    acquired = False
+                    try:
+                        try:
+                            fcntl.flock(
+                                contender,
+                                fcntl.LOCK_EX | fcntl.LOCK_NB,
+                            )
+                            acquired = True
+                        except BlockingIOError:
+                            pass
+                    finally:
+                        contender.close()
+                    if acquired:
+                        failures.append(
+                            "verifier lock inheritance: a fresh coordinator "
+                            "acquired the lock while an orphan verifier was active"
+                        )
+        finally:
+            if parent_descriptor_open:
+                lock.close()
+            release_path.touch()
+            if worker is not None and worker.poll() is None:
+                try:
+                    os.kill(worker.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    worker.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    failures.append(
+                        "verifier lock inheritance: worker cleanup timed out"
+                    )
+            if verifier_pid is not None:
+                deadline = time.monotonic() + 2.0
+                while process_id_is_live(verifier_pid) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if process_id_is_live(verifier_pid):
+                    failures.append(
+                        "verifier lock inheritance: orphan verifier did not terminate"
+                    )
+                    try:
+                        os.killpg(verifier_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    contender = lock_path.open("a+")
+    try:
+        try:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            failures.append(
+                "verifier lock inheritance: lock remained held after verifier exit"
+            )
+    finally:
+        contender.close()
+    if worker is not None and process_id_is_live(worker.pid):
+        failures.append("verifier lock inheritance: worker leaked after cleanup")
+    if verifier_pid is not None and process_id_is_live(verifier_pid):
+        failures.append("verifier lock inheritance: verifier leaked after cleanup")
+    return failures
+
+
 def worker_environment(
     plan: WorkerPlan,
     *,
@@ -11596,6 +11825,40 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     ap.add_argument(
+        "--verifier-lock-self-test-child",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--verifier-lock-self-test-state",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--verifier-lock-self-test-release",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--verifier-lock-self-test-nonce",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--verifier-lock-self-test-fd",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--verifier-lock-self-test-device",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--verifier-lock-self-test-inode",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
         "--suite-self-test-state",
         type=Path,
         help=argparse.SUPPRESS,
@@ -11629,12 +11892,34 @@ def main() -> int:
         args.suite_timeout_self_test_child,
         args.suite_linger_self_test_child,
         args.suite_interrupt_self_test_child,
+        args.verifier_lock_self_test_child,
     )
     if sum(bool(mode) for mode in self_test_modes) > 1:
         ap.error("self-test modes are mutually exclusive")
     if any(self_test_modes):
         if args.k or args.jobs != "auto" or args.worker_phase is not None:
             ap.error("self-tests cannot be combined with audit or worker options")
+        if args.verifier_lock_self_test_child:
+            required_verifier_lock = (
+                args.verifier_lock_self_test_state,
+                args.verifier_lock_self_test_release,
+                args.verifier_lock_self_test_nonce,
+                args.verifier_lock_self_test_fd,
+                args.verifier_lock_self_test_device,
+                args.verifier_lock_self_test_inode,
+            )
+            if any(value is None for value in required_verifier_lock):
+                ap.error(
+                    "verifier-lock self-test child requires its complete assignment"
+                )
+            return verifier_lock_self_test_child(
+                args.verifier_lock_self_test_state,
+                args.verifier_lock_self_test_release,
+                args.verifier_lock_self_test_nonce,
+                args.verifier_lock_self_test_fd,
+                args.verifier_lock_self_test_device,
+                args.verifier_lock_self_test_inode,
+            )
         suite_process_self_test = (
             args.suite_timeout_self_test_child
             or args.suite_linger_self_test_child
@@ -11690,6 +11975,20 @@ def main() -> int:
     if args.suite_timeout_self_test_fault is not None:
         ap.error(
             "--suite-timeout-self-test-fault requires --suite-timeout-self-test-child"
+        )
+    if any(
+        value is not None
+        for value in (
+            args.verifier_lock_self_test_state,
+            args.verifier_lock_self_test_release,
+            args.verifier_lock_self_test_nonce,
+            args.verifier_lock_self_test_fd,
+            args.verifier_lock_self_test_device,
+            args.verifier_lock_self_test_inode,
+        )
+    ):
+        ap.error(
+            "verifier-lock self-test options require --verifier-lock-self-test-child"
         )
 
     if args.worker_phase is not None:
