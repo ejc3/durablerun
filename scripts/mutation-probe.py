@@ -4053,7 +4053,7 @@ VERDICTS = {
     "emit-wake-one-witness": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "wake witness conformance [libsql] decides every park against every pair of corruptions",
+        "wake witness conformance [libsql] decides every park through one correlated wait witness",
         "mutation-verdict:behavior:emit-wake-one-witness",
         "packages/conformance/src/suite.ts",
     ),
@@ -4072,15 +4072,15 @@ VERDICTS = {
     "emit-wake-event-correlation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "wake witness conformance [libsql] decides every park against every pair of corruptions",
+        "wake witness conformance [libsql] decides every park through one correlated wait witness",
         "mutation-verdict:behavior:emit-wake-one-witness",
         "packages/conformance/src/suite.ts",
     ),
     "emit-wake-step-correlation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "wake witness conformance [libsql] decides every park against every single-row corruption",
-        "mutation-verdict:behavior:emit-wake-step-correlation",
+        "wake witness conformance [libsql] decides every park through one correlated wait witness",
+        "mutation-verdict:behavior:emit-wake-one-witness",
         "packages/conformance/src/suite.ts",
     ),
     "successor-ownership": ExpectedVerdict(
@@ -4146,7 +4146,7 @@ VERDICTS = {
     "legacy-wait-step-unique-scalar": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "wake witness conformance [libsql] decides every park against every pair of corruptions",
+        "wake witness conformance [libsql] decides every park through one correlated wait witness",
         "mutation-verdict:behavior:emit-wake-one-witness",
         "packages/conformance/src/suite.ts",
     ),

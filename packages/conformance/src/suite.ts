@@ -3269,10 +3269,12 @@ export const WAKE_SINGLE_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
 )
 
 const WAKE_AT_STEP = WAKE_SUBSETS.filter((fields) => !fields.includes('step_name'))
-// Pair every row whose step agrees with every row whose step differs. The
-// exact queue-only | step-only pair is the historical counterexample: two
-// individually disqualified registrations must never combine into one wake.
-const WAKE_AT_OTHER = WAKE_SUBSETS.filter((fields) => fields.includes('step_name'))
+// The exact step-only disagreement belongs to the dedicated historical case
+// below. The general pair matrix keeps every other cross-row combination
+// without duplicating that case or the legacy null-step ambiguity cases.
+const WAKE_AT_OTHER = WAKE_SUBSETS.filter(
+  (fields) => fields.includes('step_name') && fields.length > 1,
+)
 
 // Legacy parks have no step to correlate. Two otherwise identical matching
 // registrations at different steps are therefore their own pair dimension:
@@ -3288,6 +3290,17 @@ const WAKE_LEGACY_AMBIGUITY_CASES: readonly WakeWitnessCase[] = WAKE_AXES.filter
   rows: [healthyWakeRow(deadline), corruptWakeRow(deadline, ['step_name'])],
 }))
 
+const WAKE_SPLIT_ROW_CASES: readonly WakeWitnessCase[] = WAKE_AXES.filter(
+  ({ deadline, owner, parkLabel }) =>
+    deadline.label === 'untimed' && owner.live && parkLabel === 'parked',
+).map(({ deadline, owner, parkLabel, park }) => ({
+  label: `${deadline.label} / ${owner.label} / ${parkLabel} / queue | step_name`,
+  owner,
+  park,
+  rows: [corruptWakeRow(deadline, ['queue']), corruptWakeRow(deadline, ['step_name'])],
+  preserveSplitRowEvidence: true,
+}))
+
 export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = [
   ...WAKE_AXES.flatMap(({ deadline, owner, parkLabel, park }) =>
     WAKE_AT_STEP.flatMap((left) =>
@@ -3296,17 +3309,10 @@ export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = [
         owner,
         park,
         rows: [corruptWakeRow(deadline, left), corruptWakeRow(deadline, right)],
-        preserveSplitRowEvidence:
-          deadline.label === 'untimed' &&
-          owner.live &&
-          parkLabel === 'parked' &&
-          left.length === 1 &&
-          left[0] === 'queue' &&
-          right.length === 1 &&
-          right[0] === 'step_name',
       })),
     ),
   ),
+  ...WAKE_SPLIT_ROW_CASES,
   ...WAKE_LEGACY_AMBIGUITY_CASES,
 ]
 

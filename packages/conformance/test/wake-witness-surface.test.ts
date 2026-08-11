@@ -1,11 +1,7 @@
 import type { SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixtureFactory } from '../src/fixture.js'
-import {
-  WAKE_PAIR_CASES,
-  WAKE_SINGLE_CASES,
-  wakeWitnessDisagreements,
-} from '../src/suite.js'
+import { WAKE_PAIR_CASES, WAKE_SINGLE_CASES, wakeWitnessDisagreements } from '../src/suite.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 type StatementMutator = (
