@@ -3529,6 +3529,19 @@ BAD_INVOCATIONS = [
         "base `pnpm verify` reaches zero script checkers",
         "a base gate containing zero checker invocations is accepted as meaningful",
     ),
+    (
+        "mutation-probe.py",
+        {},
+        (
+            "--classifier-self-test",
+            "--verifier-lock-self-test-drop-inheritance",
+        ),
+        (
+            "--verifier-lock-self-test-drop-inheritance requires "
+            "--verifier-lock-self-test-child"
+        ),
+        "a verifier-lock fault option must not be ignored by another self-test mode",
+    ),
 ] + [
     (
         "mutation-probe.py",
