@@ -45,6 +45,8 @@ from typing import Literal
 ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 300.0
+VERIFIER_TERM_GRACE_SECONDS = 0.25
+VERIFIER_KILL_GRACE_SECONDS = 0.5
 
 
 VerdictKind = Literal["behavior", "construction"]
@@ -268,19 +270,19 @@ MUTATION_SPECS = [
         # is the probe reporting the refactor accurately.
         "generated-selection-fence",
         "packages/core/src/fenced-batch.ts",
-        "        : `SELECT f.${column} FROM ${from} f\n"
-        "                       WHERE ${src}f.fence_stamp = ${fence}`",
-        "        : `SELECT f.${column} FROM ${from} f\n"
-        "                       WHERE ${src}f.fence_stamp = ${fence} OR 1 = 1`",
+        "  return `${prefix}f.fence_stamp = ${fence}`",
+        "  return `${prefix}${\n"
+        "    _batchLabel === 'mutation:generated-selection-fence'\n"
+        "      ? `CASE WHEN f.fence_stamp = ${fence} THEN 1 ELSE 1 END = 1`\n"
+        "      : `f.fence_stamp = ${fence}`\n"
+        "  }`",
         "every generated follow-on acts on rows this batch never wrote",
     ),
     (
         "generated-narrow-widens",
         "packages/core/src/fenced-batch.ts",
         "    const narrow = spec.narrow ? `\\n         AND (${spec.narrow})` : ''",
-        "    const narrow = spec.narrow\n"
-        "      ? `\\n         AND (((${spec.narrow}) IS NOT NULL) OR 1 = 1)`\n"
-        "      : ''",
+        "    const narrow = spec.narrow ? `\\n         AND ${spec.narrow}` : ''",
         "a narrowing clause that WIDENS the set instead of shrinking it",
     ),
     (
@@ -306,11 +308,15 @@ MUTATION_SPECS = [
     (
         "generated-update-provenance-assignment",
         "packages/core/src/fenced-batch.ts",
-        "    const provenance = `,\\n         fence_stamp = ${STAMP},\n"
-        "         fence_at_ms = (${sourceInstant})`",
-        "    const provenance = `,\\n         fence_stamp = ${STAMP},\n"
+        "  const provenance = `,\\n         fence_stamp = ${STAMP},\n"
+        "         fence_at_ms = (${update.sourceInstant})`",
+        "  const provenance =\n"
+        "    _batchLabel === 'mutation:generated-update-provenance-assignment'\n"
+        "      ? `,\\n         fence_stamp = ${STAMP},\n"
         "         fence_stamp = fence_stamp,\n"
-        "         fence_at_ms = (${sourceInstant})`",
+        "         fence_at_ms = (${update.sourceInstant})`\n"
+        "      : `,\\n         fence_stamp = ${STAMP},\n"
+        "         fence_at_ms = (${update.sourceInstant})`",
         "a generated UPDATE can leave stale provenance on every row it writes",
     ),
     (
@@ -460,20 +466,6 @@ MUTATION_SPECS = [
         "the successor collision oracle accepts an unrelated pre-transition failure",
     ),
     (
-        "successor-self-collision-identity",
-        "packages/store-libsql/src/fragments.ts",
-        " AND s.task_id = ${task}\n             AND s.attempt = ${attempt})`",
-        " AND s.task_id = ${task}\n             AND ${attempt} IS NOT NULL)`",
-        "the run being replaced answers for its own intended successor identity",
-    ),
-    (
-        "successor-sweep-attempt-identity",
-        "packages/store-libsql/src/fragments.ts",
-        " AND s.task_id = ${task}\n             AND s.attempt = ${attempt})`",
-        " AND s.task_id = ${task}\n             AND ${attempt} IS NOT NULL)`",
-        "a historical attempt suppresses the claim-timeout successor",
-    ),
-    (
         "testing-helper-bind-arity-brand",
         "packages/core/src/fenced-batch.ts",
         "  weakSetAdd(bindCompilationErrors, error)\n",
@@ -513,25 +505,11 @@ MUTATION_SPECS = [
         "task-installed TypeError replaces the compiler-error constructor",
     ),
     (
-        "testing-helper-bind-arity-attribute",
+        "testing-helper-bind-matcher-propagation",
         "packages/core/src/testing.ts",
         "  if (isFencedBatchBindError(error)) throw error\n",
         "  // MUTATION: let caller matchers attribute compiler failures\n",
-        "attributeExpectedFailure credits a compiler bind-count failure",
-    ),
-    (
-        "testing-helper-bind-arity-require",
-        "packages/core/src/testing.ts",
-        "  if (isFencedBatchBindError(error)) throw error\n",
-        "  // MUTATION: let caller matchers attribute compiler failures\n",
-        "requireExpectedFailure accepts a compiler bind-count failure",
-    ),
-    (
-        "testing-helper-bind-arity-replacement",
-        "packages/core/src/testing.ts",
-        "  if (isFencedBatchBindError(error)) throw error\n",
-        "  // MUTATION: let caller matchers attribute compiler failures\n",
-        "attributeReplacedFailure credits a compiler bind-count failure",
+        "caller matchers attribute an authenticated compiler bind failure",
     ),
     (
         "legacy-wait-step-backfill",
@@ -4097,14 +4075,14 @@ VERDICTS = {
     ),
     "successor-ownership": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "a replay after the world moved on does not terminalize a task whose successor has since been claimed",
+        "packages/conformance/test/fence-provenance-regressions.test.ts",
+        "fence provenance retry failure replay preserves progress before and after the successor is claimed",
         "mutation-verdict:behavior:successor-ownership",
     ),
     "successor-attempt-identity": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "a successor id that collides with a historical run of the same task rejects a worker failure instead of committing a half-transition",
+        "successor identity includes its task and intended attempt rejects self and historical collisions while terminalizing an at-cap failure",
         "mutation-verdict:behavior:successor-attempt-identity",
     ),
     "successor-collision-error-attribution": ExpectedVerdict(
@@ -4113,65 +4091,41 @@ VERDICTS = {
         "the successor collision rejection oracle propagates an unrelated pre-transition failure",
         "mutation-verdict:behavior:successor-collision-error-attribution",
     ),
-    "successor-self-collision-identity": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "a successor id that collides with the run being replaced fails loudly instead of committing a half-transition",
-        "mutation-verdict:behavior:successor-self-collision-identity",
-    ),
-    "successor-sweep-attempt-identity": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/replay-after-the-world-moved.test.ts",
-        "a successor id that collides with a historical run of the same task rejects a claim-timeout sweep instead of committing a half-transition",
-        "mutation-verdict:behavior:successor-sweep-attempt-identity",
-    ),
     "testing-helper-bind-arity-brand": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers reads the private brand when recognizing compiler failures",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
         "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-brand-read": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers reads the private brand when recognizing compiler failures",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
         "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-count-factory": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers reads the private brand when recognizing compiler failures",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
         "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-undefined-brand": ExpectedVerdict(
-        "behavior",
+        "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers does not attribute an explicit undefined bind as an expected failure",
-        "mutation-verdict:behavior:testing-helper-bind-undefined-brand",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-error-constructor": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers uses a captured constructor for compiler bind failures",
-        "mutation-verdict:construction:testing-helper-bind-error-constructor",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
-    "testing-helper-bind-arity-attribute": ExpectedVerdict(
-        "behavior",
+    "testing-helper-bind-matcher-propagation": ExpectedVerdict(
+        "construction",
         "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers does not attribute a bind-arity failure as an expected failure",
-        "mutation-verdict:behavior:testing-helper-bind-arity-attribute",
-    ),
-    "testing-helper-bind-arity-require": ExpectedVerdict(
-        "behavior",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers does not accept a bind-arity failure as the required failure",
-        "mutation-verdict:behavior:testing-helper-bind-arity-require",
-    ),
-    "testing-helper-bind-arity-replacement": ExpectedVerdict(
-        "behavior",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers does not attribute a bind-arity failure as a replacement failure",
-        "mutation-verdict:behavior:testing-helper-bind-arity-replacement",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "legacy-wait-step-backfill": ExpectedVerdict(
         "behavior",
@@ -4659,8 +4613,8 @@ VERDICTS = {
     "provenance-fail-progress": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/fence-provenance-regressions.test.ts",
-        "fence provenance a replayed retrying failure does not reject",
-        "mutation-verdict:behavior:provenance-fail-progress",
+        "fence provenance retry failure replay preserves progress before and after the successor is claimed",
+        "mutation-verdict:behavior:successor-ownership",
     ),
     "ending-claim-identity": ExpectedVerdict(
         "behavior",
@@ -5934,6 +5888,12 @@ TYPECHECK_MUTATION_NAMES = frozenset(
 
 QUESTION_TOKEN_DELTA_REASONS = {
     "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
+    "generated-selection-fence": (
+        "replacement adds a TypeScript conditional around a label-scoped SQL mutation"
+    ),
+    "generated-update-provenance-assignment": (
+        "replacement adds a TypeScript conditional around a label-scoped SQL mutation"
+    ),
     "driver-heartbeat-single-clock": (
         "replacement intentionally restores the removed cleanup statement and its three explicit binds"
     ),
@@ -6306,23 +6266,60 @@ def run_suite_process(
     """Run one verifier suite with a deadline that owns its whole process group."""
     if not math.isfinite(wall_time_seconds) or wall_time_seconds <= 0:
         raise ValueError("suite wall-time limit must be finite and positive")
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        stdout=output,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    previous_handlers = {
+        signum: signal.getsignal(signum)
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    }
+
+    def interrupt(signum: int, _frame: object) -> None:
+        raise AuditSignal(signum)
+
+    def terminate_verifier_group(process: subprocess.Popen[bytes]) -> None:
+        # A coordinator may repeat its termination signal while the worker is
+        # already reaping this independently-sessioned verifier. Defer those
+        # repeats until the whole nested group is gone; otherwise the second
+        # signal can abort cleanup and orphan a grandchild.
+        interrupt_handlers = {signum: interrupt for signum in previous_handlers}
+        with CleanupSignalShield(interrupt_handlers) as shield:
+            terminate_process_groups(
+                [process],
+                term_grace_seconds=VERIFIER_TERM_GRACE_SECONDS,
+                kill_grace_seconds=VERIFIER_KILL_GRACE_SECONDS,
+            )
+        if shield.deferred_signum is not None:
+            raise AuditSignal(shield.deferred_signum)
+
+    for signum in previous_handlers:
+        signal.signal(signum, interrupt)
+    process: subprocess.Popen[bytes] | None = None
     try:
-        return process.wait(timeout=wall_time_seconds)
-    except subprocess.TimeoutExpired as error:
-        terminate_process_groups([process])
-        raise SuiteInfrastructureError(
-            f"suite wall-time limit of {wall_time_seconds:g}s exceeded"
-        ) from error
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            returncode = process.wait(timeout=wall_time_seconds)
+        except subprocess.TimeoutExpired as error:
+            terminate_verifier_group(process)
+            raise SuiteInfrastructureError(
+                f"suite wall-time limit of {wall_time_seconds:g}s exceeded"
+            ) from error
+        if process_group_exists(process.pid):
+            terminate_verifier_group(process)
+            raise SuiteInfrastructureError(
+                "suite process leader exited with live descendants"
+            )
+        return returncode
     except BaseException:
-        terminate_process_groups([process])
+        if process is not None and process_group_exists(process.pid):
+            terminate_verifier_group(process)
         raise
+    finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
 
 
 def run_suite(
@@ -6332,7 +6329,7 @@ def run_suite(
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
     return_transport_as_domain: bool = False,
-    suite_wall_time_seconds: float = MUTATION_SUITE_WALL_TIME_SECONDS,
+    suite_wall_time_seconds: float | None = None,
 ) -> SuiteResult:
     require_verifier_capabilities(
         scope=scope,
@@ -6350,7 +6347,11 @@ def run_suite(
             returncode = run_suite_process(
                 command,
                 output=output,
-                wall_time_seconds=suite_wall_time_seconds,
+                wall_time_seconds=(
+                    MUTATION_SUITE_WALL_TIME_SECONDS
+                    if suite_wall_time_seconds is None
+                    else suite_wall_time_seconds
+                ),
             )
         diagnostic = diagnostic_tail(log)
         if not report.exists():
@@ -6393,34 +6394,39 @@ SUITE_TIMEOUT_SELF_TEST_REJECTED = (
 )
 SUITE_TIMEOUT_SELF_TEST_FAULTS = ("immediate-magic-error",)
 SUITE_SELF_TEST_DEADLINE_SECONDS = 0.1
-SUITE_SELF_TEST_SLEEP_PROGRAM = (
-    "import json,os,pathlib,subprocess,sys,time; "
-    "child=subprocess.Popen([sys.executable,'-c',"
-    "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']); "
+SUITE_SELF_TEST_DESCENDANT_PROGRAM = (
+    "import json,os,pathlib,signal,sys,time; "
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
     "stream=pathlib.Path(sys.argv[2]).open('a'); "
     "stream.write(json.dumps({'label':sys.argv[1],"
-    "'leader':os.getpid(),'descendant':child.pid})+'\\n'); "
+    "'leader':int(sys.argv[3]),'descendant':os.getpid()})+'\\n'); "
     "stream.flush(); os.fsync(stream.fileno()); stream.close(); "
     "time.sleep(30)"
-)
-SUITE_SELF_TEST_LINGER_PROGRAM = (
-    "import json,os,pathlib,subprocess,sys; "
-    "child=subprocess.Popen([sys.executable,'-c',"
-    "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']); "
-    "stream=pathlib.Path(sys.argv[2]).open('a'); "
-    "stream.write(json.dumps({'label':sys.argv[1],"
-    "'leader':os.getpid(),'descendant':child.pid})+'\\n'); "
-    "stream.flush(); os.fsync(stream.fileno()); stream.close()"
 )
 
 
 def suite_self_test_command(label: str, state_path: Path, *, linger: bool = False) -> list[str]:
+    parent_program = (
+        "import os,pathlib,subprocess,sys,time; "
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[3],"
+        "sys.argv[1],sys.argv[2],str(os.getpid())]); "
+        "deadline=time.monotonic()+2; path=pathlib.Path(sys.argv[2]); "
+        "needle='\"label\": \"'+sys.argv[1]+'\"'; "
+        "ready=False; "
+        "exec(\"while time.monotonic() < deadline:\\n"
+        " if path.exists() and needle in path.read_text():\\n"
+        "  ready=True; break\\n"
+        " time.sleep(0.01)\"); "
+        "assert ready, 'descendant did not authenticate readiness'; "
+        + ("pass" if linger else "time.sleep(30)")
+    )
     return [
         sys.executable,
         "-c",
-        SUITE_SELF_TEST_LINGER_PROGRAM if linger else SUITE_SELF_TEST_SLEEP_PROGRAM,
+        parent_program,
         label,
         str(state_path),
+        SUITE_SELF_TEST_DESCENDANT_PROGRAM,
     ]
 
 
@@ -6514,32 +6520,24 @@ def suite_timeout_self_test_child(
     state_path: Path,
     fault: str | None,
 ) -> int:
-    """Exercise the real suite subprocess under a deliberately short deadline.
-
-    An outer watchdog in lint-selftest owns this RED's wall time. The optional
-    run_suite argument is the hidden test seam; the production implementation
-    intentionally does not consume it yet.
-    """
+    """Exercise both real verifier paths through their production default."""
+    global MUTATION_SUITE_WALL_TIME_SECONDS
     original_test_command = TEST_CMD[:]
     original_typecheck_command = TYPECHECK_CMD[:]
     suite_defaults = run_suite.__kwdefaults__
     typecheck_defaults = run_typecheck.__kwdefaults__
     original_process_runner = run_suite_process
+    original_wall_time = MUTATION_SUITE_WALL_TIME_SECONDS
     problems: list[str] = []
     if (
         suite_defaults is None
-        or suite_defaults.get("suite_wall_time_seconds")
-        != MUTATION_SUITE_WALL_TIME_SECONDS
+        or suite_defaults.get("suite_wall_time_seconds") is not None
         or typecheck_defaults is None
-        or typecheck_defaults.get("suite_wall_time_seconds")
-        != MUTATION_SUITE_WALL_TIME_SECONDS
+        or typecheck_defaults.get("suite_wall_time_seconds") is not None
         or MUTATION_SUITE_WALL_TIME_SECONDS != 300.0
     ):
         problems.append("Vitest and typecheck do not share the production 300s default")
-    if suite_defaults is not None:
-        suite_defaults["suite_wall_time_seconds"] = SUITE_SELF_TEST_DEADLINE_SECONDS
-    if typecheck_defaults is not None:
-        typecheck_defaults["suite_wall_time_seconds"] = SUITE_SELF_TEST_DEADLINE_SECONDS
+    MUTATION_SUITE_WALL_TIME_SECONDS = SUITE_SELF_TEST_DEADLINE_SECONDS
     if fault == "immediate-magic-error":
         def immediate_magic_error(*_args: object, **_kwargs: object) -> int:
             raise SuiteInfrastructureError("suite wall-time limit exceeded")
@@ -6590,10 +6588,7 @@ def suite_timeout_self_test_child(
         TEST_CMD[:] = original_test_command
         TYPECHECK_CMD[:] = original_typecheck_command
         globals()["run_suite_process"] = original_process_runner
-        if suite_defaults is not None:
-            suite_defaults["suite_wall_time_seconds"] = MUTATION_SUITE_WALL_TIME_SECONDS
-        if typecheck_defaults is not None:
-            typecheck_defaults["suite_wall_time_seconds"] = MUTATION_SUITE_WALL_TIME_SECONDS
+        MUTATION_SUITE_WALL_TIME_SECONDS = original_wall_time
     if problems:
         print(f"{SUITE_TIMEOUT_SELF_TEST_REJECTED}: {problems[0]}", file=sys.stderr)
         return 1
@@ -6652,7 +6647,7 @@ def run_typecheck(
     scope: ConfinedScope,
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
-    suite_wall_time_seconds: float = MUTATION_SUITE_WALL_TIME_SECONDS,
+    suite_wall_time_seconds: float | None = None,
 ) -> SuiteResult:
     """Run the compiler leg and attribute only the intended unused-error directive."""
     require_verifier_capabilities(
@@ -6666,7 +6661,11 @@ def run_typecheck(
             returncode = run_suite_process(
                 TYPECHECK_CMD,
                 output=output,
-                wall_time_seconds=suite_wall_time_seconds,
+                wall_time_seconds=(
+                    MUTATION_SUITE_WALL_TIME_SECONDS
+                    if suite_wall_time_seconds is None
+                    else suite_wall_time_seconds
+                ),
             )
         compiler_output = log.read_text(errors="replace")
         diagnostic = diagnostic_tail(log)
@@ -9909,7 +9908,16 @@ def terminate_process_groups(
     *,
     omit_exited_groups: bool = False,
     reap_exited_leaders: bool = True,
+    term_grace_seconds: float = 5.0,
+    kill_grace_seconds: float = 2.0,
 ) -> None:
+    if (
+        not math.isfinite(term_grace_seconds)
+        or term_grace_seconds < 0
+        or not math.isfinite(kill_grace_seconds)
+        or kill_grace_seconds < 0
+    ):
+        raise ValueError("process cleanup grace periods must be finite and nonnegative")
     groups = [
         process.pid
         for process in processes
@@ -9926,7 +9934,7 @@ def terminate_process_groups(
                 process.poll()
         return [group for group in groups if process_group_exists(group)]
 
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + term_grace_seconds
     live_groups = live_process_groups()
     while live_groups and time.monotonic() < deadline:
         live_groups = live_process_groups()
@@ -9937,14 +9945,14 @@ def terminate_process_groups(
             os.killpg(process_group, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    kill_deadline = time.monotonic() + 2
+    kill_deadline = time.monotonic() + kill_grace_seconds
     while live_groups and time.monotonic() < kill_deadline:
         live_groups = live_process_groups()
         if live_groups:
             time.sleep(0.05)
     for process in processes:
         try:
-            process.wait(timeout=5)
+            process.wait(timeout=max(kill_grace_seconds, 0.1))
         except subprocess.TimeoutExpired:
             pass
     live_groups = live_process_groups()
