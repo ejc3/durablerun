@@ -139,6 +139,51 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       const sweepTargets = POISON_TARGET_CASES.filter(
         (target) => target.label === 'sweep:lost-launch' || target.label === 'sweep:claim-timeout',
       )
+      const relaunchClaimWitnessIds = {
+        upper: 'counter-bound/run-relaunch-count',
+        lower: 'counter-bound-lower/run-relaunch-count',
+      } as const
+      const relaunchClaimTargets = POISON_TARGET_CASES.filter(
+        (target) =>
+          target.label === 'claim' &&
+          (target.witness.id === relaunchClaimWitnessIds.upper ||
+            target.witness.id === relaunchClaimWitnessIds.lower),
+      )
+      const captureRelaunchClaimTargets = async (
+        side: keyof typeof relaunchClaimWitnessIds,
+      ): Promise<unknown[]> => {
+        const witnessId = relaunchClaimWitnessIds[side]
+        const observations: unknown[] = []
+        for (const target of relaunchClaimTargets.filter(
+          (candidate) => candidate.witness.id === witnessId,
+        )) {
+          observations.push(
+            await runPoisonTargetCase(makeFixture, target).then(
+              (result) => ({
+                id: target.id,
+                label: target.label,
+                profile: target.profile,
+                witness: target.witness.id,
+                kind: 'resolved',
+                result: {
+                  label: result.label,
+                  profile: result.profile,
+                  witness: result.witness,
+                },
+              }),
+              (error: unknown) => ({
+                id: target.id,
+                label: target.label,
+                profile: target.profile,
+                witness: target.witness.id,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+        return observations
+      }
 
       it('contains accounting/below-top-minus-one across both claim profiles', async () => {
         const observations: unknown[] = []
@@ -530,6 +575,68 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             },
           ],
           receipt: { result: [], after: receiptBefore },
+        })
+      })
+
+      describe('relaunch_count claim boundary containment', () => {
+        it('owns the upper bound across both claim profiles', async () => {
+          const observations = await captureRelaunchClaimTargets('upper')
+          expect(observations, 'mutation-verdict:behavior:poison-claim-relaunch-upper').toEqual([
+            {
+              id: 'counter-bound/run-relaunch-count/claim-pending',
+              label: 'claim',
+              profile: 'claim-pending',
+              witness: 'counter-bound/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-pending',
+                witness: 'counter-bound/run-relaunch-count',
+              },
+            },
+            {
+              id: 'counter-bound/run-relaunch-count/claim-sleeping',
+              label: 'claim',
+              profile: 'claim-sleeping',
+              witness: 'counter-bound/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-sleeping',
+                witness: 'counter-bound/run-relaunch-count',
+              },
+            },
+          ])
+        })
+
+        it('owns the lower bound across both claim profiles', async () => {
+          const observations = await captureRelaunchClaimTargets('lower')
+          expect(observations, 'mutation-verdict:behavior:poison-claim-relaunch-lower').toEqual([
+            {
+              id: 'counter-bound-lower/run-relaunch-count/claim-pending',
+              label: 'claim',
+              profile: 'claim-pending',
+              witness: 'counter-bound-lower/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-pending',
+                witness: 'counter-bound-lower/run-relaunch-count',
+              },
+            },
+            {
+              id: 'counter-bound-lower/run-relaunch-count/claim-sleeping',
+              label: 'claim',
+              profile: 'claim-sleeping',
+              witness: 'counter-bound-lower/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-sleeping',
+                witness: 'counter-bound-lower/run-relaunch-count',
+              },
+            },
+          ])
         })
       })
 
