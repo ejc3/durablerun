@@ -302,19 +302,16 @@ type PersistedCounterFieldFor<Id extends PersistedCounterFieldContract['id']> = 
 
 /**
  * The keyed persisted-counter construction surface.
- *
- * RED: every key is deliberately optional so the compile-only regression can
- * prove that omitting any one enrolled durable counter is currently writable.
  */
 export type PersistedCounterFieldRecord = Readonly<{
-  'task-attempts'?: PersistedCounterFieldFor<'task-attempts'>
-  'task-max-attempts'?: PersistedCounterFieldFor<'task-max-attempts'>
-  'task-infra-retries'?: PersistedCounterFieldFor<'task-infra-retries'>
-  'run-attempt'?: PersistedCounterFieldFor<'run-attempt'>
-  'run-claim-gen'?: PersistedCounterFieldFor<'run-claim-gen'>
-  'run-activated-gen'?: PersistedCounterFieldFor<'run-activated-gen'>
-  'run-relaunch-count'?: PersistedCounterFieldFor<'run-relaunch-count'>
-  'checkpoint-owner-attempt'?: PersistedCounterFieldFor<'checkpoint-owner-attempt'>
+  'task-attempts': PersistedCounterFieldFor<'task-attempts'>
+  'task-max-attempts': PersistedCounterFieldFor<'task-max-attempts'>
+  'task-infra-retries': PersistedCounterFieldFor<'task-infra-retries'>
+  'run-attempt': PersistedCounterFieldFor<'run-attempt'>
+  'run-claim-gen': PersistedCounterFieldFor<'run-claim-gen'>
+  'run-activated-gen': PersistedCounterFieldFor<'run-activated-gen'>
+  'run-relaunch-count': PersistedCounterFieldFor<'run-relaunch-count'>
+  'checkpoint-owner-attempt': PersistedCounterFieldFor<'checkpoint-owner-attempt'>
 }>
 
 /**
@@ -322,61 +319,73 @@ export type PersistedCounterFieldRecord = Readonly<{
  *
  * Each descriptor binds its public condition/witness ID to one exact durable
  * column and that column's nominal bounds. Generated witness, severity, and
- * inventory surfaces iterate this list instead of maintaining table-specific
- * copies.
+ * inventory surfaces iterate the mechanically derived array instead of
+ * maintaining table-specific copies.
  */
-export const PERSISTED_COUNTER_FIELDS = freeze([
-  freeze({
+const PERSISTED_COUNTER_FIELDS_BY_ID = freeze({
+  'task-attempts': freeze({
     id: 'task-attempts',
     table: 'tasks',
     column: 'attempts',
     bounds: PERSISTED_INTEGER_BOUNDS.tasks.attempts,
   }),
-  freeze({
+  'task-max-attempts': freeze({
     id: 'task-max-attempts',
     table: 'tasks',
     column: 'max_attempts',
     bounds: PERSISTED_INTEGER_BOUNDS.tasks.max_attempts,
   }),
-  freeze({
+  'task-infra-retries': freeze({
     id: 'task-infra-retries',
     table: 'tasks',
     column: 'infra_retries',
     bounds: PERSISTED_INTEGER_BOUNDS.tasks.infra_retries,
   }),
-  freeze({
+  'run-attempt': freeze({
     id: 'run-attempt',
     table: 'runs',
     column: 'attempt',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.attempt,
   }),
-  freeze({
+  'run-claim-gen': freeze({
     id: 'run-claim-gen',
     table: 'runs',
     column: 'claim_gen',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.claim_gen,
   }),
-  freeze({
+  'run-activated-gen': freeze({
     id: 'run-activated-gen',
     table: 'runs',
     column: 'activated_gen',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.activated_gen,
   }),
-  freeze({
+  'run-relaunch-count': freeze({
     id: 'run-relaunch-count',
     table: 'runs',
     column: 'relaunch_count',
     bounds: PERSISTED_INTEGER_BOUNDS.runs.relaunch_count,
   }),
-  freeze({
+  'checkpoint-owner-attempt': freeze({
     id: 'checkpoint-owner-attempt',
     table: 'checkpoints',
     column: 'owner_attempt',
     bounds: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt,
   }),
-] as const satisfies readonly PersistedCounterFieldContract[])
+} as const satisfies PersistedCounterFieldRecord)
 
-export type PersistedCounterFieldDescriptor = (typeof PERSISTED_COUNTER_FIELDS)[number]
+function frozenCounterFieldValues(
+  fields: typeof PERSISTED_COUNTER_FIELDS_BY_ID,
+): readonly PersistedCounterFieldContract[] {
+  const values: PersistedCounterFieldContract[] = []
+  for (const id of objectKeys(fields) as (keyof typeof PERSISTED_COUNTER_FIELDS_BY_ID)[]) {
+    values[values.length] = fields[id]
+  }
+  return freeze(values)
+}
+
+export const PERSISTED_COUNTER_FIELDS = frozenCounterFieldValues(PERSISTED_COUNTER_FIELDS_BY_ID)
+
+export type PersistedCounterFieldDescriptor = PersistedCounterFieldContract
 export type PersistedCounterFieldId = PersistedCounterFieldDescriptor['id']
 
 type PersistedIntegerTable = keyof typeof PERSISTED_INTEGER_BOUNDS

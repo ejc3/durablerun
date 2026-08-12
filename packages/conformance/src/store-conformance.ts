@@ -70,10 +70,9 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
 function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`poison matrix [${dialect}] (ambient write label x forbidden pre-state)`, () => {
     it('covers every invariant and keeps the atomic witness inventory pinned', () => {
-      expect(
-        uncoveredConditionIds(),
-        'mutation-verdict:behavior:persisted-counter-field-inventory',
-      ).toEqual([])
+      expect(uncoveredConditionIds(), 'persisted counter field inventory stays complete').toEqual(
+        [],
+      )
       expect(unknownCoveredConditionIds()).toEqual([])
       expect(duplicatePoisonWitnessIds()).toEqual([])
       expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(109)

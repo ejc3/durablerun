@@ -897,98 +897,58 @@ MUTATION_SPECS = [
     (
         "persisted-counter-field-task-attempts",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'task-attempts',\n"
-        "    table: 'tasks',\n"
-        "    column: 'attempts',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.tasks.attempts,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits tasks.attempts",
+        "  'task-attempts': PersistedCounterFieldFor<'task-attempts'>\n",
+        "  'task-attempts'?: PersistedCounterFieldFor<'task-attempts'>\n",
+        "the keyed persisted-counter contract makes tasks.attempts optional",
     ),
     (
         "persisted-counter-field-task-max-attempts",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'task-max-attempts',\n"
-        "    table: 'tasks',\n"
-        "    column: 'max_attempts',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.tasks.max_attempts,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits tasks.max_attempts",
+        "  'task-max-attempts': PersistedCounterFieldFor<'task-max-attempts'>\n",
+        "  'task-max-attempts'?: PersistedCounterFieldFor<'task-max-attempts'>\n",
+        "the keyed persisted-counter contract makes tasks.max_attempts optional",
     ),
     (
         "persisted-counter-field-task-infra-retries",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'task-infra-retries',\n"
-        "    table: 'tasks',\n"
-        "    column: 'infra_retries',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.tasks.infra_retries,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits tasks.infra_retries",
+        "  'task-infra-retries': PersistedCounterFieldFor<'task-infra-retries'>\n",
+        "  'task-infra-retries'?: PersistedCounterFieldFor<'task-infra-retries'>\n",
+        "the keyed persisted-counter contract makes tasks.infra_retries optional",
     ),
     (
         "persisted-counter-field-run-attempt",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'run-attempt',\n"
-        "    table: 'runs',\n"
-        "    column: 'attempt',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.attempt,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits runs.attempt",
+        "  'run-attempt': PersistedCounterFieldFor<'run-attempt'>\n",
+        "  'run-attempt'?: PersistedCounterFieldFor<'run-attempt'>\n",
+        "the keyed persisted-counter contract makes runs.attempt optional",
     ),
     (
         "persisted-counter-field-run-claim-gen",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'run-claim-gen',\n"
-        "    table: 'runs',\n"
-        "    column: 'claim_gen',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.claim_gen,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits runs.claim_gen",
+        "  'run-claim-gen': PersistedCounterFieldFor<'run-claim-gen'>\n",
+        "  'run-claim-gen'?: PersistedCounterFieldFor<'run-claim-gen'>\n",
+        "the keyed persisted-counter contract makes runs.claim_gen optional",
     ),
     (
         "persisted-counter-field-run-activated-gen",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'run-activated-gen',\n"
-        "    table: 'runs',\n"
-        "    column: 'activated_gen',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.activated_gen,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits runs.activated_gen",
+        "  'run-activated-gen': PersistedCounterFieldFor<'run-activated-gen'>\n",
+        "  'run-activated-gen'?: PersistedCounterFieldFor<'run-activated-gen'>\n",
+        "the keyed persisted-counter contract makes runs.activated_gen optional",
     ),
     (
         "persisted-counter-field-run-relaunch-count",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'run-relaunch-count',\n"
-        "    table: 'runs',\n"
-        "    column: 'relaunch_count',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.runs.relaunch_count,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits runs.relaunch_count",
+        "  'run-relaunch-count': PersistedCounterFieldFor<'run-relaunch-count'>\n",
+        "  'run-relaunch-count'?: PersistedCounterFieldFor<'run-relaunch-count'>\n",
+        "the keyed persisted-counter contract makes runs.relaunch_count optional",
     ),
     (
         "persisted-counter-field-checkpoint-owner-attempt",
         "packages/core/src/validate.ts",
-        "  freeze({\n"
-        "    id: 'checkpoint-owner-attempt',\n"
-        "    table: 'checkpoints',\n"
-        "    column: 'owner_attempt',\n"
-        "    bounds: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt,\n"
-        "  }),\n",
-        "",
-        "the generated persisted-counter contract omits checkpoints.owner_attempt",
+        "  'checkpoint-owner-attempt': PersistedCounterFieldFor<'checkpoint-owner-attempt'>\n",
+        "  'checkpoint-owner-attempt'?: PersistedCounterFieldFor<'checkpoint-owner-attempt'>\n",
+        "the keyed persisted-counter contract makes checkpoints.owner_attempt optional",
     ),
     (
         "poison-profile-claim-pending",
@@ -4359,60 +4319,60 @@ VERDICTS = {
         "mutation-verdict:construction:derived-row-rejects-spread-descriptor",
     ),
     "persisted-counter-field-task-attempts": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-task-attempts",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "persisted-counter-field-task-max-attempts": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-task-max-attempts",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "persisted-counter-field-task-infra-retries": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-task-infra-retries",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "persisted-counter-field-run-attempt": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-run-attempt",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "persisted-counter-field-run-claim-gen": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-run-claim-gen",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "persisted-counter-field-run-activated-gen": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-run-activated-gen",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "persisted-counter-field-run-relaunch-count": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-run-relaunch-count",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "persisted-counter-field-checkpoint-owner-attempt": ExpectedVerdict(
-        "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) covers every invariant and keeps the atomic witness inventory pinned",
-        "mutation-verdict:behavior:persisted-counter-field-inventory",
-        "packages/conformance/src/store-conformance.ts",
+        "construction",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
+        "requires every keyed persisted-counter descriptor at construction",
+        "mutation-verdict:construction:persisted-counter-field-checkpoint-owner-attempt",
+        "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "poison-profile-claim-pending": ExpectedVerdict(
         "behavior",
@@ -5907,6 +5867,14 @@ TYPECHECK_MUTATION_NAMES = frozenset(
         "stored-incrementable-rejects-spread-descriptor",
         "persisted-row-rejects-spread-descriptor",
         "derived-row-rejects-spread-descriptor",
+        "persisted-counter-field-task-attempts",
+        "persisted-counter-field-task-max-attempts",
+        "persisted-counter-field-task-infra-retries",
+        "persisted-counter-field-run-attempt",
+        "persisted-counter-field-run-claim-gen",
+        "persisted-counter-field-run-activated-gen",
+        "persisted-counter-field-run-relaunch-count",
+        "persisted-counter-field-checkpoint-owner-attempt",
         "retry-normalized-type-is-nominal",
         "generated-runs-to-waits-authoritative-cleanup",
         "generated-runs-to-tasks-queue-ownership",
@@ -5951,6 +5919,30 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "derived-row-rejects-spread-descriptor": (
         "replacement adds an optional TypeScript field declaration"
+    ),
+    "persisted-counter-field-task-attempts": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "persisted-counter-field-task-max-attempts": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "persisted-counter-field-task-infra-retries": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "persisted-counter-field-run-attempt": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "persisted-counter-field-run-claim-gen": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "persisted-counter-field-run-activated-gen": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "persisted-counter-field-run-relaunch-count": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "persisted-counter-field-checkpoint-owner-attempt": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
     ),
     "poison-relational-target-inventory": (
         "replacement removes TypeScript optional-chaining and nullish-coalescing tokens"
