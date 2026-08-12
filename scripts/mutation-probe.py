@@ -4325,7 +4325,7 @@ VERDICTS = {
     "claim-receipt-requires-user-attempt-budget": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains attempts/at-max-with-live-run across claim, receipt, fail, and sweep paths",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains every sweep target behind pre-limit eligibility and owns exhausted-budget paths",
         "mutation-verdict:behavior:current-run-requires-user-attempt-budget",
         "packages/conformance/src/store-conformance.ts",
     ),
@@ -4353,7 +4353,7 @@ VERDICTS = {
     "current-run-requires-user-attempt-budget": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains attempts/at-max-with-live-run across claim, receipt, fail, and sweep paths",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains every sweep target behind pre-limit eligibility and owns exhausted-budget paths",
         "mutation-verdict:behavior:current-run-requires-user-attempt-budget",
         "packages/conformance/src/store-conformance.ts",
     ),
@@ -4647,9 +4647,10 @@ VERDICTS = {
     ),
     "poison-sweep-scan-prelimit": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests applies sweep target eligibility before the scan limit",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains every sweep target behind pre-limit eligibility and owns exhausted-budget paths",
         "mutation-verdict:behavior:poison-sweep-scan-prelimit",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "sweep-lost-launch-rechecks-accounting": ExpectedVerdict(
         "behavior",

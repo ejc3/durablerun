@@ -753,73 +753,6 @@ describe('poison/invariant mechanism self-tests', () => {
     )
   })
 
-  it('owns the exact upper relaunch boundary across all four lifecycle profiles', async () => {
-    const observations: unknown[] = []
-    const targets = POISON_TARGET_CASES.filter(
-      (candidate) => candidate.witness.id === 'counter-bound/run-relaunch-count',
-    )
-
-    for (const candidate of targets) {
-      observations.push(
-        await runPoisonTargetCase(makeLibsqlFixture, candidate).then(
-          (result) => ({
-            profile: candidate.profile,
-            kind: 'resolved',
-            result: {
-              label: result.label,
-              witness: result.witness,
-              profile: result.profile,
-            },
-          }),
-          (error: unknown) => ({
-            profile: candidate.profile,
-            kind: 'rejected',
-            error: String(error),
-          }),
-        ),
-      )
-    }
-
-    expect(observations, 'mutation-verdict:behavior:poison-targetability-inventory').toEqual([
-      {
-        profile: 'claim-pending',
-        kind: 'resolved',
-        result: {
-          label: 'claim',
-          witness: 'counter-bound/run-relaunch-count',
-          profile: 'claim-pending',
-        },
-      },
-      {
-        profile: 'claim-sleeping',
-        kind: 'resolved',
-        result: {
-          label: 'claim',
-          witness: 'counter-bound/run-relaunch-count',
-          profile: 'claim-sleeping',
-        },
-      },
-      {
-        profile: 'sweep-lost-launch',
-        kind: 'resolved',
-        result: {
-          label: 'sweep:lost-launch',
-          witness: 'counter-bound/run-relaunch-count',
-          profile: 'sweep-lost-launch',
-        },
-      },
-      {
-        profile: 'sweep-claim-timeout',
-        kind: 'resolved',
-        result: {
-          label: 'sweep:claim-timeout',
-          witness: 'counter-bound/run-relaunch-count',
-          profile: 'sweep-claim-timeout',
-        },
-      },
-    ])
-  })
-
   it('enrolls every relational and fractional target in every lifecycle arm', () => {
     const profiles = [
       'claim-pending',
@@ -948,28 +881,37 @@ describe('poison/invariant mechanism self-tests', () => {
     const observations: unknown[] = []
 
     for (const { profile, targetId } of cases) {
+      const candidate = target(targetId)
       let seededState: unknown
-      const outcome = await runPoisonTargetCase(makeLibsqlFixture, target(targetId), {
-        beforeSnapshot: async (raw) => {
-          const [tasks, runs] = await raw.batch(
-            'oracle-meta',
-            [
-              {
-                sql: `SELECT state FROM tasks WHERE task_id = 'poison-task'`,
-                args: [],
-              },
-              {
-                sql: `SELECT state, claimed_by, claim_gen, activated_gen, lease_ms,
-                             claim_expires_at_ms, heartbeat_at_ms, available_at_ms
-                      FROM runs WHERE run_id = 'poison-run'`,
-                args: [],
-              },
-            ],
-            'read',
-          )
-          seededState = { task: tasks?.rows[0], run: runs?.rows[0] }
+      const outcome = await runPoisonMatrixCase(
+        makeLibsqlFixture,
+        'driver-heartbeat',
+        candidate.witness,
+        {
+          targetProfile: candidate.profile,
+          targetCompanions: candidate.companions,
+          healthyTrigger: false,
+          beforeSnapshot: async (raw) => {
+            const [tasks, runs] = await raw.batch(
+              'oracle-meta',
+              [
+                {
+                  sql: `SELECT state FROM tasks WHERE task_id = 'poison-task'`,
+                  args: [],
+                },
+                {
+                  sql: `SELECT state, claimed_by, claim_gen, activated_gen, lease_ms,
+                               claim_expires_at_ms, heartbeat_at_ms, available_at_ms
+                        FROM runs WHERE run_id = 'poison-run'`,
+                  args: [],
+                },
+              ],
+              'read',
+            )
+            seededState = { task: tasks?.rows[0], run: runs?.rows[0] }
+          },
         },
-      }).then(
+      ).then(
         () => 'resolved' as const,
         () => 'rejected' as const,
       )
@@ -1259,18 +1201,6 @@ describe('poison/invariant mechanism self-tests', () => {
     expect(compileOnly).toBeTypeOf('function')
   })
 
-  it('applies sweep target eligibility before the scan limit', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-sweep-scan-prelimit' },
-      /made no durable state change/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-bound/task-max-attempts/sweep-lost-launch'),
-        ),
-    )
-  })
-
   it('contains upper relaunch_count at the claim door', async () => {
     await attributeExpectedFailure(
       { kind: 'behavior', mutation: 'poison-claim-relaunch-upper' },
@@ -1333,7 +1263,7 @@ describe('poison/invariant mechanism self-tests', () => {
     await expect(
       runPoisonTargetCase(
         makeLibsqlFixture,
-        target('counter-bound/task-max-attempts/sweep-claim-timeout'),
+        target('counter-bound/task-max-attempts/claim-pending'),
         {
           afterInvoke: (raw) =>
             write(raw, [

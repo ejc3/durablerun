@@ -188,11 +188,42 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         ])
       })
 
-      it('contains attempts/at-max-with-live-run across claim, receipt, fail, and sweep paths', async () => {
-        const poisonObservations: unknown[] = []
+      it('contains every sweep target behind pre-limit eligibility and owns exhausted-budget paths', async () => {
+        const nonExhaustedSweepTargets = sweepTargets.filter(
+          (target) => !exhaustedBudgetTargets.includes(target),
+        )
+        const observations: unknown[] = []
+        for (const target of nonExhaustedSweepTargets) {
+          observations.push(
+            await runPoisonTargetCase(makeFixture, target).then(
+              (result) => ({
+                id: target.id,
+                label: target.label,
+                profile: target.profile,
+                witness: target.witness.id,
+                kind: 'resolved',
+                result: {
+                  label: result.label,
+                  profile: result.profile,
+                  witness: result.witness,
+                },
+              }),
+              (error: unknown) => ({
+                id: target.id,
+                label: target.label,
+                profile: target.profile,
+                witness: target.witness.id,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+
+        const exhaustedPoisonObservations: unknown[] = []
         const exhaustedBudgetWitness = exhaustedBudgetTargets[0]?.witness
         if (!exhaustedBudgetWitness) throw new Error('missing exhausted-budget poison witness')
-        poisonObservations.push(
+        exhaustedPoisonObservations.push(
           await runPoisonMatrixCase(makeFixture, 'fail', exhaustedBudgetWitness).then(
             (result) => ({
               profile: 'fail',
@@ -203,7 +234,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           ),
         )
         for (const target of exhaustedBudgetTargets) {
-          poisonObservations.push(
+          exhaustedPoisonObservations.push(
             await runPoisonTargetCase(makeFixture, target).then(
               (result) => ({
                 profile: target.profile,
@@ -272,95 +303,17 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
 
         expect(
           {
-            poison: poisonObservations,
-            receipt: { result: receipt, after: receiptAfter },
-          },
-          'mutation-verdict:behavior:current-run-requires-user-attempt-budget',
-        ).toEqual({
-          poison: [
-            {
-              profile: 'fail',
-              kind: 'resolved',
-              result: { label: 'fail', witness: 'attempts/at-max-with-live-run' },
-            },
-            {
-              profile: 'claim-pending',
-              kind: 'resolved',
-              result: {
-                label: 'claim',
-                witness: 'attempts/at-max-with-live-run',
-                profile: 'claim-pending',
-              },
-            },
-            {
-              profile: 'claim-sleeping',
-              kind: 'resolved',
-              result: {
-                label: 'claim',
-                witness: 'attempts/at-max-with-live-run',
-                profile: 'claim-sleeping',
-              },
-            },
-            {
-              profile: 'sweep-lost-launch',
-              kind: 'resolved',
-              result: {
-                label: 'sweep:lost-launch',
-                witness: 'attempts/at-max-with-live-run',
-                profile: 'sweep-lost-launch',
-              },
-            },
-            {
-              profile: 'sweep-claim-timeout',
-              kind: 'resolved',
-              result: {
-                label: 'sweep:claim-timeout',
-                witness: 'attempts/at-max-with-live-run',
-                profile: 'sweep-claim-timeout',
-              },
-            },
-          ],
-          receipt: { result: [], after: receiptBefore },
-        })
-      })
-
-      it('contains every sweep target behind pre-limit eligibility', async () => {
-        const observations: unknown[] = []
-        for (const target of sweepTargets) {
-          observations.push(
-            await runPoisonTargetCase(makeFixture, target).then(
-              (result) => ({
-                id: target.id,
-                label: target.label,
-                profile: target.profile,
-                witness: target.witness.id,
-                kind: 'resolved',
-                result: {
-                  label: result.label,
-                  profile: result.profile,
-                  witness: result.witness,
-                },
-              }),
-              (error: unknown) => ({
-                id: target.id,
-                label: target.label,
-                profile: target.profile,
-                witness: target.witness.id,
-                kind: 'rejected',
-                error: String(error),
-              }),
-            ),
-          )
-        }
-
-        expect(
-          {
             targetIdentities: sweepTargets.map((target) => ({
               id: target.id,
               label: target.label,
               profile: target.profile,
               witness: target.witness.id,
             })),
+            partitionSizes: {
+              all: sweepTargets.length,
+              nonExhausted: nonExhaustedSweepTargets.length,
+              exhausted: sweepTargets.length - nonExhaustedSweepTargets.length,
+            },
             observations,
           },
           'mutation-verdict:behavior:poison-sweep-scan-prelimit',
@@ -511,7 +464,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
               witness: 'counter-bound-lower/run-relaunch-count',
             },
           ],
-          observations: sweepTargets.map((target) => ({
+          partitionSizes: { all: 24, nonExhausted: 22, exhausted: 2 },
+          observations: nonExhaustedSweepTargets.map((target) => ({
             id: target.id,
             label: target.label,
             profile: target.profile,
@@ -524,12 +478,66 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             },
           })),
         })
+
+        expect(
+          {
+            poison: exhaustedPoisonObservations,
+            receipt: { result: receipt, after: receiptAfter },
+          },
+          'mutation-verdict:behavior:current-run-requires-user-attempt-budget',
+        ).toEqual({
+          poison: [
+            {
+              profile: 'fail',
+              kind: 'resolved',
+              result: { label: 'fail', witness: 'attempts/at-max-with-live-run' },
+            },
+            {
+              profile: 'claim-pending',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'claim-pending',
+              },
+            },
+            {
+              profile: 'claim-sleeping',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'claim-sleeping',
+              },
+            },
+            {
+              profile: 'sweep-lost-launch',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:lost-launch',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'sweep-lost-launch',
+              },
+            },
+            {
+              profile: 'sweep-claim-timeout',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:claim-timeout',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'sweep-claim-timeout',
+              },
+            },
+          ],
+          receipt: { result: [], after: receiptBefore },
+        })
       })
 
       for (const target of POISON_TARGET_CASES) {
         if (
           highestOwnedOrdinalTargets.includes(target) ||
-          exhaustedBudgetTargets.includes(target)
+          exhaustedBudgetTargets.includes(target) ||
+          sweepTargets.includes(target)
         ) {
           continue
         }
