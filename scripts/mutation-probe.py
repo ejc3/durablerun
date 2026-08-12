@@ -1459,6 +1459,82 @@ MUTATION_SPECS = [
         "a dialect silently drops an entire shared conformance surface",
     ),
     (
+        "scheduler-conformance-enrollment",
+        "packages/conformance/src/store-conformance.ts",
+        "  { id: 'scheduler', run: schedulerConformance },\n",
+        "",
+        "a dialect silently drops scheduler conformance",
+    ),
+    (
+        "fault-matrix-conformance-enrollment",
+        "packages/conformance/src/store-conformance.ts",
+        "  { id: 'fault-matrix', run: faultMatrixConformance },\n",
+        "",
+        "a dialect silently drops fault-matrix conformance",
+    ),
+    (
+        "wake-witness-conformance-enrollment",
+        "packages/conformance/src/store-conformance.ts",
+        "  { id: 'wake-witness', run: wakeWitnessConformance },\n",
+        "",
+        "a dialect silently drops wake-witness conformance",
+    ),
+    (
+        "scheduler-conformance-dispatch",
+        "packages/conformance/src/store-conformance.ts",
+        "      for (const { run } of registeredSurfaces) {\n"
+        "        run(dialect, makeFixture)\n"
+        "      }\n",
+        "      for (const { id, run } of registeredSurfaces) {\n"
+        "        if (id !== 'scheduler') run(dialect, makeFixture)\n"
+        "      }\n",
+        "the bound registry retains scheduler membership but skips its executable dispatch",
+    ),
+    (
+        "fault-matrix-conformance-dispatch",
+        "packages/conformance/src/store-conformance.ts",
+        "      for (const { run } of registeredSurfaces) {\n"
+        "        run(dialect, makeFixture)\n"
+        "      }\n",
+        "      for (const { id, run } of registeredSurfaces) {\n"
+        "        if (id !== 'fault-matrix') run(dialect, makeFixture)\n"
+        "      }\n",
+        "the bound registry retains fault-matrix membership but skips its executable dispatch",
+    ),
+    (
+        "poison-matrix-conformance-dispatch",
+        "packages/conformance/src/store-conformance.ts",
+        "      for (const { run } of registeredSurfaces) {\n"
+        "        run(dialect, makeFixture)\n"
+        "      }\n",
+        "      for (const { id, run } of registeredSurfaces) {\n"
+        "        if (id !== 'poison-matrix') run(dialect, makeFixture)\n"
+        "      }\n",
+        "the bound registry retains poison-matrix membership but skips its executable dispatch",
+    ),
+    (
+        "timestamp-boundary-conformance-dispatch",
+        "packages/conformance/src/store-conformance.ts",
+        "      for (const { run } of registeredSurfaces) {\n"
+        "        run(dialect, makeFixture)\n"
+        "      }\n",
+        "      for (const { id, run } of registeredSurfaces) {\n"
+        "        if (id !== 'timestamp-boundaries') run(dialect, makeFixture)\n"
+        "      }\n",
+        "the bound registry retains timestamp-boundary membership but skips its executable dispatch",
+    ),
+    (
+        "wake-witness-conformance-dispatch",
+        "packages/conformance/src/store-conformance.ts",
+        "      for (const { run } of registeredSurfaces) {\n"
+        "        run(dialect, makeFixture)\n"
+        "      }\n",
+        "      for (const { id, run } of registeredSurfaces) {\n"
+        "        if (id !== 'wake-witness') run(dialect, makeFixture)\n"
+        "      }\n",
+        "the bound registry retains wake-witness membership but skips its executable dispatch",
+    ),
+    (
         "provenance-fail-progress",
         "packages/store-libsql/src/store.ts",
         "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
@@ -4049,6 +4125,14 @@ MUTATION_SPECS.extend(
 )
 
 
+SHARED_CONFORMANCE_REGISTRY_VERDICT = ExpectedVerdict(
+    "construction",
+    "packages/conformance/test/enrollment.test.ts",
+    "shared conformance enrollment is one indivisible door owns five surfaces and executable dispatch through one callable registry",
+    "mutation-verdict:construction:shared-conformance-runner-registry",
+)
+
+
 VERDICTS = {
     "followon-provenance-check": ExpectedVerdict(
         "construction",
@@ -4864,12 +4948,15 @@ VERDICTS = {
         "mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge",
         "packages/conformance/src/store-conformance.ts",
     ),
-    "shared-conformance-runner-registry": ExpectedVerdict(
-        "construction",
-        "packages/conformance/test/enrollment.test.ts",
-        "shared conformance enrollment is one indivisible door owns exported surface IDs and umbrella dispatch through one executable registry",
-        "mutation-verdict:construction:shared-conformance-runner-registry",
-    ),
+    "shared-conformance-runner-registry": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "scheduler-conformance-enrollment": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "fault-matrix-conformance-enrollment": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "wake-witness-conformance-enrollment": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "scheduler-conformance-dispatch": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "fault-matrix-conformance-dispatch": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "poison-matrix-conformance-dispatch": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "timestamp-boundary-conformance-dispatch": SHARED_CONFORMANCE_REGISTRY_VERDICT,
+    "wake-witness-conformance-dispatch": SHARED_CONFORMANCE_REGISTRY_VERDICT,
     "sweep-claim-timeout-generation": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -5267,12 +5354,7 @@ VERDICTS.update(
             "epoch-addition fragments emits each anonymous duration placeholder exactly once",
             "mutation-verdict:construction:timestamp-addition-single-use-deltas",
         ),
-        "timestamp-boundary-enrollment": ExpectedVerdict(
-            "construction",
-            "packages/conformance/test/enrollment.test.ts",
-            "shared conformance enrollment is one indivisible door owns exported surface IDs and umbrella dispatch through one executable registry",
-            "mutation-verdict:construction:shared-conformance-runner-registry",
-        ),
+        "timestamp-boundary-enrollment": SHARED_CONFORMANCE_REGISTRY_VERDICT,
         "admin-fake-now-invalid": ExpectedVerdict(
             "behavior",
             "packages/store-libsql/test/admin-time-boundary.test.ts",
@@ -8387,7 +8469,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 403:
+        if len(MUTATIONS) != 411:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

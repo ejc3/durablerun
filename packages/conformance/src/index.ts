@@ -16,7 +16,7 @@ export {
   type EngineInvariantConditionId,
   type EngineInvariantFinding,
 } from './invariants.js'
-export { STORE_CONFORMANCE_SURFACE_IDS, storeConformance } from './store-conformance.js'
+export { storeConformance } from './store-conformance.js'
 export * from './fault-matrix.js'
 export {
   type CounterBoundaryTarget,

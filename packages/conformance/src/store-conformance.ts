@@ -792,25 +792,45 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
   })
 }
 
-const STORE_CONFORMANCE_SURFACES = Object.freeze([
-  { id: 'scheduler', run: schedulerConformance },
-  { id: 'fault-matrix', run: faultMatrixConformance },
-  { id: 'poison-matrix', run: poisonMatrixConformance },
-  { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
-  { id: 'wake-witness', run: wakeWitnessConformance },
-] as const)
+type StoreConformanceRunner = (dialect: string, makeFixture: StoreFixtureFactory) => void
+type RegisteredSurface<Id extends string> = Readonly<{
+  id: Id
+  run: StoreConformanceRunner
+}>
+type BoundStoreConformance<Id extends string> = StoreConformanceRunner &
+  Readonly<{ surfaces: readonly RegisteredSurface<Id>[] }>
 
-export const STORE_CONFORMANCE_SURFACE_IDS = Object.freeze(
-  STORE_CONFORMANCE_SURFACES.map(({ id }) => id),
-)
+/**
+ * Binds the observable surface inventory and executable dispatch into one
+ * value. The copies prevent a caller from changing an enrolled record after
+ * binding; the callable and its registry are immutable once returned.
+ */
+export function bindStoreConformanceSurfaces<const Id extends string>(
+  surfaces: readonly RegisteredSurface<Id>[],
+): BoundStoreConformance<Id> {
+  const registeredSurfaces = Object.freeze(
+    surfaces.map(({ id, run }) => Object.freeze({ id, run })),
+  )
+  const dispatch = Object.assign(
+    (dialect: string, makeFixture: StoreFixtureFactory): void => {
+      for (const { run } of registeredSurfaces) {
+        run(dialect, makeFixture)
+      }
+    },
+    { surfaces: registeredSurfaces },
+  )
+  return Object.freeze(dispatch)
+}
 
 /**
  * The one enrollment door for a dialect. Adding a store fixture necessarily
  * runs every shared behavioral surface; individual backends cannot silently
  * opt out of the expensive fault, poison, or wake dimensions.
  */
-export function storeConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
-  for (const { run } of STORE_CONFORMANCE_SURFACES) {
-    run(dialect, makeFixture)
-  }
-}
+export const storeConformance = bindStoreConformanceSurfaces([
+  { id: 'scheduler', run: schedulerConformance },
+  { id: 'fault-matrix', run: faultMatrixConformance },
+  { id: 'poison-matrix', run: poisonMatrixConformance },
+  { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
+  { id: 'wake-witness', run: wakeWitnessConformance },
+] as const)
