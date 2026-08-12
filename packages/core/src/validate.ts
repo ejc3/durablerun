@@ -295,6 +295,28 @@ type PersistedCounterFieldContract =
       bounds: typeof PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt
     }>
 
+type PersistedCounterFieldFor<Id extends PersistedCounterFieldContract['id']> = Extract<
+  PersistedCounterFieldContract,
+  { readonly id: Id }
+>
+
+/**
+ * The keyed persisted-counter construction surface.
+ *
+ * RED: every key is deliberately optional so the compile-only regression can
+ * prove that omitting any one enrolled durable counter is currently writable.
+ */
+export type PersistedCounterFieldRecord = Readonly<{
+  'task-attempts'?: PersistedCounterFieldFor<'task-attempts'>
+  'task-max-attempts'?: PersistedCounterFieldFor<'task-max-attempts'>
+  'task-infra-retries'?: PersistedCounterFieldFor<'task-infra-retries'>
+  'run-attempt'?: PersistedCounterFieldFor<'run-attempt'>
+  'run-claim-gen'?: PersistedCounterFieldFor<'run-claim-gen'>
+  'run-activated-gen'?: PersistedCounterFieldFor<'run-activated-gen'>
+  'run-relaunch-count'?: PersistedCounterFieldFor<'run-relaunch-count'>
+  'checkpoint-owner-attempt'?: PersistedCounterFieldFor<'checkpoint-owner-attempt'>
+}>
+
 /**
  * The complete persisted-counter inventory.
  *
