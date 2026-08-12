@@ -19,7 +19,7 @@ const SURFACE_BINDINGS = [
   ['poison-matrix', 'poisonMatrixConformance'],
   ['timestamp-boundaries', 'timestampBoundaryConformance'],
   ['wake-witness', 'wakeWitnessConformance'],
-]
+] as const
 
 describe('shared conformance enrollment is one indivisible door', () => {
   it('exports one umbrella instead of asking dialects to select sub-suites', () => {
@@ -60,6 +60,44 @@ describe('shared conformance enrollment is one indivisible door', () => {
     for (const runner of runnerNames) {
       expect.soft(dispatch).not.toContain(`${runner}(`)
     }
+  })
+
+  it('owns exported surface IDs and umbrella dispatch through one executable registry', () => {
+    const source = readFileSync(UMBRELLA, 'utf8')
+    const registry =
+      source.match(
+        /const\s+STORE_CONFORMANCE_SURFACES\s*=\s*(?:Object\.freeze\(\s*)?\[([\s\S]*?)\]\s*(?:as const)?\s*\)?/,
+      )?.[1] ?? ''
+    const bindings = [...registry.matchAll(/\{\s*id:\s*'([^']+)'\s*,\s*run:\s*(\w+)/g)].map(
+      ([, id, runner]) => [id, runner],
+    )
+    const inventory =
+      source.match(
+        /export const STORE_CONFORMANCE_SURFACE_IDS\s*=([\s\S]*?)(?=\n(?:const|function|export|async function)\s)/,
+      )?.[1] ?? ''
+    const dispatch = source.slice(source.indexOf('export function storeConformance'))
+    const runnerNames = SURFACE_BINDINGS.map(([, runner]) => runner)
+
+    expect(
+      {
+        bindings,
+        surfaceIds: (conformance as Record<string, unknown>).STORE_CONFORMANCE_SURFACE_IDS,
+        inventoryUsesRegistry: inventory.includes('STORE_CONFORMANCE_SURFACES'),
+        dispatchUsesRegistry: dispatch.includes('STORE_CONFORMANCE_SURFACES'),
+        invokesRegisteredRunner: /(?:\brun|\.run)\(\s*dialect\s*,\s*makeFixture\s*\)/.test(
+          dispatch,
+        ),
+        directRunnerCalls: runnerNames.filter((runner) => dispatch.includes(`${runner}(`)),
+      },
+      'mutation-verdict:construction:shared-conformance-runner-registry',
+    ).toEqual({
+      bindings: SURFACE_BINDINGS,
+      surfaceIds: SURFACE_BINDINGS.map(([id]) => id),
+      inventoryUsesRegistry: true,
+      dispatchUsesRegistry: true,
+      invokesRegisteredRunner: true,
+      directRunnerCalls: [],
+    })
   })
 
   it('enrolls every store package through one central fixture registry', () => {
