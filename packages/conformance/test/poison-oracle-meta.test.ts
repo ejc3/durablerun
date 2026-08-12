@@ -751,6 +751,73 @@ describe('poison/invariant mechanism self-tests', () => {
     )
   })
 
+  it('owns the exact upper relaunch boundary across all four lifecycle profiles', async () => {
+    const observations: unknown[] = []
+    const targets = POISON_TARGET_CASES.filter(
+      (candidate) => candidate.witness.id === 'counter-bound/run-relaunch-count',
+    )
+
+    for (const candidate of targets) {
+      observations.push(
+        await runPoisonTargetCase(makeLibsqlFixture, candidate).then(
+          (result) => ({
+            profile: candidate.profile,
+            kind: 'resolved',
+            result: {
+              label: result.label,
+              witness: result.witness,
+              profile: result.profile,
+            },
+          }),
+          (error: unknown) => ({
+            profile: candidate.profile,
+            kind: 'rejected',
+            error: String(error),
+          }),
+        ),
+      )
+    }
+
+    expect(observations, 'mutation-verdict:behavior:poison-targetability-inventory').toEqual([
+      {
+        profile: 'claim-pending',
+        kind: 'resolved',
+        result: {
+          label: 'claim',
+          witness: 'counter-bound/run-relaunch-count',
+          profile: 'claim-pending',
+        },
+      },
+      {
+        profile: 'claim-sleeping',
+        kind: 'resolved',
+        result: {
+          label: 'claim',
+          witness: 'counter-bound/run-relaunch-count',
+          profile: 'claim-sleeping',
+        },
+      },
+      {
+        profile: 'sweep-lost-launch',
+        kind: 'resolved',
+        result: {
+          label: 'sweep:lost-launch',
+          witness: 'counter-bound/run-relaunch-count',
+          profile: 'sweep-lost-launch',
+        },
+      },
+      {
+        profile: 'sweep-claim-timeout',
+        kind: 'resolved',
+        result: {
+          label: 'sweep:claim-timeout',
+          witness: 'counter-bound/run-relaunch-count',
+          profile: 'sweep-claim-timeout',
+        },
+      },
+    ])
+  })
+
   it('enrolls every relational and fractional target in every lifecycle arm', () => {
     const profiles = [
       'claim-pending',
