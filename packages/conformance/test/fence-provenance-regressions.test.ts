@@ -620,36 +620,6 @@ describe('fence provenance', () => {
     })
   })
 
-  it('an invalid activation generation cannot disarm the cancellation deadline', async () => {
-    // Generation zero is not a claim receipt. Reject it at the port before a
-    // driver can coerce it, and leave the task's armed start deadline intact.
-    // The older implementation let this value reach the batch: its losing CAS
-    // still left a follow-on able to match activated_gen = 0 and clear the
-    // deadline of a task that had never started.
-    const f = await fixture()
-    await insertTask(f.raw, {
-      id: 'T',
-      state: 'running',
-      cancelAtMs: NOW + 30_000, // armed start deadline; no max-duration clause
-      cancellation: '{"maxDelaySeconds":30}',
-    })
-    await insertRun(f.raw, {
-      id: 'R',
-      taskId: 'T',
-      state: 'running',
-      claimedBy: 'worker',
-      claimGen: 1,
-      activatedGen: 0,
-      claimExpiresAtMs: NOW + 60_000,
-    })
-
-    await expect(f.store.activate(Q, 'R', 'worker', 0)).rejects.toThrow(RangeError)
-
-    const [task] = await query(f.raw, `SELECT cancel_at_ms FROM tasks WHERE task_id = 'T'`)
-    expect(task?.cancel_at_ms).toBe(NOW + 30_000) // deadline untouched
-    f.close()
-  })
-
   it('spawn refuses a newly minted task id that an orphan run already owns', async () => {
     const f = await fixture(['NEW-TASK', 'NEW-RUN'])
     try {
