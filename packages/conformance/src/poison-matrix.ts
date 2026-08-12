@@ -18,11 +18,11 @@ import {
 } from '@durablerun/core'
 import { MATRIX_WRITE_LABELS } from './fault-matrix.js'
 import {
-  executeStorageCorruption,
   type StorageCorruption,
   type StorageCorruptionDisposition,
   type StoreFixture,
   type StoreFixtureFactory,
+  executeStorageCorruption,
 } from './fixture.js'
 import {
   ENGINE_INVARIANT_CONDITIONS,
@@ -80,11 +80,121 @@ const PROTECTED_STEP = '$await:protected'
 const PROTECTED_DRIVER = 'protected-driver'
 
 export type PoisonTargetArm = 'claim' | 'sweep:lost-launch' | 'sweep:claim-timeout'
-export type PoisonTargetProfile =
-  | 'claim-pending'
-  | 'claim-sleeping'
-  | 'sweep-lost-launch'
-  | 'sweep-claim-timeout'
+
+type PoisonTargetProfileSeed<
+  State extends 'pending' | 'sleeping' | 'running',
+  ClaimedBy extends string | null,
+  ClaimGen extends number,
+  ActivatedGen extends number,
+  LeaseMs extends number | null,
+  ClaimExpiresAtMs extends number | null,
+  HeartbeatAtMs extends number | null,
+  AvailableAtMs extends number | null,
+> = Readonly<{
+  state: State
+  taskAttempts: 0
+  taskMaxAttempts: 5
+  taskInfraRetries: 0
+  runAttempt: 1
+  claimedBy: ClaimedBy
+  claimGen: ClaimGen
+  activatedGen: ActivatedGen
+  runRelaunchCount: 0
+  leaseMs: LeaseMs
+  claimExpiresAtMs: ClaimExpiresAtMs
+  heartbeatAtMs: HeartbeatAtMs
+  availableAtMs: AvailableAtMs
+}>
+
+export type PoisonTargetProfileSeedRecord = Readonly<{
+  'claim-pending': PoisonTargetProfileSeed<'pending', null, 0, 0, null, null, null, 999_998>
+  'claim-sleeping': PoisonTargetProfileSeed<'sleeping', null, 1, 1, null, null, null, 999_998>
+  'sweep-lost-launch': PoisonTargetProfileSeed<
+    'running',
+    'poison-worker',
+    1,
+    0,
+    60_000,
+    999_998,
+    940_000,
+    null
+  >
+  'sweep-claim-timeout': PoisonTargetProfileSeed<
+    'running',
+    'poison-worker',
+    1,
+    1,
+    60_000,
+    999_998,
+    940_000,
+    null
+  >
+}>
+
+export type PoisonTargetProfile = keyof PoisonTargetProfileSeedRecord
+
+export const POISON_TARGET_PROFILE_SEEDS = Object.freeze({
+  'claim-pending': Object.freeze({
+    state: 'pending',
+    taskAttempts: 0,
+    taskMaxAttempts: 5,
+    taskInfraRetries: 0,
+    runAttempt: 1,
+    claimedBy: null,
+    claimGen: 0,
+    activatedGen: 0,
+    runRelaunchCount: 0,
+    leaseMs: null,
+    claimExpiresAtMs: null,
+    heartbeatAtMs: null,
+    availableAtMs: 999_998,
+  }),
+  'claim-sleeping': Object.freeze({
+    state: 'sleeping',
+    taskAttempts: 0,
+    taskMaxAttempts: 5,
+    taskInfraRetries: 0,
+    runAttempt: 1,
+    claimedBy: null,
+    claimGen: 1,
+    activatedGen: 1,
+    runRelaunchCount: 0,
+    leaseMs: null,
+    claimExpiresAtMs: null,
+    heartbeatAtMs: null,
+    availableAtMs: 999_998,
+  }),
+  'sweep-lost-launch': Object.freeze({
+    state: 'running',
+    taskAttempts: 0,
+    taskMaxAttempts: 5,
+    taskInfraRetries: 0,
+    runAttempt: 1,
+    claimedBy: TOKEN,
+    claimGen: 1,
+    activatedGen: 0,
+    runRelaunchCount: 0,
+    leaseMs: 60_000,
+    claimExpiresAtMs: 999_998,
+    heartbeatAtMs: 940_000,
+    availableAtMs: null,
+  }),
+  'sweep-claim-timeout': Object.freeze({
+    state: 'running',
+    taskAttempts: 0,
+    taskMaxAttempts: 5,
+    taskInfraRetries: 0,
+    runAttempt: 1,
+    claimedBy: TOKEN,
+    claimGen: 1,
+    activatedGen: 1,
+    runRelaunchCount: 0,
+    leaseMs: 60_000,
+    claimExpiresAtMs: 999_998,
+    heartbeatAtMs: 940_000,
+    availableAtMs: null,
+  }),
+} as const satisfies PoisonTargetProfileSeedRecord)
 
 type CounterSeedOverrides = Readonly<
   Partial<{
@@ -1126,12 +1236,7 @@ async function preparePoisonTarget(
   profile: PoisonTargetProfile,
   companions: CounterSeedOverrides,
 ): Promise<void> {
-  const claimCandidate = profile === 'claim-pending' || profile === 'claim-sleeping'
-  const previouslyActivated = profile === 'claim-sleeping' || profile === 'sweep-claim-timeout'
-  const state =
-    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'
-  const claimGen = profile === 'claim-pending' ? 0 : 1
-  const activatedGen = previouslyActivated ? claimGen : 0
+  const seed = POISON_TARGET_PROFILE_SEEDS[profile]
 
   await raw.batch(
     'poison:target-profile',
@@ -1140,7 +1245,7 @@ async function preparePoisonTarget(
         `UPDATE tasks
          SET state = ?, attempts = ?, max_attempts = ?, infra_retries = ?
          WHERE task_id = ?`,
-        [state, 0, 5, 0, TASK],
+        [seed.state, seed.taskAttempts, seed.taskMaxAttempts, seed.taskInfraRetries, TASK],
       ),
       sql(
         `UPDATE runs
@@ -1149,16 +1254,16 @@ async function preparePoisonTarget(
              heartbeat_at_ms = ?, available_at_ms = ?
          WHERE run_id = ?`,
         [
-          state,
-          1,
-          claimCandidate ? null : TOKEN,
-          claimGen,
-          activatedGen,
-          0,
-          claimCandidate ? null : 60_000,
-          claimCandidate ? null : NOW - 2,
-          claimCandidate ? null : NOW - 60_000,
-          claimCandidate ? NOW - 2 : null,
+          seed.state,
+          seed.runAttempt,
+          seed.claimedBy,
+          seed.claimGen,
+          seed.activatedGen,
+          seed.runRelaunchCount,
+          seed.leaseMs,
+          seed.claimExpiresAtMs,
+          seed.heartbeatAtMs,
+          seed.availableAtMs,
           RUN,
         ],
       ),
@@ -1187,17 +1292,22 @@ async function preparePoisonTarget(
         `UPDATE tasks
          SET attempts = ?, max_attempts = ?, infra_retries = ?
          WHERE task_id = ?`,
-        [companions.attempts ?? 0, companions.maxAttempts ?? 5, companions.infraRetries ?? 0, TASK],
+        [
+          companions.attempts ?? seed.taskAttempts,
+          companions.maxAttempts ?? seed.taskMaxAttempts,
+          companions.infraRetries ?? seed.taskInfraRetries,
+          TASK,
+        ],
       ),
       sql(
         `UPDATE runs
          SET attempt = ?, claim_gen = ?, activated_gen = ?, relaunch_count = ?
          WHERE run_id = ?`,
         [
-          companions.attempt ?? 1,
-          companions.claimGen ?? claimGen,
-          companions.activatedGen ?? activatedGen,
-          companions.relaunchCount ?? 0,
+          companions.attempt ?? seed.runAttempt,
+          companions.claimGen ?? seed.claimGen,
+          companions.activatedGen ?? seed.activatedGen,
+          companions.relaunchCount ?? seed.runRelaunchCount,
           RUN,
         ],
       ),

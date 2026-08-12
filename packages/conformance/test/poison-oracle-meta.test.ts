@@ -13,6 +13,7 @@ import {
   POISON_TARGET_CASES,
   POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
+  type PoisonTargetProfileSeedRecord,
   type ProtocolSnapshot,
   findingSeverity,
   runPoisonMatrixCase,
@@ -978,52 +979,41 @@ describe('poison/invariant mechanism self-tests', () => {
     ])
   })
 
-  it('executes the claim-pending target profile', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-profile-claim-pending' },
-      /declared claim-pending/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-bound/task-max-attempts/claim-pending'),
-        ),
-    )
-  })
+  it('requires every exact target lifecycle profile seed at construction', () => {
+    const compileOnly = (): void => {
+      type ReplaceProfileSeed<
+        Profile extends keyof PoisonTargetProfileSeedRecord,
+        Field extends keyof PoisonTargetProfileSeedRecord[Profile],
+        Value,
+      > = Omit<PoisonTargetProfileSeedRecord, Profile> & {
+        readonly [Key in Profile]: Omit<PoisonTargetProfileSeedRecord[Profile], Field> & {
+          readonly [Changed in Field]: Value
+        }
+      }
 
-  it('executes the claim-sleeping target profile', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-profile-claim-sleeping' },
-      /declared claim-sleeping/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-bound/task-max-attempts/claim-sleeping'),
-        ),
-    )
-  })
+      const claimPendingAsSleeping = {} as ReplaceProfileSeed<'claim-pending', 'state', 'sleeping'>
+      // @ts-expect-error claim-pending must remain pending — mutation-verdict:construction:poison-profile-claim-pending
+      const claimPending: PoisonTargetProfileSeedRecord = claimPendingAsSleeping
 
-  it('executes the sweep-lost-launch target profile', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-profile-sweep-lost-launch' },
-      /declared lost-launch target/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-bound/task-max-attempts/sweep-lost-launch'),
-        ),
-    )
-  })
+      const claimSleepingAsPending = {} as ReplaceProfileSeed<'claim-sleeping', 'state', 'pending'>
+      // @ts-expect-error claim-sleeping must remain sleeping — mutation-verdict:construction:poison-profile-claim-sleeping
+      const claimSleeping: PoisonTargetProfileSeedRecord = claimSleepingAsPending
 
-  it('executes the sweep-claim-timeout target profile', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-profile-sweep-claim-timeout' },
-      /declared claim-timeout target/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-bound/task-max-attempts/sweep-claim-timeout'),
-        ),
-    )
+      const lostLaunchAsActivated = {} as ReplaceProfileSeed<'sweep-lost-launch', 'activatedGen', 1>
+      // @ts-expect-error lost-launch must remain pre-activation — mutation-verdict:construction:poison-profile-sweep-lost-launch
+      const sweepLostLaunch: PoisonTargetProfileSeedRecord = lostLaunchAsActivated
+
+      const claimTimeoutAsUnactivated = {} as ReplaceProfileSeed<
+        'sweep-claim-timeout',
+        'activatedGen',
+        0
+      >
+      // @ts-expect-error claim-timeout must remain post-activation — mutation-verdict:construction:poison-profile-sweep-claim-timeout
+      const sweepClaimTimeout: PoisonTargetProfileSeedRecord = claimTimeoutAsUnactivated
+
+      void [claimPending, claimSleeping, sweepLostLaunch, sweepClaimTimeout]
+    }
+    expect(compileOnly).toBeTypeOf('function')
   })
 
   it('applies sweep target eligibility before the scan limit', async () => {

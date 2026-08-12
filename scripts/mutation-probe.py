@@ -52,6 +52,7 @@ VERIFIER_KILL_GRACE_SECONDS = 0.5
 
 VerdictKind = Literal["behavior", "construction"]
 VerifierKind = Literal["vitest", "typecheck"]
+TypecheckProject = Literal["store-libsql", "conformance"]
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class Mutation:
     breaks: str
     verdict: ExpectedVerdict
     verifier: VerifierKind = "vitest"
+    typecheck_project: TypecheckProject | None = None
 
 
 @dataclass(frozen=True)
@@ -953,37 +955,64 @@ MUTATION_SPECS = [
     (
         "poison-profile-claim-pending",
         "packages/conformance/src/poison-matrix.ts",
-        "  const state =\n"
-        "    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'\n",
-        "  const state =\n"
-        "    profile === 'claim-pending' ? 'sleeping' : profile === 'claim-sleeping' ? 'sleeping' : 'running'\n",
-        "the declared claim-pending target profile is seeded as sleeping",
+        "  'claim-pending': PoisonTargetProfileSeed<'pending', null, 0, 0, null, null, null, 999_998>\n",
+        "  'claim-pending': PoisonTargetProfileSeed<\n"
+        "    'pending' | 'sleeping',\n"
+        "    null,\n"
+        "    0,\n"
+        "    0,\n"
+        "    null,\n"
+        "    null,\n"
+        "    null,\n"
+        "    999_998\n"
+        "  >\n",
+        "the keyed profile contract admits a sleeping claim-pending seed",
     ),
     (
         "poison-profile-claim-sleeping",
         "packages/conformance/src/poison-matrix.ts",
-        "  const state =\n"
-        "    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'sleeping' : 'running'\n",
-        "  const state =\n"
-        "    profile === 'claim-pending' ? 'pending' : profile === 'claim-sleeping' ? 'pending' : 'running'\n",
-        "the declared claim-sleeping target profile is seeded as pending",
+        "  'claim-sleeping': PoisonTargetProfileSeed<'sleeping', null, 1, 1, null, null, null, 999_998>\n",
+        "  'claim-sleeping': PoisonTargetProfileSeed<\n"
+        "    'sleeping' | 'pending',\n"
+        "    null,\n"
+        "    1,\n"
+        "    1,\n"
+        "    null,\n"
+        "    null,\n"
+        "    null,\n"
+        "    999_998\n"
+        "  >\n",
+        "the keyed profile contract admits a pending claim-sleeping seed",
     ),
     (
         "poison-profile-sweep-lost-launch",
         "packages/conformance/src/poison-matrix.ts",
-        "  const previouslyActivated = profile === 'claim-sleeping' || profile === 'sweep-claim-timeout'\n",
-        "  const previouslyActivated =\n"
-        "    profile === 'claim-sleeping' ||\n"
-        "    profile === 'sweep-claim-timeout' ||\n"
-        "    profile === 'sweep-lost-launch'\n",
-        "the declared lost-launch target profile is seeded as post-activation",
+        "  'sweep-lost-launch': PoisonTargetProfileSeed<\n"
+        "    'running',\n"
+        "    'poison-worker',\n"
+        "    1,\n"
+        "    0,\n",
+        "  'sweep-lost-launch': PoisonTargetProfileSeed<\n"
+        "    'running',\n"
+        "    'poison-worker',\n"
+        "    1,\n"
+        "    0 | 1,\n",
+        "the keyed profile contract admits an activated lost-launch seed",
     ),
     (
         "poison-profile-sweep-claim-timeout",
         "packages/conformance/src/poison-matrix.ts",
-        "  const previouslyActivated = profile === 'claim-sleeping' || profile === 'sweep-claim-timeout'\n",
-        "  const previouslyActivated = profile === 'claim-sleeping'\n",
-        "the declared claim-timeout target profile is seeded as pre-activation",
+        "  'sweep-claim-timeout': PoisonTargetProfileSeed<\n"
+        "    'running',\n"
+        "    'poison-worker',\n"
+        "    1,\n"
+        "    1,\n",
+        "  'sweep-claim-timeout': PoisonTargetProfileSeed<\n"
+        "    'running',\n"
+        "    'poison-worker',\n"
+        "    1,\n"
+        "    1 | 0,\n",
+        "the keyed profile contract admits an unactivated claim-timeout seed",
     ),
     (
         "poison-targetability-inventory",
@@ -4375,28 +4404,32 @@ VERDICTS = {
         "packages/store-libsql/test/integer-domain-types.test.ts",
     ),
     "poison-profile-claim-pending": ExpectedVerdict(
-        "behavior",
+        "construction",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests executes the claim-pending target profile",
-        "mutation-verdict:behavior:poison-profile-claim-pending",
+        "poison/invariant mechanism self-tests requires every exact target lifecycle profile seed at construction",
+        "mutation-verdict:construction:poison-profile-claim-pending",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
     "poison-profile-claim-sleeping": ExpectedVerdict(
-        "behavior",
+        "construction",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests executes the claim-sleeping target profile",
-        "mutation-verdict:behavior:poison-profile-claim-sleeping",
+        "poison/invariant mechanism self-tests requires every exact target lifecycle profile seed at construction",
+        "mutation-verdict:construction:poison-profile-claim-sleeping",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
     "poison-profile-sweep-lost-launch": ExpectedVerdict(
-        "behavior",
+        "construction",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests executes the sweep-lost-launch target profile",
-        "mutation-verdict:behavior:poison-profile-sweep-lost-launch",
+        "poison/invariant mechanism self-tests requires every exact target lifecycle profile seed at construction",
+        "mutation-verdict:construction:poison-profile-sweep-lost-launch",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
     "poison-profile-sweep-claim-timeout": ExpectedVerdict(
-        "behavior",
+        "construction",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests executes the sweep-claim-timeout target profile",
-        "mutation-verdict:behavior:poison-profile-sweep-claim-timeout",
+        "poison/invariant mechanism self-tests requires every exact target lifecycle profile seed at construction",
+        "mutation-verdict:construction:poison-profile-sweep-claim-timeout",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
     "poison-targetability-inventory": ExpectedVerdict(
         "behavior",
@@ -5861,7 +5894,7 @@ if set(spec_names) != set(VERDICTS):
     stale = sorted(set(VERDICTS) - set(spec_names))
     raise RuntimeError(f"mutation verdict inventory mismatch: missing={missing}, stale={stale}")
 
-TYPECHECK_MUTATION_NAMES = frozenset(
+STORE_LIBSQL_TYPECHECK_MUTATION_NAMES = frozenset(
     {
         "stored-within-rejects-spread-descriptor",
         "stored-incrementable-rejects-spread-descriptor",
@@ -5883,6 +5916,30 @@ TYPECHECK_MUTATION_NAMES = frozenset(
         "generated-update-requires-target",
     }
 )
+
+CONFORMANCE_TYPECHECK_MUTATION_NAMES = frozenset(
+    {
+        "poison-profile-claim-pending",
+        "poison-profile-claim-sleeping",
+        "poison-profile-sweep-lost-launch",
+        "poison-profile-sweep-claim-timeout",
+    }
+)
+
+if STORE_LIBSQL_TYPECHECK_MUTATION_NAMES & CONFORMANCE_TYPECHECK_MUTATION_NAMES:
+    raise RuntimeError("mutation-probe typecheck project inventories overlap")
+
+TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
+    **{
+        name: "store-libsql"
+        for name in STORE_LIBSQL_TYPECHECK_MUTATION_NAMES
+    },
+    **{
+        name: "conformance"
+        for name in CONFORMANCE_TYPECHECK_MUTATION_NAMES
+    },
+}
+TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
     "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
@@ -5997,6 +6054,7 @@ MUTATIONS = [
         *spec,
         VERDICTS[spec[0]],
         verifier="typecheck" if spec[0] in TYPECHECK_MUTATION_NAMES else "vitest",
+        typecheck_project=TYPECHECK_MUTATION_PROJECTS.get(spec[0]),
     )
     for spec in MUTATION_SPECS
 ]
@@ -6006,7 +6064,7 @@ MUTATIONS = [
 # every other compiler-harvested marker must resolve to an ExpectedVerdict.
 VERDICT_MARKER_EXEMPTIONS = {
     "mutation-verdict:behavior:poison-target-profile-seeding": (
-        "RED aggregate fixture; the four profile mutations transfer ownership in GREEN"
+        "healthy runtime aggregate; compiler-owned profile-record mutations own the exact seeds"
     ),
     "mutation-verdict:behavior:fault-matrix-edge-crossing:fresh": (
         "healthy generated-matrix control; edge mutations own the non-fresh markers"
@@ -6039,11 +6097,47 @@ TYPECHECK_CMD = [
     "packages/store-libsql/tsconfig.json",
     "--noEmit",
 ]
+CONFORMANCE_TYPECHECK_CMD = [
+    "pnpm",
+    "exec",
+    "tsc",
+    "-p",
+    "packages/conformance/tsconfig.json",
+    "--noEmit",
+]
+TYPECHECK_PROJECT_ORDER: tuple[TypecheckProject, ...] = (
+    "store-libsql",
+    "conformance",
+)
 CONFINEMENT_ENV = "DURABLERUN_MUTATION_SCOPE"
 REPORT_VERSION = 2
 MUTATION_CHECKPOINT_DIRECTORY = "durablerun-mutation-checkpoints"
 MAX_AUTO_JOBS = 16
 MIN_CORES_PER_AUTO_JOB = 8
+
+
+def typecheck_command(project: TypecheckProject) -> list[str]:
+    if project == "store-libsql":
+        return TYPECHECK_CMD
+    if project == "conformance":
+        return CONFORMANCE_TYPECHECK_CMD
+    raise ValueError(f"unknown mutation typecheck project {project!r}")
+
+
+def mutation_typecheck_projects(
+    mutations: list[Mutation],
+) -> tuple[TypecheckProject, ...]:
+    projects: set[TypecheckProject] = set()
+    for mutation in mutations:
+        if mutation.verifier != "typecheck":
+            continue
+        if mutation.typecheck_project is None:
+            raise ValueError(f"{mutation.name}: typecheck mutation has no project")
+        projects.add(mutation.typecheck_project)
+    ordered = tuple(project for project in TYPECHECK_PROJECT_ORDER if project in projects)
+    if len(ordered) != len(projects):
+        raise ValueError(f"unknown mutation typecheck projects {sorted(projects)!r}")
+    return ordered
 
 
 def relative_test_file(value: object) -> str:
@@ -6714,6 +6808,7 @@ def suite_interrupt_self_test_child(state_path: Path) -> int:
 def run_typecheck(
     expected: ExpectedVerdict | None,
     *,
+    project: TypecheckProject = "store-libsql",
     scope: ConfinedScope,
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
@@ -6729,7 +6824,7 @@ def run_typecheck(
         log = Path(temporary) / "tsc.log"
         with log.open("wb") as output:
             returncode = run_suite_process(
-                TYPECHECK_CMD,
+                typecheck_command(project),
                 output=output,
                 audit_lock=authority.audit_lock,
                 wall_time_seconds=(
@@ -7914,19 +8009,67 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "packages/store-libsql/tsconfig.json",
             "--noEmit",
         ]:
-            failures.append("construction mutations do not execute the pinned TypeScript compiler leg")
-        selected_typecheck = {
-            mutation.name for mutation in MUTATIONS if mutation.verifier == "typecheck"
-        }
-        if selected_typecheck != TYPECHECK_MUTATION_NAMES:
             failures.append(
-                "the construction-mutation verifier inventory differs from its canonical names"
+                "store-libsql construction mutations do not execute their pinned TypeScript project"
             )
+        if CONFORMANCE_TYPECHECK_CMD != [
+            "pnpm",
+            "exec",
+            "tsc",
+            "-p",
+            "packages/conformance/tsconfig.json",
+            "--noEmit",
+        ]:
+            failures.append(
+                "conformance construction mutations do not execute their pinned TypeScript project"
+            )
+        if TYPECHECK_PROJECT_ORDER != ("store-libsql", "conformance"):
+            failures.append("construction-mutation projects do not have their canonical order")
+        if (
+            typecheck_command("store-libsql") is not TYPECHECK_CMD
+            or typecheck_command("conformance") is not CONFORMANCE_TYPECHECK_CMD
+        ):
+            failures.append("construction-mutation command routing has a second representation")
+        selected_typecheck = {
+            mutation.name: mutation.typecheck_project
+            for mutation in MUTATIONS
+            if mutation.verifier == "typecheck"
+        }
+        if selected_typecheck != TYPECHECK_MUTATION_PROJECTS:
+            failures.append(
+                "the construction-mutation verifier inventory differs from its canonical projects"
+            )
+        if (
+            len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
+            or len(CONFORMANCE_TYPECHECK_MUTATION_NAMES) != 4
+            or len(TYPECHECK_MUTATION_NAMES) != 22
+        ):
+            failures.append("the construction-mutation project inventory cardinality changed")
         if any(
             mutation.verifier == "typecheck" and mutation.verdict.kind != "construction"
             for mutation in MUTATIONS
         ):
             failures.append("a typecheck mutation is attributed as a behavioral verdict")
+        if any(
+            (mutation.verifier == "typecheck") != (mutation.typecheck_project is not None)
+            for mutation in MUTATIONS
+        ):
+            failures.append("a mutation verifier and its typecheck project disagree")
+        mutation_by_name = {mutation.name: mutation for mutation in MUTATIONS}
+        store_typecheck = mutation_by_name["generated-update-requires-target"]
+        conformance_typecheck = mutation_by_name["poison-profile-claim-pending"]
+        routing_cases = (
+            ("store-only", [store_typecheck], ("store-libsql",)),
+            ("conformance-only", [conformance_typecheck], ("conformance",)),
+            (
+                "mixed-reversed",
+                [conformance_typecheck, store_typecheck],
+                ("store-libsql", "conformance"),
+            ),
+        )
+        for label, mutations, expected_projects in routing_cases:
+            if mutation_typecheck_projects(mutations) != expected_projects:
+                failures.append(f"{label} construction-mutation project routing changed")
         confined = confinement_command([])
         if confined[:4] != [
             "bash",
@@ -8212,6 +8355,7 @@ def mutation_registry_digest() -> str:
             "replace": mutation.replace,
             "breaks": mutation.breaks,
             "verifier": mutation.verifier,
+            "typecheck_project": mutation.typecheck_project,
             "verdict": {
                 "kind": mutation.verdict.kind,
                 "file": mutation.verdict.file,
@@ -10032,21 +10176,23 @@ def execute_mutation(
             raise RuntimeError(
                 f"{mutation.name}: worker diff is {changed}, expected only {mutation.file}"
             )
-        result = (
-            run_typecheck(
+        if mutation.verifier == "typecheck":
+            if mutation.typecheck_project is None:
+                raise RuntimeError(f"{mutation.name}: typecheck mutation has no project")
+            result = run_typecheck(
                 mutation.verdict,
+                project=mutation.typecheck_project,
                 scope=scope,
                 workspace=workspace,
                 authority=authority,
             )
-            if mutation.verifier == "typecheck"
-            else run_suite(
+        else:
+            result = run_suite(
                 max_workers,
                 scope=scope,
                 workspace=workspace,
                 authority=authority,
             )
-        )
         outcome = classify_verdict(result, mutation.verdict)
         if outcome == "caught":
             detail = (
@@ -10132,15 +10278,18 @@ def worker_phase(
             workspace=workspace,
             authority=authority,
         )
-        if baseline.green and any(
-            by_name[name][1].verifier == "typecheck" for name in mutation_names
-        ):
-            baseline = run_typecheck(
-                None,
-                scope=scope,
-                workspace=workspace,
-                authority=authority,
-            )
+        if baseline.green:
+            assigned_mutations = [by_name[name][1] for name in mutation_names]
+            for project in mutation_typecheck_projects(assigned_mutations):
+                baseline = run_typecheck(
+                    None,
+                    project=project,
+                    scope=scope,
+                    workspace=workspace,
+                    authority=authority,
+                )
+                if not baseline.green:
+                    break
         payload = {
             "version": REPORT_VERSION,
             "phase": "baseline",
