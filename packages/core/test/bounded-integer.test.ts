@@ -104,10 +104,12 @@ describe('decodeBoundedInteger', () => {
     expect(compileOnly).toBeTypeOf('function')
   })
 
-  it('validates a port run ordinal through one fixed domain', () => {
+  it('validates the numeric run-ordinal interval through one fixed domain', () => {
     expect(requireRunOrdinal('attempt', 1)).toBe(1)
     expect(requireRunOrdinal('attempt', MAX_RUN_ORDINAL)).toBe(MAX_RUN_ORDINAL)
-    for (const invalid of [0, 1.5, MAX_RUN_ORDINAL + 1, Number.NaN, Number.POSITIVE_INFINITY, 1n]) {
+    // Non-number client inputs are owned end-to-end by the sole production
+    // consumer so primitive and port assertions cannot both kill one mutant.
+    for (const invalid of [0, 1.5, MAX_RUN_ORDINAL + 1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => requireRunOrdinal('attempt', invalid)).toThrow(/runs\.attempt/)
     }
   })
