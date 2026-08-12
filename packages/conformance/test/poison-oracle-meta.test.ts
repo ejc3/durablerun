@@ -529,6 +529,328 @@ describe('poison/invariant mechanism self-tests', () => {
     }
   }
 
+  it('owns lower-bound and checkpoint severity across every persisted integer field', async () => {
+    const normalizeSeverity = (probe: () => readonly bigint[]) => {
+      try {
+        return { kind: 'values' as const, values: probe() }
+      } catch (error) {
+        return { kind: 'error' as const, error: String(error) }
+      }
+    }
+    type NormalizedSeverity = ReturnType<typeof normalizeSeverity>
+    const hasSeverityValues = (
+      severity: NormalizedSeverity,
+      expected: readonly bigint[],
+    ): boolean =>
+      severity.kind === 'values' &&
+      severity.values.length === expected.length &&
+      severity.values.every((value, index) => value === expected[index])
+    const sameSeverity = (left: NormalizedSeverity, right: NormalizedSeverity): boolean => {
+      if (left.kind === 'error') return right.kind === 'error' && left.error === right.error
+      return right.kind === 'values' && hasSeverityValues(left, right.values)
+    }
+    const normalizePoisonCase = async (run: () => ReturnType<typeof runPoisonMatrixCase>) => {
+      try {
+        const result = await run()
+        return {
+          kind: 'resolved' as const,
+          result: {
+            label: result.label,
+            witness: result.witness,
+            corruptionDisposition: result.corruptionDisposition,
+          },
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const detailStart = message.indexOf(': ')
+        return {
+          kind: 'rejected' as const,
+          error: detailStart === -1 ? message : message.slice(detailStart + 2),
+        }
+      }
+    }
+    type NormalizedPoisonCase = Awaited<ReturnType<typeof normalizePoisonCase>>
+    const persistedSubject = (
+      table: PersistedCounterFieldDescriptor['table'] | PersistedTemporalFieldDescriptor['table'],
+    ): string => {
+      switch (table) {
+        case 'tasks':
+          return 'tasks/poison-task'
+        case 'runs':
+          return 'runs/poison-run'
+        case 'checkpoints':
+          return 'checkpoints/poison-task/poison-checkpoint'
+        case 'events':
+          return 'events/q/protected-fired-event'
+        case 'waits':
+          return 'waits/protected-run/$await:protected'
+        case 'drivers':
+          return 'drivers/q/protected-driver'
+      }
+    }
+    const worseningError = (conditionId: string, subject: string): string =>
+      `${conditionId} on ${subject} worsened from 1 to 2`
+    const counterLowerError = (field: PersistedCounterFieldDescriptor): string => {
+      const primary = worseningError(`counter-bound/${field.id}`, persistedSubject(field.table))
+      switch (field.id) {
+        case 'task-attempts':
+          return `${primary}; generation/negative-attempts on poison-task worsened from 1 to 2`
+        case 'task-infra-retries':
+          return `${primary}; generation/negative-infra-retries on poison-task worsened from 1 to 2`
+        case 'run-attempt':
+          return `write escaped authority: runs/poison-run changed relationship attempt; ${primary}`
+        case 'run-claim-gen':
+          return `${primary}; generation/negative-claim on poison-run worsened from 1 to 2`
+        case 'run-relaunch-count':
+          return `${primary}; generation/negative-relaunch on poison-run worsened from 1 to 2`
+        default:
+          return primary
+      }
+    }
+    const temporalLowerError = (field: PersistedTemporalFieldDescriptor): string => {
+      const primary = worseningError(`temporal-bound/${field.id}`, persistedSubject(field.table))
+      switch (field.table) {
+        case 'events':
+          return `write escaped authority: events/["q","protected-fired-event"] was outside frozen pre-state authority; ${primary}`
+        case 'waits':
+          return `write escaped authority: waits/["protected-run","$await:protected"] was outside frozen pre-state authority; ${primary}`
+        case 'drivers':
+          return `write escaped authority: drivers/["q","protected-driver"] was outside frozen pre-state authority; ${primary}`
+        default:
+          return primary
+      }
+    }
+
+    const directLowerField = PERSISTED_COUNTER_FIELDS.find(
+      (candidate) => candidate.id === 'task-max-attempts',
+    )
+    if (!directLowerField) throw new Error('missing task-max-attempts field')
+    const directLowerFinding: EngineInvariantFinding = {
+      conditionId: 'counter-bound/task-max-attempts',
+      name: 'counter-out-of-range',
+      subject: 'tasks/poison-task',
+      subjectIdentity: ['tasks', 'poison-task'],
+      message: 'counter-out-of-range: tasks/poison-task',
+    }
+    const lowerDirect = normalizeSeverity(() =>
+      [1, 2].map((offset) =>
+        findingSeverity(
+          directLowerFinding,
+          protocolSnapshot({
+            tasks: [
+              {
+                task_id: 'poison-task',
+                max_attempts: directLowerField.bounds.min - offset,
+              },
+            ],
+          }),
+        ),
+      ),
+    )
+
+    const lowerWorsening: unknown[] = []
+    for (const field of PERSISTED_COUNTER_FIELDS) {
+      if (field.table === 'checkpoints') continue
+      lowerWorsening.push({
+        field: `counter/${field.id}`,
+        outcome: await normalizePoisonCase(() =>
+          runPoisonMatrixCase(
+            makeLibsqlFixture,
+            'driver-heartbeat',
+            witness(`counter-bound-lower/${field.id}`),
+            {
+              afterInvoke: (raw) =>
+                write(raw, [
+                  {
+                    sql: `UPDATE ${field.table}
+                          SET ${field.column} = ${field.column} - 1
+                          WHERE ${fieldPredicate(field)}`,
+                    args: [],
+                  },
+                ]),
+            },
+          ),
+        ),
+      })
+    }
+    for (const field of PERSISTED_TEMPORAL_FIELDS) {
+      lowerWorsening.push({
+        field: `temporal/${field.id}`,
+        outcome: await normalizePoisonCase(() =>
+          runPoisonMatrixCase(
+            makeLibsqlFixture,
+            'emit-event',
+            witness(`temporal-bound-lower/${field.id}`),
+            {
+              afterInvoke: (raw) =>
+                write(raw, [
+                  {
+                    sql: `UPDATE ${field.table}
+                          SET ${field.column} = ${field.column} - 1
+                          WHERE ${temporalFieldPredicate(field)}`,
+                    args: [],
+                  },
+                ]),
+            },
+          ),
+        ),
+      })
+    }
+
+    const checkpointField = PERSISTED_COUNTER_FIELDS.find(
+      (candidate) => candidate.id === 'checkpoint-owner-attempt',
+    )
+    if (!checkpointField) throw new Error('missing checkpoint-owner-attempt field')
+    const checkpointFinding: EngineInvariantFinding = {
+      conditionId: 'counter-bound/checkpoint-owner-attempt',
+      name: 'counter-out-of-range',
+      subject: 'checkpoints/poison-task/poison-checkpoint',
+      subjectIdentity: ['checkpoints', 'poison-task', 'poison-checkpoint'],
+      message: 'counter-out-of-range: checkpoints/poison-task/poison-checkpoint',
+    }
+    const checkpointUpperDirect = normalizeSeverity(() =>
+      [1, 2].map((offset) =>
+        findingSeverity(
+          checkpointFinding,
+          protocolSnapshot({
+            checkpoints: [
+              {
+                task_id: 'poison-task',
+                checkpoint_name: 'poison-checkpoint',
+                owner_attempt: checkpointField.bounds.max + offset,
+              },
+            ],
+          }),
+        ),
+      ),
+    )
+    const checkpointLowerDirect = normalizeSeverity(() =>
+      [1, 2].map((offset) =>
+        findingSeverity(
+          checkpointFinding,
+          protocolSnapshot({
+            checkpoints: [
+              {
+                task_id: 'poison-task',
+                checkpoint_name: 'poison-checkpoint',
+                owner_attempt: checkpointField.bounds.min - offset,
+              },
+            ],
+          }),
+        ),
+      ),
+    )
+    const checkpointWorsening: Array<{
+      side: 'upper' | 'lower'
+      outcome: NormalizedPoisonCase
+    }> = []
+    const checkpointWorseningError = `write escaped authority: checkpoints/["poison-task","poison-checkpoint"] changed relationship owner_attempt; ${worseningError(
+      'counter-bound/checkpoint-owner-attempt',
+      'checkpoints/poison-task/poison-checkpoint',
+    )}`
+    for (const side of ['upper', 'lower'] as const) {
+      checkpointWorsening.push({
+        side,
+        outcome: await normalizePoisonCase(() =>
+          runPoisonMatrixCase(
+            makeLibsqlFixture,
+            'driver-heartbeat',
+            witness(
+              side === 'upper'
+                ? `counter-bound/${checkpointField.id}`
+                : `counter-bound-lower/${checkpointField.id}`,
+            ),
+            {
+              afterInvoke: (raw) =>
+                write(raw, [
+                  {
+                    sql: `UPDATE ${checkpointField.table}
+                          SET ${checkpointField.column} = ${checkpointField.column} ${side === 'upper' ? '+' : '-'} 1
+                          WHERE ${fieldPredicate(checkpointField)}`,
+                    args: [],
+                  },
+                ]),
+            },
+          ),
+        ),
+      })
+    }
+    const checkpointUpperWorsening = checkpointWorsening.find(
+      (observation) => observation.side === 'upper',
+    )
+    const checkpointLowerWorsening = checkpointWorsening.find(
+      (observation) => observation.side === 'lower',
+    )
+    const checkpointCounterWorsening = worseningError(
+      'counter-bound/checkpoint-owner-attempt',
+      'checkpoints/poison-task/poison-checkpoint',
+    )
+    const checkpointLowerHasCounterWorsening =
+      checkpointLowerWorsening?.outcome.kind === 'rejected' &&
+      checkpointLowerWorsening.outcome.error
+        .split('; ')
+        .some((component) => component === checkpointCounterWorsening)
+    const checkpointLowerRetainsAuthorityFailure =
+      checkpointLowerWorsening?.outcome.kind === 'rejected' &&
+      checkpointLowerWorsening.outcome.error.startsWith(
+        'write escaped authority: checkpoints/["poison-task","poison-checkpoint"] changed relationship owner_attempt',
+      )
+    const lowerDirectIsExact = hasSeverityValues(lowerDirect, [1n, 2n])
+
+    expect(
+      { direct: lowerDirect, worsening: lowerWorsening },
+      'mutation-verdict:behavior:poison-severity-lower-bound',
+    ).toEqual({
+      direct: { kind: 'values', values: [1n, 2n] },
+      worsening: [
+        ...PERSISTED_COUNTER_FIELDS.filter((field) => field.table !== 'checkpoints').map(
+          (field) => ({
+            field: `counter/${field.id}`,
+            outcome: {
+              kind: 'rejected',
+              error: counterLowerError(field),
+            },
+          }),
+        ),
+        ...PERSISTED_TEMPORAL_FIELDS.map((field) => ({
+          field: `temporal/${field.id}`,
+          outcome: {
+            kind: 'rejected',
+            error: temporalLowerError(field),
+          },
+        })),
+      ],
+    })
+    expect(
+      {
+        upperDirect: checkpointUpperDirect,
+        lowerDirectMatchesCommon: sameSeverity(checkpointLowerDirect, lowerDirect),
+        upperWorsening: checkpointUpperWorsening,
+        lowerWorsening: {
+          side: checkpointLowerWorsening?.side,
+          counterComponentTracksCommon: checkpointLowerHasCounterWorsening === lowerDirectIsExact,
+          retainsAuthorityFailure: checkpointLowerRetainsAuthorityFailure,
+        },
+      },
+      'mutation-verdict:behavior:poison-severity-checkpoint',
+    ).toEqual({
+      upperDirect: { kind: 'values', values: [1n, 2n] },
+      lowerDirectMatchesCommon: true,
+      upperWorsening: {
+        side: 'upper',
+        outcome: {
+          kind: 'rejected',
+          error: checkpointWorseningError,
+        },
+      },
+      lowerWorsening: {
+        side: 'lower',
+        counterComponentTracksCommon: true,
+        retainsAuthorityFailure: true,
+      },
+    })
+  })
+
   it('computes exact lower-bound counter severity', async () => {
     const field = PERSISTED_COUNTER_FIELDS.find((candidate) => candidate.id === 'task-max-attempts')
     if (!field) throw new Error('missing task-max-attempts field')
