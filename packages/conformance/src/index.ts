@@ -26,6 +26,8 @@ export {
   type PoisonInvocationOutcome,
   type PoisonCounterTargetabilityRecord,
   type PoisonCounterTargetabilityVector,
+  POISON_RELATIONAL_TARGETS,
+  type PoisonRelationalTargetRecord,
   POISON_TARGET_CASES,
   type PoisonTargetArm,
   type PoisonTargetCase,

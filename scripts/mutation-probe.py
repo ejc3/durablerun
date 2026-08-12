@@ -1324,11 +1324,39 @@ MUTATION_SPECS = [
         "the terminal infrastructure-cap sweep wrongly refuses the maximum legal run ordinal",
     ),
     (
-        "poison-relational-target-inventory",
+        "poison-relational-target-attempts-at-max-with-live-run",
         "packages/conformance/src/poison-matrix.ts",
-        "  const targetArms = witness.counterBoundary?.arms ?? witness.targetArms\n",
-        "  const targetArms = witness.counterBoundary?.arms\n",
-        "relational and fractional witnesses are omitted from generated target cases",
+        "  readonly 'attempts/at-max-with-live-run': TargetableVector\n",
+        "  readonly 'attempts/at-max-with-live-run'?: TargetableVector\n",
+        "the relational-target contract makes attempts-at-max-with-live-run optional",
+    ),
+    (
+        "poison-relational-target-accounting-below-top-minus-one",
+        "packages/conformance/src/poison-matrix.ts",
+        "  readonly 'accounting/below-top-minus-one': TargetableVector\n",
+        "  readonly 'accounting/below-top-minus-one'?: TargetableVector\n",
+        "the relational-target contract makes accounting-below-top-minus-one optional",
+    ),
+    (
+        "poison-relational-target-accounting-live-run-not-next",
+        "packages/conformance/src/poison-matrix.ts",
+        "  readonly 'accounting/live-run-not-next': TargetableVector\n",
+        "  readonly 'accounting/live-run-not-next'?: TargetableVector\n",
+        "the relational-target contract makes accounting-live-run-not-next optional",
+    ),
+    (
+        "poison-relational-target-counter-fractional-task-max-attempts",
+        "packages/conformance/src/poison-matrix.ts",
+        "  readonly 'counter-fractional/task-max-attempts': TargetableVector\n",
+        "  readonly 'counter-fractional/task-max-attempts'?: TargetableVector\n",
+        "the relational-target contract makes fractional task max-attempts optional",
+    ),
+    (
+        "poison-relational-target-counter-fractional-run-relaunch-count",
+        "packages/conformance/src/poison-matrix.ts",
+        "  readonly 'counter-fractional/run-relaunch-count': TargetableVector\n",
+        "  readonly 'counter-fractional/run-relaunch-count'?: TargetableVector\n",
+        "the relational-target contract makes fractional run relaunch-count optional",
     ),
     (
         "poison-fractional-storage-guard",
@@ -4737,7 +4765,7 @@ VERDICTS = {
     "poison-target-closure-comparison": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests rejects any targeted change to the poison-owned closure",
+        "poison/invariant mechanism self-tests rejects every targeted rewrite of the poison-owned closure",
         "mutation-verdict:behavior:poison-target-closure-comparison",
     ),
     "poison-returned-target-comparison": ExpectedVerdict(
@@ -4759,11 +4787,40 @@ VERDICTS = {
         "mutation-verdict:behavior:sweep-accepts-max-ordinal-at-infra-cap",
         "packages/conformance/src/suite.ts",
     ),
-    "poison-relational-target-inventory": ExpectedVerdict(
-        "behavior",
+    "poison-relational-target-attempts-at-max-with-live-run": ExpectedVerdict(
+        "construction",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests enrolls every relational and fractional target in every lifecycle arm",
-        "mutation-verdict:behavior:poison-relational-target-inventory",
+        "poison/invariant mechanism self-tests requires every relational and fractional target at construction",
+        "mutation-verdict:construction:poison-relational-target-attempts-at-max-with-live-run",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-relational-target-accounting-below-top-minus-one": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every relational and fractional target at construction",
+        "mutation-verdict:construction:poison-relational-target-accounting-below-top-minus-one",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-relational-target-accounting-live-run-not-next": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every relational and fractional target at construction",
+        "mutation-verdict:construction:poison-relational-target-accounting-live-run-not-next",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-relational-target-counter-fractional-task-max-attempts": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every relational and fractional target at construction",
+        "mutation-verdict:construction:poison-relational-target-counter-fractional-task-max-attempts",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-relational-target-counter-fractional-run-relaunch-count": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every relational and fractional target at construction",
+        "mutation-verdict:construction:poison-relational-target-counter-fractional-run-relaunch-count",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
     "poison-fractional-storage-guard": ExpectedVerdict(
         "behavior",
@@ -6132,6 +6189,11 @@ CONFORMANCE_TYPECHECK_MUTATION_NAMES = frozenset(
         "poison-profile-claim-sleeping",
         "poison-profile-sweep-lost-launch",
         "poison-profile-sweep-claim-timeout",
+        "poison-relational-target-attempts-at-max-with-live-run",
+        "poison-relational-target-accounting-below-top-minus-one",
+        "poison-relational-target-accounting-live-run-not-next",
+        "poison-relational-target-counter-fractional-task-max-attempts",
+        "poison-relational-target-counter-fractional-run-relaunch-count",
         "poison-targetability-vector-task-attempts-upper",
         "poison-targetability-vector-task-attempts-lower",
         "poison-targetability-vector-task-max-attempts-upper",
@@ -6226,8 +6288,20 @@ QUESTION_TOKEN_DELTA_REASONS = {
     "persisted-counter-field-checkpoint-owner-attempt": (
         "replacement adds a TypeScript optional-property token, not a SQL bind"
     ),
-    "poison-relational-target-inventory": (
-        "replacement removes TypeScript optional-chaining and nullish-coalescing tokens"
+    "poison-relational-target-attempts-at-max-with-live-run": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "poison-relational-target-accounting-below-top-minus-one": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "poison-relational-target-accounting-live-run-not-next": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "poison-relational-target-counter-fractional-task-max-attempts": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
+    ),
+    "poison-relational-target-counter-fractional-run-relaunch-count": (
+        "replacement adds a TypeScript optional-property token, not a SQL bind"
     ),
     "schema-version-row-required": (
         "replacement removes TypeScript optional-chaining and nullish-coalescing tokens"
@@ -6292,6 +6366,9 @@ VERDICT_MARKER_EXEMPTIONS = {
     ),
     "mutation-verdict:behavior:poison-targetability-inventory": (
         "healthy runtime aggregate; compiler-owned targetability-record mutations own the exact vectors"
+    ),
+    "mutation-verdict:behavior:poison-relational-target-inventory": (
+        "healthy runtime aggregate; compiler-owned relational-target-record mutations own the exact targets"
     ),
     "mutation-verdict:behavior:fault-matrix-edge-crossing:fresh": (
         "healthy generated-matrix control; edge mutations own the non-fresh markers"
@@ -8307,12 +8384,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 399:
+        if len(MUTATIONS) != 403:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
-            or len(CONFORMANCE_TYPECHECK_MUTATION_NAMES) != 20
-            or len(TYPECHECK_MUTATION_NAMES) != 38
+            or len(CONFORMANCE_TYPECHECK_MUTATION_NAMES) != 25
+            or len(TYPECHECK_MUTATION_NAMES) != 43
         ):
             failures.append("the construction-mutation project inventory cardinality changed")
         if any(

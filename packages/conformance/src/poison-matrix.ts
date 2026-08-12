@@ -293,6 +293,14 @@ export type PoisonCounterTargetabilityRecord = Readonly<{
   'checkpoint-owner-attempt/lower': UnreadVector
 }>
 
+export type PoisonRelationalTargetRecord = {
+  readonly 'attempts/at-max-with-live-run': TargetableVector
+  readonly 'accounting/below-top-minus-one': TargetableVector
+  readonly 'accounting/live-run-not-next': TargetableVector
+  readonly 'counter-fractional/task-max-attempts': TargetableVector
+  readonly 'counter-fractional/run-relaunch-count': TargetableVector
+}
+
 export interface CounterBoundaryTarget {
   readonly fieldId: PersistedCounterFieldId
   readonly side: 'upper' | 'lower'
@@ -306,7 +314,6 @@ export interface PoisonWitness {
   storageCorruption?: StorageCorruption
   inertLive?: true
   counterBoundary?: CounterBoundaryTarget
-  targetArms?: Readonly<Record<PoisonTargetArm, PoisonTargetability>>
   targetNonExactField?: PersistedCounterFieldId
 }
 
@@ -491,6 +498,14 @@ const ALL_TARGET_ARMS = Object.freeze({
   'sweep:lost-launch': Object.freeze({ kind: 'targetable' as const }),
   'sweep:claim-timeout': Object.freeze({ kind: 'targetable' as const }),
 })
+
+export const POISON_RELATIONAL_TARGETS = Object.freeze({
+  'attempts/at-max-with-live-run': ALL_TARGET_ARMS,
+  'accounting/below-top-minus-one': ALL_TARGET_ARMS,
+  'accounting/live-run-not-next': ALL_TARGET_ARMS,
+  'counter-fractional/task-max-attempts': ALL_TARGET_ARMS,
+  'counter-fractional/run-relaunch-count': ALL_TARGET_ARMS,
+} as const satisfies PoisonRelationalTargetRecord)
 
 function counterCompanions(
   fieldId: PersistedCounterFieldId,
@@ -753,7 +768,6 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
       sql(`UPDATE tasks SET attempts = max_attempts WHERE task_id = ?`, [TASK]),
       sql(`UPDATE runs SET attempt = 6 WHERE run_id = ?`, [RUN]),
     ],
-    targetArms: ALL_TARGET_ARMS,
   },
   {
     id: 'accounting/above-top',
@@ -771,13 +785,11 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
         [RUN_2, Q, TASK, NOW],
       ),
     ],
-    targetArms: ALL_TARGET_ARMS,
   },
   {
     id: 'accounting/live-run-not-next',
     covers: ['accounting/live-run-not-next'],
     statements: [sql(`UPDATE tasks SET attempts = 1 WHERE task_id = ?`, [TASK])],
-    targetArms: ALL_TARGET_ARMS,
   },
   {
     id: 'checkpoint/task-mismatch',
@@ -952,7 +964,6 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
         covers: [`counter/${field.id}`],
         statements: [],
         storageCorruption: counterStorageCorruption(field, 'fractional-real'),
-        targetArms: ALL_TARGET_ARMS,
         targetNonExactField: field.id,
       },
     ]
@@ -1131,9 +1142,10 @@ const profilesForArm = (arm: PoisonTargetArm): readonly PoisonTargetProfile[] =>
 
 const targetCases: PoisonTargetCase[] = []
 const unreachableTargets: UnreachablePoisonTarget[] = []
-for (const witness of POISON_WITNESSES) {
-  const targetArms = witness.counterBoundary?.arms ?? witness.targetArms
-  if (!targetArms) continue
+const enrollTarget = (
+  witness: PoisonWitness,
+  targetArms: Readonly<Record<PoisonTargetArm, PoisonTargetability>>,
+): void => {
   for (const arm of ['claim', 'sweep:lost-launch', 'sweep:claim-timeout'] as const) {
     const targetability = targetArms[arm]
     if (targetability.kind === 'unreachable') {
@@ -1159,6 +1171,20 @@ for (const witness of POISON_WITNESSES) {
       )
     }
   }
+}
+
+const requiredPoisonWitness = (id: string): PoisonWitness => {
+  for (const witness of POISON_WITNESSES) {
+    if (witness.id === id) return witness
+  }
+  throw new Error(`missing poison witness ${id}`)
+}
+
+for (const [witnessId, targetArms] of Object.entries(POISON_RELATIONAL_TARGETS)) {
+  enrollTarget(requiredPoisonWitness(witnessId), targetArms)
+}
+for (const witness of POISON_WITNESSES) {
+  if (witness.counterBoundary) enrollTarget(witness, witness.counterBoundary.arms)
 }
 
 export const POISON_TARGET_CASES: readonly PoisonTargetCase[] = Object.freeze(targetCases)
