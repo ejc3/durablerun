@@ -1004,6 +1004,20 @@ describe('poison/invariant mechanism self-tests', () => {
     )
   })
 
+  it('enrolls every relational and fractional target in every lifecycle profile', () => {
+    const witnessIds = Object.keys(POISON_RELATIONAL_TARGETS)
+    const profileIds = Object.keys(POISON_TARGET_PROFILE_SEEDS)
+    const relationalWitnessIds = new Set(witnessIds)
+    const actual = POISON_TARGET_CASES.filter(({ witness }) =>
+      relationalWitnessIds.has(witness.id),
+    ).map(({ id }) => id)
+    const expected = witnessIds.flatMap((witnessId) =>
+      profileIds.map((profileId) => `${witnessId}/${profileId}`),
+    )
+
+    expect(actual, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual(expected)
+  })
+
   it('owns every relational and fractional target across all lifecycle profiles', async () => {
     const witnessIds = Object.keys(POISON_RELATIONAL_TARGETS)
     const profileIds = Object.keys(POISON_TARGET_PROFILE_SEEDS)
