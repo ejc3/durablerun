@@ -4776,9 +4776,10 @@ VERDICTS = {
     ),
     "accounting-live-run-next-invariant": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/invariant-checkers.test.ts",
-        "invariant checkers fire on constructed corruption flags a live run whose ordinal is not the next accounted attempt",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment owns accounting/live-run-not-next across every ambient label and lifecycle profile",
         "mutation-verdict:behavior:accounting-live-run-next-invariant",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "sweep-accepts-max-ordinal-at-infra-cap": ExpectedVerdict(
         "behavior",

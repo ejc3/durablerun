@@ -10,12 +10,15 @@ import {
 import type { StoreFixtureFactory } from './fixture.js'
 import { ENGINE_INVARIANT_CONDITIONS } from './invariants.js'
 import {
+  POISON_AGGREGATE_WITNESSES,
   POISON_TARGET_CASES,
   POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
   POISON_WITNESS_COUNT,
   POISON_WRITE_LABELS,
   duplicatePoisonWitnessIds,
+  observePoisonAggregateAmbientCase,
+  observePoisonAggregateTargetCase,
   runPoisonMatrixCase,
   runPoisonTargetCase,
   uncoveredConditionIds,
@@ -149,11 +152,10 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           (target.witness.id === relaunchClaimWitnessIds.upper ||
             target.witness.id === relaunchClaimWitnessIds.lower),
       )
-      const accountingLiveRunNextWitness = POISON_WITNESSES.find(
-        (witness) => witness.id === 'accounting/live-run-not-next',
-      )
+      const accountingLiveRunNextWitness =
+        POISON_AGGREGATE_WITNESSES['accounting/live-run-not-next']
       const accountingLiveRunNextTargets = POISON_TARGET_CASES.filter(
-        (target) => target.witness.id === 'accounting/live-run-not-next',
+        (target) => target.witness.id === accountingLiveRunNextWitness,
       )
       const captureRelaunchClaimTargets = async (
         side: keyof typeof relaunchClaimWitnessIds,
@@ -192,17 +194,18 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       }
 
       it('owns accounting/live-run-not-next across every ambient label and lifecycle profile', async () => {
-        if (!accountingLiveRunNextWitness) {
-          throw new Error('missing accounting/live-run-not-next poison witness')
-        }
         const observations: unknown[] = []
         for (const label of POISON_WRITE_LABELS) {
           observations.push(
-            await runPoisonMatrixCase(makeFixture, label, accountingLiveRunNextWitness).then(
-              (result) => ({
+            await observePoisonAggregateAmbientCase(
+              makeFixture,
+              label,
+              'accounting/live-run-not-next',
+            ).then(
+              (observation) => ({
                 id: `ambient/${label}`,
-                kind: 'resolved',
-                result: { label: result.label, witness: result.witness },
+                kind: 'observed',
+                observation,
               }),
               (error: unknown) => ({
                 id: `ambient/${label}`,
@@ -214,15 +217,11 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         }
         for (const target of accountingLiveRunNextTargets) {
           observations.push(
-            await runPoisonTargetCase(makeFixture, target).then(
-              (result) => ({
+            await observePoisonAggregateTargetCase(makeFixture, target).then(
+              (observation) => ({
                 id: target.id,
-                kind: 'resolved',
-                result: {
-                  label: result.label,
-                  profile: result.profile,
-                  witness: result.witness,
-                },
+                kind: 'observed',
+                observation,
               }),
               (error: unknown) => ({
                 id: target.id,
@@ -257,43 +256,56 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'sweep:claim-timeout',
           ].map((label) => ({
             id: `ambient/${label}`,
-            kind: 'resolved',
-            result: { label, witness: 'accounting/live-run-not-next' },
+            kind: 'observed',
+            observation: {
+              label,
+              witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
+            },
           })),
           {
             id: 'accounting/live-run-not-next/claim-pending',
-            kind: 'resolved',
-            result: {
+            kind: 'observed',
+            observation: {
               label: 'claim',
               profile: 'claim-pending',
               witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
             },
           },
           {
             id: 'accounting/live-run-not-next/claim-sleeping',
-            kind: 'resolved',
-            result: {
+            kind: 'observed',
+            observation: {
               label: 'claim',
               profile: 'claim-sleeping',
               witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
             },
           },
           {
             id: 'accounting/live-run-not-next/sweep-lost-launch',
-            kind: 'resolved',
-            result: {
+            kind: 'observed',
+            observation: {
               label: 'sweep:lost-launch',
               profile: 'sweep-lost-launch',
               witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
             },
           },
           {
             id: 'accounting/live-run-not-next/sweep-claim-timeout',
-            kind: 'resolved',
-            result: {
+            kind: 'observed',
+            observation: {
               label: 'sweep:claim-timeout',
               profile: 'sweep-claim-timeout',
               witness: 'accounting/live-run-not-next',
+              conditionIds: ['accounting/live-run-not-next'],
+              corruptionDisposition: 'injected',
             },
           },
         ])

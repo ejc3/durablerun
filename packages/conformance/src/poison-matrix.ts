@@ -1180,6 +1180,22 @@ const requiredPoisonWitness = (id: string): PoisonWitness => {
   throw new Error(`missing poison witness ${id}`)
 }
 
+export type PoisonAggregateWitnessId = 'accounting/live-run-not-next'
+
+/**
+ * Witnesses whose invariant-firing proof is owned by one class-altitude
+ * aggregate. Their transition cases still run through the normal matrix, but
+ * they do not each re-assert the same precondition.
+ */
+export const POISON_AGGREGATE_WITNESSES = Object.freeze({
+  'accounting/live-run-not-next': 'accounting/live-run-not-next',
+} as const satisfies Readonly<{ [Id in PoisonAggregateWitnessId]: Id }>)
+
+const aggregateOwnsWitness = (
+  witness: PoisonWitness,
+): witness is PoisonWitness & { readonly id: PoisonAggregateWitnessId } =>
+  Object.prototype.hasOwnProperty.call(POISON_AGGREGATE_WITNESSES, witness.id)
+
 for (const [witnessId, targetArms] of Object.entries(POISON_RELATIONAL_TARGETS)) {
   enrollTarget(requiredPoisonWitness(witnessId), targetArms)
 }
@@ -2802,6 +2818,101 @@ export interface PoisonCaseOptions {
   afterInvoke?(raw: SqlExecutor): Promise<void>
 }
 
+interface PreparedPoisonCase {
+  readonly caseName: string
+  readonly fixture: StoreFixture
+  readonly corruptionDisposition: StorageCorruptionDisposition
+  readonly beforeFindings: readonly EngineInvariantFinding[]
+}
+
+async function preparePoisonCase(
+  makeFixture: StoreFixtureFactory,
+  label: (typeof MATRIX_WRITE_LABELS)[number],
+  witness: PoisonWitness,
+  options: PoisonCaseOptions,
+): Promise<PreparedPoisonCase> {
+  const caseName = `${label}-${witness.id}${options.targetProfile ? `-${options.targetProfile}` : ''}`
+  const fixture = await makeFixture(`poison-${caseName}`)
+  try {
+    await seedBase(fixture)
+    if (options.targetProfile) {
+      await preparePoisonTarget(fixture.raw, options.targetProfile, options.targetCompanions ?? {})
+    }
+    if (witness.statements.length > 0) {
+      await fixture.raw.batch('poison:corrupt', witness.statements, 'write')
+    }
+    const corruptionDisposition = witness.storageCorruption
+      ? await executeStorageCorruption(fixture, witness.storageCorruption)
+      : 'injected'
+    if (corruptionDisposition === 'structurally-rejected') {
+      return {
+        caseName,
+        fixture,
+        corruptionDisposition,
+        beforeFindings: [],
+      }
+    }
+    if (options.healthyTrigger !== false) await seedHealthyTrigger(fixture.raw, label)
+    await options.beforeSnapshot?.(fixture.raw)
+
+    const beforeFindings = await engineInvariantFindings(fixture.raw)
+    return { caseName, fixture, corruptionDisposition, beforeFindings }
+  } catch (error) {
+    fixture.close()
+    throw error
+  }
+}
+
+export interface PoisonAggregateWitnessObservation {
+  readonly label: (typeof MATRIX_WRITE_LABELS)[number]
+  readonly witness: PoisonAggregateWitnessId
+  readonly profile?: PoisonTargetProfile
+  readonly conditionIds: readonly EngineInvariantConditionId[]
+  readonly corruptionDisposition: StorageCorruptionDisposition
+}
+
+async function observePoisonAggregateWitnessCase(
+  makeFixture: StoreFixtureFactory,
+  label: (typeof MATRIX_WRITE_LABELS)[number],
+  witnessId: PoisonAggregateWitnessId,
+  options: Pick<PoisonCaseOptions, 'targetProfile' | 'targetCompanions'>,
+): Promise<PoisonAggregateWitnessObservation> {
+  const witness = requiredPoisonWitness(witnessId)
+  const prepared = await preparePoisonCase(makeFixture, label, witness, options)
+  try {
+    return {
+      label,
+      witness: witnessId,
+      ...(options.targetProfile ? { profile: options.targetProfile } : {}),
+      conditionIds: prepared.beforeFindings.map(({ conditionId }) => conditionId),
+      corruptionDisposition: prepared.corruptionDisposition,
+    }
+  } finally {
+    prepared.fixture.close()
+  }
+}
+
+export function observePoisonAggregateAmbientCase(
+  makeFixture: StoreFixtureFactory,
+  label: (typeof MATRIX_WRITE_LABELS)[number],
+  witnessId: PoisonAggregateWitnessId,
+): Promise<PoisonAggregateWitnessObservation> {
+  return observePoisonAggregateWitnessCase(makeFixture, label, witnessId, {})
+}
+
+export function observePoisonAggregateTargetCase(
+  makeFixture: StoreFixtureFactory,
+  target: PoisonTargetCase,
+): Promise<PoisonAggregateWitnessObservation> {
+  if (!aggregateOwnsWitness(target.witness)) {
+    throw new Error(`poison target '${target.id}' has no aggregate witness owner`)
+  }
+  return observePoisonAggregateWitnessCase(makeFixture, target.label, target.witness.id, {
+    targetProfile: target.profile,
+    targetCompanions: target.companions,
+  })
+}
+
 /**
  * One generated label x corrupt-pre-state cell. The operation may refuse the
  * corrupt target; refusal is safe only when the labeled batch really ran and
@@ -2813,19 +2924,9 @@ export async function runPoisonMatrixCase(
   witness: PoisonWitness,
   options: PoisonCaseOptions = {},
 ): Promise<PoisonCaseResult> {
-  const caseName = `${label}-${witness.id}${options.targetProfile ? `-${options.targetProfile}` : ''}`
-  const f = await makeFixture(`poison-${caseName}`)
+  const prepared = await preparePoisonCase(makeFixture, label, witness, options)
+  const { caseName, fixture: f, corruptionDisposition, beforeFindings } = prepared
   try {
-    await seedBase(f)
-    if (options.targetProfile) {
-      await preparePoisonTarget(f.raw, options.targetProfile, options.targetCompanions ?? {})
-    }
-    if (witness.statements.length > 0) {
-      await f.raw.batch('poison:corrupt', witness.statements, 'write')
-    }
-    const corruptionDisposition = witness.storageCorruption
-      ? await executeStorageCorruption(f, witness.storageCorruption)
-      : 'injected'
     if (corruptionDisposition === 'structurally-rejected') {
       return {
         label,
@@ -2835,17 +2936,15 @@ export async function runPoisonMatrixCase(
         corruptionDisposition,
       }
     }
-    if (options.healthyTrigger !== false) await seedHealthyTrigger(f.raw, label)
-    await options.beforeSnapshot?.(f.raw)
-
-    const beforeFindings = await engineInvariantFindings(f.raw)
-    for (const expected of witness.covers) {
-      if (!beforeFindings.some((item) => item.conditionId === expected)) {
-        throw new Error(
-          `${label}/${witness.id}: witness did not fire '${expected}'; got ${beforeFindings
-            .map((item) => `${item.conditionId} (${item.message})`)
-            .join('; ')}`,
-        )
+    if (!aggregateOwnsWitness(witness)) {
+      for (const expected of witness.covers) {
+        if (!beforeFindings.some((item) => item.conditionId === expected)) {
+          throw new Error(
+            `${label}/${witness.id}: witness did not fire '${expected}'; got ${beforeFindings
+              .map((item) => `${item.conditionId} (${item.message})`)
+              .join('; ')}`,
+          )
+        }
       }
     }
     const before = await snapshot(f.raw)

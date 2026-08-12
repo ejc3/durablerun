@@ -245,19 +245,6 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
-  it('flags a live run whose ordinal is not the next accounted attempt', async () => {
-    const f = await seeded('live-run-not-next-accounted-attempt')
-    await f.raw.batch('corrupt', [
-      { sql: `UPDATE tasks SET attempts = 1 WHERE task_id = 't1'`, args: [] },
-    ])
-
-    expect(
-      (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
-      'mutation-verdict:behavior:accounting-live-run-next-invariant',
-    ).toContain('accounting/live-run-not-next')
-    f.close()
-  })
-
   it('flags a live run after the user-attempt budget is exhausted', async () => {
     const f = await seeded('live-run-at-attempt-cap')
     await f.raw.batch('corrupt', [
