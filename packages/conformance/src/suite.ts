@@ -1961,10 +1961,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           owner: {
             task: 'current',
             queue: Q,
-            attempt: PERSISTED_INTEGER_BOUNDS.runs.attempt.max + 1,
+            attempt: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt.max + 1,
           },
           checkpointQueue: Q,
-          ownerAttempt: PERSISTED_INTEGER_BOUNDS.runs.attempt.max + 1,
+          ownerAttempt: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt.max + 1,
           requireFailure: {
             'checkpoint-write': (action) =>
               requireExpectedFailure(
