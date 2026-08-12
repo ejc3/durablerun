@@ -136,6 +136,9 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       const exhaustedBudgetTargets = POISON_TARGET_CASES.filter(
         (target) => target.witness.id === 'attempts/at-max-with-live-run',
       )
+      const sweepTargets = POISON_TARGET_CASES.filter(
+        (target) => target.label === 'sweep:lost-launch' || target.label === 'sweep:claim-timeout',
+      )
 
       it('contains accounting/below-top-minus-one across both claim profiles', async () => {
         const observations: unknown[] = []
@@ -318,6 +321,208 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             },
           ],
           receipt: { result: [], after: receiptBefore },
+        })
+      })
+
+      it('contains every sweep target behind pre-limit eligibility', async () => {
+        const observations: unknown[] = []
+        for (const target of sweepTargets) {
+          observations.push(
+            await runPoisonTargetCase(makeFixture, target).then(
+              (result) => ({
+                id: target.id,
+                label: target.label,
+                profile: target.profile,
+                witness: target.witness.id,
+                kind: 'resolved',
+                result: {
+                  label: result.label,
+                  profile: result.profile,
+                  witness: result.witness,
+                },
+              }),
+              (error: unknown) => ({
+                id: target.id,
+                label: target.label,
+                profile: target.profile,
+                witness: target.witness.id,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+
+        expect(
+          {
+            targetIdentities: sweepTargets.map((target) => ({
+              id: target.id,
+              label: target.label,
+              profile: target.profile,
+              witness: target.witness.id,
+            })),
+            observations,
+          },
+          'mutation-verdict:behavior:poison-sweep-scan-prelimit',
+        ).toEqual({
+          targetIdentities: [
+            {
+              id: 'attempts/at-max-with-live-run/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'attempts/at-max-with-live-run',
+            },
+            {
+              id: 'attempts/at-max-with-live-run/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'attempts/at-max-with-live-run',
+            },
+            {
+              id: 'accounting/below-top-minus-one/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'accounting/below-top-minus-one',
+            },
+            {
+              id: 'accounting/below-top-minus-one/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'accounting/below-top-minus-one',
+            },
+            {
+              id: 'accounting/live-run-not-next/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'accounting/live-run-not-next',
+            },
+            {
+              id: 'accounting/live-run-not-next/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'accounting/live-run-not-next',
+            },
+            {
+              id: 'counter-fractional/task-max-attempts/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-fractional/task-max-attempts',
+            },
+            {
+              id: 'counter-fractional/task-max-attempts/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-fractional/task-max-attempts',
+            },
+            {
+              id: 'counter-fractional/run-relaunch-count/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-fractional/run-relaunch-count',
+            },
+            {
+              id: 'counter-fractional/run-relaunch-count/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-fractional/run-relaunch-count',
+            },
+            {
+              id: 'counter-bound/task-max-attempts/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound/task-max-attempts',
+            },
+            {
+              id: 'counter-bound/task-max-attempts/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-bound/task-max-attempts',
+            },
+            {
+              id: 'counter-bound/task-infra-retries/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound/task-infra-retries',
+            },
+            {
+              id: 'counter-bound/task-infra-retries/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-bound/task-infra-retries',
+            },
+            {
+              id: 'counter-bound/run-claim-gen/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound/run-claim-gen',
+            },
+            {
+              id: 'counter-bound/run-relaunch-count/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound/run-relaunch-count',
+            },
+            {
+              id: 'counter-bound/run-relaunch-count/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-bound/run-relaunch-count',
+            },
+            {
+              id: 'counter-bound-lower/task-attempts/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound-lower/task-attempts',
+            },
+            {
+              id: 'counter-bound-lower/task-attempts/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-bound-lower/task-attempts',
+            },
+            {
+              id: 'counter-bound-lower/task-infra-retries/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound-lower/task-infra-retries',
+            },
+            {
+              id: 'counter-bound-lower/task-infra-retries/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-bound-lower/task-infra-retries',
+            },
+            {
+              id: 'counter-bound-lower/run-activated-gen/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound-lower/run-activated-gen',
+            },
+            {
+              id: 'counter-bound-lower/run-relaunch-count/sweep-lost-launch',
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'counter-bound-lower/run-relaunch-count',
+            },
+            {
+              id: 'counter-bound-lower/run-relaunch-count/sweep-claim-timeout',
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'counter-bound-lower/run-relaunch-count',
+            },
+          ],
+          observations: sweepTargets.map((target) => ({
+            id: target.id,
+            label: target.label,
+            profile: target.profile,
+            witness: target.witness.id,
+            kind: 'resolved',
+            result: {
+              label: target.label,
+              profile: target.profile,
+              witness: target.witness.id,
+            },
+          })),
         })
       })
 
