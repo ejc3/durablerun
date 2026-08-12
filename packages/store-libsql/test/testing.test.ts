@@ -15,6 +15,21 @@ describe('the routine test id source', () => {
     ])
   })
 
+  it('rejects a duplicate proposed token serial before exposing it', () => {
+    const testIdSourceWithSerialProposal = testIdSource as (
+      namespace: string,
+      options: { nextTokenSerial(previous: number): number },
+    ) => ReturnType<typeof testIdSource>
+    const ids = testIdSourceWithSerialProposal('guard', {
+      nextTokenSerial: () => 1,
+    })
+
+    ids.token()
+    expect(() => ids.token(), 'regression:test-token-source-monotonic-guard').toThrow(
+      /token serial must strictly increase/,
+    )
+  })
+
   it('reserves the fence separator for the compiled stamp', () => {
     expect(() => testIdSource('fixture:claim')).toThrow('only letters, digits')
   })
