@@ -7,17 +7,17 @@ import {
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
+import { executeStorageCorruption } from '../src/fixture.js'
 import { type EngineInvariantFinding, engineInvariantFindings } from '../src/invariants.js'
 import {
   POISON_TARGET_CASES,
   POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
-  findingSeverity,
   type ProtocolSnapshot,
+  findingSeverity,
   runPoisonMatrixCase,
   runPoisonTargetCase,
 } from '../src/poison-matrix.js'
-import { executeStorageCorruption } from '../src/fixture.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 function witness(id: string) {
@@ -854,6 +854,128 @@ describe('poison/invariant mechanism self-tests', () => {
       },
     )
     expect(generation).toMatchObject({ claim_gen: 1, activated_gen: 1 })
+  })
+
+  it('executes every target lifecycle profile from its exact seeded state', async () => {
+    const cases = [
+      {
+        profile: 'claim-pending',
+        targetId: 'counter-bound/task-max-attempts/claim-pending',
+      },
+      {
+        profile: 'claim-sleeping',
+        targetId: 'counter-bound/task-max-attempts/claim-sleeping',
+      },
+      {
+        profile: 'sweep-lost-launch',
+        targetId: 'counter-bound/task-max-attempts/sweep-lost-launch',
+      },
+      {
+        profile: 'sweep-claim-timeout',
+        targetId: 'counter-bound/task-max-attempts/sweep-claim-timeout',
+      },
+    ] as const
+    const observations: unknown[] = []
+
+    for (const { profile, targetId } of cases) {
+      let seededState: unknown
+      const outcome = await runPoisonTargetCase(makeLibsqlFixture, target(targetId), {
+        beforeSnapshot: async (raw) => {
+          const [tasks, runs] = await raw.batch(
+            'oracle-meta',
+            [
+              {
+                sql: `SELECT state FROM tasks WHERE task_id = 'poison-task'`,
+                args: [],
+              },
+              {
+                sql: `SELECT state, claimed_by, claim_gen, activated_gen, lease_ms,
+                             claim_expires_at_ms, heartbeat_at_ms, available_at_ms
+                      FROM runs WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+            ],
+            'read',
+          )
+          seededState = { task: tasks?.rows[0], run: runs?.rows[0] }
+        },
+      }).then(
+        () => 'resolved' as const,
+        () => 'rejected' as const,
+      )
+      observations.push({ profile, seededState, outcome })
+    }
+
+    expect(observations, 'mutation-verdict:behavior:poison-target-profile-seeding').toEqual([
+      {
+        profile: 'claim-pending',
+        seededState: {
+          task: { state: 'pending' },
+          run: {
+            state: 'pending',
+            claimed_by: null,
+            claim_gen: 0,
+            activated_gen: 0,
+            lease_ms: null,
+            claim_expires_at_ms: null,
+            heartbeat_at_ms: null,
+            available_at_ms: 999_998,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'claim-sleeping',
+        seededState: {
+          task: { state: 'sleeping' },
+          run: {
+            state: 'sleeping',
+            claimed_by: null,
+            claim_gen: 1,
+            activated_gen: 1,
+            lease_ms: null,
+            claim_expires_at_ms: null,
+            heartbeat_at_ms: null,
+            available_at_ms: 999_998,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'sweep-lost-launch',
+        seededState: {
+          task: { state: 'running' },
+          run: {
+            state: 'running',
+            claimed_by: 'poison-worker',
+            claim_gen: 1,
+            activated_gen: 0,
+            lease_ms: 60_000,
+            claim_expires_at_ms: 999_998,
+            heartbeat_at_ms: 940_000,
+            available_at_ms: null,
+          },
+        },
+        outcome: 'resolved',
+      },
+      {
+        profile: 'sweep-claim-timeout',
+        seededState: {
+          task: { state: 'running' },
+          run: {
+            state: 'running',
+            claimed_by: 'poison-worker',
+            claim_gen: 1,
+            activated_gen: 1,
+            lease_ms: 60_000,
+            claim_expires_at_ms: 999_998,
+            heartbeat_at_ms: 940_000,
+            available_at_ms: null,
+          },
+        },
+        outcome: 'resolved',
+      },
+    ])
   })
 
   it('executes the claim-pending target profile', async () => {

@@ -6005,6 +6005,9 @@ MUTATIONS = [
 # claiming a live mutation of their own. Keep the set exact and reasons local:
 # every other compiler-harvested marker must resolve to an ExpectedVerdict.
 VERDICT_MARKER_EXEMPTIONS = {
+    "mutation-verdict:behavior:poison-target-profile-seeding": (
+        "RED aggregate fixture; the four profile mutations transfer ownership in GREEN"
+    ),
     "mutation-verdict:behavior:fault-matrix-edge-crossing:fresh": (
         "healthy generated-matrix control; edge mutations own the non-fresh markers"
     ),
