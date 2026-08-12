@@ -149,6 +149,12 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           (target.witness.id === relaunchClaimWitnessIds.upper ||
             target.witness.id === relaunchClaimWitnessIds.lower),
       )
+      const accountingLiveRunNextWitness = POISON_WITNESSES.find(
+        (witness) => witness.id === 'accounting/live-run-not-next',
+      )
+      const accountingLiveRunNextTargets = POISON_TARGET_CASES.filter(
+        (target) => target.witness.id === 'accounting/live-run-not-next',
+      )
       const captureRelaunchClaimTargets = async (
         side: keyof typeof relaunchClaimWitnessIds,
       ): Promise<unknown[]> => {
@@ -184,6 +190,114 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         }
         return observations
       }
+
+      it('owns accounting/live-run-not-next across every ambient label and lifecycle profile', async () => {
+        if (!accountingLiveRunNextWitness) {
+          throw new Error('missing accounting/live-run-not-next poison witness')
+        }
+        const observations: unknown[] = []
+        for (const label of POISON_WRITE_LABELS) {
+          observations.push(
+            await runPoisonMatrixCase(makeFixture, label, accountingLiveRunNextWitness).then(
+              (result) => ({
+                id: `ambient/${label}`,
+                kind: 'resolved',
+                result: { label: result.label, witness: result.witness },
+              }),
+              (error: unknown) => ({
+                id: `ambient/${label}`,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+        for (const target of accountingLiveRunNextTargets) {
+          observations.push(
+            await runPoisonTargetCase(makeFixture, target).then(
+              (result) => ({
+                id: target.id,
+                kind: 'resolved',
+                result: {
+                  label: result.label,
+                  profile: result.profile,
+                  witness: result.witness,
+                },
+              }),
+              (error: unknown) => ({
+                id: target.id,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+
+        expect(
+          observations,
+          'mutation-verdict:behavior:accounting-live-run-next-invariant',
+        ).toEqual([
+          ...[
+            'driver-heartbeat',
+            'spawn',
+            'claim',
+            'activate',
+            'heartbeat',
+            'reschedule',
+            'suspend',
+            'emit-event',
+            'await-event',
+            'complete',
+            'fail',
+            'cancel-task',
+            'expire-lease-now',
+            'set-checkpoint',
+            'sweep:cancel',
+            'sweep:lost-launch',
+            'sweep:claim-timeout',
+          ].map((label) => ({
+            id: `ambient/${label}`,
+            kind: 'resolved',
+            result: { label, witness: 'accounting/live-run-not-next' },
+          })),
+          {
+            id: 'accounting/live-run-not-next/claim-pending',
+            kind: 'resolved',
+            result: {
+              label: 'claim',
+              profile: 'claim-pending',
+              witness: 'accounting/live-run-not-next',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/claim-sleeping',
+            kind: 'resolved',
+            result: {
+              label: 'claim',
+              profile: 'claim-sleeping',
+              witness: 'accounting/live-run-not-next',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/sweep-lost-launch',
+            kind: 'resolved',
+            result: {
+              label: 'sweep:lost-launch',
+              profile: 'sweep-lost-launch',
+              witness: 'accounting/live-run-not-next',
+            },
+          },
+          {
+            id: 'accounting/live-run-not-next/sweep-claim-timeout',
+            kind: 'resolved',
+            result: {
+              label: 'sweep:claim-timeout',
+              profile: 'sweep-claim-timeout',
+              witness: 'accounting/live-run-not-next',
+            },
+          },
+        ])
+      })
 
       it('contains accounting/below-top-minus-one across both claim profiles', async () => {
         const observations: unknown[] = []
