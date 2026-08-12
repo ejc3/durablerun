@@ -38,6 +38,9 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
     for (const label of MATRIX_READ_LABELS) {
       cells.push([label, 'crash-after'], [label, 'duplicate'])
     }
+    const cellSeedVector = cells.flatMap(([label, fault]) =>
+      FAULT_SEEDS.map((seed) => ({ label, fault, seed })),
+    )
 
     for (const [label, fault] of cells) {
       for (const preState of MATRIX_PRE_STATES) {
@@ -66,6 +69,37 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
           }
         })
       }
+    }
+
+    for (const preState of MATRIX_PRE_STATES) {
+      it(`owns ${preState} across every generated label/fault cell and seed`, async () => {
+        const observed = []
+        for (const { label, fault, seed } of cellSeedVector) {
+          observed.push(
+            await runFaultMatrixCase(makeFixture, label, fault, seed, preState).then(
+              () => ({ label, fault, seed, outcome: 'resolved' as const }),
+              () => ({ label, fault, seed, outcome: 'rejected' as const }),
+            ),
+          )
+        }
+
+        const crossingMarker = {
+          fresh: 'mutation-verdict:behavior:fault-matrix-edge-crossing:fresh',
+          'infra-cap-edge': 'mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge',
+          'relaunch-cap-edge':
+            'mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge',
+          'attempt-cap-edge':
+            'mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge',
+        }[preState]
+        expect(observed, crossingMarker).toEqual(
+          cellSeedVector.map(({ label, fault, seed }) => ({
+            label,
+            fault,
+            seed,
+            outcome: 'resolved',
+          })),
+        )
+      }, 120_000)
     }
   })
 }
