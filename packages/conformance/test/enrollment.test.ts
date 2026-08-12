@@ -1,7 +1,16 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import type { StoreFixtureFactory } from '../src/fixture.js'
 import * as conformance from '../src/index.js'
+import * as storeConformanceModule from '../src/store-conformance.js'
+
+type SurfaceRunner = (dialect: string, makeFixture: StoreFixtureFactory) => void
+type RegisteredSurface = Readonly<{ id: string; run: SurfaceRunner }>
+type BoundSurfaceRegistry = SurfaceRunner & {
+  readonly surfaces: readonly RegisteredSurface[]
+}
+type SurfaceRegistryBinder = (surfaces: readonly RegisteredSurface[]) => BoundSurfaceRegistry
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 const REGISTRY = `${ROOT}/packages/conformance/test/dialect-fixtures.ts`
@@ -12,6 +21,13 @@ const SURFACE_BINDINGS = [
   ['poison-matrix', 'poisonMatrixConformance'],
   ['timestamp-boundaries', 'timestampBoundaryConformance'],
   ['wake-witness', 'wakeWitnessConformance'],
+] as const
+const EXPECTED_SURFACE_IDS = [
+  'scheduler',
+  'fault-matrix',
+  'poison-matrix',
+  'timestamp-boundaries',
+  'wake-witness',
 ] as const
 
 describe('shared conformance enrollment is one indivisible door', () => {
@@ -54,6 +70,57 @@ describe('shared conformance enrollment is one indivisible door', () => {
       dispatchUsesRegistry: true,
       invokesRegisteredRunner: true,
       directRunnerCalls: [],
+    })
+  })
+
+  it('owns five surfaces and executable dispatch through one callable registry', () => {
+    const directModule = storeConformanceModule as Record<string, unknown>
+    const binderCandidate = directModule.bindStoreConformanceSurfaces
+    const binder =
+      typeof binderCandidate === 'function' ? (binderCandidate as SurfaceRegistryBinder) : undefined
+    const probeCalls: { id: string; dialect: string; sameFixture: boolean }[] = []
+    const probeFixture = (() => {
+      throw new Error('the registry probe must not construct a fixture')
+    }) as StoreFixtureFactory
+    const probe = binder?.(
+      EXPECTED_SURFACE_IDS.map((id) => ({
+        id,
+        run: (dialect, makeFixture) => {
+          probeCalls.push({ id, dialect, sameFixture: makeFixture === probeFixture })
+        },
+      })),
+    )
+    probe?.('probe-dialect', probeFixture)
+
+    const umbrella = directModule.storeConformance
+    const umbrellaSurfaceIds =
+      typeof umbrella === 'function' && 'surfaces' in umbrella && Array.isArray(umbrella.surfaces)
+        ? umbrella.surfaces.map((surface) =>
+            typeof surface === 'object' && surface !== null && 'id' in surface
+              ? surface.id
+              : undefined,
+          )
+        : undefined
+
+    expect(
+      {
+        registryBinder: typeof binder,
+        probeIsCallable: typeof probe === 'function',
+        probeCalls,
+        umbrellaIsCallable: typeof umbrella === 'function',
+        umbrellaSurfaceIds,
+      },
+      'regression:shared-conformance-bound-registry',
+    ).toEqual({
+      registryBinder: 'function',
+      probeIsCallable: true,
+      probeCalls: EXPECTED_SURFACE_IDS.map((id) => ({
+        id,
+        dialect: 'probe-dialect',
+        sameFixture: true,
+      })),
+      umbrellaIsCallable: true,
+      umbrellaSurfaceIds: EXPECTED_SURFACE_IDS,
     })
   })
 
