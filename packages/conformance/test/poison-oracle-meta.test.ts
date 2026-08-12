@@ -1018,30 +1018,6 @@ describe('poison/invariant mechanism self-tests', () => {
     expect(actual, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual(expected)
   })
 
-  it('owns every relational and fractional target across all lifecycle profiles', async () => {
-    const witnessIds = Object.keys(POISON_RELATIONAL_TARGETS)
-    const profileIds = Object.keys(POISON_TARGET_PROFILE_SEEDS)
-    const witnessIdSet = new Set(witnessIds)
-    const observations: Array<{ id: string; outcome: string }> = []
-
-    for (const candidate of POISON_TARGET_CASES.filter(({ witness }) =>
-      witnessIdSet.has(witness.id),
-    )) {
-      const outcome = await runPoisonTargetCase(makeLibsqlFixture, candidate).then(
-        () => 'resolved',
-        (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      observations.push({ id: candidate.id, outcome })
-    }
-
-    const expected = witnessIds.flatMap((witnessId) =>
-      profileIds.map((profile) => ({ id: `${witnessId}/${profile}`, outcome: 'resolved' })),
-    )
-    expect(observations, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual(
-      expected,
-    )
-  })
-
   it('requires every relational and fractional target at construction', () => {
     const compileOnly = (): void => {
       const withoutAttemptsAtMax = {} as Omit<

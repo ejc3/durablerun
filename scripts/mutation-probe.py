@@ -6368,7 +6368,7 @@ VERDICT_MARKER_EXEMPTIONS = {
         "healthy runtime aggregate; compiler-owned targetability-record mutations own the exact vectors"
     ),
     "mutation-verdict:behavior:poison-relational-target-inventory": (
-        "healthy runtime aggregate; compiler-owned relational-target-record mutations own the exact targets"
+        "healthy derived enrollment projection; compiler-owned relational-target record owns exact membership"
     ),
     "mutation-verdict:behavior:fault-matrix-edge-crossing:fresh": (
         "healthy generated-matrix control; edge mutations own the non-fresh markers"
