@@ -42,35 +42,6 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
       FAULT_SEEDS.map((seed) => ({ label, fault, seed })),
     )
 
-    for (const [label, fault] of cells) {
-      for (const preState of MATRIX_PRE_STATES) {
-        const from = preState === 'fresh' ? '' : ` from ${preState}`
-        it(`${label} survives ${fault}${from}`, async () => {
-          const crossingMarker = {
-            fresh: 'mutation-verdict:behavior:fault-matrix-edge-crossing:fresh',
-            'infra-cap-edge': 'mutation-verdict:behavior:fault-matrix-edge-crossing:infra-cap-edge',
-            'relaunch-cap-edge':
-              'mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge',
-            'attempt-cap-edge':
-              'mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge',
-          }[preState]
-          for (const seed of FAULT_SEEDS) {
-            const observed = await runFaultMatrixCase(
-              makeFixture,
-              label,
-              fault,
-              seed,
-              preState,
-            ).then(
-              () => 'resolved' as const,
-              () => 'rejected' as const,
-            )
-            expect(observed, crossingMarker).toBe('resolved')
-          }
-        })
-      }
-    }
-
     for (const preState of MATRIX_PRE_STATES) {
       it(`owns ${preState} across every generated label/fault cell and seed`, async () => {
         const observed = []
