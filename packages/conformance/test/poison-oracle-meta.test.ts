@@ -1025,6 +1025,62 @@ describe('poison/invariant mechanism self-tests', () => {
     expect(actual, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual(expected)
   })
 
+  it('owns every relational and fractional target across all lifecycle profiles', async () => {
+    const witnessIds = new Set<string>([
+      'attempts/at-max-with-live-run',
+      'accounting/below-top-minus-one',
+      'accounting/live-run-not-next',
+      'counter-fractional/task-max-attempts',
+      'counter-fractional/run-relaunch-count',
+    ])
+    const observations: Array<{ id: string; outcome: string }> = []
+
+    for (const candidate of POISON_TARGET_CASES.filter(({ witness }) =>
+      witnessIds.has(witness.id),
+    )) {
+      const outcome = await runPoisonTargetCase(makeLibsqlFixture, candidate).then(
+        () => 'resolved',
+        (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      observations.push({ id: candidate.id, outcome })
+    }
+
+    expect(observations, 'mutation-verdict:behavior:poison-relational-target-inventory').toEqual([
+      { id: 'attempts/at-max-with-live-run/claim-pending', outcome: 'resolved' },
+      { id: 'attempts/at-max-with-live-run/claim-sleeping', outcome: 'resolved' },
+      { id: 'attempts/at-max-with-live-run/sweep-lost-launch', outcome: 'resolved' },
+      { id: 'attempts/at-max-with-live-run/sweep-claim-timeout', outcome: 'resolved' },
+      { id: 'accounting/below-top-minus-one/claim-pending', outcome: 'resolved' },
+      { id: 'accounting/below-top-minus-one/claim-sleeping', outcome: 'resolved' },
+      { id: 'accounting/below-top-minus-one/sweep-lost-launch', outcome: 'resolved' },
+      { id: 'accounting/below-top-minus-one/sweep-claim-timeout', outcome: 'resolved' },
+      { id: 'accounting/live-run-not-next/claim-pending', outcome: 'resolved' },
+      { id: 'accounting/live-run-not-next/claim-sleeping', outcome: 'resolved' },
+      { id: 'accounting/live-run-not-next/sweep-lost-launch', outcome: 'resolved' },
+      { id: 'accounting/live-run-not-next/sweep-claim-timeout', outcome: 'resolved' },
+      { id: 'counter-fractional/task-max-attempts/claim-pending', outcome: 'resolved' },
+      { id: 'counter-fractional/task-max-attempts/claim-sleeping', outcome: 'resolved' },
+      {
+        id: 'counter-fractional/task-max-attempts/sweep-lost-launch',
+        outcome: 'resolved',
+      },
+      {
+        id: 'counter-fractional/task-max-attempts/sweep-claim-timeout',
+        outcome: 'resolved',
+      },
+      { id: 'counter-fractional/run-relaunch-count/claim-pending', outcome: 'resolved' },
+      { id: 'counter-fractional/run-relaunch-count/claim-sleeping', outcome: 'resolved' },
+      {
+        id: 'counter-fractional/run-relaunch-count/sweep-lost-launch',
+        outcome: 'resolved',
+      },
+      {
+        id: 'counter-fractional/run-relaunch-count/sweep-claim-timeout',
+        outcome: 'resolved',
+      },
+    ])
+  })
+
   it('rejects a claim target that no longer sorts before its healthy trigger', async () => {
     await expect(
       runPoisonTargetCase(
@@ -1483,6 +1539,71 @@ describe('poison/invariant mechanism self-tests', () => {
           target('counter-fractional/task-max-attempts/claim-pending'),
         ),
     )
+  })
+
+  it('rejects every targeted rewrite of the poison-owned closure', async () => {
+    const closureChange = 'targeted poison-owned closure changed'
+    const capture = async (run: () => ReturnType<typeof runPoisonTargetCase>) => {
+      try {
+        await run()
+        return { kind: 'resolved' as const }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return {
+          kind: 'rejected' as const,
+          reason: message.includes(closureChange) ? closureChange : message,
+        }
+      }
+    }
+
+    const heartbeatRewrite = await capture(() =>
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/claim-pending'),
+        {
+          afterInvoke: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs SET heartbeat_at_ms = 1000001
+                      WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    )
+    const launderingSuccessor = await capture(() =>
+      runPoisonTargetCase(
+        makeLibsqlFixture,
+        target('counter-bound/task-max-attempts/claim-pending'),
+        {
+          afterInvoke: (raw) =>
+            write(raw, [
+              {
+                sql: `UPDATE runs
+                      SET state = 'failed', claimed_by = NULL, claim_expires_at_ms = NULL
+                      WHERE run_id = 'poison-run'`,
+                args: [],
+              },
+              {
+                sql: `INSERT INTO runs
+                        (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+                      VALUES ('laundered-successor', 'q', 'poison-task', 2,
+                              'pending', 1000000, 1000000)`,
+                args: [],
+              },
+            ]),
+        },
+      ),
+    )
+
+    expect(
+      { heartbeatRewrite, launderingSuccessor },
+      'mutation-verdict:behavior:poison-target-closure-comparison',
+    ).toEqual({
+      heartbeatRewrite: { kind: 'rejected', reason: closureChange },
+      launderingSuccessor: { kind: 'rejected', reason: closureChange },
+    })
   })
 
   it('rejects any targeted change to the poison-owned closure', async () => {
