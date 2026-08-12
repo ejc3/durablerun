@@ -4,7 +4,7 @@ import {
   LeaseLostError,
   MAX_COUNT,
   MAX_DURATION_MS,
-  MAX_RUN_ORDINAL,
+  PERSISTED_INTEGER_BOUNDS,
   RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
@@ -1287,13 +1287,14 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('leaves an expired claim unchanged when its ordinal exceeds the protocol bound', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         const spawned = await f.store.spawn(Q, 'overflowed-run-ordinal', '{}')
         const run = await claimOne('tick-overflowed-run-ordinal')
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
         await f.raw.batch('corrupt-run-ordinal', [
           {
             sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [MAX_RUN_ORDINAL + 1, run.runId],
+            args: [runOrdinalMaximum + 1, run.runId],
           },
         ])
         await f.admin.setFakeNowEpochMs(1_100_000)
@@ -1312,7 +1313,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('accepts the maximum ordinal at the terminal infra-cap branch', async () => {
-        await f.store.spawn(Q, 'max-run-ordinal', '{}', { maxAttempts: MAX_COUNT })
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
+        const maxUserAttempts = runOrdinalMaximum - INFRA_RETRY_CAP
+        await f.store.spawn(Q, 'max-run-ordinal', '{}', { maxAttempts: maxUserAttempts })
         const run = await claimOne('tick-max-run-ordinal')
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
         await f.raw.batch('seed-max-run-ordinal', [
@@ -1320,18 +1323,18 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             sql: `UPDATE tasks
                   SET attempts = ?, max_attempts = ?, infra_retries = ?
                   WHERE task_id = ?`,
-            args: [MAX_COUNT - 1, MAX_COUNT, INFRA_RETRY_CAP, run.taskId],
+            args: [maxUserAttempts - 1, maxUserAttempts, INFRA_RETRY_CAP, run.taskId],
           },
           {
             sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [MAX_RUN_ORDINAL, run.runId],
+            args: [runOrdinalMaximum, run.runId],
           },
         ])
         await f.admin.setFakeNowEpochMs(1_100_000)
 
         expect(
           await f.store.sweep(Q, 10),
-          'mutation-verdict:behavior:sweep-accepts-max-ordinal-at-infra-cap',
+          'sweep accepts the canonical run-ordinal maximum',
         ).toEqual([{ kind: 'infra-cap-exhausted', runId: run.runId, taskId: run.taskId }])
       })
 
@@ -1955,9 +1958,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         },
         {
           id: 'owner-attempt-out-of-range',
-          owner: { task: 'current', queue: Q, attempt: MAX_RUN_ORDINAL + 1 },
+          owner: {
+            task: 'current',
+            queue: Q,
+            attempt: PERSISTED_INTEGER_BOUNDS.runs.attempt.max + 1,
+          },
           checkpointQueue: Q,
-          ownerAttempt: MAX_RUN_ORDINAL + 1,
+          ownerAttempt: PERSISTED_INTEGER_BOUNDS.runs.attempt.max + 1,
           requireFailure: {
             'checkpoint-write': (action) =>
               requireExpectedFailure(
@@ -2203,10 +2210,11 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         )
 
         expect(await snapshot(f, run.taskId)).toEqual(before)
-        expect(await f.store.getCheckpoints(Q, run.taskId, MAX_RUN_ORDINAL)).toEqual([])
+        expect(await f.store.getCheckpoints(Q, run.taskId, run.attempt)).toEqual([])
       })
 
       it('rejects an out-of-range stored owner attempt before extending the lease', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         await f.store.spawn(Q, 'overflowed-checkpoint-owner', '{}')
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
         if (!run) throw new Error('expected claim')
@@ -2214,7 +2222,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('corrupt-checkpoint-owner-bound', [
           {
             sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [MAX_RUN_ORDINAL + 1, run.runId],
+            args: [runOrdinalMaximum + 1, run.runId],
           },
         ])
         const before = await snapshot(f, run.taskId)
@@ -2447,6 +2455,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('validates checkpoint visibility through the run-ordinal input domain', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         let executorCalls = 0
         const forbiddenExecutor: SqlExecutor = {
           batch: async () => {
@@ -2459,7 +2468,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const invalidAttempts = [
           { name: 'zero', value: 0 },
           { name: 'fractional', value: 1.5 },
-          { name: 'above-bound', value: MAX_RUN_ORDINAL + 1 },
+          { name: 'above-bound', value: runOrdinalMaximum + 1 },
           { name: 'nan', value: Number.NaN },
           { name: 'infinity', value: Number.POSITIVE_INFINITY },
           { name: 'bigint', value: 1n as unknown as number },
@@ -2488,7 +2497,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
 
         expect(await f.store.getCheckpoints(Q, 'missing-task', 1)).toEqual([])
-        expect(await f.store.getCheckpoints(Q, 'missing-task', MAX_RUN_ORDINAL)).toEqual([])
+        expect(await f.store.getCheckpoints(Q, 'missing-task', runOrdinalMaximum)).toEqual([])
       })
 
       it('visibility filters by owner attempt', async () => {
@@ -2536,6 +2545,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('accepts the maximum legal run ordinal in checkpoint ownership', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
         if (!run) throw new Error('expected claim')
@@ -2546,18 +2556,18 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             sql: `INSERT INTO runs
                     (run_id, queue, task_id, attempt, state, created_at_ms)
                   VALUES ('max-checkpoint-owner', ?, ?, ?, 'failed', 1000000)`,
-            args: [Q, run.taskId, MAX_RUN_ORDINAL],
+            args: [Q, run.taskId, runOrdinalMaximum],
           },
           {
             sql: `UPDATE checkpoints
                   SET owner_run_id = 'max-checkpoint-owner', owner_attempt = ?
                   WHERE task_id = ? AND checkpoint_name = 's'`,
-            args: [MAX_RUN_ORDINAL, run.taskId],
+            args: [runOrdinalMaximum, run.taskId],
           },
         ])
 
-        expect(await f.store.getCheckpoints(Q, run.taskId, MAX_RUN_ORDINAL)).toMatchObject([
-          { checkpointName: 's', ownerAttempt: MAX_RUN_ORDINAL },
+        expect(await f.store.getCheckpoints(Q, run.taskId, runOrdinalMaximum)).toMatchObject([
+          { checkpointName: 's', ownerAttempt: runOrdinalMaximum },
         ])
       })
     })

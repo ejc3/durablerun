@@ -3,8 +3,7 @@ import {
   FencedBatch,
   INFRA_RETRY_CAP,
   LeaseLostError,
-  MAX_COUNT,
-  MAX_RUN_ORDINAL,
+  PERSISTED_INTEGER_BOUNDS,
   REASON_CLAIM_TIMEOUT,
   RELAUNCH_CAP,
   type SqlExecutor,
@@ -759,23 +758,25 @@ describe('fence provenance', () => {
   it('claim accepts the exact maximum run ordinal including the full infrastructure budget', async () => {
     const f = await fixture()
     try {
-      const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: MAX_COUNT })
+      const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
+      const maxUserAttempts = runOrdinalMaximum - INFRA_RETRY_CAP
+      const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: maxUserAttempts })
       await f.raw.batch('at-run-ordinal-bound', [
         {
           sql: `UPDATE tasks SET attempts = ?, infra_retries = ? WHERE task_id = ?`,
-          args: [MAX_COUNT - 1, INFRA_RETRY_CAP, spawned.taskId],
+          args: [maxUserAttempts - 1, INFRA_RETRY_CAP, spawned.taskId],
         },
         {
           sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-          args: [MAX_RUN_ORDINAL, spawned.runId],
+          args: [runOrdinalMaximum, spawned.runId],
         },
       ])
 
       const [claim] = await f.store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
       expect(claim).toMatchObject({
-        attempt: MAX_RUN_ORDINAL,
+        attempt: runOrdinalMaximum,
         infraRetries: INFRA_RETRY_CAP,
-        maxAttempts: MAX_COUNT,
+        maxAttempts: maxUserAttempts,
       })
       expect(await engineInvariantViolations(f.raw)).toEqual([])
     } finally {

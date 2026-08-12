@@ -4783,10 +4783,10 @@ VERDICTS = {
     ),
     "sweep-accepts-max-ordinal-at-infra-cap": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] sweep classification accepts the maximum ordinal at the terminal infra-cap branch",
+        "packages/core/test/bounded-integer.test.ts",
+        "decodeBoundedInteger validates the numeric run-ordinal interval through one fixed domain",
         "mutation-verdict:behavior:sweep-accepts-max-ordinal-at-infra-cap",
-        "packages/conformance/src/suite.ts",
+        "packages/core/test/bounded-integer.test.ts",
     ),
     "poison-relational-target-attempts-at-max-with-live-run": ExpectedVerdict(
         "construction",
