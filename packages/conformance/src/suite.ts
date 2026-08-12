@@ -942,251 +942,120 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('quiesces terminal activated timeouts across normal and corrupt-relaunch discovery paths', async () => {
-        const normalSpawned = await f.store.spawn(Q, 'terminal-timeout-owner-aggregate', '{}')
-        const normalRun = await claimOne('tick-terminal-timeout-owner-aggregate')
-        const normalActivated = await f.store.activate(
-          Q,
-          normalRun.runId,
-          normalRun.claimToken,
-          normalRun.claimGen,
-        )
-        await f.raw.batch('terminalize-timeout-owner-aggregate', [
-          {
-            sql: `UPDATE tasks
-                  SET state = 'failed', attempts = max_attempts,
-                      failure_reason = '{"name":"External"}'
-                  WHERE task_id = ?`,
-            args: [normalSpawned.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [normalRun.maxAttempts, normalRun.runId],
-          },
-        ])
-        await f.admin.setFakeNowEpochMs(1_100_000)
+        async function observeTerminalTimeout(corruptRelaunch: boolean, nowEpochMs: number) {
+          const label = corruptRelaunch ? 'corrupt-relaunch' : 'normal'
+          const spawned = await f.store.spawn(Q, `terminal-timeout-${label}-aggregate`, '{}')
+          const run = await claimOne(`tick-terminal-timeout-${label}-aggregate`)
+          const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          await f.raw.batch(`terminalize-timeout-${label}-aggregate`, [
+            {
+              sql: `UPDATE tasks
+                    SET state = 'failed', attempts = max_attempts,
+                        failure_reason = '{"name":"External"}'
+                    WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+              args: [run.maxAttempts, run.runId],
+            },
+          ])
+          const corruptionDisposition = corruptRelaunch
+            ? await executeStorageCorruption(f, {
+                table: 'runs',
+                runId: run.runId,
+                column: 'relaunch_count',
+                invalidRepresentation: 'fractional-real',
+              })
+            : null
+          await f.admin.setFakeNowEpochMs(nowEpochMs)
 
-        const normalSwept = await f.store.sweep(Q, 10)
-        const [normalTask, normalStoredRun] = await f.raw.batch(
-          'terminal-timeout-owner-aggregate:assert',
-          [
-            {
-              sql: `SELECT state, attempts, max_attempts
-                    FROM tasks WHERE task_id = ?`,
-              args: [normalSpawned.taskId],
-            },
-            {
-              sql: `SELECT state, claimed_by FROM runs WHERE run_id = ?`,
-              args: [normalRun.runId],
-            },
-          ],
-          'read',
-        )
+          const swept =
+            corruptionDisposition === 'injected'
+              ? await attributeExpectedFailure(
+                  { kind: 'behavior', mutation: 'terminal-timeout-decode-ignores-relaunch' },
+                  (error) =>
+                    error instanceof RangeError &&
+                    error.message ===
+                      `sweep.relaunch_count must be an exact SQL integer in [0, ${RELAUNCH_CAP}], got number (not-an-exact-integer)`,
+                  () => f.store.sweep(Q, 10),
+                )
+              : await f.store.sweep(Q, 10)
+          const [task, storedRun] = await f.raw.batch(
+            `terminal-timeout-${label}-aggregate:assert`,
+            [
+              {
+                sql: `SELECT state, attempts, max_attempts, failure_reason
+                      FROM tasks WHERE task_id = ?`,
+                args: [spawned.taskId],
+              },
+              {
+                sql: `SELECT state, claimed_by, relaunch_count FROM runs WHERE run_id = ?`,
+                args: [run.runId],
+              },
+            ],
+            'read',
+          )
 
-        const corruptSpawned = await f.store.spawn(
-          Q,
-          'terminal-timeout-corrupt-relaunch-aggregate',
-          '{}',
-        )
-        const corruptRun = await claimOne('tick-terminal-timeout-corrupt-relaunch-aggregate')
-        const corruptActivated = await f.store.activate(
-          Q,
-          corruptRun.runId,
-          corruptRun.claimToken,
-          corruptRun.claimGen,
-        )
-        await f.raw.batch('terminalize-timeout-corrupt-relaunch-aggregate', [
-          {
-            sql: `UPDATE tasks
-                  SET state = 'failed', attempts = max_attempts,
-                      failure_reason = '{"name":"External"}'
-                  WHERE task_id = ?`,
-            args: [corruptSpawned.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [corruptRun.maxAttempts, corruptRun.runId],
-          },
-        ])
-        const disposition = await executeStorageCorruption(f, {
-          table: 'runs',
-          runId: corruptRun.runId,
-          column: 'relaunch_count',
-          invalidRepresentation: 'fractional-real',
-        })
-        await f.admin.setFakeNowEpochMs(1_200_000)
+          return {
+            corruptionDisposition,
+            maxAttempts: run.maxAttempts,
+            observation: {
+              activated: activated !== null,
+              swept,
+              task: task?.rows[0],
+              run: storedRun?.rows[0],
+            },
+          }
+        }
 
-        const corruptSwept =
-          disposition === 'injected'
-            ? await attributeExpectedFailure(
-                { kind: 'behavior', mutation: 'terminal-timeout-decode-ignores-relaunch' },
-                (error) =>
-                  error instanceof RangeError &&
-                  error.message ===
-                    `sweep.relaunch_count must be an exact SQL integer in [0, ${RELAUNCH_CAP}], got number (not-an-exact-integer)`,
-                () => f.store.sweep(Q, 10),
-              )
-            : await f.store.sweep(Q, 10)
-        const [corruptTask, corruptStoredRun] = await f.raw.batch(
-          'terminal-timeout-corrupt-relaunch-aggregate:assert',
-          [
-            {
-              sql: `SELECT state, attempts, max_attempts, failure_reason
-                    FROM tasks WHERE task_id = ?`,
-              args: [corruptSpawned.taskId],
-            },
-            {
-              sql: `SELECT state, claimed_by, relaunch_count FROM runs WHERE run_id = ?`,
-              args: [corruptRun.runId],
-            },
-          ],
-          'read',
-        )
+        const normal = await observeTerminalTimeout(false, 1_100_000)
+        const corrupt = await observeTerminalTimeout(true, 1_200_000)
 
         expect(
-          {
-            activated: normalActivated !== null,
-            swept: normalSwept,
-            task: normalTask?.rows[0],
-            run: normalStoredRun?.rows[0],
-          },
+          normal.observation,
           'mutation-verdict:behavior:sweep-quiesces-terminal-timeout-owner',
         ).toEqual({
           activated: true,
           swept: [],
           task: {
             state: 'failed',
-            attempts: normalRun.maxAttempts,
-            max_attempts: normalRun.maxAttempts,
-          },
-          run: { state: 'failed', claimed_by: null },
-        })
-        if (disposition === 'structurally-rejected') return
-        expect(
-          {
-            activated: corruptActivated !== null,
-            swept: corruptSwept,
-            task: corruptTask?.rows[0],
-            run: corruptStoredRun?.rows[0],
-          },
-          'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
-        ).toEqual({
-          activated: true,
-          swept: [],
-          task: {
-            state: 'failed',
-            attempts: corruptRun.maxAttempts,
-            max_attempts: corruptRun.maxAttempts,
+            attempts: normal.maxAttempts,
+            max_attempts: normal.maxAttempts,
             failure_reason: '{"name":"External"}',
           },
-          run: { state: 'failed', claimed_by: null, relaunch_count: 0.5 },
+          run: { state: 'failed', claimed_by: null, relaunch_count: 0 },
         })
-      })
 
-      it('quiesces an activated expired run under a terminal final-attempt owner', async () => {
-        const spawned = await f.store.spawn(Q, 'terminal-timeout-owner', '{}')
-        const run = await claimOne('tick-terminal-timeout-owner')
-        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
-        await f.raw.batch('terminalize-timeout-owner', [
-          {
-            sql: `UPDATE tasks
-                  SET state = 'failed', attempts = max_attempts,
-                      failure_reason = '{"name":"External"}'
-                  WHERE task_id = ?`,
-            args: [spawned.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [run.maxAttempts, run.runId],
-          },
-        ])
-        await f.admin.setFakeNowEpochMs(1_100_000)
-
-        expect(await f.store.sweep(Q, 10)).toEqual([])
-        const [task, runs] = await f.raw.batch(
-          'terminal-timeout-owner:assert',
-          [
-            {
-              sql: `SELECT state, attempts, max_attempts
-                    FROM tasks WHERE task_id = ?`,
-              args: [spawned.taskId],
+        if (corrupt.corruptionDisposition === 'structurally-rejected') {
+          expect(corrupt.observation).toEqual({
+            activated: true,
+            swept: [],
+            task: {
+              state: 'failed',
+              attempts: corrupt.maxAttempts,
+              max_attempts: corrupt.maxAttempts,
+              failure_reason: '{"name":"External"}',
             },
-            {
-              sql: `SELECT state, claimed_by FROM runs WHERE task_id = ?`,
-              args: [spawned.taskId],
+            run: { state: 'failed', claimed_by: null, relaunch_count: 0 },
+          })
+        } else {
+          expect(corrupt.corruptionDisposition).toBe('injected')
+          expect(
+            corrupt.observation,
+            'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
+          ).toEqual({
+            activated: true,
+            swept: [],
+            task: {
+              state: 'failed',
+              attempts: corrupt.maxAttempts,
+              max_attempts: corrupt.maxAttempts,
+              failure_reason: '{"name":"External"}',
             },
-          ],
-          'read',
-        )
-        expect(task?.rows[0]).toMatchObject({
-          state: 'failed',
-          attempts: run.maxAttempts,
-          max_attempts: run.maxAttempts,
-        })
-        expect(
-          runs?.rows,
-          'mutation-verdict:behavior:sweep-quiesces-terminal-timeout-owner',
-        ).toEqual([{ state: 'failed', claimed_by: null }])
-      })
-
-      it('quiesces a terminal activated timeout despite an unrelated corrupt relaunch counter', async () => {
-        const spawned = await f.store.spawn(Q, 'terminal-timeout-corrupt-relaunch', '{}')
-        const run = await claimOne('tick-terminal-timeout-corrupt-relaunch')
-        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
-        await f.raw.batch('terminalize-timeout-corrupt-relaunch', [
-          {
-            sql: `UPDATE tasks
-                  SET state = 'failed', attempts = max_attempts,
-                      failure_reason = '{"name":"External"}'
-                  WHERE task_id = ?`,
-            args: [spawned.taskId],
-          },
-        ])
-        const disposition = await executeStorageCorruption(f, {
-          table: 'runs',
-          runId: run.runId,
-          column: 'relaunch_count',
-          invalidRepresentation: 'fractional-real',
-        })
-        if (disposition === 'structurally-rejected') return
-        await f.admin.setFakeNowEpochMs(1_100_000)
-
-        const swept = await attributeExpectedFailure(
-          { kind: 'behavior', mutation: 'terminal-timeout-decode-ignores-relaunch' },
-          (error) =>
-            error instanceof RangeError &&
-            error.message ===
-              `sweep.relaunch_count must be an exact SQL integer in [0, ${RELAUNCH_CAP}], got number (not-an-exact-integer)`,
-          () => f.store.sweep(Q, 10),
-        )
-        expect(
-          swept,
-          'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
-        ).toEqual([])
-        const [task, storedRun] = await f.raw.batch(
-          'terminal-timeout-corrupt-relaunch:assert',
-          [
-            {
-              sql: `SELECT state, attempts, max_attempts, failure_reason
-                    FROM tasks WHERE task_id = ?`,
-              args: [spawned.taskId],
-            },
-            {
-              sql: `SELECT state, claimed_by FROM runs WHERE run_id = ?`,
-              args: [run.runId],
-            },
-          ],
-          'read',
-        )
-        expect(task?.rows[0]).toMatchObject({
-          state: 'failed',
-          attempts: run.maxAttempts,
-          max_attempts: run.maxAttempts,
-          failure_reason: '{"name":"External"}',
-        })
-        expect(
-          storedRun?.rows,
-          'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
-        ).toEqual([{ state: 'failed', claimed_by: null }])
+            run: { state: 'failed', claimed_by: null, relaunch_count: 0.5 },
+          })
+        }
       })
 
       it('quiesces a relaunch-cap run under a terminal owner without reviving its task', async () => {
