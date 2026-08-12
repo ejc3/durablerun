@@ -20,6 +20,8 @@ Usage: mutation-probe.py [-k substring] [--jobs auto|N]
        mutation-probe.py --classifier-self-test [--self-test-fault FAULT]
        mutation-probe.py --orchestration-self-test
                          [--orchestration-self-test-fault FAULT]
+       mutation-probe.py --routing-self-test
+                         [--routing-self-test-fault FAULT]
        mutation-probe.py --suite-timeout-self-test-child
 """
 from __future__ import annotations
@@ -6126,6 +6128,8 @@ def typecheck_command(project: TypecheckProject) -> list[str]:
 
 def mutation_typecheck_projects(
     mutations: list[Mutation],
+    *,
+    routing_self_test_fault: str | None = None,
 ) -> tuple[TypecheckProject, ...]:
     projects: set[TypecheckProject] = set()
     for mutation in mutations:
@@ -6137,6 +6141,47 @@ def mutation_typecheck_projects(
     ordered = tuple(project for project in TYPECHECK_PROJECT_ORDER if project in projects)
     if len(ordered) != len(projects):
         raise ValueError(f"unknown mutation typecheck projects {sorted(projects)!r}")
+    if routing_self_test_fault == "skip-store-typecheck" and ordered == (
+        "store-libsql",
+    ):
+        return ()
+    if routing_self_test_fault == "misroute-store-typecheck" and ordered == (
+        "store-libsql",
+    ):
+        return ("conformance",)
+    if routing_self_test_fault == "duplicate-store-typecheck" and ordered == (
+        "store-libsql",
+    ):
+        return ("store-libsql", "store-libsql")
+    if routing_self_test_fault == "skip-conformance-typecheck" and ordered == (
+        "conformance",
+    ):
+        return ()
+    if routing_self_test_fault == "misroute-conformance-typecheck" and ordered == (
+        "conformance",
+    ):
+        return ("store-libsql",)
+    if routing_self_test_fault == "duplicate-conformance-typecheck" and ordered == (
+        "conformance",
+    ):
+        return ("conformance", "conformance")
+    if (
+        routing_self_test_fault == "reverse-typecheck-project-order"
+        and len(ordered) > 1
+    ):
+        return tuple(reversed(ordered))
+    if routing_self_test_fault == "typecheck-behavior-only" and not ordered:
+        return ("store-libsql",)
+    if (
+        routing_self_test_fault == "typecheck-vitest-construction-baseline"
+        and not ordered
+        and any(
+            mutation.verdict.kind == "construction"
+            and mutation.typecheck_project is None
+            for mutation in mutations
+        )
+    ):
+        return ("store-libsql",)
     return ordered
 
 
@@ -8335,6 +8380,86 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
 )
 
 
+ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS = {
+    "skip-store-typecheck": (
+        "store baseline: expected verifier trace "
+        "['vitest', 'tsc:store-libsql'], observed ['vitest']"
+    ),
+    "misroute-store-typecheck": (
+        "store baseline: expected verifier trace "
+        "['vitest', 'tsc:store-libsql'], observed "
+        "['vitest', 'tsc:conformance']"
+    ),
+    "duplicate-store-typecheck": (
+        "store baseline: expected verifier trace "
+        "['vitest', 'tsc:store-libsql'], observed "
+        "['vitest', 'tsc:store-libsql', 'tsc:store-libsql']"
+    ),
+    "skip-conformance-typecheck": (
+        "conformance baseline: expected verifier trace "
+        "['vitest', 'tsc:conformance'], observed ['vitest']"
+    ),
+    "misroute-conformance-typecheck": (
+        "conformance baseline: expected verifier trace "
+        "['vitest', 'tsc:conformance'], observed "
+        "['vitest', 'tsc:store-libsql']"
+    ),
+    "duplicate-conformance-typecheck": (
+        "conformance baseline: expected verifier trace "
+        "['vitest', 'tsc:conformance'], observed "
+        "['vitest', 'tsc:conformance', 'tsc:conformance']"
+    ),
+    "skip-vitest": (
+        "behavior baseline: expected verifier trace ['vitest'], observed []"
+    ),
+    "reverse-typecheck-project-order": (
+        "mixed baseline: expected verifier trace "
+        "['vitest', 'tsc:store-libsql', 'tsc:conformance'], observed "
+        "['vitest', 'tsc:conformance', 'tsc:store-libsql']"
+    ),
+    "typecheck-behavior-only": (
+        "behavior baseline: expected verifier trace ['vitest'], observed "
+        "['vitest', 'tsc:store-libsql']"
+    ),
+    "typecheck-vitest-construction-baseline": (
+        "Vitest construction baseline: expected verifier trace ['vitest'], "
+        "observed ['vitest', 'tsc:store-libsql']"
+    ),
+    "continue-after-vitest-red": (
+        "vitest-red baseline: expected verifier trace ['vitest:red'], observed "
+        "['vitest:red', 'tsc:store-libsql', 'tsc:conformance']"
+    ),
+    "continue-after-store-typecheck-red": (
+        "store-red baseline: expected verifier trace "
+        "['vitest', 'tsc:store-libsql:red'], observed "
+        "['vitest', 'tsc:store-libsql:red', 'tsc:conformance']"
+    ),
+    "accept-conformance-typecheck-red": (
+        "conformance-red baseline: expected status 2, observed 0"
+    ),
+    "misroute-conformance-mutation": (
+        "conformance mutation dispatch: expected verifier trace "
+        "['tsc:conformance'], observed ['tsc:store-libsql']"
+    ),
+    "misroute-store-mutation": (
+        "store mutation dispatch: expected verifier trace "
+        "['tsc:store-libsql'], observed ['tsc:conformance']"
+    ),
+    "typecheck-behavior-mutation": (
+        "behavior mutation dispatch: expected verifier trace "
+        "['vitest'], observed ['tsc:store-libsql']"
+    ),
+    "typecheck-vitest-construction-mutation": (
+        "Vitest construction mutation dispatch: expected verifier trace "
+        "['vitest'], observed ['tsc:store-libsql']"
+    ),
+    "omit-typecheck-project-from-registry-digest": (
+        "registry digest did not change when only typecheck_project changed"
+    ),
+}
+ROUTING_SELF_TEST_FAULTS = tuple(ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS)
+
+
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -8346,7 +8471,10 @@ def expected_verdict(mutation: Mutation) -> str:
     )
 
 
-def mutation_registry_digest() -> str:
+def mutation_registry_digest(
+    *,
+    omit_typecheck_project: bool = False,
+) -> str:
     payload = [
         {
             "name": mutation.name,
@@ -8355,7 +8483,9 @@ def mutation_registry_digest() -> str:
             "replace": mutation.replace,
             "breaks": mutation.breaks,
             "verifier": mutation.verifier,
-            "typecheck_project": mutation.typecheck_project,
+            "typecheck_project": (
+                None if omit_typecheck_project else mutation.typecheck_project
+            ),
             "verdict": {
                 "kind": mutation.verdict.kind,
                 "file": mutation.verdict.file,
@@ -10151,6 +10281,7 @@ def execute_mutation(
     scope: ConfinedScope,
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
+    routing_self_test_fault: str | None = None,
 ) -> dict[str, object]:
     path = ROOT / mutation.file
     original = path.read_text()
@@ -10176,12 +10307,37 @@ def execute_mutation(
             raise RuntimeError(
                 f"{mutation.name}: worker diff is {changed}, expected only {mutation.file}"
             )
-        if mutation.verifier == "typecheck":
-            if mutation.typecheck_project is None:
+        if (
+            mutation.verifier == "typecheck"
+            or routing_self_test_fault
+            in (
+                "typecheck-behavior-mutation",
+                "typecheck-vitest-construction-mutation",
+            )
+        ):
+            if (
+                mutation.typecheck_project is None
+                and routing_self_test_fault
+                not in (
+                    "typecheck-behavior-mutation",
+                    "typecheck-vitest-construction-mutation",
+                )
+            ):
                 raise RuntimeError(f"{mutation.name}: typecheck mutation has no project")
+            project = mutation.typecheck_project or "store-libsql"
+            if (
+                routing_self_test_fault == "misroute-conformance-mutation"
+                and project == "conformance"
+            ):
+                project = "store-libsql"
+            elif (
+                routing_self_test_fault == "misroute-store-mutation"
+                and project == "store-libsql"
+            ):
+                project = "conformance"
             result = run_typecheck(
                 mutation.verdict,
-                project=mutation.typecheck_project,
+                project=project,
                 scope=scope,
                 workspace=workspace,
                 authority=authority,
@@ -10226,6 +10382,7 @@ def worker_phase(
     run_root: Path,
     nonce: str,
     baseline_barrier: str | None,
+    routing_self_test_fault: str | None = None,
 ) -> int:
     if os.environ.get(CONFINEMENT_ENV) != "1":
         print("mutation-probe worker refuses to run outside its coordinator scope", file=sys.stderr)
@@ -10272,15 +10429,24 @@ def worker_phase(
         for name in mutation_names
     ]
     if phase == "baseline":
-        baseline = run_suite(
-            max_workers,
-            scope=scope,
-            workspace=workspace,
-            authority=authority,
-        )
-        if baseline.green:
+        if routing_self_test_fault == "skip-vitest":
+            baseline = SuiteResult(True, True, (), (), "")
+        else:
+            baseline = run_suite(
+                max_workers,
+                scope=scope,
+                workspace=workspace,
+                authority=authority,
+            )
+        if (
+            baseline.green
+            or routing_self_test_fault == "continue-after-vitest-red"
+        ):
             assigned_mutations = [by_name[name][1] for name in mutation_names]
-            for project in mutation_typecheck_projects(assigned_mutations):
+            for project in mutation_typecheck_projects(
+                assigned_mutations,
+                routing_self_test_fault=routing_self_test_fault,
+            ):
                 baseline = run_typecheck(
                     None,
                     project=project,
@@ -10288,7 +10454,17 @@ def worker_phase(
                     workspace=workspace,
                     authority=authority,
                 )
-                if not baseline.green:
+                if (
+                    routing_self_test_fault == "accept-conformance-typecheck-red"
+                    and project == "conformance"
+                    and not baseline.green
+                ):
+                    baseline = SuiteResult(True, True, (), (), "")
+                if (
+                    not baseline.green
+                    and routing_self_test_fault
+                    != "continue-after-store-typecheck-red"
+                ):
                     break
         payload = {
             "version": REPORT_VERSION,
@@ -10353,6 +10529,400 @@ def worker_phase(
             ),
         )
     return 0 if all(row["outcome"] == "caught" for row in rows) else 1
+
+
+def routing_self_test(fault: str | None = None) -> int:
+    """Generated fault surface for verifier routing through the real worker paths."""
+    failures: list[str] = []
+    head = "a" * 40
+
+    def fixture_mutation(
+        name: str,
+        project: TypecheckProject | None,
+        *,
+        kind: VerdictKind | None = None,
+    ) -> Mutation:
+        file = f"{name}.ts"
+        verdict_kind: VerdictKind = (
+            kind
+            if kind is not None
+            else "construction" if project is not None else "behavior"
+        )
+        return Mutation(
+            name,
+            file,
+            f"{name}-guard",
+            f"{name}-removed",
+            f"{name} routing break",
+            ExpectedVerdict(
+                verdict_kind,
+                file,
+                f"{name} attributable verdict",
+                f"mutation-verdict:{verdict_kind}:{name}",
+            ),
+            verifier="typecheck" if project is not None else "vitest",
+            typecheck_project=project,
+        )
+
+    behavior = fixture_mutation("routing-behavior", None)
+    vitest_construction = fixture_mutation(
+        "routing-vitest-construction",
+        None,
+        kind="construction",
+    )
+    store = fixture_mutation("routing-store", "store-libsql")
+    conformance = fixture_mutation("routing-conformance", "conformance")
+    fixture_mutations = [behavior, vitest_construction, store, conformance]
+
+    green = SuiteResult(True, True, (), (), "")
+    red = SuiteResult(
+        False,
+        False,
+        (FailedAssertion("routing.test.ts", "routing red", ("routing red",)),),
+        (),
+        "routing red",
+    )
+    verifier_trace: list[str] = []
+    active_case = [""]
+    dispatch_file = [""]
+    production_digest = mutation_registry_digest
+
+    def fixture_git_output(_root: Path, *arguments: str) -> str:
+        if arguments == ("rev-parse", "HEAD^{commit}"):
+            return head
+        if arguments == ("diff", "--name-only", "--"):
+            return dispatch_file[0]
+        if arguments == ("status", "--porcelain"):
+            return ""
+        return ""
+
+    fixture_authority = WorkerAuthority(
+        Path("/routing-self-test/run"),
+        Path("/routing-self-test/worker"),
+        0,
+        head,
+        "routing-self-test-nonce",
+        InheritedAuditLock(Path("/routing-self-test/audit.lock"), -1, 0, 0),
+    )
+
+    def fixture_run_suite(
+        _max_workers: int,
+        **_arguments: object,
+    ) -> SuiteResult:
+        dispatch_verdict = {
+            "dispatch-behavior": behavior.verdict,
+            "dispatch-Vitest construction": vitest_construction.verdict,
+        }.get(active_case[0])
+        if dispatch_verdict is not None:
+            verifier_trace.append("vitest")
+            return SuiteResult(
+                False,
+                False,
+                (
+                    FailedAssertion(
+                        dispatch_verdict.file,
+                        dispatch_verdict.full_name,
+                        (dispatch_verdict.marker,),
+                    ),
+                ),
+                (),
+                "",
+            )
+        if active_case[0] == "vitest-red":
+            verifier_trace.append("vitest:red")
+            return red
+        verifier_trace.append("vitest")
+        return green
+
+    def fixture_run_typecheck(
+        expected: ExpectedVerdict | None,
+        *,
+        project: TypecheckProject,
+        **_arguments: object,
+    ) -> SuiteResult:
+        suffix = ""
+        result = green
+        if active_case[0] == "store-red" and project == "store-libsql":
+            suffix = ":red"
+            result = red
+        elif active_case[0] == "conformance-red" and project == "conformance":
+            suffix = ":red"
+            result = red
+        verifier_trace.append(f"tsc:{project}{suffix}")
+        if expected is not None:
+            return SuiteResult(
+                False,
+                False,
+                (
+                    FailedAssertion(
+                        expected.file,
+                        expected.full_name,
+                        (expected.marker,),
+                    ),
+                ),
+                (),
+                "",
+            )
+        return result
+
+    patched = {
+        "ROOT": Path("/routing-self-test/unset"),
+        "assert_clean": lambda _root=ROOT: None,
+        "git_output": fixture_git_output,
+        "prove_confined_scope": lambda: ConfinedScope("routing-self-test", 1, 1, 1),
+        "prove_worker_authority": lambda **_arguments: fixture_authority,
+        "prove_workspace_links": lambda root: IsolatedWorkspace(root.resolve()),
+        "run_suite": fixture_run_suite,
+        "run_typecheck": fixture_run_typecheck,
+    }
+    originals = {name: globals()[name] for name in patched}
+    original_mutations = MUTATIONS[:]
+    original_scope = os.environ.get(CONFINEMENT_ENV)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="durablerun-routing-selftest-"
+        ) as temporary_text:
+            temporary = Path(temporary_text)
+            for mutation in fixture_mutations:
+                (temporary / mutation.file).write_text(f"{mutation.find}\n")
+            patched["ROOT"] = temporary
+            globals().update(patched)
+            MUTATIONS[:] = fixture_mutations
+            os.environ[CONFINEMENT_ENV] = "1"
+
+            baseline_cases = (
+                (
+                    "store",
+                    [store.name],
+                    ["vitest", "tsc:store-libsql"],
+                    0,
+                ),
+                (
+                    "conformance",
+                    [conformance.name],
+                    ["vitest", "tsc:conformance"],
+                    0,
+                ),
+                (
+                    "mixed",
+                    [store.name, conformance.name],
+                    ["vitest", "tsc:store-libsql", "tsc:conformance"],
+                    0,
+                ),
+                ("behavior", [behavior.name], ["vitest"], 0),
+                (
+                    "Vitest construction",
+                    [vitest_construction.name],
+                    ["vitest"],
+                    0,
+                ),
+                ("vitest-red", [store.name, conformance.name], ["vitest:red"], 2),
+                (
+                    "store-red",
+                    [store.name, conformance.name],
+                    ["vitest", "tsc:store-libsql:red"],
+                    2,
+                ),
+                (
+                    "conformance-red",
+                    [conformance.name],
+                    ["vitest", "tsc:conformance:red"],
+                    2,
+                ),
+            )
+            baseline_fault_cases = {
+                "skip-store-typecheck": "store",
+                "misroute-store-typecheck": "store",
+                "duplicate-store-typecheck": "store",
+                "skip-conformance-typecheck": "conformance",
+                "misroute-conformance-typecheck": "conformance",
+                "duplicate-conformance-typecheck": "conformance",
+                "skip-vitest": "behavior",
+                "reverse-typecheck-project-order": "mixed",
+                "typecheck-behavior-only": "behavior",
+                "typecheck-vitest-construction-baseline": "Vitest construction",
+                "continue-after-vitest-red": "vitest-red",
+                "continue-after-store-typecheck-red": "store-red",
+                "accept-conformance-typecheck-red": "conformance-red",
+            }
+            report_path = temporary / "baseline.json"
+            for label, mutation_names, expected_trace, expected_code in baseline_cases:
+                active_case[0] = label
+                verifier_trace.clear()
+                report_path.unlink(missing_ok=True)
+                code = worker_phase(
+                    phase="baseline",
+                    audit_lock_fd=-1,
+                    report_path=report_path,
+                    head=head,
+                    worker_id=0,
+                    mutation_names=mutation_names,
+                    max_workers=1,
+                    run_root=temporary,
+                    nonce="routing-self-test-nonce",
+                    baseline_barrier=None,
+                    routing_self_test_fault=(
+                        fault if baseline_fault_cases.get(fault) == label else None
+                    ),
+                )
+                if verifier_trace != expected_trace:
+                    failures.append(
+                        f"{label} baseline: expected verifier trace "
+                        f"{expected_trace!r}, observed {verifier_trace!r}"
+                    )
+                elif code != expected_code:
+                    failures.append(
+                        f"{label} baseline: expected status {expected_code}, observed {code}"
+                    )
+
+            dispatch_cases = (
+                ("behavior", 0, behavior, ["vitest"]),
+                ("Vitest construction", 1, vitest_construction, ["vitest"]),
+                ("store", 2, store, ["tsc:store-libsql"]),
+                ("conformance", 3, conformance, ["tsc:conformance"]),
+            )
+            dispatch_fault_cases = {
+                "misroute-store-mutation": "store",
+                "misroute-conformance-mutation": "conformance",
+                "typecheck-behavior-mutation": "behavior",
+                "typecheck-vitest-construction-mutation": "Vitest construction",
+            }
+            for label, ordinal, mutation, expected_dispatch_trace in dispatch_cases:
+                active_case[0] = f"dispatch-{label}"
+                verifier_trace.clear()
+                dispatch_file[0] = mutation.file
+                expected = expected_result(ordinal, mutation, root=temporary)
+                row = execute_mutation(
+                    mutation,
+                    expected,
+                    max_workers=1,
+                    scope=ConfinedScope("routing-self-test", 1, 1, 1),
+                    workspace=IsolatedWorkspace(temporary.resolve()),
+                    authority=fixture_authority,
+                    routing_self_test_fault=(
+                        fault if dispatch_fault_cases.get(fault) == label else None
+                    ),
+                )
+                if verifier_trace != expected_dispatch_trace:
+                    failures.append(
+                        f"{label} mutation dispatch: expected verifier trace "
+                        f"{expected_dispatch_trace!r}, observed {verifier_trace!r}"
+                    )
+                elif row["outcome"] != "caught":
+                    failures.append(
+                        f"{label} mutation dispatch did not preserve its "
+                        "attributable verdict"
+                    )
+                elif (temporary / mutation.file).read_text() != f"{mutation.find}\n":
+                    failures.append(f"{label} mutation dispatch did not restore its source")
+
+            def routed_digest(mutation: Mutation) -> str:
+                MUTATIONS[:] = [mutation]
+                return production_digest(
+                    omit_typecheck_project=(
+                        fault == "omit-typecheck-project-from-registry-digest"
+                    )
+                )
+
+            same_mutation_other_project = Mutation(
+                store.name,
+                store.file,
+                store.find,
+                store.replace,
+                store.breaks,
+                store.verdict,
+                verifier=store.verifier,
+                typecheck_project="conformance",
+            )
+            store_digest = routed_digest(store)
+            conformance_digest = routed_digest(same_mutation_other_project)
+            if store_digest == conformance_digest:
+                failures.append(
+                    "registry digest did not change when only typecheck_project changed"
+                )
+            MUTATIONS[:] = fixture_mutations
+    finally:
+        MUTATIONS[:] = original_mutations
+        globals().update(originals)
+        if original_scope is None:
+            os.environ.pop(CONFINEMENT_ENV, None)
+        else:
+            os.environ[CONFINEMENT_ENV] = original_scope
+
+    if fault is not None:
+        expected_diagnostic = ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS[fault]
+        if failures == [expected_diagnostic]:
+            print(
+                "mutation-probe routing self-test caught injected fault "
+                f"{fault}: {expected_diagnostic}",
+                file=sys.stderr,
+            )
+            return 1
+        if failures:
+            print(
+                "mutation-probe routing self-test attributed injected fault "
+                f"{fault} incorrectly: expected {[expected_diagnostic]!r}, "
+                f"observed {failures!r}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "mutation-probe routing self-test MISSED injected fault "
+            f"{fault}",
+            file=sys.stderr,
+        )
+        return 0
+
+    for injected_fault, expected_diagnostic in (
+        ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS.items()
+    ):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--routing-self-test",
+                "--routing-self-test-fault",
+                injected_fault,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        marker = (
+            "mutation-probe routing self-test caught injected fault "
+            f"{injected_fault}: {expected_diagnostic}"
+        )
+        if result.returncode != 1 or marker not in (result.stdout + result.stderr):
+            failures.append(
+                "declared routing fault "
+                f"{injected_fault!r} was not caught through its CLI path"
+            )
+
+    expected_mutation_fields = {
+        "name",
+        "file",
+        "find",
+        "replace",
+        "breaks",
+        "verdict",
+        "typecheck_project",
+    }
+    if set(Mutation.__dataclass_fields__) != expected_mutation_fields:
+        failures.append(
+            "single representation: Mutation routing has fields outside its "
+            "canonical typecheck_project authority"
+        )
+
+    if failures:
+        for failure in failures:
+            print(f"mutation-probe routing self-test: {failure}", file=sys.stderr)
+        return 1
+    print(
+        "mutation-probe routing self-test: "
+        f"{len(ROUTING_SELF_TEST_FAULTS)} declared injected faults exercised "
+        "from canonical inventory through worker baseline and mutation dispatch"
+    )
+    return 0
 
 
 def mutation_checkpoint_problems() -> list[str]:
@@ -12126,6 +12696,11 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     ap.add_argument(
+        "--routing-self-test",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
         "--suite-timeout-self-test-child",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -12195,6 +12770,11 @@ def main() -> int:
         choices=ORCHESTRATION_SELF_TEST_FAULTS,
         help=argparse.SUPPRESS,
     )
+    ap.add_argument(
+        "--routing-self-test-fault",
+        choices=ROUTING_SELF_TEST_FAULTS,
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--worker-phase", choices=("baseline", "mutations"), help=argparse.SUPPRESS)
     ap.add_argument("--worker-audit-lock-fd", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--worker-result", type=Path, help=argparse.SUPPRESS)
@@ -12211,6 +12791,7 @@ def main() -> int:
         args.self_test,
         args.classifier_self_test,
         args.orchestration_self_test,
+        args.routing_self_test,
         args.suite_timeout_self_test_child,
         args.suite_linger_self_test_child,
         args.suite_interrupt_self_test_child,
@@ -12269,6 +12850,8 @@ def main() -> int:
                 ap.error(
                     "--orchestration-self-test-fault requires --orchestration-self-test"
                 )
+            if args.routing_self_test_fault is not None:
+                ap.error("--routing-self-test-fault requires --routing-self-test")
             if (
                 args.suite_timeout_self_test_fault is not None
                 and not args.suite_timeout_self_test_child
@@ -12288,23 +12871,34 @@ def main() -> int:
         if args.orchestration_self_test:
             if args.self_test_fault is not None:
                 ap.error("--self-test-fault requires --classifier-self-test")
+            if args.routing_self_test_fault is not None:
+                ap.error("--routing-self-test-fault requires --routing-self-test")
             return orchestration_self_test(args.orchestration_self_test_fault)
         if args.orchestration_self_test_fault is not None:
             ap.error(
                 "--orchestration-self-test-fault requires --orchestration-self-test"
             )
+        if args.routing_self_test:
+            if args.self_test_fault is not None:
+                ap.error("--self-test-fault requires --classifier-self-test")
+            return routing_self_test(args.routing_self_test_fault)
+        if args.routing_self_test_fault is not None:
+            ap.error("--routing-self-test-fault requires --routing-self-test")
         classifier_result = self_test(
             args.self_test_fault,
             check_live_inventory=args.self_test,
         )
         if args.self_test:
             orchestration_result = orchestration_self_test()
-            return classifier_result or orchestration_result
+            routing_result = routing_self_test()
+            return classifier_result or orchestration_result or routing_result
         return classifier_result
     if args.self_test_fault is not None:
         ap.error("--self-test-fault requires --classifier-self-test")
     if args.orchestration_self_test_fault is not None:
         ap.error("--orchestration-self-test-fault requires --orchestration-self-test")
+    if args.routing_self_test_fault is not None:
+        ap.error("--routing-self-test-fault requires --routing-self-test")
     if args.suite_self_test_state is not None:
         ap.error("--suite-self-test-state requires a suite process self-test")
     if args.suite_timeout_self_test_fault is not None:
