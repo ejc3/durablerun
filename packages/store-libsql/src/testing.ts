@@ -2,6 +2,8 @@ import type { IdSource } from '@durablerun/core'
 import { LibsqlStoreAdmin } from './admin.js'
 import { LibsqlExecutor } from './executor.js'
 
+const nextMonotoneSerial = (previous: number): number => previous + 1
+
 /**
  * A deterministic source for routine database tests.
  *
@@ -9,7 +11,10 @@ import { LibsqlExecutor } from './executor.js'
  * no UUID still receives a fresh provenance token. Zero padding preserves the
  * ordering contract of UUIDv7 stand-ins once a fixture reaches two digits.
  */
-export function testIdSource(namespace = 'test'): IdSource {
+export function testIdSource(
+  namespace = 'test',
+  options: { readonly nextTokenSerial?: (previous: number) => number } = {},
+): IdSource {
   if (!/^[a-zA-Z0-9_-]+$/.test(namespace)) {
     throw new Error(
       `test id namespace must contain only letters, digits, underscores, or hyphens: ${namespace}`,
@@ -17,10 +22,23 @@ export function testIdSource(namespace = 'test'): IdSource {
   }
   let ids = 0
   let tokens = 0
+  const proposeTokenSerial = options.nextTokenSerial ?? nextMonotoneSerial
   const serial = (value: number) => String(value).padStart(6, '0')
   return {
     uuidv7: () => `${namespace}-id-${serial(++ids)}`,
-    token: () => `${namespace}-token-${serial(++tokens)}`,
+    token: () => {
+      const proposed = proposeTokenSerial(tokens)
+      if (!Number.isSafeInteger(proposed)) {
+        throw new RangeError(`test token serial must be a safe integer: ${proposed}`)
+      }
+      if (proposed <= tokens) {
+        throw new RangeError(
+          `test token serial must strictly increase: proposed ${proposed} after ${tokens}`,
+        )
+      }
+      tokens = proposed
+      return `${namespace}-token-${serial(tokens)}`
+    },
   }
 }
 

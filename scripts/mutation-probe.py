@@ -1603,9 +1603,16 @@ MUTATION_SPECS = [
     (
         "test-token-source-monotonic",
         "packages/store-libsql/src/testing.ts",
-        "    token: () => `${namespace}-token-${serial(++tokens)}`,",
-        "    token: () => `${namespace}-token-${serial(tokens || ++tokens)}`,",
-        "routine fixtures reuse their first provenance seed on every later batch",
+        "      if (proposed <= tokens) {\n",
+        "      if (false) {\n",
+        "the test token sequencer exposes a duplicate proposed serial",
+    ),
+    (
+        "test-token-source-valid-serial",
+        "packages/store-libsql/src/testing.ts",
+        "      if (!Number.isSafeInteger(proposed)) {\n",
+        "      if (false) {\n",
+        "the test token sequencer exposes a non-integer or unsafe proposed serial",
     ),
     (
         "schema-fault-is-permanent",
@@ -5057,8 +5064,14 @@ VERDICTS = {
     "test-token-source-monotonic": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/testing.test.ts",
-        "the routine test id source keeps ids ordered and tokens unique when calls are interleaved",
+        "the routine test id source rejects a duplicate proposed token serial before exposing it",
         "mutation-verdict:behavior:test-token-source-monotonic",
+    ),
+    "test-token-source-valid-serial": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/testing.test.ts",
+        "the routine test id source requires every proposed token serial to be a safe integer",
+        "mutation-verdict:behavior:test-token-source-valid-serial",
     ),
     "schema-fault-is-permanent": ExpectedVerdict(
         "behavior",
@@ -8534,7 +8547,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 414:
+        if len(MUTATIONS) != 415:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

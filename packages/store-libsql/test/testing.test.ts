@@ -2,12 +2,28 @@ import { describe, expect, it } from 'vitest'
 import { openTestDb, testIdSource } from '../src/testing.js'
 
 describe('the routine test id source', () => {
+  const observeTokenProposals = (namespace: string, proposedSerials: readonly number[]) => {
+    const remaining = [...proposedSerials]
+    const ids = testIdSource(namespace, {
+      nextTokenSerial: () => {
+        const proposed = remaining.shift()
+        if (proposed === undefined) throw new Error('missing proposed token serial')
+        return proposed
+      },
+    })
+    const capture = (): string => {
+      try {
+        return ids.token()
+      } catch (error) {
+        return String(error)
+      }
+    }
+    return { first: capture(), attempt: capture(), retry: capture() }
+  }
+
   it('keeps ids ordered and tokens unique when calls are interleaved', () => {
     const ids = testIdSource('fixture')
-    expect(
-      [ids.token(), ids.uuidv7(), ids.uuidv7(), ids.token()],
-      'mutation-verdict:behavior:test-token-source-monotonic',
-    ).toEqual([
+    expect([ids.token(), ids.uuidv7(), ids.uuidv7(), ids.token()]).toEqual([
       'fixture-token-000001',
       'fixture-id-000001',
       'fixture-id-000002',
@@ -16,43 +32,25 @@ describe('the routine test id source', () => {
   })
 
   it('rejects a duplicate proposed token serial before exposing it', () => {
-    const testIdSourceWithSerialProposal = testIdSource as (
-      namespace: string,
-      options: { nextTokenSerial(previous: number): number },
-    ) => ReturnType<typeof testIdSource>
-    const ids = testIdSourceWithSerialProposal('guard', {
-      nextTokenSerial: () => 1,
+    expect(
+      observeTokenProposals('guard', [1, 1, 2]),
+      'mutation-verdict:behavior:test-token-source-monotonic',
+    ).toEqual({
+      first: 'guard-token-000001',
+      attempt: 'RangeError: test token serial must strictly increase: proposed 1 after 1',
+      retry: 'guard-token-000002',
     })
-
-    ids.token()
-    expect(() => ids.token(), 'regression:test-token-source-monotonic-guard').toThrow(
-      /token serial must strictly increase/,
-    )
   })
 
   it('requires every proposed token serial to be a safe integer', () => {
-    const testIdSourceWithSerialProposal = testIdSource as (
-      namespace: string,
-      options: { nextTokenSerial(previous: number): number },
-    ) => ReturnType<typeof testIdSource>
     const observations = [Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 53].map(
-      (invalid, index) => {
-        const proposals = [1, invalid, 2]
-        const ids = testIdSourceWithSerialProposal(`domain-${index}`, {
-          nextTokenSerial: () => proposals.shift() ?? 2,
-        })
-        const first = ids.token()
-        let attempt: unknown
-        try {
-          attempt = ids.token()
-        } catch (error) {
-          attempt = String(error)
-        }
-        return { invalid: String(invalid), first, attempt, retry: ids.token() }
-      },
+      (invalid, index) => ({
+        invalid: String(invalid),
+        ...observeTokenProposals(`domain-${index}`, [1, invalid, 2]),
+      }),
     )
 
-    expect(observations, 'regression:test-token-source-valid-serial').toEqual([
+    expect(observations, 'mutation-verdict:behavior:test-token-source-valid-serial').toEqual([
       {
         invalid: 'NaN',
         first: 'domain-0-token-000001',
@@ -74,8 +72,7 @@ describe('the routine test id source', () => {
       {
         invalid: '9007199254740992',
         first: 'domain-3-token-000001',
-        attempt:
-          'RangeError: test token serial must be a safe integer: 9007199254740992',
+        attempt: 'RangeError: test token serial must be a safe integer: 9007199254740992',
         retry: 'domain-3-token-000002',
       },
     ])
