@@ -1,4 +1,9 @@
-import { SchemaMismatchError, type SqlExecutor, StoreUnavailableError } from '@durablerun/core'
+import {
+  SchemaMismatchError,
+  SchemaNotInitializedError,
+  type SqlExecutor,
+  StoreUnavailableError,
+} from '@durablerun/core'
 import { attributeReplacedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -228,6 +233,34 @@ describe('migrate reports success only when the schema is current', () => {
       throw new Error('mutation-verdict:behavior:schema-absence-is-typed')
     }
     expect(observed.error).toBe(outage)
+  })
+
+  it('owns typed schema absence without accepting deceptive failure text', async () => {
+    const capture = (executor: SqlExecutor) =>
+      new LibsqlStoreAdmin(executor).schemaVersion().then(
+        (value) => ({ kind: 'resolved' as const, value }),
+        (error: unknown) => ({ kind: 'rejected' as const, error }),
+      )
+    const absent = new SchemaNotInitializedError('schema metadata has not been initialized')
+    const deceptive = new StoreUnavailableError('proxy said no such table while disconnecting')
+    const typedAbsence: SqlExecutor = {
+      batch: async () => {
+        throw absent
+      },
+    }
+    const deceptiveFailure: SqlExecutor = {
+      batch: async () => {
+        throw deceptive
+      },
+    }
+
+    const typed = await capture(typedAbsence)
+    const text = await capture(deceptiveFailure)
+
+    expect({ typed, text }, 'mutation-verdict:behavior:schema-absence-is-typed').toEqual({
+      typed: { kind: 'resolved', value: 0 },
+      text: { kind: 'rejected', error: deceptive },
+    })
   })
 
   it('requires exactly one schema-version result row', async () => {
