@@ -5,7 +5,7 @@ import {
   type PersistedTemporalFieldDescriptor,
   type SqlExecutor,
 } from '@durablerun/core'
-import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
+import { requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { executeStorageCorruption } from '../src/fixture.js'
 import { type EngineInvariantFinding, engineInvariantFindings } from '../src/invariants.js'
@@ -1490,18 +1490,6 @@ describe('poison/invariant mechanism self-tests', () => {
       ]
     }
     expect(compileOnly).toBeTypeOf('function')
-  })
-
-  it('contains an in-range fractional counter at the claim door', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-fractional-storage-guard' },
-      /targeted poison-owned closure changed|returned the poison task or run/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-fractional/task-max-attempts/claim-pending'),
-        ),
-    )
   })
 
   it('rejects every targeted rewrite of the poison-owned closure', async () => {

@@ -1359,11 +1359,54 @@ MUTATION_SPECS = [
         "the relational-target contract makes fractional run relaunch-count optional",
     ),
     (
-        "poison-fractional-storage-guard",
-        "packages/store-libsql/src/fragments.ts",
-        "export const storedInteger = (col: string): string => `typeof(${col}) = 'integer'`\n",
-        "export const storedInteger = (col: string): string => `${col} IS NOT NULL`\n",
-        "an in-range fractional REAL value is accepted as a persisted integer",
+        "poison-claim-fractional-task-max-attempts",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${storedCurrentRunAccounting(run, task)}\n"
+        "               AND ${storedHighestOwnedOrdinal(run)}",
+        "               AND ${storedCurrentRunAccounting(run, task).replace(\n"
+        "                 `typeof(${task}.max_attempts) = 'integer'`,\n"
+        "                 `${task}.max_attempts IS NOT NULL`,\n"
+        "               )}\n"
+        "               AND ${storedHighestOwnedOrdinal(run)}",
+        "claim accepts an in-range fractional REAL task max-attempts counter",
+    ),
+    (
+        "poison-claim-fractional-run-relaunch-count",
+        "packages/store-libsql/src/store.ts",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}\n"
+        "               AND ${storedCurrentRunAccounting(run, task)}\n",
+        "               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run).replace(\n"
+        "                 `typeof(${run}.relaunch_count) = 'integer'`,\n"
+        "                 `${run}.relaunch_count IS NOT NULL`,\n"
+        "               )}\n"
+        "               AND ${storedCurrentRunAccounting(run, task)}\n",
+        "claim accepts an in-range fractional REAL run relaunch-count counter",
+    ),
+    (
+        "poison-sweep-fractional-task-max-attempts",
+        "packages/store-libsql/src/store.ts",
+        "   AND ${storedCurrentRunAccounting(run, task)}\n"
+        "   AND ${storedHighestOwnedOrdinal(run)}\n",
+        "   AND ${storedCurrentRunAccounting(run, task).replace(\n"
+        "     `typeof(${task}.max_attempts) = 'integer'`,\n"
+        "     `${task}.max_attempts IS NOT NULL`,\n"
+        "   )}\n"
+        "   AND ${storedHighestOwnedOrdinal(run)}\n",
+        "sweep accepts an in-range fractional REAL task max-attempts counter",
+    ),
+    (
+        "poison-sweep-fractional-run-relaunch-count",
+        "packages/store-libsql/src/store.ts",
+        "const sweepLiveOwnerAdmissible = (run: string, task: string): string =>\n"
+        "  `${storedSweepCounters(run)}\n"
+        "   AND ${soleLiveRun(run)}\n",
+        "const sweepLiveOwnerAdmissible = (run: string, task: string): string =>\n"
+        "  `${storedSweepCounters(run).replace(\n"
+        "    `typeof(${run}.relaunch_count) = 'integer'`,\n"
+        "    `${run}.relaunch_count IS NOT NULL`,\n"
+        "  )}\n"
+        "   AND ${soleLiveRun(run)}\n",
+        "sweep accepts an in-range fractional REAL run relaunch-count counter",
     ),
     (
         "poison-claim-relaunch-upper",
@@ -4907,11 +4950,33 @@ VERDICTS = {
         "mutation-verdict:construction:poison-relational-target-counter-fractional-run-relaunch-count",
         "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
-    "poison-fractional-storage-guard": ExpectedVerdict(
+    "poison-claim-fractional-task-max-attempts": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests contains an in-range fractional counter at the claim door",
-        "mutation-verdict:behavior:poison-fractional-storage-guard",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains fractional task max-attempts across both claim profiles",
+        "mutation-verdict:behavior:poison-claim-fractional-task-max-attempts",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "poison-claim-fractional-run-relaunch-count": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains fractional run relaunch-count across both claim profiles",
+        "mutation-verdict:behavior:poison-claim-fractional-run-relaunch-count",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "poison-sweep-fractional-task-max-attempts": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains every sweep target behind pre-limit eligibility and owns exhausted-budget paths",
+        "mutation-verdict:behavior:poison-sweep-fractional-task-max-attempts",
+        "packages/conformance/src/store-conformance.ts",
+    ),
+    "poison-sweep-fractional-run-relaunch-count": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains every sweep target behind pre-limit eligibility and owns exhausted-budget paths",
+        "mutation-verdict:behavior:poison-sweep-fractional-run-relaunch-count",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "poison-claim-relaunch-upper": ExpectedVerdict(
         "behavior",
@@ -8469,7 +8534,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 411:
+        if len(MUTATIONS) != 414:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

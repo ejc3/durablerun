@@ -80,6 +80,119 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
 
 function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`poison matrix [${dialect}] (ambient write label x forbidden pre-state)`, () => {
+    type FractionalWitnessId = Extract<
+      keyof PoisonRelationalTargetRecord,
+      `counter-fractional/${string}`
+    >
+    type FractionalTargetId = `${FractionalWitnessId}/${PoisonTargetProfile}`
+    type AmbientPoisonCase = Readonly<{
+      label: (typeof POISON_WRITE_LABELS)[number]
+      witness: PoisonTargetCase['witness']
+    }>
+    type AmbientObservation = Readonly<
+      {
+        id: `ambient/${(typeof POISON_WRITE_LABELS)[number]}`
+        label: (typeof POISON_WRITE_LABELS)[number]
+        witness: PoisonTargetCase['witness']['id']
+      } & (
+        | {
+            kind: 'resolved'
+            result: { label: string; witness: PoisonTargetCase['witness']['id'] }
+          }
+        | { kind: 'rejected'; error: string }
+      )
+    >
+    type TargetObservation = Readonly<
+      {
+        id: PoisonTargetCase['id']
+        label: PoisonTargetCase['label']
+        profile: PoisonTargetCase['profile']
+        witness: PoisonTargetCase['witness']['id']
+      } & (
+        | {
+            kind: 'resolved'
+            result: {
+              label: string
+              profile: PoisonTargetCase['profile'] | undefined
+              witness: PoisonTargetCase['witness']['id']
+            }
+          }
+        | { kind: 'rejected'; error: string }
+      )
+    >
+    const fractionalWitnessIds = {
+      taskMaxAttempts: 'counter-fractional/task-max-attempts',
+      runRelaunchCount: 'counter-fractional/run-relaunch-count',
+    } as const satisfies Readonly<Record<string, FractionalWitnessId>>
+    const fractionalWitness = (id: FractionalWitnessId): PoisonTargetCase['witness'] => {
+      const witness = POISON_WITNESSES.find((candidate) => candidate.id === id)
+      if (!witness) throw new Error(`missing fractional poison witness ${id}`)
+      return witness
+    }
+    const fractionalWitnesses = {
+      taskMaxAttempts: fractionalWitness(fractionalWitnessIds.taskMaxAttempts),
+      runRelaunchCount: fractionalWitness(fractionalWitnessIds.runRelaunchCount),
+    } as const
+    const fractionalTarget = (id: FractionalTargetId): PoisonTargetCase => {
+      const target = POISON_TARGET_CASES.find((candidate) => candidate.id === id)
+      if (!target) throw new Error(`missing fractional poison target ${id}`)
+      return target
+    }
+    const fractionalTargets = {
+      taskMaxAttempts: {
+        claim: [
+          fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/claim-pending`),
+          fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/claim-sleeping`),
+        ],
+        sweep: [
+          fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/sweep-lost-launch`),
+          fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/sweep-claim-timeout`),
+        ],
+      },
+      runRelaunchCount: {
+        claim: [
+          fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/claim-pending`),
+          fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/claim-sleeping`),
+        ],
+        sweep: [
+          fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/sweep-lost-launch`),
+          fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/sweep-claim-timeout`),
+        ],
+      },
+    } as const
+    const fractionalAmbientLabels = {
+      claim: POISON_WRITE_LABELS.filter((label) => label === 'claim'),
+      sweep: POISON_WRITE_LABELS.filter(
+        (label) => label === 'sweep:lost-launch' || label === 'sweep:claim-timeout',
+      ),
+    }
+    const ambientCasesFor = (
+      witness: PoisonTargetCase['witness'],
+      labels: readonly (typeof POISON_WRITE_LABELS)[number][],
+    ): readonly AmbientPoisonCase[] => labels.map((label) => ({ label, witness }))
+    const fractionalOwnedAmbientCases = {
+      taskMaxAttempts: {
+        claim: ambientCasesFor(fractionalWitnesses.taskMaxAttempts, fractionalAmbientLabels.claim),
+        sweep: ambientCasesFor(fractionalWitnesses.taskMaxAttempts, fractionalAmbientLabels.sweep),
+      },
+      runRelaunchCount: {
+        claim: ambientCasesFor(fractionalWitnesses.runRelaunchCount, fractionalAmbientLabels.claim),
+        sweep: ambientCasesFor(fractionalWitnesses.runRelaunchCount, fractionalAmbientLabels.sweep),
+      },
+    } as const
+    const ambientCaseKey = (
+      label: (typeof POISON_WRITE_LABELS)[number],
+      witness: PoisonTargetCase['witness'],
+    ): string => `${label}\u0000${witness.id}`
+    const fractionalOwnedAmbientCaseKeys = new Set(
+      [
+        ...fractionalOwnedAmbientCases.taskMaxAttempts.claim,
+        ...fractionalOwnedAmbientCases.taskMaxAttempts.sweep,
+        ...fractionalOwnedAmbientCases.runRelaunchCount.claim,
+        ...fractionalOwnedAmbientCases.runRelaunchCount.sweep,
+      ].map(({ label, witness }) => ambientCaseKey(label, witness)),
+    )
+
     it('covers every invariant and keeps the atomic witness inventory pinned', () => {
       expect(uncoveredConditionIds(), 'persisted counter field inventory stays complete').toEqual(
         [],
@@ -107,6 +220,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
     for (const label of POISON_WRITE_LABELS) {
       for (const witness of POISON_WITNESSES) {
         if (label === 'fail' && witness.id === 'attempts/at-max-with-live-run') continue
+        if (fractionalOwnedAmbientCaseKeys.has(ambientCaseKey(label, witness))) continue
         it(`${label} does not amplify ${witness.id}`, async () => {
           const hasClaimCardinalityVerdict =
             label === 'claim' && witness.id === 'cardinality/two-live-runs'
@@ -157,60 +271,10 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         upper: 'counter-bound/run-relaunch-count',
         lower: 'counter-bound-lower/run-relaunch-count',
       } as const
-      type FractionalWitnessId = Extract<
-        keyof PoisonRelationalTargetRecord,
-        `counter-fractional/${string}`
-      >
-      type FractionalTargetId = `${FractionalWitnessId}/${PoisonTargetProfile}`
-      type TargetObservation = Readonly<
-        {
-          id: PoisonTargetCase['id']
-          label: PoisonTargetCase['label']
-          profile: PoisonTargetCase['profile']
-          witness: PoisonTargetCase['witness']['id']
-        } & (
-          | {
-              kind: 'resolved'
-              result: {
-                label: string
-                profile: PoisonTargetCase['profile'] | undefined
-                witness: PoisonTargetCase['witness']['id']
-              }
-            }
-          | { kind: 'rejected'; error: string }
-        )
-      >
-      const fractionalWitnessIds = {
-        taskMaxAttempts: 'counter-fractional/task-max-attempts',
-        runRelaunchCount: 'counter-fractional/run-relaunch-count',
-      } as const satisfies Readonly<Record<string, FractionalWitnessId>>
-      const fractionalTarget = (id: FractionalTargetId): PoisonTargetCase => {
-        const target = POISON_TARGET_CASES.find((candidate) => candidate.id === id)
-        if (!target) throw new Error(`missing fractional poison target ${id}`)
-        return target
-      }
-      const fractionalTargets = {
-        taskMaxAttempts: {
-          claim: [
-            fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/claim-pending`),
-            fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/claim-sleeping`),
-          ],
-          sweep: [
-            fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/sweep-lost-launch`),
-            fractionalTarget(`${fractionalWitnessIds.taskMaxAttempts}/sweep-claim-timeout`),
-          ],
-        },
-        runRelaunchCount: {
-          claim: [
-            fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/claim-pending`),
-            fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/claim-sleeping`),
-          ],
-          sweep: [
-            fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/sweep-lost-launch`),
-            fractionalTarget(`${fractionalWitnessIds.runRelaunchCount}/sweep-claim-timeout`),
-          ],
-        },
-      } as const
+      const fractionalClaimTargets: readonly PoisonTargetCase[] = [
+        ...fractionalTargets.taskMaxAttempts.claim,
+        ...fractionalTargets.runRelaunchCount.claim,
+      ]
       const fractionalSweepTargets: readonly PoisonTargetCase[] = [
         ...fractionalTargets.taskMaxAttempts.sweep,
         ...fractionalTargets.runRelaunchCount.sweep,
@@ -253,6 +317,32 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
                 label: target.label,
                 profile: target.profile,
                 witness: target.witness.id,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+        return observations
+      }
+      const captureAmbientObservations = async (
+        cases: readonly AmbientPoisonCase[],
+      ): Promise<AmbientObservation[]> => {
+        const observations: AmbientObservation[] = []
+        for (const { label, witness } of cases) {
+          observations.push(
+            await runPoisonMatrixCase(makeFixture, label, witness).then(
+              (result) => ({
+                id: `ambient/${label}` as const,
+                label,
+                witness: witness.id,
+                kind: 'resolved',
+                result: { label: result.label, witness: result.witness },
+              }),
+              (error: unknown) => ({
+                id: `ambient/${label}` as const,
+                label,
+                witness: witness.id,
                 kind: 'rejected',
                 error: String(error),
               }),
@@ -435,69 +525,109 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       })
 
       it('contains fractional task max-attempts across both claim profiles', async () => {
-        const observations = await captureTargetObservations(
+        const ambientObservations = await captureAmbientObservations(
+          fractionalOwnedAmbientCases.taskMaxAttempts.claim,
+        )
+        const targetObservations = await captureTargetObservations(
           fractionalTargets.taskMaxAttempts.claim,
         )
 
-        expect(observations, 'regression:poison-claim-fractional-task-max-attempts').toEqual([
-          {
-            id: 'counter-fractional/task-max-attempts/claim-pending',
-            label: 'claim',
-            profile: 'claim-pending',
-            witness: 'counter-fractional/task-max-attempts',
-            kind: 'resolved',
-            result: {
+        expect(
+          { ambient: ambientObservations, targets: targetObservations },
+          'mutation-verdict:behavior:poison-claim-fractional-task-max-attempts',
+        ).toEqual({
+          ambient: [
+            {
+              id: 'ambient/claim',
+              label: 'claim',
+              witness: 'counter-fractional/task-max-attempts',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                witness: 'counter-fractional/task-max-attempts',
+              },
+            },
+          ],
+          targets: [
+            {
+              id: 'counter-fractional/task-max-attempts/claim-pending',
               label: 'claim',
               profile: 'claim-pending',
               witness: 'counter-fractional/task-max-attempts',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-pending',
+                witness: 'counter-fractional/task-max-attempts',
+              },
             },
-          },
-          {
-            id: 'counter-fractional/task-max-attempts/claim-sleeping',
-            label: 'claim',
-            profile: 'claim-sleeping',
-            witness: 'counter-fractional/task-max-attempts',
-            kind: 'resolved',
-            result: {
+            {
+              id: 'counter-fractional/task-max-attempts/claim-sleeping',
               label: 'claim',
               profile: 'claim-sleeping',
               witness: 'counter-fractional/task-max-attempts',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-sleeping',
+                witness: 'counter-fractional/task-max-attempts',
+              },
             },
-          },
-        ])
+          ],
+        })
       })
 
       it('contains fractional run relaunch-count across both claim profiles', async () => {
-        const observations = await captureTargetObservations(
+        const ambientObservations = await captureAmbientObservations(
+          fractionalOwnedAmbientCases.runRelaunchCount.claim,
+        )
+        const targetObservations = await captureTargetObservations(
           fractionalTargets.runRelaunchCount.claim,
         )
 
-        expect(observations, 'regression:poison-claim-fractional-run-relaunch-count').toEqual([
-          {
-            id: 'counter-fractional/run-relaunch-count/claim-pending',
-            label: 'claim',
-            profile: 'claim-pending',
-            witness: 'counter-fractional/run-relaunch-count',
-            kind: 'resolved',
-            result: {
+        expect(
+          { ambient: ambientObservations, targets: targetObservations },
+          'mutation-verdict:behavior:poison-claim-fractional-run-relaunch-count',
+        ).toEqual({
+          ambient: [
+            {
+              id: 'ambient/claim',
+              label: 'claim',
+              witness: 'counter-fractional/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                witness: 'counter-fractional/run-relaunch-count',
+              },
+            },
+          ],
+          targets: [
+            {
+              id: 'counter-fractional/run-relaunch-count/claim-pending',
               label: 'claim',
               profile: 'claim-pending',
               witness: 'counter-fractional/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-pending',
+                witness: 'counter-fractional/run-relaunch-count',
+              },
             },
-          },
-          {
-            id: 'counter-fractional/run-relaunch-count/claim-sleeping',
-            label: 'claim',
-            profile: 'claim-sleeping',
-            witness: 'counter-fractional/run-relaunch-count',
-            kind: 'resolved',
-            result: {
+            {
+              id: 'counter-fractional/run-relaunch-count/claim-sleeping',
               label: 'claim',
               profile: 'claim-sleeping',
               witness: 'counter-fractional/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                profile: 'claim-sleeping',
+                witness: 'counter-fractional/run-relaunch-count',
+              },
             },
-          },
-        ])
+          ],
+        })
       })
 
       it('contains every sweep target behind pre-limit eligibility and owns exhausted-budget paths', async () => {
@@ -512,6 +642,12 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         )
         const fractionalRelaunchObservations = observationsFor(
           fractionalTargets.runRelaunchCount.sweep,
+        )
+        const fractionalTaskMaxAmbientObservations = await captureAmbientObservations(
+          fractionalOwnedAmbientCases.taskMaxAttempts.sweep,
+        )
+        const fractionalRelaunchAmbientObservations = await captureAmbientObservations(
+          fractionalOwnedAmbientCases.runRelaunchCount.sweep,
         )
 
         const exhaustedPoisonObservations: unknown[] = []
@@ -784,64 +920,118 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         })
 
         expect(
-          fractionalTaskMaxObservations,
-          'regression:poison-sweep-fractional-task-max-attempts',
-        ).toEqual([
           {
-            id: 'counter-fractional/task-max-attempts/sweep-lost-launch',
-            label: 'sweep:lost-launch',
-            profile: 'sweep-lost-launch',
-            witness: 'counter-fractional/task-max-attempts',
-            kind: 'resolved',
-            result: {
+            ambient: fractionalTaskMaxAmbientObservations,
+            targets: fractionalTaskMaxObservations,
+          },
+          'mutation-verdict:behavior:poison-sweep-fractional-task-max-attempts',
+        ).toEqual({
+          ambient: [
+            {
+              id: 'ambient/sweep:lost-launch',
+              label: 'sweep:lost-launch',
+              witness: 'counter-fractional/task-max-attempts',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:lost-launch',
+                witness: 'counter-fractional/task-max-attempts',
+              },
+            },
+            {
+              id: 'ambient/sweep:claim-timeout',
+              label: 'sweep:claim-timeout',
+              witness: 'counter-fractional/task-max-attempts',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:claim-timeout',
+                witness: 'counter-fractional/task-max-attempts',
+              },
+            },
+          ],
+          targets: [
+            {
+              id: 'counter-fractional/task-max-attempts/sweep-lost-launch',
               label: 'sweep:lost-launch',
               profile: 'sweep-lost-launch',
               witness: 'counter-fractional/task-max-attempts',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:lost-launch',
+                profile: 'sweep-lost-launch',
+                witness: 'counter-fractional/task-max-attempts',
+              },
             },
-          },
-          {
-            id: 'counter-fractional/task-max-attempts/sweep-claim-timeout',
-            label: 'sweep:claim-timeout',
-            profile: 'sweep-claim-timeout',
-            witness: 'counter-fractional/task-max-attempts',
-            kind: 'resolved',
-            result: {
+            {
+              id: 'counter-fractional/task-max-attempts/sweep-claim-timeout',
               label: 'sweep:claim-timeout',
               profile: 'sweep-claim-timeout',
               witness: 'counter-fractional/task-max-attempts',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:claim-timeout',
+                profile: 'sweep-claim-timeout',
+                witness: 'counter-fractional/task-max-attempts',
+              },
             },
-          },
-        ])
+          ],
+        })
 
         expect(
-          fractionalRelaunchObservations,
-          'regression:poison-sweep-fractional-run-relaunch-count',
-        ).toEqual([
           {
-            id: 'counter-fractional/run-relaunch-count/sweep-lost-launch',
-            label: 'sweep:lost-launch',
-            profile: 'sweep-lost-launch',
-            witness: 'counter-fractional/run-relaunch-count',
-            kind: 'resolved',
-            result: {
+            ambient: fractionalRelaunchAmbientObservations,
+            targets: fractionalRelaunchObservations,
+          },
+          'mutation-verdict:behavior:poison-sweep-fractional-run-relaunch-count',
+        ).toEqual({
+          ambient: [
+            {
+              id: 'ambient/sweep:lost-launch',
+              label: 'sweep:lost-launch',
+              witness: 'counter-fractional/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:lost-launch',
+                witness: 'counter-fractional/run-relaunch-count',
+              },
+            },
+            {
+              id: 'ambient/sweep:claim-timeout',
+              label: 'sweep:claim-timeout',
+              witness: 'counter-fractional/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:claim-timeout',
+                witness: 'counter-fractional/run-relaunch-count',
+              },
+            },
+          ],
+          targets: [
+            {
+              id: 'counter-fractional/run-relaunch-count/sweep-lost-launch',
               label: 'sweep:lost-launch',
               profile: 'sweep-lost-launch',
               witness: 'counter-fractional/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:lost-launch',
+                profile: 'sweep-lost-launch',
+                witness: 'counter-fractional/run-relaunch-count',
+              },
             },
-          },
-          {
-            id: 'counter-fractional/run-relaunch-count/sweep-claim-timeout',
-            label: 'sweep:claim-timeout',
-            profile: 'sweep-claim-timeout',
-            witness: 'counter-fractional/run-relaunch-count',
-            kind: 'resolved',
-            result: {
+            {
+              id: 'counter-fractional/run-relaunch-count/sweep-claim-timeout',
               label: 'sweep:claim-timeout',
               profile: 'sweep-claim-timeout',
               witness: 'counter-fractional/run-relaunch-count',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:claim-timeout',
+                profile: 'sweep-claim-timeout',
+                witness: 'counter-fractional/run-relaunch-count',
+              },
             },
-          },
-        ])
+          ],
+        })
 
         expect(
           {
@@ -964,6 +1154,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           highestOwnedOrdinalTargets.includes(target) ||
           exhaustedBudgetTargets.includes(target) ||
           sweepTargets.includes(target) ||
+          fractionalClaimTargets.includes(target) ||
           relaunchClaimTargets.includes(target)
         ) {
           continue
