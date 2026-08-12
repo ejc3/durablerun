@@ -53,7 +53,6 @@ VERIFIER_KILL_GRACE_SECONDS = 0.5
 
 
 VerdictKind = Literal["behavior", "construction"]
-VerifierKind = Literal["vitest", "typecheck"]
 TypecheckProject = Literal["store-libsql", "conformance"]
 
 
@@ -74,7 +73,6 @@ class Mutation:
     replace: str
     breaks: str
     verdict: ExpectedVerdict
-    verifier: VerifierKind = "vitest"
     typecheck_project: TypecheckProject | None = None
 
 
@@ -6055,7 +6053,6 @@ MUTATIONS = [
     Mutation(
         *spec,
         VERDICTS[spec[0]],
-        verifier="typecheck" if spec[0] in TYPECHECK_MUTATION_NAMES else "vitest",
         typecheck_project=TYPECHECK_MUTATION_PROJECTS.get(spec[0]),
     )
     for spec in MUTATION_SPECS
@@ -6133,11 +6130,8 @@ def mutation_typecheck_projects(
 ) -> tuple[TypecheckProject, ...]:
     projects: set[TypecheckProject] = set()
     for mutation in mutations:
-        if mutation.verifier != "typecheck":
-            continue
-        if mutation.typecheck_project is None:
-            raise ValueError(f"{mutation.name}: typecheck mutation has no project")
-        projects.add(mutation.typecheck_project)
+        if mutation.typecheck_project is not None:
+            projects.add(mutation.typecheck_project)
     ordered = tuple(project for project in TYPECHECK_PROJECT_ORDER if project in projects)
     if len(ordered) != len(projects):
         raise ValueError(f"unknown mutation typecheck projects {sorted(projects)!r}")
@@ -6756,6 +6750,7 @@ def suite_timeout_self_test_child(
                 TYPECHECK_CMD,
                 lambda: run_typecheck(
                     None,
+                    project="store-libsql",
                     scope=fixture_scope,
                     workspace=fixture_workspace,
                     authority=fixture_authority,
@@ -6853,7 +6848,7 @@ def suite_interrupt_self_test_child(state_path: Path) -> int:
 def run_typecheck(
     expected: ExpectedVerdict | None,
     *,
-    project: TypecheckProject = "store-libsql",
+    project: TypecheckProject,
     scope: ConfinedScope,
     workspace: IsolatedWorkspace,
     authority: WorkerAuthority,
@@ -8078,7 +8073,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         selected_typecheck = {
             mutation.name: mutation.typecheck_project
             for mutation in MUTATIONS
-            if mutation.verifier == "typecheck"
+            if mutation.typecheck_project is not None
         }
         if selected_typecheck != TYPECHECK_MUTATION_PROJECTS:
             failures.append(
@@ -8091,15 +8086,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         ):
             failures.append("the construction-mutation project inventory cardinality changed")
         if any(
-            mutation.verifier == "typecheck" and mutation.verdict.kind != "construction"
+            mutation.typecheck_project is not None
+            and mutation.verdict.kind != "construction"
             for mutation in MUTATIONS
         ):
             failures.append("a typecheck mutation is attributed as a behavioral verdict")
-        if any(
-            (mutation.verifier == "typecheck") != (mutation.typecheck_project is not None)
-            for mutation in MUTATIONS
-        ):
-            failures.append("a mutation verifier and its typecheck project disagree")
         mutation_by_name = {mutation.name: mutation for mutation in MUTATIONS}
         store_typecheck = mutation_by_name["generated-update-requires-target"]
         conformance_typecheck = mutation_by_name["poison-profile-claim-pending"]
@@ -8482,7 +8473,6 @@ def mutation_registry_digest(
             "find": mutation.find,
             "replace": mutation.replace,
             "breaks": mutation.breaks,
-            "verifier": mutation.verifier,
             "typecheck_project": (
                 None if omit_typecheck_project else mutation.typecheck_project
             ),
@@ -10308,7 +10298,7 @@ def execute_mutation(
                 f"{mutation.name}: worker diff is {changed}, expected only {mutation.file}"
             )
         if (
-            mutation.verifier == "typecheck"
+            mutation.typecheck_project is not None
             or routing_self_test_fault
             in (
                 "typecheck-behavior-mutation",
@@ -10560,7 +10550,6 @@ def routing_self_test(fault: str | None = None) -> int:
                 f"{name} attributable verdict",
                 f"mutation-verdict:{verdict_kind}:{name}",
             ),
-            verifier="typecheck" if project is not None else "vitest",
             typecheck_project=project,
         )
 
@@ -10831,7 +10820,6 @@ def routing_self_test(fault: str | None = None) -> int:
                 store.replace,
                 store.breaks,
                 store.verdict,
-                verifier=store.verifier,
                 typecheck_project="conformance",
             )
             store_digest = routed_digest(store)
