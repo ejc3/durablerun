@@ -1825,6 +1825,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         requireFailure: Readonly<Record<CheckpointConflictOperationId, CheckpointConflictVerdict>>
       }>
 
+      const aboveCheckpointOwnerAttempt = PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt.max + 1
       const invalidCheckpointConflictCases: readonly InvalidCheckpointConflictCase[] = [
         {
           id: 'missing-owner',
@@ -1961,10 +1962,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           owner: {
             task: 'current',
             queue: Q,
-            attempt: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt.max + 1,
+            attempt: aboveCheckpointOwnerAttempt,
           },
           checkpointQueue: Q,
-          ownerAttempt: PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt.max + 1,
+          ownerAttempt: aboveCheckpointOwnerAttempt,
           requireFailure: {
             'checkpoint-write': (action) =>
               requireExpectedFailure(
