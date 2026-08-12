@@ -4867,7 +4867,7 @@ VERDICTS = {
     "shared-conformance-runner-registry": ExpectedVerdict(
         "construction",
         "packages/conformance/test/enrollment.test.ts",
-        "shared conformance enrollment is one indivisible door couples the surface inventory and umbrella dispatch in one registry",
+        "shared conformance enrollment is one indivisible door owns exported surface IDs and umbrella dispatch through one executable registry",
         "mutation-verdict:construction:shared-conformance-runner-registry",
     ),
     "sweep-claim-timeout-generation": ExpectedVerdict(
@@ -5270,7 +5270,7 @@ VERDICTS.update(
         "timestamp-boundary-enrollment": ExpectedVerdict(
             "construction",
             "packages/conformance/test/enrollment.test.ts",
-            "shared conformance enrollment is one indivisible door couples the surface inventory and umbrella dispatch in one registry",
+            "shared conformance enrollment is one indivisible door owns exported surface IDs and umbrella dispatch through one executable registry",
             "mutation-verdict:construction:shared-conformance-runner-registry",
         ),
         "admin-fake-now-invalid": ExpectedVerdict(
