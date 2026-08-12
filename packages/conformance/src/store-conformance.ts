@@ -96,6 +96,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
 
     for (const label of POISON_WRITE_LABELS) {
       for (const witness of POISON_WITNESSES) {
+        if (label === 'fail' && witness.id === 'attempts/at-max-with-live-run') continue
         it(`${label} does not amplify ${witness.id}`, async () => {
           const hasClaimCardinalityVerdict =
             label === 'claim' && witness.id === 'cardinality/two-live-runs'
@@ -185,10 +186,22 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         ])
       })
 
-      it('contains attempts/at-max-with-live-run across every claim and sweep profile', async () => {
-        const observations: unknown[] = []
+      it('contains attempts/at-max-with-live-run across claim, receipt, fail, and sweep paths', async () => {
+        const poisonObservations: unknown[] = []
+        const exhaustedBudgetWitness = exhaustedBudgetTargets[0]?.witness
+        if (!exhaustedBudgetWitness) throw new Error('missing exhausted-budget poison witness')
+        poisonObservations.push(
+          await runPoisonMatrixCase(makeFixture, 'fail', exhaustedBudgetWitness).then(
+            (result) => ({
+              profile: 'fail',
+              kind: 'resolved',
+              result: { label: result.label, witness: result.witness },
+            }),
+            (error: unknown) => ({ profile: 'fail', kind: 'rejected', error: String(error) }),
+          ),
+        )
         for (const target of exhaustedBudgetTargets) {
-          observations.push(
+          poisonObservations.push(
             await runPoisonTargetCase(makeFixture, target).then(
               (result) => ({
                 profile: target.profile,
@@ -208,51 +221,114 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           )
         }
 
+        const receiptFixture = await makeFixture('poison-attempt-budget-receipt')
+        let receipt: unknown
+        let receiptBefore: unknown
+        let receiptAfter: unknown
+        try {
+          await receiptFixture.admin.setFakeNowEpochMs(1_000_000)
+          const spawned = await receiptFixture.store.spawn('q', 'exhausted-budget-receipt', '{}', {
+            maxAttempts: 5,
+          })
+          await receiptFixture.store.claim('q', 'receipt-token', {
+            leaseSeconds: 60,
+            limit: 1,
+          })
+          await receiptFixture.raw.batch('poison-attempt-budget-receipt:corrupt', [
+            {
+              sql: `UPDATE tasks SET attempts = max_attempts WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `UPDATE runs SET attempt = 6 WHERE run_id = ?`,
+              args: [spawned.runId],
+            },
+          ])
+          const snapshot = async () => {
+            const [tasks, runs] = await receiptFixture.raw.batch(
+              'poison-attempt-budget-receipt:snapshot',
+              [
+                { sql: `SELECT * FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+                {
+                  sql: `SELECT * FROM runs WHERE task_id = ? ORDER BY attempt`,
+                  args: [spawned.taskId],
+                },
+              ],
+              'read',
+            )
+            return { tasks: tasks?.rows, runs: runs?.rows }
+          }
+          receiptBefore = await snapshot()
+          receipt = await receiptFixture.store.claim('q', 'receipt-token', {
+            leaseSeconds: 60,
+            limit: 1,
+          })
+          receiptAfter = await snapshot()
+        } finally {
+          receiptFixture.close()
+        }
+
         expect(
-          observations,
-          'mutation-verdict:behavior:claim-requires-user-attempt-budget',
-        ).toEqual([
           {
-            profile: 'claim-pending',
-            kind: 'resolved',
-            result: {
-              label: 'claim',
-              witness: 'attempts/at-max-with-live-run',
+            poison: poisonObservations,
+            receipt: { result: receipt, after: receiptAfter },
+          },
+          'mutation-verdict:behavior:current-run-requires-user-attempt-budget',
+        ).toEqual({
+          poison: [
+            {
+              profile: 'fail',
+              kind: 'resolved',
+              result: { label: 'fail', witness: 'attempts/at-max-with-live-run' },
+            },
+            {
               profile: 'claim-pending',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'claim-pending',
+              },
             },
-          },
-          {
-            profile: 'claim-sleeping',
-            kind: 'resolved',
-            result: {
-              label: 'claim',
-              witness: 'attempts/at-max-with-live-run',
+            {
               profile: 'claim-sleeping',
+              kind: 'resolved',
+              result: {
+                label: 'claim',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'claim-sleeping',
+              },
             },
-          },
-          {
-            profile: 'sweep-lost-launch',
-            kind: 'resolved',
-            result: {
-              label: 'sweep:lost-launch',
-              witness: 'attempts/at-max-with-live-run',
+            {
               profile: 'sweep-lost-launch',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:lost-launch',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'sweep-lost-launch',
+              },
             },
-          },
-          {
-            profile: 'sweep-claim-timeout',
-            kind: 'resolved',
-            result: {
-              label: 'sweep:claim-timeout',
-              witness: 'attempts/at-max-with-live-run',
+            {
               profile: 'sweep-claim-timeout',
+              kind: 'resolved',
+              result: {
+                label: 'sweep:claim-timeout',
+                witness: 'attempts/at-max-with-live-run',
+                profile: 'sweep-claim-timeout',
+              },
             },
-          },
-        ])
+          ],
+          receipt: { result: [], after: receiptBefore },
+        })
       })
 
       for (const target of POISON_TARGET_CASES) {
-        if (highestOwnedOrdinalTargets.includes(target)) continue
+        if (
+          highestOwnedOrdinalTargets.includes(target) ||
+          exhaustedBudgetTargets.includes(target)
+        ) {
+          continue
+        }
         it(`${target.profile} contains ${target.witness.id}`, async () => {
           await expect(runPoisonTargetCase(makeFixture, target)).resolves.toMatchObject({
             label: target.label,

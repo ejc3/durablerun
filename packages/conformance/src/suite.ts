@@ -406,57 +406,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await snapshot(f, poisoned.taskId)).toEqual(poisonedBefore)
       })
 
-      it('does not claim a live run after the user-attempt budget is exhausted', async () => {
-        const exhausted = await f.store.spawn(Q, 'exhausted-live-run', '{}', {
-          maxAttempts: 5,
-        })
-        await f.raw.batch('corrupt-live-run-at-attempt-cap', [
-          {
-            sql: `UPDATE tasks SET attempts = max_attempts WHERE task_id = ?`,
-            args: [exhausted.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = 6 WHERE run_id = ?`,
-            args: [exhausted.runId],
-          },
-        ])
-        const exhaustedBefore = await snapshot(f, exhausted.taskId)
-
-        await f.admin.setFakeNowEpochMs(1_000_001)
-        const healthy = await f.store.spawn(Q, 'healthy-after-exhausted', '{}')
-        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
-
-        expect(
-          claimed.map((run) => run.taskId),
-          'mutation-verdict:behavior:claim-requires-user-attempt-budget',
-        ).toEqual([healthy.taskId])
-        expect(await snapshot(f, exhausted.taskId)).toEqual(exhaustedBefore)
-      })
-
-      it('does not return an exhausted run from a same-token claim receipt', async () => {
-        const spawned = await f.store.spawn(Q, 'exhausted-receipt', '{}', { maxAttempts: 5 })
-        expect(
-          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
-        ).toHaveLength(1)
-        await f.raw.batch('corrupt-receipt-at-attempt-cap', [
-          {
-            sql: `UPDATE tasks SET attempts = max_attempts WHERE task_id = ?`,
-            args: [spawned.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = 6 WHERE run_id = ?`,
-            args: [spawned.runId],
-          },
-        ])
-        const before = await snapshot(f, spawned.taskId)
-
-        expect(
-          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
-          'mutation-verdict:behavior:claim-receipt-requires-user-attempt-budget',
-        ).toEqual([])
-        expect(await snapshot(f, spawned.taskId)).toEqual(before)
-      })
-
       it('does not return an activated-ahead run from a same-token claim receipt', async () => {
         const spawned = await f.store.spawn(Q, 'activated-ahead-receipt', '{}')
         expect(

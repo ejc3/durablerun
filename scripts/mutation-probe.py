@@ -4234,9 +4234,9 @@ VERDICTS = {
     "claim-receipt-requires-user-attempt-budget": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] claim does not return an exhausted run from a same-token claim receipt",
-        "mutation-verdict:behavior:claim-receipt-requires-user-attempt-budget",
-        "packages/conformance/src/suite.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains attempts/at-max-with-live-run across claim, receipt, fail, and sweep paths",
+        "mutation-verdict:behavior:current-run-requires-user-attempt-budget",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "claim-receipt-requires-highest-owned-ordinal": ExpectedVerdict(
         "behavior",
@@ -4262,9 +4262,9 @@ VERDICTS = {
     "current-run-requires-user-attempt-budget": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
-        "scheduler conformance [libsql] claim does not claim a live run after the user-attempt budget is exhausted",
-        "mutation-verdict:behavior:claim-requires-user-attempt-budget",
-        "packages/conformance/src/suite.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment contains attempts/at-max-with-live-run across claim, receipt, fail, and sweep paths",
+        "mutation-verdict:behavior:current-run-requires-user-attempt-budget",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "current-run-requires-highest-owned-ordinal": ExpectedVerdict(
         "behavior",
