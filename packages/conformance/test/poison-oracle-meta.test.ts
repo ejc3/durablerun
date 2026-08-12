@@ -851,99 +851,29 @@ describe('poison/invariant mechanism self-tests', () => {
     })
   })
 
-  it('computes exact lower-bound counter severity', async () => {
-    const field = PERSISTED_COUNTER_FIELDS.find((candidate) => candidate.id === 'task-max-attempts')
-    if (!field) throw new Error('missing task-max-attempts field')
-    const finding: EngineInvariantFinding = {
-      conditionId: 'counter-bound/task-max-attempts',
-      name: 'counter-out-of-range',
-      subject: 'tasks/poison-task',
-      subjectIdentity: ['tasks', 'poison-task'],
-      message: 'counter-out-of-range: tasks/poison-task',
-    }
-    const severity = (offset: number): bigint =>
-      findingSeverity(
-        finding,
-        protocolSnapshot({
-          tasks: [{ task_id: 'poison-task', max_attempts: field.bounds.min - offset }],
-        }),
-      )
-
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-severity-lower-bound' },
-      /unexpected lower-bound severities/,
-      async () => {
-        const actual = [severity(1), severity(2)]
-        if (actual[0] !== 1n || actual[1] !== 2n) {
-          throw new Error(`unexpected lower-bound severities: ${actual.join(', ')}`)
-        }
-      },
-    )
-  })
-
-  it('resolves checkpoint severity by composite identity', async () => {
-    const field = PERSISTED_COUNTER_FIELDS.find(
-      (candidate) => candidate.id === 'checkpoint-owner-attempt',
-    )
-    if (!field) throw new Error('missing checkpoint-owner-attempt field')
-    const finding: EngineInvariantFinding = {
-      conditionId: 'counter-bound/checkpoint-owner-attempt',
-      name: 'counter-out-of-range',
-      subject: 'checkpoints/poison-task/poison-checkpoint',
-      subjectIdentity: ['checkpoints', 'poison-task', 'poison-checkpoint'],
-      message: 'counter-out-of-range: checkpoints/poison-task/poison-checkpoint',
-    }
-    const severity = (offset: number): bigint =>
-      findingSeverity(
-        finding,
-        protocolSnapshot({
-          checkpoints: [
-            {
-              task_id: 'poison-task',
-              checkpoint_name: 'poison-checkpoint',
-              owner_attempt: field.bounds.max + offset,
-            },
-          ],
-        }),
-      )
-
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-severity-checkpoint' },
-      /unexpected checkpoint severities/,
-      async () => {
-        const actual = [severity(1), severity(2)]
-        if (actual[0] !== 1n || actual[1] !== 2n) {
-          throw new Error(`unexpected checkpoint severities: ${actual.join(', ')}`)
-        }
-      },
-    )
-  })
-
-  for (const side of ['upper', 'lower'] as const) {
-    for (const field of PERSISTED_COUNTER_FIELDS) {
-      it(`catches ${side} ${field.id} worsening on the same subject`, async () => {
-        const run = () =>
-          runPoisonMatrixCase(
-            makeLibsqlFixture,
-            'driver-heartbeat',
-            witness(
-              side === 'upper' ? `counter-bound/${field.id}` : `counter-bound-lower/${field.id}`,
-            ),
-            {
-              afterInvoke: (raw) =>
-                write(raw, [
-                  {
-                    sql: `UPDATE ${field.table}
-                          SET ${field.column} = ${field.column} ${side === 'upper' ? '+' : '-'} 1
-                          WHERE ${fieldPredicate(field)}`,
-                    args: [],
-                  },
-                ]),
-            },
-          )
-        await expect(run()).rejects.toThrow(/worsened/)
-      })
-    }
+  for (const field of PERSISTED_COUNTER_FIELDS.filter(
+    (candidate) => candidate.table !== 'checkpoints',
+  )) {
+    it(`catches upper ${field.id} worsening on the same subject`, async () => {
+      const run = () =>
+        runPoisonMatrixCase(
+          makeLibsqlFixture,
+          'driver-heartbeat',
+          witness(`counter-bound/${field.id}`),
+          {
+            afterInvoke: (raw) =>
+              write(raw, [
+                {
+                  sql: `UPDATE ${field.table}
+                        SET ${field.column} = ${field.column} + 1
+                        WHERE ${fieldPredicate(field)}`,
+                  args: [],
+                },
+              ]),
+          },
+        )
+      await expect(run()).rejects.toThrow(/worsened/)
+    })
   }
 
   it('owns both boundary witnesses for every persisted counter bound', () => {
@@ -979,31 +909,27 @@ describe('poison/invariant mechanism self-tests', () => {
     ).toEqual(['checkpoints', 'drivers', 'events', 'runs', 'tasks', 'waits'])
   })
 
-  for (const side of ['upper', 'lower'] as const) {
-    for (const field of PERSISTED_TEMPORAL_FIELDS) {
-      it(`catches ${side} ${field.id} temporal-bound worsening on the same subject`, async () => {
-        await expect(
-          runPoisonMatrixCase(
-            makeLibsqlFixture,
-            'emit-event',
-            witness(
-              side === 'upper' ? `temporal-bound/${field.id}` : `temporal-bound-lower/${field.id}`,
-            ),
-            {
-              afterInvoke: (raw) =>
-                write(raw, [
-                  {
-                    sql: `UPDATE ${field.table}
-                          SET ${field.column} = ${field.column} ${side === 'upper' ? '+' : '-'} 1
-                          WHERE ${temporalFieldPredicate(field)}`,
-                    args: [],
-                  },
-                ]),
-            },
-          ),
-        ).rejects.toThrow(/worsened/)
-      })
-    }
+  for (const field of PERSISTED_TEMPORAL_FIELDS) {
+    it(`catches upper ${field.id} temporal-bound worsening on the same subject`, async () => {
+      await expect(
+        runPoisonMatrixCase(
+          makeLibsqlFixture,
+          'emit-event',
+          witness(`temporal-bound/${field.id}`),
+          {
+            afterInvoke: (raw) =>
+              write(raw, [
+                {
+                  sql: `UPDATE ${field.table}
+                        SET ${field.column} = ${field.column} + 1
+                        WHERE ${temporalFieldPredicate(field)}`,
+                  args: [],
+                },
+              ]),
+          },
+        ),
+      ).rejects.toThrow(/worsened/)
+    })
   }
 
   it('classifies every counter boundary against every target arm', () => {

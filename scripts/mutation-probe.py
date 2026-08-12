@@ -4725,13 +4725,13 @@ VERDICTS = {
     "poison-severity-lower-bound": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests computes exact lower-bound counter severity",
+        "poison/invariant mechanism self-tests owns lower-bound and checkpoint severity across every persisted integer field",
         "mutation-verdict:behavior:poison-severity-lower-bound",
     ),
     "poison-severity-checkpoint": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests resolves checkpoint severity by composite identity",
+        "poison/invariant mechanism self-tests owns lower-bound and checkpoint severity across every persisted integer field",
         "mutation-verdict:behavior:poison-severity-checkpoint",
     ),
     "poison-target-closure-comparison": ExpectedVerdict(
