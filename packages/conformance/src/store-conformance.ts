@@ -644,7 +644,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         if (
           highestOwnedOrdinalTargets.includes(target) ||
           exhaustedBudgetTargets.includes(target) ||
-          sweepTargets.includes(target)
+          sweepTargets.includes(target) ||
+          relaunchClaimTargets.includes(target)
         ) {
           continue
         }

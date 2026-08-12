@@ -1492,30 +1492,6 @@ describe('poison/invariant mechanism self-tests', () => {
     expect(compileOnly).toBeTypeOf('function')
   })
 
-  it('contains upper relaunch_count at the claim door', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-claim-relaunch-upper' },
-      /targeted poison-owned closure changed|returned the poison task or run/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-bound/run-relaunch-count/claim-pending'),
-        ),
-    )
-  })
-
-  it('contains lower relaunch_count at the claim door', async () => {
-    await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'poison-claim-relaunch-lower' },
-      /targeted poison-owned closure changed|returned the poison task or run/,
-      () =>
-        runPoisonTargetCase(
-          makeLibsqlFixture,
-          target('counter-bound-lower/run-relaunch-count/claim-pending'),
-        ),
-    )
-  })
-
   it('contains an in-range fractional counter at the claim door', async () => {
     await attributeExpectedFailure(
       { kind: 'behavior', mutation: 'poison-fractional-storage-guard' },

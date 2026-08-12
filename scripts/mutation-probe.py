@@ -4830,15 +4830,17 @@ VERDICTS = {
     ),
     "poison-claim-relaunch-upper": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests contains upper relaunch_count at the claim door",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment relaunch_count claim boundary containment owns the upper bound across both claim profiles",
         "mutation-verdict:behavior:poison-claim-relaunch-upper",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "poison-claim-relaunch-lower": ExpectedVerdict(
         "behavior",
-        "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests contains lower relaunch_count at the claim door",
+        "packages/conformance/test/libsql.test.ts",
+        "poison matrix [libsql] (ambient write label x forbidden pre-state) branch-reachable counter containment relaunch_count claim boundary containment owns the lower bound across both claim profiles",
         "mutation-verdict:behavior:poison-claim-relaunch-lower",
+        "packages/conformance/src/store-conformance.ts",
     ),
     "matrix-lost-launch-edge-progress": ExpectedVerdict(
         "behavior",
