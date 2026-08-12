@@ -8,11 +8,7 @@ import {
   RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
-import {
-  attributeExpectedFailure,
-  attributeReplacedFailure,
-  requireExpectedFailure,
-} from '@durablerun/core/testing'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -2450,22 +2446,36 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }
         const guardedStore = f.storeOver(forbiddenExecutor)
 
-        for (const invalidAttempt of [
-          0,
-          1.5,
-          MAX_RUN_ORDINAL + 1,
-          Number.NaN,
-          Number.POSITIVE_INFINITY,
-          1n as unknown as number,
-        ]) {
-          await attributeReplacedFailure(
-            { kind: 'behavior', mutation: 'checkpoint-read-validates-run-attempt-input' },
-            /runs\.attempt/,
-            /invalid run ordinal reached/,
-            () => guardedStore.getCheckpoints(Q, 'missing-task', invalidAttempt),
+        const invalidAttempts = [
+          { name: 'zero', value: 0 },
+          { name: 'fractional', value: 1.5 },
+          { name: 'above-bound', value: MAX_RUN_ORDINAL + 1 },
+          { name: 'nan', value: Number.NaN },
+          { name: 'infinity', value: Number.POSITIVE_INFINITY },
+          { name: 'bigint', value: 1n as unknown as number },
+        ]
+        const observed: { name: string; rejectedBeforeSql: boolean }[] = []
+        for (const { name, value } of invalidAttempts) {
+          const error = await guardedStore.getCheckpoints(Q, 'missing-task', value).then(
+            () => null,
+            (reason: unknown) => reason,
           )
+          observed.push({
+            name,
+            rejectedBeforeSql: error instanceof RangeError && /runs\.attempt/.test(error.message),
+          })
         }
-        expect(executorCalls).toBe(0)
+
+        expect(
+          { invalidInputs: observed, executorCalls },
+          'mutation-verdict:behavior:checkpoint-read-validates-run-attempt-input',
+        ).toEqual({
+          invalidInputs: invalidAttempts.map(({ name }) => ({
+            name,
+            rejectedBeforeSql: true,
+          })),
+          executorCalls: 0,
+        })
 
         expect(await f.store.getCheckpoints(Q, 'missing-task', 1)).toEqual([])
         expect(await f.store.getCheckpoints(Q, 'missing-task', MAX_RUN_ORDINAL)).toEqual([])
