@@ -105,6 +105,18 @@ describe('decodeBoundedInteger', () => {
   })
 
   it('validates the numeric run-ordinal interval through one fixed domain', () => {
+    expect(
+      {
+        declaredMaximum: MAX_RUN_ORDINAL,
+        persistedMaximum: PERSISTED_INTEGER_BOUNDS.runs.attempt.max,
+        acceptedMaximum: requireRunOrdinal('attempt', PERSISTED_INTEGER_BOUNDS.runs.attempt.max),
+      },
+      'mutation-verdict:behavior:sweep-accepts-max-ordinal-at-infra-cap',
+    ).toEqual({
+      declaredMaximum: MAX_RUN_ORDINAL,
+      persistedMaximum: MAX_RUN_ORDINAL,
+      acceptedMaximum: MAX_RUN_ORDINAL,
+    })
     expect(requireRunOrdinal('attempt', 1)).toBe(1)
     expect(requireRunOrdinal('attempt', MAX_RUN_ORDINAL)).toBe(MAX_RUN_ORDINAL)
     // Non-number client inputs are owned end-to-end by the sole production
