@@ -133,6 +133,9 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
         (target) =>
           target.label === 'claim' && target.witness.id === 'accounting/below-top-minus-one',
       )
+      const exhaustedBudgetTargets = POISON_TARGET_CASES.filter(
+        (target) => target.witness.id === 'attempts/at-max-with-live-run',
+      )
 
       it('contains accounting/below-top-minus-one across both claim profiles', async () => {
         const observations: unknown[] = []
@@ -177,6 +180,72 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
               label: 'claim',
               witness: 'accounting/below-top-minus-one',
               profile: 'claim-sleeping',
+            },
+          },
+        ])
+      })
+
+      it('contains attempts/at-max-with-live-run across every claim and sweep profile', async () => {
+        const observations: unknown[] = []
+        for (const target of exhaustedBudgetTargets) {
+          observations.push(
+            await runPoisonTargetCase(makeFixture, target).then(
+              (result) => ({
+                profile: target.profile,
+                kind: 'resolved',
+                result: {
+                  label: result.label,
+                  witness: result.witness,
+                  profile: result.profile,
+                },
+              }),
+              (error: unknown) => ({
+                profile: target.profile,
+                kind: 'rejected',
+                error: String(error),
+              }),
+            ),
+          )
+        }
+
+        expect(
+          observations,
+          'mutation-verdict:behavior:claim-requires-user-attempt-budget',
+        ).toEqual([
+          {
+            profile: 'claim-pending',
+            kind: 'resolved',
+            result: {
+              label: 'claim',
+              witness: 'attempts/at-max-with-live-run',
+              profile: 'claim-pending',
+            },
+          },
+          {
+            profile: 'claim-sleeping',
+            kind: 'resolved',
+            result: {
+              label: 'claim',
+              witness: 'attempts/at-max-with-live-run',
+              profile: 'claim-sleeping',
+            },
+          },
+          {
+            profile: 'sweep-lost-launch',
+            kind: 'resolved',
+            result: {
+              label: 'sweep:lost-launch',
+              witness: 'attempts/at-max-with-live-run',
+              profile: 'sweep-lost-launch',
+            },
+          },
+          {
+            profile: 'sweep-claim-timeout',
+            kind: 'resolved',
+            result: {
+              label: 'sweep:claim-timeout',
+              witness: 'attempts/at-max-with-live-run',
+              profile: 'sweep-claim-timeout',
             },
           },
         ])
