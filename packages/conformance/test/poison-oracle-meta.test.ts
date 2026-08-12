@@ -13,6 +13,8 @@ import {
   POISON_TARGET_CASES,
   POISON_UNREACHABLE_TARGETS,
   POISON_WITNESSES,
+  type PoisonCounterTargetabilityRecord,
+  type PoisonCounterTargetabilityVector,
   type PoisonTargetProfileSeedRecord,
   type ProtocolSnapshot,
   findingSeverity,
@@ -1079,6 +1081,180 @@ describe('poison/invariant mechanism self-tests', () => {
       const sweepClaimTimeout: PoisonTargetProfileSeedRecord = claimTimeoutAsUnactivated
 
       void [claimPending, claimSleeping, sweepLostLaunch, sweepClaimTimeout]
+    }
+    expect(compileOnly).toBeTypeOf('function')
+  })
+
+  it('requires every exact counter targetability vector at construction', () => {
+    const compileOnly = (): void => {
+      type Targetable = Readonly<{ kind: 'targetable' }>
+      type CounterRelation = Readonly<{
+        kind: 'unreachable'
+        reason: 'counter-relation-needs-another-invalid-field'
+      }>
+      type Generation = Readonly<{
+        kind: 'unreachable'
+        reason: 'generation-classification-needs-another-invalid-field'
+      }>
+      type TargetableVector = PoisonCounterTargetabilityVector<Targetable, Targetable, Targetable>
+      type CounterRelationVector = PoisonCounterTargetabilityVector<
+        CounterRelation,
+        CounterRelation,
+        CounterRelation
+      >
+      type GenerationGenerationTargetableVector = PoisonCounterTargetabilityVector<
+        Generation,
+        Generation,
+        Targetable
+      >
+      type ReplaceTargetabilityVector<
+        Key extends keyof PoisonCounterTargetabilityRecord,
+        Vector,
+      > = Omit<PoisonCounterTargetabilityRecord, Key> & {
+        readonly [Changed in Key]: Vector
+      }
+
+      const taskAttemptsUpperAsTargetable = {} as ReplaceTargetabilityVector<
+        'task-attempts/upper',
+        TargetableVector
+      >
+      // @ts-expect-error upper task attempts must remain unreachable — mutation-verdict:construction:poison-targetability-vector-task-attempts-upper
+      const taskAttemptsUpper: PoisonCounterTargetabilityRecord = taskAttemptsUpperAsTargetable
+
+      const taskAttemptsLowerAsUnreachable = {} as ReplaceTargetabilityVector<
+        'task-attempts/lower',
+        CounterRelationVector
+      >
+      // @ts-expect-error lower task attempts must remain targetable — mutation-verdict:construction:poison-targetability-vector-task-attempts-lower
+      const taskAttemptsLower: PoisonCounterTargetabilityRecord = taskAttemptsLowerAsUnreachable
+
+      const taskMaxAttemptsUpperAsUnreachable = {} as ReplaceTargetabilityVector<
+        'task-max-attempts/upper',
+        CounterRelationVector
+      >
+      // @ts-expect-error upper task max attempts must remain targetable — mutation-verdict:construction:poison-targetability-vector-task-max-attempts-upper
+      const taskMaxAttemptsUpper: PoisonCounterTargetabilityRecord =
+        taskMaxAttemptsUpperAsUnreachable
+
+      const taskMaxAttemptsLowerAsTargetable = {} as ReplaceTargetabilityVector<
+        'task-max-attempts/lower',
+        TargetableVector
+      >
+      // @ts-expect-error lower task max attempts must remain unreachable — mutation-verdict:construction:poison-targetability-vector-task-max-attempts-lower
+      const taskMaxAttemptsLower: PoisonCounterTargetabilityRecord =
+        taskMaxAttemptsLowerAsTargetable
+
+      const taskInfraRetriesUpperAsUnreachable = {} as ReplaceTargetabilityVector<
+        'task-infra-retries/upper',
+        CounterRelationVector
+      >
+      // @ts-expect-error upper task infra retries must remain targetable — mutation-verdict:construction:poison-targetability-vector-task-infra-retries-upper
+      const taskInfraRetriesUpper: PoisonCounterTargetabilityRecord =
+        taskInfraRetriesUpperAsUnreachable
+
+      const taskInfraRetriesLowerAsUnreachable = {} as ReplaceTargetabilityVector<
+        'task-infra-retries/lower',
+        CounterRelationVector
+      >
+      // @ts-expect-error lower task infra retries must remain targetable — mutation-verdict:construction:poison-targetability-vector-task-infra-retries-lower
+      const taskInfraRetriesLower: PoisonCounterTargetabilityRecord =
+        taskInfraRetriesLowerAsUnreachable
+
+      const runAttemptUpperAsTargetable = {} as ReplaceTargetabilityVector<
+        'run-attempt/upper',
+        TargetableVector
+      >
+      // @ts-expect-error upper run attempt must remain unreachable — mutation-verdict:construction:poison-targetability-vector-run-attempt-upper
+      const runAttemptUpper: PoisonCounterTargetabilityRecord = runAttemptUpperAsTargetable
+
+      const runAttemptLowerAsTargetable = {} as ReplaceTargetabilityVector<
+        'run-attempt/lower',
+        TargetableVector
+      >
+      // @ts-expect-error lower run attempt must remain unreachable — mutation-verdict:construction:poison-targetability-vector-run-attempt-lower
+      const runAttemptLower: PoisonCounterTargetabilityRecord = runAttemptLowerAsTargetable
+
+      const runClaimGenUpperAsGenerationGenerationTargetable = {} as ReplaceTargetabilityVector<
+        'run-claim-gen/upper',
+        GenerationGenerationTargetableVector
+      >
+      // @ts-expect-error upper claim generation must remain targetable/targetable/unreachable — mutation-verdict:construction:poison-targetability-vector-run-claim-gen-upper
+      const runClaimGenUpper: PoisonCounterTargetabilityRecord =
+        runClaimGenUpperAsGenerationGenerationTargetable
+
+      const runClaimGenLowerAsTargetable = {} as ReplaceTargetabilityVector<
+        'run-claim-gen/lower',
+        TargetableVector
+      >
+      // @ts-expect-error lower claim generation must remain unreachable — mutation-verdict:construction:poison-targetability-vector-run-claim-gen-lower
+      const runClaimGenLower: PoisonCounterTargetabilityRecord = runClaimGenLowerAsTargetable
+
+      const runActivatedGenUpperAsTargetable = {} as ReplaceTargetabilityVector<
+        'run-activated-gen/upper',
+        TargetableVector
+      >
+      // @ts-expect-error upper activated generation must remain unreachable — mutation-verdict:construction:poison-targetability-vector-run-activated-gen-upper
+      const runActivatedGenUpper: PoisonCounterTargetabilityRecord =
+        runActivatedGenUpperAsTargetable
+
+      const runActivatedGenLowerAsGenerationGenerationTargetable = {} as ReplaceTargetabilityVector<
+        'run-activated-gen/lower',
+        GenerationGenerationTargetableVector
+      >
+      // @ts-expect-error lower activated generation must remain targetable/targetable/unreachable — mutation-verdict:construction:poison-targetability-vector-run-activated-gen-lower
+      const runActivatedGenLower: PoisonCounterTargetabilityRecord =
+        runActivatedGenLowerAsGenerationGenerationTargetable
+
+      const runRelaunchCountUpperAsUnreachable = {} as ReplaceTargetabilityVector<
+        'run-relaunch-count/upper',
+        CounterRelationVector
+      >
+      // @ts-expect-error upper relaunch count must remain targetable — mutation-verdict:construction:poison-targetability-vector-run-relaunch-count-upper
+      const runRelaunchCountUpper: PoisonCounterTargetabilityRecord =
+        runRelaunchCountUpperAsUnreachable
+
+      const runRelaunchCountLowerAsUnreachable = {} as ReplaceTargetabilityVector<
+        'run-relaunch-count/lower',
+        CounterRelationVector
+      >
+      // @ts-expect-error lower relaunch count must remain targetable — mutation-verdict:construction:poison-targetability-vector-run-relaunch-count-lower
+      const runRelaunchCountLower: PoisonCounterTargetabilityRecord =
+        runRelaunchCountLowerAsUnreachable
+
+      const checkpointOwnerAttemptUpperAsTargetable = {} as ReplaceTargetabilityVector<
+        'checkpoint-owner-attempt/upper',
+        TargetableVector
+      >
+      // @ts-expect-error upper checkpoint owner attempt must remain unread — mutation-verdict:construction:poison-targetability-vector-checkpoint-owner-attempt-upper
+      const checkpointOwnerAttemptUpper: PoisonCounterTargetabilityRecord =
+        checkpointOwnerAttemptUpperAsTargetable
+
+      const checkpointOwnerAttemptLowerAsTargetable = {} as ReplaceTargetabilityVector<
+        'checkpoint-owner-attempt/lower',
+        TargetableVector
+      >
+      // @ts-expect-error lower checkpoint owner attempt must remain unread — mutation-verdict:construction:poison-targetability-vector-checkpoint-owner-attempt-lower
+      const checkpointOwnerAttemptLower: PoisonCounterTargetabilityRecord =
+        checkpointOwnerAttemptLowerAsTargetable
+
+      void [
+        taskAttemptsUpper,
+        taskAttemptsLower,
+        taskMaxAttemptsUpper,
+        taskMaxAttemptsLower,
+        taskInfraRetriesUpper,
+        taskInfraRetriesLower,
+        runAttemptUpper,
+        runAttemptLower,
+        runClaimGenUpper,
+        runClaimGenLower,
+        runActivatedGenUpper,
+        runActivatedGenLower,
+        runRelaunchCountUpper,
+        runRelaunchCountLower,
+        checkpointOwnerAttemptUpper,
+        checkpointOwnerAttemptLower,
+      ]
     }
     expect(compileOnly).toBeTypeOf('function')
   })

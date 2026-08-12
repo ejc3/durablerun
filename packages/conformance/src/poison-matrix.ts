@@ -208,15 +208,90 @@ type CounterSeedOverrides = Readonly<
   }>
 >
 
+export type PoisonUnreachableTargetReason =
+  | 'counter-relation-needs-another-invalid-field'
+  | 'generation-classification-needs-another-invalid-field'
+  | 'transition-does-not-read-field'
+
 export type PoisonTargetability =
   | { readonly kind: 'targetable'; readonly companions?: CounterSeedOverrides }
   | {
       readonly kind: 'unreachable'
-      readonly reason:
-        | 'counter-relation-needs-another-invalid-field'
-        | 'generation-classification-needs-another-invalid-field'
-        | 'transition-does-not-read-field'
+      readonly reason: PoisonUnreachableTargetReason
     }
+
+type TargetableCounterTargetability = Readonly<{ kind: 'targetable' }>
+type UnreachableCounterTargetability<Reason extends PoisonUnreachableTargetReason> = Readonly<{
+  kind: 'unreachable'
+  reason: Reason
+}>
+
+export type PoisonCounterTargetabilityVector<
+  Claim extends PoisonTargetability,
+  LostLaunch extends PoisonTargetability,
+  ClaimTimeout extends PoisonTargetability,
+> = Readonly<{
+  claim: Claim
+  'sweep:lost-launch': LostLaunch
+  'sweep:claim-timeout': ClaimTimeout
+}>
+
+type TargetableVector = PoisonCounterTargetabilityVector<
+  TargetableCounterTargetability,
+  TargetableCounterTargetability,
+  TargetableCounterTargetability
+>
+type CounterRelationVector = PoisonCounterTargetabilityVector<
+  UnreachableCounterTargetability<'counter-relation-needs-another-invalid-field'>,
+  UnreachableCounterTargetability<'counter-relation-needs-another-invalid-field'>,
+  UnreachableCounterTargetability<'counter-relation-needs-another-invalid-field'>
+>
+type GenerationVector = PoisonCounterTargetabilityVector<
+  UnreachableCounterTargetability<'generation-classification-needs-another-invalid-field'>,
+  UnreachableCounterTargetability<'generation-classification-needs-another-invalid-field'>,
+  UnreachableCounterTargetability<'generation-classification-needs-another-invalid-field'>
+>
+type UnreadVector = PoisonCounterTargetabilityVector<
+  UnreachableCounterTargetability<'transition-does-not-read-field'>,
+  UnreachableCounterTargetability<'transition-does-not-read-field'>,
+  UnreachableCounterTargetability<'transition-does-not-read-field'>
+>
+type TargetableTargetableGenerationVector = PoisonCounterTargetabilityVector<
+  TargetableCounterTargetability,
+  TargetableCounterTargetability,
+  UnreachableCounterTargetability<'generation-classification-needs-another-invalid-field'>
+>
+export type GenerationGenerationTargetableVector = PoisonCounterTargetabilityVector<
+  UnreachableCounterTargetability<'generation-classification-needs-another-invalid-field'>,
+  UnreachableCounterTargetability<'generation-classification-needs-another-invalid-field'>,
+  TargetableCounterTargetability
+>
+
+/**
+ * Exact counter-boundary classification contract.
+ *
+ * This intentionally names both sides of every persisted counter. Adding a
+ * persisted field therefore cannot silently inherit a default classification:
+ * the direct lookup below stops compiling until its two vectors are declared.
+ */
+export type PoisonCounterTargetabilityRecord = Readonly<{
+  'task-attempts/upper': CounterRelationVector
+  'task-attempts/lower': TargetableVector
+  'task-max-attempts/upper': TargetableVector
+  'task-max-attempts/lower': CounterRelationVector
+  'task-infra-retries/upper': TargetableVector
+  'task-infra-retries/lower': TargetableVector
+  'run-attempt/upper': CounterRelationVector
+  'run-attempt/lower': CounterRelationVector
+  'run-claim-gen/upper': TargetableTargetableGenerationVector
+  'run-claim-gen/lower': GenerationVector
+  'run-activated-gen/upper': GenerationVector
+  'run-activated-gen/lower': TargetableTargetableGenerationVector
+  'run-relaunch-count/upper': TargetableVector
+  'run-relaunch-count/lower': TargetableVector
+  'checkpoint-owner-attempt/upper': UnreadVector
+  'checkpoint-owner-attempt/lower': UnreadVector
+}>
 
 export interface CounterBoundaryTarget {
   readonly fieldId: PersistedCounterFieldId
@@ -314,36 +389,102 @@ const checkpoint = (
     [taskId, queue, ownerRunId, ownerAttempt, updatedAt],
   )
 
-const TARGETABLE_COUNTER_BOUNDARIES = Object.freeze({
-  claim: new Set([
-    'task-attempts/lower',
-    'task-max-attempts/upper',
-    'task-infra-retries/lower',
-    'task-infra-retries/upper',
-    'run-claim-gen/upper',
-    'run-activated-gen/lower',
-    'run-relaunch-count/lower',
-    'run-relaunch-count/upper',
-  ]),
-  'sweep:lost-launch': new Set([
-    'task-attempts/lower',
-    'task-max-attempts/upper',
-    'task-infra-retries/lower',
-    'task-infra-retries/upper',
-    'run-claim-gen/upper',
-    'run-activated-gen/lower',
-    'run-relaunch-count/lower',
-    'run-relaunch-count/upper',
-  ]),
-  'sweep:claim-timeout': new Set([
-    'task-attempts/lower',
-    'task-max-attempts/upper',
-    'task-infra-retries/lower',
-    'task-infra-retries/upper',
-    'run-relaunch-count/lower',
-    'run-relaunch-count/upper',
-  ]),
-} satisfies Readonly<Record<PoisonTargetArm, ReadonlySet<string>>>)
+const TARGETABLE_COUNTER_TARGETABILITY = Object.freeze({ kind: 'targetable' as const })
+const COUNTER_RELATION_TARGETABILITY = Object.freeze({
+  kind: 'unreachable' as const,
+  reason: 'counter-relation-needs-another-invalid-field' as const,
+})
+const GENERATION_TARGETABILITY = Object.freeze({
+  kind: 'unreachable' as const,
+  reason: 'generation-classification-needs-another-invalid-field' as const,
+})
+const UNREAD_TARGETABILITY = Object.freeze({
+  kind: 'unreachable' as const,
+  reason: 'transition-does-not-read-field' as const,
+})
+
+const COUNTER_TARGETABILITY = Object.freeze({
+  'task-attempts/upper': Object.freeze({
+    claim: COUNTER_RELATION_TARGETABILITY,
+    'sweep:lost-launch': COUNTER_RELATION_TARGETABILITY,
+    'sweep:claim-timeout': COUNTER_RELATION_TARGETABILITY,
+  }),
+  'task-attempts/lower': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': TARGETABLE_COUNTER_TARGETABILITY,
+  }),
+  'task-max-attempts/upper': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': TARGETABLE_COUNTER_TARGETABILITY,
+  }),
+  'task-max-attempts/lower': Object.freeze({
+    claim: COUNTER_RELATION_TARGETABILITY,
+    'sweep:lost-launch': COUNTER_RELATION_TARGETABILITY,
+    'sweep:claim-timeout': COUNTER_RELATION_TARGETABILITY,
+  }),
+  'task-infra-retries/upper': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': TARGETABLE_COUNTER_TARGETABILITY,
+  }),
+  'task-infra-retries/lower': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': TARGETABLE_COUNTER_TARGETABILITY,
+  }),
+  'run-attempt/upper': Object.freeze({
+    claim: COUNTER_RELATION_TARGETABILITY,
+    'sweep:lost-launch': COUNTER_RELATION_TARGETABILITY,
+    'sweep:claim-timeout': COUNTER_RELATION_TARGETABILITY,
+  }),
+  'run-attempt/lower': Object.freeze({
+    claim: COUNTER_RELATION_TARGETABILITY,
+    'sweep:lost-launch': COUNTER_RELATION_TARGETABILITY,
+    'sweep:claim-timeout': COUNTER_RELATION_TARGETABILITY,
+  }),
+  'run-claim-gen/upper': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': GENERATION_TARGETABILITY,
+  }),
+  'run-claim-gen/lower': Object.freeze({
+    claim: GENERATION_TARGETABILITY,
+    'sweep:lost-launch': GENERATION_TARGETABILITY,
+    'sweep:claim-timeout': GENERATION_TARGETABILITY,
+  }),
+  'run-activated-gen/upper': Object.freeze({
+    claim: GENERATION_TARGETABILITY,
+    'sweep:lost-launch': GENERATION_TARGETABILITY,
+    'sweep:claim-timeout': GENERATION_TARGETABILITY,
+  }),
+  'run-activated-gen/lower': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': GENERATION_TARGETABILITY,
+  }),
+  'run-relaunch-count/upper': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': TARGETABLE_COUNTER_TARGETABILITY,
+  }),
+  'run-relaunch-count/lower': Object.freeze({
+    claim: TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:lost-launch': TARGETABLE_COUNTER_TARGETABILITY,
+    'sweep:claim-timeout': TARGETABLE_COUNTER_TARGETABILITY,
+  }),
+  'checkpoint-owner-attempt/upper': Object.freeze({
+    claim: UNREAD_TARGETABILITY,
+    'sweep:lost-launch': UNREAD_TARGETABILITY,
+    'sweep:claim-timeout': UNREAD_TARGETABILITY,
+  }),
+  'checkpoint-owner-attempt/lower': Object.freeze({
+    claim: UNREAD_TARGETABILITY,
+    'sweep:lost-launch': UNREAD_TARGETABILITY,
+    'sweep:claim-timeout': UNREAD_TARGETABILITY,
+  }),
+} as const satisfies PoisonCounterTargetabilityRecord)
 
 const ALL_TARGET_ARMS = Object.freeze({
   claim: Object.freeze({ kind: 'targetable' as const }),
@@ -366,41 +507,23 @@ function counterCompanions(
   return undefined
 }
 
-function unreachableCounterReason(
-  fieldId: PersistedCounterFieldId,
-  side: 'upper' | 'lower',
-  arm: PoisonTargetArm,
-): Extract<PoisonTargetability, { kind: 'unreachable' }>['reason'] {
-  if (fieldId === 'checkpoint-owner-attempt') return 'transition-does-not-read-field'
-  if (fieldId === 'run-claim-gen' || fieldId === 'run-activated-gen') {
-    return 'generation-classification-needs-another-invalid-field'
-  }
-  return 'counter-relation-needs-another-invalid-field'
-}
-
 function counterBoundaryTarget(
   fieldId: PersistedCounterFieldId,
   side: 'upper' | 'lower',
 ): CounterBoundaryTarget {
-  const key = `${fieldId}/${side}`
+  const arms = COUNTER_TARGETABILITY[`${fieldId}/${side}`]
   const companions = counterCompanions(fieldId, side)
-  const arm = (name: PoisonTargetArm): PoisonTargetability =>
-    TARGETABLE_COUNTER_BOUNDARIES[name].has(key)
-      ? Object.freeze({
-          kind: 'targetable' as const,
-          ...(companions === undefined ? {} : { companions }),
-        })
-      : Object.freeze({
-          kind: 'unreachable' as const,
-          reason: unreachableCounterReason(fieldId, side, name),
-        })
+  const mergeCompanions = (targetability: PoisonTargetability): PoisonTargetability =>
+    targetability.kind === 'targetable' && companions !== undefined
+      ? Object.freeze({ ...targetability, companions })
+      : targetability
   return Object.freeze({
     fieldId,
     side,
     arms: Object.freeze({
-      claim: arm('claim'),
-      'sweep:lost-launch': arm('sweep:lost-launch'),
-      'sweep:claim-timeout': arm('sweep:claim-timeout'),
+      claim: mergeCompanions(arms.claim),
+      'sweep:lost-launch': mergeCompanions(arms['sweep:lost-launch']),
+      'sweep:claim-timeout': mergeCompanions(arms['sweep:claim-timeout']),
     }),
   })
 }

@@ -1015,18 +1015,120 @@ MUTATION_SPECS = [
         "the keyed profile contract admits an unactivated claim-timeout seed",
     ),
     (
-        "poison-targetability-inventory",
+        "poison-targetability-vector-task-attempts-upper",
         "packages/conformance/src/poison-matrix.ts",
-        "    'run-activated-gen/lower',\n"
-        "    'run-relaunch-count/lower',\n"
-        "    'run-relaunch-count/upper',\n"
-        "  ]),\n"
-        "  'sweep:lost-launch': new Set([\n",
-        "    'run-activated-gen/lower',\n"
-        "    'run-relaunch-count/lower',\n"
-        "  ]),\n"
-        "  'sweep:lost-launch': new Set([\n",
-        "the upper relaunch-count boundary is silently reclassified as unreachable at claim",
+        "  'task-attempts/upper': CounterRelationVector\n",
+        "  'task-attempts/upper': CounterRelationVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable upper task-attempts vector",
+    ),
+    (
+        "poison-targetability-vector-task-attempts-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'task-attempts/lower': TargetableVector\n",
+        "  'task-attempts/lower': TargetableVector | CounterRelationVector\n",
+        "the keyed targetability contract admits an unreachable lower task-attempts vector",
+    ),
+    (
+        "poison-targetability-vector-task-max-attempts-upper",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'task-max-attempts/upper': TargetableVector\n",
+        "  'task-max-attempts/upper': TargetableVector | CounterRelationVector\n",
+        "the keyed targetability contract admits an unreachable upper task-max-attempts vector",
+    ),
+    (
+        "poison-targetability-vector-task-max-attempts-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'task-max-attempts/lower': CounterRelationVector\n",
+        "  'task-max-attempts/lower': CounterRelationVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable lower task-max-attempts vector",
+    ),
+    (
+        "poison-targetability-vector-task-infra-retries-upper",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'task-infra-retries/upper': TargetableVector\n",
+        "  'task-infra-retries/upper': TargetableVector | CounterRelationVector\n",
+        "the keyed targetability contract admits an unreachable upper task-infra-retries vector",
+    ),
+    (
+        "poison-targetability-vector-task-infra-retries-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'task-infra-retries/lower': TargetableVector\n",
+        "  'task-infra-retries/lower': TargetableVector | CounterRelationVector\n",
+        "the keyed targetability contract admits an unreachable lower task-infra-retries vector",
+    ),
+    (
+        "poison-targetability-vector-run-attempt-upper",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-attempt/upper': CounterRelationVector\n",
+        "  'run-attempt/upper': CounterRelationVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable upper run-attempt vector",
+    ),
+    (
+        "poison-targetability-vector-run-attempt-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-attempt/lower': CounterRelationVector\n",
+        "  'run-attempt/lower': CounterRelationVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable lower run-attempt vector",
+    ),
+    (
+        "poison-targetability-vector-run-claim-gen-upper",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-claim-gen/upper': TargetableTargetableGenerationVector\n",
+        "  'run-claim-gen/upper':\n"
+        "    | TargetableTargetableGenerationVector\n"
+        "    | GenerationGenerationTargetableVector\n",
+        "the keyed targetability contract admits the inverted upper claim-generation vector",
+    ),
+    (
+        "poison-targetability-vector-run-claim-gen-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-claim-gen/lower': GenerationVector\n",
+        "  'run-claim-gen/lower': GenerationVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable lower claim-generation vector",
+    ),
+    (
+        "poison-targetability-vector-run-activated-gen-upper",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-activated-gen/upper': GenerationVector\n",
+        "  'run-activated-gen/upper': GenerationVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable upper activation-generation vector",
+    ),
+    (
+        "poison-targetability-vector-run-activated-gen-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-activated-gen/lower': TargetableTargetableGenerationVector\n",
+        "  'run-activated-gen/lower':\n"
+        "    | TargetableTargetableGenerationVector\n"
+        "    | GenerationGenerationTargetableVector\n",
+        "the keyed targetability contract admits the inverted lower activation-generation vector",
+    ),
+    (
+        "poison-targetability-vector-run-relaunch-count-upper",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-relaunch-count/upper': TargetableVector\n",
+        "  'run-relaunch-count/upper': TargetableVector | CounterRelationVector\n",
+        "the keyed targetability contract admits an unreachable upper relaunch-count vector",
+    ),
+    (
+        "poison-targetability-vector-run-relaunch-count-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'run-relaunch-count/lower': TargetableVector\n",
+        "  'run-relaunch-count/lower': TargetableVector | CounterRelationVector\n",
+        "the keyed targetability contract admits an unreachable lower relaunch-count vector",
+    ),
+    (
+        "poison-targetability-vector-checkpoint-owner-attempt-upper",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'checkpoint-owner-attempt/upper': UnreadVector\n",
+        "  'checkpoint-owner-attempt/upper': UnreadVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable upper checkpoint-owner vector",
+    ),
+    (
+        "poison-targetability-vector-checkpoint-owner-attempt-lower",
+        "packages/conformance/src/poison-matrix.ts",
+        "  'checkpoint-owner-attempt/lower': UnreadVector\n",
+        "  'checkpoint-owner-attempt/lower': UnreadVector | TargetableVector\n",
+        "the keyed targetability contract admits a targetable lower checkpoint-owner vector",
     ),
     (
         "poison-sweep-scan-prelimit",
@@ -4431,11 +4533,117 @@ VERDICTS = {
         "mutation-verdict:construction:poison-profile-sweep-claim-timeout",
         "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
-    "poison-targetability-inventory": ExpectedVerdict(
-        "behavior",
+    "poison-targetability-vector-task-attempts-upper": ExpectedVerdict(
+        "construction",
         "packages/conformance/test/poison-oracle-meta.test.ts",
-        "poison/invariant mechanism self-tests classifies every counter boundary against every target arm",
-        "mutation-verdict:behavior:poison-targetability-inventory",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-task-attempts-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-task-attempts-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-task-attempts-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-task-max-attempts-upper": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-task-max-attempts-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-task-max-attempts-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-task-max-attempts-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-task-infra-retries-upper": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-task-infra-retries-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-task-infra-retries-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-task-infra-retries-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-attempt-upper": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-attempt-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-attempt-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-attempt-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-claim-gen-upper": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-claim-gen-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-claim-gen-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-claim-gen-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-activated-gen-upper": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-activated-gen-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-activated-gen-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-activated-gen-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-relaunch-count-upper": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-relaunch-count-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-run-relaunch-count-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-run-relaunch-count-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-checkpoint-owner-attempt-upper": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-checkpoint-owner-attempt-upper",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+    ),
+    "poison-targetability-vector-checkpoint-owner-attempt-lower": ExpectedVerdict(
+        "construction",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests requires every exact counter targetability vector at construction",
+        "mutation-verdict:construction:poison-targetability-vector-checkpoint-owner-attempt-lower",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
     ),
     "poison-sweep-scan-prelimit": ExpectedVerdict(
         "behavior",
@@ -5923,6 +6131,22 @@ CONFORMANCE_TYPECHECK_MUTATION_NAMES = frozenset(
         "poison-profile-claim-sleeping",
         "poison-profile-sweep-lost-launch",
         "poison-profile-sweep-claim-timeout",
+        "poison-targetability-vector-task-attempts-upper",
+        "poison-targetability-vector-task-attempts-lower",
+        "poison-targetability-vector-task-max-attempts-upper",
+        "poison-targetability-vector-task-max-attempts-lower",
+        "poison-targetability-vector-task-infra-retries-upper",
+        "poison-targetability-vector-task-infra-retries-lower",
+        "poison-targetability-vector-run-attempt-upper",
+        "poison-targetability-vector-run-attempt-lower",
+        "poison-targetability-vector-run-claim-gen-upper",
+        "poison-targetability-vector-run-claim-gen-lower",
+        "poison-targetability-vector-run-activated-gen-upper",
+        "poison-targetability-vector-run-activated-gen-lower",
+        "poison-targetability-vector-run-relaunch-count-upper",
+        "poison-targetability-vector-run-relaunch-count-lower",
+        "poison-targetability-vector-checkpoint-owner-attempt-upper",
+        "poison-targetability-vector-checkpoint-owner-attempt-lower",
     }
 )
 
@@ -6064,6 +6288,9 @@ MUTATIONS = [
 VERDICT_MARKER_EXEMPTIONS = {
     "mutation-verdict:behavior:poison-target-profile-seeding": (
         "healthy runtime aggregate; compiler-owned profile-record mutations own the exact seeds"
+    ),
+    "mutation-verdict:behavior:poison-targetability-inventory": (
+        "healthy runtime aggregate; compiler-owned targetability-record mutations own the exact vectors"
     ),
     "mutation-verdict:behavior:fault-matrix-edge-crossing:fresh": (
         "healthy generated-matrix control; edge mutations own the non-fresh markers"
@@ -8079,10 +8306,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
+        if len(MUTATIONS) != 399:
+            failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
-            or len(CONFORMANCE_TYPECHECK_MUTATION_NAMES) != 4
-            or len(TYPECHECK_MUTATION_NAMES) != 22
+            or len(CONFORMANCE_TYPECHECK_MUTATION_NAMES) != 20
+            or len(TYPECHECK_MUTATION_NAMES) != 38
         ):
             failures.append("the construction-mutation project inventory cardinality changed")
         if any(
