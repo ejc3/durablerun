@@ -314,21 +314,24 @@ describe('fuzz shard batch plan', () => {
         }
       },
     )
-    await attributeExpectedFailure(
-      { kind: 'construction', mutation: 'nightly-fuzz-runtime-environment' },
-      /expected false to be true/,
-      async () => {
-        for (const plan of plans) {
-          for (const process of plan) {
-            expect(
-              process.command.startsWith(
-                `env FUZZ_SEEDS=20000 FUZZ_STEPS=150 FUZZ_BATCHES=4 FUZZ_BATCH_INDEX=${process.batch} `,
-              ),
-            ).toBe(true)
-          }
+    let processCount = 0
+    let runtimeEnvironmentMismatches = 0
+    for (const plan of plans) {
+      for (const process of plan) {
+        processCount++
+        if (
+          !process.command.startsWith(
+            `env FUZZ_SEEDS=20000 FUZZ_STEPS=150 FUZZ_BATCHES=4 FUZZ_BATCH_INDEX=${process.batch} `,
+          )
+        ) {
+          runtimeEnvironmentMismatches++
         }
-      },
-    )
+      }
+    }
+    expect(
+      { processCount, runtimeEnvironmentMismatches },
+      'mutation-verdict:construction:nightly-fuzz-runtime-environment',
+    ).toEqual({ processCount: 128, runtimeEnvironmentMismatches: 0 })
     for (const [shard, plan] of plans.entries()) {
       expect(plan.reduce((sum, process) => sum + process.walks, 0)).toBe(625)
       for (const process of plan) {
