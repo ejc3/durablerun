@@ -10,7 +10,7 @@ import {
   decodeBoundedInteger,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { interposeAfterBatch, type StoreFixture, type StoreFixtureFactory } from './fixture.js'
+import { type StoreFixture, type StoreFixtureFactory, interposeAfterBatch } from './fixture.js'
 
 const Q = 'time-boundary'
 const NORMAL_NOW_MS = 1_000_000
@@ -539,6 +539,23 @@ async function fixtureAt(makeFixture: StoreFixtureFactory, seed: string): Promis
   return fixture
 }
 
+async function boundaryTargetsAt(
+  makeFixture: StoreFixtureFactory,
+  testCase: TimeBoundaryCase,
+  seed: string,
+  nowMs: number,
+): Promise<readonly number[]> {
+  const fixture = await fixtureAt(makeFixture, seed)
+  try {
+    const prepared = await testCase.prepare(fixture)
+    await fixture.admin.setFakeNowEpochMs(nowMs)
+    await prepared.invoke()
+    return await prepared.targets()
+  } finally {
+    fixture.close()
+  }
+}
+
 async function driverCleanupRows(
   fixture: StoreFixture,
   victimLastBeatMs: number,
@@ -584,21 +601,28 @@ export function timestampBoundaryConformance(
 ): void {
   describe(`timestamp boundaries [${dialect}]`, () => {
     for (const testCase of BOUNDARY_CASES) {
-      it(`${testCase.id} accepts an exact MAX_EPOCH_MS result`, async () => {
-        const fixture = await fixtureAt(makeFixture, `${testCase.id}:exact`)
-        try {
-          const prepared = await testCase.prepare(fixture)
-          await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS - testCase.deltaMs)
-          await prepared.invoke()
-          const targets = await prepared.targets()
-          expect(targets).not.toHaveLength(0)
-          expect(
-            targets.every((value) => value === MAX_EPOCH_MS),
-            testCase.exactMarker,
-          ).toBe(true)
-        } finally {
-          fixture.close()
-        }
+      it(`${testCase.id} preserves the epoch predecessor and accepts an exact MAX_EPOCH_MS result`, async () => {
+        const exactTargets = await boundaryTargetsAt(
+          makeFixture,
+          testCase,
+          `${testCase.id}:exact`,
+          MAX_EPOCH_MS - testCase.deltaMs,
+        )
+        const belowCeilingTargets = await boundaryTargetsAt(
+          makeFixture,
+          testCase,
+          `${testCase.id}:below-ceiling`,
+          MAX_EPOCH_MS - testCase.deltaMs - 1,
+        )
+        expect(
+          {
+            exact: exactTargets.length > 0 && exactTargets.every((value) => value === MAX_EPOCH_MS),
+            belowCeiling:
+              belowCeilingTargets.length > 0 &&
+              belowCeilingTargets.every((value) => value === MAX_EPOCH_MS - 1),
+          },
+          testCase.exactMarker,
+        ).toEqual({ exact: true, belowCeiling: true })
       })
 
       it(`${testCase.id} refuses overflow by one without a partial transition`, async () => {
