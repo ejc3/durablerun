@@ -44,15 +44,27 @@ describe('snapshotTaskThrowable', () => {
     ).toEqual({ plainObject: generic, thrownFunction: generic })
   })
 
-  it('contains revoked proxy traps at the total fallback', async () => {
+  it('contains hostile descriptor and revoked proxy traps at the total fallback', async () => {
+    const descriptorError = new RangeError('hostile descriptor trap')
+    const hostileDescriptor = new Proxy(Object.create(null), {
+      getOwnPropertyDescriptor(): never {
+        throw descriptorError
+      },
+    })
+    const hostileDescriptorSnapshot = await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'task-throwable-total-fallback' },
+      (error) => error === descriptorError,
+      async () => snapshotTaskThrowable(hostileDescriptor),
+    )
+
     const revocable = Proxy.revocable(Object.create(null), {})
     revocable.revoke()
-    const snapshot = await attributeExpectedFailure(
-      { kind: 'behavior', mutation: 'task-throwable-total-fallback' },
-      /proxy that has been revoked/,
-      async () => snapshotTaskThrowable(revocable.proxy),
-    )
-    expect(snapshot).toEqual(failure('Error', 'task threw an uninspectable value'))
+    const revokedProxySnapshot = snapshotTaskThrowable(revocable.proxy)
+    const generic = failure('Error', 'task threw an uninspectable value')
+    expect({ hostileDescriptorSnapshot, revokedProxySnapshot }).toEqual({
+      hostileDescriptorSnapshot: generic,
+      revokedProxySnapshot: generic,
+    })
   })
 
   it('reads names from data descriptors without invoking getters', () => {

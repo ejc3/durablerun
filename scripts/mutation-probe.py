@@ -5763,7 +5763,7 @@ VERDICTS.update(
         "task-throwable-total-fallback": ExpectedVerdict(
             "behavior",
             "packages/core/test/errors.test.ts",
-            "snapshotTaskThrowable contains revoked proxy traps at the total fallback",
+            "snapshotTaskThrowable contains hostile descriptor and revoked proxy traps at the total fallback",
             "mutation-verdict:behavior:task-throwable-total-fallback",
         ),
         "task-throwable-name-data-only": ExpectedVerdict(
