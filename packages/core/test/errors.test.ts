@@ -34,10 +34,14 @@ describe('snapshotTaskThrowable', () => {
   })
 
   it('uses one generic payload for uninspectable objects', () => {
+    const generic = failure('Error', 'task threw an uninspectable value')
     expect(
-      snapshotTaskThrowable({ arbitrary: true }),
+      {
+        plainObject: snapshotTaskThrowable({ arbitrary: true }),
+        thrownFunction: snapshotTaskThrowable(() => undefined),
+      },
       'mutation-verdict:behavior:task-throwable-generic-payload',
-    ).toEqual(failure('Error', 'task threw an uninspectable value'))
+    ).toEqual({ plainObject: generic, thrownFunction: generic })
   })
 
   it('contains revoked proxy traps at the total fallback', async () => {
