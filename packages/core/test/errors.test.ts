@@ -120,10 +120,16 @@ describe('snapshotTaskThrowable', () => {
         },
       },
     })
-    expect(snapshotTaskThrowable(hostileCoercion)).toEqual(
-      failure('Error', 'task threw an uninspectable value'),
-    )
-    expect(coercions, 'mutation-verdict:behavior:task-throwable-no-object-coercion').toBe(0)
+    expect(
+      {
+        snapshot: snapshotTaskThrowable(hostileCoercion),
+        coercions,
+      },
+      'mutation-verdict:behavior:task-throwable-no-object-coercion',
+    ).toEqual({
+      snapshot: failure('Error', 'task threw an uninspectable value'),
+      coercions: 0,
+    })
   })
 
   it('treats public engine control constructors as ordinary task failures', () => {
