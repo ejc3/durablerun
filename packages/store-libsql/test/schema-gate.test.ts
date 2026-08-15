@@ -255,7 +255,7 @@ describe('migrate reports success only when the schema is current', () => {
     const malformed: SqlExecutor = { batch: async () => [] }
     const observed = await captureSchemaVersion(new LibsqlStoreAdmin(malformed))
 
-    expect(observed, 'regression:schema-version-missing-result').toEqual({
+    expect(observed, 'mutation-verdict:behavior:schema-version-missing-result').toEqual({
       kind: 'rejected',
       error: expect.any(SchemaMismatchError),
     })
@@ -271,7 +271,7 @@ describe('migrate reports success only when the schema is current', () => {
     }
     const observed = await captureSchemaVersion(new LibsqlStoreAdmin(malformed))
 
-    expect(observed, 'regression:schema-version-extra-results').toEqual({
+    expect(observed, 'mutation-verdict:behavior:schema-version-extra-results').toEqual({
       kind: 'rejected',
       error: expect.any(SchemaMismatchError),
     })
@@ -317,7 +317,7 @@ describe('migrate reports success only when the schema is current', () => {
         migration,
         tables: tables?.rows.map((row) => row.name),
       },
-      'regression:schema-version-missing-row',
+      'mutation-verdict:behavior:schema-version-missing-row',
     ).toEqual({
       synthetic: { kind: 'rejected', error: expect.any(SchemaMismatchError) },
       initialized: { kind: 'rejected', error: expect.any(SchemaMismatchError) },
@@ -333,57 +333,9 @@ describe('migrate reports success only when the schema is current', () => {
     }
     const observed = await captureSchemaVersion(new LibsqlStoreAdmin(malformed))
 
-    expect(observed, 'regression:schema-version-extra-rows').toEqual({
+    expect(observed, 'mutation-verdict:behavior:schema-version-extra-rows').toEqual({
       kind: 'rejected',
       error: expect.any(SchemaMismatchError),
-    })
-  })
-
-  it('rejects an initialized metadata table with no version row', async () => {
-    await db.batch('corrupt', [
-      {
-        sql: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID`,
-        args: [],
-      },
-    ])
-
-    await expect(admin.schemaVersion()).rejects.toBeInstanceOf(SchemaMismatchError)
-  })
-
-  it('does not let migrate relabel an initialized versionless metadata table as fresh', async () => {
-    await db.batch('corrupt', [
-      {
-        sql: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID`,
-        args: [],
-      },
-    ])
-
-    const outcome = await admin.migrate().then(
-      () => ({ kind: 'resolved' as const }),
-      (error: unknown) => ({
-        kind: 'rejected' as const,
-        name: error instanceof Error ? error.name : typeof error,
-      }),
-    )
-    const [tables] = await db.batch(
-      'probe',
-      [
-        {
-          sql: `SELECT name FROM sqlite_master
-                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-                ORDER BY name`,
-          args: [],
-        },
-      ],
-      'read',
-    )
-
-    expect({
-      outcome,
-      tables: tables?.rows.map((row) => row.name),
-    }).toEqual({
-      outcome: { kind: 'rejected', name: 'SchemaMismatchError' },
-      tables: ['meta'],
     })
   })
 

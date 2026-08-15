@@ -1629,13 +1629,36 @@ MUTATION_SPECS = [
         "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
-        "schema-version-row-required",
+        "schema-version-missing-result",
         "packages/store-libsql/src/admin.ts",
-        "      throw new SchemaMismatchError(\n"
-        "        `schema-version read must return exactly one result with one row, got ${results.length} results and ${result?.rows.length ?? 0} rows`,\n"
-        "      )",
-        "      return 0",
-        "missing or duplicated version results are interpreted as a fresh database",
+        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "    if (results.length === 0) return 0\n"
+        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "an absent schema-version result is interpreted as a fresh database",
+    ),
+    (
+        "schema-version-extra-results",
+        "packages/store-libsql/src/admin.ts",
+        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "    if (results.length > 1) return 0\n"
+        "    const result = results.length === 1 ? results[0] : undefined\n",
+        "duplicated schema-version results are interpreted as a fresh database",
+    ),
+    (
+        "schema-version-missing-row",
+        "packages/store-libsql/src/admin.ts",
+        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "    if (result !== undefined && result.rows.length === 0) return 0\n"
+        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "an absent schema-version row is interpreted as a fresh database",
+    ),
+    (
+        "schema-version-extra-rows",
+        "packages/store-libsql/src/admin.ts",
+        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "    if (result !== undefined && result.rows.length > 1) return 0\n"
+        "    const row = result?.rows.length === 1 ? result.rows[0] : undefined\n",
+        "duplicated schema-version rows are interpreted as a fresh database",
     ),
     (
         "migration-postcondition-old-version",
@@ -5085,11 +5108,29 @@ VERDICTS = {
         "migrate reports success only when the schema is current owns typed schema absence without accepting deceptive failure text",
         "mutation-verdict:behavior:schema-absence-is-typed",
     ),
-    "schema-version-row-required": ExpectedVerdict(
+    "schema-version-missing-result": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/schema-gate.test.ts",
-        "migrate reports success only when the schema is current requires exactly one schema-version result row",
-        "mutation-verdict:behavior:schema-version-row-required",
+        "migrate reports success only when the schema is current rejects a schema-version read with no result",
+        "mutation-verdict:behavior:schema-version-missing-result",
+    ),
+    "schema-version-extra-results": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema-gate.test.ts",
+        "migrate reports success only when the schema is current rejects a schema-version read with extra results",
+        "mutation-verdict:behavior:schema-version-extra-results",
+    ),
+    "schema-version-missing-row": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema-gate.test.ts",
+        "migrate reports success only when the schema is current rejects a schema-version read with no row",
+        "mutation-verdict:behavior:schema-version-missing-row",
+    ),
+    "schema-version-extra-rows": ExpectedVerdict(
+        "behavior",
+        "packages/store-libsql/test/schema-gate.test.ts",
+        "migrate reports success only when the schema is current rejects a schema-version read with extra rows",
+        "mutation-verdict:behavior:schema-version-extra-rows",
     ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
@@ -6465,9 +6506,6 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "poison-relational-target-counter-fractional-run-relaunch-count": (
         "replacement adds a TypeScript optional-property token, not a SQL bind"
-    ),
-    "schema-version-row-required": (
-        "replacement removes TypeScript optional-chaining and nullish-coalescing tokens"
     ),
     "timestamp-boundary-oracle-rejects-text": (
         "replacement adds a TypeScript conditional expression"
@@ -8547,7 +8585,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 415:
+        if len(MUTATIONS) != 418:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
