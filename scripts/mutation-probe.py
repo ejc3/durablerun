@@ -2710,9 +2710,12 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
         "timestamp-activation-existing-first-start-at-max",
         "packages/store-libsql/src/store.ts",
         "    WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0",
-        "    WHEN NOT ${epochAdditionFits(at, durationMs)} THEN 0",
+        "    WHEN NOT (\n"
+        "      (${firstStarted} IS NULL OR ${storedIntegerWithin(TASK_INTEGER_BOUNDS.first_started_at_ms, task)})\n"
+        "      AND ${epochAdditionFits(at, durationMs)}\n"
+        "    ) THEN 0",
         "uses an existing first-start instant for max-duration on reactivation",
-        "reactivation checks duration headroom from now instead of the persisted first start",
+        "reactivation validates the persisted first start but checks duration headroom from now",
     ),
     (
         "timestamp-claim-pending-lower-before-limit",
