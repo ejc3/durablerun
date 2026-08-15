@@ -3031,8 +3031,13 @@ MUTATION_SPECS.extend(
             "invariant-snapshot-table-identity",
             "packages/conformance/src/invariants.ts",
             "    rowsByTable.set(table, result.rows)",
-            "    rowsByTable.set('tasks', result.rows)",
-            "the invariant snapshot assigns every result to one fixed table instead of its projection identity",
+            "    rowsByTable.set(\n"
+            "      (['tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers'] as const)[\n"
+            "        resultIndex\n"
+            "      ] || table,\n"
+            "      result.rows,\n"
+            "    )",
+            "the invariant snapshot binder rebinds supplied projections through a second positional table list",
         ),
         (
             "timestamp-boundary-enrollment",
