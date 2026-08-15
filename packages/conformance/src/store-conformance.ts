@@ -242,7 +242,16 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
               /^Error: cancel-task\/ownership\/run-task-queue-mismatch: new invariant violation: terminal-task-with-live-run: poison-task\/poison-run$/,
               run,
             )
-            expect(result).toMatchObject({ label, witness: witness.id })
+            const observed = result as typeof result & {
+              readonly invocationResult: unknown
+              readonly poisonSubjectUnchanged: boolean
+            }
+            expect(observed).toMatchObject({
+              label,
+              witness: witness.id,
+              invocationResult: false,
+              poisonSubjectUnchanged: true,
+            })
             return
           }
           await expect(run()).resolves.toMatchObject({
