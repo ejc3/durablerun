@@ -13,10 +13,7 @@ describe('cancellation deadline fragments', () => {
 describe('epoch-addition fragments', () => {
   it('emits each anonymous duration placeholder exactly once', () => {
     const sql = epochAdditionFits('$NOW$', '?', '?')
-    expect(
-      sql.match(/\?/g),
-      'mutation-verdict:construction:timestamp-addition-single-use-deltas',
-    ).toHaveLength(2)
+    expect(sql.match(/\?/g)).toHaveLength(2)
     expect(sql).toContain('253402300799000 - ((?) + (?))')
   })
 })

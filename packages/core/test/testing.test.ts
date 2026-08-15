@@ -27,6 +27,22 @@ async function bindArityFailure(): Promise<never> {
   throw new Error('bind-arity failure unexpectedly returned')
 }
 
+async function bindUnusedArgumentFailure(): Promise<never> {
+  const unreachable: SqlExecutor = {
+    batch: async () => {
+      throw new Error('unused-argument failure reached the executor')
+    },
+  }
+  const batch = new FencedBatch('testing-helper', 'seed', { now: 'CURRENT_TIMESTAMP' }).cas(
+    'win',
+    'runs',
+    `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`,
+    ['run', 'unused'],
+  )
+  await batch.run(unreachable)
+  throw new Error('unused-argument failure unexpectedly returned')
+}
+
 async function bindUndefinedFailure(): Promise<never> {
   const unreachable: SqlExecutor = {
     batch: async () => {
@@ -94,6 +110,15 @@ describe('mutation verdict promise helpers', () => {
       Object.defineProperty(globalThis, 'Error', originalError)
     }
 
+    const missingArgument = await observeCompilerBindPropagation(
+      /binds 2 of 1 explicit args/,
+      bindArityFailure,
+    )
+    const unusedArgument = await observeCompilerBindPropagation(
+      /binds 1 of 2 explicit args/,
+      bindUnusedArgumentFailure,
+    )
+
     expect(
       {
         producers: {
@@ -101,6 +126,10 @@ describe('mutation verdict promise helpers', () => {
           undefined: undefinedProducer,
           capturedConstructor: observed instanceof (originalTypeError.value as ErrorConstructor),
           poisonedConstructorBrand: isFencedBatchBindError(observed),
+        },
+        bindCounts: {
+          missingArgument,
+          unusedArgument,
         },
         consumers: {
           attribute: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>

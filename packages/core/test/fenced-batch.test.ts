@@ -1031,16 +1031,6 @@ describe('compilation binds tokens left to right', () => {
     )
     await expect(b.run(new FakeDb([1]))).rejects.toThrow(/is undefined/)
   })
-
-  it('fails when a statement binds a different number of args than it has', async () => {
-    const b = batch().cas(
-      'win',
-      'runs',
-      `UPDATE runs SET ${FENCE_SET} WHERE run_id = ? AND queue = ?`,
-      ['only-one'],
-    )
-    await expect(b.run(new FakeDb())).rejects.toThrow(/binds 2 of 1/)
-  })
 })
 
 describe('run() reports the outcome', () => {

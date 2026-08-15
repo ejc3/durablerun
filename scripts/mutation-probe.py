@@ -472,6 +472,20 @@ MUTATION_SPECS = [
         "the compiler-error predicate stops reading its private brand",
     ),
     (
+        "testing-helper-bind-count-missing-argument",
+        "packages/core/src/fenced-batch.ts",
+        "    if (argIndex !== s.args.length) {",
+        "    if (argIndex < s.args.length) {",
+        "a statement with more placeholders than explicit args bypasses the compiler bind-count check",
+    ),
+    (
+        "testing-helper-bind-count-unused-argument",
+        "packages/core/src/fenced-batch.ts",
+        "    if (argIndex !== s.args.length) {",
+        "    if (argIndex > s.args.length) {",
+        "a statement with fewer placeholders than explicit args bypasses the compiler bind-count check",
+    ),
+    (
         "testing-helper-bind-count-factory",
         "packages/core/src/fenced-batch.ts",
         "      throw bindCompilationError(\n"
@@ -3005,13 +3019,6 @@ MUTATION_SPECS.extend(
             "the invariant snapshot assigns every result to one fixed table instead of its projection identity",
         ),
         (
-            "timestamp-addition-single-use-deltas",
-            "packages/store-libsql/src/fragments.ts",
-            "  const totalDelta = deltas.map((delta) => `(${delta})`).join(' + ')",
-            "  const totalDelta = deltas.map((delta) => `(${delta}) + (${delta})`).join(' + ')",
-            "each anonymous duration placeholder is consumed twice",
-        ),
-        (
             "timestamp-boundary-enrollment",
             "packages/conformance/src/store-conformance.ts",
             "  { id: 'timestamp-boundaries', run: timestampBoundaryConformance },\n",
@@ -4418,6 +4425,18 @@ VERDICTS = {
         "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
         "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
+    "testing-helper-bind-count-missing-argument": ExpectedVerdict(
+        "construction",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
+    ),
+    "testing-helper-bind-count-unused-argument": ExpectedVerdict(
+        "construction",
+        "packages/core/test/testing.test.ts",
+        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
+        "mutation-verdict:construction:testing-helper-bind-brand-read",
+    ),
     "testing-helper-bind-count-factory": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
@@ -5488,12 +5507,6 @@ VERDICTS.update(
             "packages/conformance/test/invariant-checkers.test.ts",
             "invariant checkers fire on constructed corruption binds every snapshot result through its projection table identity",
             "mutation-verdict:construction:invariant-snapshot-table-identity",
-        ),
-        "timestamp-addition-single-use-deltas": ExpectedVerdict(
-            "construction",
-            "packages/store-libsql/test/fragments.test.ts",
-            "epoch-addition fragments emits each anonymous duration placeholder exactly once",
-            "mutation-verdict:construction:timestamp-addition-single-use-deltas",
         ),
         "timestamp-boundary-enrollment": SHARED_CONFORMANCE_REGISTRY_VERDICT,
         "admin-fake-now-invalid": ExpectedVerdict(
@@ -8607,7 +8620,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 418:
+        if len(MUTATIONS) != 419:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
