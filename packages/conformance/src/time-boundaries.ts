@@ -969,26 +969,39 @@ export function timestampBoundaryConformance(
         ])
         await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS - 2)
 
+        const activation = await settle(() =>
+          fixture.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+        )
+        const [persistedTask, persistedRun] = await fixture.raw.batch(
+          'time-boundary:existing-first-start-after',
+          [
+            {
+              sql: `SELECT cancel_at_ms FROM tasks WHERE task_id = ?`,
+              args: [task.taskId],
+            },
+            {
+              sql: `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`,
+              args: [run.runId],
+            },
+          ],
+          'read',
+        )
+
         expect(
-          await fixture.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+          {
+            activation:
+              activation.kind === 'resolved'
+                ? { kind: 'resolved', nonNull: activation.value !== null }
+                : activation,
+            taskCancelAtMs: persistedTask?.rows[0]?.cancel_at_ms,
+            runClaimExpiresAtMs: persistedRun?.rows[0]?.claim_expires_at_ms,
+          },
           'mutation-verdict:behavior:timestamp-activation-existing-first-start-at-max',
-        ).not.toBeNull()
-        expect(
-          await scalar(
-            fixture,
-            `SELECT cancel_at_ms FROM tasks WHERE task_id = ?`,
-            [task.taskId],
-            'cancel_at_ms',
-          ),
-        ).toBe(MAX_EPOCH_MS - 1)
-        expect(
-          await scalar(
-            fixture,
-            `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`,
-            [run.runId],
-            'claim_expires_at_ms',
-          ),
-        ).toBe(MAX_EPOCH_MS - 1)
+        ).toEqual({
+          activation: { kind: 'resolved', nonNull: true },
+          taskCancelAtMs: MAX_EPOCH_MS - 1,
+          runClaimExpiresAtMs: MAX_EPOCH_MS - 1,
+        })
       } finally {
         fixture.close()
       }
