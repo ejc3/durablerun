@@ -3050,8 +3050,11 @@ MUTATION_SPECS.extend(
             "admin-fake-now-invalid",
             "packages/store-libsql/src/admin.ts",
             "    const validEpochMs = requireEpochMs('epochMs', epochMs)",
-            "    const validEpochMs = epochMs",
-            "the fake engine clock accepts invalid epoch values",
+            "    let validEpochMs = epochMs\n"
+            "    if (epochMs !== -1) {\n"
+            "      validEpochMs = requireEpochMs('epochMs', epochMs)\n"
+            "    }",
+            "the fake engine clock accepts the immediate negative predecessor to the epoch domain",
         ),
         (
             "admin-fake-now-exact-endpoints",
