@@ -3402,8 +3402,17 @@ MUTATION_SPECS.extend(
             "        wake: ownedWake,\n"
             "        checkpoint: ownedCheckpoint,\n"
             "      })",
-            "      throw new SuspendSignal(reason, ownedWake, ownedCheckpoint) // MUTATION",
-            "a suspension minted by the invocation is not enrolled in its control scope",
+            "      const signal = new SuspendSignal(reason, wake, checkpoint)\n"
+            "      if (ownedCheckpoint !== undefined && ownedCheckpoint.key === 'sleep') {\n"
+            "        throw signal // MUTATION\n"
+            "      }\n"
+            "      return enroll(signal, {\n"
+            "        kind: 'suspend',\n"
+            "        reason,\n"
+            "        wake: ownedWake,\n"
+            "        checkpoint: ownedCheckpoint,\n"
+            "      })",
+            "a suspension with the owned checkpoint key 'sleep' is not enrolled in its control scope",
         ),
         (
             "task-control-suspend-reason-owned",
