@@ -599,6 +599,108 @@ async function driverCleanupRows(
   return driverRows(fixture, 'time-boundary:driver-cleanup-after')
 }
 
+async function settle<T>(
+  action: () => Promise<T>,
+): Promise<{ readonly kind: 'resolved'; readonly value: T } | { readonly kind: 'rejected' }> {
+  try {
+    return { kind: 'resolved', value: await action() }
+  } catch {
+    return { kind: 'rejected' }
+  }
+}
+
+async function terminalTaskSnapshot(fixture: StoreFixture, taskId: string) {
+  const [task, runs] = await fixture.raw.batch(
+    'time-boundary:terminal-snapshot',
+    [
+      {
+        sql: `SELECT state, infra_retries
+              FROM tasks WHERE task_id = ?`,
+        args: [taskId],
+      },
+      {
+        sql: `SELECT attempt, state, failed_at_ms
+              FROM runs WHERE task_id = ? ORDER BY attempt, run_id`,
+        args: [taskId],
+      },
+    ],
+    'read',
+  )
+  const taskRow = task?.rows[0]
+  return {
+    task:
+      taskRow === undefined
+        ? null
+        : {
+            state: taskRow.state,
+            infraRetries: taskRow.infra_retries,
+          },
+    runs: (runs?.rows ?? []).map((row) => ({
+      attempt: row.attempt,
+      state: row.state,
+      failedAtMs: row.failed_at_ms,
+    })),
+  }
+}
+
+async function infraTerminalObservation(
+  makeFixture: StoreFixtureFactory,
+  seed: string,
+  atCap: boolean,
+) {
+  const fixture = await fixtureAt(makeFixture, seed)
+  try {
+    const run = await activated(fixture, seed)
+    if (atCap) {
+      await fixture.raw.batch('time-boundary:infra-cap', [
+        {
+          sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+          args: [INFRA_RETRY_CAP, run.taskId],
+        },
+        {
+          sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+          args: [INFRA_RETRY_CAP + 1, run.runId],
+        },
+      ])
+    }
+    const nowMs = atCap ? MAX_EPOCH_MS : 1_100_000
+    await fixture.admin.setFakeNowEpochMs(nowMs)
+    const sweep = await settle(() => fixture.store.sweep(Q, 1))
+    return {
+      sweep:
+        sweep.kind === 'resolved'
+          ? { kind: 'resolved', results: sweep.value.map((result) => result.kind) }
+          : sweep,
+      ...(await terminalTaskSnapshot(fixture, run.taskId)),
+    }
+  } finally {
+    fixture.close()
+  }
+}
+
+async function terminalUserFailureObservation(
+  makeFixture: StoreFixtureFactory,
+  seed: string,
+  nowMs: number,
+) {
+  const fixture = await fixtureAt(makeFixture, seed)
+  try {
+    const run = await activated(fixture, seed, { maxAttempts: 1 })
+    await fixture.admin.setFakeNowEpochMs(nowMs)
+    const failure = await settle(() =>
+      fixture.store.fail(Q, run.runId, run.claimToken, '{"name":"done"}', {
+        delaySeconds: ONE_MS_SECONDS,
+      }),
+    )
+    return {
+      failure: { kind: failure.kind },
+      ...(await terminalTaskSnapshot(fixture, run.taskId)),
+    }
+  } finally {
+    fixture.close()
+  }
+}
+
 export function timestampBoundaryConformance(
   dialect: string,
   makeFixture: StoreFixtureFactory,
@@ -771,64 +873,67 @@ export function timestampBoundaryConformance(
       }
     })
 
-    it('allows the infra-cap terminal arm at the epoch ceiling', async () => {
-      const fixture = await fixtureAt(makeFixture, 'terminal:infra-cap')
-      try {
-        const run = await activated(fixture, 'terminal-infra')
-        await fixture.raw.batch('time-boundary:infra-cap', [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP, run.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, run.runId],
-          },
-        ])
-        await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS)
+    it('allows the infra-cap terminal arm at the epoch ceiling while preserving a below-cap successor', async () => {
+      const belowCap = await infraTerminalObservation(
+        makeFixture,
+        'terminal:infra-below-cap',
+        false,
+      )
+      const atCap = await infraTerminalObservation(makeFixture, 'terminal:infra-cap', true)
 
-        expect(
-          await fixture.store.sweep(Q, 1),
-          'mutation-verdict:behavior:timestamp-terminal-infra-cap-at-max',
-        ).toEqual([
-          {
-            kind: 'infra-cap-exhausted',
-            runId: run.runId,
-            taskId: run.taskId,
-          },
-        ])
-      } finally {
-        fixture.close()
-      }
+      expect(
+        { belowCap, atCap },
+        'mutation-verdict:behavior:timestamp-terminal-infra-cap-at-max',
+      ).toEqual({
+        belowCap: {
+          sweep: { kind: 'resolved', results: ['claim-timeout'] },
+          task: { state: 'pending', infraRetries: 1 },
+          runs: [
+            { attempt: 1, state: 'failed', failedAtMs: 1_100_000 },
+            { attempt: 2, state: 'pending', failedAtMs: null },
+          ],
+        },
+        atCap: {
+          sweep: { kind: 'resolved', results: ['infra-cap-exhausted'] },
+          task: { state: 'failed', infraRetries: INFRA_RETRY_CAP },
+          runs: [
+            {
+              attempt: INFRA_RETRY_CAP + 1,
+              state: 'failed',
+              failedAtMs: MAX_EPOCH_MS,
+            },
+          ],
+        },
+      })
     })
 
-    it('allows terminal user failure when retry budget is exhausted', async () => {
-      const fixture = await fixtureAt(makeFixture, 'terminal:user-budget')
-      try {
-        const run = await activated(fixture, 'terminal-user', {
-          maxAttempts: 1,
-        })
-        await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS)
-        await fixture.store.fail(Q, run.runId, run.claimToken, '{"name":"done"}', {
-          delaySeconds: ONE_MS_SECONDS,
-        })
+    it('allows exhausted-budget terminal user failure at the epoch ceiling and its predecessor', async () => {
+      const predecessor = await terminalUserFailureObservation(
+        makeFixture,
+        'terminal:user-budget-predecessor',
+        MAX_EPOCH_MS - 1,
+      )
+      const exact = await terminalUserFailureObservation(
+        makeFixture,
+        'terminal:user-budget-exact',
+        MAX_EPOCH_MS,
+      )
 
-        const result = await fixture.store.getTaskResult(Q, run.taskId)
-        expect(
-          result,
-          'mutation-verdict:behavior:timestamp-terminal-user-failure-at-max',
-        ).toMatchObject({ state: 'failed' })
-        expect(
-          await scalar(
-            fixture,
-            `SELECT COUNT(*) AS count FROM runs WHERE task_id = ?`,
-            [run.taskId],
-            'count',
-          ),
-        ).toBe(1)
-      } finally {
-        fixture.close()
-      }
+      expect(
+        { predecessor, exact },
+        'mutation-verdict:behavior:timestamp-terminal-user-failure-at-max',
+      ).toEqual({
+        predecessor: {
+          failure: { kind: 'resolved' },
+          task: { state: 'failed', infraRetries: 0 },
+          runs: [{ attempt: 1, state: 'failed', failedAtMs: MAX_EPOCH_MS - 1 }],
+        },
+        exact: {
+          failure: { kind: 'resolved' },
+          task: { state: 'failed', infraRetries: 0 },
+          runs: [{ attempt: 1, state: 'failed', failedAtMs: MAX_EPOCH_MS }],
+        },
+      })
     })
 
     it('uses an existing first-start instant for max-duration on reactivation', async () => {

@@ -2695,7 +2695,7 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   AND ${epochAdditionFits(NOW, infraDelayMs)})))",
-        "allows the infra-cap terminal arm at the epoch ceiling",
+        "allows the infra-cap terminal arm at the epoch ceiling while preserving a below-cap successor",
         "the terminal infrastructure-cap arm is incorrectly gated by successor headroom",
     ),
     (
@@ -2703,7 +2703,7 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
         "packages/store-libsql/src/store.ts",
         "           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts\n",
         "           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) <= t.max_attempts\n",
-        "allows terminal user failure when retry budget is exhausted",
+        "allows exhausted-budget terminal user failure at the epoch ceiling and its predecessor",
         "an exhausted user retry budget incorrectly creates an overflowing successor",
     ),
     (
