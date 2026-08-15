@@ -3067,8 +3067,12 @@ MUTATION_SPECS.extend(
             "nightly-fuzz-plan-exact-coverage",
             "packages/conformance/test/fuzz-shard-runner.ts",
             "  for (let seed = shard + batch * shardCount; seed < totalSeeds; seed += shardCount * batchCount) {",
-            "  for (let seed = shard; seed < totalSeeds; seed += shardCount) {",
-            "bounded fuzz processes overlap and each repeat the complete logical shard",
+            "  for (\n"
+            "    let seed = shard + (batch + Number(batch === 1)) * shardCount;\n"
+            "    seed < totalSeeds;\n"
+            "    seed += shardCount * batchCount\n"
+            "  ) {",
+            "batch one repeats batch two's equal-cardinality seed set and omits its own",
         ),
         (
             "nightly-fuzz-plan-dimensions",
