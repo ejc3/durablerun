@@ -91,10 +91,16 @@ describe('snapshotTaskThrowable', () => {
         throw new Error('message getter ran')
       },
     })
-    expect(snapshotTaskThrowable(hostileMessage)).toEqual(
-      failure('Error', 'task threw an uninspectable value'),
-    )
-    expect(messageReads, 'mutation-verdict:behavior:task-throwable-message-data-only').toBe(0)
+    expect(
+      {
+        snapshot: snapshotTaskThrowable(hostileMessage),
+        messageReads,
+      },
+      'mutation-verdict:behavior:task-throwable-message-data-only',
+    ).toEqual({
+      snapshot: failure('Error', 'task threw an uninspectable value'),
+      messageReads: 0,
+    })
   })
 
   it('never coerces an uninspectable object', () => {
