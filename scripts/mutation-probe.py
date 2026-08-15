@@ -3540,17 +3540,16 @@ MUTATION_SPECS.extend(
         (
             "task-control-store-typed-only",
             "packages/sdk/src/task-control.ts",
-            "  } catch {\n"
-            "    // A hostile proxy is not one of the store's typed infrastructure errors.\n"
-            "  }\n"
-            "  return undefined\n"
-            "}",
-            "  } catch {\n"
-            "    // A hostile proxy is not one of the store's typed infrastructure errors.\n"
-            "  }\n"
-            "  return STORE_UNAVAILABLE // MUTATION\n"
-            "}",
-            "an ordinary store rejection gains infrastructure authority",
+            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
+            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE\n"
+            "    if (\n"
+            "      typeof error === 'object' &&\n"
+            "      error !== null &&\n"
+            "      taskHasOwn(error, 'cause')\n"
+            "    ) {\n"
+            "      return STORE_UNAVAILABLE // MUTATION\n"
+            "    }",
+            "an ordinary object error carrying an own cause gains store-outage authority",
         ),
         (
             "task-control-store-total-fallback",
