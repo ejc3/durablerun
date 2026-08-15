@@ -3337,9 +3337,16 @@ MUTATION_SPECS.extend(
         (
             "task-throwable-generic-payload",
             "packages/core/src/errors.ts",
-            "  'task threw an uninspectable value',",
-            "  'mutated uninspectable task failure',",
-            "uninspectable objects acquire a second generic wire spelling",
+            "    if (message.kind !== 'value') return GENERIC_TASK_FAILURE",
+            "    if (message.kind !== 'value' && typeof value === 'function') {\n"
+            "      return freeze({\n"
+            "        kind: 'failure',\n"
+            "        fatal: false,\n"
+            "        failureJson: taskFailureJson('Error', 'mutated uninspectable task failure'),\n"
+            "      })\n"
+            "    }\n"
+            "    if (message.kind !== 'value') return GENERIC_TASK_FAILURE",
+            "a thrown function acquires a second generic wire spelling",
         ),
         (
             "task-throwable-total-fallback",
