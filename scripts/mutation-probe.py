@@ -2618,7 +2618,7 @@ def weakened_driver_heartbeat_for_source(exists: bool) -> str:
         "              WITH heartbeat(queue, driver_id) AS (VALUES (?, ?))\n"
         "              SELECT heartbeat.queue, heartbeat.driver_id, ${NOW_MS}, ${NOW_MS} + ?\n"
         "              FROM heartbeat\n"
-        "              WHERE ${epochAdditionFits(NOW_MS, '?').replace(\" - \", \" + \")}\n"
+        "              WHERE ${epochAdditionFits(NOW_MS, '?')}\n"
         f"                 OR {existence} (\n"
         "                   SELECT 1 FROM drivers d\n"
         "                   WHERE d.queue = heartbeat.queue\n"
