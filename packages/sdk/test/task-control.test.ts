@@ -242,14 +242,32 @@ describe('task control scope', () => {
       control: { sameError: true, snapshot: { kind: 'store-unavailable' } },
     })
 
-    const ordinary = new Error('ordinary')
+    const selectedOrdinary = new Error('ordinary', {
+      cause: new Error('ordinary sentinel cause'),
+    })
+    const ordinaryControl = new Error('cause-less ordinary control')
+    const selectedOrdinaryRejection = await captureRejected(() =>
+      scope.issuer.storeCall(() => Promise.reject(selectedOrdinary)),
+    )
+    const ordinaryControlRejection = await captureRejected(() =>
+      scope.issuer.storeCall(() => Promise.reject(ordinaryControl)),
+    )
     expect(
-      await captureRejected(() => scope.issuer.storeCall(() => Promise.reject(ordinary))),
-    ).toBe(ordinary)
-    expect(
-      scope.snapshot(ordinary),
+      {
+        selected: {
+          sameError: selectedOrdinaryRejection === selectedOrdinary,
+          snapshot: scope.snapshot(selectedOrdinaryRejection),
+        },
+        control: {
+          sameError: ordinaryControlRejection === ordinaryControl,
+          snapshot: scope.snapshot(ordinaryControlRejection),
+        },
+      },
       'mutation-verdict:construction:task-control-store-typed-only',
-    ).toBeUndefined()
+    ).toEqual({
+      selected: { sameError: true, snapshot: undefined },
+      control: { sameError: true, snapshot: undefined },
+    })
   })
 
   it('uses the captured ordinary type check, not a handler-installed hook', () => {
