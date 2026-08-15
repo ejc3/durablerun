@@ -1071,7 +1071,7 @@ export function timestampBoundaryConformance(
               cancelAtMs: storedAfter?.rows[0]?.cancel_at_ms,
             },
           },
-          'regression:timestamp-activation-rounded-duration-max',
+          'mutation-verdict:behavior:timestamp-activation-rounded-duration-max',
         ).toEqual({
           activation: { kind: 'resolved', nonNull: true },
           cancellation: {
