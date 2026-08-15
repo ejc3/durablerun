@@ -6,6 +6,7 @@ import {
   type PersistedTemporalFieldId,
   type PersistedTemporalTable,
   type SqlExecutor,
+  type SqlResult,
   type SqlRow,
   decodeBoundedInteger,
   isLiveState,
@@ -218,6 +219,37 @@ const SNAPSHOT_STATEMENTS = SNAPSHOT_PROJECTIONS.map(({ table, columns }) => ({
   sql: `SELECT ${columns.join(', ')} FROM ${table}`,
   args: [],
 }))
+
+export function bindInvariantSnapshotRows(
+  projections: readonly {
+    table: PersistedTemporalTable
+    columns: readonly string[]
+  }[],
+  results: readonly SqlResult[],
+): ReadonlyMap<PersistedTemporalTable, readonly SqlRow[]> {
+  if (results.length !== projections.length) {
+    throw new Error(
+      `invariant result count mismatch: expected ${projections.length}, got ${results.length}`,
+    )
+  }
+  const rowsByTable = new Map<PersistedTemporalTable, readonly SqlRow[]>()
+  projections.forEach(({ table, columns }, resultIndex) => {
+    const result = results[resultIndex]
+    if (!result || !Array.isArray(result.rows)) {
+      throw new Error(`invariant snapshot result ${resultIndex} has no rows array`)
+    }
+    result.rows.forEach((row, rowIndex) => {
+      const missing = columns.filter((column) => !Object.prototype.hasOwnProperty.call(row, column))
+      if (missing.length > 0) {
+        throw new Error(
+          `invariant snapshot ${resultIndex} row ${rowIndex} missing columns: ${missing.join(', ')}`,
+        )
+      }
+    })
+    rowsByTable.set(table, result.rows)
+  })
+  return rowsByTable
+}
 
 function text(row: SqlRow, column: string): string {
   const value = row[column]
@@ -784,27 +816,7 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
  */
 export async function engineInvariantFindings(raw: SqlExecutor): Promise<EngineInvariantFinding[]> {
   const results = await raw.batch('invariants', SNAPSHOT_STATEMENTS, 'read')
-  if (results.length !== SNAPSHOT_STATEMENTS.length) {
-    throw new Error(
-      `invariant result count mismatch: expected ${SNAPSHOT_STATEMENTS.length}, got ${results.length}`,
-    )
-  }
-  const rowsByTable = new Map<PersistedTemporalTable, readonly SqlRow[]>()
-  SNAPSHOT_PROJECTIONS.forEach(({ table, columns }, resultIndex) => {
-    const result = results[resultIndex]
-    if (!result || !Array.isArray(result.rows)) {
-      throw new Error(`invariant snapshot result ${resultIndex} has no rows array`)
-    }
-    result.rows.forEach((row, rowIndex) => {
-      const missing = columns.filter((column) => !Object.prototype.hasOwnProperty.call(row, column))
-      if (missing.length > 0) {
-        throw new Error(
-          `invariant snapshot ${resultIndex} row ${rowIndex} missing columns: ${missing.join(', ')}`,
-        )
-      }
-    })
-    rowsByTable.set(table, result.rows)
-  })
+  const rowsByTable = bindInvariantSnapshotRows(SNAPSHOT_PROJECTIONS, results)
   const requiredRows = (table: PersistedTemporalTable): readonly SqlRow[] => {
     const rows = rowsByTable.get(table)
     if (!rows) throw new Error(`invariant snapshot omitted table '${table}'`)

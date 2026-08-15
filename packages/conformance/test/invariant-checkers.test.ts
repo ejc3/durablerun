@@ -5,10 +5,14 @@ import {
   MAX_RUN_ORDINAL,
   RELAUNCH_CAP,
   type SqlExecutor,
+  type SqlResult,
 } from '@durablerun/core'
-import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
-import { engineInvariantFindings, engineInvariantViolations } from '../src/invariants.js'
+import {
+  bindInvariantSnapshotRows,
+  engineInvariantFindings,
+  engineInvariantViolations,
+} from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 /**
@@ -592,17 +596,33 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
-  it('binds every snapshot result through its projection table identity', async () => {
-    const f = await seeded('projection-table-identity')
-    try {
-      const findings = await attributeExpectedFailure(
-        { kind: 'construction', mutation: 'invariant-snapshot-table-identity' },
-        /invariant snapshot omitted table 'runs'/,
-        () => engineInvariantFindings(f.raw),
-      )
-      expect(findings).toEqual([])
-    } finally {
-      f.close()
-    }
+  it('binds every snapshot result through its projection table identity', () => {
+    const projections = [
+      { table: 'runs', columns: ['snapshot_table'] },
+      { table: 'checkpoints', columns: ['snapshot_table'] },
+      { table: 'events', columns: ['snapshot_table'] },
+      { table: 'waits', columns: ['snapshot_table'] },
+      { table: 'drivers', columns: ['snapshot_table'] },
+      { table: 'tasks', columns: ['snapshot_table'] },
+    ] as const
+    const results: readonly SqlResult[] = projections.map(({ table }) => ({
+      rows: [{ snapshot_table: table }],
+      rowsAffected: 1,
+    }))
+    const rowsByTable = bindInvariantSnapshotRows(projections, results)
+
+    expect(
+      {
+        size: rowsByTable.size,
+        bindings: projections.map(({ table }) => [
+          table,
+          rowsByTable.get(table)?.map((row) => row.snapshot_table),
+        ]),
+      },
+      'mutation-verdict:construction:invariant-snapshot-table-identity',
+    ).toEqual({
+      size: projections.length,
+      bindings: projections.map(({ table }) => [table, [table]]),
+    })
   })
 })
