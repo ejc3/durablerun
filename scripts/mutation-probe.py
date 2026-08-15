@@ -2693,18 +2693,18 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
         "packages/store-libsql/src/store.ts",
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
-        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
-        "                   AND ${epochAdditionFits(NOW, infraDelayMs)})))",
+        "                 AND (${epochAdditionFits(NOW, infraDelayMs)})))",
         "allows the infra-cap terminal arm at the epoch ceiling while preserving a below-cap successor",
-        "the terminal infrastructure-cap arm is incorrectly gated by successor headroom",
+        "the infrastructure-cap terminal arm loses its successor-headroom bypass",
     ),
     (
         "timestamp-terminal-user-failure-at-max",
         "packages/store-libsql/src/store.ts",
-        "           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts\n",
-        "           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) <= t.max_attempts\n",
+        "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\n"
+        "          OR ${epochAdditionFits(NOW, '?')})`",
+        "        : `AND ${epochAdditionFits(NOW, '?')}`",
         "allows exhausted-budget terminal user failure at the epoch ceiling and its predecessor",
-        "an exhausted user retry budget incorrectly creates an overflowing successor",
+        "exhausted-budget terminal user failure loses its successor-headroom bypass",
     ),
     (
         "timestamp-activation-existing-first-start-at-max",

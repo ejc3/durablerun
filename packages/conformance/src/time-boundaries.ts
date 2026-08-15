@@ -669,7 +669,14 @@ async function infraTerminalObservation(
     return {
       sweep:
         sweep.kind === 'resolved'
-          ? { kind: 'resolved', results: sweep.value.map((result) => result.kind) }
+          ? {
+              kind: 'resolved',
+              results: sweep.value.map((result) => ({
+                kind: result.kind,
+                sameRun: result.runId === run.runId,
+                sameTask: result.taskId === run.taskId,
+              })),
+            }
           : sweep,
       ...(await terminalTaskSnapshot(fixture, run.taskId)),
     }
@@ -886,7 +893,10 @@ export function timestampBoundaryConformance(
         'mutation-verdict:behavior:timestamp-terminal-infra-cap-at-max',
       ).toEqual({
         belowCap: {
-          sweep: { kind: 'resolved', results: ['claim-timeout'] },
+          sweep: {
+            kind: 'resolved',
+            results: [{ kind: 'claim-timeout', sameRun: true, sameTask: true }],
+          },
           task: { state: 'pending', infraRetries: 1 },
           runs: [
             { attempt: 1, state: 'failed', failedAtMs: 1_100_000 },
@@ -894,7 +904,10 @@ export function timestampBoundaryConformance(
           ],
         },
         atCap: {
-          sweep: { kind: 'resolved', results: ['infra-cap-exhausted'] },
+          sweep: {
+            kind: 'resolved',
+            results: [{ kind: 'infra-cap-exhausted', sameRun: true, sameTask: true }],
+          },
           task: { state: 'failed', infraRetries: INFRA_RETRY_CAP },
           runs: [
             {
