@@ -2999,9 +2999,22 @@ MUTATION_SPECS.extend(
         (
             "temporal-field-id-is-bounds-field",
             "packages/core/src/validate.ts",
-            "  return freeze({ id: bounds.field, table, column, bounds, kind, nullable })",
-            "  return freeze({ id: column, table, column, bounds, kind, nullable })",
-            "a temporal descriptor derives its identity from the column spelling instead of its nominal bounds",
+            "  persistedTemporalField(\n"
+            "    'tasks',\n"
+            "    'enqueue_at_ms',\n"
+            "    PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms,\n"
+            "    'epoch-ms',\n"
+            "    false,\n"
+            "  ),",
+            "  freeze({\n"
+            "    id: 'enqueue_at_ms',\n"
+            "    table: 'tasks',\n"
+            "    column: 'enqueue_at_ms',\n"
+            "    bounds: PERSISTED_INTEGER_BOUNDS.tasks.enqueue_at_ms,\n"
+            "    kind: 'epoch-ms',\n"
+            "    nullable: false,\n"
+            "  }),",
+            "the tasks.enqueue_at_ms temporal descriptor uses its unqualified column spelling instead of its nominal bounds identity",
         ),
         (
             "migrated-integer-inventory-complete",
