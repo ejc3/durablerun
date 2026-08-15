@@ -113,8 +113,19 @@ describe('task control scope', () => {
     checkpoint.stateJson = 'mutated'
     Object.defineProperty(signal, 'reason', { value: 'await-event' })
 
+    const deadline = { atEpochMs: 1_000_000 }
+    const deadlineSignal = captureThrown(() => first.issuer.suspend('sleep', deadline))
+    deadline.atEpochMs = 9_999_999
+    const deadlineSnapshot = first.snapshot(deadlineSignal)
+
     const snapshot = first.snapshot(signal)
-    expect(snapshot, 'mutation-verdict:construction:task-control-suspend-auth').toBeDefined()
+    expect(
+      {
+        checkpointed: snapshot?.kind,
+        checkpointless: deadlineSnapshot?.kind,
+      },
+      'mutation-verdict:construction:task-control-suspend-auth',
+    ).toEqual({ checkpointed: 'suspend', checkpointless: 'suspend' })
     if (snapshot?.kind !== 'suspend') throw new Error('expected a suspension snapshot')
     expect(snapshot.reason, 'mutation-verdict:construction:task-control-suspend-reason-owned').toBe(
       'sleep',
@@ -132,10 +143,6 @@ describe('task control scope', () => {
       'mutation-verdict:construction:task-control-suspend-checkpoint-state-owned',
     ).toBe('{"wake":5}')
 
-    const deadline = { atEpochMs: 1_000_000 }
-    const deadlineSignal = captureThrown(() => first.issuer.suspend('sleep', deadline))
-    deadline.atEpochMs = 9_999_999
-    const deadlineSnapshot = first.snapshot(deadlineSignal)
     expect(
       deadlineSnapshot?.kind === 'suspend' ? deadlineSnapshot.wake : undefined,
       'mutation-verdict:construction:task-control-suspend-absolute-wake-owned',
