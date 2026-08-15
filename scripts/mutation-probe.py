@@ -2382,6 +2382,31 @@ def weakened_epoch_addition(call: str) -> str:
     return f'{call}.replace(" - ", " + ")'
 
 
+RELATIVE_WAKE_EXPRESSION = "${wakePlan.expression}"
+
+
+def exact_epoch_ceiling_replacement(
+    anchor: str, expression: str, *, relative_wake: bool
+) -> str:
+    """Cap only an exact legal epoch result while preserving every smaller value."""
+    capped = f"MIN({expression}, ${{DERIVED_INTEGER_BOUNDS.epoch_ms.max - 1}})"
+    if relative_wake:
+        wake_plan = "    const wakePlan = prepareWake(wake, relativeWake)\n"
+        if anchor.count(wake_plan) != 1:
+            raise ValueError("relative wake exact-ceiling anchor must own one wake plan")
+        return anchor.replace(
+            wake_plan,
+            wake_plan
+            + "    if (relativeWake) {\n"
+            + f"      wakePlan.expression = `{capped}`\n"
+            + "    }\n",
+            1,
+        )
+    if anchor.count(expression) != 1:
+        raise ValueError("exact-ceiling anchor must own one persisted expression")
+    return anchor.replace(expression, capped, 1)
+
+
 TIMESTAMP_ADDITION_CASES = (
     (
         "spawn-enqueue",
@@ -2390,7 +2415,7 @@ TIMESTAMP_ADDITION_CASES = (
         "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
         "epochAdditionFits(NOW, '?')",
         "       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,\n",
-        "       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ? - 1,\n",
+        "${NOW} + ?",
     ),
     (
         "spawn-cancellation",
@@ -2399,7 +2424,7 @@ TIMESTAMP_ADDITION_CASES = (
         "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
         "epochAdditionFits(NOW, '?', '?')",
         "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,\n",
-        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? - 1 ELSE NULL END,\n",
+        "${NOW} + ? + ?",
     ),
     (
         "claim-lease",
@@ -2411,9 +2436,7 @@ TIMESTAMP_ADDITION_CASES = (
         "         claim_expires_at_ms = ${NOW} + ?,\n"
         "         heartbeat_at_ms = ${NOW},\n"
         "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
-        "         claim_expires_at_ms = ${NOW} + ? - 1,\n"
-        "         heartbeat_at_ms = ${NOW},\n"
-        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
+        "${NOW} + ?",
     ),
     (
         "activation-lease",
@@ -2423,8 +2446,7 @@ TIMESTAMP_ADDITION_CASES = (
         "epochAdditionFits(NOW, 'runs.lease_ms')",
         "         claim_expires_at_ms = ${NOW} + lease_ms,\n"
         "         heartbeat_at_ms = ${NOW},",
-        "         claim_expires_at_ms = ${NOW} + lease_ms - 1,\n"
-        "         heartbeat_at_ms = ${NOW},",
+        "${NOW} + lease_ms",
     ),
     (
         "activation-max-duration",
@@ -2432,7 +2454,7 @@ TIMESTAMP_ADDITION_CASES = (
         "    WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0",
         "epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)",
         "            COALESCE(first_started_at_ms, ${activated}) + ${taskMaxDurationMs('tasks')}\n",
-        "            COALESCE(first_started_at_ms, ${activated}) + ${taskMaxDurationMs('tasks')} - 1\n",
+        "COALESCE(first_started_at_ms, ${activated}) + ${taskMaxDurationMs('tasks')}",
     ),
     (
         "heartbeat-lease",
@@ -2442,8 +2464,7 @@ TIMESTAMP_ADDITION_CASES = (
         "epochAdditionFits(NOW_MS, '?')",
         "                claim_expires_at_ms = ${NOW_MS} + ?,\n"
         "                heartbeat_at_ms = ${NOW_MS}",
-        "                claim_expires_at_ms = ${NOW_MS} + ? - 1,\n"
-        "                heartbeat_at_ms = ${NOW_MS}",
+        "${NOW_MS} + ?",
     ),
     (
         "lost-launch-relaunch",
@@ -2452,7 +2473,7 @@ TIMESTAMP_ADDITION_CASES = (
         "         AND ${epochAdditionFits(NOW, relaunchDelayMs)}`",
         "epochAdditionFits(NOW, relaunchDelayMs)",
         "         available_at_ms = ${NOW} + ${relaunchDelayMs},\n",
-        "         available_at_ms = ${NOW} + ${relaunchDelayMs} - 1,\n",
+        "${NOW} + ${relaunchDelayMs}",
     ),
     (
         "claim-timeout-successor",
@@ -2461,7 +2482,7 @@ TIMESTAMP_ADDITION_CASES = (
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
         "epochAdditionFits(NOW, infraDelayMs)",
         "              f.fence_at_ms + ${infraDelayMs},\n",
-        "              f.fence_at_ms + ${infraDelayMs} - 1,\n",
+        "f.fence_at_ms + ${infraDelayMs}",
     ),
     (
         "driver-heartbeat",
@@ -2470,7 +2491,7 @@ TIMESTAMP_ADDITION_CASES = (
         "              WHERE ${epochAdditionFits(NOW_MS, '?')}`",
         "epochAdditionFits(NOW_MS, '?')",
         "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?\n",
-        "              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ? - 1\n",
+        "${NOW_MS} + ?",
     ),
     (
         "reschedule-wake",
@@ -2484,10 +2505,7 @@ TIMESTAMP_ADDITION_CASES = (
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
         "    const wakePlan = prepareWake(wake, relativeWake)\n"
         "    // ONE SQL shape for both dispositions",
-        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
-        "    const wakePlan = prepareWake(wake, relativeWake)\n"
-        "    if (relativeWake) wakePlan.argument -= 1 // MUTATION\n"
-        "    // ONE SQL shape for both dispositions",
+        RELATIVE_WAKE_EXPRESSION,
     ),
     (
         "suspend-wake",
@@ -2501,10 +2519,7 @@ TIMESTAMP_ADDITION_CASES = (
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
         "    const wakePlan = prepareWake(wake, relativeWake)\n"
         "    const b = new FencedBatch('suspend'",
-        "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
-        "    const wakePlan = prepareWake(wake, relativeWake)\n"
-        "    if (relativeWake) wakePlan.argument -= 1 // MUTATION\n"
-        "    const b = new FencedBatch('suspend'",
+        RELATIVE_WAKE_EXPRESSION,
     ),
     (
         "user-retry-successor",
@@ -2513,7 +2528,7 @@ TIMESTAMP_ADDITION_CASES = (
         "          OR ${epochAdditionFits(NOW, '?')})`",
         "epochAdditionFits(NOW, '?')",
         "                f.fence_at_ms + ?,\n",
-        "                f.fence_at_ms + ? - 1,\n",
+        "f.fence_at_ms + ?",
     ),
     (
         "checkpoint-lease",
@@ -2522,7 +2537,7 @@ TIMESTAMP_ADDITION_CASES = (
         "         AND ${epochAdditionFits(NOW, '?')}`",
         "epochAdditionFits(NOW, '?')",
         "         claim_expires_at_ms = ${NOW} + ?, heartbeat_at_ms = ${NOW}, ${FENCE_SET}\n",
-        "         claim_expires_at_ms = ${NOW} + ? - 1, heartbeat_at_ms = ${NOW}, ${FENCE_SET}\n",
+        "${NOW} + ?",
     ),
     (
         "event-timeout",
@@ -2531,7 +2546,7 @@ TIMESTAMP_ADDITION_CASES = (
         "       ON CONFLICT (run_id, step_name) DO NOTHING",
         "epochAdditionFits(NOW, '?')",
         "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}\n",
-        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? - 1 ELSE NULL END, ${NOW}, ${FENCE_VALS}\n",
+        "${NOW} + ?",
     ),
 )
 
@@ -2612,7 +2627,9 @@ def weakened_driver_heartbeat_for_source(exists: bool) -> str:
     )
 
 
-for slug, title, guard_anchor, guard_call, exact_find, exact_replace in TIMESTAMP_ADDITION_CASES:
+for slug, title, guard_anchor, guard_call, exact_find, exact_expression in (
+    TIMESTAMP_ADDITION_CASES
+):
     overflow_find = guard_anchor
     overflow_replace = guard_anchor.replace(
         guard_call, weakened_epoch_addition(guard_call), 1
@@ -2620,6 +2637,11 @@ for slug, title, guard_anchor, guard_call, exact_find, exact_replace in TIMESTAM
     if slug == "driver-heartbeat":
         overflow_find = DRIVER_HEARTBEAT_STATEMENT
         overflow_replace = weakened_driver_heartbeat_for_source(False)
+    exact_replace = exact_epoch_ceiling_replacement(
+        exact_find,
+        exact_expression,
+        relative_wake=exact_expression == RELATIVE_WAKE_EXPRESSION,
+    )
     MUTATION_SPECS.extend(
         (
             (
@@ -5408,7 +5430,7 @@ VERDICTS = {
     ),
 }
 
-for slug, title, _guard_anchor, _guard_call, _exact_find, _exact_replace in (
+for slug, title, _guard_anchor, _guard_call, _exact_find, _exact_expression in (
     TIMESTAMP_ADDITION_CASES
 ):
     for boundary in ("overflow", "exact"):
@@ -5416,7 +5438,7 @@ for slug, title, _guard_anchor, _guard_call, _exact_find, _exact_replace in (
         test_suffix = (
             "refuses overflow by one without a partial transition"
             if boundary == "overflow"
-            else "accepts an exact MAX_EPOCH_MS result"
+            else "preserves the epoch predecessor and accepts an exact MAX_EPOCH_MS result"
         )
         VERDICTS[name] = ExpectedVerdict(
             "behavior",

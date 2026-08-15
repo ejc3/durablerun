@@ -834,21 +834,21 @@ export function timestampBoundaryConformance(
       const fixture = await fixtureAt(makeFixture, 'control:existing-first-start')
       try {
         const task = await spawned(fixture, 'existing-first-start', {
-          cancellation: { maxDurationSeconds: 0.002 },
+          cancellation: { maxDurationSeconds: 0.003 },
         })
         const run = await claimOne(fixture, 'existing-first-start-token', ONE_MS_SECONDS)
         await fixture.raw.batch('time-boundary:existing-first-start', [
           {
             sql: `UPDATE tasks SET first_started_at_ms = ?, cancel_at_ms = ?
                   WHERE task_id = ?`,
-            args: [MAX_EPOCH_MS - 2, MAX_EPOCH_MS, task.taskId],
+            args: [MAX_EPOCH_MS - 4, MAX_EPOCH_MS - 1, task.taskId],
           },
           {
             sql: `UPDATE runs SET started_at_ms = ? WHERE run_id = ?`,
-            args: [MAX_EPOCH_MS - 2, run.runId],
+            args: [MAX_EPOCH_MS - 4, run.runId],
           },
         ])
-        await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS - 1)
+        await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS - 2)
 
         expect(
           await fixture.store.activate(Q, run.runId, run.claimToken, run.claimGen),
@@ -861,7 +861,7 @@ export function timestampBoundaryConformance(
             [task.taskId],
             'cancel_at_ms',
           ),
-        ).toBe(MAX_EPOCH_MS)
+        ).toBe(MAX_EPOCH_MS - 1)
         expect(
           await scalar(
             fixture,
@@ -869,7 +869,7 @@ export function timestampBoundaryConformance(
             [run.runId],
             'claim_expires_at_ms',
           ),
-        ).toBe(MAX_EPOCH_MS)
+        ).toBe(MAX_EPOCH_MS - 1)
       } finally {
         fixture.close()
       }
@@ -885,7 +885,7 @@ export function timestampBoundaryConformance(
         ) {
           throw new Error('rounded max-duration setup does not straddle the seconds ceiling')
         }
-        const firstStartedAtMs = MAX_EPOCH_MS - MAX_DURATION_MS
+        const firstStartedAtMs = MAX_EPOCH_MS - MAX_DURATION_MS - 1
         await fixture.admin.setFakeNowEpochMs(firstStartedAtMs)
         const task = await spawned(fixture, 'activation-rounded-duration-max', {
           cancellation: { maxDurationSeconds: durationSeconds },
@@ -914,7 +914,7 @@ export function timestampBoundaryConformance(
           activated: true,
           task: {
             first_started_at_ms: firstStartedAtMs,
-            cancel_at_ms: MAX_EPOCH_MS,
+            cancel_at_ms: MAX_EPOCH_MS - 1,
           },
         })
       } finally {
