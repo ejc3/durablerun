@@ -191,7 +191,10 @@ describe('task control scope', () => {
       cause: new Error('lease-loss sentinel cause'),
     })
     const control = new LeaseLostError('cause-less control')
-    const storeUnavailable = new StoreUnavailableError('offline')
+    const selectedOutage = new StoreUnavailableError('offline', {
+      cause: new Error('store-outage sentinel cause'),
+    })
+    const outageControl = new StoreUnavailableError('cause-less outage control')
 
     const selectedRejection = await captureRejected(() =>
       scope.issuer.storeCall(() => Promise.reject(selected)),
@@ -216,13 +219,28 @@ describe('task control scope', () => {
       control: { sameError: true, snapshot: { kind: 'lease-lost' } },
     })
 
+    const selectedOutageRejection = await captureRejected(() =>
+      scope.issuer.storeCall(() => Promise.reject(selectedOutage)),
+    )
+    const outageControlRejection = await captureRejected(() =>
+      scope.issuer.storeCall(() => Promise.reject(outageControl)),
+    )
     expect(
-      await captureRejected(() => scope.issuer.storeCall(() => Promise.reject(storeUnavailable))),
-    ).toBe(storeUnavailable)
-    expect(
-      scope.snapshot(storeUnavailable),
+      {
+        selected: {
+          sameError: selectedOutageRejection === selectedOutage,
+          snapshot: scope.snapshot(selectedOutageRejection),
+        },
+        control: {
+          sameError: outageControlRejection === outageControl,
+          snapshot: scope.snapshot(outageControlRejection),
+        },
+      },
       'mutation-verdict:construction:task-control-store-outage-auth',
-    ).toEqual({ kind: 'store-unavailable' })
+    ).toEqual({
+      selected: { sameError: true, snapshot: { kind: 'store-unavailable' } },
+      control: { sameError: true, snapshot: { kind: 'store-unavailable' } },
+    })
 
     const ordinary = new Error('ordinary')
     expect(
