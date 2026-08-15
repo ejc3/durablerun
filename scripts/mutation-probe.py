@@ -3374,9 +3374,12 @@ MUTATION_SPECS.extend(
             "task-throwable-message-data-only",
             "packages/core/src/errors.ts",
             "    const message = errorDataString(value, 'message')",
-            "    const message: DataString = {\n"
-            "      kind: 'value',\n"
-            "      value: Reflect.get(value, 'message') as string,\n"
+            "    let message = errorDataString(value, 'message')\n"
+            "    if (message.kind === 'unsafe') {\n"
+            "      message = {\n"
+            "        kind: 'value',\n"
+            "        value: Reflect.get(value, 'message') as string,\n"
+            "      }\n"
             "    }",
             "failure normalization invokes a hostile message getter",
         ),
