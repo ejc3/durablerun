@@ -556,6 +556,21 @@ async function boundaryTargetsAt(
   }
 }
 
+async function driverRows(fixture: StoreFixture, label: string) {
+  const [drivers] = await fixture.raw.batch(
+    label,
+    [
+      {
+        sql: `SELECT driver_id, last_beat_ms, expires_at_ms
+              FROM drivers WHERE queue = ? ORDER BY driver_id`,
+        args: [Q],
+      },
+    ],
+    'read',
+  )
+  return drivers?.rows
+}
+
 async function driverCleanupRows(
   fixture: StoreFixture,
   victimLastBeatMs: number,
@@ -581,18 +596,7 @@ async function driverCleanupRows(
     },
   ])
   await fixture.store.driverHeartbeat(Q, sourceDriver, ONE_MS_SECONDS)
-  const [drivers] = await fixture.raw.batch(
-    'time-boundary:driver-cleanup-after',
-    [
-      {
-        sql: `SELECT driver_id, last_beat_ms, expires_at_ms
-              FROM drivers WHERE queue = ? ORDER BY driver_id`,
-        args: [Q],
-      },
-    ],
-    'read',
-  )
-  return drivers?.rows
+  return driverRows(fixture, 'time-boundary:driver-cleanup-after')
 }
 
 export function timestampBoundaryConformance(
@@ -673,24 +677,21 @@ export function timestampBoundaryConformance(
             ],
           },
         ])
+        const before = await driverRows(
+          fixture,
+          'time-boundary:driver-heartbeat-overflow-cleanup-before',
+        )
         await fixture.admin.setFakeNowEpochMs(MAX_EPOCH_MS)
 
         await fixture.store.driverHeartbeat(Q, sourceDriver, ONE_MS_SECONDS).catch(() => undefined)
-        const [drivers] = await fixture.raw.batch(
+        const after = await driverRows(
+          fixture,
           'time-boundary:driver-heartbeat-overflow-cleanup-after',
-          [
-            {
-              sql: `SELECT driver_id, last_beat_ms, expires_at_ms
-                    FROM drivers WHERE queue = ? ORDER BY driver_id`,
-              args: [Q],
-            },
-          ],
-          'read',
         )
         expect(
-          drivers?.rows,
+          { before, after },
           'mutation-verdict:behavior:timestamp-driver-heartbeat-overflow-preserves-cleanup-inputs',
-        ).toEqual(expected)
+        ).toEqual({ before: expected, after: expected })
       } finally {
         fixture.close()
       }
