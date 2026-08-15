@@ -3521,8 +3521,11 @@ MUTATION_SPECS.extend(
             "task-control-store-lease-auth",
             "packages/sdk/src/task-control.ts",
             "    if (hasInstance(LeaseLostError, error)) return LEASE_LOST",
-            "    if (false && hasInstance(LeaseLostError, error)) return LEASE_LOST",
-            "a typed lease loss from the immediate store boundary is not authenticated",
+            "    if (hasInstance(LeaseLostError, error)) {\n"
+            "      if (taskHasOwn(error as object, 'cause')) return undefined // MUTATION\n"
+            "      return LEASE_LOST\n"
+            "    }",
+            "a typed lease loss carrying an own cause is not authenticated at the immediate store boundary",
         ),
         (
             "task-control-store-outage-auth",
