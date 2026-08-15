@@ -122,6 +122,10 @@ describe('mutation verdict promise helpers', () => {
         capturedConstructor: true,
         poisonedConstructorBrand: true,
       },
+      bindCounts: {
+        missingArgument: 'propagated',
+        unusedArgument: 'propagated',
+      },
       consumers: {
         attribute: 'propagated',
         require: 'propagated',
