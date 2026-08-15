@@ -3328,8 +3328,11 @@ MUTATION_SPECS.extend(
             "task-throwable-prototype-data",
             "packages/core/src/errors.ts",
             "    const name = errorDataString(value, 'name')",
-            "    const name: DataString = { kind: 'absent' } // MUTATION",
-            "a built-in Error subtype loses its data-string prototype name",
+            "    let name = errorDataString(value, 'name')\n"
+            "    if (name.kind === 'value' && name.value === 'TypeError') {\n"
+            "      name = { kind: 'absent' } // MUTATION\n"
+            "    }",
+            "a TypeError loses its data-string prototype name",
         ),
         (
             "task-throwable-generic-payload",
