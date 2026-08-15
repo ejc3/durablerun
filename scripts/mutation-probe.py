@@ -3531,8 +3531,11 @@ MUTATION_SPECS.extend(
             "task-control-store-outage-auth",
             "packages/sdk/src/task-control.ts",
             "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
-            "    if (false && hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
-            "a typed outage from the immediate store boundary is not authenticated",
+            "    if (hasInstance(StoreUnavailableError, error)) {\n"
+            "      if (taskHasOwn(error as object, 'cause')) return undefined // MUTATION\n"
+            "      return STORE_UNAVAILABLE\n"
+            "    }",
+            "a typed store outage carrying an own cause is not authenticated at the immediate store boundary",
         ),
         (
             "task-control-store-typed-only",
