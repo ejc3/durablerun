@@ -61,6 +61,12 @@ async function migrateTo(version: number): Promise<void> {
   }
 }
 
+const captureSchemaVersion = (subject: LibsqlStoreAdmin) =>
+  subject.schemaVersion().then(
+    (value) => ({ kind: 'resolved' as const, value }),
+    (error: unknown) => ({ kind: 'rejected' as const, error }),
+  )
+
 describe('a database older than the binary', () => {
   /**
    * The damage this prevents: the store wraps every driver throw as
@@ -245,34 +251,92 @@ describe('migrate reports success only when the schema is current', () => {
     })
   })
 
-  it('requires exactly one schema-version result row', async () => {
+  it('rejects a schema-version read with no result', async () => {
+    const malformed: SqlExecutor = { batch: async () => [] }
+    const observed = await captureSchemaVersion(new LibsqlStoreAdmin(malformed))
+
+    expect(observed, 'regression:schema-version-missing-result').toEqual({
+      kind: 'rejected',
+      error: expect.any(SchemaMismatchError),
+    })
+  })
+
+  it('rejects a schema-version read with extra results', async () => {
     const current = { value: String(CURRENT_SCHEMA_VERSION) }
-    const cases = [
-      { name: 'missing result', results: [] },
-      { name: 'missing row', results: [{ rows: [], rowsAffected: 0 }] },
-      {
-        name: 'extra result',
-        results: [
-          { rows: [current], rowsAffected: 1 },
-          { rows: [current], rowsAffected: 1 },
-        ],
-      },
-      {
-        name: 'extra row',
-        results: [{ rows: [current, current], rowsAffected: 2 }],
-      },
-    ]
-    for (const { name, results } of cases) {
-      const malformed: SqlExecutor = { batch: async () => results }
-      const observed = await new LibsqlStoreAdmin(malformed).schemaVersion().then(
-        (value) => ({ kind: 'resolved' as const, value }),
-        (error: unknown) => ({ kind: 'rejected' as const, error }),
-      )
-      if (observed.kind === 'resolved') {
-        throw new Error('mutation-verdict:behavior:schema-version-row-required')
-      }
-      expect(observed.error, name).toBeInstanceOf(SchemaMismatchError)
+    const malformed: SqlExecutor = {
+      batch: async () => [
+        { rows: [current], rowsAffected: 1 },
+        { rows: [current], rowsAffected: 1 },
+      ],
     }
+    const observed = await captureSchemaVersion(new LibsqlStoreAdmin(malformed))
+
+    expect(observed, 'regression:schema-version-extra-results').toEqual({
+      kind: 'rejected',
+      error: expect.any(SchemaMismatchError),
+    })
+  })
+
+  it('rejects a schema-version read with no row', async () => {
+    const malformed: SqlExecutor = {
+      batch: async () => [{ rows: [], rowsAffected: 0 }],
+    }
+    const synthetic = await captureSchemaVersion(new LibsqlStoreAdmin(malformed))
+
+    await db.batch('corrupt', [
+      {
+        sql: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID`,
+        args: [],
+      },
+    ])
+    const initialized = await captureSchemaVersion(admin)
+    const migration = await admin.migrate().then(
+      () => ({ kind: 'resolved' as const }),
+      (error: unknown) => ({
+        kind: 'rejected' as const,
+        name: error instanceof Error ? error.name : typeof error,
+      }),
+    )
+    const [tables] = await db.batch(
+      'probe',
+      [
+        {
+          sql: `SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name`,
+          args: [],
+        },
+      ],
+      'read',
+    )
+
+    expect(
+      {
+        synthetic,
+        initialized,
+        migration,
+        tables: tables?.rows.map((row) => row.name),
+      },
+      'regression:schema-version-missing-row',
+    ).toEqual({
+      synthetic: { kind: 'rejected', error: expect.any(SchemaMismatchError) },
+      initialized: { kind: 'rejected', error: expect.any(SchemaMismatchError) },
+      migration: { kind: 'rejected', name: 'SchemaMismatchError' },
+      tables: ['meta'],
+    })
+  })
+
+  it('rejects a schema-version read with extra rows', async () => {
+    const current = { value: String(CURRENT_SCHEMA_VERSION) }
+    const malformed: SqlExecutor = {
+      batch: async () => [{ rows: [current, current], rowsAffected: 2 }],
+    }
+    const observed = await captureSchemaVersion(new LibsqlStoreAdmin(malformed))
+
+    expect(observed, 'regression:schema-version-extra-rows').toEqual({
+      kind: 'rejected',
+      error: expect.any(SchemaMismatchError),
+    })
   })
 
   it('rejects an initialized metadata table with no version row', async () => {
