@@ -187,16 +187,34 @@ describe('task control scope', () => {
 
   it('enrolls typed failures only at the immediate trusted store boundary', async () => {
     const scope = createTaskControlScope()
-    const leaseLost = new LeaseLostError('lost')
+    const selected = new LeaseLostError('lost', {
+      cause: new Error('lease-loss sentinel cause'),
+    })
+    const control = new LeaseLostError('cause-less control')
     const storeUnavailable = new StoreUnavailableError('offline')
 
+    const selectedRejection = await captureRejected(() =>
+      scope.issuer.storeCall(() => Promise.reject(selected)),
+    )
+    const controlRejection = await captureRejected(() =>
+      scope.issuer.storeCall(() => Promise.reject(control)),
+    )
     expect(
-      await captureRejected(() => scope.issuer.storeCall(() => Promise.reject(leaseLost))),
-    ).toBe(leaseLost)
-    expect(
-      scope.snapshot(leaseLost),
+      {
+        selected: {
+          sameError: selectedRejection === selected,
+          snapshot: scope.snapshot(selectedRejection),
+        },
+        control: {
+          sameError: controlRejection === control,
+          snapshot: scope.snapshot(controlRejection),
+        },
+      },
       'mutation-verdict:construction:task-control-store-lease-auth',
-    ).toEqual({ kind: 'lease-lost' })
+    ).toEqual({
+      selected: { sameError: true, snapshot: { kind: 'lease-lost' } },
+      control: { sameError: true, snapshot: { kind: 'lease-lost' } },
+    })
 
     expect(
       await captureRejected(() => scope.issuer.storeCall(() => Promise.reject(storeUnavailable))),
