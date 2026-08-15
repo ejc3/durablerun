@@ -10,7 +10,6 @@ import {
   requireDerivedInteger,
   requireRunOrdinal,
 } from '../src/index.js'
-import { attributeExpectedFailure } from '../src/testing.js'
 
 describe('decodeBoundedInteger', () => {
   const bounds = { min: 0, max: 10 }
@@ -69,30 +68,42 @@ describe('decodeBoundedInteger', () => {
     expect(claimBounds).not.toBe(wrongField)
   })
 
-  it('pins the complete nominal persisted-temporal inventory', async () => {
-    expect(PERSISTED_TEMPORAL_FIELDS).toHaveLength(23)
-    expect(Object.isFrozen(PERSISTED_TEMPORAL_FIELDS)).toBe(true)
-    await attributeExpectedFailure(
-      { kind: 'construction', mutation: 'temporal-field-id-is-bounds-field' },
-      /expected .* to be/,
-      async () => {
-        for (const field of PERSISTED_TEMPORAL_FIELDS) {
-          expect(field.id).toBe(field.bounds.field)
-        }
-      },
-    )
-    expect(new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => field.id))).toHaveProperty('size', 23)
+  it('pins the complete nominal persisted-temporal inventory', () => {
     expect(
-      new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => `${field.table}.${field.column}`)),
-    ).toHaveProperty('size', 23)
-    for (const field of PERSISTED_TEMPORAL_FIELDS) {
-      expect(Object.isFrozen(field)).toBe(true)
-      expect(field.bounds.field).toBe(`${field.table}.${field.column}`)
-      expect(field.bounds.min).toBe(field.kind === 'duration-ms' ? 1 : 0)
-      expect(field.bounds.max).toBe(field.kind === 'duration-ms' ? MAX_DURATION_MS : MAX_EPOCH_MS)
-    }
-    expect(PERSISTED_TEMPORAL_FIELDS.filter((field) => field.nullable)).toHaveLength(16)
-    expect(PERSISTED_TEMPORAL_FIELDS.filter((field) => !field.nullable)).toHaveLength(7)
+      {
+        length: PERSISTED_TEMPORAL_FIELDS.length,
+        inventoryFrozen: Object.isFrozen(PERSISTED_TEMPORAL_FIELDS),
+        uniqueIds: new Set(PERSISTED_TEMPORAL_FIELDS.map((field) => field.id)).size,
+        uniqueLocations: new Set(
+          PERSISTED_TEMPORAL_FIELDS.map((field) => `${field.table}.${field.column}`),
+        ).size,
+        fields: PERSISTED_TEMPORAL_FIELDS.map((field) => ({
+          frozen: Object.isFrozen(field),
+          idMatchesBounds: field.id === field.bounds.field,
+          boundsMatchLocation: field.bounds.field === `${field.table}.${field.column}`,
+          minMatchesKind: field.bounds.min === (field.kind === 'duration-ms' ? 1 : 0),
+          maxMatchesKind:
+            field.bounds.max === (field.kind === 'duration-ms' ? MAX_DURATION_MS : MAX_EPOCH_MS),
+        })),
+        nullable: PERSISTED_TEMPORAL_FIELDS.filter((field) => field.nullable).length,
+        nonnullable: PERSISTED_TEMPORAL_FIELDS.filter((field) => !field.nullable).length,
+      },
+      'mutation-verdict:construction:temporal-field-id-is-bounds-field',
+    ).toEqual({
+      length: 23,
+      inventoryFrozen: true,
+      uniqueIds: 23,
+      uniqueLocations: 23,
+      fields: Array.from({ length: 23 }, () => ({
+        frozen: true,
+        idMatchesBounds: true,
+        boundsMatchLocation: true,
+        minMatchesKind: true,
+        maxMatchesKind: true,
+      })),
+      nullable: 16,
+      nonnullable: 7,
+    })
   })
 
   it('keeps persisted descriptors out of the derived-result decoder', () => {
