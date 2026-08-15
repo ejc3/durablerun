@@ -1,5 +1,5 @@
 import { MAX_EPOCH_MS } from '@durablerun/core'
-import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
+import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LibsqlExecutor, LibsqlStoreAdmin } from '../src/index.js'
 
@@ -19,7 +19,6 @@ afterEach(() => {
 
 describe('fake engine-time boundary', () => {
   const invalidEpochs: ReadonlyArray<readonly [string, unknown]> = [
-    ['negative', -1],
     ['fractional', 1.5],
     ['NaN', Number.NaN],
     ['positive infinity', Number.POSITIVE_INFINITY],
@@ -29,13 +28,21 @@ describe('fake engine-time boundary', () => {
   ]
 
   it.each(invalidEpochs)('rejects a %s fake clock without changing time', async (_name, value) => {
-    // MUTATION-RED: removing the admin epoch validator admits this value.
-    await requireExpectedFailure(
-      { kind: 'behavior', mutation: 'admin-fake-now-invalid' },
-      (error) => error instanceof RangeError,
-      () => admin.setFakeNowEpochMs(value as Parameters<typeof admin.setFakeNowEpochMs>[0]),
-    )
+    await expect(
+      admin.setFakeNowEpochMs(value as Parameters<typeof admin.setFakeNowEpochMs>[0]),
+    ).rejects.toBeInstanceOf(RangeError)
     expect(await admin.nowEpochMs()).toBe(1_000_000)
+  })
+
+  it('rejects a negative fake clock without changing time', async () => {
+    // MUTATION-RED: removing the admin epoch validator persists a clock that cannot be decoded.
+    const write = await Promise.allSettled([admin.setFakeNowEpochMs(-1)])
+    const clock = await Promise.allSettled([admin.nowEpochMs()])
+
+    expect({ write, clock }, 'mutation-verdict:behavior:admin-fake-now-invalid').toEqual({
+      write: [{ status: 'rejected', reason: expect.any(RangeError) }],
+      clock: [{ status: 'fulfilled', value: 1_000_000 }],
+    })
   })
 
   it('accepts both exact epoch endpoints', async () => {
