@@ -24,6 +24,9 @@ describe('snapshotTaskThrowable', () => {
     expect(snapshotTaskThrowable(new Error('ordinary failure'))).toEqual(
       failure('Error', 'ordinary failure'),
     )
+  })
+
+  it('preserves a built-in Error subtype name from prototype data', () => {
     expect(
       snapshotTaskThrowable(new TypeError('typed failure')),
       'mutation-verdict:behavior:task-throwable-prototype-data',

@@ -5741,7 +5741,7 @@ VERDICTS.update(
         "task-throwable-prototype-data": ExpectedVerdict(
             "behavior",
             "packages/core/test/errors.test.ts",
-            "snapshotTaskThrowable owns primitive and Error diagnostics in one canonical representation",
+            "snapshotTaskThrowable preserves a built-in Error subtype name from prototype data",
             "mutation-verdict:behavior:task-throwable-prototype-data",
         ),
         "task-throwable-generic-payload": ExpectedVerdict(
