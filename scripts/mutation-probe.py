@@ -3355,9 +3355,10 @@ MUTATION_SPECS.extend(
             "    return GENERIC_TASK_FAILURE\n"
             "  }",
             "  } catch (error) {\n"
-            "    throw error // MUTATION\n"
+            "    if (error instanceof RangeError) throw error // MUTATION\n"
+            "    return GENERIC_TASK_FAILURE\n"
             "  }",
-            "a hostile proxy trap escapes the total throwable boundary",
+            "a RangeError thrown by a hostile descriptor trap escapes the total throwable boundary",
         ),
         (
             "task-throwable-name-data-only",
