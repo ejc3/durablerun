@@ -1625,7 +1625,7 @@ MUTATION_SPECS = [
         "schema-absence-is-typed",
         "packages/store-libsql/src/admin.ts",
         "      if (error instanceof SchemaNotInitializedError) return null",
-        "      if (String(error).includes('no such table')) return null",
+        "      if (error instanceof SchemaNotInitializedError || String(error).includes('no such table')) return null",
         "an unrelated executor failure is interpreted as a fresh database",
     ),
     (
@@ -5082,7 +5082,7 @@ VERDICTS = {
     "schema-absence-is-typed": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/schema-gate.test.ts",
-        "migrate reports success only when the schema is current does not classify unrelated executor failures by message substring",
+        "migrate reports success only when the schema is current owns typed schema absence without accepting deceptive failure text",
         "mutation-verdict:behavior:schema-absence-is-typed",
     ),
     "schema-version-row-required": ExpectedVerdict(

@@ -217,24 +217,6 @@ describe('migrate reports success only when the schema is current', () => {
     await expect(admin.schemaVersion()).rejects.toBeInstanceOf(SchemaMismatchError)
   })
 
-  it('does not classify unrelated executor failures by message substring', async () => {
-    const outage = new StoreUnavailableError('proxy said no such table while disconnecting')
-    const deceptive: SqlExecutor = {
-      batch: async () => {
-        throw outage
-      },
-    }
-
-    const observed = await new LibsqlStoreAdmin(deceptive).schemaVersion().then(
-      (value) => ({ kind: 'resolved' as const, value }),
-      (error: unknown) => ({ kind: 'rejected' as const, error }),
-    )
-    if (observed.kind === 'resolved') {
-      throw new Error('mutation-verdict:behavior:schema-absence-is-typed')
-    }
-    expect(observed.error).toBe(outage)
-  })
-
   it('owns typed schema absence without accepting deceptive failure text', async () => {
     const capture = (executor: SqlExecutor) =>
       new LibsqlStoreAdmin(executor).schemaVersion().then(
