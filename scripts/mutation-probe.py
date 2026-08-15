@@ -3388,13 +3388,10 @@ MUTATION_SPECS.extend(
             "packages/core/src/errors.ts",
             "    if (message.kind !== 'value') return GENERIC_TASK_FAILURE",
             "    if (message.kind !== 'value') {\n"
-            "      return freeze({\n"
-            "        kind: 'failure',\n"
-            "        fatal: false,\n"
-            "        failureJson: taskFailureJson('Error', stringifyPrimitive(value)),\n"
-            "      })\n"
+            "      if (hasOwn(value, Symbol.toPrimitive)) stringifyPrimitive(value) // MUTATION\n"
+            "      return GENERIC_TASK_FAILURE\n"
             "    }",
-            "failure normalization coerces an uninspectable object",
+            "failure normalization invokes an uninspectable object's own Symbol.toPrimitive hook",
         ),
         (
             "task-control-suspend-auth",
