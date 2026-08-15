@@ -3128,8 +3128,8 @@ MUTATION_SPECS.extend(
             "nightly-fuzz-runtime-environment",
             "scripts/nightly-fuzz-shard.sh",
             '    "FUZZ_BATCH_INDEX=$batch"\n',
-            "",
-            "the hosted process plan no longer executes the batch coordinate it reports",
+            '    "FUZZ_BATCH_INDEX=$((batch + (shard == 1 && batch == 1)))"\n',
+            "one hosted process repeats an equal-cardinality sibling batch and omits its reported coordinate",
         ),
         (
             "nightly-fuzz-batch-execution",
