@@ -2794,13 +2794,25 @@ function newFindings(
     .map((item) => item.message)
 }
 
-export interface PoisonCaseResult {
-  label: string
-  witness: string
-  profile?: PoisonTargetProfile
-  invocationError: unknown
-  corruptionDisposition: StorageCorruptionDisposition
+interface PoisonCaseResultIdentity {
+  readonly label: string
+  readonly witness: string
+  readonly profile?: PoisonTargetProfile
 }
+
+interface ExecutedPoisonCaseResult extends PoisonCaseResultIdentity {
+  readonly invocationError: unknown
+  readonly invocationResult: unknown
+  readonly poisonSubjectUnchanged: boolean
+  readonly corruptionDisposition: 'injected'
+}
+
+interface StructurallyRejectedPoisonCaseResult extends PoisonCaseResultIdentity {
+  readonly invocationError: null
+  readonly corruptionDisposition: 'structurally-rejected'
+}
+
+export type PoisonCaseResult = ExecutedPoisonCaseResult | StructurallyRejectedPoisonCaseResult
 
 export interface PoisonCaseOptions {
   /**
@@ -3021,11 +3033,16 @@ export async function runPoisonMatrixCase(
     if (errors.length > 0) {
       throw new Error(`${label}/${witness.id}: ${errors.join('; ')}`)
     }
+    const poisonOutcome = outcomes.find((outcome) => outcome.target === 'poison')
+    if (!poisonOutcome)
+      throw new Error(`${label}/${witness.id}: poison invocation was not recorded`)
     return {
       label,
       witness: witness.id,
       ...(options.targetProfile ? { profile: options.targetProfile } : {}),
-      invocationError: outcomes.find((outcome) => outcome.target === 'poison')?.error ?? null,
+      invocationError: poisonOutcome.error ?? null,
+      invocationResult: poisonOutcome.result,
+      poisonSubjectUnchanged: same(poisonOwnedClosure(before), poisonOwnedClosure(after)),
       corruptionDisposition,
     }
   } finally {

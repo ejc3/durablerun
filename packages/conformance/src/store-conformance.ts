@@ -239,14 +239,13 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           if (hasCancelQueueOwnershipVerdict) {
             const result = await attributeExpectedFailure(
               { kind: 'behavior', mutation: 'cancel-task-requires-run-task-queue-ownership' },
-              /^Error: cancel-task\/ownership\/run-task-queue-mismatch: new invariant violation: terminal-task-with-live-run: poison-task\/poison-run$/,
+              /^Error: cancel-task\/ownership\/run-task-queue-mismatch: new invariant violation: running-run-under-non-running-task: poison-run; new invariant violation: terminal-task-with-live-run: poison-task\/poison-run$/,
               run,
             )
-            const observed = result as typeof result & {
-              readonly invocationResult: unknown
-              readonly poisonSubjectUnchanged: boolean
+            if (result.corruptionDisposition !== 'injected') {
+              throw new Error('cancel queue ownership poison was structurally rejected')
             }
-            expect(observed).toMatchObject({
+            expect(result).toMatchObject({
               label,
               witness: witness.id,
               invocationResult: false,

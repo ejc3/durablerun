@@ -1238,37 +1238,6 @@ describe('fence provenance', () => {
     }
   })
 
-  it('cancelTask refuses to cross into a run that moved to a different queue', async () => {
-    const f = await fixture()
-    try {
-      const run = await activatedRun(f)
-      await exec(f.raw, `UPDATE runs SET queue = 'other' WHERE run_id = ?`, [run.runId])
-      const before = await query(
-        f.raw,
-        `SELECT t.state AS task_state, r.state AS run_state, r.claimed_by
-         FROM tasks t JOIN runs r ON r.task_id = t.task_id
-         WHERE t.task_id = ?`,
-        [run.taskId],
-      )
-
-      const cancelled = await f.store.cancelTask(Q, run.taskId)
-      const after = await query(
-        f.raw,
-        `SELECT t.state AS task_state, r.state AS run_state, r.claimed_by
-         FROM tasks t JOIN runs r ON r.task_id = t.task_id
-         WHERE t.task_id = ?`,
-        [run.taskId],
-      )
-
-      expect(
-        { cancelled, after },
-        'regression:cancel-task-requires-run-task-queue-ownership',
-      ).toEqual({ cancelled: false, after: before })
-    } finally {
-      f.close()
-    }
-  })
-
   it('generated cross-table relations cannot cross queue ownership', async () => {
     const f = await fixture()
     try {
