@@ -1020,16 +1020,36 @@ export function timestampBoundaryConformance(
         const firstStartedAtMs = MAX_EPOCH_MS - MAX_DURATION_MS - 1
         await fixture.admin.setFakeNowEpochMs(firstStartedAtMs)
         const task = await spawned(fixture, 'activation-rounded-duration-max', {
-          cancellation: { maxDurationSeconds: durationSeconds },
+          cancellation: { maxDurationSeconds: 1 },
         })
         const run = await claimOne(fixture, 'activation-rounded-duration-max-token')
+        const cancellationJson = JSON.stringify({ maxDurationSeconds: durationSeconds })
+        await fixture.raw.batch('time-boundary:activation-rounded-duration-max-persisted', [
+          {
+            sql: `UPDATE tasks SET cancellation = ? WHERE task_id = ?`,
+            args: [cancellationJson, task.taskId],
+          },
+        ])
+        const [storedBefore] = await fixture.raw.batch(
+          'time-boundary:activation-rounded-duration-max-before',
+          [
+            {
+              sql: `SELECT cancellation FROM tasks WHERE task_id = ?`,
+              args: [task.taskId],
+            },
+          ],
+          'read',
+        )
 
-        const activation = await fixture.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        const [persisted] = await fixture.raw.batch(
+        const activation = await settle(() =>
+          fixture.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+        )
+        const [storedAfter] = await fixture.raw.batch(
           'time-boundary:activation-rounded-duration-max-after',
           [
             {
-              sql: `SELECT first_started_at_ms, cancel_at_ms
+              sql: `SELECT cancellation, first_started_at_ms,
+                       cancel_at_ms
                     FROM tasks WHERE task_id = ?`,
               args: [task.taskId],
             },
@@ -1038,15 +1058,29 @@ export function timestampBoundaryConformance(
         )
         expect(
           {
-            activated: activation !== null,
-            task: persisted?.rows[0],
+            activation:
+              activation.kind === 'resolved'
+                ? { kind: 'resolved', nonNull: activation.value !== null }
+                : activation,
+            cancellation: {
+              before: storedBefore?.rows[0]?.cancellation,
+              after: storedAfter?.rows[0]?.cancellation,
+            },
+            task: {
+              firstStartedAtMs: storedAfter?.rows[0]?.first_started_at_ms,
+              cancelAtMs: storedAfter?.rows[0]?.cancel_at_ms,
+            },
           },
-          'mutation-verdict:behavior:timestamp-activation-rounded-duration-max',
+          'regression:timestamp-activation-rounded-duration-max',
         ).toEqual({
-          activated: true,
+          activation: { kind: 'resolved', nonNull: true },
+          cancellation: {
+            before: cancellationJson,
+            after: cancellationJson,
+          },
           task: {
-            first_started_at_ms: firstStartedAtMs,
-            cancel_at_ms: MAX_EPOCH_MS - 1,
+            firstStartedAtMs,
+            cancelAtMs: MAX_EPOCH_MS - 1,
           },
         })
       } finally {
