@@ -1,9 +1,9 @@
-import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
 import { fuzzBatchSeeds } from './fuzz-shard-runner.js'
@@ -81,32 +81,56 @@ printf 'nightly-fuzz-executed-batch=missing\\n'
 }
 
 describe('fuzz shard batch plan', () => {
-  it('partitions every nightly seed exactly once into bounded fresh-process batches', async () => {
-    await attributeExpectedFailure(
-      { kind: 'construction', mutation: 'nightly-fuzz-plan-exact-coverage' },
-      /expected .* to be less than or equal to 160|expected .* to be 20000|expected .* to deeply equal/,
-      async () => {
-        const totalSeeds = 20_000
-        const shardCount = 32
-        const batchCount = 4
-        const planned: number[] = []
+  it('partitions every nightly seed exactly once into bounded fresh-process batches', () => {
+    const totalSeeds = 20_000
+    const shardCount = 32
+    const batchCount = 4
+    const planned: number[] = []
+    let processCount = 0
+    let emptyBatches = 0
+    let oversizedBatches = 0
+    let wrongShardSeeds = 0
+    let wrongBatchSeeds = 0
+    let outOfRangeSeeds = 0
 
-        for (let shard = 0; shard < shardCount; shard++) {
-          for (let batch = 0; batch < batchCount; batch++) {
-            const seeds = fuzzBatchSeeds({ totalSeeds, shard, shardCount, batch, batchCount })
-            expect(seeds.length).toBeGreaterThan(0)
-            expect(seeds.length).toBeLessThanOrEqual(160)
-            expect(seeds.every((seed) => seed % shardCount === shard)).toBe(true)
-            planned.push(...seeds)
-          }
+    for (let shard = 0; shard < shardCount; shard++) {
+      for (let batch = 0; batch < batchCount; batch++) {
+        const seeds = fuzzBatchSeeds({ totalSeeds, shard, shardCount, batch, batchCount })
+        processCount++
+        if (seeds.length === 0) emptyBatches++
+        if (seeds.length > 160) oversizedBatches++
+        for (const seed of seeds) {
+          if (seed % shardCount !== shard) wrongShardSeeds++
+          const ordinal = (seed - shard) / shardCount
+          if (!Number.isInteger(ordinal) || ordinal % batchCount !== batch) wrongBatchSeeds++
+          if (!Number.isInteger(seed) || seed < 0 || seed >= totalSeeds) outOfRangeSeeds++
         }
+        planned.push(...seeds)
+      }
+    }
 
-        expect(new Set(planned).size).toBe(totalSeeds)
-        expect(planned.toSorted((a, b) => a - b)).toEqual(
-          Array.from({ length: totalSeeds }, (_, seed) => seed),
-        )
+    expect(
+      {
+        processCount,
+        emptyBatches,
+        oversizedBatches,
+        wrongShardSeeds,
+        wrongBatchSeeds,
+        outOfRangeSeeds,
+        plannedCount: planned.length,
+        uniqueCount: new Set(planned).size,
       },
-    )
+      'mutation-verdict:construction:nightly-fuzz-plan-exact-coverage',
+    ).toEqual({
+      processCount: 128,
+      emptyBatches: 0,
+      oversizedBatches: 0,
+      wrongShardSeeds: 0,
+      wrongBatchSeeds: 0,
+      outOfRangeSeeds: 0,
+      plannedCount: 20_000,
+      uniqueCount: 20_000,
+    })
   })
 
   it('rejects invalid plan dimensions', async () => {
