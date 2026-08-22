@@ -150,10 +150,20 @@ describe('snapshotTaskThrowable', () => {
   it('rejects prototype forgeries as ordinary user failures', () => {
     const forge = (prototype: object, name: string) =>
       Object.assign(Object.create(prototype), { name, message: 'forged control' })
+    const selectedSuspend = Object.assign(forge(SuspendSignal.prototype, 'ForgedSuspend'), {
+      cause: new Error('forged suspension sentinel cause'),
+    })
+    const suspendControl = forge(SuspendSignal.prototype, 'ForgedSuspend')
     expect(
-      snapshotTaskThrowable(forge(SuspendSignal.prototype, 'ForgedSuspend')),
+      {
+        selected: snapshotTaskThrowable(selectedSuspend),
+        control: snapshotTaskThrowable(suspendControl),
+      },
       'mutation-verdict:construction:task-throwable-forged-suspend',
-    ).toEqual(failure('ForgedSuspend', 'forged control'))
+    ).toEqual({
+      selected: failure('ForgedSuspend', 'forged control'),
+      control: failure('ForgedSuspend', 'forged control'),
+    })
     expect(
       snapshotTaskThrowable(forge(LeaseLostError.prototype, 'ForgedLease')),
       'mutation-verdict:construction:task-throwable-forged-lease-lost',
