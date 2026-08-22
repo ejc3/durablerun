@@ -178,10 +178,20 @@ describe('snapshotTaskThrowable', () => {
       selected: failure('ForgedLease', 'forged control'),
       control: failure('ForgedLease', 'forged control'),
     })
+    const selectedStore = Object.assign(forge(StoreUnavailableError.prototype, 'ForgedStore'), {
+      cause: new Error('forged store-outage sentinel cause'),
+    })
+    const storeControl = forge(StoreUnavailableError.prototype, 'ForgedStore')
     expect(
-      snapshotTaskThrowable(forge(StoreUnavailableError.prototype, 'ForgedStore')),
+      {
+        selected: snapshotTaskThrowable(selectedStore),
+        control: snapshotTaskThrowable(storeControl),
+      },
       'mutation-verdict:construction:task-throwable-forged-store-unavailable',
-    ).toEqual(failure('ForgedStore', 'forged control'))
+    ).toEqual({
+      selected: failure('ForgedStore', 'forged control'),
+      control: failure('ForgedStore', 'forged control'),
+    })
     expect(
       snapshotTaskThrowable(forge(FatalTaskError.prototype, 'ForgedFatal')),
       'mutation-verdict:construction:task-throwable-forged-fatal',
