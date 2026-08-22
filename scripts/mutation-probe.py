@@ -3663,10 +3663,15 @@ MUTATION_SPECS.extend(
             "task-throwable-forged-store-unavailable",
             "packages/core/src/errors.ts",
             "      const authentic = getAuthenticFatalFailure(value)",
-            "      const authentic =\n"
-            "        getAuthenticFatalFailure(value) ??\n"
-            "        (value instanceof StoreUnavailableError ? GENERIC_TASK_FAILURE : undefined)",
-            "the public store-outage prototype alone grants privileged failure enrollment",
+            "      let authentic = getAuthenticFatalFailure(value)\n"
+            "      if (\n"
+            "        authentic === undefined &&\n"
+            "        value instanceof StoreUnavailableError &&\n"
+            "        hasOwn(value, 'cause')\n"
+            "      ) {\n"
+            "        authentic = GENERIC_TASK_FAILURE // MUTATION\n"
+            "      }",
+            "a store-outage prototype forgery carrying an own cause gains privileged failure enrollment",
         ),
         (
             "task-throwable-forged-fatal",
@@ -6623,9 +6628,6 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "task-control-scope-isolation": (
         "replacement adds an optional TypeScript field and nullish assignment"
-    ),
-    "task-throwable-forged-store-unavailable": (
-        "replacement adds TypeScript nullish-coalescing and conditional syntax"
     ),
     "task-throwable-forged-fatal": (
         "replacement adds TypeScript nullish-coalescing and conditional syntax"
