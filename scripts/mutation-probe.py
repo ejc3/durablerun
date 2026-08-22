@@ -3635,10 +3635,15 @@ MUTATION_SPECS.extend(
             "task-throwable-forged-suspend",
             "packages/core/src/errors.ts",
             "      const authentic = getAuthenticFatalFailure(value)",
-            "      const authentic =\n"
-            "        getAuthenticFatalFailure(value) ??\n"
-            "        (value instanceof SuspendSignal ? GENERIC_TASK_FAILURE : undefined)",
-            "the public suspension prototype alone grants privileged failure enrollment",
+            "      let authentic = getAuthenticFatalFailure(value)\n"
+            "      if (\n"
+            "        authentic === undefined &&\n"
+            "        value instanceof SuspendSignal &&\n"
+            "        hasOwn(value, 'cause')\n"
+            "      ) {\n"
+            "        authentic = GENERIC_TASK_FAILURE // MUTATION\n"
+            "      }",
+            "a suspension prototype forgery carrying an own cause gains privileged failure enrollment",
         ),
         (
             "task-throwable-forged-lease-lost",
@@ -6613,9 +6618,6 @@ QUESTION_TOKEN_DELTA_REASONS = {
     ),
     "task-control-scope-isolation": (
         "replacement adds an optional TypeScript field and nullish assignment"
-    ),
-    "task-throwable-forged-suspend": (
-        "replacement adds TypeScript nullish-coalescing and conditional syntax"
     ),
     "task-throwable-forged-lease-lost": (
         "replacement adds TypeScript nullish-coalescing and conditional syntax"
