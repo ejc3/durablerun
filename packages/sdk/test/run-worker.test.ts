@@ -1068,7 +1068,9 @@ describe('runClaimedRun', () => {
   })
 
   it('reads replay maps with the module-captured Map.get', () => {
-    const map = new TaskMap<string, unknown>([['value', { real: true }]])
+    const selected = new TaskMap<string, unknown>([['value', { real: true }]])
+    Object.defineProperty(selected, 'cause', { value: new Error('map-get sentinel cause') })
+    const control = new TaskMap<string, unknown>([['value', { real: true }]])
     const descriptor = Object.getOwnPropertyDescriptor(Map.prototype, 'get')
     if (descriptor === undefined) throw new Error('expected Map.get')
     Object.defineProperty(Map.prototype, 'get', {
@@ -1078,11 +1080,17 @@ describe('runClaimedRun', () => {
     })
     let observed: unknown
     try {
-      observed = taskMapGet(map, 'value')
+      observed = {
+        selected: taskMapGet(selected, 'value'),
+        control: taskMapGet(control, 'value'),
+      }
     } finally {
       Object.defineProperty(Map.prototype, 'get', descriptor)
     }
-    expect(observed, 'mutation-verdict:construction:sdk-captured-map-get').toEqual({ real: true })
+    expect(observed, 'mutation-verdict:construction:sdk-captured-map-get').toEqual({
+      selected: { real: true },
+      control: { real: true },
+    })
   })
 
   it('writes replay maps with the module-captured Map.set', () => {
