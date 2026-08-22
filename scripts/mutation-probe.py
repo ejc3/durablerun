@@ -4045,9 +4045,15 @@ MUTATION_SPECS.extend(
             "  map: Map<K, V>,\n"
             "  key: K,\n"
             ") => V | undefined",
-            "export const taskMapGet = <K, V>(map: Map<K, V>, key: K): V | undefined =>\n"
-            "  map.get(key) // MUTATION",
-            "replay-map reads resolve mutable Map.prototype.get at invocation time",
+            "const capturedTaskMapGet = Map.prototype.get.call.bind(Map.prototype.get) as <K, V>(\n"
+            "  map: Map<K, V>,\n"
+            "  key: K,\n"
+            ") => V | undefined\n"
+            "export const taskMapGet = <K, V>(map: Map<K, V>, key: K): V | undefined => {\n"
+            "  if (hasOwn(map, 'cause')) return map.get(key) // MUTATION\n"
+            "  return capturedTaskMapGet(map, key)\n"
+            "}",
+            "a selected replay map carrying an own cause resolves mutable Map.prototype.get at invocation time",
         ),
         (
             "sdk-captured-map-set",
