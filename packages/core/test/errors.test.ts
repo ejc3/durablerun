@@ -164,10 +164,20 @@ describe('snapshotTaskThrowable', () => {
       selected: failure('ForgedSuspend', 'forged control'),
       control: failure('ForgedSuspend', 'forged control'),
     })
+    const selectedLease = Object.assign(forge(LeaseLostError.prototype, 'ForgedLease'), {
+      cause: new Error('forged lease-loss sentinel cause'),
+    })
+    const leaseControl = forge(LeaseLostError.prototype, 'ForgedLease')
     expect(
-      snapshotTaskThrowable(forge(LeaseLostError.prototype, 'ForgedLease')),
+      {
+        selected: snapshotTaskThrowable(selectedLease),
+        control: snapshotTaskThrowable(leaseControl),
+      },
       'mutation-verdict:construction:task-throwable-forged-lease-lost',
-    ).toEqual(failure('ForgedLease', 'forged control'))
+    ).toEqual({
+      selected: failure('ForgedLease', 'forged control'),
+      control: failure('ForgedLease', 'forged control'),
+    })
     expect(
       snapshotTaskThrowable(forge(StoreUnavailableError.prototype, 'ForgedStore')),
       'mutation-verdict:construction:task-throwable-forged-store-unavailable',
