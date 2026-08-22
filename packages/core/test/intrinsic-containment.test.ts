@@ -183,16 +183,26 @@ describe('trusted task-boundary intrinsics', () => {
   })
 
   it('checks storage-unsafe names with the module-captured RegExp.test', () => {
+    const rejected = (raw: string): boolean => {
+      try {
+        UserName.parse('step name', raw)
+        return false
+      } catch (error) {
+        return error instanceof FatalTaskError
+      }
+    }
     const observed = replaceProperty(
       RegExp.prototype,
       'test',
       () => false,
-      () => UserName.parse('step name', '\ud800'),
+      () => ({
+        selected: rejected('x\ud800'),
+        control: rejected('\ud800'),
+      }),
     )
-    expect(
-      observed.error,
-      'mutation-verdict:construction:user-name-captured-regexp-test',
-    ).toBeInstanceOf(FatalTaskError)
+    expect(observed, 'mutation-verdict:construction:user-name-captured-regexp-test').toEqual({
+      value: { selected: true, control: true },
+    })
   })
 
   it('rejects functions at every task-value surface before prototype toJSON can disguise them', () => {
