@@ -3966,8 +3966,12 @@ MUTATION_SPECS.extend(
             "user-name-captured-regexp-test",
             "packages/core/src/validate.ts",
             "    if (stringIncludes(raw, '\\u0000') || regexpExec(/\\p{Surrogate}/u, raw) !== null) {",
-            "    if (stringIncludes(raw, '\\u0000') || /\\p{Surrogate}/u.test(raw)) { // MUTATION",
-            "user-name validation regresses to mutable RegExp.prototype.test dispatch",
+            "    if (\n"
+            "      stringIncludes(raw, '\\u0000') ||\n"
+            "      (regexpExec(/\\p{Surrogate}/u, raw) !== null &&\n"
+            "        (raw.length === 1 || /\\p{Surrogate}/u.test(raw)))\n"
+            "    ) { // MUTATION",
+            "a non-leading lone surrogate is rechecked through mutable RegExp.prototype.test and can be accepted",
         ),
         (
             "task-value-rejects-exotic-objects",
