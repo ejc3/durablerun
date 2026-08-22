@@ -1113,30 +1113,48 @@ describe('runClaimedRun', () => {
   })
 
   it('a handler cannot replace bounded worker finalization', async () => {
-    const f = await fx('sdk-captured-promise-race')
-    try {
-      await f.store.spawn(Q, 'job', '{}')
-      const invocation = await claimInvocation(f, 'w1')
-      const observed = await replacePropertyAsync(
-        Promise,
-        'race',
-        () => Promise.reject(new Error('task-installed Promise.race ran')),
-        () =>
-          runClaimedRun(
-            {
-              store: f.store,
-              clock: f.clock,
-              registry: registry({ job: async () => 'done' }),
-            },
-            invocation,
-          ),
-      )
-      expect(observed, 'mutation-verdict:construction:sdk-captured-promise-race').toEqual({
-        value: { kind: 'completed' },
-      })
-    } finally {
-      f.close()
+    const runCase = async (ownFinalizationCause: boolean) => {
+      const f = await fx('sdk-captured-promise-race')
+      try {
+        const sleep = f.clock.sleep.bind(f.clock)
+        f.clock.sleep = (ms, interrupt) => {
+          const pending = sleep(ms, interrupt)
+          if (ownFinalizationCause && ms === 5_000 && interrupt === undefined) {
+            Object.defineProperty(pending, 'cause', {
+              value: new Error('finalization sentinel cause'),
+            })
+          }
+          return pending
+        }
+        await f.store.spawn(Q, 'job', '{}')
+        const invocation = await claimInvocation(f, 'w1')
+        return await replacePropertyAsync(
+          Promise,
+          'race',
+          () => Promise.reject(new Error('task-installed Promise.race ran')),
+          () =>
+            runClaimedRun(
+              {
+                store: f.store,
+                clock: f.clock,
+                registry: registry({ job: async () => 'done' }),
+              },
+              invocation,
+            ),
+        )
+      } finally {
+        f.close()
+      }
     }
+
+    const observed = {
+      selected: await runCase(true),
+      control: await runCase(false),
+    }
+    expect(observed, 'mutation-verdict:construction:sdk-captured-promise-race').toEqual({
+      selected: { value: { kind: 'completed' } },
+      control: { value: { kind: 'completed' } },
+    })
   })
 
   it('task initialization cannot replace the heartbeat controller constructor', async () => {
