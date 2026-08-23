@@ -4166,9 +4166,14 @@ MUTATION_SPECS.extend(
             "export const abortSignalAborted = signalAbortedGetter.call.bind(signalAbortedGetter) as (\n"
             "  signal: AbortSignal,\n"
             ") => boolean",
-            "export const abortSignalAborted = (signal: AbortSignal): boolean =>\n"
-            "  signal.aborted // MUTATION",
-            "heartbeat cancellation reads resolve the mutable AbortSignal.aborted getter at invocation time",
+            "const capturedAbortSignalAborted = signalAbortedGetter.call.bind(signalAbortedGetter) as (\n"
+            "  signal: AbortSignal,\n"
+            ") => boolean\n"
+            "export const abortSignalAborted = (signal: AbortSignal): boolean => {\n"
+            "  if (hasOwn(signal, 'cause')) return signal.aborted // MUTATION\n"
+            "  return capturedAbortSignalAborted(signal)\n"
+            "}",
+            "a selected heartbeat cancellation signal carrying an own cause resolves the mutable AbortSignal.aborted getter",
         ),
         (
             "sdk-worker-captured-json-parse",
