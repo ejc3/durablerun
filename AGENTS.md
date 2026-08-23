@@ -17,9 +17,45 @@ lightweight tick drivers that launch workers on demand.
 - **DESIGN.md is the spec.** Every invariant in it is (or becomes) a
   conformance test. Any PR that changes behavior updates DESIGN.md in the same
   diff.
-- **BUILD.md is the plan.** Local-first: everything through Phase 5 runs on
-  this machine (SQLite `file:`/`:memory:`, Postgres/MySQL in podman
-  containers, driver/workers as local Node processes). Cloud lands in Phase C.
+- **BUILD.md is the plan.** Local reproducibility remains the baseline
+  (SQLite `file:`/`:memory:`, future Postgres/MySQL work in podman, and local
+  driver/workers). The current milestone brings forward one thin remote-Turso
+  dogfood slice; broader cloud infrastructure remains in Phase C.
+
+## Standing rule: outcome before machinery
+
+The unit of progress is a demonstrated user outcome, not code volume, finding
+count, proof-surface size, or process completeness. At any time BUILD.md names
+one current milestone with a falsifiable exit test and explicit non-goals.
+Order work by its distance from that exit test:
+
+1. Close a reachable hole that can lose, duplicate, or misattribute durable
+   state.
+2. Remove an operability blocker that prevents useful dogfood, deployment,
+   recovery, or diagnosis.
+3. Build the minimum product surface needed to run and inspect the milestone.
+4. Validate a core promise, such as portability, against a real implementation.
+5. Defer everything else until observed use makes it necessary.
+
+Before starting or expanding work, name the milestone evidence it will
+produce. If there is none, it is not on the critical path: put it in an options
+backlog or delete it. A review note becomes a correctness finding only when it
+demonstrates a reachable contract or release-safety violation; nits,
+hypothetical bypasses, and defects confined to review machinery are ordinary
+tooling work, not product incidents.
+
+The assurance rules below protect outcome-bearing changes; they do not create
+independent scope. A finding authorizes the smallest sufficient fix and the
+highest existing layer that can catch its class. It does not automatically
+authorize a new global lint, mutation corpus, postmortem system, protocol,
+abstraction, or full-system rewrite. New assurance machinery must close an
+observed gap that existing structural, conformance, simulation, and protocol
+checks cannot express, and it must replace or delete lower-value machinery.
+
+Stop when the exit test passes. Do not polish past the milestone, reopen
+source-identical work, or widen the plan because another detail is visible.
+Keep one outcome-bearing implementation PR in flight; split or defer anything
+that makes it difficult to review, land, and dogfood promptly.
 
 ## Commands
 
@@ -228,13 +264,14 @@ standing in for the property it approximates. The catalogue, all paid for:
   surface could be deleted with all 1728 cases still green.
 
 So when a finding lands, the question is not only "what mechanism catches
-this" but "is that mechanism the property, or a picture of it?" — and if it is
-a picture, the follow-up task is to replace it, recorded in BUILD.md with a
-named PR rather than left as an intention. Two are open now: PR3.9 compiles
-the SQL into a tree instead of scanning its text, and the red-mutation rule
-requires a mutation per claimed condition instead of one per mechanism.
+this" but "is that mechanism the property, or a picture of it?" If replacement
+advances the current milestone, record it in BUILD.md with a named PR; otherwise
+put it in the options backlog. PR3.9's SQL-tree work and PR3.10's per-condition
+mutation work are explicitly deferred from the current milestone.
 
-The ratchet only turns one way. A change that moves a check DOWN the ladder —
+The ratchet advances by substitution, not accumulation. A stronger structural
+guarantee identifies and deletes the lower-rung checks, fixtures, and process
+that it makes redundant. A change that moves a check DOWN the ladder —
 replacing a structural guarantee with a lint, or a lint with a review
 instruction — needs the same written justification as any other loosening of
 the gate, in the PR body under `gate-changes:`.

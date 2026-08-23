@@ -6,6 +6,35 @@ This top-of-file block is the sole normative suite transport contract:
 structurally valid `SuiteResult` reaches verdict classification.
 <!-- mutation-suite-transport-contract:end -->
 
+## Current milestone — useful Turso dogfood
+
+The default product thesis is a Turso-first TypeScript durable-workflow engine.
+The historical phase inventory below is an options map, not permission to run
+several tracks at once.
+
+**Exit test:** from a clean checkout, a developer can start and inspect one
+useful workflow in under 30 minutes; the same workload runs against remote
+Turso for seven consecutive days, survives deliberate driver and worker
+deaths, and shows no lost work or duplicated checkpointed effects. Quiescent
+work produces no idle worker compute, and terminal failures have an inspectable
+reason.
+
+**Critical path:**
+
+1. Close the active-wait identity hole if events remain in the public surface.
+2. Add the minimum README, runnable example, and status inspection needed for
+   the exit test.
+3. Close only the launcher, wake, shutdown, deadline, and SQL-error handling
+   gaps that prevent sustained execution.
+4. Run the useful workload locally, then as the thin remote-Turso vertical
+   slice; retain kill/recovery and idle evidence.
+
+**Non-goals for this milestone:** the PR3.9 all-operation SQL rewrite, PR3.10
+mutation-attribution expansion, child workflows, sagas, MySQL, sharding,
+dedicated placement, EndingFeed, and the WDK wrapper. PostgreSQL follows this
+milestone if pluggable SQL remains a product promise; otherwise that promise is
+removed from the v0 scope.
+
 Companion to DESIGN.md (the spec). Rules for every PR: lands green (lint,
 format, unit + conformance) before the next branches off it; adds the
 conformance cases for what it builds; updates DESIGN.md in the same diff if
@@ -28,12 +57,12 @@ apps/
   web/           (Phase C) Vercel app: /api/tasks|events|tick|worker|inspect
 ```
 
-**LOCAL-FIRST ORDERING (decided 2026-07-18): everything through Phase 5 runs
-entirely on this machine** — SQLite via `file:`/`:memory:` libsql, Postgres and
-MySQL in containers (podman), the driver and workers as local Node processes
-over localhost HTTP. No cloud account is touched until Phase C. "CI" until a
-remote exists = `pnpm verify` (lint + format + typecheck + test) run locally
-before every commit.
+**LOCAL-FIRST IMPLEMENTATION (decided 2026-07-18):** engine work remains
+reproducible on this machine — SQLite via `file:`/`:memory:` libsql, future
+Postgres/MySQL work in containers, and driver/workers as local Node processes.
+This no longer postpones outcome validation: the current milestone includes
+one thin remote-Turso dogfood deployment. Broader cloud UI and infrastructure
+remain in Phase C. `pnpm verify` is the local CI gate.
 
 ## Phase 0 — rails (local)
 
