@@ -65,6 +65,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Check out the base commit beside it
         run: git worktree add /tmp/base ${{ github.event.pull_request.base.sha }}
       - name: The base gate's composition rules, applied to this tree
@@ -76,7 +82,16 @@ jobs:
             exit 0
           fi
           python3 /tmp/base/scripts/gate-lint.py "$GITHUB_WORKSPACE" /tmp/base
+      - name: Expose installed modules to staged base-owned checkers
+        env:
+          TMPDIR: ${{ runner.temp }}/durablerun-base-gate
+        run: |
+          mkdir -p "$TMPDIR"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$TMPDIR/node_modules"
       - name: The base branch's checkers, applied to this tree
+        env:
+          NODE_PATH: ${{ github.workspace }}/node_modules
+          TMPDIR: ${{ runner.temp }}/durablerun-base-gate
         run: |
           if [ -f /tmp/base/scripts/gate-lint.py ] && grep -q -- '--run-base HEAD BASE' /tmp/base/scripts/gate-lint.py; then
             python3 /tmp/base/scripts/gate-lint.py --run-base "$GITHUB_WORKSPACE" /tmp/base
