@@ -298,6 +298,37 @@ describe('poison/invariant mechanism self-tests', () => {
     })
   })
 
+  it('rejects a healthy call that commits and then rejects with undefined', async () => {
+    await expect(
+      runPoisonMatrixCase(
+        async (seed) => {
+          const f = await makeLibsqlFixture(seed)
+          let calls = 0
+          return {
+            ...f,
+            storeOver: (db, buggify) => {
+              const store = f.storeOver(db, buggify)
+              return new Proxy(store, {
+                get(target, property, receiver) {
+                  if (property !== 'driverHeartbeat') {
+                    return Reflect.get(target, property, receiver)
+                  }
+                  return async (...args: Parameters<typeof target.driverHeartbeat>) => {
+                    await target.driverHeartbeat(...args)
+                    calls += 1
+                    if (calls === 2) return Promise.reject(undefined)
+                  }
+                },
+              })
+            },
+          }
+        },
+        'driver-heartbeat',
+        witness('terminal-task/live-running-run'),
+      ),
+    ).rejects.toThrow(/healthy trigger did not win/)
+  })
+
   it('rejects a label that crossed the executor but made no durable state change', async () => {
     await expect(
       runPoisonMatrixCase(
