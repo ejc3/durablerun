@@ -104,9 +104,9 @@ function prepareWake(
   relative: boolean,
 ): {
   expression: string
-  argument: number
+  expressionArgs: [mode: number, relativeMs: number, absoluteMs: number]
   fits: string
-  fitArgs: number[]
+  fitArgs: [mode: number, relativeMs: number]
 } {
   const value = relative
     ? (wake as { inSeconds: number }).inSeconds
@@ -114,11 +114,19 @@ function prepareWake(
   const argument = relative
     ? durationToMs('wake.inSeconds', value)
     : requireEpochMs('wake.atEpochMs', value)
+  const mode = relative ? 1 : 0
+  const relativeMs = relative ? argument : 0
+  const absoluteMs = relative ? 0 : argument
   return {
-    expression: relative ? `${NOW_MS} + ?` : `?`,
-    argument,
-    fits: relative ? `AND ${epochAdditionFits(NOW_MS, '?')}` : '',
-    fitArgs: relative ? [argument] : [],
+    // A batch label is the tracing and crash-injection address, so both wake
+    // variants must compile to one statement inventory and bind shape. The
+    // mode is data, not TypeScript control flow: relative wakes still derive
+    // their absolute instant from database time, while absolute wakes are
+    // stored verbatim after requireEpochMs validates them above.
+    expression: `(CASE WHEN ? = 1 THEN ${NOW_MS} + ? ELSE ? END)`,
+    expressionArgs: [mode, relativeMs, absoluteMs],
+    fits: `AND (CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE 1 END)`,
+    fitArgs: [mode, relativeMs],
   }
 }
 
@@ -1285,8 +1293,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                      WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
          ${wakePlan.fits}`,
       [
-        wakePlan.argument,
-        wakePlan.argument,
+        ...wakePlan.expressionArgs,
+        ...wakePlan.expressionArgs,
         wakeDisposition,
         wakeDisposition,
         wakeDisposition,
@@ -1336,8 +1344,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND ${validCheckpointConflict('runs', '?')}
          ${wakePlan.fits}`,
       [
-        wakePlan.argument,
-        wakePlan.argument,
+        ...wakePlan.expressionArgs,
+        ...wakePlan.expressionArgs,
         runId,
         queue,
         claimToken,

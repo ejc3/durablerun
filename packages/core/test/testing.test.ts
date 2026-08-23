@@ -10,6 +10,10 @@ const marker = 'mutation-verdict:behavior:testing-helper'
 const verdict = { kind: 'behavior', mutation: 'testing-helper' } as const
 const expected = new Error('expected')
 const unrelated = new Error('unrelated')
+const namedReplacementExpectation = {
+  expectedError: (error: unknown) => error === expected,
+  replacementError: (error: unknown) => error === unrelated,
+} satisfies Parameters<typeof attributeReplacedFailure>[1]
 
 async function bindArityFailure(): Promise<never> {
   const unreachable: SqlExecutor = {
@@ -139,7 +143,11 @@ describe('mutation verdict promise helpers', () => {
             requireExpectedFailure(verdict, /.*/, bindArityFailure),
           ),
           replacement: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>
-            attributeReplacedFailure(verdict, /expected healthy failure/, /.*/, bindArityFailure),
+            attributeReplacedFailure(
+              verdict,
+              { expectedError: /expected healthy failure/, replacementError: /.*/ },
+              bindArityFailure,
+            ),
           ),
         },
       },
@@ -231,44 +239,28 @@ describe('mutation verdict promise helpers', () => {
 
   it('attributes only the named replacement for an expected failure', async () => {
     await expect(
-      attributeReplacedFailure(
-        verdict,
-        (error) => error === expected,
-        (error) => error === unrelated,
-        async () => {
-          throw expected
-        },
-      ),
+      attributeReplacedFailure(verdict, namedReplacementExpectation, async () => {
+        throw expected
+      }),
     ).resolves.toBeUndefined()
     await expect(
-      attributeReplacedFailure(
-        verdict,
-        (error) => error === expected,
-        (error) => error === unrelated,
-        async () => {
-          throw unrelated
-        },
-      ),
+      attributeReplacedFailure(verdict, namedReplacementExpectation, async () => {
+        throw unrelated
+      }),
     ).rejects.toThrow(marker)
   })
 
   it('owns canonical marker construction instead of accepting decorated strings', async () => {
     await expect(
-      attributeReplacedFailure(
-        verdict,
-        (error) => error === expected,
-        (error) => error === unrelated,
-        async () => {
-          throw unrelated
-        },
-      ),
+      attributeReplacedFailure(verdict, namedReplacementExpectation, async () => {
+        throw unrelated
+      }),
     ).rejects.toThrow(marker)
 
     await expect(
       attributeReplacedFailure(
         { kind: 'behavior', mutation: 'testing-helper: diagnostic suffix' },
-        (error) => error === expected,
-        (error) => error === unrelated,
+        namedReplacementExpectation,
         async () => {
           throw unrelated
         },
@@ -279,22 +271,12 @@ describe('mutation verdict promise helpers', () => {
   it('does not attribute success or a third rejection as a replacement failure', async () => {
     const third = new Error('third')
     await expect(
-      attributeReplacedFailure(
-        verdict,
-        (error) => error === expected,
-        (error) => error === unrelated,
-        async () => undefined,
-      ),
+      attributeReplacedFailure(verdict, namedReplacementExpectation, async () => undefined),
     ).rejects.not.toThrow(marker)
     await expect(
-      attributeReplacedFailure(
-        verdict,
-        (error) => error === expected,
-        (error) => error === unrelated,
-        async () => {
-          throw third
-        },
-      ),
+      attributeReplacedFailure(verdict, namedReplacementExpectation, async () => {
+        throw third
+      }),
     ).rejects.toBe(third)
   })
 })

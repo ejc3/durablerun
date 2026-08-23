@@ -248,7 +248,11 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             expect(result).toMatchObject({
               label,
               witness: witness.id,
-              invocationResult: false,
+              invocation: {
+                target: 'poison',
+                status: 'fulfilled',
+                result: false,
+              },
               poisonSubjectUnchanged: true,
             })
             return

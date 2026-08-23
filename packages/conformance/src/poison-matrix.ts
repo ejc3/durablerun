@@ -1759,11 +1759,21 @@ type FrozenAuthority = Record<SnapshotTable, ReadonlySet<string>>
 type ExpectedInsertion = Readonly<Record<string, string | number | bigint | null>>
 type InsertAuthority = Record<SnapshotTable, Map<string, ExpectedInsertion>>
 
-export interface PoisonInvocationOutcome {
-  target: 'poison' | 'healthy'
-  result?: unknown
-  error?: unknown
-}
+type PoisonInvocationTarget = 'poison' | 'healthy'
+
+export type PoisonInvocationOutcome<
+  Target extends PoisonInvocationTarget = PoisonInvocationTarget,
+> =
+  | Readonly<{
+      target: Target
+      status: 'fulfilled'
+      result: unknown
+    }>
+  | Readonly<{
+      target: Target
+      status: 'rejected'
+      reason: unknown
+    }>
 
 function freezeAuthority(before: ProtocolSnapshot): FrozenAuthority {
   const taskIds = new Set([TASK, TRIGGER_TASK])
@@ -1895,6 +1905,7 @@ function explicitInsertAuthority(
   }
 
   for (const outcome of outcomes) {
+    if (outcome.status !== 'fulfilled') continue
     if (label === 'spawn') {
       const result = object(outcome.result)
       if (
@@ -2319,12 +2330,12 @@ function hasOutcome(
   outcomes: readonly PoisonInvocationOutcome[],
   predicate: (result: unknown) => boolean,
 ): boolean {
-  return outcomes.some((outcome) => outcome.error === undefined && predicate(outcome.result))
+  return outcomes.some((outcome) => outcome.status === 'fulfilled' && predicate(outcome.result))
 }
 
 function outcomeItems(outcomes: readonly PoisonInvocationOutcome[]): Record<string, unknown>[] {
   return outcomes.flatMap((outcome) =>
-    Array.isArray(outcome.result)
+    outcome.status === 'fulfilled' && Array.isArray(outcome.result)
       ? outcome.result
           .map(object)
           .filter((item): item is Record<string, unknown> => item !== undefined)
@@ -2544,7 +2555,11 @@ function poisonTargetErrors(
   if (!same(poisonOwnedClosure(before), poisonOwnedClosure(after))) {
     errors.push('targeted poison-owned closure changed')
   }
-  if (outcomes.some((outcome) => outcomeMentionsPoison(outcome.result))) {
+  if (
+    outcomes.some(
+      (outcome) => outcome.status === 'fulfilled' && outcomeMentionsPoison(outcome.result),
+    )
+  ) {
     errors.push('targeted operation returned the poison task or run')
   }
   return errors
@@ -2554,12 +2569,20 @@ function healthyWinErrors(
   label: string,
   after: ProtocolSnapshot,
   outcomes: readonly PoisonInvocationOutcome[],
+  responsibleTarget: PoisonInvocationTarget,
 ): string[] {
   const errors: string[] = []
   const task = rowById(after, 'tasks', TRIGGER_TASK)
   const run = rowById(after, 'runs', TRIGGER_RUN)
   const expect = (condition: boolean, message: string): void => {
     if (!condition) errors.push(`healthy trigger did not win: ${message}`)
+  }
+  if (
+    outcomes.some(
+      (outcome) => outcome.target === responsibleTarget && outcome.status === 'rejected',
+    )
+  ) {
+    errors.push('healthy trigger did not win: invocation rejected')
   }
   switch (label) {
     case 'driver-heartbeat': {
@@ -2574,8 +2597,11 @@ function healthyWinErrors(
     }
     case 'spawn': {
       const result = outcomes
-        .filter((outcome) => outcome.target === 'healthy')
-        .map((outcome) => object(outcome.result))
+        .flatMap((outcome) =>
+          outcome.target === 'healthy' && outcome.status === 'fulfilled'
+            ? [object(outcome.result)]
+            : [],
+        )
         .find((value) => value?.created === true)
       const spawnedTask =
         typeof result?.taskId === 'string' ? rowById(after, 'tasks', result.taskId) : undefined
@@ -2801,14 +2827,13 @@ interface PoisonCaseResultIdentity {
 }
 
 interface ExecutedPoisonCaseResult extends PoisonCaseResultIdentity {
-  readonly invocationError: unknown
-  readonly invocationResult: unknown
+  readonly invocation: PoisonInvocationOutcome<'poison'>
   readonly poisonSubjectUnchanged: boolean
   readonly corruptionDisposition: 'injected'
 }
 
 interface StructurallyRejectedPoisonCaseResult extends PoisonCaseResultIdentity {
-  readonly invocationError: null
+  readonly invocation: null
   readonly corruptionDisposition: 'structurally-rejected'
 }
 
@@ -2944,7 +2969,7 @@ export async function runPoisonMatrixCase(
         label,
         witness: witness.id,
         ...(options.targetProfile ? { profile: options.targetProfile } : {}),
-        invocationError: null,
+        invocation: null,
         corruptionDisposition,
       }
     }
@@ -2975,22 +3000,25 @@ export async function runPoisonMatrixCase(
     const recorder = new RecordingExecutor(f.raw)
     const store = f.storeOver(recorder)
     const outcomes: PoisonInvocationOutcome[] = []
-    const call = async (
-      target: PoisonInvocationOutcome['target'],
+    const call = async <Target extends PoisonInvocationTarget>(
+      target: Target,
       invokeTarget: () => Promise<unknown>,
-    ): Promise<void> => {
-      const outcome: PoisonInvocationOutcome = { target }
-      outcomes.push(outcome)
+    ): Promise<PoisonInvocationOutcome<Target>> => {
       try {
-        outcome.result = await invokeTarget()
-      } catch (error) {
-        outcome.error = error
+        const result = await invokeTarget()
+        return Object.freeze({ target, status: 'fulfilled', result })
+      } catch (reason) {
+        return Object.freeze({ target, status: 'rejected', reason })
       }
     }
     const targetedSelection = options.targetProfile !== undefined
-    await call('poison', () => invoke(label, store, POISON_INVOCATION, targetedSelection ? 1 : 100))
+    outcomes.push(
+      await call('poison', () =>
+        invoke(label, store, POISON_INVOCATION, targetedSelection ? 1 : 100),
+      ),
+    )
     if (options.healthyTrigger !== false && !targetedSelection) {
-      await call('healthy', () => invoke(label, store, HEALTHY_INVOCATION))
+      outcomes.push(await call('healthy', () => invoke(label, store, HEALTHY_INVOCATION)))
     }
     options.afterOutcomes?.(outcomes)
     try {
@@ -3024,7 +3052,9 @@ export async function runPoisonMatrixCase(
         (item) => `new invariant violation: ${item}`,
       ),
       ...worsenedFindings(beforeFindings, afterFindings, before, after),
-      ...(options.healthyTrigger === false ? [] : healthyWinErrors(label, after, outcomes)),
+      ...(options.healthyTrigger === false
+        ? []
+        : healthyWinErrors(label, after, outcomes, targetedSelection ? 'poison' : 'healthy')),
       ...(options.targetProfile ? poisonTargetErrors(before, after, outcomes) : []),
     ]
     if (liveRuns(after, TASK).length > liveRuns(before, TASK).length) {
@@ -3033,15 +3063,16 @@ export async function runPoisonMatrixCase(
     if (errors.length > 0) {
       throw new Error(`${label}/${witness.id}: ${errors.join('; ')}`)
     }
-    const poisonOutcome = outcomes.find((outcome) => outcome.target === 'poison')
+    const poisonOutcome = outcomes.find(
+      (outcome): outcome is PoisonInvocationOutcome<'poison'> => outcome.target === 'poison',
+    )
     if (!poisonOutcome)
       throw new Error(`${label}/${witness.id}: poison invocation was not recorded`)
     return {
       label,
       witness: witness.id,
       ...(options.targetProfile ? { profile: options.targetProfile } : {}),
-      invocationError: poisonOutcome.error ?? null,
-      invocationResult: poisonOutcome.result,
+      invocation: poisonOutcome,
       poisonSubjectUnchanged: same(poisonOwnedClosure(before), poisonOwnedClosure(after)),
       corruptionDisposition,
     }

@@ -17,6 +17,7 @@ import {
   POISON_WITNESSES,
   type PoisonCounterTargetabilityRecord,
   type PoisonCounterTargetabilityVector,
+  type PoisonInvocationOutcome,
   type PoisonRelationalTargetRecord,
   type PoisonTargetProfileSeedRecord,
   type ProtocolSnapshot,
@@ -299,34 +300,87 @@ describe('poison/invariant mechanism self-tests', () => {
   })
 
   it('rejects a healthy call that commits and then rejects with undefined', async () => {
-    await expect(
-      runPoisonMatrixCase(
-        async (seed) => {
-          const f = await makeLibsqlFixture(seed)
-          let calls = 0
-          return {
-            ...f,
-            storeOver: (db, buggify) => {
-              const store = f.storeOver(db, buggify)
-              return new Proxy(store, {
-                get(target, property, receiver) {
-                  if (property !== 'driverHeartbeat') {
-                    return Reflect.get(target, property, receiver)
-                  }
-                  return async (...args: Parameters<typeof target.driverHeartbeat>) => {
-                    await target.driverHeartbeat(...args)
-                    calls += 1
-                    if (calls === 2) return Promise.reject(undefined)
-                  }
-                },
-              })
+    let outcomes: readonly PoisonInvocationOutcome[] = []
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-healthy-settlement' },
+      /healthy trigger did not win: invocation rejected/,
+      () =>
+        runPoisonMatrixCase(
+          async (seed) => {
+            const f = await makeLibsqlFixture(seed)
+            let calls = 0
+            return {
+              ...f,
+              storeOver: (db, buggify) => {
+                const store = f.storeOver(db, buggify)
+                return new Proxy(store, {
+                  get(target, property, receiver) {
+                    if (property !== 'driverHeartbeat') {
+                      return Reflect.get(target, property, receiver)
+                    }
+                    return async (...args: Parameters<typeof target.driverHeartbeat>) => {
+                      await target.driverHeartbeat(...args)
+                      calls += 1
+                      if (calls === 2) return Promise.reject(undefined)
+                    }
+                  },
+                })
+              },
+            }
+          },
+          'driver-heartbeat',
+          witness('terminal-task/live-running-run'),
+          {
+            afterOutcomes: (recorded) => {
+              outcomes = [...recorded]
             },
-          }
-        },
-        'driver-heartbeat',
-        witness('terminal-task/live-running-run'),
-      ),
-    ).rejects.toThrow(/healthy trigger did not win/)
+          },
+        ),
+    )
+    expect(outcomes).toEqual([
+      { target: 'poison', status: 'fulfilled', result: undefined },
+      { target: 'healthy', status: 'rejected', reason: undefined },
+    ])
+    expect(outcomes.every((outcome) => Object.isFrozen(outcome))).toBe(true)
+  })
+
+  it('rejects a targeted call that commits healthy progress and then rejects with undefined', async () => {
+    let outcomes: readonly PoisonInvocationOutcome[] = []
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'poison-targeted-settlement-owner' },
+      /healthy trigger did not win: invocation rejected/,
+      () =>
+        runPoisonTargetCase(
+          async (seed) => {
+            const f = await makeLibsqlFixture(seed)
+            return {
+              ...f,
+              storeOver: (db, buggify) => {
+                const store = f.storeOver(db, buggify)
+                return new Proxy(store, {
+                  get(storeTarget, property, receiver) {
+                    if (property !== 'claim') {
+                      return Reflect.get(storeTarget, property, receiver)
+                    }
+                    return async (...args: Parameters<typeof storeTarget.claim>) => {
+                      await storeTarget.claim(...args)
+                      return Promise.reject(undefined)
+                    }
+                  },
+                })
+              },
+            }
+          },
+          target('attempts/at-max-with-live-run/claim-pending'),
+          {
+            afterOutcomes: (recorded) => {
+              outcomes = [...recorded]
+            },
+          },
+        ),
+    )
+    expect(outcomes).toEqual([{ target: 'poison', status: 'rejected', reason: undefined }])
+    expect(outcomes.every((outcome) => Object.isFrozen(outcome))).toBe(true)
   })
 
   it('rejects a label that crossed the executor but made no durable state change', async () => {
@@ -1598,10 +1652,13 @@ describe('poison/invariant mechanism self-tests', () => {
           target('counter-bound/task-max-attempts/claim-pending'),
           {
             afterOutcomes: (outcomes) => {
-              outcomes.push({
-                target: 'poison',
-                result: [{ taskId: 'poison-task', runId: 'poison-run' }],
-              })
+              outcomes.push(
+                Object.freeze({
+                  target: 'poison',
+                  status: 'fulfilled',
+                  result: [{ taskId: 'poison-task', runId: 'poison-run' }],
+                }),
+              )
             },
           },
         ),

@@ -1,12 +1,13 @@
 import { LeaseLostError, StoreUnavailableError, SuspendSignal } from '@durablerun/core'
 import { taskHasOwn } from './intrinsics.js'
 
-type SuspendControlSnapshot = {
-  readonly kind: 'suspend'
-  readonly reason: 'sleep' | 'await-event'
-  readonly wake: { readonly inSeconds: number } | { readonly atEpochMs: number } | undefined
-  readonly checkpoint: { readonly key: string; readonly stateJson: string } | undefined
-}
+type SuspendControlSnapshot =
+  | {
+      readonly kind: 'sleep'
+      readonly wake: { readonly inSeconds: number } | { readonly atEpochMs: number }
+      readonly checkpoint: { readonly key: string; readonly stateJson: string }
+    }
+  | { readonly kind: 'await-event' }
 
 export type InfrastructureControlSnapshot =
   | { readonly kind: 'lease-lost' }
@@ -20,11 +21,11 @@ export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControl
  * task code from enrolling its own public error instances.
  */
 export interface TaskControlIssuer {
-  suspend(
-    reason: 'sleep' | 'await-event',
-    wake?: { inSeconds: number } | { atEpochMs: number },
-    checkpoint?: { key: string; stateJson: string },
+  sleep(
+    wake: { inSeconds: number } | { atEpochMs: number },
+    checkpoint: { key: string; stateJson: string },
   ): never
+  awaitEvent(): never
   leaseLost(message: string): never
   storeCall<T>(operation: () => Promise<T>): Promise<T>
 }
@@ -50,6 +51,7 @@ const hasInstance = ordinaryHasInstance.call.bind(ordinaryHasInstance) as (
   errorType: object,
   value: unknown,
 ) => boolean
+const AWAIT_EVENT = freeze({ kind: 'await-event' } as const)
 const LEASE_LOST = freeze({ kind: 'lease-lost' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
 
@@ -82,27 +84,23 @@ export function createTaskControlScope(): TaskControlScope {
   }
 
   const issuer: TaskControlIssuer = freeze({
-    suspend(
-      reason: 'sleep' | 'await-event',
-      wake?: { inSeconds: number } | { atEpochMs: number },
-      checkpoint?: { key: string; stateJson: string },
+    sleep(
+      wake: { inSeconds: number } | { atEpochMs: number },
+      checkpoint: { key: string; stateJson: string },
     ): never {
-      const ownedWake =
-        wake === undefined
-          ? undefined
-          : isRelativeWake(wake)
-            ? freeze({ inSeconds: wake.inSeconds })
-            : freeze({ atEpochMs: wake.atEpochMs })
-      const ownedCheckpoint =
-        checkpoint === undefined
-          ? undefined
-          : freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })
-      return enroll(new SuspendSignal(reason, wake, checkpoint), {
-        kind: 'suspend',
-        reason,
+      const ownedWake = isRelativeWake(wake)
+        ? freeze({ inSeconds: wake.inSeconds })
+        : freeze({ atEpochMs: wake.atEpochMs })
+      const ownedCheckpoint = freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })
+      return enroll(new SuspendSignal('sleep', wake, checkpoint), {
+        kind: 'sleep',
         wake: ownedWake,
         checkpoint: ownedCheckpoint,
       })
+    },
+
+    awaitEvent(): never {
+      return enroll(new SuspendSignal('await-event'), AWAIT_EVENT)
     },
 
     leaseLost(message: string): never {

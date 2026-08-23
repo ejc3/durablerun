@@ -965,16 +965,16 @@ MUTATION_SPECS = [
         "         AND ${validCheckpointConflict('runs', '?')}\n"
         "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakePlan.argument,\n"
-        "        wakePlan.argument,",
+        "        ...wakePlan.expressionArgs,\n"
+        "        ...wakePlan.expressionArgs,",
         "         AND ${validCheckpointConflict('runs', '?').replace(\n"
         "           'AND EXISTS (',\n"
         "           'AND c.owner_attempt <= runs.attempt AND EXISTS (',\n"
         "         )}\n"
         "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakePlan.argument,\n"
-        "        wakePlan.argument,",
+        "        ...wakePlan.expressionArgs,\n"
+        "        ...wakePlan.expressionArgs,",
         "suspendRun mistakes a valid higher LWW owner for corrupt ownership",
     ),
     (
@@ -1512,9 +1512,38 @@ MUTATION_SPECS = [
     (
         "poison-returned-target-comparison",
         "packages/conformance/src/poison-matrix.ts",
-        "  if (outcomes.some((outcome) => outcomeMentionsPoison(outcome.result))) {\n",
-        "  if (false && outcomes.some((outcome) => outcomeMentionsPoison(outcome.result))) {\n",
+        "  if (\n"
+        "    outcomes.some(\n"
+        "      (outcome) => outcome.status === 'fulfilled' && outcomeMentionsPoison(outcome.result),\n"
+        "    )\n"
+        "  ) {\n",
+        "  if (\n"
+        "    false &&\n"
+        "    outcomes.some(\n"
+        "      (outcome) => outcome.status === 'fulfilled' && outcomeMentionsPoison(outcome.result),\n"
+        "    )\n"
+        "  ) {\n",
         "a targeted transition may return the poisoned task or run",
+    ),
+    (
+        "poison-healthy-settlement",
+        "packages/conformance/src/poison-matrix.ts",
+        "  if (\n"
+        "    outcomes.some(\n"
+        "      (outcome) => outcome.target === responsibleTarget && outcome.status === 'rejected',\n"
+        "    )\n"
+        "  ) {\n"
+        "    errors.push('healthy trigger did not win: invocation rejected')\n"
+        "  }\n",
+        "",
+        "a healthy transition can reject after committing and still satisfy the durable-state oracle",
+    ),
+    (
+        "poison-targeted-settlement-owner",
+        "packages/conformance/src/poison-matrix.ts",
+        "healthyWinErrors(label, after, outcomes, targetedSelection ? 'poison' : 'healthy')",
+        "healthyWinErrors(label, after, outcomes, 'healthy')",
+        "a targeted selection checks settlement on an invocation that never ran",
     ),
     (
         "accounting-live-run-next-invariant",
@@ -2495,8 +2524,8 @@ CHECKPOINT_CONFLICT_CONSUMERS = (
         "\n"
         "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakePlan.argument,\n"
-        "        wakePlan.argument,",
+        "        ...wakePlan.expressionArgs,\n"
+        "        ...wakePlan.expressionArgs,",
     ),
 )
 
@@ -2716,8 +2745,8 @@ TIMESTAMP_ADDITION_CASES = (
         "reschedule wake deadline",
         "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakePlan.argument,\n"
-        "        wakePlan.argument,\n"
+        "        ...wakePlan.expressionArgs,\n"
+        "        ...wakePlan.expressionArgs,\n"
         "        wakeDisposition,",
         "wakePlan.fits",
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
@@ -2730,8 +2759,8 @@ TIMESTAMP_ADDITION_CASES = (
         "suspend wake deadline",
         "         ${wakePlan.fits}`,\n"
         "      [\n"
-        "        wakePlan.argument,\n"
-        "        wakePlan.argument,\n"
+        "        ...wakePlan.expressionArgs,\n"
+        "        ...wakePlan.expressionArgs,\n"
         "        runId,",
         "wakePlan.fits",
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
@@ -3604,19 +3633,17 @@ MUTATION_SPECS.extend(
         (
             "task-control-suspend-auth",
             "packages/sdk/src/task-control.ts",
-            "      return enroll(new SuspendSignal(reason, wake, checkpoint), {\n"
-            "        kind: 'suspend',\n"
-            "        reason,\n"
+            "      return enroll(new SuspendSignal('sleep', wake, checkpoint), {\n"
+            "        kind: 'sleep',\n"
             "        wake: ownedWake,\n"
             "        checkpoint: ownedCheckpoint,\n"
             "      })",
-            "      const signal = new SuspendSignal(reason, wake, checkpoint)\n"
-            "      if (ownedCheckpoint !== undefined && ownedCheckpoint.key === 'sleep') {\n"
+            "      const signal = new SuspendSignal('sleep', wake, checkpoint)\n"
+            "      if (ownedCheckpoint.key === 'sleep') {\n"
             "        throw signal // MUTATION\n"
             "      }\n"
             "      return enroll(signal, {\n"
-            "        kind: 'suspend',\n"
-            "        reason,\n"
+            "        kind: 'sleep',\n"
             "        wake: ownedWake,\n"
             "        checkpoint: ownedCheckpoint,\n"
             "      })",
@@ -3625,17 +3652,15 @@ MUTATION_SPECS.extend(
         (
             "task-control-suspend-reason-owned",
             "packages/sdk/src/task-control.ts",
-            "      return enroll(new SuspendSignal(reason, wake, checkpoint), {\n"
-            "        kind: 'suspend',\n"
-            "        reason,\n"
+            "      return enroll(new SuspendSignal('sleep', wake, checkpoint), {\n"
+            "        kind: 'sleep',\n"
             "        wake: ownedWake,\n"
             "        checkpoint: ownedCheckpoint,\n"
             "      })",
-            "      const signal = new SuspendSignal(reason, wake, checkpoint)\n"
+            "      const signal = new SuspendSignal('sleep', wake, checkpoint)\n"
             "      return enroll(signal, {\n"
-            "        kind: 'suspend',\n"
-            "        get reason(): 'sleep' | 'await-event' {\n"
-            "          return signal.reason as 'sleep' | 'await-event'\n"
+            "        get kind(): 'sleep' {\n"
+            "          return signal.reason as 'sleep'\n"
             "        },\n"
             "        wake: ownedWake,\n"
             "        checkpoint: ownedCheckpoint,\n"
@@ -3645,15 +3670,15 @@ MUTATION_SPECS.extend(
         (
             "task-control-suspend-relative-wake-owned",
             "packages/sdk/src/task-control.ts",
-            "            ? freeze({ inSeconds: wake.inSeconds })",
-            "            ? wake",
+            "        ? freeze({ inSeconds: wake.inSeconds })",
+            "        ? wake",
             "the suspension snapshot retains a handler-mutable relative wake",
         ),
         (
             "task-control-suspend-absolute-wake-owned",
             "packages/sdk/src/task-control.ts",
-            "            : freeze({ atEpochMs: wake.atEpochMs })",
-            "            : wake",
+            "        : freeze({ atEpochMs: wake.atEpochMs })",
+            "        : wake",
             "the suspension snapshot retains a handler-mutable absolute wake",
         ),
         (
@@ -3666,25 +3691,25 @@ MUTATION_SPECS.extend(
         (
             "task-control-suspend-checkpoint-key-owned",
             "packages/sdk/src/task-control.ts",
-            "          : freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })",
-            "          : freeze({\n"
-            "              get key() {\n"
-            "                return checkpoint.key\n"
-            "              },\n"
-            "              stateJson: checkpoint.stateJson,\n"
-            "            })",
+            "      const ownedCheckpoint = freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })",
+            "      const ownedCheckpoint = freeze({\n"
+            "        get key() {\n"
+            "          return checkpoint.key\n"
+            "        },\n"
+            "        stateJson: checkpoint.stateJson,\n"
+            "      })",
             "the suspension snapshot re-reads a handler-mutated checkpoint key",
         ),
         (
             "task-control-suspend-checkpoint-state-owned",
             "packages/sdk/src/task-control.ts",
-            "          : freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })",
-            "          : freeze({\n"
-            "              key: checkpoint.key,\n"
-            "              get stateJson() {\n"
-            "                return checkpoint.stateJson\n"
-            "              },\n"
-            "            })",
+            "      const ownedCheckpoint = freeze({ key: checkpoint.key, stateJson: checkpoint.stateJson })",
+            "      const ownedCheckpoint = freeze({\n"
+            "        key: checkpoint.key,\n"
+            "        get stateJson() {\n"
+            "          return checkpoint.stateJson\n"
+            "        },\n"
+            "      })",
             "the suspension snapshot re-reads handler-mutated checkpoint state",
         ),
         (
@@ -5263,6 +5288,18 @@ VERDICTS = {
         "poison/invariant mechanism self-tests rejects returning the poison target even when storage stayed unchanged",
         "mutation-verdict:behavior:poison-returned-target-comparison",
     ),
+    "poison-healthy-settlement": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests rejects a healthy call that commits and then rejects with undefined",
+        "mutation-verdict:behavior:poison-healthy-settlement",
+    ),
+    "poison-targeted-settlement-owner": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/poison-oracle-meta.test.ts",
+        "poison/invariant mechanism self-tests rejects a targeted call that commits healthy progress and then rejects with undefined",
+        "mutation-verdict:behavior:poison-targeted-settlement-owner",
+    ),
     "accounting-live-run-next-invariant": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -6759,6 +6796,9 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "poison-targeted-settlement-owner": (
+        "replacement removes a TypeScript conditional token, not a SQL bind"
+    ),
     "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
     "generated-selection-fence": (
         "replacement adds a TypeScript conditional around a label-scoped SQL mutation"
@@ -8369,7 +8409,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "canonical behavior descriptor",
             "await attributeReplacedFailure("
-            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, /a/, /b/, action)",
+            "{kind: 'behavior', mutation: 'schema-fault-is-permanent'}, "
+            "{expectedError: /a/, replacementError: /b/}, action)",
             frozenset({("behavior", "schema-fault-is-permanent")}),
         ),
         (
@@ -8418,7 +8459,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         (
             "indirect descriptor",
             "const verdict = {kind: 'behavior', mutation: 'schema-fault-is-permanent'}\n"
-            "await attributeReplacedFailure(verdict, /a/, /b/, action)",
+            "await attributeReplacedFailure("
+            "verdict, {expectedError: /a/, replacementError: /b/}, action)",
             frozenset(),
         ),
         (
@@ -8794,6 +8836,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "import type { TypeOnlyValue } from './missing.js'\n"
             "const value = 1\n"
         ),
+        "__selftest__/mutation-binding-type-only-namespace.ts": (
+            "import type * as TypeOnlyNamespace from './missing.js'\n"
+            "const value = 1\n"
+        ),
         "__selftest__/mutation-binding-extends.ts": (
             "class Base {}\n"
             "class Child extends Base {}\n"
@@ -8863,6 +8909,14 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "const value = 1",
             "const value = TypeOnlyValue",
             "type-only import aliases do not create runtime value bindings",
+            expected,
+        ),
+        Mutation(
+            "selftest-typescript-binding-type-only-namespace",
+            "__selftest__/mutation-binding-type-only-namespace.ts",
+            "const value = 1",
+            "const value = TypeOnlyNamespace",
+            "type-only namespace imports do not create runtime value bindings",
             expected,
         ),
         Mutation(
@@ -9152,6 +9206,9 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "selftest-typescript-binding-type-only-import": (
                 "2:15 newly unbound runtime identifier 'TypeOnlyValue'",
             ),
+            "selftest-typescript-binding-type-only-namespace": (
+                "2:15 newly unbound runtime identifier 'TypeOnlyNamespace'",
+            ),
             "selftest-typescript-binding-extends": (
                 "2:21 newly unbound runtime identifier 'MissingBase'",
             ),
@@ -9227,7 +9284,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 419:
+        if len(MUTATIONS) != 421:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

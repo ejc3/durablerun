@@ -1,4 +1,4 @@
-import { type SqlExecutor } from '@durablerun/core'
+import type { SqlExecutor } from '@durablerun/core'
 import { expect, it } from 'vitest'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 

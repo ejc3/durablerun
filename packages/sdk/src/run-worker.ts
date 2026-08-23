@@ -197,21 +197,14 @@ export async function runClaimedRun(
       resultJson = serializeTaskValue('task result', result)
     } catch (error) {
       const control = taskControls.snapshot(error)
-      if (control?.kind === 'suspend') {
-        // awaitEvent parks the run INSIDE its own atomic batch — a second
-        // park here would overwrite the registered wait.
-        if (control.reason === 'await-event') return { kind: 'suspended' }
+      // awaitEvent parks the run INSIDE its own atomic batch — a second park
+      // here would overwrite the registered wait.
+      if (control?.kind === 'await-event') return { kind: 'suspended' }
+      if (control?.kind === 'sleep') {
         try {
           // The park and its marker are ONE transition (or neither happens):
           // a marker without a park would lie on the next pass.
-          if (control.checkpoint) {
-            await store.suspendRun(queue, runId, claimToken, control.wake ?? { inSeconds: 0 }, {
-              key: control.checkpoint.key,
-              stateJson: control.checkpoint.stateJson,
-            })
-          } else {
-            await store.reschedule(queue, runId, claimToken, control.wake ?? { inSeconds: 0 })
-          }
+          await store.suspendRun(queue, runId, claimToken, control.wake, control.checkpoint)
           return { kind: 'suspended' }
         } catch (inner) {
           return trustedStoreOutcome(inner)

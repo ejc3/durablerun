@@ -341,6 +341,11 @@ function createMutationBindingAnalyzer(sources) {
   if (typeof ts.isInExpressionContext !== 'function') {
     throw new Error('installed TypeScript does not expose isInExpressionContext')
   }
+  if (typeof ts.isPartOfTypeOnlyImportOrExportDeclaration !== 'function') {
+    throw new Error(
+      'installed TypeScript does not expose isPartOfTypeOnlyImportOrExportDeclaration',
+    )
+  }
   const currentSources = new Map()
   const originalSources = new Map()
   const versions = new Map()
@@ -414,30 +419,12 @@ function createMutationBindingAnalyzer(sources) {
     return ts.isInExpressionContext(node)
   }
 
-  const isTypeOnlyAliasDeclaration = (declaration) => {
-    for (
-      let current = declaration;
-      current && !ts.isSourceFile(current);
-      current = current.parent
-    ) {
-      if (
-        (ts.isImportClause(current) ||
-          ts.isImportSpecifier(current) ||
-          ts.isImportEqualsDeclaration(current) ||
-          ts.isExportSpecifier(current) ||
-          ts.isExportDeclaration(current)) &&
-        current.isTypeOnly
-      ) {
-        return true
-      }
-    }
-    return false
-  }
-
   const resolvesToRuntimeValue = (checker, node) => {
     const symbol = checker.resolveName(node.text, node, ts.SymbolFlags.Value, false)
     if (!symbol) return false
-    if ((symbol.declarations ?? []).some(isTypeOnlyAliasDeclaration)) return false
+    if ((symbol.declarations ?? []).some(ts.isPartOfTypeOnlyImportOrExportDeclaration)) {
+      return false
+    }
     if (symbol.flags & ts.SymbolFlags.Alias) {
       const target = checker.getAliasedSymbol(symbol)
       if (target.name !== 'unknown' && !(target.flags & ts.SymbolFlags.Value)) return false

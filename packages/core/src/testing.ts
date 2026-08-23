@@ -1,6 +1,10 @@
 import { isFencedBatchBindError } from './fenced-batch.js'
 
 export type ExpectedError = RegExp | ((error: unknown) => boolean)
+export interface ReplacedFailureExpectation {
+  readonly expectedError: ExpectedError
+  readonly replacementError: ExpectedError
+}
 export type MutationVerdictKind = 'behavior' | 'construction'
 export interface MutationVerdict {
   readonly kind: MutationVerdictKind
@@ -69,16 +73,15 @@ export async function requireExpectedFailure(
  */
 export async function attributeReplacedFailure(
   verdict: MutationVerdict,
-  expectedError: ExpectedError,
-  replacementError: ExpectedError,
+  expectation: ReplacedFailureExpectation,
   action: () => Promise<unknown>,
 ): Promise<void> {
   const marker = markerFor(verdict)
   try {
     await action()
   } catch (error) {
-    if (matches(expectedError, error)) return
-    if (matches(replacementError, error)) throw new Error(marker)
+    if (matches(expectation.expectedError, error)) return
+    if (matches(expectation.replacementError, error)) throw new Error(marker)
     throw error
   }
   throw new Error('expected operation to reject')

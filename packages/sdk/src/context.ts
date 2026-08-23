@@ -309,7 +309,7 @@ export class ReplayContext implements TaskContext {
     }
     // The store batch ALREADY parked the run: signal without a wake so the
     // runtime performs no second suspension.
-    this.#controls.suspend('await-event')
+    this.#controls.awaitEvent()
   }
 
   /** Lease-fenced marker write shared by the await memoization. */
@@ -343,7 +343,7 @@ export class ReplayContext implements TaskContext {
   ): Promise<void> {
     const key = this.storageName(kind)
     if (taskMapHas(this.seen, key)) return // the wake already happened: continue
-    this.#controls.suspend('sleep', wake, {
+    this.#controls.sleep(wake, {
       key,
       stateJson: serializeTaskValue('sleep marker', wake),
     })

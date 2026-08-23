@@ -1,7 +1,20 @@
 import { LeaseLostError, StoreUnavailableError } from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
-import { createTaskControlScope, trustedStoreControl } from '../src/task-control.js'
+import {
+  type TaskControlIssuer,
+  createTaskControlScope,
+  trustedStoreControl,
+} from '../src/task-control.js'
+
+function invalidTaskControlShapes(issuer: TaskControlIssuer): void {
+  // @ts-expect-error A sleep control always owns its durable checkpoint.
+  issuer.sleep({ inSeconds: 1 })
+  // @ts-expect-error awaitEvent carries no second suspension payload.
+  issuer.awaitEvent({ inSeconds: 1 }, { key: 'invalid', stateJson: '{}' })
+}
+
+void invalidTaskControlShapes
 
 function captureThrown(action: () => never): unknown {
   try {
@@ -52,10 +65,7 @@ describe('task control scope', () => {
     Object.defineProperty(WeakMap.prototype, 'get', {
       configurable: true,
       value: () => ({
-        kind: 'suspend',
-        reason: 'await-event',
-        wake: undefined,
-        checkpoint: undefined,
+        kind: 'await-event',
       }),
       writable: true,
     })
@@ -85,7 +95,7 @@ describe('task control scope', () => {
     let snapshot: ReturnType<ReturnType<typeof createTaskControlScope>['snapshot']> = undefined
     try {
       const scope = createTaskControlScope()
-      const signal = captureThrown(() => scope.issuer.suspend('await-event'))
+      const signal = captureThrown(() => scope.issuer.awaitEvent())
       snapshot = scope.snapshot(signal)
     } finally {
       Object.defineProperty(WeakMap.prototype, 'set', {
@@ -95,10 +105,7 @@ describe('task control scope', () => {
       })
     }
     expect(snapshot, 'mutation-verdict:construction:task-control-captured-map-set').toEqual({
-      kind: 'suspend',
-      reason: 'await-event',
-      wake: undefined,
-      checkpoint: undefined,
+      kind: 'await-event',
     })
   })
 
@@ -107,44 +114,46 @@ describe('task control scope', () => {
     const second = createTaskControlScope()
     const wake = { inSeconds: 5 }
     const checkpoint = { key: 'sleep', stateJson: '{"wake":5}' }
-    const signal = captureThrown(() => first.issuer.suspend('sleep', wake, checkpoint))
+    const signal = captureThrown(() => first.issuer.sleep(wake, checkpoint))
     wake.inSeconds = 99
     checkpoint.key = 'mutated'
     checkpoint.stateJson = 'mutated'
     Object.defineProperty(signal, 'reason', { value: 'await-event' })
 
     const deadline = { atEpochMs: 1_000_000 }
-    const deadlineSignal = captureThrown(() => first.issuer.suspend('sleep', deadline))
+    const deadlineSignal = captureThrown(() =>
+      first.issuer.sleep(deadline, { key: 'sleep-until', stateJson: '{"wake":1000000}' }),
+    )
     deadline.atEpochMs = 9_999_999
     const deadlineSnapshot = first.snapshot(deadlineSignal)
 
     const snapshot = first.snapshot(signal)
     expect(
       {
-        checkpointed: snapshot?.kind,
-        checkpointless: deadlineSnapshot?.kind,
+        relative: snapshot !== undefined,
+        absolute: deadlineSnapshot !== undefined,
       },
       'mutation-verdict:construction:task-control-suspend-auth',
-    ).toEqual({ checkpointed: 'suspend', checkpointless: 'suspend' })
-    if (snapshot?.kind !== 'suspend') throw new Error('expected a suspension snapshot')
-    expect(snapshot.reason, 'mutation-verdict:construction:task-control-suspend-reason-owned').toBe(
+    ).toEqual({ relative: true, absolute: true })
+    expect(snapshot?.kind, 'mutation-verdict:construction:task-control-suspend-reason-owned').toBe(
       'sleep',
     )
+    if (snapshot?.kind !== 'sleep') throw new Error('expected a sleep snapshot')
     expect(
       snapshot.wake,
       'mutation-verdict:construction:task-control-suspend-relative-wake-owned',
     ).toEqual({ inSeconds: 5 })
     expect(
-      snapshot.checkpoint?.key,
+      snapshot.checkpoint.key,
       'mutation-verdict:construction:task-control-suspend-checkpoint-key-owned',
     ).toBe('sleep')
     expect(
-      snapshot.checkpoint?.stateJson,
+      snapshot.checkpoint.stateJson,
       'mutation-verdict:construction:task-control-suspend-checkpoint-state-owned',
     ).toBe('{"wake":5}')
 
     expect(
-      deadlineSnapshot?.kind === 'suspend' ? deadlineSnapshot.wake : undefined,
+      deadlineSnapshot?.kind === 'sleep' ? deadlineSnapshot.wake : undefined,
       'mutation-verdict:construction:task-control-suspend-absolute-wake-owned',
     ).toEqual({ atEpochMs: 1_000_000 })
     expect(
@@ -164,14 +173,19 @@ describe('task control scope', () => {
     let snapshot: ReturnType<ReturnType<typeof createTaskControlScope>['snapshot']> = undefined
     try {
       const scope = createTaskControlScope()
-      const signal = captureThrown(() => scope.issuer.suspend('sleep', { atEpochMs: 1_000_000 }))
+      const signal = captureThrown(() =>
+        scope.issuer.sleep(
+          { atEpochMs: 1_000_000 },
+          { key: 'sleep-until', stateJson: '{"wake":1000000}' },
+        ),
+      )
       snapshot = scope.snapshot(signal)
     } finally {
       if (descriptor === undefined) Reflect.deleteProperty(Object.prototype, 'inSeconds')
       else Object.defineProperty(Object.prototype, 'inSeconds', descriptor)
     }
     expect(
-      snapshot?.kind === 'suspend' ? snapshot.wake : undefined,
+      snapshot?.kind === 'sleep' ? snapshot.wake : undefined,
       'mutation-verdict:construction:task-control-absolute-wake-own-discriminant',
     ).toEqual({ atEpochMs: 1_000_000 })
   })

@@ -204,10 +204,12 @@ describe('normalizeRetryStrategy', () => {
       })
       await attributeReplacedFailure(
         { kind: 'behavior', mutation: 'retry-normalize-readable-fields' },
-        (error) =>
-          error instanceof RangeError &&
-          error.message === `retry strategy ${field} is not readable`,
-        (error) => error === escaped,
+        {
+          expectedError: (error) =>
+            error instanceof RangeError &&
+            error.message === `retry strategy ${field} is not readable`,
+          replacementError: (error) => error === escaped,
+        },
         async () => normalizeRetryStrategy(hostile),
       )
     }

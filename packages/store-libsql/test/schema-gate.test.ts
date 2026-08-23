@@ -91,8 +91,10 @@ describe('a database older than the binary', () => {
     for (const sql of cases) {
       await attributeReplacedFailure(
         { kind: 'behavior', mutation: 'schema-fault-is-permanent' },
-        (error) => error instanceof SchemaMismatchError,
-        (error) => error instanceof StoreUnavailableError,
+        {
+          expectedError: (error) => error instanceof SchemaMismatchError,
+          replacementError: (error) => error instanceof StoreUnavailableError,
+        },
         () => db.batch('probe', [{ sql, args: [] }], 'read'),
       )
     }
