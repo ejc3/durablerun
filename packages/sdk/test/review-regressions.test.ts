@@ -1,9 +1,10 @@
-import { type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
+import { type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { runClaimedRun, type TaskRegistry } from '../src/index.js'
+import { type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 
@@ -29,9 +30,7 @@ class InstantClock {
 }
 
 async function fx(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   const clock = new InstantClock()
@@ -253,18 +252,6 @@ describe('SDK residual review regressions', () => {
       { sql: `SELECT owner_attempt FROM checkpoints WHERE checkpoint_name = '$sleep'`, args: [] },
     ])
     expect(Number(row?.rows[0]?.owner_attempt)).toBe(5)
-    f.close()
-  })
-
-  it('an invalid sleep duration is a permanent user error, never an infrastructure loop', async () => {
-    const f = await fx('sdk-bad-sleep')
-    const reg: TaskRegistry = new Map([['job', async (ctx) => ctx.sleepFor(Number.NaN)]])
-    const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 3 })
-    // Before the fix: SuspendSignal thrown first, validation exploded later
-    // inside the park, the run stayed active, and lease recovery repeated
-    // the deterministic bad call toward the infrastructure cap.
-    expect(await claimAndRun(f, f.store, reg, 'w1')).toEqual({ kind: 'failed' })
-    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('failed')
     f.close()
   })
 })

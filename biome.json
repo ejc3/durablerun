@@ -22,6 +22,15 @@
     "formatter": { "quoteStyle": "single", "semicolons": "asNeeded" }
   },
   "files": {
-    "ignore": ["node_modules", "dist", "*.md"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      "*.md",
+      "__probe*.ts",
+      "__dump*.ts",
+      "zz-*.test.ts",
+      "tmp-repro",
+      "*.probe-conflict"
+    ]
   }
 }

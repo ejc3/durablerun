@@ -25,6 +25,8 @@ export interface FuzzStats {
   sweepTransitions: number
   cancels: number
   nextWakes: number
+  emits: number
+  awaits: number
 }
 
 /**
@@ -72,6 +74,8 @@ async function runWalk(
     sweepTransitions: 0,
     cancels: 0,
     nextWakes: 0,
+    emits: 0,
+    awaits: 0,
   }
 
   /** Fractional seconds are legal (rounded to ms) — exercise them freely. */
@@ -171,6 +175,20 @@ async function runWalk(
           )
         )
           stats.reschedules++
+      } else if (kind < 0.9) {
+        const out = await expectLeaseLoss(() =>
+          f.store.awaitEvent(
+            Q,
+            run.taskId,
+            run.runId,
+            run.claimToken,
+            `w${step}`,
+            `ev${rng.int(3)}`,
+            rng.next() < 0.5 ? 30 + rng.int(60) : null,
+          ),
+        )
+        if (out) stats.awaits++
+        // Parked or answered inline — either way this hold is finished.
       } else if (kind < 0.95) {
         if (
           await expectLeaseLoss(() =>
@@ -212,6 +230,9 @@ async function runWalk(
         )
           stats.reschedules++
       }
+    } else if (roll < 0.86) {
+      await f.store.emitEvent(Q, `ev${rng.int(3)}`, `{"n":${rng.int(9)}}`)
+      stats.emits++
     } else if (roll < 0.88) {
       // The read path fuzzes too: nextWakeAt must always be a safe integer
       // (an Inf lease or REAL epoch surfaces HERE even before the invariant

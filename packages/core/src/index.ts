@@ -1,5 +1,6 @@
 export * from './buggify.js'
 export * from './clock.js'
+export * from './contract.js'
 export * from './errors.js'
 export * from './fenced-batch.js'
 export * from './ids.js'

@@ -306,9 +306,7 @@ function withLaunchTimeout(launcher: Launcher, clock: Clock, timeoutMs: number):
         // The transport call stays pending in the background — its promise
         // is abandoned, never awaited again. The run recovers through the
         // normal lost-launch path.
-        return LaunchOutcome.launchFailed(
-          new Error(`launch unconfirmed after ${timeoutMs}ms (delivery may still happen)`),
-        )
+        return LaunchOutcome.launchFailed()
       }
       return outcome as LaunchOutcome
     },

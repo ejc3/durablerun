@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { PERSISTED_COUNTER_FIELDS, PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -41,9 +42,46 @@ describe('migrations', () => {
       },
     ])
     const names = (result?.rows ?? []).map((r) => r.name)
-    for (const t of ['meta', 'tasks', 'runs', 'checkpoints', 'events', 'waits']) {
+    for (const t of ['meta', 'tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers']) {
       expect(names).toContain(t)
     }
+  })
+
+  it('enrolls every migrated integer column with exact nullability', async () => {
+    await admin.migrate()
+    const persistedIntegers = [
+      ...PERSISTED_COUNTER_FIELDS.map((field) => ({ ...field, nullable: false })),
+      ...PERSISTED_TEMPORAL_FIELDS,
+    ]
+    const tables = [...new Set(persistedIntegers.map((field) => field.table))]
+    const results = await db.batch(
+      'test:temporal-schema',
+      tables.map((table) => ({ sql: `PRAGMA table_info(${table})`, args: [] })),
+      'read',
+    )
+    const observed = results
+      .flatMap((result, index) => {
+        const table = tables[index]
+        if (table === undefined) throw new Error(`missing temporal table at index ${index}`)
+        return result.rows
+          .filter((row) => String(row.type).toUpperCase() === 'INTEGER')
+          .map((row) => ({
+            field: `${table}.${String(row.name)}`,
+            nullable: row.notnull === 0 || row.notnull === 0n,
+          }))
+      })
+      .sort((left, right) => left.field.localeCompare(right.field))
+    const expected = persistedIntegers
+      .map(({ table, column, nullable }) => ({
+        field: `${table}.${column}`,
+        nullable,
+      }))
+      .sort((left, right) => left.field.localeCompare(right.field))
+
+    expect(observed, 'mutation-verdict:construction:migrated-integer-inventory-complete').toEqual(
+      expected,
+    )
+    expect(observed).toHaveLength(31)
   })
 })
 
@@ -82,6 +120,9 @@ describe('migrations are append-only', () => {
   const FROZEN: Record<number, string> = {
     1: 'fa525645bb25c0ae6c0d9c5922e2d3005e00c5a120372cf6a72d030cdc484dcb',
     2: '120485faedab6f3f915c60d2f8dbbba5b810fa9233e4a6423c843d6dac4eecfa',
+    3: '2d990218bab811ebf1a8ebecc5d4da1370bfd2e61eba077ba6cca68a9bfe4eee',
+    4: 'c6b92dcd92b8745a1d0a43b72ddf73b9e7a398f2be9c88af978b854110426402',
+    5: '7f3f2fe9f4e203110ed0001500ad7ca805e1d467aea3b13b2b6aba6d966d8295',
   }
 
   it('every migration hash matches its frozen value', () => {

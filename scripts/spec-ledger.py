@@ -8,24 +8,91 @@ import re
 import sys
 from pathlib import Path
 
-root = Path(__file__).resolve().parent.parent
-spec = (root / "specs" / "Scheduler.tla").read_text()
-src = ""
-for path in sorted((root / "packages" / "store-libsql" / "src").glob("*.ts")):
-    src += path.read_text()
+# Source checkers are part of the clean-tree gate. Importing their shared
+# lexical machinery must not create scripts/__pycache__ in the tree it audits.
+sys.dont_write_bytecode = True
 
-# Harvest string-literal labels across newlines: batch( 'x' | FencedBatch( 'x'
-labels = set(re.findall(r"(?:\.batch\(|new FencedBatch\()\s*[\r\n]*\s*'([a-zA-Z0-9:_-]+)'", src))
-# Labels passed through variables must be declared here AND exist in source.
-DYNAMIC = {"cancel-task", "sweep:cancel"}
-for label in DYNAMIC:
-    if f"'{label}'" not in src:
-        sys.exit(f"spec-ledger: declared dynamic label '{label}' not found in source")
-labels |= DYNAMIC
+from source_lex import (
+    batch_calls,
+    batch_label,
+    store_typescript_sources,
+    validated_root,
+)
 
-if "--labels" in sys.argv:
+arguments = list(sys.argv[1:])
+if arguments.count("--labels") > 1:
+    sys.exit("spec-ledger.py: --labels may appear at most once")
+labels_only = "--labels" in arguments
+if labels_only:
+    arguments.remove("--labels")
+try:
+    root = validated_root(
+        arguments,
+        Path(__file__).resolve().parent.parent,
+        "spec-ledger.py",
+    )
+    source_paths = store_typescript_sources(root, "spec-ledger.py")
+except ValueError as error:
+    sys.exit(str(error))
+
+# Template migration labels are setup trace addresses rather than protocol
+# actions; their SQL shape is independently fenced and checked by batch-lint.
+# Every protocol label is otherwise a literal at its FencedBatch construction
+# site, so the executable call and this inventory have one representation.
+SETUP_LABEL_FAMILIES = {
+    (
+        "packages/store-libsql/src/admin.ts",
+        "raw",
+        "migrate:v",
+    ): "migration versions are setup trace addresses, not protocol actions",
+}
+
+labels: set[str] = set()
+try:
+    call_inventory = batch_calls(root, source_paths, "spec-ledger.py")
+except ValueError as error:
+    sys.exit(str(error))
+
+for path in source_paths:
+    rel = path.relative_to(root).as_posix()
+    source = path.read_text()
+    calls = call_inventory[rel]
+    parsed_calls = [(call, batch_label(source, call)) for call in calls]
+    opaque_identities = [
+        (call.kind, parsed.value)
+        for call, parsed in parsed_calls
+        if parsed.kind == "opaque"
+    ]
+    duplicate_opaque = next(
+        (
+            identity
+            for identity in opaque_identities
+            if opaque_identities.count(identity) > 1
+        ),
+        None,
+    )
+    if duplicate_opaque is not None:
+        sys.exit(
+            f"{rel}: opaque label classification is not unique to one binding: "
+            f"{duplicate_opaque[0]} label {duplicate_opaque[1]!r}"
+        )
+    for call, parsed in parsed_calls:
+        if parsed.kind == "static":
+            labels.add(parsed.value)
+            continue
+        identity = (rel, call.kind, parsed.value)
+        if parsed.kind == "template" and identity in SETUP_LABEL_FAMILIES:
+            continue
+        sys.exit(
+            f"{rel}: batch call shape is opaque: "
+            f"cannot resolve {call.kind} label {parsed.value!r}"
+        )
+
+if labels_only:
     print(json.dumps(sorted(labels)))
     sys.exit(0)
+
+spec = (root / "specs" / "Scheduler.tla").read_text()
 
 # The check is scoped to the ledger block and requires the quoted form —
 # a bare word elsewhere in the spec (prose, identifiers) counts for nothing.
@@ -60,7 +127,45 @@ if untagged:
             f"tag — exactly one of {', '.join(TAGS)} required on its ledger line"
         )
     sys.exit(1)
+# Every modeled guard needs an EXECUTABLE twin (CLAUDE.md class rule): for
+# each ledger line mapping a label to actions with [cas-fenced], every
+# ACTION named must be claimed by a fenceTwin('Action') marker inside a
+# test file — placed on the test that exercises that action's fence/guard
+# refusal (zombie or replay gets zero rows / an error, never success).
+# Per-ACTION, not per-label, is load-bearing: 'await-event' had a twin for
+# its miss branch while the hit branch shipped an unfenced success read.
+fenced_actions = set()
+for ln in block.splitlines():
+    m = re.search(r"'[a-zA-Z0-9:_-]+'\s*->\s*([A-Za-z0-9_/ ]+?)\s*\[cas-fenced\]", ln)
+    if m:
+        fenced_actions.update(a.strip() for a in m.group(1).split("/"))
+tests = ""
+for path in sorted(root.glob("packages/*/test/**/*.ts")):
+    tests += path.read_text()
+# The conformance suite's tests live in src/ (run via the per-store runner).
+for path in sorted(root.glob("packages/conformance/src/**/*.ts")):
+    tests += path.read_text()
+marked = set(re.findall(r"fenceTwin\('([A-Za-z0-9_]+)'\)", tests))
+untwinned = sorted(a for a in fenced_actions if a not in marked)
+if untwinned:
+    for action in untwinned:
+        print(
+            f"spec-ledger: fenced action '{action}' has no executable twin — "
+            f"add fenceTwin('{action}') to the test that proves its "
+            f"fence/guard refuses a stale or duplicate caller"
+        )
+    sys.exit(1)
+stale_marks = sorted(m for m in marked if m not in fenced_actions)
+if stale_marks:
+    for mark in stale_marks:
+        print(
+            f"spec-ledger: fenceTwin('{mark}') marks an action that is not a "
+            f"[cas-fenced] mapping in the ledger — remove or rename it"
+        )
+    sys.exit(1)
+
 print(
     f"spec-ledger: all {len(labels)} batch labels accounted for and "
-    f"duplicate-classified (block-scoped)"
+    f"duplicate-classified; all {len(fenced_actions)} fenced actions "
+    f"have executable twins (block-scoped)"
 )

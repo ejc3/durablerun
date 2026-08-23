@@ -1,10 +1,27 @@
-import { LeaseLostError, type SqlExecutor } from '@durablerun/core'
-import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
+import { type IdSource, LeaseLostError, type SqlExecutor } from '@durablerun/core'
+import { attributeExpectedFailure } from '@durablerun/core/testing'
+import { SimWorld } from '@durablerun/harness'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 const Q = 'q'
+
+/**
+ * Give one operation an exact collision without predicting a fixture's private
+ * ID call count. The fallback keeps operations that eagerly mint a second ID
+ * deterministic even when their first compare-and-set loses.
+ */
+function storeWithFirstId(raw: SqlExecutor, firstId: string): LibsqlSchedulerStore {
+  let ids = 0
+  let tokens = 0
+  const source: IdSource = {
+    uuidv7: () => (ids++ === 0 ? firstId : `${firstId}-fallback-${ids}`),
+    token: () => `collision-token-${++tokens}`,
+  }
+  return new LibsqlSchedulerStore(raw, source)
+}
 
 /** All epoch-ms columns must hold INTEGER (or NULL) storage class. */
 async function nonIntegerTemporalRows(raw: SqlExecutor): Promise<string[]> {
@@ -27,6 +44,44 @@ async function nonIntegerTemporalRows(raw: SqlExecutor): Promise<string[]> {
     'read',
   )
   return (result?.rows ?? []).map((r) => String(r.v))
+}
+
+async function addLowerLiveSibling(
+  raw: SqlExecutor,
+  taskId: string,
+  claimedRunId: string,
+): Promise<void> {
+  await raw.batch('forge-lower-live-sibling', [
+    {
+      sql: `UPDATE runs SET attempt = 2 WHERE run_id = ?`,
+      args: [claimedRunId],
+    },
+    {
+      sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+      args: [taskId],
+    },
+    {
+      sql: `INSERT INTO runs
+              (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+            VALUES ('corrupt-sibling', ?, ?, 1, 'pending', 1060000, 1000000)`,
+      args: [Q, taskId],
+    },
+  ])
+}
+
+async function withInheritedRelativeWake<T>(action: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'inSeconds')
+  Object.defineProperty(Object.prototype, 'inSeconds', {
+    configurable: true,
+    value: 0,
+    writable: true,
+  })
+  try {
+    return await action()
+  } finally {
+    if (descriptor === undefined) Reflect.deleteProperty(Object.prototype, 'inSeconds')
+    else Object.defineProperty(Object.prototype, 'inSeconds', descriptor)
+  }
 }
 
 /**
@@ -93,16 +148,90 @@ describe('transition-layer review regressions (second round)', () => {
     f.close()
   })
 
+  it('reschedule classifies an absolute wake by its own discriminant', async () => {
+    const f = await makeLibsqlFixture('absolute-reschedule-own-discriminant')
+    try {
+      await f.admin.setFakeNowEpochMs(1_000_000)
+      await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('claim')
+      await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await withInheritedRelativeWake(() =>
+        f.store.reschedule(Q, run.runId, run.claimToken, { atEpochMs: 1_030_000 }),
+      )
+      const [stored] = await f.raw.batch(
+        'absolute-reschedule-result',
+        [
+          {
+            sql: `SELECT available_at_ms FROM runs WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ],
+        'read',
+      )
+      expect(
+        stored?.rows[0]?.available_at_ms,
+        'mutation-verdict:behavior:reschedule-wake-own-discriminant',
+      ).toBe(1_030_000)
+    } finally {
+      f.close()
+    }
+  })
+
+  it('suspendRun keeps an absolute wake aligned with its marker', async () => {
+    const f = await makeLibsqlFixture('absolute-suspend-own-discriminant')
+    try {
+      await f.admin.setFakeNowEpochMs(1_000_000)
+      await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('claim')
+      await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await withInheritedRelativeWake(() =>
+        f.store.suspendRun(
+          Q,
+          run.runId,
+          run.claimToken,
+          { atEpochMs: 1_030_000 },
+          { key: '$sleepUntil', stateJson: '{"atEpochMs":1030000}' },
+        ),
+      )
+      const [stored, marker] = await f.raw.batch(
+        'absolute-suspend-result',
+        [
+          {
+            sql: `SELECT available_at_ms FROM runs WHERE run_id = ?`,
+            args: [run.runId],
+          },
+          {
+            sql: `SELECT state FROM checkpoints
+                  WHERE task_id = ? AND checkpoint_name = '$sleepUntil'`,
+            args: [run.taskId],
+          },
+        ],
+        'read',
+      )
+      expect(
+        {
+          availableAtMs: stored?.rows[0]?.available_at_ms,
+          marker: marker?.rows[0]?.state,
+        },
+        'mutation-verdict:behavior:suspend-wake-own-discriminant',
+      ).toEqual({ availableAtMs: 1_030_000, marker: '{"atEpochMs":1030000}' })
+    } finally {
+      f.close()
+    }
+  })
+
   it('fail() at the cap under a successor-id collision books nothing foreign', async () => {
     const f = await makeLibsqlFixture('fail-collide')
     await f.admin.setFakeNowEpochMs(1_000_000)
     const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
-    // Seeded ids replay: spawn consumed two uuidv7s; fail() mints the
-    // successor id as the third BEFORE drawing its batch stamp.
-    const mirror = seededIdSource(new Rng('fail-collide'))
-    mirror.uuidv7()
-    mirror.uuidv7()
-    const predictedSuccessor = mirror.uuidv7()
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    expect(run.taskId).toBe(spawned.taskId)
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+    const predictedSuccessor = 'foreign-fail-successor'
     // A FOREIGN pending run under a live foreign task at exactly that id.
     await f.raw.batch('t', [
       {
@@ -117,13 +246,15 @@ describe('transition-layer review regressions (second round)', () => {
         args: [predictedSuccessor, Q],
       },
     ])
-    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('claim')
-    expect(run.taskId).toBe(spawned.taskId)
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     // At the cap the successor INSERT is suppressed (0 rows, no PK error) —
     // the follow-ons must NOT mistake the pre-existing foreign row for it.
-    await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 0 })
+    await storeWithFirstId(f.raw, predictedSuccessor).fail(
+      Q,
+      run.runId,
+      run.claimToken,
+      '{"name":"Boom"}',
+      { delaySeconds: 0 },
+    )
     const [task] = await f.raw.batch('t', [
       {
         sql: `SELECT state, attempts, last_attempt_run FROM tasks WHERE task_id = ?`,
@@ -205,7 +336,7 @@ describe('transition-layer review regressions (second round)', () => {
     // A carried wake arrives with the claim (as the event emit will park it).
     await f.raw.batch('t', [
       {
-        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}', wake_step = '$await:e1' WHERE run_id = ?`,
         args: [run.runId],
       },
     ])
@@ -215,6 +346,168 @@ describe('transition-layer review regressions (second round)', () => {
     const [again] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
     expect(again?.runId).toBe(run.runId)
     expect(again?.wake).toMatchObject({ payloadJson: '{"x":1}' })
+    f.close()
+  })
+
+  it('spawn under an id collision with a terminal task creates no run (rule 6)', async () => {
+    // Codex PR#11 round 6: the initial-run INSERT selected a bare task_id
+    // even when the task insert lost (idempotency conflict). With an injected
+    // uuid colliding an existing TERMINAL task, a pending run was booked under
+    // it. Force spawn's first id and pre-seed that state.
+    const f = await makeLibsqlFixture('spawn-collide')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const collidingId = 'terminal-task-collision'
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
+                idempotency_key, state, enqueue_at_ms, created_at_ms)
+              VALUES (?, ?, 'x', '{}', '{"kind":"none"}', 1, 'k', 'completed', 1000000, 1000000)`,
+        args: [collidingId, Q],
+      },
+    ])
+    // Deliberately NOT wrapped in .catch(): a colliding task id must make the
+    // insert LOSE, the same as any other conflict, not raise a constraint
+    // error out of spawn. Swallowing the rejection here made this test pass
+    // either way, so deleting the guard that converts the collision into a
+    // lost compare-and-set broke nothing — found by mutation probe.
+    const result = await storeWithFirstId(f.raw, collidingId).spawn(Q, 'job', '{}', {
+      idempotencyKey: 'k',
+    })
+    expect(result.created).toBe(false)
+    const [runs] = await f.raw.batch('t', [
+      { sql: `SELECT COUNT(*) AS n FROM runs WHERE task_id = ?`, args: [collidingId] },
+    ])
+    expect(Number(runs?.rows[0]?.n)).toBe(0) // no run under the terminal task
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [collidingId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('completed')
+    f.close()
+  })
+
+  it('spawn loses rather than crashing when only the task id collides', async () => {
+    // The case above collides on BOTH the task id and the idempotency key, so
+    // the targeted ON CONFLICT absorbs it and the primary-key guard is never
+    // needed — which is why deleting that guard broke nothing. The guard
+    // exists for a collision on the id ALONE, where the targeted conflict
+    // clause does not apply and the insert would raise a constraint error out
+    // of spawn to a caller who did nothing wrong.
+    const f = await makeLibsqlFixture('spawn-collide-id-only')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const collidingId = 'task-id-only-collision'
+    await f.raw.batch('t', [
+      {
+        sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
+                state, enqueue_at_ms, created_at_ms)
+              VALUES (?, ?, 'other', '{}', '{"kind":"none"}', 1, 'pending', 1000000, 1000000)`,
+        args: [collidingId, Q],
+      },
+    ])
+
+    const result = await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'spawn-primary-key-guard' },
+      /UNIQUE constraint failed: tasks\.task_id/,
+      () => storeWithFirstId(f.raw, collidingId).spawn(Q, 'job', '{}'), // no idempotency key
+    )
+    expect(result).toMatchObject({ created: false })
+
+    // The pre-existing task is untouched: no run was attached to it, and its
+    // name is still its own.
+    const [rows] = await f.raw.batch('t', [
+      {
+        sql: `SELECT (SELECT COUNT(*) FROM runs WHERE task_id = t.task_id) AS runs,
+                     t.task_name
+              FROM tasks t WHERE t.task_id = ?`,
+        args: [collidingId],
+      },
+    ])
+    expect(rows?.rows[0]).toMatchObject({ runs: 0, task_name: 'other' })
+    f.close()
+  })
+
+  it('a same-token claim receipt never revives a terminal task (rule 6)', async () => {
+    // Codex PR#11 round 5: a completed task whose run still carries token T
+    // (the externally-corrupted state rule 6 covers). A same-token claim(T)
+    // must not revive the task to 'running' nor hand the run back to launch.
+    const f = await makeLibsqlFixture('terminal-claim-receipt')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'completed', completed_payload = '{}' WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    const again = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('completed') // not revived
+    expect(again).toHaveLength(0) // no terminal run handed back
+    f.close()
+  })
+
+  it('a same-token claim receipt refuses a task with multiple live runs', async () => {
+    const f = await makeLibsqlFixture('multiple-live-claim-receipt')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await addLowerLiveSibling(f.raw, spawned.taskId, run.runId)
+
+    const receipt = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    expect(receipt, 'mutation-verdict:behavior:claim-receipt-requires-sole-live-run').toHaveLength(
+      0,
+    )
+    f.close()
+  })
+
+  it('activate refuses a claim whose task acquired another live run', async () => {
+    const f = await makeLibsqlFixture('multiple-live-activate')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await addLowerLiveSibling(f.raw, spawned.taskId, run.runId)
+
+    const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    expect(activated, 'mutation-verdict:behavior:activate-requires-sole-live-run').toBeNull()
+    const [row] = await f.raw.batch('t', [
+      {
+        sql: `SELECT activated_gen, started_at_ms FROM runs WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+    expect(row?.rows[0]).toMatchObject({ activated_gen: 0, started_at_ms: null })
+    f.close()
+  })
+
+  it('a losing duplicate activate never re-arms a terminal task deadline (rule 6)', async () => {
+    // Codex PR#11 round 5: a duplicate activate loses the CAS (returns null)
+    // but its follow-on matched the pre-existing activated state and re-armed
+    // a completed task's cleared cancellation deadline.
+    const f = await makeLibsqlFixture('terminal-activate-dup')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    const spawned = await f.store.spawn(Q, 'job', '{}', {
+      cancellation: { maxDurationSeconds: 100 },
+    })
+    const [run] = await f.store.claim(Q, 'T', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.raw.batch('t', [
+      {
+        sql: `UPDATE tasks SET state = 'completed', cancel_at_ms = NULL WHERE task_id = ?`,
+        args: [spawned.taskId],
+      },
+    ])
+    expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).toBeNull()
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state, cancel_at_ms FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('completed')
+    expect(task?.rows[0]?.cancel_at_ms).toBeNull() // deadline not re-armed
     f.close()
   })
 })
@@ -275,7 +568,7 @@ describe('transition-layer review regressions (first round)', () => {
     // Park a wake (as the event emit will), fail with retry so it carries.
     await f.raw.batch('t', [
       {
-        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
+        sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}', wake_step = '$await:e1' WHERE run_id = ?`,
         args: [run.runId],
       },
     ])
@@ -337,6 +630,7 @@ describe('sweep and cancellation review regressions', () => {
       // The boundary the reviewed interleaving needs: one infra retry left.
       await f.raw.batch('t', [
         { sql: `UPDATE tasks SET infra_retries = 19 WHERE task_id = ?`, args: [spawned.taskId] },
+        { sql: `UPDATE runs SET attempt = 20 WHERE task_id = ?`, args: [spawned.taskId] },
       ])
       const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
       if (!run) throw new Error('expected claim')
@@ -371,6 +665,8 @@ describe('sweep and cancellation review regressions', () => {
     expect(corruptSeeds, 'seeds reaching an invariant-violating state').toEqual([])
   })
 
+  // fenceTwin('CancelSweep') — the disarmed-deadline guard blocks the
+  // sweep's cancel CAS from firing on a task that started in time.
   it('max_delay never cancels a task that started on time', async () => {
     const f = await makeLibsqlFixture('max-delay')
     await f.admin.setFakeNowEpochMs(1_000_000)
@@ -481,7 +777,42 @@ describe('sweep and cancellation review regressions', () => {
     if (!run) throw new Error('expected claim')
     await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     await f.admin.setFakeNowEpochMs(1_100_000) // lease already past
-    expect(await f.store.expireLeaseNow(Q, run.runId, run.claimToken)).toBe(false)
+    expect(
+      await f.store.expireLeaseNow(Q, run.runId, run.claimToken),
+      'mutation-verdict:behavior:expire-lease-requires-future-expiry',
+    ).toBe(false)
+    f.close()
+  })
+
+  it('expireLeaseNow refuses to launder a fractional stored expiry', async () => {
+    const f = await makeLibsqlFixture('expire-fractional')
+    await f.admin.setFakeNowEpochMs(1_000_000)
+    await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 't1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await f.raw.batch('fractional-expiry', [
+      {
+        sql: `UPDATE runs SET claim_expires_at_ms = 1000000.5 WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+
+    const expired = await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
+    const [state] = await f.raw.batch('fractional-expiry-state', [
+      {
+        sql: `SELECT claim_expires_at_ms, typeof(claim_expires_at_ms) AS storage_type
+              FROM runs WHERE run_id = ?`,
+        args: [run.runId],
+      },
+    ])
+    expect(
+      { expired, row: state?.rows[0] },
+      'mutation-verdict:behavior:expire-lease-requires-integer-expiry',
+    ).toEqual({
+      expired: false,
+      row: { claim_expires_at_ms: 1_000_000.5, storage_type: 'real' },
+    })
     f.close()
   })
 
@@ -489,12 +820,11 @@ describe('sweep and cancellation review regressions', () => {
     const f = await makeLibsqlFixture('collide')
     await f.admin.setFakeNowEpochMs(1_000_000)
     const spawned = await f.store.spawn(Q, 'job', '{}')
-    // Seeded ids are deterministic: replay the same stream to predict the
-    // successor id the sweep will mint (spawn consumed two uuidv7s).
-    const mirror = seededIdSource(new Rng('collide'))
-    mirror.uuidv7()
-    mirror.uuidv7()
-    const predictedSuccessor = mirror.uuidv7()
+    const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected claim')
+    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+    const predictedSuccessor = 'foreign-sweep-successor'
     // Park a FOREIGN run under a different task at exactly that id.
     await f.raw.batch('t', [
       {
@@ -509,13 +839,10 @@ describe('sweep and cancellation review regressions', () => {
         args: [predictedSuccessor, Q],
       },
     ])
-    const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     await f.admin.setFakeNowEpochMs(1_100_000)
     // The collision must surface loudly — never silent bookkeeping against
     // a foreign row.
-    await expect(f.store.sweep(Q, 10)).rejects.toThrow()
+    await expect(storeWithFirstId(f.raw, predictedSuccessor).sweep(Q, 10)).rejects.toThrow()
     const [task] = await f.raw.batch('t', [
       {
         sql: `SELECT infra_retries, last_attempt_run FROM tasks WHERE task_id = ?`,
@@ -527,6 +854,8 @@ describe('sweep and cancellation review regressions', () => {
     f.close()
   })
 
+  // fenceTwin('CancelExplicit') — the losing cancel CAS returns false and
+  // its follow-ons touch nothing.
   it('a losing cancel executes none of its follow-ons', async () => {
     const f = await makeLibsqlFixture('lose-cancel')
     await f.admin.setFakeNowEpochMs(1_000_000)

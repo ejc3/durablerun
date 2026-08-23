@@ -9,8 +9,8 @@
  */
 
 export interface SqlStatement {
-  sql: string
-  args: ReadonlyArray<string | number | bigint | Uint8Array | null>
+  readonly sql: string
+  readonly args: ReadonlyArray<string | number | bigint | Uint8Array | null>
 }
 
 export interface SqlRow {

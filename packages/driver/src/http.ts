@@ -69,11 +69,9 @@ export function httpLauncher(opts: { url: string; secret: string }): Launcher {
           body,
         })
         if (response.status === 202) return LaunchOutcome.accepted()
-        return LaunchOutcome.launchFailed(
-          new Error(`worker refused launch: HTTP ${response.status}`),
-        )
-      } catch (error) {
-        return LaunchOutcome.launchFailed(error)
+        return LaunchOutcome.launchFailed()
+      } catch {
+        return LaunchOutcome.launchFailed()
       }
     },
   }

@@ -1,11 +1,22 @@
-import { type Client, createClient } from '@libsql/client'
+import { type Client, createClient, LibsqlError } from '@libsql/client'
 import {
+  SchemaNotInitializedError,
+  SchemaMismatchError,
   type SqlBatchMode,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
   StoreUnavailableError,
 } from '@durablerun/core'
+import { SCHEMA_VERSION_READ_SQL } from './schema.js'
+
+/**
+ * SQLite's wording for "this build and this database disagree about the
+ * shape of the data". All three are deterministic: the same statement will
+ * fail the same way forever, so retrying is always wrong.
+ */
+const SCHEMA_FAULT = /no such (?:column|table)|has no column named|duplicate column name/i
+const MISSING_META_TABLE = /no such table:\s*meta$/i
 
 /**
  * SqlExecutor over @libsql/client. `batch(…, 'write')` is atomic — implicit
@@ -56,6 +67,22 @@ export class LibsqlExecutor implements SqlExecutor {
     statements: readonly SqlStatement[],
     mode: SqlBatchMode = 'write',
   ): Promise<SqlResult[]> {
+    // An `undefined` bind is a programming error, not an outage. Letting it
+    // reach the driver put its TypeError inside the catch below, where every
+    // driver throw becomes StoreUnavailableError — so a deterministic bad
+    // value was reported as infrastructure and retried until the
+    // infrastructure budget ran out. Rejecting it HERE, outside the try,
+    // keeps that misclassification unwritable for every value that crosses
+    // this port, not only the ones a boundary validator happens to cover.
+    for (const [i, s] of statements.entries()) {
+      for (const [j, arg] of s.args.entries()) {
+        if (arg === undefined) {
+          throw new TypeError(
+            `batch(${_label}) statement ${i} argument ${j} is undefined — bind null explicitly if that is what you mean`,
+          )
+        }
+      }
+    }
     let results: Awaited<ReturnType<Client['batch']>>
     try {
       if (this.fileBacked) await this.applyConnectionPragmas()
@@ -64,6 +91,33 @@ export class LibsqlExecutor implements SqlExecutor {
         mode,
       )
     } catch (error) {
+      const schemaVersionRead =
+        _label === 'migrate:version' &&
+        mode === 'read' &&
+        statements.length === 1 &&
+        statements[0]?.sql === SCHEMA_VERSION_READ_SQL &&
+        statements[0].args.length === 0
+      if (
+        schemaVersionRead &&
+        error instanceof LibsqlError &&
+        MISSING_META_TABLE.test(error.message)
+      ) {
+        throw new SchemaNotInitializedError('schema metadata has not been initialized', {
+          cause: error,
+        })
+      }
+      // A schema mismatch is PERMANENT, so it gets its own type: consumers
+      // treat StoreUnavailableError as transient and recover through the
+      // lease, which for a missing column means retrying a deterministic
+      // failure until the run's infrastructure budget is gone. Splitting it
+      // out here covers every statement of every batch, including paths no
+      // startup check would run.
+      if (error instanceof LibsqlError && SCHEMA_FAULT.test(error.message)) {
+        throw new SchemaMismatchError(
+          `batch(${_label}) hit a schema this build does not expect — the database is probably not migrated: ${String(error)}`,
+          { cause: error },
+        )
+      }
       // Typed so consumers can classify INFRASTRUCTURE failure by type —
       // a store outage must never be mistaken for a user failure.
       throw new StoreUnavailableError(`batch(${_label}) failed: ${String(error)}`, {

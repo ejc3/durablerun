@@ -19,7 +19,7 @@
 set -euo pipefail
 
 TLA_VERSION="v1.8.0"
-TLA_SHA256="cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3"
+TLA_SHA256="eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a"
 CACHE_DIR="${TLA_CACHE_DIR:-$HOME/.cache/tla}"
 JAR="$CACHE_DIR/tla2tools.jar"
 STATES="$(mktemp -d "${TMPDIR:-/tmp}/tla-states.XXXXXX")"
@@ -75,6 +75,53 @@ tlc() { # tlc <mem_mb> <workers> <extra...>
     -cp "$JAR" tlc2.TLC -workers "$workers" -deadlock "$@"
 }
 
+report() { # report <name> <tlc-exit-code> <log> — 0 iff the model is clean
+  local name="$1" code="$2" log="$3"
+  if [[ "$code" -eq 0 ]]; then
+    echo "$name: $(grep -m1 'Model checking completed' "$log" || echo done)"
+    return 0
+  fi
+  # TLC's verdict exits are 10 (assumption), 11 (deadlock), 12 (safety),
+  # 13 (liveness). Anything else is the CHECKER failing — OOM, disk full,
+  # parse — not the model. The two must be labeled distinctly: a nightly
+  # run of six concurrent TLC processes on a 7 GB runner once starved out,
+  # printed three lasso-less trace fragments, and read as a phantom spec
+  # violation until a well-resourced rerun came back clean.
+  if [[ "$code" -ge 10 && "$code" -le 13 ]]; then
+    echo "$name: MODEL VIOLATION (TLC exit $code) — a real counterexample follows:"
+  else
+    echo "$name: INFRA ERROR (TLC exit $code) — the checker failed, NOT the model; rerun with more resources:"
+  fi
+  grep -n -m5 -E 'Error|Exception|OutOfMemory|No space' "$log" || true
+  tail -40 "$log"
+  return 1
+}
+
+run_one() { # run_one <name> <cfg> <mem_mb> <workers> <extra...>
+  local name="$1" cfg="$2" mem="$3" workers="$4"
+  shift 4
+  local code=0
+  tlc "$mem" "$workers" "$@" -metadir "$STATES/$name" -config "$cfg" \
+    Scheduler.tla >"$STATES/$name.log" 2>&1 || code=$?
+  report "$name" "$code" "$STATES/$name.log"
+}
+
+# TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
+# FULL budget — for CI matrix jobs where each runner hosts one TLC process.
+# Concurrent groups on a 7 GB runner starve each other: the shared disk
+# filling under three liveness graphs once failed all three heavy groups
+# in the same minute. Probes ride only the safety job (one vacuity check
+# per matrix run is enough).
+if [[ -n "${TLA_ONLY:-}" && "${TLA_ONLY}" != "safety" ]]; then
+  case "$TLA_ONLY" in
+    liveness[1-5]) ;;
+    *) echo "TLA_ONLY must be safety or liveness1..liveness5, got: $TLA_ONLY" >&2; exit 2 ;;
+  esac
+  g="${TLA_ONLY#liveness}"
+  run_one "$TLA_ONLY" "SchedulerLiveness$g.cfg" "$TLA_HEAP_MB" "$CORES" -lncheck final
+  exit $?
+fi
+
 echo "== phase 1: vacuity probes, concurrent (each MUST find its witness trace)"
 probe_pids=()
 probe_names=()
@@ -106,7 +153,11 @@ done
 # spec when they do — throwaway artifacts, removed here.
 rm -f ./*_TTrace_*.tla ./*_TTrace_*.bin
 
-if [[ "${TLA_SCOPE:-full}" == "ci" ]]; then
+if [[ "${TLA_ONLY:-}" == "safety" ]]; then
+  echo "== safety only (TLA_ONLY), full budget"
+  run_one safety Scheduler.cfg "$TLA_HEAP_MB" "$CORES"
+  exit $?
+elif [[ "${TLA_SCOPE:-full}" == "ci" ]]; then
   echo "== phase 2 (ci scope): safety + liveness at the CI-sized constants"
   tlc "$TLA_HEAP_MB" "$CORES" -metadir "$STATES/ci" -config SchedulerCI.cfg Scheduler.tla
 else
@@ -139,20 +190,15 @@ else
 
   fail=0
   for g in 1 2 3 4 5; do
-    if wait "${group_pids[$((g - 1))]}"; then
-      echo "liveness group $g: $(grep -m1 'Model checking completed' "$STATES/liveness$g.log" || echo done)"
-    else
-      echo "LIVENESS GROUP $g FAILED:"
-      tail -40 "$STATES/liveness$g.log"
-      fail=1
-    fi
+    code=0
+    wait "${group_pids[$((g - 1))]}" || code=$?
+    report "liveness group $g" "$code" "$STATES/liveness$g.log" || fail=1
   done
-  if wait "$safety_pid"; then
-    echo "safety: $(grep -m1 'Model checking completed' "$STATES/safety.log" || echo done)"
+  code=0
+  wait "$safety_pid" || code=$?
+  if report safety "$code" "$STATES/safety.log"; then
     grep -E "states generated|distinct states" "$STATES/safety.log" | tail -1
   else
-    echo "SAFETY FAILED:"
-    tail -40 "$STATES/safety.log"
     fail=1
   fi
   exit "$fail"

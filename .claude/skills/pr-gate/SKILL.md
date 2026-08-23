@@ -43,9 +43,50 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    where two of the four driver-review bugs lived (claim idempotency, cancels
    ordering).
 5. **Merge on green only** — CI (verify + tla jobs) must pass on the PR head.
-6. **Launched reviewers report before merge** — or are explicitly
-   abandoned in the PR body. A wedged reviewer is not a completed review:
-   merging with codex silently stuck cost a thirteen-finding follow-up.
+6. **Launched reviewers report before merge** — MECHANIZED: main's branch
+   protection requires the 'adversarial-review' commit status, which only
+   scripts/review-attest.sh produces, and it refuses to attest unless the
+   codex log and the review-workflow journal are each bound to the current
+   PR head and verifiably COMPLETED (or the PR body carries an explicit
+   'reviews-abandoned:<reason>' trailer, which the status echoes publicly).
+   Merging without reviews is an operation
+   GitHub refuses, not a rule to remember — it was forgotten under
+   momentum twice; now the failure mode requires deliberately attesting
+   falsely, a different and auditable class. The same script enforces the
+   SEV rule FIRST — a mandatory `review-findings: <count>` line in the PR
+   body, and for a nonzero count an added, filled-in postmortem (Part 6);
+   the abandonment trailer never skips that gate.
+7. **`pnpm verify:mutations` clean** — when the PR adds or
+   changes a guard. The command self-confines once, captures the clean
+   committed head, and uses isolated detached worktrees (`--jobs auto` by
+   default). It deletes each guard in turn and requires the exact attributable
+   verdict to fail. A survivor is a guard nothing is maintaining, and the next
+   refactor can drop it with the build still green. A STALE pattern, incomplete
+   worker, wrong-head/missing/duplicate/extra result, cleanup leak, or
+   process/report disagreement also fails the audit. The live aggregate cgroup
+   must preserve 25% of host memory and the host CPU reserve; merely finite
+   limits are not confinement. A missing, malformed, or signaled Vitest report
+   is infrastructure failure, never a completed wrong-path mutation. Do not
+   skip this because the suite is green — green is what it is testing the
+   meaning of. The final success line must name the current head, and the next
+   session-state check must show no mutation worktrees left behind.
+8. **`bash scripts/session-state.sh` clean** — before reporting a round
+   finished. Repository ownership comes from cwd, argv, and live ancestry;
+   unrelated host sleeps are not repository evidence.
+   The same snapshot covers registered worktrees, while Git reports stashes and
+   uncommitted files. Never grep the process table for tool names to decide
+   nothing is running: that answer was given once from
+   `ps | grep -E 'codex-cli|tla2tools|vitest'`, which cannot match a shell loop
+   sitting in `sleep`, and it missed two — one spinning for 38 hours from an
+   earlier session, and one whose own exit condition was `! pgrep -f "tla.sh"`,
+   which matched the waiter's own command line and so could never become true.
+   A negative claim needs a check that would visibly fail if the claim were
+   false.
+9. **Simplify + elegance pass ran** — before the final push, a dedicated
+   simplification review over the FULL branch diff (`/simplify`, or an
+   equivalent walk of Part 5): every accepted simplification lands in the
+   PR, every rejected one gets a written reason in the PR body. "It works"
+   is not the bar. [CLAUDE.md standing rule]
 
 ## Part 2 — Correctness checks (what reviews hunt, learned here)
 
@@ -239,6 +280,19 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
 - **Prevention + class altitude**: every fix ships the class-level tripwire —
   invariant checker, fuzz op, sim actor, or lint — not just the instance
   test.
+- **Every review-caught bug is a SEV**: a bug that survives the author's
+  machinery and is found by review — or later (nightly, production) — gets
+  a complete postmortem under `postmortems/` committed in the SAME PR:
+  impact, red/green commits, the finder artifact quoted, per-finding layer
+  analysis (which layer should have caught it and why it could not), the
+  mechanisms instituted with their ladder rungs, deferrals in BUILD.md.
+  MECHANIZED: review-attest.sh requires a `review-findings: <count>` line
+  in every PR body; a nonzero count requires the PR to ADD a postmortem
+  containing every template section, placeholders filled, findings table
+  non-empty; the abandonment trailer never skips this gate. Declaring 0
+  over a branch with red-test commits publicly claims they were
+  machinery-caught — the same auditable-if-false class as the attestation
+  itself. [CLAUDE.md standing rule]
 - **DESIGN.md updates in the same diff** for any observable behavior change
   (thrown error types, LWW semantics, mirror rules — all were missed once).
 - **BUILD.md scope reconciliation**: promised-but-deferred items get an

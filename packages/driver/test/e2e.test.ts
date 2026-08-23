@@ -1,13 +1,14 @@
-import { type Clock, systemClock } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
+import { type Clock, systemClock } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import type { TaskRegistry } from '@durablerun/sdk'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import {
+  DriverLoop,
   createWakeServer,
   createWorkerServer,
-  DriverLoop,
   httpLauncher,
   signBody,
 } from '../src/index.js'
@@ -22,9 +23,7 @@ const SECRET = 'test-secret'
  * still gets its time injected — it just gets the production clock).
  */
 async function harness(seed: string, registry: TaskRegistry) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   const clock: Clock = systemClock()
