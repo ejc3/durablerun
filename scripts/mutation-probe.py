@@ -4224,8 +4224,9 @@ MUTATION_SPECS.extend(
             "sdk-captured-registry-get",
             "packages/sdk/src/intrinsics.ts",
             "    return taskMapGet(registry as Map<K, V>, key)",
-            "    return registry.get(key) // MUTATION",
-            "an authentic Map lookup resolves mutable Map.prototype.get after task initialization",
+            "    if (hasOwn(registry, 'cause')) return registry.get(key) // MUTATION\n"
+            "    return taskMapGet(registry as Map<K, V>, key)",
+            "a selected Map registry carrying an own cause resolves its overridable get instead of its stored entry",
         ),
         (
             "sdk-registry-map-entry-authority",
