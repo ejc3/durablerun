@@ -2639,9 +2639,12 @@ def exact_epoch_ceiling_replacement(
         return anchor.replace(
             wake_plan,
             wake_plan
-            + "    if (relativeWake) {\n"
-            + f"      wakePlan.expression = `{capped}`\n"
-            + "    }\n",
+            + "    wakePlan.expression = wakePlan.expression\n"
+            + "      .replace(`THEN ${NOW_MS} + `, `THEN MIN(${NOW_MS} + `)\n"
+            + "      .replace(\n"
+            + "        ' ELSE ',\n"
+            + "        `, ${DERIVED_INTEGER_BOUNDS.epoch_ms.max - 1}) ELSE `,\n"
+            + "      )\n",
             1,
         )
     if anchor.count(expression) != 1:
