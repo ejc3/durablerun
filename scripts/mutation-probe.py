@@ -1626,8 +1626,9 @@ MUTATION_SPECS = [
         "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n",
         "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
         "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
-        "         AND run_id <> 'prov-sweep-run'\n",
-        "the replay regression accepts a sweep that never performs the transition it owes",
+        "         AND (run_id <> 'prov-sweep-run'\n"
+        "           OR attempt <> ${TASK_INTEGER_BOUNDS.infra_retries.max})\n",
+        "the selected at-cap replay makes no progress while its below-cap control remains safe",
     ),
     (
         "matrix-attempt-edge-progress",
@@ -2232,14 +2233,24 @@ MUTATION_SPECS = [
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
         "               OR (t.state IN ${LIVE}\n"
         "                 AND ${sweepLiveOwnerAdmissible('runs', 't')\n"
-        "                   .replace(storedCurrentRunAccounting('runs', 't'), '1 = 1')\n"
-        "                   .replace(storedHighestOwnedOrdinal('runs'), '1 = 1')\n"
+        "                   .replace(\n"
+        "                     storedCurrentRunAccounting('runs', 't'),\n"
+        "                     `(${storedCurrentRunAccounting('runs', 't')}\n"
+        "           OR typeof(runs.attempt) = 'text')`,\n"
+        "                   )\n"
+        "                   .replace(\n"
+        "                     storedHighestOwnedOrdinal('runs'),\n"
+        "                     `(${storedHighestOwnedOrdinal('runs')}\n"
+        "           OR typeof(runs.attempt) = 'text')`,\n"
+        "                   )\n"
         "                   .replace(\n"
         "                     `(${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
         "           AND runs.attempt = t.attempts + t.infra_retries + 1)`,\n"
-        "                     '1 = 1',\n"
+        "                     `((${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "           AND runs.attempt = t.attempts + t.infra_retries + 1)\n"
+        "           OR typeof(runs.attempt) = 'text')`,\n"
         "                   )}\n",
-        "the claim-timeout CAS launders a fractional attempt after bypassing all three independent attempt proofs",
+        "the claim-timeout CAS launders a text attempt after bypassing all three independent attempt proofs",
     ),
     (
         "heartbeat-requires-run-task-queue-ownership",
@@ -2726,12 +2737,12 @@ def driver_cleanup_bound_mutation(omit: str) -> str:
     )
     expiry_guard = (
         "                AND typeof(expires_at_ms) = 'integer'\n"
-        "                AND expires_at_ms BETWEEN 0 AND ${MAX_EPOCH_MS}`\n"
+        "                AND expires_at_ms BETWEEN 0 AND ${MAX_EPOCH_MS}`,\n"
     )
     if omit == "last-beat":
         last_beat_guard = "                AND 1 = 1\n"
     elif omit == "expiry":
-        expiry_guard = "                AND 1 = 1`\n"
+        expiry_guard = "                AND 1 = 1`,\n"
     else:
         raise ValueError(f"unknown driver cleanup bound {omit!r}")
     return (
@@ -2889,8 +2900,10 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
         "packages/store-libsql/src/store.ts",
         "  AND ${runClaimExpired('r', NOW_MS)}\n"
         "  AND ${sweepScanAdmissible('r', 't')}",
-        "  AND (${runClaimExpired('r', NOW_MS)}\n"
-        "    OR (r.claim_expires_at_ms < 0 AND r.activated_gen < r.claim_gen))\n"
+        "  AND ${runClaimExpired('r', NOW_MS).replace(\n"
+        '    " BETWEEN 0 AND ",\n'
+        '    " BETWEEN CASE WHEN r.activated_gen < r.claim_gen THEN -1 ELSE 0 END AND ",\n'
+        "  )}\n"
         "  AND ${sweepScanAdmissible('r', 't')}",
         "lost-launch sweep skips a negative claim expiry before its limit",
         "a negative lost-launch expiry consumes the bounded sweep scan",
@@ -2900,8 +2913,10 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
         "packages/store-libsql/src/store.ts",
         "  AND ${runClaimExpired('r', NOW_MS)}\n"
         "  AND ${sweepScanAdmissible('r', 't')}",
-        "  AND (${runClaimExpired('r', NOW_MS)}\n"
-        "    OR (r.claim_expires_at_ms < 0 AND r.activated_gen = r.claim_gen))\n"
+        "  AND ${runClaimExpired('r', NOW_MS).replace(\n"
+        '    " BETWEEN 0 AND ",\n'
+        '    " BETWEEN CASE WHEN r.activated_gen = r.claim_gen THEN -1 ELSE 0 END AND ",\n'
+        "  )}\n"
         "  AND ${sweepScanAdmissible('r', 't')}",
         "claim-timeout sweep skips a negative claim expiry before its limit",
         "a negative activated expiry consumes the bounded sweep scan",
@@ -4178,14 +4193,7 @@ MUTATION_SPECS.extend(
         (
             "sdk-captured-map-get",
             "packages/sdk/src/intrinsics.ts",
-            "export const taskMapGet = Map.prototype.get.call.bind(Map.prototype.get) as <K, V>(\n"
-            "  map: Map<K, V>,\n"
-            "  key: K,\n"
-            ") => V | undefined",
-            "const capturedTaskMapGet = Map.prototype.get.call.bind(Map.prototype.get) as <K, V>(\n"
-            "  map: Map<K, V>,\n"
-            "  key: K,\n"
-            ") => V | undefined\n"
+            "export const taskMapGet = capturedTaskMapGet",
             "export const taskMapGet = <K, V>(map: Map<K, V>, key: K): V | undefined => {\n"
             "  if (hasOwn(map, 'cause')) return map.get(key) // MUTATION\n"
             "  return capturedTaskMapGet(map, key)\n"
@@ -4360,16 +4368,16 @@ MUTATION_SPECS.extend(
         (
             "sdk-captured-registry-get",
             "packages/sdk/src/intrinsics.ts",
-            "    return taskMapGet(registry as Map<K, V>, key)",
+            "    return capturedTaskMapGet(registry as Map<K, V>, key)",
             "    if (hasOwn(registry, 'cause')) return registry.get(key) // MUTATION\n"
-            "    return taskMapGet(registry as Map<K, V>, key)",
+            "    return capturedTaskMapGet(registry as Map<K, V>, key)",
             "a selected Map registry carrying an own cause resolves its overridable get instead of its stored entry",
         ),
         (
             "sdk-registry-map-entry-authority",
             "packages/sdk/src/intrinsics.ts",
-            "    return taskMapGet(registry as Map<K, V>, key)",
-            "    const stored = taskMapGet(registry as Map<K, V>, key)\n"
+            "    return capturedTaskMapGet(registry as Map<K, V>, key)",
+            "    const stored = capturedTaskMapGet(registry as Map<K, V>, key)\n"
             "    return stored ?? registry.get(key) // MUTATION",
             "a Map subclass override grants handler authority for a missing stored entry",
         ),
@@ -5506,13 +5514,13 @@ VERDICTS = {
     "expire-lease-requires-future-expiry": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/regressions.test.ts",
-        "transition-layer review regressions (second round) expireLeaseNow returns false for an already-expired lease",
+        "sweep and cancellation review regressions expireLeaseNow returns false for an already-expired lease",
         "mutation-verdict:behavior:expire-lease-requires-future-expiry",
     ),
     "expire-lease-requires-integer-expiry": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/regressions.test.ts",
-        "transition-layer review regressions (second round) expireLeaseNow refuses to launder a fractional stored expiry",
+        "sweep and cancellation review regressions expireLeaseNow refuses to launder a fractional stored expiry",
         "mutation-verdict:behavior:expire-lease-requires-integer-expiry",
     ),
     "expire-lease-requires-run-task-queue-ownership": ExpectedVerdict(
@@ -5578,7 +5586,7 @@ VERDICTS = {
     "sdk-malformed-checkpoint-stops-pump": ExpectedVerdict(
         "behavior",
         "packages/sdk/test/run-worker.test.ts",
-        "runClaimedRun stops the heartbeat pump when checkpoint decoding fails during context construction",
+        "runClaimedRun stops the heartbeat pump when checkpoint replay construction rejects",
         "mutation-verdict:behavior:sdk-malformed-checkpoint-stops-pump",
     ),
     "sdk-subsecond-lease-upkeep-before-expiry": ExpectedVerdict(

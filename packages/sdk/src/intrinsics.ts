@@ -26,10 +26,11 @@ export const abortSignalAborted = signalAbortedGetter.call.bind(signalAbortedGet
 ) => boolean
 
 export const TaskMap = Map
-export const taskMapGet = Map.prototype.get.call.bind(Map.prototype.get) as <K, V>(
+const capturedTaskMapGet = Map.prototype.get.call.bind(Map.prototype.get) as <K, V>(
   map: Map<K, V>,
   key: K,
 ) => V | undefined
+export const taskMapGet = capturedTaskMapGet
 export const taskMapHas = Map.prototype.has.call.bind(Map.prototype.has) as <K, V>(
   map: Map<K, V>,
   key: K,
@@ -49,7 +50,7 @@ export const taskMapSet = Map.prototype.set.call.bind(Map.prototype.set) as <K, 
  */
 export function taskRegistryGet<K, V>(registry: ReadonlyMap<K, V>, key: K): V | undefined {
   try {
-    return taskMapGet(registry as Map<K, V>, key)
+    return capturedTaskMapGet(registry as Map<K, V>, key)
   } catch {
     // Structural maps and proxies have no authentic Map internal slot. Their
     // resolver is trusted host code rather than SDK-owned durable machinery.
