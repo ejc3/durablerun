@@ -18,6 +18,14 @@ const EXPECT_ERROR_VERDICT_MARKER = new RegExp(
   `(?<!${VERDICT_MARKER_BOUNDARY})${VERDICT_MARKER_SOURCE}(?!${VERDICT_MARKER_BOUNDARY})`,
   'gu',
 )
+const STATIC_VITEST_MODIFIERS = new Set([
+  'concurrent',
+  'fails',
+  'only',
+  'sequential',
+  'skip',
+  'todo',
+])
 
 function unwrap(expression) {
   let current = expression
@@ -126,6 +134,53 @@ function isCanonicalVerdictHelper(pathName, identifier, helperName, checker) {
   })
 }
 
+function canonicalVitestRegistration(identifier, checker) {
+  const symbol = checker.getSymbolAtLocation(identifier)
+  if (!symbol) return undefined
+  for (const declaration of symbol.declarations ?? []) {
+    if (!ts.isImportSpecifier(declaration)) continue
+    const imported = declaration.propertyName?.text ?? declaration.name.text
+    const statement = importDeclaration(declaration)
+    if (
+      (imported !== 'describe' && imported !== 'it' && imported !== 'test') ||
+      !statement ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== 'vitest'
+    ) {
+      continue
+    }
+    return imported
+  }
+  return undefined
+}
+
+function vitestRegistration(expression, checker) {
+  let current = unwrap(expression)
+  let parameterized = false
+  while (ts.isPropertyAccessExpression(current)) {
+    if (current.name.text === 'each') {
+      parameterized = true
+    } else if (!STATIC_VITEST_MODIFIERS.has(current.name.text)) {
+      return undefined
+    }
+    current = unwrap(current.expression)
+  }
+  if (ts.isCallExpression(current)) {
+    const inner = vitestRegistration(current.expression, checker)
+    return inner ? { ...inner, parameterized: true } : undefined
+  }
+  if (!ts.isIdentifier(current)) return undefined
+  const kind = canonicalVitestRegistration(current, checker)
+  return kind ? { kind, parameterized } : undefined
+}
+
+function staticTitle(argument) {
+  const value = argument && unwrap(argument)
+  return value && (ts.isStringLiteralLike(value) || ts.isNoSubstitutionTemplateLiteral(value))
+    ? value.text
+    : undefined
+}
+
 function analyze(path, sourceFile, checker) {
   const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
     const start = diagnostic.start ?? 0
@@ -139,6 +194,8 @@ function analyze(path, sourceFile, checker) {
   const descriptors = new Map()
   const directMarkers = new Set()
   const expectErrorMarkers = []
+  const behaviorTitleOwners = new Map()
+  const dynamicBehaviorTitleMarkers = new Set()
 
   for (const directive of sourceFile.commentDirectives ?? []) {
     if (directive.type !== ts.CommentDirectiveType.ExpectError) continue
@@ -199,6 +256,54 @@ function analyze(path, sourceFile, checker) {
   }
   visit(sourceFile)
 
+  function recordBehaviorMarker(node, suites, test) {
+    if (
+      !test ||
+      (!ts.isStringLiteralLike(node) && !ts.isNoSubstitutionTemplateLiteral(node)) ||
+      !node.text.startsWith('mutation-verdict:behavior:') ||
+      !VERDICT_MARKER.test(node.text)
+    ) {
+      return
+    }
+    if (test.dynamic || suites.some((suite) => suite.dynamic)) {
+      dynamicBehaviorTitleMarkers.add(node.text)
+      return
+    }
+    const fullName = [...suites.map((suite) => suite.title), test.title].join(' ')
+    const key = `${node.text}\u0000${fullName}`
+    behaviorTitleOwners.set(key, [node.text, fullName])
+  }
+
+  function visitBehaviorOwners(node, suites, test) {
+    recordBehaviorMarker(node, suites, test)
+    if (ts.isCallExpression(node)) {
+      const registration = vitestRegistration(node.expression, checker)
+      if (registration) {
+        const callback = node.arguments.find(
+          (argument) => ts.isArrowFunction(argument) || ts.isFunctionExpression(argument),
+        )
+        if (callback) {
+          const title = staticTitle(node.arguments[0])
+          const owner = {
+            title,
+            dynamic: registration.parameterized || title === undefined,
+          }
+          for (const argument of node.arguments) {
+            if (argument !== callback) visitBehaviorOwners(argument, suites, test)
+          }
+          if (registration.kind === 'describe') {
+            visitBehaviorOwners(callback, [...suites, owner], test)
+          } else {
+            visitBehaviorOwners(callback, suites, owner)
+          }
+          return
+        }
+      }
+    }
+    ts.forEachChild(node, (child) => visitBehaviorOwners(child, suites, test))
+  }
+  visitBehaviorOwners(sourceFile, [], undefined)
+
   return {
     diagnostics,
     promiseMessageLines: [...promiseMessageLines].sort((left, right) => left - right),
@@ -206,10 +311,74 @@ function analyze(path, sourceFile, checker) {
       left.join(':').localeCompare(right.join(':')),
     ),
     directVerdictMarkers: [...directMarkers].sort(),
+    behaviorVerdictTitleOwners: [...behaviorTitleOwners.values()].sort(
+      (left, right) => left[0].localeCompare(right[0]) || left[1].localeCompare(right[1]),
+    ),
+    dynamicBehaviorVerdictTitleMarkers: [...dynamicBehaviorTitleMarkers].sort(),
     expectErrorVerdictMarkers: expectErrorMarkers.sort(
       (left, right) => left[1] - right[1] || left[0].localeCompare(right[0]),
     ),
   }
+}
+
+function mutationOccurrence(source, find) {
+  if (find.length === 0) return { error: 'mutation find text must not be empty' }
+  const start = source.indexOf(find)
+  if (start === -1) return { error: 'mutation pattern occurs 0 times; expected exactly one' }
+  if (source.indexOf(find, start + find.length) !== -1) {
+    return { error: 'mutation pattern occurs more than once; expected exactly one' }
+  }
+  return { start }
+}
+
+function mutationScriptKind(pathName) {
+  if (pathName.endsWith('.tsx')) return ts.ScriptKind.TSX
+  if (pathName.endsWith('.ts')) return ts.ScriptKind.TS
+  return undefined
+}
+
+function analyzeMutationSyntax(sources, mutations) {
+  if (!Array.isArray(mutations)) throw new Error('mutation syntax analysis requires mutations')
+  const seen = new Set()
+  const results = []
+  for (const mutation of mutations) {
+    if (!mutation || typeof mutation !== 'object') {
+      throw new Error('mutation syntax entry must be an object')
+    }
+    const { name, file, find, replace } = mutation
+    if (
+      typeof name !== 'string' ||
+      typeof file !== 'string' ||
+      typeof find !== 'string' ||
+      typeof replace !== 'string'
+    ) {
+      throw new Error('mutation syntax entry requires string name/file/find/replace')
+    }
+    if (seen.has(name)) throw new Error(`duplicate mutation syntax name ${name}`)
+    seen.add(name)
+    const source = sources[file]
+    if (typeof source !== 'string') throw new Error(`${name}: source ${file} is missing`)
+    const scriptKind = mutationScriptKind(file)
+    if (scriptKind === undefined) throw new Error(`${name}: ${file} is not TypeScript source`)
+    const occurrence = mutationOccurrence(source, find)
+    if (occurrence.error) {
+      results.push({ name, file, materializationError: occurrence.error, diagnostics: [] })
+      continue
+    }
+    const mutated =
+      source.slice(0, occurrence.start) + replace + source.slice(occurrence.start + find.length)
+    const sourceFile = ts.createSourceFile(file, mutated, ts.ScriptTarget.Latest, false, scriptKind)
+    const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
+      const start = diagnostic.start ?? 0
+      const location = sourceFile.getLineAndCharacterOfPosition(start)
+      return `${location.line + 1}:${location.character + 1} ${ts.flattenDiagnosticMessageText(
+        diagnostic.messageText,
+        '\n',
+      )}`
+    })
+    results.push({ name, file, materializationError: null, diagnostics })
+  }
+  return { mutations: results }
 }
 
 function analyzeVerdictProgram(sources) {
@@ -796,6 +965,12 @@ function main() {
   const input = JSON.parse(fs.readFileSync(0, 'utf8'))
   if (!input || typeof input !== 'object' || !input.sources || typeof input.sources !== 'object') {
     throw new Error('expected {"sources": {"path.ts": "source"}}')
+  }
+  if (input.analysis === 'mutation-syntax') {
+    process.stdout.write(
+      `${JSON.stringify(analyzeMutationSyntax(input.sources, input.mutations))}\n`,
+    )
+    return
   }
   if (input.analysis === 'batches') {
     process.stdout.write(`${JSON.stringify(analyzeBatchProgram(input.sources))}\n`)

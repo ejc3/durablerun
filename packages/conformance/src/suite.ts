@@ -1281,9 +1281,11 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
         expect(interposed.fired()).toBe(true)
         if (!injected) return
-        expect(swept, 'mutation-verdict:behavior:sweep-rejects-noninteger-attempt').toEqual([])
         expect(afterCorruption).toBeDefined()
-        expect(await snapshot(f, run.taskId)).toEqual(afterCorruption)
+        expect(
+          { swept, after: await snapshot(f, run.taskId) },
+          'mutation-verdict:behavior:sweep-rejects-noninteger-attempt',
+        ).toEqual({ swept: [], after: afterCorruption })
       })
 
       it('leaves an expired claim unchanged when its ordinal exceeds the protocol bound', async () => {

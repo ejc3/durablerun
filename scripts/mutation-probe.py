@@ -123,7 +123,16 @@ class TypeScriptSourceAnalysis:
     promise_message_lines: tuple[int, ...]
     helper_verdict_descriptors: frozenset[tuple[str, str]]
     direct_verdict_markers: frozenset[str]
+    behavior_verdict_title_owners: frozenset[tuple[str, str]]
+    dynamic_behavior_verdict_title_markers: frozenset[str]
     expect_error_verdict_markers: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True)
+class TypeScriptMutationSyntaxAnalysis:
+    file: str
+    materialization_error: str | None
+    diagnostics: tuple[str, ...]
 
 
 def analyze_typescript_sources(
@@ -158,6 +167,8 @@ def analyze_typescript_sources(
         lines = entry.get("promiseMessageLines")
         descriptors = entry.get("helperVerdictDescriptors")
         markers = entry.get("directVerdictMarkers")
+        title_owners = entry.get("behaviorVerdictTitleOwners")
+        dynamic_title_markers = entry.get("dynamicBehaviorVerdictTitleMarkers")
         expect_error_markers = entry.get("expectErrorVerdictMarkers")
         if not (
             isinstance(diagnostics, list)
@@ -173,6 +184,15 @@ def analyze_typescript_sources(
             )
             and isinstance(markers, list)
             and all(isinstance(item, str) for item in markers)
+            and isinstance(title_owners, list)
+            and all(
+                isinstance(item, list)
+                and len(item) == 2
+                and all(isinstance(part, str) for part in item)
+                for item in title_owners
+            )
+            and isinstance(dynamic_title_markers, list)
+            and all(isinstance(item, str) for item in dynamic_title_markers)
             and isinstance(expect_error_markers, list)
             and all(
                 isinstance(item, list)
@@ -189,7 +209,74 @@ def analyze_typescript_sources(
             tuple(lines),
             frozenset((item[0], item[1]) for item in descriptors),
             frozenset(markers),
+            frozenset((item[0], item[1]) for item in title_owners),
+            frozenset(dynamic_title_markers),
             tuple((item[0], item[1]) for item in expect_error_markers),
+        )
+    return analyses
+
+
+def analyze_typescript_mutation_syntax(
+    sources: dict[str, str],
+    mutations: list[Mutation],
+) -> dict[str, TypeScriptMutationSyntaxAnalysis]:
+    """Parse every generated TypeScript mutant without type or helper resolution."""
+    request = [
+        {
+            "name": mutation.name,
+            "file": mutation.file,
+            "find": mutation.find,
+            "replace": mutation.replace,
+        }
+        for mutation in mutations
+    ]
+    result = subprocess.run(
+        ["node", str(TYPESCRIPT_ANALYZER)],
+        cwd=ROOT,
+        input=json.dumps(
+            {"analysis": "mutation-syntax", "sources": sources, "mutations": request}
+        ),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            "TypeScript mutant syntax analyzer failed: "
+            f"{(result.stdout + result.stderr).strip()[:500]}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+        entries = payload["mutations"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"TypeScript mutant syntax analyzer returned malformed JSON: {error}"
+        ) from error
+    if not isinstance(entries, list) or len(entries) != len(mutations):
+        raise ValueError("TypeScript mutant syntax analyzer returned the wrong inventory")
+
+    analyses: dict[str, TypeScriptMutationSyntaxAnalysis] = {}
+    for mutation, entry in zip(mutations, entries, strict=True):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{mutation.name}: TypeScript mutant syntax result is not an object")
+        name = entry.get("name")
+        file = entry.get("file")
+        materialization_error = entry.get("materializationError")
+        diagnostics = entry.get("diagnostics")
+        if not (
+            name == mutation.name
+            and file == mutation.file
+            and (materialization_error is None or isinstance(materialization_error, str))
+            and isinstance(diagnostics, list)
+            and all(isinstance(item, str) for item in diagnostics)
+            and name not in analyses
+        ):
+            raise ValueError(
+                f"{mutation.name}: TypeScript mutant syntax analysis has an invalid shape"
+            )
+        analyses[name] = TypeScriptMutationSyntaxAnalysis(
+            file,
+            materialization_error,
+            tuple(diagnostics),
         )
     return analyses
 
@@ -211,6 +298,56 @@ def helper_owned_marker_diagnostic(
         f"{mutation_name}: helper descriptor {descriptor!r} owns {expected!r}, "
         f"not {marker!r}"
     )
+
+
+def behavioral_verdict_title_diagnostic(
+    mutation_name: str,
+    verdict: ExpectedVerdict,
+    analysis: TypeScriptSourceAnalysis,
+    dynamic_reason: str | None,
+) -> str | None:
+    """Bind a same-file direct marker to its exact static Vitest owner."""
+    marker_file = verdict.marker_file or verdict.file
+    if verdict.kind != "behavior" or marker_file != verdict.file:
+        if dynamic_reason is not None:
+            return f"{mutation_name}: dynamic-title reason is stale for a non-direct owner"
+        return None
+
+    marker_parts = verdict.marker.split(":", 2)
+    descriptor = (
+        (marker_parts[1], marker_parts[2]) if len(marker_parts) == 3 else ("", "")
+    )
+    titles = sorted(
+        title
+        for marker, title in analysis.behavior_verdict_title_owners
+        if marker == verdict.marker
+    )
+    if verdict.full_name in titles:
+        if dynamic_reason is not None:
+            return f"{mutation_name}: dynamic-title reason is stale for a static owner"
+        return None
+    if titles:
+        return (
+            f"{mutation_name}: ExpectedVerdict full_name {verdict.full_name!r} does not "
+            f"match static direct-marker owner(s) {titles!r}"
+        )
+    if verdict.marker in analysis.dynamic_behavior_verdict_title_markers:
+        if dynamic_reason is None or not dynamic_reason.strip():
+            return (
+                f"{mutation_name}: dynamic direct Vitest title requires a non-empty "
+                "exact reason"
+            )
+        return None
+    if dynamic_reason is not None:
+        return f"{mutation_name}: dynamic-title reason is stale"
+    if descriptor in analysis.helper_verdict_descriptors:
+        return None
+    if verdict.marker in analysis.direct_verdict_markers:
+        return (
+            f"{mutation_name}: same-file direct behavioral marker has no enclosing "
+            "static or explicitly dynamic Vitest owner"
+        )
+    return None
 
 
 # (name, file, find, replace, what removing it should break)
@@ -7653,6 +7790,19 @@ def classify_verdict(
 QUESTION_DELTA_LIVE_ENROLLMENT_FAULT = "bypass-question-delta-live-enrollment"
 VERDICT_INVENTORY_ORPHAN_FAULT = "accept-orphan-verdict-marker"
 FROZEN_MIGRATION_TARGET_FAULT = "accept-frozen-migration-mutation"
+TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT = (
+    "poison-typescript-mutant-syntax-live-enrollment"
+)
+STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
+    "corrupt-static-verdict-title-live-enrollment"
+)
+
+DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "legacy-wait-step-backfill": (
+        "the Vitest title is generated from the migration-derived table, column, "
+        "and version tuple"
+    ),
+}
 
 FROZEN_MIGRATION_MUTATION_TARGETS = {
     "packages/store-libsql/src/schema.ts": (
@@ -7674,6 +7824,8 @@ SELF_TEST_FAULTS = (
     VERDICT_INVENTORY_ORPHAN_FAULT,
     FROZEN_MIGRATION_TARGET_FAULT,
     QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
+    TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
+    STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT,
 )
 
 
@@ -7743,7 +7895,13 @@ def mutation_target_diagnostic(file: str) -> str | None:
 def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     """Generated false-positive surface for the verdict classifier itself."""
     check_live_inventory = (
-        check_live_inventory or fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT
+        check_live_inventory
+        or fault
+        in (
+            QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
+            TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
+            STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT,
+        )
     )
     expected = ExpectedVerdict(
         "behavior",
@@ -7857,6 +8015,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     elif fault == FROZEN_MIGRATION_TARGET_FAULT:
         pass
     elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
+        pass
+    elif fault == TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT:
+        pass
+    elif fault == STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT:
         pass
     elif fault is not None:
         print(f"mutation-probe self-test: unknown injected fault {fault}", file=sys.stderr)
@@ -8503,6 +8665,82 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "live mutation targets frozen migration history",
         ),
     )
+    title_owner_marker = "mutation-verdict:behavior:title-owner-probe"
+    title_owner_cases = (
+        (
+            "nested static owner",
+            "import { describe, expect, it } from 'vitest'\n"
+            "describe('outer', () => {\n"
+            "  describe('inner', () => {\n"
+            "    it('owner', () => expect(1, "
+            f"'{title_owner_marker}').toBe(1))\n"
+            "  })\n"
+            "})",
+            frozenset({(title_owner_marker, "outer inner owner")}),
+            frozenset(),
+        ),
+        (
+            "dynamic test owner",
+            "import { describe, expect, it } from 'vitest'\n"
+            "const value = 'owner'\n"
+            "describe('outer', () => {\n"
+            "  it(`dynamic ${value}`, () => expect(1, "
+            f"'{title_owner_marker}').toBe(1))\n"
+            "})",
+            frozenset(),
+            frozenset({title_owner_marker}),
+        ),
+        (
+            "same-spelled local registrations",
+            "function describe(_title: string, body: () => void) { body() }\n"
+            "function it(_title: string, body: () => void) { body() }\n"
+            "function expect(_value: unknown, _message: string) {\n"
+            "  return { toBe: (_wanted: unknown) => undefined }\n"
+            "}\n"
+            "describe('outer', () => {\n"
+            "  it('owner', () => expect(1, "
+            f"'{title_owner_marker}').toBe(1))\n"
+            "})",
+            frozenset(),
+            frozenset(),
+        ),
+    )
+    syntax_sources = {
+        "__selftest__/mutation-syntax-valid.ts": "function value() { return 1 }\n",
+        "__selftest__/mutation-syntax-invalid.ts": (
+            "const value = {\n  sql: `SELECT 1`,\n  args: [],\n}\n"
+        ),
+        "__selftest__/mutation-syntax-semantic.ts": (
+            "import { missing } from 'does-not-exist'\n"
+            "const value: NeverDeclared = missing\n"
+        ),
+    }
+    syntax_mutations = [
+        Mutation(
+            "selftest-typescript-syntax-valid",
+            "__selftest__/mutation-syntax-valid.ts",
+            "return 1",
+            "return 2",
+            "synthetic valid syntax mutation",
+            expected,
+        ),
+        Mutation(
+            "selftest-typescript-syntax-invalid",
+            "__selftest__/mutation-syntax-invalid.ts",
+            "sql: `SELECT 1`,",
+            "sql: `SELECT 1`",
+            "synthetic missing object-property comma",
+            expected,
+        ),
+        Mutation(
+            "selftest-typescript-syntax-semantic",
+            "__selftest__/mutation-syntax-semantic.ts",
+            "NeverDeclared",
+            "AnotherMissingType",
+            "syntactic validation must ignore semantic resolution",
+            expected,
+        ),
+    ]
 
     failures = []
     inventory_checker = verdict_inventory_problems
@@ -8559,6 +8797,10 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         **{
             f"__selftest__/direct-marker-{index}.ts": source
             for index, (_, source, _, _, _) in enumerate(direct_marker_cases)
+        },
+        **{
+            f"__selftest__/title-owner-{index}.ts": source
+            for index, (_, source, _, _) in enumerate(title_owner_cases)
         },
     }
     live_paths: list[Path] = []
@@ -8660,6 +8902,91 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 f"direct-marker {label}: expected directive ownership "
                 f"{wanted_expect_error}, got {analysis.expect_error_verdict_markers}"
             )
+    for index, (label, _, wanted_owners, wanted_dynamic) in enumerate(
+        title_owner_cases
+    ):
+        key = f"__selftest__/title-owner-{index}.ts"
+        analysis = analyses.get(key)
+        if analysis is None:
+            continue
+        if analysis.diagnostics:
+            failures.append(
+                f"title-owner {label}: TypeScript diagnostics {analysis.diagnostics}"
+            )
+            continue
+        if analysis.behavior_verdict_title_owners != wanted_owners:
+            failures.append(
+                f"title-owner {label}: expected owners {wanted_owners}, "
+                f"got {analysis.behavior_verdict_title_owners}"
+            )
+        if analysis.dynamic_behavior_verdict_title_markers != wanted_dynamic:
+            failures.append(
+                f"title-owner {label}: expected dynamic markers {wanted_dynamic}, "
+                f"got {analysis.dynamic_behavior_verdict_title_markers}"
+            )
+
+    live_syntax_mutations: list[Mutation] = []
+    if check_live_inventory:
+        injected_syntax_fault = False
+        for mutation in MUTATIONS:
+            if Path(mutation.file).suffix not in {".ts", ".tsx"}:
+                continue
+            syntax_mutation = mutation
+            if (
+                fault == TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT
+                and not injected_syntax_fault
+            ):
+                syntax_mutation = Mutation(
+                    mutation.name,
+                    mutation.file,
+                    mutation.find,
+                    mutation.replace + "\n      const =\n",
+                    mutation.breaks,
+                    mutation.verdict,
+                    mutation.typecheck_project,
+                )
+                injected_syntax_fault = True
+            live_syntax_mutations.append(syntax_mutation)
+            syntax_sources.setdefault(
+                mutation.file, (ROOT / mutation.file).read_text()
+            )
+    all_syntax_mutations = [*syntax_mutations, *live_syntax_mutations]
+    try:
+        syntax_analyses = analyze_typescript_mutation_syntax(
+            syntax_sources, all_syntax_mutations
+        )
+    except ValueError as error:
+        failures.append(str(error))
+        syntax_analyses = {}
+    for mutation in syntax_mutations:
+        analysis = syntax_analyses.get(mutation.name)
+        if analysis is None:
+            continue
+        if analysis.materialization_error is not None:
+            failures.append(
+                f"mutant-syntax {mutation.name}: {analysis.materialization_error}"
+            )
+            continue
+        invalid = mutation.name == "selftest-typescript-syntax-invalid"
+        if invalid != bool(analysis.diagnostics):
+            failures.append(
+                f"mutant-syntax {mutation.name}: expected diagnostics={invalid}, "
+                f"got {analysis.diagnostics}"
+            )
+    for mutation in live_syntax_mutations:
+        analysis = syntax_analyses.get(mutation.name)
+        if analysis is None:
+            continue
+        if analysis.materialization_error is not None:
+            failures.append(
+                f"{mutation.name}: cannot generate TypeScript mutant: "
+                f"{analysis.materialization_error}"
+            )
+        elif analysis.diagnostics:
+            failures.append(
+                f"{mutation.name}: generated TypeScript mutant has parse diagnostics "
+                f"{analysis.diagnostics}"
+            )
     if check_live_inventory:
         if TEST_CMD[:3] != ["pnpm", "exec", "vitest"]:
             failures.append("worker suites do not execute Vitest directly")
@@ -8747,6 +9074,12 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 f"{stale_name}: question-delta reason names no live mutation"
             )
+        for stale_name in sorted(
+            set(DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS) - mutation_names
+        ):
+            failures.append(
+                f"{stale_name}: dynamic-title reason names no live mutation"
+            )
         for mutation in MUTATIONS:
             source = (ROOT / mutation.file).read_text()
             occurrences = source.count(mutation.find)
@@ -8790,6 +9123,27 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             )
             if ownership_diagnostic is not None:
                 failures.append(ownership_diagnostic)
+            if marker_analysis is not None:
+                title_verdict = mutation.verdict
+                if (
+                    fault == STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT
+                    and mutation.name == "sdk-owned-retry-attempt"
+                ):
+                    title_verdict = ExpectedVerdict(
+                        mutation.verdict.kind,
+                        mutation.verdict.file,
+                        mutation.verdict.full_name + " injected-stale-title",
+                        mutation.verdict.marker,
+                        mutation.verdict.marker_file,
+                    )
+                title_diagnostic = behavioral_verdict_title_diagnostic(
+                    mutation.name,
+                    title_verdict,
+                    marker_analysis,
+                    DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS.get(mutation.name),
+                )
+                if title_diagnostic is not None:
+                    failures.append(title_diagnostic)
             if (
                 (
                     marker_analysis is None
@@ -8836,28 +9190,34 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         got = classify_verdict(result, verdict, matcher, **options)
         if got != wanted:
             failures.append(f"{label}: expected {wanted}, got {got}")
+    live_enrollment_faults = (
+        QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
+        TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
+        STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT,
+    )
     if not failures and fault is None and check_live_inventory:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--classifier-self-test",
-                "--self-test-fault",
-                QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        marker = (
-            "mutation-probe self-test caught injected fault "
-            f"{QUESTION_DELTA_LIVE_ENROLLMENT_FAULT}"
-        )
-        if result.returncode != 1 or marker not in (result.stdout + result.stderr):
-            failures.append(
-                "the live question-delta enrollment fault was not rejected "
-                "through its canonical CLI path"
+        for injected_fault in live_enrollment_faults:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--classifier-self-test",
+                    "--self-test-fault",
+                    injected_fault,
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
             )
+            marker = (
+                "mutation-probe self-test caught injected fault "
+                f"{injected_fault}"
+            )
+            if result.returncode != 1 or marker not in (result.stdout + result.stderr):
+                failures.append(
+                    f"the live enrollment fault {injected_fault} was not rejected "
+                    "through its canonical CLI path"
+                )
     if failures:
         if fault is not None:
             print(
@@ -8881,8 +9241,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         f"{len(helper_binding_cases)} helper-binding cases, "
         f"{len(helper_marker_cases)} helper-marker cases, "
         f"{len(direct_marker_cases)} direct-marker cases, "
+        f"{len(title_owner_cases)} title-owner cases, "
         f"{len(verdict_inventory_cases)} verdict-inventory cases, "
-        f"{len(question_delta_cases)} question-delta cases, one live-enrollment fault, "
+        f"{len(question_delta_cases)} question-delta cases, "
+        f"{len(syntax_mutations)} mutant-syntax cases, "
+        f"{len(live_enrollment_faults)} live-enrollment faults, "
         f"{len(MUTATIONS)} live mutations"
     )
     return 0

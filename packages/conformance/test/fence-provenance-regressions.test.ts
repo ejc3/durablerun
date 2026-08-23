@@ -280,6 +280,77 @@ async function activatedRun(f: Fixture): Promise<{
   return { taskId: spawned.taskId, runId: run.runId, claimToken: run.claimToken }
 }
 
+async function observeClaimTimeoutReplay(infraRetries: number, worldSeed: string) {
+  const f = await fixture(['successor-1'], ['sweep-stamp'])
+  try {
+    await insertTask(f.raw, { id: 'T', state: 'running', infraRetries })
+    const attempt = infraRetries + 1
+    await insertRun(f.raw, {
+      id: 'prov-sweep-run',
+      taskId: 'T',
+      attempt,
+      state: 'running',
+      claimedBy: 'worker',
+      claimGen: 3,
+      activatedGen: 3,
+      claimExpiresAtMs: NOW - 1,
+    })
+
+    const world = new SimWorld(f.raw, worldSeed)
+    world.injectDuplicate({ label: 'sweep:claim-timeout' })
+    let outcome: 'resolved' | 'rejected' = 'resolved'
+    world.actor('sweeper', async (db) => {
+      await f
+        .storeOver(db)
+        .sweep(Q, 10)
+        .catch(() => {
+          outcome = 'rejected'
+        })
+    })
+    await world.run()
+
+    return {
+      outcome,
+      progress: await taskRunProgress(f.raw, 'T'),
+      invariantViolations: await engineInvariantViolations(f.raw),
+    }
+  } finally {
+    f.close()
+  }
+}
+
+function expectedClaimTimeoutReplay(infraRetries: number) {
+  const attempt = infraRetries + 1
+  return {
+    outcome: 'resolved',
+    progress: {
+      task: {
+        state: 'pending',
+        attempts: 0,
+        infraRetries: infraRetries + 1,
+        failureReason: null,
+      },
+      runs: [
+        {
+          runId: 'prov-sweep-run',
+          attempt,
+          state: 'failed',
+          claimedBy: null,
+          failureReason: REASON_CLAIM_TIMEOUT,
+        },
+        {
+          runId: 'successor-1',
+          attempt: attempt + 1,
+          state: 'pending',
+          claimedBy: null,
+          failureReason: null,
+        },
+      ],
+    },
+    invariantViolations: [],
+  }
+}
+
 async function moveTaskToOtherQueue(f: Fixture, taskId: string): Promise<void> {
   await exec(f.raw, `UPDATE tasks SET queue = 'other' WHERE task_id = ?`, [taskId])
 }
@@ -354,141 +425,17 @@ describe('fence provenance', () => {
   })
 
   it('a replayed claim-timeout sweep at the infra cap leaves no live run under a terminal task', async () => {
-    // The claim-timeout batch's terminal follow-on keys on "infra retries are
-    // at the cap" plus the stamped dead run. On an exact replay of the same
-    // compiled batch the successor insert is correctly suppressed (the cap is
-    // now reached), but the terminal follow-on still matches — so the task
-    // goes terminal while the successor run the first pass created is still
-    // pending. That is precisely the state rule 6 forbids.
-    const f = await fixture(['successor-1'], ['sweep-stamp'])
-    // Legal state at the cap boundary: cap-1 infra retries means the live run
-    // is attempt cap, because a run's attempt counts every successor.
-    await insertTask(f.raw, {
-      id: 'T',
-      state: 'running',
-      infraRetries: INFRA_RETRY_CAP - 1,
-    })
-    await insertRun(f.raw, {
-      id: 'prov-sweep-run',
-      taskId: 'T',
-      attempt: INFRA_RETRY_CAP,
-      state: 'running',
-      claimedBy: 'worker',
-      claimGen: 3,
-      activatedGen: 3,
-      claimExpiresAtMs: NOW - 1, // lease already expired
-    })
+    // The selected boundary and its below-cap control share the same replay,
+    // claim generation, ids, and marker. Only the infrastructure ordinal
+    // differs, so one assertion owns both progress guarantees without a
+    // second reporter callback.
+    const selected = await observeClaimTimeoutReplay(INFRA_RETRY_CAP - 1, 'sweep-cap-replay')
+    const control = await observeClaimTimeoutReplay(0, 'sweep-below-cap-replay')
 
-    const world = new SimWorld(f.raw, 'sweep-cap-replay')
-    world.injectDuplicate({ label: 'sweep:claim-timeout' })
-    world.actor('sweeper', async (db) => {
-      await f.storeOver(db).sweep(Q, 10)
+    expect({ selected, control }, 'mutation-verdict:behavior:provenance-sweep-progress').toEqual({
+      selected: expectedClaimTimeoutReplay(INFRA_RETRY_CAP - 1),
+      control: expectedClaimTimeoutReplay(0),
     })
-    await world.run()
-
-    expect(
-      await taskRunProgress(f.raw, 'T'),
-      'mutation-verdict:behavior:provenance-sweep-progress',
-    ).toEqual({
-      task: {
-        state: 'pending',
-        attempts: 0,
-        infraRetries: INFRA_RETRY_CAP,
-        failureReason: null,
-      },
-      runs: [
-        {
-          runId: 'prov-sweep-run',
-          attempt: INFRA_RETRY_CAP,
-          state: 'failed',
-          claimedBy: null,
-          failureReason: REASON_CLAIM_TIMEOUT,
-        },
-        {
-          runId: 'successor-1',
-          attempt: INFRA_RETRY_CAP + 1,
-          state: 'pending',
-          claimedBy: null,
-          failureReason: null,
-        },
-      ],
-    })
-    expect(
-      await engineInvariantViolations(f.raw),
-      'mutation-verdict:behavior:provenance-sweep-progress',
-    ).toEqual([])
-    f.close()
-  })
-
-  it('a replayed claim-timeout sweep below the cap does not reject', async () => {
-    // The successor insert is guarded on the dead run being failed and
-    // carrying this batch's stamp — the state THIS batch's own compare-and-
-    // swap just produced. Replaying the same compiled batch re-satisfies that
-    // guard with the first pass's own write, so the insert runs a second time
-    // with the same successor id and the same attempt ordinal and violates the
-    // unique index. The batch is atomic so nothing is corrupted, but the CALL
-    // rejects — and the driver awaits sweep bare at the top of a tick, so one
-    // duplicated sweep item throws away the whole tick: no claims, no
-    // launches, no next-wake calculation.
-    //
-    // The at-cap case (further down) hides this: there the second insert is
-    // correctly refused because the cap has been reached.
-    const f = await fixture(['successor-1'], ['sweep-stamp'])
-    await insertTask(f.raw, { id: 'T', state: 'running', infraRetries: 0 })
-    await insertRun(f.raw, {
-      id: 'prov-sweep-run',
-      taskId: 'T',
-      attempt: 1,
-      state: 'running',
-      claimedBy: 'worker',
-      claimGen: 1,
-      activatedGen: 1,
-      claimExpiresAtMs: NOW - 1,
-    })
-
-    const world = new SimWorld(f.raw, 'sweep-below-cap-replay')
-    world.injectDuplicate({ label: 'sweep:claim-timeout' })
-    let rejection: unknown = null
-    world.actor('sweeper', async (db) => {
-      await f
-        .storeOver(db)
-        .sweep(Q, 10)
-        .catch((e) => {
-          rejection = e
-        })
-    })
-    await world.run()
-
-    expect(rejection, 'mutation-verdict:behavior:provenance-sweep-progress').toBeNull()
-    expect(
-      await taskRunProgress(f.raw, 'T'),
-      'mutation-verdict:behavior:provenance-sweep-progress',
-    ).toEqual({
-      task: {
-        state: 'pending',
-        attempts: 0,
-        infraRetries: 1,
-        failureReason: null,
-      },
-      runs: [
-        {
-          runId: 'prov-sweep-run',
-          attempt: 1,
-          state: 'failed',
-          claimedBy: null,
-          failureReason: REASON_CLAIM_TIMEOUT,
-        },
-        {
-          runId: 'successor-1',
-          attempt: 2,
-          state: 'pending',
-          claimedBy: null,
-          failureReason: null,
-        },
-      ],
-    })
-    expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
   })
 
   async function immediateRetryFailureReplay() {
@@ -854,12 +801,23 @@ describe('fence provenance', () => {
         id: 'A',
         queue: 'other',
         state: 'pending',
-        idempotencyKey: 'key',
       })
       await insertRun(f.raw, {
         id: 'rA',
         queue: 'other',
         taskId: 'A',
+        state: 'pending',
+      })
+      await insertTask(f.raw, {
+        id: 'B',
+        queue: 'other',
+        state: 'pending',
+        idempotencyKey: 'key',
+      })
+      await insertRun(f.raw, {
+        id: 'rB',
+        queue: 'other',
+        taskId: 'B',
         state: 'pending',
       })
       await insertTask(f.raw, { id: 'Z', state: 'pending', idempotencyKey: 'key' })
