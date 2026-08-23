@@ -1490,11 +1490,11 @@ type-only namespace-import control rather than claiming a new finding.
 The historical 419-entry run at `98c3dee` and its 417-plus-two follow-up remain
 exactly the receipts described above. After the documentation closeout at
 `a00fc27`, a clean-head confined audit reported **419/419 caught**, zero
-survivors, zero wrong-path entries, and every shard complete. Findings 271 and
-273 then added two settlement mutations, so a final clean-head confined
-**421-entry** rerun remains the final mutation gate; the 419-entry receipt and
-focused two-entry receipts do not claim that result. The pinned TLA+ launcher
-checksum was separately refreshed
+survivors, zero wrong-path entries, and every shard complete. Finding 271's
+repair then added two settlement mutations, and finding 273 refined one of
+them, so a final clean-head confined **421-entry** rerun remains the final
+mutation gate; the 419-entry receipt and focused two-entry receipts do not
+claim that result. The pinned TLA+ launcher checksum was separately refreshed
 to the official v1.8.0 prerelease asset digest
 `sha256:eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a`
 after that asset changed on 2026-08-21. This preserves the checksum gate rather
