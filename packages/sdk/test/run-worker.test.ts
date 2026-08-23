@@ -1754,21 +1754,40 @@ describe('runClaimedRun', () => {
     const f = await fx('sdk-captured-registry-get')
     try {
       await f.store.spawn(Q, 'job', '{}')
-      const invocation = await claimInvocation(f, 'w1')
+      await f.store.spawn(Q, 'job', '{}')
+      const selectedInvocation = await claimInvocation(f, 'w1')
+      const controlInvocation = await claimInvocation(f, 'w2')
       class RedirectingRegistry extends Map<string, TaskHandler> {
         override get(name: string): TaskHandler | undefined {
           return super.get(name === 'job' ? 'missing' : name)
         }
       }
-      const reg = new RedirectingRegistry([['job', async () => 'done']])
+      const handler: TaskHandler = async () => 'done'
+      const selectedRegistry = new RedirectingRegistry([['job', handler]])
+      Object.defineProperty(selectedRegistry, 'cause', {
+        value: new Error('registry-get sentinel cause'),
+      })
+      const controlRegistry = new RedirectingRegistry([['job', handler]])
       const observed = await replacePropertyAsync(
         Map.prototype,
         'get',
         () => undefined,
-        () => runClaimedRun({ store: f.store, clock: f.clock, registry: reg }, invocation),
+        async () => ({
+          selected: await runClaimedRun(
+            { store: f.store, clock: f.clock, registry: selectedRegistry },
+            selectedInvocation,
+          ),
+          control: await runClaimedRun(
+            { store: f.store, clock: f.clock, registry: controlRegistry },
+            controlInvocation,
+          ),
+        }),
       )
       expect(observed, 'mutation-verdict:behavior:sdk-captured-registry-get').toEqual({
-        value: { kind: 'completed' },
+        value: {
+          selected: { kind: 'completed' },
+          control: { kind: 'completed' },
+        },
       })
     } finally {
       f.close()
