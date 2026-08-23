@@ -331,6 +331,7 @@ fault and attribution evidence for one variant did not prove the other.
 | 271 | Poison invocation settlement used optional `result` and `error` fields, so fulfillment with `undefined` and rejection with `undefined` had the same representation; the healthy-progress oracle also did not require its responsible invocation to fulfill | A call could commit its durable transition, reject its caller, and still make the generated poison cell report green | Poison invocation outcome and healthy-progress oracle | Field absence and the value `undefined` stood in for a promise settlement discriminant, while durable change stood in for successful return | Return one frozen discriminated outcome (`fulfilled/result` or `rejected/reason`) from the sole recorder, require the normal healthy or targeted poison invocation to fulfill, and attack both ownership decisions exactly (rungs 1 and 2) |
 | 272 | Relative and absolute wakes compiled different SQL text and bind arities inside the same `reschedule` and `suspend` batch labels | One tracing/crash-injection address named two executable transition shapes, so a fault or replay proof for one wake representation did not prove the other | Batch-label compiled-shape contract and generated SQL corpus | Source inventories enumerated labels and static statement counts, but did not execute the input-selected fragments hidden behind `prepareWake` | Classify the wake once, bind its mode and both value slots into one `CASE`-based SQL/arity topology, and compare the real relative/absolute batches for both labels (rung 1 for the current topology, rung 2 for the focused capture) |
 | 273 | Finding 271's first settlement mutation changed the shared rejection owner broadly enough to fail the targeted settlement case and then generated poison siblings before its named assertion | The new guard could receive only wrong-path evidence, leaving its advertised exact mutation unproved | Settlement mutation construction and exact attribution | Deleting a shared condition was treated as an isolated attack even though the generated sibling surface consumed the same branch | Give the healthy and targeted paths separate replacement verdicts, then mutate only the undefined healthy rejection; the exact audit isolates and catches both entries (rungs 2 and 3) |
+| 274 | The existing exact-ceiling mutations for reschedule and suspend changed SQL only for relative wakes, so finding 272's shape regression failed beside both timestamp owners | Two valid timestamp kills became wrong-path and the 421-entry audit could not prove their advertised causal ownership | Timestamp mutation construction and exact attribution | The pre-shape-contract mutant used TypeScript control flow to express a relative-only semantic defect, reproducing the production topology bug inside the verifier | Mutate the relative arm inside one fixed `CASE` string for both wake representations, retaining bind arity and leaving the shape test green; focused audits isolate both timestamp verdicts (rungs 2 and 3) |
 
 ## Detection ledger
 
@@ -362,8 +363,9 @@ fault and attribution evidence for one variant did not prove the other.
 | Exact mutation audits, findings 168 through 267 | 100 | **yes** |
 | Binding and simplify reviews, findings 268 through 272 | 5 | no |
 | Focused settlement mutation audit, finding 273 | 1 | **yes** |
+| First final 421-entry exact audit, finding 274 | 1 | **yes** |
 
-Self-catch rate: **132 of 273, or 48.4%** (through finding 123: **30 of
+Self-catch rate: **133 of 274, or 48.5%** (through finding 123: **30 of
 123, or 24.4%**; previous temporal round: **1 of 43, or 2.3%**). The original
 35-finding audit was **24 of 35, or 68.6%**, but the later boundary and repair
 rounds were almost entirely review-caught. The long audit found 22 attribution
@@ -380,9 +382,9 @@ the retry/throwable, task-realm, and bind-attribution rounds raise it to
 `review-findings: 337`. The preceding closeout raised the previously recorded
 30 self-catches by 29 to 59. The durable-boundary ownership round then added 45
 review catches and one self-catch. All later addenda bring the current branch
-catalogue to **430 review-caught plus 162 self-caught, or 592 total findings**.
+catalogue to **430 review-caught plus 163 self-caught, or 593 total findings**.
 The required trailer is `review-findings: 430`; the branch self-catch rate is
-**27.4%** and outside review found **72.6%**.
+**27.5%** and outside review found **72.5%**.
 
 ## Recurrence
 
@@ -1351,13 +1353,13 @@ entries.
 
 ## Final exact-attribution marathon addendum (2026-08-23)
 
-This addendum owns findings 124 through 273. The round added **48
-review-caught findings** (125 through 167 and 268 through 272) and **102
-self-caught findings** (124, 168 through 267, and 273), **150 total**: this
-repository's machinery found **68.0%** of the round and outside review found
-**32.0%**. Cumulatively the branch has **430 review-caught plus 162 self-caught
-findings, 592 total**, for a **27.4%** self-catch rate; outside review found
-**72.6%**. The required PR trailer is `review-findings: 430`.
+This addendum owns findings 124 through 274. The round added **48
+review-caught findings** (125 through 167 and 268 through 272) and **103
+self-caught findings** (124, 168 through 267, 273, and 274), **151 total**: this
+repository's machinery found **68.2%** of the round and outside review found
+**31.8%**. Cumulatively the branch has **430 review-caught plus 163 self-caught
+findings, 593 total**, for a **27.5%** self-catch rate; outside review found
+**72.5%**. The required PR trailer is `review-findings: 430`.
 
 Through finding 270, all new findings except the two audit-process gaps, 124
 and 168, were caused by the exact-attribution repairs themselves. Findings 271
@@ -1365,9 +1367,11 @@ and 272 predated their closing repairs: the ambiguous settlement value was in
 the poison surface from its first red implementation, while wake SQL already
 branched before `prepareWake` hoisted that choice. Finding 273 was introduced
 by finding 271's first exact-mutation mechanism and caught by its own focused
-audit. The expanded round therefore adds **146 fix-induced findings** to the
-preceding 53, for **199 cumulative fix-induced findings**. The repair was
-re-audited as new code, not merely rerun through its green regression.
+audit. Finding 274 was introduced by finding 272's shape regression exposing
+two older relative-only timestamp mutants. The expanded round therefore adds
+**147 fix-induced findings** to the preceding 53, for **200 cumulative
+fix-induced findings**. Both repairs were re-audited as new code, not merely
+rerun through their green regressions.
 
 Finding 266 recurs immediately after finding 264. Finding 264 proved only that
 each materialized TypeScript mutant parses; finding 266 showed that parsing is
@@ -1427,6 +1431,16 @@ healthy mutation selects only an undefined healthy rejection, and the targeted
 mutation changes only which invocation owns settlement; both focused audits
 reached their exact sole verdict.
 
+Finding 274 is an immediate recurrence of the one-mutation/one-owner class,
+this time induced by finding 272's new control. The timestamp mutants were
+written before fixed wake topology existed, so each reintroduced the same
+relative-only TypeScript branch that finding 272 removed from production. The
+full audit did its job: at `5cf87d5` it refused both real timestamp kills as
+wrong-path because the shape regression also failed. Green `1d005de` mutates
+the relative arm inside the fixed `CASE` text for both wake representations;
+the SQL and bind shape stays equal while the exact-ceiling behavior alone is
+wrong.
+
 ### Closing mechanism audit
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -1434,6 +1448,7 @@ reached their exact sole verdict.
 | Frozen discriminated poison settlement and responsible-target check | 1 for representation, 2 for current consumers | Within the recorder there is no value that represents both rejected `undefined` and fulfilled `undefined`: `status` is required and the two frozen variants have disjoint payload keys. The literal mutation surface can still omit a future settlement consumer from both source and `MUTATIONS`; the earlier executed undeclared-condition false negative remains PR3.10's boundary. |
 | One mode-bound wake SQL topology plus real-batch comparison | 1 for the current `prepareWake` consumers, 2 for enumeration | An executed temporary mutation inserted `${wakeDisposition === 'preserve' ? 'AND 1 = 1' : ''}` into `reschedule`. The current relative/absolute focused case still passed **1/1** because both calls used `consume`; an expanded consume-versus-preserve probe then failed with `{ sqlText: false, bindArity: true }`. The focused case cannot enroll a new input branch, label, statement, or dialect. PR3.9 owns the generated per-dialect label/variant corpus and signature-uniqueness gate. |
 | Two exact settlement mutations | 2/3 | A mutation that changes the shared condition broadly still fails several generated siblings: that written boundary produced wrong-path receipts at both `cbbb70d` and `25f5849`. The scoped `2023def` mutations are exact for the two current conditions; a future condition omitted from the registry remains the executed PR3.10 completeness false negative. |
+| Shape-preserving timestamp mutants | 2/3 | Before `1d005de`, both exact-ceiling mutants used `if (relativeWake)` to change only one compiled SQL shape; the first 421-entry audit caught that executable false negative at ordinals 233 and 235. The repaired generator preserves the current wake signature, but a future mutation can still cross another control unless the complete exact audit runs. |
 
 The full 419-entry run at `98c3dee` produced **417 caught entries**, with only
 ordinals 257 and 258 wrong-path and **zero survivors or stale entries**. The
@@ -1478,6 +1493,16 @@ That self-catch is finding 273. `2023def` restricts the mutation to the
 undefined-rejection discriminant; separate one-row audits reported `caught`
 for `poison-healthy-settlement` and `poison-targeted-settlement-owner`, with
 their exact declared verdicts.
+
+The first final 421-entry audit at `5cf87d5` then reached 242 durable results
+before it was stopped: 240 were exact catches, while
+`timestamp-addition-reschedule-wake-exact` and
+`timestamp-addition-suspend-wake-exact` were both correctly classified
+wrong-path because the new shape test failed beside their timestamp verdicts.
+That self-catch is finding 274. Green `1d005de` makes both materialized mutants
+rewrite the relative arm inside the same fixed `CASE` for relative and absolute
+calls. Separate focused audits then reported each mutation caught only by its
+declared exact-ceiling verdict; the complete 421-entry rerun remains required.
 
 The checkpointless-sleep simplify report did not reproduce as a correctness
 finding. Every production `ReplayContext.sleep` suspension already carried its

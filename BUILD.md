@@ -497,8 +497,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     simplify pass then added two exact poison-settlement mutations, bringing the
     current registry to **421**. The clean `a00fc27` checkpoint had already
     caught all 419 then-declared entries; those two additions supersede that
-    historical receipt, so a clean final-head 421/421 audit is now the final
-    mutation gate.
+    historical receipt. The first 421-entry run at `5cf87d5` then refused two
+    pre-existing relative-only timestamp mutants as wrong-path because the new
+    shape control also failed. Green `1d005de` rewrites their relative `CASE`
+    arm without changing the compiled wake signature, and both focused audits
+    are exact. A clean final-head 421/421 audit is still the final mutation gate.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
