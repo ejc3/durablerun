@@ -8790,6 +8790,14 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "const value = 1\n"
         ),
         "__selftest__/mutation-binding-construction.ts": "const value = 1\n",
+        "__selftest__/mutation-binding-type-only-import.ts": (
+            "import type { TypeOnlyValue } from './missing.js'\n"
+            "const value = 1\n"
+        ),
+        "__selftest__/mutation-binding-extends.ts": (
+            "class Base {}\n"
+            "class Child extends Base {}\n"
+        ),
         "__selftest__/mutation-binding-shorthand.ts": (
             "const value = 1\n"
             "void ({ value })\n"
@@ -8837,8 +8845,33 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "__selftest__/mutation-binding-construction.ts",
             "const value = 1",
             "const value = MissingConstructionRuntime",
-            "construction mutations keep their project typecheck authoritative",
+            "Vitest-routed construction verdict still requires runtime bindings",
             construction,
+        ),
+        Mutation(
+            "selftest-typescript-binding-project-construction",
+            "__selftest__/mutation-binding-construction.ts",
+            "const value = 1",
+            "const value = MissingConstructionRuntime",
+            "project-typechecked construction mutation keeps its compiler authority",
+            construction,
+            "store-libsql",
+        ),
+        Mutation(
+            "selftest-typescript-binding-type-only-import",
+            "__selftest__/mutation-binding-type-only-import.ts",
+            "const value = 1",
+            "const value = TypeOnlyValue",
+            "type-only import aliases do not create runtime value bindings",
+            expected,
+        ),
+        Mutation(
+            "selftest-typescript-binding-extends",
+            "__selftest__/mutation-binding-extends.ts",
+            "class Child extends Base {}",
+            "class Child extends MissingBase {}",
+            "class heritage expressions require runtime value bindings",
+            expected,
         ),
         Mutation(
             "selftest-typescript-binding-shorthand",
@@ -9113,6 +9146,15 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "selftest-typescript-binding-construction": (
                 "1:15 newly unbound runtime identifier 'MissingConstructionRuntime'",
             ),
+            "selftest-typescript-binding-project-construction": (
+                "1:15 newly unbound runtime identifier 'MissingConstructionRuntime'",
+            ),
+            "selftest-typescript-binding-type-only-import": (
+                "2:15 newly unbound runtime identifier 'TypeOnlyValue'",
+            ),
+            "selftest-typescript-binding-extends": (
+                "2:21 newly unbound runtime identifier 'MissingBase'",
+            ),
             "selftest-typescript-binding-shorthand": (
                 "2:9 newly unbound runtime identifier 'value'",
             ),
@@ -9122,6 +9164,20 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 f"mutant-binding {mutation.name}: expected "
                 f"{wanted_runtime_bindings}, got "
                 f"{analysis.runtime_binding_diagnostics}"
+            )
+        preflight_diagnostic = typescript_mutation_preflight_diagnostic(
+            mutation, analysis
+        )
+        wants_preflight_rejection = bool(
+            analysis.materialization_error or analysis.diagnostics
+        ) or (
+            bool(wanted_runtime_bindings) and mutation.typecheck_project is None
+        )
+        if bool(preflight_diagnostic) != wants_preflight_rejection:
+            failures.append(
+                f"mutant-binding-policy {mutation.name}: expected "
+                f"rejection={wants_preflight_rejection}, got "
+                f"{preflight_diagnostic!r}"
             )
     for mutation in live_syntax_mutations:
         analysis = syntax_analyses.get(mutation.name)
