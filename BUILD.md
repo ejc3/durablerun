@@ -206,16 +206,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
     wrong-path result rather than credit.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
-    The verifier runs 20 attribution cases, nineteen promise-message source
-    cases, ten canonical helper-descriptor cases, two helper-binding cases,
-    three helper-marker cases, sixteen direct-marker cases, six verdict-inventory
-    cases, and seven question-delta cases across all 385 live mutations. One
-    live-enrollment fault and 37 generated orchestration faults attack the
-    classifier and parallel coordinator, including a canonical-CLI attack that
-    withholds all live question-delta reasons in one inventory traversal and
-    requires an aggregate refusal. It proves the live enrollment call is not a
-    removable second path, not each declaration independently; an equal-count
-    cancellation remains the source alarm's explicit boundary.
+    The verifier runs its classifier, source-owner, and generated-construction
+    surfaces across all **419 live mutations**. Every TypeScript replacement is
+    materialized and parsed before enrollment. Every mutant routed to Vitest
+    also passes an incremental compiler value-binding comparison against its
+    original source, so a newly unbound runtime identifier is rejected before
+    checkpoint or worker creation; only project-typechecked construction
+    mutants retain their compiler invocation as the semantic authority.
+    Type-only aliases are not runtime values, while class heritage and
+    shorthand expressions remain runtime references. Same-file direct
+    behavioral markers are bound to their enclosing static Vitest full title,
+    while genuinely dynamic titles require an explicit mutation-specific
+    reason. Four canonical
+    live-enrollment faults attack question-delta, generated-syntax,
+    runtime-binding, and static-title coverage. The parallel coordinator and
+    routing surfaces exercise their declared injected faults. Exact fixture
+    counts live in the canonical self-test output rather than a second
+    hand-maintained BUILD inventory.
     The parallel coordinator has its own generated injected faults for shard
     coverage, exact head, exact result inventory, process/report agreement,
     protective memory and CPU ceilings, missing/malformed/signaled transport,
@@ -448,7 +455,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     369 at `2619b64`, queue-scoped the remaining spawn-receipt collision at
     370, rehomed two driver-cleanup attacks away from frozen migration history
     without changing the count, and added sixteen current-source owners while
-    removing the dead `trustedMax` entry. The current total is **385**. Spawn
+    removing the dead `trustedMax` entry. The then-current total was **385**. Spawn
     now uses the captured core codec for owned retry, cancellation, and header
     values; claim uses the captured parser for admitted retry and headers. The
     split `durableTaskRetryAdmissible` and `durableTaskHeadersAdmissible`
@@ -462,8 +469,29 @@ these three things; nothing else in the system does I/O, time, or randomness.
     confined full verify passed **81 files / 3,583 tests**, all eleven lints,
     format-check, and typecheck. The mutation self-test enrolled all 385 entries
     with the inventories above. No targeted audit of the new entries or full
-    385-entry audit is claimed; current-head fuzz, TLC, and final-head review
-    also remain final-merge gates.
+    385-entry audit was claimed at that checkpoint; current-head fuzz, TLC, and
+    final-head review also remained final-merge gates.
+
+    The subsequent exact-attribution marathon grew the registry from **385 to
+    419**. Its first residual audit exposed eleven rows collapsing to eight
+    site-and-cause findings: one survivor, stale static owner titles, generated
+    TypeScript syntax failures, and collateral mutation dispatch. Consolidated
+    red `0a24790` raises title and syntax ownership into the build and isolates
+    the remaining selected/control observations; green `98c3dee` closes those
+    eight causes without changing cardinality. The complete 419-row checkpoint
+    at `98c3dee` then reported **417 exact catches and two wrong-path rows**, with
+    no survivor or stale row: both driver-cleanup bound mutants referenced an
+    unimported `MAX_EPOCH_MS` and failed before their declared owners. Red
+    `be917fa` makes syntactically valid unbound runtime names fail the generated
+    preflight; green `fafcd13` resolves value bindings before audit setup and
+    derives both cleanup bounds from
+    `PERSISTED_INTEGER_BOUNDS.drivers`. Mandatory follow-up review then found
+    three binding-policy/classification false negatives and an ordering-proof
+    gap. Red `e21ffdb` exposes the executable misses; green `fc9171d` makes
+    `typecheck_project` the sole routing authority, rejects erased type-only
+    aliases, retains runtime class heritage, and proves rejection precedes
+    checkpoint/worktree creation. The exact focused rerun is 2/2; a clean
+    final-head 419/419 receipt remains the final merge gate.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
@@ -562,13 +590,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   require each mutation to resolve to that condition's attributable verdict. A
   condition ID, detached marker inventory, or one mutation per mechanism is
   still a proxy. The subsequent durable-boundary ownership tranche raises the
-  live registry to 385 and declares exact owners for the currently enumerated
-  classifier, codec, replay, worker, clock, collision, compiler-bind,
-  completion-origin, task-option single-read, wake-discriminant, payload
-  field-by-door, relation-policy, and advisory-expiry arms. This inventory does
-  not prove the new mutations killed their targets until the pending exact
-  audit, nor that a future arm is enrolled. PR3.10 must derive both the cases
-  and their mutation/verdict ownership from the same layer descriptor.
+  live registry to **419** and declares exact owners for the currently
+  enumerated classifier, codec, replay, worker, clock, collision,
+  compiler-bind, completion-origin, task-option, wake-discriminant, payload,
+  relation-policy, advisory-expiry, generated-syntax, static-title, and
+  intrinsic-dispatch arms. A final-head 419/419 exact audit is required to
+  prove those current declarations; even that receipt cannot prove that a
+  future semantic arm is enrolled. PR3.10 must derive both the cases and their
+  mutation/verdict ownership from the same layer descriptor.
   The same gate must verify each postmortem's cited red and green hashes are
   distinct, ordered commits and that the red commit demonstrably leaves the
   named probe failing; the final attribution closeout showed that prose-only
