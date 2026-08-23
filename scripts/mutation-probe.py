@@ -133,6 +133,7 @@ class TypeScriptMutationSyntaxAnalysis:
     file: str
     materialization_error: str | None
     diagnostics: tuple[str, ...]
+    runtime_binding_diagnostics: tuple[str, ...]
 
 
 def analyze_typescript_sources(
@@ -262,12 +263,15 @@ def analyze_typescript_mutation_syntax(
         file = entry.get("file")
         materialization_error = entry.get("materializationError")
         diagnostics = entry.get("diagnostics")
+        runtime_binding_diagnostics = entry.get("runtimeBindingDiagnostics", [])
         if not (
             name == mutation.name
             and file == mutation.file
             and (materialization_error is None or isinstance(materialization_error, str))
             and isinstance(diagnostics, list)
             and all(isinstance(item, str) for item in diagnostics)
+            and isinstance(runtime_binding_diagnostics, list)
+            and all(isinstance(item, str) for item in runtime_binding_diagnostics)
             and name not in analyses
         ):
             raise ValueError(
@@ -277,6 +281,7 @@ def analyze_typescript_mutation_syntax(
             file,
             materialization_error,
             tuple(diagnostics),
+            tuple(runtime_binding_diagnostics),
         )
     return analyses
 
@@ -7801,6 +7806,9 @@ FROZEN_MIGRATION_TARGET_FAULT = "accept-frozen-migration-mutation"
 TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT = (
     "poison-typescript-mutant-syntax-live-enrollment"
 )
+TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT = (
+    "poison-typescript-mutant-binding-live-enrollment"
+)
 STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
     "corrupt-static-verdict-title-live-enrollment"
 )
@@ -7833,6 +7841,7 @@ SELF_TEST_FAULTS = (
     FROZEN_MIGRATION_TARGET_FAULT,
     QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
     TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
+    TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT,
     STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT,
 )
 
@@ -7908,6 +7917,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         in (
             QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
             TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
+            TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT,
             STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT,
         )
     )
@@ -8025,6 +8035,8 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     elif fault == QUESTION_DELTA_LIVE_ENROLLMENT_FAULT:
         pass
     elif fault == TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT:
+        pass
+    elif fault == TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT:
         pass
     elif fault == STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT:
         pass
@@ -8722,6 +8734,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "import { missing } from 'does-not-exist'\n"
             "const value: NeverDeclared = missing\n"
         ),
+        "__selftest__/mutation-binding-behavior.ts": (
+            "void ExistingMissingRuntime\n"
+            "const value = 1\n"
+        ),
+        "__selftest__/mutation-binding-construction.ts": "const value = 1\n",
     }
     syntax_mutations = [
         Mutation(
@@ -8747,6 +8764,22 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "AnotherMissingType",
             "syntactic validation must ignore semantic resolution",
             expected,
+        ),
+        Mutation(
+            "selftest-typescript-binding-behavior",
+            "__selftest__/mutation-binding-behavior.ts",
+            "const value = 1",
+            "const value = NewMissingRuntime",
+            "behavioral mutation introduces an unbound runtime identifier",
+            expected,
+        ),
+        Mutation(
+            "selftest-typescript-binding-construction",
+            "__selftest__/mutation-binding-construction.ts",
+            "const value = 1",
+            "const value = MissingConstructionRuntime",
+            "construction mutations keep their project typecheck authoritative",
+            construction,
         ),
     ]
 
@@ -8936,9 +8969,13 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     live_syntax_mutations: list[Mutation] = []
     if check_live_inventory:
         injected_syntax_fault = False
+        injected_binding_fault = False
         for mutation in MUTATIONS:
             if Path(mutation.file).suffix not in {".ts", ".tsx"}:
                 continue
+            source = syntax_sources.setdefault(
+                mutation.file, (ROOT / mutation.file).read_text()
+            )
             syntax_mutation = mutation
             if (
                 fault == TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT
@@ -8954,10 +8991,23 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     mutation.typecheck_project,
                 )
                 injected_syntax_fault = True
+            elif (
+                fault == TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT
+                and not injected_binding_fault
+                and mutation.verdict.kind == "behavior"
+            ):
+                syntax_mutation = Mutation(
+                    mutation.name,
+                    mutation.file,
+                    source,
+                    source
+                    + "\nvoid __durablerunMutationProbeUnboundRuntimeIdentifier\n",
+                    mutation.breaks,
+                    mutation.verdict,
+                    mutation.typecheck_project,
+                )
+                injected_binding_fault = True
             live_syntax_mutations.append(syntax_mutation)
-            syntax_sources.setdefault(
-                mutation.file, (ROOT / mutation.file).read_text()
-            )
     all_syntax_mutations = [*syntax_mutations, *live_syntax_mutations]
     try:
         syntax_analyses = analyze_typescript_mutation_syntax(
@@ -8981,6 +9031,20 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                 f"mutant-syntax {mutation.name}: expected diagnostics={invalid}, "
                 f"got {analysis.diagnostics}"
             )
+        wanted_runtime_bindings = {
+            "selftest-typescript-binding-behavior": (
+                "2:15 newly unbound runtime identifier 'NewMissingRuntime'",
+            ),
+            "selftest-typescript-binding-construction": (
+                "1:15 newly unbound runtime identifier 'MissingConstructionRuntime'",
+            ),
+        }.get(mutation.name, ())
+        if analysis.runtime_binding_diagnostics != wanted_runtime_bindings:
+            failures.append(
+                f"mutant-binding {mutation.name}: expected "
+                f"{wanted_runtime_bindings}, got "
+                f"{analysis.runtime_binding_diagnostics}"
+            )
     for mutation in live_syntax_mutations:
         analysis = syntax_analyses.get(mutation.name)
         if analysis is None:
@@ -8994,6 +9058,15 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 f"{mutation.name}: generated TypeScript mutant has parse diagnostics "
                 f"{analysis.diagnostics}"
+            )
+        elif (
+            mutation.verdict.kind == "behavior"
+            and analysis.runtime_binding_diagnostics
+        ):
+            failures.append(
+                f"{mutation.name}: generated behavioral TypeScript mutant has "
+                "runtime binding diagnostics "
+                f"{analysis.runtime_binding_diagnostics}"
             )
     if check_live_inventory:
         if TEST_CMD[:3] != ["pnpm", "exec", "vitest"]:
@@ -9201,6 +9274,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     live_enrollment_faults = (
         QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
         TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
+        TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT,
         STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT,
     )
     if not failures and fault is None and check_live_inventory:
