@@ -337,46 +337,258 @@ function mutationScriptKind(pathName) {
   return undefined
 }
 
+function createMutationBindingAnalyzer(sources) {
+  if (typeof ts.isInExpressionContext !== 'function') {
+    throw new Error('installed TypeScript does not expose isInExpressionContext')
+  }
+  const currentSources = new Map()
+  const originalSources = new Map()
+  const versions = new Map()
+  const fileByPath = new Map()
+  for (const [pathName, source] of Object.entries(sources)) {
+    if (typeof source !== 'string') throw new Error(`${pathName}: source must be a string`)
+    const fileName = path.resolve(process.cwd(), pathName)
+    currentSources.set(fileName, source)
+    originalSources.set(fileName, source)
+    versions.set(fileName, 0)
+    fileByPath.set(pathName, fileName)
+  }
+  const options = {
+    target: ts.ScriptTarget.ES2023,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    skipLibCheck: true,
+    noEmit: true,
+    moduleDetection: ts.ModuleDetectionKind.Force,
+  }
+  const host = {
+    getScriptFileNames: () => [...currentSources.keys()],
+    getScriptVersion: (fileName) => String(versions.get(fileName) ?? 0),
+    getScriptSnapshot(fileName) {
+      const source = currentSources.get(fileName) ?? ts.sys.readFile(fileName)
+      return source === undefined ? undefined : ts.ScriptSnapshot.fromString(source)
+    },
+    getCurrentDirectory: () => process.cwd(),
+    getCompilationSettings: () => options,
+    getDefaultLibFileName: (compilerOptions) => ts.getDefaultLibFilePath(compilerOptions),
+    fileExists: (fileName) => currentSources.has(fileName) || ts.sys.fileExists(fileName),
+    readFile: (fileName) => currentSources.get(fileName) ?? ts.sys.readFile(fileName),
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+    realpath: ts.sys.realpath,
+  }
+  const service = ts.createLanguageService(host, ts.createDocumentRegistry())
+
+  const inErasedTypeContext = (node) => {
+    for (let parent = node.parent; parent && !ts.isSourceFile(parent); parent = parent.parent) {
+      if (
+        ts.isTypeNode(parent) ||
+        ts.isInterfaceDeclaration(parent) ||
+        ts.isTypeAliasDeclaration(parent)
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  const isLocalValueExport = (node) => {
+    const specifier = node.parent
+    if (!ts.isExportSpecifier(specifier)) return false
+    const declaration = specifier.parent.parent
+    if (
+      !ts.isExportDeclaration(declaration) ||
+      declaration.isTypeOnly ||
+      specifier.isTypeOnly ||
+      declaration.moduleSpecifier
+    ) {
+      return false
+    }
+    return specifier.propertyName ? specifier.propertyName === node : specifier.name === node
+  }
+
+  const isRuntimeReference = (node) => {
+    if (inErasedTypeContext(node)) return false
+    const parent = node.parent
+    if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false
+    if (ts.isMetaProperty(parent)) return false
+    if (ts.isShorthandPropertyAssignment(parent) && parent.name === node) return true
+    if (isLocalValueExport(node)) return true
+    if (
+      (ts.isJsxOpeningElement(parent) ||
+        ts.isJsxClosingElement(parent) ||
+        ts.isJsxSelfClosingElement(parent)) &&
+      parent.tagName === node &&
+      ts.isIntrinsicJsxName(node.text)
+    ) {
+      return false
+    }
+    return ts.isInExpressionContext(node)
+  }
+
+  const unresolvedRuntimeReferences = (fileName) => {
+    const program = service.getProgram()
+    if (!program) throw new Error('TypeScript binding program is unavailable')
+    const sourceFile = program.getSourceFile(fileName)
+    if (!sourceFile) throw new Error(`${fileName}: TypeScript binding program omitted source`)
+    const checker = program.getTypeChecker()
+    const references = []
+    const visit = (node) => {
+      if (
+        ts.isIdentifier(node) &&
+        isRuntimeReference(node) &&
+        !checker.resolveName(node.text, node, ts.SymbolFlags.Value, false)
+      ) {
+        const start = node.getStart(sourceFile)
+        const location = sourceFile.getLineAndCharacterOfPosition(start)
+        references.push({
+          name: node.text,
+          start,
+          end: node.end,
+          line: location.line + 1,
+          character: location.character + 1,
+        })
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(sourceFile)
+    return references
+  }
+
+  const baselineByFile = new Map()
+  for (const fileName of currentSources.keys()) {
+    baselineByFile.set(fileName, unresolvedRuntimeReferences(fileName))
+  }
+
+  const newlyUnbound = (original, mutated, baselineReferences, mutantReferences) => {
+    let prefix = 0
+    while (
+      prefix < original.length &&
+      prefix < mutated.length &&
+      original.charCodeAt(prefix) === mutated.charCodeAt(prefix)
+    ) {
+      prefix += 1
+    }
+    let suffix = 0
+    while (
+      suffix < original.length - prefix &&
+      suffix < mutated.length - prefix &&
+      original.charCodeAt(original.length - 1 - suffix) ===
+        mutated.charCodeAt(mutated.length - 1 - suffix)
+    ) {
+      suffix += 1
+    }
+    const delta = mutated.length - original.length
+    const baselineKeys = new Set(
+      baselineReferences.map(({ name, start, end }) => `${name}\0${start}\0${end}`),
+    )
+    return mutantReferences.filter((reference) => {
+      let mappedStart
+      let mappedEnd
+      if (reference.end <= prefix) {
+        mappedStart = reference.start
+        mappedEnd = reference.end
+      } else if (reference.start >= mutated.length - suffix) {
+        mappedStart = reference.start - delta
+        mappedEnd = reference.end - delta
+      }
+      return (
+        mappedStart === undefined ||
+        !baselineKeys.has(`${reference.name}\0${mappedStart}\0${mappedEnd}`)
+      )
+    })
+  }
+
+  return {
+    analyze(pathName, mutated) {
+      const fileName = fileByPath.get(pathName)
+      if (!fileName) throw new Error(`${pathName}: TypeScript binding source is missing`)
+      const original = originalSources.get(fileName)
+      currentSources.set(fileName, mutated)
+      versions.set(fileName, (versions.get(fileName) ?? 0) + 1)
+      try {
+        const references = unresolvedRuntimeReferences(fileName)
+        return newlyUnbound(original, mutated, baselineByFile.get(fileName), references).map(
+          ({ name, line, character }) =>
+            `${line}:${character} newly unbound runtime identifier '${name}'`,
+        )
+      } finally {
+        currentSources.set(fileName, original)
+        versions.set(fileName, (versions.get(fileName) ?? 0) + 1)
+      }
+    },
+    dispose() {
+      service.dispose()
+    },
+  }
+}
+
 function analyzeMutationSyntax(sources, mutations) {
   if (!Array.isArray(mutations)) throw new Error('mutation syntax analysis requires mutations')
   const seen = new Set()
   const results = []
-  for (const mutation of mutations) {
-    if (!mutation || typeof mutation !== 'object') {
-      throw new Error('mutation syntax entry must be an object')
+  const bindingAnalyzer = createMutationBindingAnalyzer(sources)
+  try {
+    for (const mutation of mutations) {
+      if (!mutation || typeof mutation !== 'object') {
+        throw new Error('mutation syntax entry must be an object')
+      }
+      const { name, file, find, replace } = mutation
+      if (
+        typeof name !== 'string' ||
+        typeof file !== 'string' ||
+        typeof find !== 'string' ||
+        typeof replace !== 'string'
+      ) {
+        throw new Error('mutation syntax entry requires string name/file/find/replace')
+      }
+      if (seen.has(name)) throw new Error(`duplicate mutation syntax name ${name}`)
+      seen.add(name)
+      const source = sources[file]
+      if (typeof source !== 'string') throw new Error(`${name}: source ${file} is missing`)
+      const scriptKind = mutationScriptKind(file)
+      if (scriptKind === undefined) throw new Error(`${name}: ${file} is not TypeScript source`)
+      const occurrence = mutationOccurrence(source, find)
+      if (occurrence.error) {
+        results.push({
+          name,
+          file,
+          materializationError: occurrence.error,
+          diagnostics: [],
+          runtimeBindingDiagnostics: [],
+        })
+        continue
+      }
+      const mutated =
+        source.slice(0, occurrence.start) + replace + source.slice(occurrence.start + find.length)
+      const sourceFile = ts.createSourceFile(
+        file,
+        mutated,
+        ts.ScriptTarget.Latest,
+        false,
+        scriptKind,
+      )
+      const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
+        const start = diagnostic.start ?? 0
+        const location = sourceFile.getLineAndCharacterOfPosition(start)
+        return `${location.line + 1}:${location.character + 1} ${ts.flattenDiagnosticMessageText(
+          diagnostic.messageText,
+          '\n',
+        )}`
+      })
+      const runtimeBindingDiagnostics =
+        diagnostics.length === 0 ? bindingAnalyzer.analyze(file, mutated) : []
+      results.push({
+        name,
+        file,
+        materializationError: null,
+        diagnostics,
+        runtimeBindingDiagnostics,
+      })
     }
-    const { name, file, find, replace } = mutation
-    if (
-      typeof name !== 'string' ||
-      typeof file !== 'string' ||
-      typeof find !== 'string' ||
-      typeof replace !== 'string'
-    ) {
-      throw new Error('mutation syntax entry requires string name/file/find/replace')
-    }
-    if (seen.has(name)) throw new Error(`duplicate mutation syntax name ${name}`)
-    seen.add(name)
-    const source = sources[file]
-    if (typeof source !== 'string') throw new Error(`${name}: source ${file} is missing`)
-    const scriptKind = mutationScriptKind(file)
-    if (scriptKind === undefined) throw new Error(`${name}: ${file} is not TypeScript source`)
-    const occurrence = mutationOccurrence(source, find)
-    if (occurrence.error) {
-      results.push({ name, file, materializationError: occurrence.error, diagnostics: [] })
-      continue
-    }
-    const mutated =
-      source.slice(0, occurrence.start) + replace + source.slice(occurrence.start + find.length)
-    const sourceFile = ts.createSourceFile(file, mutated, ts.ScriptTarget.Latest, false, scriptKind)
-    const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
-      const start = diagnostic.start ?? 0
-      const location = sourceFile.getLineAndCharacterOfPosition(start)
-      return `${location.line + 1}:${location.character + 1} ${ts.flattenDiagnosticMessageText(
-        diagnostic.messageText,
-        '\n',
-      )}`
-    })
-    results.push({ name, file, materializationError: null, diagnostics })
+  } finally {
+    bindingAnalyzer.dispose()
   }
   return { mutations: results }
 }

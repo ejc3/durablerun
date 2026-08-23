@@ -221,7 +221,7 @@ def analyze_typescript_mutation_syntax(
     sources: dict[str, str],
     mutations: list[Mutation],
 ) -> dict[str, TypeScriptMutationSyntaxAnalysis]:
-    """Parse every generated TypeScript mutant without type or helper resolution."""
+    """Parse every TypeScript mutant and compare its runtime lexical bindings."""
     request = [
         {
             "name": mutation.name,
@@ -232,7 +232,7 @@ def analyze_typescript_mutation_syntax(
         for mutation in mutations
     ]
     result = subprocess.run(
-        ["node", str(TYPESCRIPT_ANALYZER)],
+        ["node", "--max-old-space-size=384", str(TYPESCRIPT_ANALYZER)],
         cwd=ROOT,
         input=json.dumps(
             {"analysis": "mutation-syntax", "sources": sources, "mutations": request}
@@ -263,7 +263,7 @@ def analyze_typescript_mutation_syntax(
         file = entry.get("file")
         materialization_error = entry.get("materializationError")
         diagnostics = entry.get("diagnostics")
-        runtime_binding_diagnostics = entry.get("runtimeBindingDiagnostics", [])
+        runtime_binding_diagnostics = entry.get("runtimeBindingDiagnostics")
         if not (
             name == mutation.name
             and file == mutation.file
@@ -284,6 +284,57 @@ def analyze_typescript_mutation_syntax(
             tuple(runtime_binding_diagnostics),
         )
     return analyses
+
+
+def typescript_mutation_preflight_diagnostic(
+    mutation: Mutation,
+    analysis: TypeScriptMutationSyntaxAnalysis,
+) -> str | None:
+    """Reject a mutant that cannot reach its declared behavioral verifier."""
+    if analysis.materialization_error is not None:
+        return (
+            f"{mutation.name}: cannot generate TypeScript mutant: "
+            f"{analysis.materialization_error}"
+        )
+    if analysis.diagnostics:
+        return (
+            f"{mutation.name}: generated TypeScript mutant has parse diagnostics "
+            f"{analysis.diagnostics}"
+        )
+    if mutation.verdict.kind == "behavior" and analysis.runtime_binding_diagnostics:
+        return (
+            f"{mutation.name}: generated behavioral TypeScript mutant has "
+            f"runtime binding diagnostics {analysis.runtime_binding_diagnostics}"
+        )
+    return None
+
+
+def typescript_mutation_preflight_problems(
+    mutations: list[Mutation],
+) -> list[str]:
+    """Materialize and bind every selected TypeScript mutation before an audit."""
+    selected = [
+        mutation
+        for mutation in mutations
+        if Path(mutation.file).suffix in {".ts", ".tsx"}
+    ]
+    if not selected:
+        return []
+    sources = {mutation.file: (ROOT / mutation.file).read_text() for mutation in selected}
+    try:
+        analyses = analyze_typescript_mutation_syntax(sources, selected)
+    except ValueError as error:
+        return [str(error)]
+    problems: list[str] = []
+    for mutation in selected:
+        analysis = analyses.get(mutation.name)
+        if analysis is None:
+            problems.append(f"{mutation.name}: TypeScript mutant preflight result is missing")
+            continue
+        diagnostic = typescript_mutation_preflight_diagnostic(mutation, analysis)
+        if diagnostic is not None:
+            problems.append(diagnostic)
+    return problems
 
 
 def helper_owned_marker_diagnostic(
@@ -2738,11 +2789,11 @@ def driver_cleanup_bound_mutation(omit: str) -> str:
     """Add a source-proven mutation-only cleanup without editing frozen DDL."""
     last_beat_guard = (
         "                AND typeof(last_beat_ms) = 'integer'\n"
-        "                AND last_beat_ms BETWEEN 0 AND ${MAX_EPOCH_MS}\n"
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms)}\n"
     )
     expiry_guard = (
         "                AND typeof(expires_at_ms) = 'integer'\n"
-        "                AND expires_at_ms BETWEEN 0 AND ${MAX_EPOCH_MS}`,\n"
+        "                AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms)}`,\n"
     )
     if omit == "last-beat":
         last_beat_guard = "                AND 1 = 1\n"
@@ -8739,6 +8790,14 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "const value = 1\n"
         ),
         "__selftest__/mutation-binding-construction.ts": "const value = 1\n",
+        "__selftest__/mutation-binding-shorthand.ts": (
+            "const value = 1\n"
+            "void ({ value })\n"
+        ),
+        "__selftest__/mutation-binding-property.ts": (
+            "const row = { known: 1 }\n"
+            "void row.known\n"
+        ),
     }
     syntax_mutations = [
         Mutation(
@@ -8780,6 +8839,22 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "const value = MissingConstructionRuntime",
             "construction mutations keep their project typecheck authoritative",
             construction,
+        ),
+        Mutation(
+            "selftest-typescript-binding-shorthand",
+            "__selftest__/mutation-binding-shorthand.ts",
+            "const value = 1",
+            "const replacement = 1",
+            "shorthand values resolve through their lexical binding",
+            expected,
+        ),
+        Mutation(
+            "selftest-typescript-binding-property",
+            "__selftest__/mutation-binding-property.ts",
+            "row.known",
+            "row.missingColumn",
+            "bound receivers do not turn property names into lexical references",
+            expected,
         ),
     ]
 
@@ -9038,6 +9113,9 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             "selftest-typescript-binding-construction": (
                 "1:15 newly unbound runtime identifier 'MissingConstructionRuntime'",
             ),
+            "selftest-typescript-binding-shorthand": (
+                "2:9 newly unbound runtime identifier 'value'",
+            ),
         }.get(mutation.name, ())
         if analysis.runtime_binding_diagnostics != wanted_runtime_bindings:
             failures.append(
@@ -9049,25 +9127,9 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         analysis = syntax_analyses.get(mutation.name)
         if analysis is None:
             continue
-        if analysis.materialization_error is not None:
-            failures.append(
-                f"{mutation.name}: cannot generate TypeScript mutant: "
-                f"{analysis.materialization_error}"
-            )
-        elif analysis.diagnostics:
-            failures.append(
-                f"{mutation.name}: generated TypeScript mutant has parse diagnostics "
-                f"{analysis.diagnostics}"
-            )
-        elif (
-            mutation.verdict.kind == "behavior"
-            and analysis.runtime_binding_diagnostics
-        ):
-            failures.append(
-                f"{mutation.name}: generated behavioral TypeScript mutant has "
-                "runtime binding diagnostics "
-                f"{analysis.runtime_binding_diagnostics}"
-            )
+        diagnostic = typescript_mutation_preflight_diagnostic(mutation, analysis)
+        if diagnostic is not None:
+            failures.append(diagnostic)
     if check_live_inventory:
         if TEST_CMD[:3] != ["pnpm", "exec", "vitest"]:
             failures.append("worker suites do not execute Vitest directly")
@@ -12034,6 +12096,7 @@ def mutation_checkpoint_problems() -> list[str]:
         emitted_payload: list[object] = []
         emitted_report_paths: list[Path] = []
         executed_names: list[str] = []
+        preflighted_names: list[str] = []
         execution_mode = ["interrupt"]
         production_atomic_json = atomic_json
 
@@ -12102,6 +12165,10 @@ def mutation_checkpoint_problems() -> list[str]:
             if execution_mode[0] == "reject":
                 raise UnexpectedCheckpointExecution(expected.name)
             return mutation_result_row(expected, "caught", "attributable")
+
+        def fixture_preflight(mutations: list[Mutation]) -> list[str]:
+            preflighted_names.extend(mutation.name for mutation in mutations)
+            return []
 
         def baseline_report(launch: ProcessLaunch) -> None:
             command = launch.command
@@ -12178,6 +12245,7 @@ def mutation_checkpoint_problems() -> list[str]:
             "registered_worktrees": lambda: set(),
             "resolve_pnpm_store": lambda _root: pnpm_store,
             "run_launches": fixture_run_launches,
+            "typescript_mutation_preflight_problems": fixture_preflight,
             "usable_cores": lambda: 1,
         }
         originals = {name: globals()[name] for name in patched}
@@ -12194,6 +12262,10 @@ def mutation_checkpoint_problems() -> list[str]:
             if result_code != 128 + signal.SIGTERM:
                 failures.append(
                     "checkpoint cleanup fixture did not preserve the worker interrupt status"
+                )
+            if preflighted_names != mutation_names:
+                failures.append(
+                    "coordinator did not preflight its exact selected mutation inventory"
                 )
             if len(emitted_report_paths) != 1 or len(emitted_payload) != 1:
                 failures.append(
@@ -13441,6 +13513,17 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
         assert_clean(ROOT)
         if git_output(ROOT, "rev-parse", "HEAD^{commit}") != head:
             print("mutation-probe: HEAD moved while acquiring the audit lock", file=sys.stderr)
+            return 2
+        preflight_problems = typescript_mutation_preflight_problems(
+            [mutation for _, mutation in selected_mutations]
+        )
+        if preflight_problems:
+            for problem in preflight_problems:
+                print(f"mutation-probe preflight: {problem}", file=sys.stderr)
+            return 2
+        assert_clean(ROOT)
+        if git_output(ROOT, "rev-parse", "HEAD^{commit}") != head:
+            print("mutation-probe: HEAD moved during mutation preflight", file=sys.stderr)
             return 2
         shard_names = [[item.name for item in shard] for shard in shards]
         checkpoint_key = mutation_checkpoint_key(head, shard_names)
