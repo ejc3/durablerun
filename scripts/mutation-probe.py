@@ -4098,9 +4098,15 @@ MUTATION_SPECS.extend(
             "  })\n"
             "}",
             "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
-            "  return Promise.race([left, right]) as Promise<void> // MUTATION\n"
+            "  if (hasOwn(right, 'cause')) {\n"
+            "    return Promise.race([left, right]) as Promise<void> // MUTATION\n"
+            "  }\n"
+            "  return new TaskPromise<void>((resolve, reject) => {\n"
+            "    taskPromiseThen(left, resolve, reject)\n"
+            "    taskPromiseThen(right, resolve, reject)\n"
+            "  })\n"
             "}",
-            "worker finalization resolves mutable ambient Promise.race after task initialization",
+            "a selected finalization race input carrying an own cause resolves mutable ambient Promise.race after task initialization",
         ),
         (
             "sdk-captured-promise-race-iterator",
