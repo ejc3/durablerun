@@ -207,7 +207,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
     The verifier runs its classifier, source-owner, and generated-construction
-    surfaces across all **419 live mutations**. Every TypeScript replacement is
+    surfaces across all **421 live mutations**. Every TypeScript replacement is
     materialized and parsed before enrollment. Every mutant routed to Vitest
     also passes an incremental compiler value-binding comparison against its
     original source, so a newly unbound runtime identifier is rejected before
@@ -426,10 +426,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the same value. Suspension wake unions use captured own-property decisions
     independently at the task-control snapshot, `reschedule`, and `suspendRun`;
     an inherited `inSeconds` can never convert an absolute wake. Each store
-    consumer feeds one `prepareWake` snapshot to its SQL expression, argument,
-    and headroom guard. Handler/serialization and completion are sibling lexical
-    phases, so an ordinary completion rejection propagates and cannot enter
-    user-failure accounting.
+    consumer feeds one `prepareWake` snapshot to its SQL expression, arguments,
+    and headroom guard. Relative and absolute wakes are bind-data modes of one
+    `CASE`-based SQL text, statement inventory, and bind arity for each of the
+    `reschedule` and `suspend` labels; neither input representation selects a
+    second compiled topology. Handler/serialization and completion are sibling
+    lexical phases, so an ordinary completion rejection propagates and cannot
+    enter user-failure accounting.
 
     The unresolved-thread closeout then completed the already-counted collision
     and bind-arity findings. Three collision paths have independent exact
@@ -490,8 +493,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     gap. Red `e21ffdb` exposes the executable misses; green `fc9171d` makes
     `typecheck_project` the sole routing authority, rejects erased type-only
     aliases, retains runtime class heritage, and proves rejection precedes
-    checkpoint/worktree creation. The exact focused rerun is 2/2; a clean
-    final-head 419/419 receipt remains the final merge gate.
+    checkpoint/worktree creation. The exact focused rerun is 2/2. The closing
+    simplify pass then added two exact poison-settlement mutations, bringing the
+    current registry to **421**. The clean `a00fc27` checkpoint had already
+    caught all 419 then-declared entries; those two additions supersede that
+    historical receipt, so a clean final-head 421/421 audit is now the final
+    mutation gate.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
@@ -540,7 +547,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   to record: it is a migration plus a new field in six transitions; it is a
   protocol change, so the spec-first rule says it is modelled in TLA and
   TLC-verified before its SQL is written; and it would otherwise land unreviewed
-  at the end of a branch that has already produced six fix-induced defects.
+  at the end of a branch that has already produced repeated fix-induced defects.
   Until it lands, the generated wake surface is what holds the line, and its
   limit is written down: it can only find a wrong DECISION about rows it
   constructs, never a wrong payload, and never a row shape nobody thought of.
@@ -576,6 +583,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   types: this makes it MORE language-neutral, not less. `.compile()` yields the
   exact per-dialect SQL, so the contract artifact becomes a generated corpus of
   every labelled statement in every dialect, derived rather than hand-kept.
+  That corpus must enumerate every declared legal branch of each label and
+  reject two compiled signatures—ordered statement SQL plus bind arity—for one
+  undeclared label variant. The current libSQL regression covers only relative
+  and absolute wakes for `reschedule` and `suspend`; it cannot enroll a future
+  input branch, label, statement, or dialect. PR3.9 must generate that enrollment
+  from the same language-neutral label/variant descriptor and either give a
+  genuinely different transition its own label or declare its branch topology
+  explicitly, so a hand-maintained example is never the completeness claim.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
 
@@ -589,13 +604,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   mutation per claimed semantic branch and enum literal across all 109 IDs, and
   require each mutation to resolve to that condition's attributable verdict. A
   condition ID, detached marker inventory, or one mutation per mechanism is
-  still a proxy. The subsequent durable-boundary ownership tranche raises the
-  live registry to **419** and declares exact owners for the currently
-  enumerated classifier, codec, replay, worker, clock, collision,
+  still a proxy. The subsequent durable-boundary ownership tranche raised the
+  live registry to **419** and declared exact owners for the then-enumerated
+  classifier, codec, replay, worker, clock, collision,
   compiler-bind, completion-origin, task-option, wake-discriminant, payload,
   relation-policy, advisory-expiry, generated-syntax, static-title, and
-  intrinsic-dispatch arms. A final-head 419/419 exact audit is required to
-  prove those current declarations; even that receipt cannot prove that a
+  intrinsic-dispatch arms. Two closing settlement owners make the current
+  registry **421**. A final-head 421/421 exact audit is required to prove those
+  current declarations; even that receipt cannot prove that a
   future semantic arm is enrolled. PR3.10 must derive both the cases and their
   mutation/verdict ownership from the same layer descriptor.
   The same gate must verify each postmortem's cited red and green hashes are

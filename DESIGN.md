@@ -641,7 +641,13 @@ are load-bearing):
    a captured own-property check, once per consumer; inherited `inSeconds`
    never converts an absolute wake to a relative one. Each store suspension
    consumer prepares one wake snapshot that supplies its SQL expression,
-   argument, and epoch-headroom guard.
+   arguments, and epoch-headroom guard. Relative and absolute wakes are two
+   representations of the same `reschedule` or `suspend` transition, not two
+   label variants: within a dialect they use one ordered statement inventory,
+   SQL text, and bind arity, with only bind values selecting the mode. More
+   generally, a declared batch-label variant has one compiled signature;
+   genuinely different transition branches must be named or declared as
+   separate variants rather than hidden in representation-dependent SQL.
    **The clock expression must be at least statement-stable**: every occurrence
    within one statement — including inside a scalar subquery — must yield the
    same value. Measured: SQLite `unixepoch('subsec')` is (4000/4000 identical);
@@ -1014,17 +1020,20 @@ not depend on careful reading:
   each declaration independently.
   The verify gate runs 20 classifier cases, nineteen promise-message source
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
-  three helper-marker cases, sixteen direct-marker cases, six verdict-inventory
-  cases, and seven question-delta cases over all 385 live mutations. One
-  live-enrollment fault attacks the canonical registry path. A separate
-  generated coordinator surface injects 37 faults covering shard omission and
-  overlap, wrong
-  heads, missing/duplicate/extra results, process/report disagreement, and
-  non-owned cleanup targets, plus unconfined execution, an unowned worker,
+  three helper-marker cases, sixteen direct-marker cases, three title-owner
+  cases, six verdict-inventory cases, seven question-delta cases, eleven
+  mutant-syntax cases, and four live-enrollment attacks across all 421 live
+  mutations. A separate generated coordinator surface injects 40 faults
+  covering shard omission and overlap, wrong heads, missing/duplicate/extra
+  results, process/report disagreement, and non-owned cleanup targets, plus
+  unconfined execution, an unowned worker,
   a skipped baseline barrier, an external workspace link, malformed identity
   types, an interruptible cleanup, an orphaned descendant, oversized finite
   memory and CPU ceilings, missing/malformed/signaled suite transport, and false
-  infrastructure-success classifications. Session-state evidence classifies
+  infrastructure-success classifications. An additional 18-fault routing
+  surface exercises the exact Vitest/typecheck baseline order, fail-fast
+  behavior, mutation dispatch, and registry-digest authority. Session-state
+  evidence classifies
   Linux `Z`, `X`, and `x` through one `TERMINAL_PROCESS_STATES` definition and
   one `process_is_gone` decision for the initial observation, failure rechecks
   after owner, argv, and cwd phases, and the final-identity observation; a

@@ -11,11 +11,14 @@ then found one more Unicode marker-boundary defect. Final adversarial
 re-review found that the hosted loop could still credit a planned batch
 without dispatching its command. Subsequent closeouts followed retry and
 task-code boundaries through the worker and completed two unresolved review
-threads. The current registry has 419 declared live mutations, including
+threads. The closing simplification pass then exposed an ambiguous poison-call
+settlement representation and two compiled wake shapes hidden behind each of
+two stable batch labels. The current registry has 421 declared live mutations, including
 attacks on dispatch, every declared task-realm condition, collision error
 attribution, compiler-bind laundering, completion-error origin, single-read
 timeouts, each absolute-wake discriminant, every current task/run ownership
-door, durable worker-payload admission, and sole-live terminalization.
+door, durable worker-payload admission, poison-settlement ownership, and
+sole-live terminalization.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The subject is why the nightly and mutation gates could say more
@@ -41,6 +44,15 @@ audit stopped the branch rather than crediting those paths, so none of the
 wrong-path or survivor findings shipped as a green mutation result. Had the
 audit or its re-reviews been skipped, the PR could have advertised exact
 causal coverage while deleting guards without their named proof failing.
+
+The closing findings threatened those proofs in two more ways. A store call
+could commit its healthy transition and then reject with `undefined`, while the
+poison oracle represented both that rejection and successful fulfillment with
+the same absent optional fields. Separately, relative and absolute wakes sent
+different SQL text and bind arities through the same `reschedule` and `suspend`
+tracing/crash-injection addresses. The SQL produced the intended timestamps,
+but one observed label no longer identified one compiled transition shape, so
+fault and attribution evidence for one variant did not prove the other.
 
 ## Findings
 
@@ -316,8 +328,11 @@ causal coverage while deleting guards without their named proof failing.
 | 268 | Binding rejection keyed on `verdict.kind === behavior` although `typecheck_project` alone routes mutations to Vitest or `tsc` | The 140 Vitest-routed construction verdicts could introduce an unresolved runtime name and bypass preflight | Mutation verifier routing | Attribution vocabulary became a second representation of execution routing | Gate every mutation with no `typecheck_project`, and exempt only mutations whose declared project typecheck is authoritative (rung 1) |
 | 269 | TypeScript `resolveName(..., Value)` returned an alias symbol for an erased type-only import | A Vitest-routed mutant could use a type-only name at runtime and fail before its owner | TypeScript runtime value resolution | Alias existence was mistaken for an emitted value binding | Reject aliases owned by type-only import/export declarations and resolved targets without value flags; retain a type-only-import attack (rung 2) |
 | 270 | The coordinator self-test proved only that preflight received the selected names, not that it ran before checkpoint or worktree creation | A future reorder could mutate durable audit state before rejecting an invalid inventory while the mechanism test stayed green | Mutation preflight ordering | Enrollment was used as a proxy for pre-mutation placement | Inject a rejected preflight and assert that no checkpoint directory or worktree exists before the coordinator returns (rung 2) |
+| 271 | Poison invocation settlement used optional `result` and `error` fields, so fulfillment with `undefined` and rejection with `undefined` had the same representation; the healthy-progress oracle also did not require its responsible invocation to fulfill | A call could commit its durable transition, reject its caller, and still make the generated poison cell report green | Poison invocation outcome and healthy-progress oracle | Field absence and the value `undefined` stood in for a promise settlement discriminant, while durable change stood in for successful return | Return one frozen discriminated outcome (`fulfilled/result` or `rejected/reason`) from the sole recorder, require the normal healthy or targeted poison invocation to fulfill, and attack both ownership decisions exactly (rungs 1 and 2) |
+| 272 | Relative and absolute wakes compiled different SQL text and bind arities inside the same `reschedule` and `suspend` batch labels | One tracing/crash-injection address named two executable transition shapes, so a fault or replay proof for one wake representation did not prove the other | Batch-label compiled-shape contract and generated SQL corpus | Source inventories enumerated labels and static statement counts, but did not execute the input-selected fragments hidden behind `prepareWake` | Classify the wake once, bind its mode and both value slots into one `CASE`-based SQL/arity topology, and compare the real relative/absolute batches for both labels (rung 1 for the current topology, rung 2 for the focused capture) |
+| 273 | Finding 271's first settlement mutation changed the shared rejection owner broadly enough to fail the targeted settlement case and then generated poison siblings before its named assertion | The new guard could receive only wrong-path evidence, leaving its advertised exact mutation unproved | Settlement mutation construction and exact attribution | Deleting a shared condition was treated as an isolated attack even though the generated sibling surface consumed the same branch | Give the healthy and targeted paths separate replacement verdicts, then mutate only the undefined healthy rejection; the exact audit isolates and catches both entries (rungs 2 and 3) |
 
-## Detection ledger through finding 123
+## Detection ledger
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
@@ -342,12 +357,17 @@ causal coverage while deleting guards without their named proof failing.
 | Mandatory relation-repair review, finding 103 | 1 | no |
 | Full libSQL poison matrix against the first repair, finding 104 | 1 | **yes** |
 | Final tranche review, findings 105 through 123 | 19 | no |
+| Mutation deadline regression, finding 124 | 1 | **yes** |
+| Exact-attribution repair reviews, findings 125 through 167 | 43 | no |
+| Exact mutation audits, findings 168 through 267 | 100 | **yes** |
+| Binding and simplify reviews, findings 268 through 272 | 5 | no |
+| Focused settlement mutation audit, finding 273 | 1 | **yes** |
 
-Self-catch rate: **30 of 123, or 24.4%** (previous temporal round: **1 of
-43, or 2.3%**). The original 35-finding audit was **24 of 35, or 68.6%**,
-but the later boundary and repair rounds were almost entirely review-caught.
-The long audit found 22 attribution defects without outside review. It is not
-47 self-catches:
+Self-catch rate: **132 of 273, or 48.4%** (through finding 123: **30 of
+123, or 24.4%**; previous temporal round: **1 of 43, or 2.3%**). The original
+35-finding audit was **24 of 35, or 68.6%**, but the later boundary and repair
+rounds were almost entirely review-caught. The long audit found 22 attribution
+defects without outside review. It is not 47 self-catches:
 `47987c0` reported 42 wrong-path entries and five survivors, but those 47
 witnesses collapse to 21 independent causes above. Counting every generated
 case as a defect would mix test volume with the site-and-mechanism counting
@@ -358,11 +378,11 @@ The last checked-in cumulative trailer before this closeout was
 the retry/throwable, task-realm, and bind-attribution rounds raise it to
 `review-findings: 331`; the final durable-boundary review raises it to
 `review-findings: 337`. The preceding closeout raised the previously recorded
-30 self-catches by 29 to 59. The durable-boundary ownership round adds 45
-review catches and one self-catch, so the cumulative trailer is
-`review-findings: 382` and the branch catalogue is **382 review-caught plus 60
-self-caught, or 442 total findings**. The branch self-catch rate is **13.6%**;
-outside review found **86.4%**.
+30 self-catches by 29 to 59. The durable-boundary ownership round then added 45
+review catches and one self-catch. All later addenda bring the current branch
+catalogue to **430 review-caught plus 162 self-caught, or 592 total findings**.
+The required trailer is `review-findings: 430`; the branch self-catch rate is
+**27.4%** and outside review found **72.6%**.
 
 ## Recurrence
 
@@ -440,7 +460,7 @@ simplification covers 23; and the explicit barrel covers 31. Findings 5, 23,
 and 26 still depend on PR3.10 for generated condition completeness and semantic
 mutation minimality.
 
-## Fix-induced defects through finding 123
+## Fix-induced defects
 
 Through finding 123, there were **53 fix-induced findings**. The first
 34 occurred through finding 77. Thirteen were in the original
@@ -608,7 +628,7 @@ Deferred (recorded in BUILD.md):
 ## What this round still would not catch
 
 A new guard or generated condition omitted from `MUTATIONS` can still ship:
-the current registry has 419 declared entries, but even a complete exact audit
+the current registry has 421 declared entries, but even a complete exact audit
 of those entries is not proof that declaration is complete. Two guards
 deliberately sharing one assertion can still let the sibling kill a mutation.
 A canonical imported helper can still be given a callback that fabricates its
@@ -1331,18 +1351,23 @@ entries.
 
 ## Final exact-attribution marathon addendum (2026-08-23)
 
-This addendum owns findings 124 through 270. The round added **46
-review-caught findings** (125 through 167 and 268 through 270) and **101
-self-caught findings** (124 and 168 through 267), **147 total**: this
-repository's machinery found **68.7%** of the round and outside review found
-**31.3%**. Cumulatively the branch has **428 review-caught plus 161 self-caught
-findings, 589 total**, for a **27.3%** self-catch rate; outside review found
-**72.7%**. The required PR trailer is `review-findings: 428`.
+This addendum owns findings 124 through 273. The round added **48
+review-caught findings** (125 through 167 and 268 through 272) and **102
+self-caught findings** (124, 168 through 267, and 273), **150 total**: this
+repository's machinery found **68.0%** of the round and outside review found
+**32.0%**. Cumulatively the branch has **430 review-caught plus 162 self-caught
+findings, 592 total**, for a **27.4%** self-catch rate; outside review found
+**72.6%**. The required PR trailer is `review-findings: 430`.
 
-All new findings except the two audit-process gaps, 124 and 168, were caused by
-the exact-attribution repairs themselves. The round therefore adds **145
-fix-induced findings** to the preceding 53, for **198 cumulative
-fix-induced findings**.
+Through finding 270, all new findings except the two audit-process gaps, 124
+and 168, were caused by the exact-attribution repairs themselves. Findings 271
+and 272 predated their closing repairs: the ambiguous settlement value was in
+the poison surface from its first red implementation, while wake SQL already
+branched before `prepareWake` hoisted that choice. Finding 273 was introduced
+by finding 271's first exact-mutation mechanism and caught by its own focused
+audit. The expanded round therefore adds **146 fix-induced findings** to the
+preceding 53, for **199 cumulative fix-induced findings**. The repair was
+re-audited as new code, not merely rerun through its green regression.
 
 Finding 266 recurs immediately after finding 264. Finding 264 proved only that
 each materialized TypeScript mutant parses; finding 266 showed that parsing is
@@ -1376,6 +1401,40 @@ runtime ownership. Only construction mutations with a declared
 `typecheck_project` skip binding rejection; Vitest-routed construction verdicts
 cross the same runtime preflight as behavioral verdicts.
 
+Finding 271 recurs after the single-representation rule and the explicit
+promise-outcome helpers. Those helpers distinguish success, expected failure,
+replacement failure, and unrelated failure, but the poison layer was born
+with a second optional-field settlement representation and without its own
+settlement faults. The repair returns the canonical discriminated outcome at
+the recorder, freezes it before publication, and makes fulfillment of the
+responsible invocation part of every healthy-progress decision.
+
+Finding 272 recurs after `batch-lint` and the standing statement that a label
+is a claim about shape. The lint's “shape” was static statement count, mode,
+and clock placement; label harvesting likewise enrolled the address, not every
+legal input that could select a different compiled fragment. Neither mechanism
+could see relative/absolute control flow inside `prepareWake`. The repair makes
+wake mode data in one SQL definition, while PR3.9 owns the generated
+all-label/all-declared-variant corpus needed to replace the focused witness.
+
+Finding 273 recurs after the exact-attribution rule that one mutation changes
+one named condition and leaves its generated siblings as controls. The first
+deletion changed the shared responsible-rejection branch, so the targeted case
+and then ordinary generated poison cases failed before or beside the healthy
+settlement owner. The exact mutation audit caught the collision: `cbbb70d` and
+`25f5849` were rejected as wrong-path rather than credited. At `2023def`, the
+healthy mutation selects only an undefined healthy rejection, and the targeted
+mutation changes only which invocation owns settlement; both focused audits
+reached their exact sole verdict.
+
+### Closing mechanism audit
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Frozen discriminated poison settlement and responsible-target check | 1 for representation, 2 for current consumers | Within the recorder there is no value that represents both rejected `undefined` and fulfilled `undefined`: `status` is required and the two frozen variants have disjoint payload keys. The literal mutation surface can still omit a future settlement consumer from both source and `MUTATIONS`; the earlier executed undeclared-condition false negative remains PR3.10's boundary. |
+| One mode-bound wake SQL topology plus real-batch comparison | 1 for the current `prepareWake` consumers, 2 for enumeration | An executed temporary mutation inserted `${wakeDisposition === 'preserve' ? 'AND 1 = 1' : ''}` into `reschedule`. The current relative/absolute focused case still passed **1/1** because both calls used `consume`; an expanded consume-versus-preserve probe then failed with `{ sqlText: false, bindArity: true }`. The focused case cannot enroll a new input branch, label, statement, or dialect. PR3.9 owns the generated per-dialect label/variant corpus and signature-uniqueness gate. |
+| Two exact settlement mutations | 2/3 | A mutation that changes the shared condition broadly still fails several generated siblings: that written boundary produced wrong-path receipts at both `cbbb70d` and `25f5849`. The scoped `2023def` mutations are exact for the two current conditions; a future condition omitted from the registry remains the executed PR3.10 completeness false negative. |
+
 The full 419-entry run at `98c3dee` produced **417 caught entries**, with only
 ordinals 257 and 258 wrong-path and **zero survivors or stale entries**. The
 coordinator reported infrastructure status 2, rather than its ordinary nonzero
@@ -1401,6 +1460,42 @@ detached `e21ffdb` worktree, moving preflight after checkpoint and worktree
 setup left the old confined orchestration self-test green; `fc9171d` makes that
 same reorder fail before any artifact can exist.
 
-A final clean-head confined 419-entry rerun remains the final gate. It has not
-yet run, and the 417-plus-two historical receipt and focused two-row audit do
-not claim that final clean-head result.
+The full-branch simplify review then found findings 271 and 272. Its decisive
+verdicts were: “optional `result`/`error` cannot distinguish
+`reject(undefined)` from fulfillment,” and “one `reschedule` or `suspend`
+label compiles different SQL text and bind arity from the wake representation.”
+Red `67a5c0d` was run against `a00fc27`; both new cases failed (2/2): the
+settlement case resolved after the healthy call
+committed and rejected with `undefined`, while the real-batch comparison
+reported both `reschedule` and `suspend` as `{ sqlText: false, bindArity:
+false }`. Green `cbbb70d` installed the closed settlement outcome and fixed
+mode-bound wake SQL; the focused batch-shape case passed 1/1, the relevant
+wake regressions passed 29/29, and store-libsql typecheck passed. Its first
+settlement audit was correctly refused as wrong-path because the broad deletion
+also failed the targeted owner. `25f5849` separated the replacement verdict,
+but its next audit was still wrong-path through generated poison siblings.
+That self-catch is finding 273. `2023def` restricts the mutation to the
+undefined-rejection discriminant; separate one-row audits reported `caught`
+for `poison-healthy-settlement` and `poison-targeted-settlement-owner`, with
+their exact declared verdicts.
+
+The checkpointless-sleep simplify report did not reproduce as a correctness
+finding. Every production `ReplayContext.sleep` suspension already carried its
+durable marker, `awaitEvent` parks inside its own batch, and no public issuer
+could construct the worker's checkpointless sleep branch. `cbbb70d` removes
+that unreachable state structurally; it does not increment either detector
+ledger. The TypeScript binding simplification likewise retained an explicit
+type-only namespace-import control rather than claiming a new finding.
+
+The historical 419-entry run at `98c3dee` and its 417-plus-two follow-up remain
+exactly the receipts described above. After the documentation closeout at
+`a00fc27`, a clean-head confined audit reported **419/419 caught**, zero
+survivors, zero wrong-path entries, and every shard complete. Findings 271 and
+273 then added two settlement mutations, so a final clean-head confined
+**421-entry** rerun remains the final mutation gate; the 419-entry receipt and
+focused two-entry receipts do not claim that result. The pinned TLA+ launcher
+checksum was separately refreshed
+to the official v1.8.0 prerelease asset digest
+`sha256:eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a`
+after that asset changed on 2026-08-21. This preserves the checksum gate rather
+than waiving it; the final exact-head TLC run remains pending evidence.
