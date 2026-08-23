@@ -1211,21 +1211,30 @@ describe('runClaimedRun', () => {
   })
 
   it('reads heartbeat cancellation with the module-captured signal getter', () => {
-    const controller = new TaskAbortController()
-    const signal = abortControllerSignal(controller)
+    const selected = abortControllerSignal(new TaskAbortController())
+    Object.defineProperty(selected, 'cause', {
+      value: new Error('abort-signal sentinel cause'),
+    })
+    const control = abortControllerSignal(new TaskAbortController())
     const descriptor = Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted')
     if (descriptor === undefined) throw new Error('expected AbortSignal.aborted')
     Object.defineProperty(AbortSignal.prototype, 'aborted', {
       configurable: true,
       get: () => true,
     })
-    let observed: boolean | undefined
+    let observed: { selected: boolean; control: boolean } | undefined
     try {
-      observed = abortSignalAborted(signal)
+      observed = {
+        selected: abortSignalAborted(selected),
+        control: abortSignalAborted(control),
+      }
     } finally {
       Object.defineProperty(AbortSignal.prototype, 'aborted', descriptor)
     }
-    expect(observed, 'mutation-verdict:construction:sdk-captured-abort-aborted-getter').toBe(false)
+    expect(observed, 'mutation-verdict:construction:sdk-captured-abort-aborted-getter').toEqual({
+      selected: false,
+      control: false,
+    })
   })
 
   it('races finalization promises without ambient array iteration', async () => {
