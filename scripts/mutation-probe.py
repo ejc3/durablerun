@@ -301,9 +301,9 @@ def typescript_mutation_preflight_diagnostic(
             f"{mutation.name}: generated TypeScript mutant has parse diagnostics "
             f"{analysis.diagnostics}"
         )
-    if mutation.verdict.kind == "behavior" and analysis.runtime_binding_diagnostics:
+    if mutation.typecheck_project is None and analysis.runtime_binding_diagnostics:
         return (
-            f"{mutation.name}: generated behavioral TypeScript mutant has "
+            f"{mutation.name}: generated Vitest-routed TypeScript mutant has "
             f"runtime binding diagnostics {analysis.runtime_binding_diagnostics}"
         )
     return None
@@ -9102,7 +9102,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             elif (
                 fault == TYPESCRIPT_MUTANT_BINDING_LIVE_ENROLLMENT_FAULT
                 and not injected_binding_fault
-                and mutation.verdict.kind == "behavior"
+                and mutation.typecheck_project is None
             ):
                 syntax_mutation = Mutation(
                     mutation.name,
@@ -12152,7 +12152,9 @@ def mutation_checkpoint_problems() -> list[str]:
         emitted_payload: list[object] = []
         emitted_report_paths: list[Path] = []
         executed_names: list[str] = []
+        created_worktrees: list[Path] = []
         preflighted_names: list[str] = []
+        reject_preflight = [False]
         execution_mode = ["interrupt"]
         production_atomic_json = atomic_json
 
@@ -12193,6 +12195,7 @@ def mutation_checkpoint_problems() -> list[str]:
         ) -> subprocess.CompletedProcess[str]:
             if arguments[:4] == ("worktree", "add", "--detach", "--quiet"):
                 worker_root = Path(arguments[4])
+                created_worktrees.append(worker_root)
                 worker_root.mkdir(parents=True)
                 (worker_root / ".git").write_text("gitdir: fixture\n")
             return subprocess.CompletedProcess(("git", *arguments), 0, "", "")
@@ -12224,6 +12227,8 @@ def mutation_checkpoint_problems() -> list[str]:
 
         def fixture_preflight(mutations: list[Mutation]) -> list[str]:
             preflighted_names.extend(mutation.name for mutation in mutations)
+            if reject_preflight[0]:
+                return ["injected preflight rejection"]
             return []
 
         def baseline_report(launch: ProcessLaunch) -> None:
@@ -12313,6 +12318,23 @@ def mutation_checkpoint_problems() -> list[str]:
             MUTATIONS[:] = fixture_mutations
             os.environ[CONFINEMENT_ENV] = "1"
             secrets.token_hex = lambda _size=None: nonce
+
+            reject_preflight[0] = True
+            rejected_code = coordinate_audit("", "1")
+            if rejected_code != 2:
+                failures.append(
+                    "coordinator did not stop on a rejected mutation preflight"
+                )
+            if checkpoint_root.exists() or created_worktrees:
+                failures.append(
+                    "coordinator created checkpoint or worktree artifacts before preflight"
+                )
+            if preflighted_names != mutation_names:
+                failures.append(
+                    "rejected preflight did not receive the exact selected inventory"
+                )
+            preflighted_names.clear()
+            reject_preflight[0] = False
 
             result_code = coordinate_audit("", "1")
             if result_code != 128 + signal.SIGTERM:

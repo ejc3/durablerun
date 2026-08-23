@@ -380,19 +380,6 @@ function createMutationBindingAnalyzer(sources) {
   }
   const service = ts.createLanguageService(host, ts.createDocumentRegistry())
 
-  const inErasedTypeContext = (node) => {
-    for (let parent = node.parent; parent && !ts.isSourceFile(parent); parent = parent.parent) {
-      if (
-        ts.isTypeNode(parent) ||
-        ts.isInterfaceDeclaration(parent) ||
-        ts.isTypeAliasDeclaration(parent)
-      ) {
-        return true
-      }
-    }
-    return false
-  }
-
   const isLocalValueExport = (node) => {
     const specifier = node.parent
     if (!ts.isExportSpecifier(specifier)) return false
@@ -409,8 +396,8 @@ function createMutationBindingAnalyzer(sources) {
   }
 
   const isRuntimeReference = (node) => {
-    if (inErasedTypeContext(node)) return false
     const parent = node.parent
+    if (ts.isComputedPropertyName(parent) && ts.isTypeElement(parent.parent)) return false
     if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false
     if (ts.isMetaProperty(parent)) return false
     if (ts.isShorthandPropertyAssignment(parent) && parent.name === node) return true
@@ -427,6 +414,37 @@ function createMutationBindingAnalyzer(sources) {
     return ts.isInExpressionContext(node)
   }
 
+  const isTypeOnlyAliasDeclaration = (declaration) => {
+    for (
+      let current = declaration;
+      current && !ts.isSourceFile(current);
+      current = current.parent
+    ) {
+      if (
+        (ts.isImportClause(current) ||
+          ts.isImportSpecifier(current) ||
+          ts.isImportEqualsDeclaration(current) ||
+          ts.isExportSpecifier(current) ||
+          ts.isExportDeclaration(current)) &&
+        current.isTypeOnly
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  const resolvesToRuntimeValue = (checker, node) => {
+    const symbol = checker.resolveName(node.text, node, ts.SymbolFlags.Value, false)
+    if (!symbol) return false
+    if ((symbol.declarations ?? []).some(isTypeOnlyAliasDeclaration)) return false
+    if (symbol.flags & ts.SymbolFlags.Alias) {
+      const target = checker.getAliasedSymbol(symbol)
+      if (target.name !== 'unknown' && !(target.flags & ts.SymbolFlags.Value)) return false
+    }
+    return true
+  }
+
   const unresolvedRuntimeReferences = (fileName) => {
     const program = service.getProgram()
     if (!program) throw new Error('TypeScript binding program is unavailable')
@@ -438,7 +456,7 @@ function createMutationBindingAnalyzer(sources) {
       if (
         ts.isIdentifier(node) &&
         isRuntimeReference(node) &&
-        !checker.resolveName(node.text, node, ts.SymbolFlags.Value, false)
+        !resolvesToRuntimeValue(checker, node)
       ) {
         const start = node.getStart(sourceFile)
         const location = sourceFile.getLineAndCharacterOfPosition(start)
