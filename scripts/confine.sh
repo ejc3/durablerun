@@ -20,6 +20,13 @@ if [[ -z "${CONFINE_CPU:-}" ]]; then
   CONFINE_CPU="$((usable * 100))%"
 fi
 TASKS="${CONFINE_TASKS:-4096}"
+export CONFINE_MEM CONFINE_CPU
+export CONFINE_TASKS="$TASKS"
+
+if ! command -v systemd-run >/dev/null 2>&1; then
+  echo "confine: systemd-run is unavailable; refusing to run without an aggregate cgroup" >&2
+  exit 125
+fi
 
 exec systemd-run --user --scope --quiet \
   -p "MemoryMax=$CONFINE_MEM" -p "MemorySwapMax=0" \

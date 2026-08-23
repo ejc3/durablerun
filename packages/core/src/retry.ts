@@ -1,4 +1,14 @@
-import type { RetryStrategy } from './types.js'
+import { TASK_INTRINSICS } from './intrinsics.js'
+import type { NormalizedRetryStrategy, RetryStrategy } from './types.js'
+import { durationToMs, requirePositiveInt } from './validate.js'
+
+const {
+  MathMin: min,
+  NumberIsFinite: isFiniteNumber,
+  ObjectFreeze: freeze,
+  RangeError: TrustedRangeError,
+  ReflectGet: reflectGet,
+} = TASK_INTRINSICS
 
 /**
  * Retry math, ported from Absurd's fail_run (absurd.sql): exponential delay =
@@ -14,14 +24,32 @@ export function decideRetry(
   failedAttempt: number,
   maxAttempts: number,
 ): RetryDecision {
-  if (failedAttempt < 1) throw new RangeError(`failedAttempt must be >= 1, got ${failedAttempt}`)
-  if (strategy.kind === 'none') return { retry: false }
-  if (failedAttempt + 1 > maxAttempts) return { retry: false }
-  return { retry: true, delaySeconds: retryDelaySeconds(strategy, failedAttempt) }
+  const normalizedDecision = normalizeRetryStrategy(strategy)
+  const attempt = requirePositiveInt('failedAttempt', failedAttempt)
+  const maximum = requirePositiveInt('maxAttempts', maxAttempts)
+  if (normalizedDecision.kind === 'none' || attempt + 1 > maximum) return { retry: false }
+  return {
+    retry: true,
+    delaySeconds: normalizedRetryDelaySeconds(normalizedDecision, attempt),
+  }
 }
 
 export function retryDelaySeconds(
   strategy: Exclude<RetryStrategy, { kind: 'none' }>,
+  failedAttempt: number,
+): number {
+  const normalizedDelay = normalizeRetryStrategy(strategy)
+  if (normalizedDelay.kind === 'none') {
+    throw new TrustedRangeError('retry delay requires a fixed or exponential strategy')
+  }
+  return normalizedRetryDelaySeconds(
+    normalizedDelay,
+    requirePositiveInt('failedAttempt', failedAttempt),
+  )
+}
+
+function normalizedRetryDelaySeconds(
+  strategy: Exclude<NormalizedRetryStrategy, { kind: 'none' }>,
   failedAttempt: number,
 ): number {
   let delay: number
@@ -30,37 +58,84 @@ export function retryDelaySeconds(
       delay = strategy.baseSeconds
       break
     case 'exponential':
-      delay = Math.min(
-        strategy.baseSeconds * strategy.factor ** (failedAttempt - 1),
-        strategy.maxSeconds,
-      )
+      if (strategy.baseSeconds === 0) return 0
+      delay = strategy.baseSeconds * strategy.factor ** (failedAttempt - 1)
+      if (!isFiniteNumber(delay)) delay = strategy.maxSeconds
+      else delay = min(delay, strategy.maxSeconds)
       break
   }
-  // Malformed strategies round-trip through a TEXT column; NaN here would
-  // store a garbage available_at and silently lose the run forever — worse
-  // than a crash. Fail loudly instead (spawn also validates, see
-  // normalizeRetryStrategy).
-  if (!Number.isFinite(delay)) {
-    throw new RangeError(`retry delay is not finite for strategy ${JSON.stringify(strategy)}`)
-  }
-  return Math.max(0, delay)
+  // The strategy fields are already millisecond-canonical, but multiplication
+  // by a fractional factor can produce a sub-millisecond result. Return the
+  // exact seconds value the store will persist, not a second representation.
+  return durationToMs('retry delay', delay) / 1000
 }
 
 /**
- * Validates a strategy at the write boundary (spawn) so malformed data never
- * reaches the retry_strategy column. Returns the value unchanged on success.
+ * The one retry-strategy parser and constructor. Callers include JavaScript
+ * and durable JSON, so the input is unknown despite the public TypeScript
+ * surface. Every field is snapshotted once, durations are canonicalized to
+ * milliseconds, and a fresh exact frozen object crosses the serialization
+ * boundary; caller getters, extra fields, and toJSON hooks never do.
  */
-export function normalizeRetryStrategy(strategy: RetryStrategy): RetryStrategy {
-  if (strategy.kind === 'none') return strategy
-  const finitePositive = (n: unknown): boolean =>
-    typeof n === 'number' && Number.isFinite(n) && n >= 0
-  if (!finitePositive(strategy.baseSeconds)) {
-    throw new RangeError(`retry strategy baseSeconds invalid: ${JSON.stringify(strategy)}`)
+export function normalizeRetryStrategy(value: unknown): NormalizedRetryStrategy {
+  if (typeof value !== 'object' || value === null) {
+    throw new TrustedRangeError('retry strategy must be an object')
   }
-  if (strategy.kind === 'exponential') {
-    if (!finitePositive(strategy.factor) || !finitePositive(strategy.maxSeconds)) {
-      throw new RangeError(`retry strategy factor/maxSeconds invalid: ${JSON.stringify(strategy)}`)
-    }
+
+  const kind = readRetryField(value, 'kind')
+
+  if (kind === 'none') {
+    return finalizeRetryStrategy({ kind: 'none' })
   }
-  return strategy
+  if (kind !== 'fixed' && kind !== 'exponential') {
+    throw new TrustedRangeError('retry strategy kind must be none, fixed, or exponential')
+  }
+
+  const baseSeconds = readRetryField(value, 'baseSeconds')
+  const canonicalBase = canonicalDurationSeconds('retry strategy baseSeconds', baseSeconds)
+
+  if (kind === 'fixed') {
+    return finalizeRetryStrategy({
+      kind: 'fixed',
+      baseSeconds: canonicalBase,
+    })
+  }
+
+  const factor = readRetryField(value, 'factor')
+  const maxSeconds = readRetryField(value, 'maxSeconds')
+  const canonicalFactor = canonicalRetryFactor(factor)
+
+  return finalizeRetryStrategy({
+    kind: 'exponential',
+    baseSeconds: canonicalBase,
+    factor: canonicalFactor,
+    maxSeconds: canonicalDurationSeconds('retry strategy maxSeconds', maxSeconds),
+  })
+}
+
+function readRetryField(value: object, field: string): unknown {
+  try {
+    return reflectGet(value, field)
+  } catch {
+    throw new TrustedRangeError(`retry strategy ${field} is not readable`)
+  }
+}
+
+function finalizeRetryStrategy(value: RetryStrategy): NormalizedRetryStrategy {
+  return freeze(value) as NormalizedRetryStrategy
+}
+
+function canonicalDurationSeconds(name: string, value: unknown): number {
+  if (typeof value !== 'number') {
+    throw new TrustedRangeError(`${name} must be a number`)
+  }
+  const milliseconds = durationToMs(name, value)
+  return milliseconds === 0 ? 0 : milliseconds / 1000
+}
+
+function canonicalRetryFactor(value: unknown): number {
+  if (typeof value !== 'number' || !isFiniteNumber(value) || value < 0) {
+    throw new TrustedRangeError('retry strategy factor must be a finite non-negative number')
+  }
+  return value === 0 ? 0 : value
 }

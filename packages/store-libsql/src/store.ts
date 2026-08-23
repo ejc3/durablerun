@@ -2,54 +2,278 @@ import {
   type Buggify,
   type Checkpoint,
   type ClaimedRun,
-  durationToMs,
+  DERIVED_INTEGER_BOUNDS,
+  FENCE_COLS,
+  FENCE_SET,
+  FENCE_VALS,
   FencedBatch,
-  LeaseLostError,
-  requireEpochMs,
-  requirePositiveInt,
+  INFRA_BACKOFF_SECONDS,
   type IdSource,
+  LeaseLostError,
   type LeaseState,
-  neverBuggify,
-  normalizeRetryStrategy,
-  type RetryStrategy,
+  MAX_DURATION_MS,
+  NOW,
+  PERSISTED_INTEGER_BOUNDS,
+  POSITIVE_CLAIM_GENERATION_BOUNDS,
+  type PersistedIntegerBounds,
+  type PersistedIntegerBoundsExceptClaimGeneration,
+  REASON_CANCELLED,
+  REASON_CLAIM_TIMEOUT,
+  REASON_INFRA_CAP,
+  REASON_RELAUNCH_CAP,
+  RELAUNCH_BACKOFF_BASE_SECONDS,
+  RELAUNCH_BACKOFF_MAX_SECONDS,
+  STAMP,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
   type SqlExecutor,
   type SqlRow,
-  STAMP,
   type SweptRun,
   type TaskResult,
+  decodeBoundedInteger,
+  durationToMs,
+  fenceSetAt,
+  neverBuggify,
+  normalizeRetryStrategy,
+  parseTaskValueJson,
+  requireDerivedInteger,
+  requireEpochMs,
+  requirePositiveClaimGeneration,
+  requirePositiveInt,
+  requireRunOrdinal,
+  serializeTaskValue,
+  storageValueKind,
 } from '@durablerun/core'
-import { cancelDue, eligibleTask, LIVE } from './fragments.js'
+import {
+  LIVE,
+  cancelDue,
+  durableTaskHeadersAdmissible,
+  durableTaskRetryAdmissible,
+  eligibleTask,
+  epochAdditionFits,
+  fenceFrom,
+  fenced,
+  fencedAt,
+  registeredWait,
+  runAvailableDue,
+  runClaimExpired,
+  runClaimUnexpired,
+  runOwnedByTask,
+  soleLiveRun,
+  storedCurrentRunAccounting,
+  storedHighestOwnedOrdinal,
+  storedIncrementableClaimGeneration,
+  storedIncrementableInteger,
+  storedInteger,
+  storedIntegerWithin,
+  storedPositiveClaimGeneration,
+  successorOwned,
+  taskOwnsEveryRun,
+} from './fragments.js'
+import { DRIVER_HEARTBEAT_INGRESS } from './schema.js'
 import { NOW_MS } from './time.js'
 
-const DEFAULT_RETRY: RetryStrategy = {
+const DEFAULT_RETRY = normalizeRetryStrategy({
   kind: 'exponential',
   baseSeconds: 5,
   factor: 2,
   maxSeconds: 3600,
-}
+})
 const DEFAULT_MAX_ATTEMPTS = 5
+const TASK_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.tasks
+const RUN_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.runs
+const CHECKPOINT_INTEGER_BOUNDS = PERSISTED_INTEGER_BOUNDS.checkpoints
+const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.hasOwnProperty) as (
+  value: object,
+  key: PropertyKey,
+) => boolean
+
+type Wake = { inSeconds: number } | { atEpochMs: number }
 
 /**
- * Contract constants (DESIGN.md §3.1/§3.8.2 pins them; the conformance suite
- * asserts them; dialects must match them — they are spec, not tuning knobs).
+ * Classify and read a wake once before constructing its SQL shape.
+ *
+ * Task code shares this realm and may add an inherited `inSeconds` property
+ * or expose accessors with changing values. The captured own-property check
+ * makes the discriminant durable, and returning the complete shape keeps both
+ * suspension paths on the same snapshot.
  */
-export const RELAUNCH_CAP = 5
-export const INFRA_RETRY_CAP = 20
-export const INFRA_BACKOFF_SECONDS = 5
-export const RELAUNCH_BACKOFF_BASE_SECONDS = 5
-export const RELAUNCH_BACKOFF_MAX_SECONDS = 60
+function prepareWake(
+  wake: Wake,
+  relative: boolean,
+): {
+  expression: string
+  expressionArgs: [mode: number, relativeMs: number, absoluteMs: number]
+  fits: string
+  fitArgs: [mode: number, relativeMs: number]
+} {
+  const value = relative
+    ? (wake as { inSeconds: number }).inSeconds
+    : (wake as { atEpochMs: number }).atEpochMs
+  const argument = relative
+    ? durationToMs('wake.inSeconds', value)
+    : requireEpochMs('wake.atEpochMs', value)
+  const mode = relative ? 1 : 0
+  const relativeMs = relative ? argument : 0
+  const absoluteMs = relative ? 0 : argument
+  return {
+    // A batch label is the tracing and crash-injection address, so both wake
+    // variants must compile to one statement inventory and bind shape. The
+    // mode is data, not TypeScript control flow: relative wakes still derive
+    // their absolute instant from database time, while absolute wakes are
+    // stored verbatim after requireEpochMs validates them above.
+    expression: `(CASE WHEN ? = 1 THEN ${NOW_MS} + ? ELSE ? END)`,
+    expressionArgs: [mode, relativeMs, absoluteMs],
+    fits: `AND (CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE 1 END)`,
+    fitArgs: [mode, relativeMs],
+  }
+}
 
 /**
- * Terminal failure reasons. Since the FencedBatch stamps carry batch
- * ownership, these are pure data (never fence keys) — but they are still
- * wire-visible contract values shared with the conformance suite.
+ * The persisted cancellation JSON is an untyped serialization boundary.
+ *
+ * Activation is the one transition that consumes maxDurationSeconds. Keep its
+ * complete JSON type/range check and the resulting epoch headroom in one CASE
+ * so malformed JSON is refused before json_extract can abort a later
+ * statement, and so the leading run CAS cannot commit before task-start learns
+ * that the derived deadline is invalid.
  */
-export const REASON_CLAIM_TIMEOUT = '{"name":"$ClaimTimeout"}'
-export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
-export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
+function activationDurationAdmissible(task: string, at: string): string {
+  const cancellation = `${task}.cancellation`
+  const path = `'$.maxDurationSeconds'`
+  const seconds = `json_extract(${cancellation}, ${path})`
+  const durationMs = taskMaxDurationMs(task)
+  const firstStarted = `${task}.first_started_at_ms`
+  return `(CASE
+    WHEN ${cancellation} IS NULL THEN 1
+    WHEN NOT json_valid(${cancellation}) THEN 0
+    WHEN json_type(${cancellation}, ${path}) IS NULL THEN 1
+    WHEN json_type(${cancellation}, ${path}) NOT IN ('integer','real') THEN 0
+    WHEN (${seconds}) < 0 OR (${durationMs}) > ${MAX_DURATION_MS} THEN 0
+    WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0
+    ELSE 1
+  END = 1)`
+}
+
+function taskMaxDurationMs(task: string): string {
+  return `CAST(ROUND(
+    json_extract(${task}.cancellation, '$.maxDurationSeconds') * 1000
+  ) AS INTEGER)`
+}
+
+/**
+ * Attempt counters DERIVED from a stamped run's ordinal, never bumped
+ * (`x = x + 1` is not idempotent in a follow-on: an exact batch replay
+ * re-matches its own stamped row and counts twice — FencedBatch rejects that
+ * shape). run.attempt counts EVERY successor; infra_retries counts the
+ * infrastructure ones; the user ordinal is the difference. One definition
+ * each, used at every site.
+ */
+const USER_ATTEMPTS_FROM = (runIdParam: string, fence: string): string =>
+  `(SELECT f.attempt - tasks.infra_retries FROM runs f
+    WHERE f.run_id = ${runIdParam} AND f.fence_stamp = ${fence})`
+const INFRA_RETRIES_FROM = (successorParam: string, fence: string): string =>
+  `(SELECT f.attempt - 1 - tasks.attempts FROM runs f
+    WHERE f.run_id = ${successorParam} AND f.fence_stamp = ${fence})`
+
+/** A run's own row, by id — the correlation every fence in this file uses. */
+const BY_RUN = `f.run_id = ?`
+
+/**
+ * The last-writer-wins tiebreak on a checkpoint upsert. Wire-visible
+ * semantics, so it is ONE constant: the two write sites (the inline
+ * checkpoint and the suspension marker) drifting apart would mean a step's
+ * state was retained by one path and discarded by the other.
+ */
+const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
+    state = excluded.state,
+    owner_run_id = excluded.owner_run_id,
+    owner_attempt = excluded.owner_attempt,
+    updated_at_ms = excluded.updated_at_ms
+  WHERE excluded.owner_attempt >= checkpoints.owner_attempt`
+
+/*
+ * The equality makes the two attempt values one semantic ordinal. Validate
+ * the checkpoint's canonical representation and range once; any different
+ * owner representation fails equality. A second bounds/type predicate would
+ * be redundant and no single-condition mutation could exercise it.
+ */
+const checkpointOwnerMatches = (checkpoint: string, owner: string): string =>
+  `${storedIntegerWithin(CHECKPOINT_INTEGER_BOUNDS.owner_attempt, checkpoint)}
+   AND ${owner}.run_id = ${checkpoint}.owner_run_id
+   AND ${owner}.task_id = ${checkpoint}.task_id
+   AND ${owner}.queue = ${checkpoint}.queue
+   AND ${owner}.attempt = ${checkpoint}.owner_attempt`
+
+/**
+ * Validate the existing row whose primary key the checkpoint upsert consumes.
+ *
+ * This does not compare its ordinal with the incoming writer — CHECKPOINT_LWW
+ * remains the tiebreaker. It only refuses malformed ownership before the
+ * leading CAS can extend a lease or park a run.
+ */
+const validCheckpointConflict = (run: string, checkpointName: string): string =>
+  `NOT EXISTS (
+    SELECT 1 FROM checkpoints c
+    WHERE c.task_id = ${run}.task_id
+      AND c.checkpoint_name = ${checkpointName}
+      AND NOT (
+        c.queue = ${run}.queue
+        AND EXISTS (
+          SELECT 1 FROM runs owner
+          WHERE ${checkpointOwnerMatches('c', 'owner')}
+        )
+      )
+  )`
+
+/**
+ * The task follows its run's suspension state. `reschedule` and `suspendRun`
+ * had this written out identically -- the same statement, the same args, in
+ * two places -- which is the shape that drifts. Their eligibility guards had
+ * already drifted once.
+ */
+function taskMirrorsRun(b: FencedBatch, runId: string, after: string): void {
+  b.derived('task-mirror', {
+    relation: 'runs-to-tasks',
+    fence: after,
+    where: 'f.run_id = ?',
+    whereArgs: [runId],
+    set: {
+      state: `(SELECT f.state FROM runs f
+               WHERE f.run_id = ? AND f.fence_stamp = ${b.fence(after)})`,
+    },
+    setArgs: [runId],
+    narrow: `state IN ${LIVE}`,
+    rows: 'one',
+  })
+}
+
+/**
+ * A run's waits die with the run. Four transitions end a run — the relaunch
+ * cap, the claim timeout, completion and failure — and each wrote this
+ * statement out. They differed only in which compare-and-set they follow,
+ * which is exactly the part that must not be copied by hand.
+ */
+function waitsGone(b: FencedBatch, runId: string, after: string): void {
+  b.derived('waits-gone', {
+    relation: 'runs-to-waits',
+    fence: after,
+    where: 'f.run_id = ?',
+    whereArgs: [runId],
+    rows: 'source-keys',
+  })
+}
+
+/**
+ * The two suspension APIs share one post-transition shape. Keeping the task
+ * mirror and wait reaping inseparable prevents a timer/deferral path from
+ * clearing the run's wake fields while leaving an older registration alive.
+ */
+function finishSuspension(b: FencedBatch, runId: string): void {
+  taskMirrorsRun(b, runId, 'suspend')
+  waitsGone(b, runId, 'suspend')
+}
 
 /** Columns needed to decode a ClaimedRun (shared by claim and activate). */
 const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
@@ -63,32 +287,77 @@ const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.clai
  */
 export const SWEEP_SCAN_CANCELS_SQL = `SELECT t.task_id,
        (SELECT r.run_id FROM runs r
-          WHERE r.task_id = t.task_id AND r.state IN ${LIVE}
+          WHERE ${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}
           ORDER BY r.attempt DESC LIMIT 1) AS run_id
 FROM tasks t
-WHERE t.queue = ? AND ${cancelDue('t.cancel_at_ms')}
+WHERE t.queue = ? AND ${cancelDue('t', NOW_MS)}
   AND t.state IN ${LIVE}
+  AND ${taskOwnsEveryRun('t')}
 ORDER BY t.cancel_at_ms, t.task_id
 LIMIT ?`
 
 export const NEXT_WAKE_SQL = `SELECT MIN(v) AS wake_ms FROM (
-  SELECT MIN(available_at_ms) AS v FROM runs
-    WHERE queue = ? AND state = 'pending' AND available_at_ms IS NOT NULL
+  SELECT MIN(r.available_at_ms) AS v FROM runs r
+    WHERE r.queue = ? AND r.state = 'pending'
+      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}
   UNION ALL
-  SELECT MIN(available_at_ms) FROM runs
-    WHERE queue = ? AND state = 'sleeping' AND available_at_ms IS NOT NULL
+  SELECT MIN(r.available_at_ms) FROM runs r
+    WHERE r.queue = ? AND r.state = 'sleeping'
+      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}
   UNION ALL
-  SELECT MIN(claim_expires_at_ms) FROM runs
-    WHERE queue = ? AND state = 'running' AND claim_expires_at_ms IS NOT NULL
+  SELECT MIN(r.claim_expires_at_ms) FROM runs r
+    WHERE r.queue = ? AND r.state = 'running'
+      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}
   UNION ALL
-  SELECT MIN(cancel_at_ms) FROM tasks
-    WHERE queue = ? AND cancel_at_ms IS NOT NULL AND state IN ${LIVE}
+  SELECT MIN(t.cancel_at_ms) FROM tasks t
+    WHERE t.queue = ? AND t.state IN ${LIVE}
+      AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't')}
 )`
 
-export const SWEEP_SCAN_EXPIRED_SQL = `SELECT r.run_id, r.task_id, r.attempt, r.claim_gen, r.activated_gen, r.relaunch_count
-FROM runs r
+const storedSweepGenerations = (run: string): string =>
+  `${storedPositiveClaimGeneration(run)}
+   AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}`
+
+const storedSweepCounters = (run: string): string =>
+  `${storedSweepGenerations(run)}
+   AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}`
+
+/**
+ * A live owner may either reopen a lost launch or fail an activated timeout.
+ * This same property gates discovery before LIMIT and both winning CASes.
+ */
+const sweepLiveOwnerAdmissible = (run: string, task: string): string =>
+  `${storedSweepCounters(run)}
+   AND ${soleLiveRun(run)}
+   AND ${storedCurrentRunAccounting(run, task)}
+   AND ${storedHighestOwnedOrdinal(run)}
+   AND (${run}.activated_gen < ${run}.claim_gen
+     OR (${run}.activated_gen = ${run}.claim_gen
+       AND (${task}.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}
+         OR (${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, run)}
+           AND ${run}.attempt = ${task}.attempts + ${task}.infra_retries + 1))))`
+
+/**
+ * Terminal owners are inert, but an already terminalizing sweep arm may still
+ * quiesce their running row (DESIGN §3.4 rule 6). A lost launch below the cap
+ * is deliberately excluded because its only live-owner action would revive.
+ */
+const sweepTerminalOwnerAdmissible = (run: string): string =>
+  `${storedSweepGenerations(run)}
+   AND (${run}.activated_gen = ${run}.claim_gen
+     OR (${run}.activated_gen < ${run}.claim_gen
+       AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}
+       AND ${run}.relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}))`
+
+const sweepScanAdmissible = (run: string, task: string): string =>
+  `((${task}.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible(run, task)})
+    OR (${task}.state NOT IN ${LIVE} AND ${sweepTerminalOwnerAdmissible(run)}))`
+
+export const SWEEP_SCAN_EXPIRED_SQL = `SELECT r.run_id, r.task_id, r.claim_gen, r.activated_gen, r.relaunch_count
+FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
 WHERE r.queue = ? AND r.state = 'running'
-  AND r.claim_expires_at_ms IS NOT NULL AND r.claim_expires_at_ms <= ${NOW_MS}
+  AND ${runClaimExpired('r', NOW_MS)}
+  AND ${sweepScanAdmissible('r', 't')}
 ORDER BY r.claim_expires_at_ms, r.run_id
 LIMIT ?`
 
@@ -134,80 +403,154 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   ): Promise<SpawnResult> {
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
-    const retry = JSON.stringify(normalizeRetryStrategy(opts.retryStrategy ?? DEFAULT_RETRY))
+    const retryInput = opts.retryStrategy
+    const retry = serializeTaskValue(
+      'retry strategy',
+      normalizeRetryStrategy(retryInput === undefined ? DEFAULT_RETRY : retryInput),
+    )
     const maxAttempts = requirePositiveInt('maxAttempts', opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)
     const delayMs = durationToMs('startDelaySeconds', opts.startDelaySeconds ?? 0)
-    const maxDelayMs =
-      opts.cancellation?.maxDelaySeconds !== undefined
-        ? durationToMs('cancellation.maxDelaySeconds', opts.cancellation.maxDelaySeconds)
-        : null
-    // maxDurationSeconds is stored in the cancellation JSON and applied at
-    // activate — validate it HERE so garbage never reaches the column.
-    if (opts.cancellation?.maxDurationSeconds !== undefined) {
-      durationToMs('cancellation.maxDurationSeconds', opts.cancellation.maxDurationSeconds)
+    const cancellationInput = opts.cancellation
+    let cancellationJson: string | null = null
+    let maxDelayMs: number | null = null
+    if (cancellationInput !== undefined) {
+      const maxDelaySeconds = cancellationInput.maxDelaySeconds
+      const maxDurationSeconds = cancellationInput.maxDurationSeconds
+      if (maxDelaySeconds !== undefined) {
+        maxDelayMs = durationToMs('cancellation.maxDelaySeconds', maxDelaySeconds)
+      }
+      // maxDurationSeconds is applied at activate. Canonicalize it from the
+      // same one-time snapshot that was validated, so a getter cannot make
+      // the durable JSON disagree with the deadline arithmetic.
+      const canonicalCancellation = {
+        maxDelaySeconds: maxDelayMs === null ? undefined : maxDelayMs / 1000,
+        maxDurationSeconds:
+          maxDurationSeconds === undefined
+            ? undefined
+            : durationToMs('cancellation.maxDurationSeconds', maxDurationSeconds) / 1000,
+      }
+      cancellationJson = serializeTaskValue('cancellation policy', canonicalCancellation)
     }
 
-    const [, , chosen] = await this.db.batch('spawn', [
-      // 1. Idempotent task insert: loses silently when the key already
-      //    exists. enqueue/cancel deadlines are computed in SQL (rule 3);
-      //    cancel_at_ms materializes max_delay so sweeps and nextWakeAt are
-      //    indexed reads, never JSON scans.
-      {
-        sql: `INSERT INTO tasks (task_id, queue, task_name, params, headers, retry_strategy,
-                max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
-                cancel_at_ms, created_at_ms)
-              SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW_MS} + ?,
-                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? + ? ELSE NULL END,
-                ${NOW_MS}
-              WHERE 1
-              ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
-              DO NOTHING`,
-        args: [
-          taskId,
-          queue,
-          taskName,
-          paramsJson,
-          opts.headers ? JSON.stringify(opts.headers) : null,
-          retry,
-          maxAttempts,
-          opts.cancellation ? JSON.stringify(opts.cancellation) : null,
-          opts.idempotencyKey ?? null,
-          delayMs,
-          maxDelayMs,
-          delayMs,
-          maxDelayMs,
-        ],
-      },
-      // 2. Initial run — only when OUR task insert won: the task must be
-      //    LIVE (rule 6 — a terminal task at a colliding id gets no new run)
-      //    AND have no run yet (an idempotency hit on an existing task, or a
-      //    losing insert under an id collision, adds nothing).
-      {
-        sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
-              SELECT ?, ?, task_id, 1, 'pending', enqueue_at_ms, ${NOW_MS}
-              FROM tasks WHERE task_id = ? AND state IN ${LIVE}
-                AND NOT EXISTS (SELECT 1 FROM runs WHERE task_id = ?)`,
-        args: [runId, queue, taskId, taskId],
-      },
-      // 3. Resolve winner (ours or the pre-existing task for this key).
-      {
-        sql: `SELECT t.task_id AS task_id,
-                     (SELECT r.run_id FROM runs r WHERE r.task_id = t.task_id
-                        ORDER BY r.run_id DESC LIMIT 1) AS run_id
-              FROM tasks t
-              WHERE t.task_id = ?
-                 OR (? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?)
-              ORDER BY (t.task_id = ?) DESC
-              LIMIT 1`,
-        args: [taskId, opts.idempotencyKey ?? null, queue, opts.idempotencyKey ?? null, taskId],
-      },
-    ])
+    const headersInput = opts.headers
+    const headersJson =
+      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)
+    const key = opts.idempotencyKey ?? null
+    const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
+    // Idempotent task insert: loses silently when the key already exists.
+    // enqueue/cancel deadlines are computed in SQL (rule 3); cancel_at_ms
+    // materializes max_delay so sweeps and nextWakeAt are indexed reads, never
+    // JSON scans.
+    //
+    // The NOT EXISTS on the primary key is what makes this a compare-and-set
+    // rather than a crash: the targeted ON CONFLICT covers the idempotency
+    // index only, so a colliding task_id raised a constraint error out of
+    // spawn instead of losing. Losing is the right answer — some other task
+    // already occupies that identity — and it is one the batch can reason
+    // about.
+    b.cas(
+      'task',
+      'tasks',
+      `INSERT INTO tasks (task_id, queue, task_name, params, headers, retry_strategy,
+         max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
+         cancel_at_ms, created_at_ms, ${FENCE_COLS})
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,
+         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,
+         ${NOW}, ${FENCE_VALS}
+       WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
+         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)
+         AND ${epochAdditionFits(NOW, '?')}
+         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})
+       ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
+       DO NOTHING`,
+      [
+        taskId,
+        queue,
+        taskName,
+        paramsJson,
+        headersJson,
+        retry,
+        maxAttempts,
+        cancellationJson,
+        key,
+        delayMs,
+        maxDelayMs,
+        delayMs,
+        maxDelayMs,
+        taskId,
+        taskId,
+        delayMs,
+        maxDelayMs,
+        delayMs,
+        maxDelayMs,
+      ],
+    )
+    // The initial run, for the task THIS batch just created. One guard the
+    // old version needed has deleted itself: the task cannot be terminal, we
+    // inserted it 'pending' one statement ago.
+    //
+    // The "no run yet" guard stays, in ownership form, because the task's
+    // STAMP does not distinguish this execution from the previous one. On an
+    // exact replay after a lost response the task insert correctly writes
+    // nothing — the task is already there — but the task still CARRIES the
+    // first pass's stamp, so this statement matched and inserted the same run
+    // again, dying on the run's primary key. The caller then saw an error for
+    // a spawn that had fully succeeded, and a retry without an idempotency
+    // key made duplicate work. Asking whether the task already has a run is a
+    // question about ownership, which does not decay.
+    b.followOn(
+      'run',
+      'runs',
+      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
+         available_at_ms, created_at_ms, ${FENCE_COLS})
+       SELECT ?, f.queue, f.task_id, 1, 'pending', f.enqueue_at_ms, f.fence_at_ms,
+         ${STAMP}, f.fence_at_ms
+       FROM tasks f WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('task')}
+         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.enqueue_at_ms, 'f')}
+         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = f.task_id)`,
+      [runId, taskId],
+      'one',
+    )
+    // Only reached when the insert lost, so by definition it reads a task some
+    // OTHER caller created — fenced by the unique (queue, idempotency_key)
+    // index, not by this batch's stamp. Ordering prefers the idempotency
+    // winner over a bare id collision and breaks ties on task_id, so it is
+    // deterministic on every dialect; an `ORDER BY (t.task_id = ?) DESC` would
+    // not be, since Postgres sorts NULLs first.
+    b.openTail(
+      'receipt',
+      'the winner is a task another caller created; the unique idempotency index is its fence, not this batch stamp',
+      `SELECT winner.task_id AS task_id,
+              (SELECT r.run_id FROM runs r
+                 WHERE ${runOwnedByTask('r', 'winner')}
+                 ORDER BY r.attempt DESC, r.run_id DESC LIMIT 1) AS run_id
+       FROM (
+         SELECT t.task_id, t.queue, 1 AS priority
+         FROM tasks t WHERE t.task_id = ? AND t.queue = ?
+         UNION ALL
+         SELECT t.task_id, t.queue, 0 AS priority
+         FROM tasks t
+         WHERE ? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
+           AND t.task_id <> ?
+       ) winner
+       ORDER BY winner.priority, winner.task_id
+       LIMIT 1`,
+      [taskId, queue, key, queue, key, taskId],
+    )
+    const { won, results } = await b.run(this.db)
+    if (won === 'task') return { taskId, runId, created: true }
 
-    const row = chosen?.rows[0]
-    if (!row) throw new Error('spawn: winner resolution returned no row')
-    const wonTaskId = String(row.task_id)
-    const wonRunId = row.run_id === null ? runId : String(row.run_id)
-    return { taskId: wonTaskId, runId: wonRunId, created: wonTaskId === taskId }
+    const row = results.receipt?.rows[0]
+    if (!row) throw new Error('spawn: the task insert lost but no existing task explains it')
+    // A pre-existing task may legitimately have no run — swept away, or never
+    // given one. There is no honest run id to report then, and the previous
+    // version reported the one it had minted and never inserted, so every
+    // poll on it found nothing forever.
+    return {
+      taskId: String(row.task_id),
+      runId: row.run_id === null ? null : String(row.run_id),
+      created: false,
+    }
   }
 
   async claim(
@@ -221,101 +564,158 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
     // must drain via the successor-tick chain, never assume a full batch.
     const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
-    const [, , , picked] = await this.db.batch('claim', [
-      // 1. The claim CAS: due runs of live tasks → running, stamped with the
-      //    fresh token and an incremented per-claim generation. The candidate
-      //    subselect is a bounded per-state UNION so each leg is an ordered
-      //    covering-index scan of ≤K rows — no temp b-tree over the backlog
-      //    (prevention: the query-plan test suite pins this shape).
-      {
-        sql: `UPDATE runs SET
-                state = 'running',
-                claimed_by = ?,
-                claim_gen = claim_gen + 1,
-                lease_ms = ?,
-                claim_expires_at_ms = ${NOW_MS} + ?,
-                heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id IN (
-                SELECT c.run_id FROM (
-                  SELECT * FROM (
-                    SELECT r.run_id, r.available_at_ms FROM runs r
-                    WHERE r.queue = ? AND r.state = 'pending'
-                      AND r.available_at_ms IS NOT NULL AND r.available_at_ms <= ${NOW_MS}
-                    ORDER BY r.available_at_ms, r.run_id LIMIT ?
-                  )
-                  UNION ALL
-                  SELECT * FROM (
-                    SELECT r.run_id, r.available_at_ms FROM runs r
-                    WHERE r.queue = ? AND r.state = 'sleeping'
-                      AND r.available_at_ms IS NOT NULL AND r.available_at_ms <= ${NOW_MS}
-                    ORDER BY r.available_at_ms, r.run_id LIMIT ?
-                  )
-                ) c
-                JOIN runs cr ON cr.run_id = c.run_id
-                JOIN tasks t ON t.task_id = cr.task_id
-                WHERE ${eligibleTask('t')}
-                ORDER BY c.available_at_ms, c.run_id
-                LIMIT ?
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM runs held
-                WHERE held.queue = ? AND held.state = 'running' AND held.claimed_by = ?
-              )`,
-        args: [
-          claimToken,
-          leaseMs,
-          leaseMs,
-          queue,
-          effectiveLimit,
-          queue,
-          effectiveLimit,
-          effectiveLimit,
-          queue,
-          claimToken,
-        ],
+    const claimedWait = registeredWait('runs')
+    // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering
+    // the merged shortlist lets an earlier corrupt/ineligible run consume the
+    // whole budget and permanently starve later healthy work.
+    const claimEligibility = (run: string, task: string): string => {
+      const wait = registeredWait(run)
+      return `${eligibleTask(task, NOW)}
+               AND ${durableTaskRetryAdmissible(task)}
+               AND ${durableTaskHeadersAdmissible(task)}
+               AND ${soleLiveRun(run)}
+               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})
+               AND ${wait.temporallySafe}
+               AND ${storedIncrementableClaimGeneration(run)}
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}
+               AND ${run}.activated_gen <= ${run}.claim_gen
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}
+               AND ${storedCurrentRunAccounting(run, task)}
+               AND ${storedHighestOwnedOrdinal(run)}`
+    }
+    const candidateEligibility = claimEligibility('r', 't')
+    const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS })
+    // Due runs of live tasks → running, holding the caller's lease token AND
+    // this batch's provenance. The two are now different things, which is the
+    // point: the token survives the batch by contract (the worker keeps
+    // working), so it cannot tell one delivery of a claim from another. The
+    // candidate subselect remains a bounded per-state UNION: after eligibility
+    // each leg is an ordered index scan of at most K rows rather than a temp
+    // b-tree over the backlog, a shape the query-plan suite pins. The generation
+    // bump is safe here because the CAS's own guard consumes the pre-state.
+    b.casMany(
+      'claim',
+      'runs',
+      effectiveLimit,
+      `UPDATE runs SET
+         state = 'running',
+         claimed_by = ?,
+         claim_gen = claim_gen + 1,
+         lease_ms = ?,
+         claim_expires_at_ms = ${NOW} + ?,
+         heartbeat_at_ms = ${NOW},
+         wake_step = COALESCE(wake_step, ${claimedWait.step}),
+         ${FENCE_SET}
+       WHERE run_id IN (
+         SELECT c.run_id FROM (
+           SELECT * FROM (
+             SELECT r.run_id, r.available_at_ms FROM runs r
+             JOIN tasks t ON ${runOwnedByTask('r', 't')}
+             WHERE r.queue = ? AND r.state = 'pending'
+               AND ${runAvailableDue('r', NOW)}
+               AND ${candidateEligibility}
+             ORDER BY r.available_at_ms, r.run_id LIMIT ?
+           )
+           UNION ALL
+           SELECT * FROM (
+             SELECT r.run_id, r.available_at_ms FROM runs r
+             JOIN tasks t ON ${runOwnedByTask('r', 't')}
+             WHERE r.queue = ? AND r.state = 'sleeping'
+               AND ${runAvailableDue('r', NOW)}
+               AND ${candidateEligibility}
+             ORDER BY r.available_at_ms, r.run_id LIMIT ?
+           )
+         ) c
+         ORDER BY c.available_at_ms, c.run_id
+         LIMIT ?
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM runs held
+         WHERE held.queue = ? AND held.state = 'running' AND held.claimed_by = ?
+       )
+       AND ${epochAdditionFits(NOW, '?')}`,
+      [
+        claimToken,
+        leaseMs,
+        leaseMs,
+        queue,
+        effectiveLimit,
+        queue,
+        effectiveLimit,
+        effectiveLimit,
+        queue,
+        claimToken,
+        leaseMs,
+      ],
+    )
+    // attempts is deliberately NOT touched: per the accounting model it moves
+    // only on user-failure transitions, never at claim.
+    b.derived('task-book', {
+      relation: 'runs-to-tasks',
+      fence: 'claim',
+      where: `f.queue = ? AND f.state = 'running'`,
+      whereArgs: [queue],
+      set: {
+        state: `'running'`,
+        // The eligibility guard makes this exactly one. Keep the expression
+        // scalar even under a guard regression so every dialect exposes that
+        // regression as the same poisoned-state change instead of SQLite
+        // choosing a row while PostgreSQL/MySQL abort the batch.
+        last_attempt_run: `(SELECT MIN(f.run_id) FROM runs f
+                            WHERE f.task_id = tasks.task_id
+                              AND f.fence_stamp = ${b.fence('claim')}
+                            HAVING COUNT(*) = 1)`,
       },
-      // 2. Task bookkeeping, keyed on the post-state + token. NOTE: attempts
-      //    is deliberately NOT touched — per the TLC-checked accounting model
-      //    it moves only on user-failure transitions (fail()), never at
-      //    claim (codex finding: the earlier watermark contradicted the spec).
-      {
-        sql: `UPDATE tasks SET
-                state = 'running',
-                last_attempt_run = (
-                  SELECT r.run_id FROM runs r
-                  WHERE r.task_id = tasks.task_id AND r.claimed_by = ? AND r.state = 'running'
-                )
-              WHERE state IN ${LIVE}
-                AND task_id IN (
-                  SELECT task_id FROM runs
-                  WHERE queue = ? AND claimed_by = ? AND state = 'running'
-                )`,
-        args: [claimToken, queue, claimToken],
-      },
-      // 3. A timed-out waiter's claim consumes its wait row, so a later emit
-      //    cannot resurrect a timed-out wait (§3.4 rule 2, timeout branch).
-      {
-        sql: `DELETE FROM waits
-              WHERE run_id IN (
-                SELECT run_id FROM runs WHERE queue = ? AND claimed_by = ? AND state = 'running'
-              )
-                AND status = 'waiting'
-                AND timeout_at_ms IS NOT NULL
-                AND timeout_at_ms <= ${NOW_MS}`,
-        args: [queue, claimToken],
-      },
-      // 4. Hand back run⋈task data for the launch payloads — only for LIVE
-      //    tasks, so a terminal task's corrupt running run is never launched.
-      {
-        sql: `SELECT ${CLAIMED_RUN_COLUMNS}
-              FROM runs r JOIN tasks t ON t.task_id = r.task_id
-              WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
-                AND t.state IN ${LIVE}
-              ORDER BY r.run_id`,
-        args: [queue, claimToken],
-      },
-    ])
-    return (picked?.rows ?? []).map((row) => decodeClaimedRun(row, claimToken))
+      narrow: `state IN ${LIVE}`,
+      rows: 'source-keys',
+    })
+    // A timed-out waiter's claim consumes its wait row, so a later emit cannot
+    // resurrect a timed-out wait (§3.4 rule 2, timeout branch). Both halves
+    // changed. It used to select rows by the caller's token, which a DUPLICATE
+    // delivery of the same claim also matches even though its own CAS
+    // correctly took nothing — and it then compared their deadlines against a
+    // FRESH clock read, so waits that fell due between the two deliveries were
+    // deleted by the delivery that had claimed nothing. Now it sees only rows
+    // this batch stamped, and compares against the instant that batch
+    // recorded.
+    b.derived('waits-timeout', {
+      relation: 'runs-to-waits',
+      fence: 'claim',
+      where: `f.queue = ? AND f.state = 'running'`,
+      whereArgs: [queue],
+      narrow: `status = 'waiting'
+            AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms)}
+            AND timeout_at_ms <= ${fencedAt('runs', `f.run_id = waits.run_id`, b.fence('claim'))}`,
+      rows: 'source-keys',
+    })
+    // Deliberately keyed on the LEASE token, not this batch's stamp: §3.4
+    // rule 4 makes a same-token claim an idempotent receipt that returns the
+    // ORIGINAL selection, so this read must see rows a PREVIOUS batch stamped.
+    // Only LIVE tasks, so a terminal task's corrupt running run is never
+    // launched.
+    b.openTail(
+      'picked',
+      'rule 4: a same-token retry is a receipt and must return the original selection, which a previous batch stamped',
+      `SELECT ${CLAIMED_RUN_COLUMNS}
+       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
+       WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
+         AND t.state IN ${LIVE}
+         AND ${durableTaskRetryAdmissible('t')}
+         AND ${durableTaskHeadersAdmissible('t')}
+         AND ${soleLiveRun('r')}
+         AND ${storedPositiveClaimGeneration('r')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'r')}
+         AND r.activated_gen <= r.claim_gen
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'r')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'r')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}
+         AND ${storedCurrentRunAccounting('r', 't')}
+         AND ${storedHighestOwnedOrdinal('r')}
+       ORDER BY r.run_id`,
+      [queue, claimToken],
+    )
+    const { results } = await b.run(this.db)
+    return (results.picked?.rows ?? []).map((row) => decodeClaimedRun(row, claimToken))
   }
 
   async activate(
@@ -324,83 +724,92 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     claimGen: number,
   ): Promise<ClaimedRun | null> {
+    const validClaimGen = requirePositiveClaimGeneration('activate.claimGen', claimGen)
     // Buggify: a lost activation is always legal — the launch channel may
     // drop any delivery; the sweep classifies and relaunches without cost.
     if (this.buggify('activate:lost')) return null
-    const [cas, , data] = await this.db.batch('activate', [
-      // Per-claim latch: only this claim's first delivery passes; re-extends
-      // the lease so channel-delayed launches don't start life nearly
-      // expired. A launch whose task is already past its cancellation
-      // deadline must not start (codex): the sweep will cancel it.
-      {
-        sql: `UPDATE runs SET
-                activated_gen = ?,
-                started_at_ms = COALESCE(started_at_ms, ${NOW_MS}),
-                claim_expires_at_ms = ${NOW_MS} + lease_ms,
-                heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-                AND claim_gen = ? AND activated_gen < ?
-                AND EXISTS (
-                  SELECT 1 FROM tasks t
-                  WHERE t.task_id = runs.task_id AND ${eligibleTask('t')}
-                )`,
-        args: [claimGen, runId, queue, claimToken, claimGen, claimGen],
+    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS })
+    // Per-claim latch: only this claim's first delivery passes; re-extends
+    // the lease so channel-delayed launches don't start life nearly expired.
+    // A launch whose task is already past its cancellation deadline must not
+    // start: the sweep will cancel it. claimed_by is deliberately left alone —
+    // the worker keeps its lease — which is exactly the freedom the batch
+    // needed and did not have while claimed_by was also the stamp.
+    b.cas(
+      'activate',
+      'runs',
+      `UPDATE runs SET
+         activated_gen = ?,
+         started_at_ms = COALESCE(started_at_ms, ${NOW}),
+         claim_expires_at_ms = ${NOW} + lease_ms,
+         heartbeat_at_ms = ${NOW},
+         ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND claim_gen = ? AND activated_gen < ?
+         AND ${storedPositiveClaimGeneration('runs')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}
+         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}
+         AND ${soleLiveRun('runs')}
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}
+             AND ${durableTaskRetryAdmissible('t')}
+             AND ${durableTaskHeadersAdmissible('t')}
+             AND ${storedCurrentRunAccounting('runs', 't')}
+             AND ${storedHighestOwnedOrdinal('runs')}
+             AND ${activationDurationAdmissible('t', NOW)}
+         )`,
+      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],
+    )
+    // First-ever start stamps the task and REPLACES the deadline: max_delay is
+    // disarmed by starting (its whole meaning is "cancel if never started");
+    // max_duration runs from first start. The earlier MIN() kept the stale
+    // spawn deadline and cancelled healthy running tasks.
+    //
+    // Fencing on this batch's own stamp is what makes that safe. The previous
+    // fence was (claimed_by, activated_gen) — values the WINNER wrote — so a
+    // losing duplicate delivery matched the very row the winner had just
+    // updated and re-ran this statement, whose ELSE arm clears cancel_at_ms.
+    // A task with an armed start deadline and no max-duration clause had that
+    // deadline silently disarmed by a delivery that had already been refused,
+    // and was then never cancelled.
+    const activated = fencedAt('runs', BY_RUN, b.fence('activate'))
+    b.derived('task-start', {
+      relation: 'runs-to-tasks',
+      fence: 'activate',
+      where: 'f.run_id = ?',
+      whereArgs: [runId],
+      set: {
+        first_started_at_ms: `COALESCE(first_started_at_ms, ${activated})`,
+        // The leading CAS validated both this stored JSON value and the exact
+        // headroom of the addition. Keep conversion in one shared expression
+        // so the guard and write cannot disagree below a millisecond.
+        cancel_at_ms: `CASE
+          WHEN json_type(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
+            COALESCE(first_started_at_ms, ${activated}) + ${taskMaxDurationMs('tasks')}
+          ELSE NULL
+        END`,
       },
-      // First-ever start stamps the task and REPLACES the deadline: max_delay
-      // is disarmed by starting (its whole meaning is "cancel if never
-      // started"); max_duration runs from first start. The earlier MIN() kept
-      // the stale spawn deadline and cancelled healthy running tasks.
-      {
-        // first_started and cancel_at DERIVE from the run's started_at_ms —
-        // stamped by the CAS above at ITS single NOW — not a second NOW, so
-        // the lease expiry and the max-duration deadline share one activation
-        // instant and never split across a millisecond boundary.
-        sql: `UPDATE tasks SET
-                first_started_at_ms = COALESCE(first_started_at_ms,
-                  (SELECT r.started_at_ms FROM runs r
-                   WHERE r.run_id = ? AND r.claimed_by = ? AND r.activated_gen = ?)),
-                cancel_at_ms = CASE
-                  WHEN json_extract(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
-                    CAST(COALESCE(first_started_at_ms,
-                      (SELECT r.started_at_ms FROM runs r
-                       WHERE r.run_id = ? AND r.claimed_by = ? AND r.activated_gen = ?))
-                      + json_extract(cancellation, '$.maxDurationSeconds') * 1000 AS INTEGER)
-                  ELSE NULL
-                END
-              WHERE state IN ${LIVE}
-                AND task_id = (
-                  SELECT task_id FROM runs
-                  WHERE run_id = ? AND claimed_by = ? AND activated_gen = ?
-                )`,
-        args: [
-          runId,
-          claimToken,
-          claimGen,
-          runId,
-          claimToken,
-          claimGen,
-          runId,
-          claimToken,
-          claimGen,
-        ],
-      },
-      // Full payload for the winning worker, keyed on the post-CAS state.
-      {
-        sql: `SELECT ${CLAIMED_RUN_COLUMNS}
-              FROM runs r JOIN tasks t ON t.task_id = r.task_id
-              WHERE r.run_id = ? AND r.claimed_by = ? AND r.state = 'running'
-                AND r.claim_gen = ? AND r.activated_gen = ?`,
-        args: [runId, claimToken, claimGen, claimGen],
-      },
-    ])
-    // The SELECT's post-state cannot distinguish "this delivery won" from "a
-    // prior delivery of the SAME claim already won" — both show
-    // activated_gen = claim_gen. The CAS's own rowsAffected is the
-    // discriminator: a duplicate delivery matches zero rows because
-    // activated_gen is no longer < claim_gen. This is why the executor's
-    // rowsAffected contract (primitives.ts) is load-bearing.
-    if ((cas?.rowsAffected ?? 0) !== 1) return null
-    const row = data?.rows[0]
+      setArgs: [runId, runId],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+    // Full payload for the winning worker. Fenced, so it can only return the
+    // row THIS delivery activated — the post-state alone cannot tell "I won"
+    // from "a previous delivery of the same claim won", since both leave
+    // activated_gen equal to claim_gen.
+    b.tail(
+      'payload',
+      `SELECT ${CLAIMED_RUN_COLUMNS}
+       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
+       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'`,
+      [runId],
+    )
+    const { won, results } = await b.run(this.db)
+    if (won !== 'activate') return null
+    const row = results.payload?.rows[0]
     return row ? decodeClaimedRun(row, claimToken) : null
   }
 
@@ -414,25 +823,36 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return { held: false, remainingMs: 0 }
     const extendMs = durationToMs('extendSeconds', extendSeconds, { positive: true })
-    const [extended, remaining] = await this.db.batch('heartbeat', [
+    // ONE statement. It was two — the extend, then a SELECT computing
+    // `claim_expires_at_ms - <clock>` — which read the clock twice in one
+    // batch, so the answer was off by however far the two reads drifted.
+    // RETURNING makes the row count the proof that the lease was extended and
+    // computes the remainder in the same statement, where the clock is stable.
+    // A batch of one statement cannot have the two-clock-reads problem at all,
+    // which is a better guarantee than getting the arithmetic right.
+    const [extended] = await this.db.batch('heartbeat', [
       {
         sql: `UPDATE runs SET
                 claim_expires_at_ms = ${NOW_MS} + ?,
                 heartbeat_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
                 AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
-        args: [extendMs, runId, queue, claimToken],
-      },
-      {
-        sql: `SELECT claim_expires_at_ms - ${NOW_MS} AS remaining_ms
-              FROM runs
-              WHERE run_id = ? AND claimed_by = ? AND state = 'running'`,
-        args: [runId, claimToken],
+                            WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})
+                AND ${epochAdditionFits(NOW_MS, '?')}
+              RETURNING claim_expires_at_ms - heartbeat_at_ms AS remaining_ms`,
+        args: [extendMs, runId, queue, claimToken, extendMs],
       },
     ])
-    if ((extended?.rowsAffected ?? 0) !== 1) return { held: false, remainingMs: 0 }
-    return { held: true, remainingMs: Number(remaining?.rows[0]?.remaining_ms ?? 0) }
+    const row = extended?.rows[0]
+    if (!row) return { held: false, remainingMs: 0 }
+    return {
+      held: true,
+      remainingMs: requireDerivedInteger(
+        'heartbeat.remaining_ms',
+        row.remaining_ms,
+        DERIVED_INTEGER_BOUNDS.duration_ms,
+      ),
+    }
   }
 
   /**
@@ -460,13 +880,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     type Item =
       | { kind: 'cancel'; taskId: string; runId: string | null }
       | {
-          kind: 'expired'
+          kind: 'lost-launch'
           runId: string
           taskId: string
-          attempt: number
           claimGen: number
-          activatedGen: number
           relaunchCount: number
+        }
+      | {
+          kind: 'claim-timeout'
+          runId: string
+          taskId: string
+          claimGen: number
         }
     const items: Item[] = []
     for (const row of cancels?.rows ?? []) {
@@ -479,15 +903,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     }
     for (const row of expired?.rows ?? []) {
       if (items.length >= effectiveBudget) break
-      items.push({
-        kind: 'expired',
+      const claimGen = persistedPositiveClaimGeneration('sweep', row)
+      const activatedGen = persistedRowInteger('sweep', row, RUN_INTEGER_BOUNDS.activated_gen)
+      const identity = {
         runId: String(row.run_id),
         taskId: String(row.task_id),
-        attempt: Number(row.attempt),
-        claimGen: Number(row.claim_gen),
-        activatedGen: Number(row.activated_gen),
-        relaunchCount: Number(row.relaunch_count),
-      })
+        claimGen,
+      }
+      items.push(
+        activatedGen < claimGen
+          ? {
+              kind: 'lost-launch',
+              ...identity,
+              relaunchCount: persistedRowInteger('sweep', row, RUN_INTEGER_BOUNDS.relaunch_count),
+            }
+          : { kind: 'claim-timeout', ...identity },
+      )
     }
 
     const outcomes = await mapLimit(
@@ -495,11 +926,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       SWEEP_PIPELINE_WIDTH,
       (item): Promise<SweptRun | null> => {
         if (item.kind === 'cancel') {
-          return this.cancelTransition('sweep:cancel', queue, item.taskId, true).then((won) =>
+          const batch = new FencedBatch('sweep:cancel', this.ids.token(), { now: NOW_MS })
+          return this.cancelTransition(batch, queue, item.taskId, true).then((won) =>
             won ? { kind: 'cancelled', taskId: item.taskId, runId: item.runId } : null,
           )
         }
-        return item.activatedGen < item.claimGen
+        return item.kind === 'lost-launch'
           ? this.sweepLostLaunch(queue, item)
           : this.sweepClaimTimeout(queue, item)
       },
@@ -511,61 +943,76 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     queue: string,
     item: { runId: string; taskId: string; claimGen: number; relaunchCount: number },
   ): Promise<SweptRun | null> {
-    const fence = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
-                   AND activated_gen < claim_gen AND claim_expires_at_ms <= ${NOW_MS}`
-    const { won } = await new FencedBatch('sweep:lost-launch', this.ids.token())
-      // The launch never activated: reopen the SAME run — no new row, no
-      // attempt consumed — with linear backoff on the relaunch counter. The
-      // stamp parks in claimed_by (nothing reads claimed_by off non-running
-      // runs; the next claim overwrites it).
-      .cas(
-        'reopen',
-        `UPDATE runs SET
-           state = 'pending', claimed_by = ${STAMP}, claim_expires_at_ms = NULL,
-           heartbeat_at_ms = NULL, relaunch_count = relaunch_count + 1,
-           available_at_ms = ${NOW_MS}
-             + MIN((relaunch_count + 1) * ${RELAUNCH_BACKOFF_BASE_SECONDS}, ${RELAUNCH_BACKOFF_MAX_SECONDS}) * 1000
-         WHERE ${fence} AND relaunch_count < ${RELAUNCH_CAP}
-           AND EXISTS (SELECT 1 FROM tasks t
-                       WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
-        [item.runId, queue, item.claimGen],
-      )
-      // Past the cap: a broken launcher must surface as failed work — the
-      // task fails with the run (TLA-pinned), never an infinite launch loop.
-      .cas(
-        'cap',
-        `UPDATE runs SET
-           state = 'failed', failed_at_ms = ${NOW_MS}, claimed_by = ${STAMP},
-           claim_expires_at_ms = NULL, failure_reason = '${REASON_RELAUNCH_CAP}'
-         WHERE ${fence} AND relaunch_count >= ${RELAUNCH_CAP}`,
-        [item.runId, queue, item.claimGen],
-      )
-      // The task mirrors the run (the reviewed phantom-'running' divergence
-      // from the TLA SweepLostLaunch action).
-      .followOn(
-        'task-pending',
-        `UPDATE tasks SET state = 'pending'
-         WHERE task_id = ? AND state IN ${LIVE} AND EXISTS (
-           SELECT 1 FROM runs WHERE run_id = ? AND state = 'pending' AND claimed_by = ${STAMP}
-         )`,
-        [item.taskId, item.runId],
-      )
-      .followOn(
-        'task-fail',
-        `UPDATE tasks SET state = 'failed', failure_reason = '${REASON_RELAUNCH_CAP}'
-         WHERE task_id = ? AND state IN ${LIVE} AND EXISTS (
-           SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
-         )`,
-        [item.taskId, item.runId],
-      )
-      .followOn(
-        'waits-gone',
-        `DELETE FROM waits WHERE run_id = ? AND EXISTS (
-           SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
-         )`,
-        [item.runId, item.runId],
-      )
-      .run(this.db)
+    const b = new FencedBatch('sweep:lost-launch', this.ids.token(), { now: NOW_MS })
+    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
+                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
+    const relaunchDelayMs = `MIN(
+      (relaunch_count + 1) * ${RELAUNCH_BACKOFF_BASE_SECONDS},
+      ${RELAUNCH_BACKOFF_MAX_SECONDS}
+    ) * 1000`
+    const liveOwner = `EXISTS (
+      SELECT 1 FROM tasks t
+      WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE}
+        AND ${sweepLiveOwnerAdmissible('runs', 't')}
+    )`
+    const terminalOwner = `EXISTS (
+      SELECT 1 FROM tasks t
+      WHERE ${runOwnedByTask('runs', 't')} AND t.state NOT IN ${LIVE}
+        AND ${sweepTerminalOwnerAdmissible('runs')}
+    )`
+    // The launch never activated: reopen the SAME run — no new row, no
+    // attempt consumed — with linear backoff on the relaunch counter. The
+    // counter bump is safe in a CAS: its guard consumes the 'running' state,
+    // so a replay matches nothing and cannot bump twice.
+    b.cas(
+      'reopen',
+      'runs',
+      `UPDATE runs SET
+         state = 'pending', claimed_by = NULL, claim_expires_at_ms = NULL,
+         heartbeat_at_ms = NULL, relaunch_count = relaunch_count + 1,
+         available_at_ms = ${NOW} + ${relaunchDelayMs},
+         ${FENCE_SET}
+       WHERE ${guard} AND relaunch_count < ${RUN_INTEGER_BOUNDS.relaunch_count.max}
+         AND ${liveOwner}
+         AND ${epochAdditionFits(NOW, relaunchDelayMs)}`,
+      [item.runId, queue, item.claimGen],
+    )
+    // Past the cap: a broken launcher must surface as failed work — the
+    // task fails with the run (TLA-pinned), never an infinite launch loop.
+    b.cas(
+      'cap',
+      'runs',
+      `UPDATE runs SET
+         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,
+         claim_expires_at_ms = NULL, failure_reason = ?, ${FENCE_SET}
+       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}
+         AND (${liveOwner} OR ${terminalOwner})`,
+      [REASON_RELAUNCH_CAP, item.runId, queue, item.claimGen],
+    )
+    // The task mirrors the run (the reviewed phantom-'running' divergence
+    // from the TLA SweepLostLaunch action). Each arm names the CAS it
+    // follows, so neither can fire for the other's outcome.
+    b.derived('task-pending', {
+      relation: 'runs-to-tasks',
+      fence: 'reopen',
+      where: 'f.run_id = ?',
+      whereArgs: [item.runId],
+      set: { state: `'pending'` },
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+    b.derived('task-fail', {
+      relation: 'runs-to-tasks',
+      fence: 'cap',
+      where: 'f.run_id = ?',
+      whereArgs: [item.runId],
+      set: { state: `'failed'`, failure_reason: '?' },
+      setArgs: [REASON_RELAUNCH_CAP],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+    waitsGone(b, item.runId, 'cap')
+    const { won } = await b.run(this.db)
     if (won === 'reopen') {
       return {
         kind: 'lost-launch',
@@ -582,81 +1029,125 @@ export class LibsqlSchedulerStore implements SchedulerStore {
 
   private async sweepClaimTimeout(
     queue: string,
-    item: { runId: string; taskId: string; attempt: number; claimGen: number },
+    item: { runId: string; taskId: string; claimGen: number },
   ): Promise<SweptRun | null> {
     const successorId = this.ids.uuidv7()
-    const { won, results } = await new FencedBatch('sweep:claim-timeout', this.ids.token())
-      // Ownership CAS: the activated worker died (or was partitioned). The
-      // stamp overwrites the dead worker's token, so its zombie writes are
-      // doubly fenced from here on.
-      .cas(
-        'fail',
-        `UPDATE runs SET
-           state = 'failed', failed_at_ms = ${NOW_MS}, claimed_by = ${STAMP},
-           failure_reason = '${REASON_CLAIM_TIMEOUT}'
-         WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
-           AND activated_gen = claim_gen AND claim_expires_at_ms <= ${NOW_MS}`,
-        [item.runId, queue, item.claimGen],
-      )
-      // Successor under the infra cap, carrying the run-DB pointer and any
-      // parked event wake (§3.8.2). Plain INSERT (not OR IGNORE — reviewed:
-      // OR IGNORE also swallows PK collisions and books foreign rows): the
-      // stamp guarantees only the winner reaches this statement, so a
-      // constraint violation is a real invariant breach and must fail loudly.
-      .followOn(
-        'successor',
-        `INSERT INTO runs
-           (run_id, queue, task_id, attempt, state, available_at_ms,
-            wake_event, event_payload, wake_step, run_db, created_at_ms, claimed_by)
-         SELECT ?, r.queue, r.task_id, ?, 'pending',
-                ${NOW_MS} + ${INFRA_BACKOFF_SECONDS} * 1000,
-                r.wake_event, r.event_payload, r.wake_step, r.run_db, ${NOW_MS}, ${STAMP}
-         FROM runs r JOIN tasks t ON t.task_id = r.task_id
-         WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
-           AND t.state IN ${LIVE} AND t.infra_retries < ${INFRA_RETRY_CAP}`,
-        [successorId, item.attempt + 1, item.runId],
-      )
-      // At the cap (pre-increment): terminal. Stamp-fenced, so the reviewed
-      // losing-sweeper interleaving matches zero rows structurally.
-      .followOn(
-        'task-terminal',
-        `UPDATE tasks SET state = 'failed', failure_reason = '${REASON_INFRA_CAP}'
-         WHERE task_id = ? AND state IN ${LIVE} AND infra_retries >= ${INFRA_RETRY_CAP}
-           AND EXISTS (
-             SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
-           )`,
-        [item.taskId, item.runId],
-      )
-      // Bookkeeping keyed on the stamp AND our successor existing.
-      .followOn(
-        'bookkeeping',
-        `UPDATE tasks SET
-           infra_retries = infra_retries + 1, state = 'pending', last_attempt_run = ?
-         WHERE task_id = ? AND state IN ${LIVE}
-           AND EXISTS (
-             SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
-           )
-           AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
-        [successorId, item.taskId, item.runId, successorId],
-      )
-      // The dead run's waits die with it (the reviewed orphan-waits leak).
-      .followOn(
-        'waits-gone',
-        `DELETE FROM waits WHERE run_id = ? AND EXISTS (
-           SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
+    const infraDelayMs = `${INFRA_BACKOFF_SECONDS} * 1000`
+    const b = new FencedBatch('sweep:claim-timeout', this.ids.token(), { now: NOW_MS })
+    // Ownership CAS: the activated worker died (or was partitioned). Clearing
+    // claimed_by kills the dead worker's token, so its zombie writes are
+    // doubly fenced from here on.
+    b.cas(
+      'fail',
+      'runs',
+      `UPDATE runs SET
+         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,
+         failure_reason = ?, ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
+         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE ${runOwnedByTask('runs', 't')}
+             AND ((t.state NOT IN ${LIVE}
+                 AND ${sweepTerminalOwnerAdmissible('runs')})
+               OR (t.state IN ${LIVE}
+                 AND ${sweepLiveOwnerAdmissible('runs', 't')}
+                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}
+                   OR ${epochAdditionFits(NOW, infraDelayMs)})))
          )`,
-        [item.runId, item.runId],
-      )
-      .run(this.db)
+      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],
+    )
+    // Successor under the infra cap, carrying the run-DB pointer and any
+    // parked event wake (§3.8.2). Plain INSERT (not OR IGNORE — reviewed: OR
+    // IGNORE also swallows PK collisions and books foreign rows), so a
+    // collision with a FOREIGN row still fails loudly. Its instant is the
+    // failed run's, so the backoff is measured from the moment of death and
+    // not from a second clock read.
+    b.followOn(
+      'successor',
+      'runs',
+      `INSERT INTO runs
+         (run_id, queue, task_id, attempt, state, available_at_ms,
+          wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
+       SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
+              f.fence_at_ms + ${infraDelayMs},
+              f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
+              ${STAMP}, f.fence_at_ms
+       FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
+       WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
+         AND t.state IN ${LIVE}
+         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 't')}
+         AND t.infra_retries < ${TASK_INTEGER_BOUNDS.infra_retries.max}
+         AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
+         AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
+      [successorId, item.runId, successorId],
+      'one',
+    )
+    // At the cap (pre-increment): terminal. Terminal ONLY when this batch
+    // actually failed to place a successor — keying on the cap alone made an
+    // exact replay terminalize the task over the successor the first pass had
+    // just created (rule 6).
+    b.derived('task-terminal', {
+      relation: 'runs-to-tasks',
+      fence: 'fail',
+      where: 'f.run_id = ?',
+      whereArgs: [item.runId],
+      set: { state: `'failed'`, failure_reason: '?' },
+      setArgs: [REASON_INFRA_CAP],
+      narrow: `state IN ${LIVE}
+            AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries)}
+            AND infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}
+            AND NOT ${successorOwned(
+              '?',
+              'tasks.task_id',
+              `(SELECT p.attempt + 1 FROM runs p
+                WHERE p.run_id = ? AND p.fence_stamp = ${b.fence('fail')})`,
+            )}`,
+      narrowArgs: [successorId, item.runId],
+      rows: 'one',
+    })
+    // Bookkeeping keyed on our successor existing. The counter DERIVES from
+    // the successor's own attempt ordinal rather than incrementing:
+    // run.attempt counts every successor (user + infra), so infra = attempt -
+    // 1 - user attempts. Applying this twice is the same as applying it once,
+    // so an exact replay cannot double-count.
+    b.derived('bookkeeping', {
+      relation: 'runs-to-tasks',
+      fence: 'successor',
+      where: 'f.run_id = ?',
+      whereArgs: [successorId],
+      set: {
+        infra_retries: INFRA_RETRIES_FROM('?', b.fence('successor')),
+        state: `'pending'`,
+        last_attempt_run: '?',
+      },
+      setArgs: [successorId, successorId],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+    // The dead run's waits die with it (the reviewed orphan-waits leak).
+    waitsGone(b, item.runId, 'fail')
+    const { won, results } = await b.run(this.db)
     if (won !== 'fail') return null // lost the race
-    return (results.successor?.rowsAffected ?? 0) === 1
-      ? {
-          kind: 'claim-timeout',
-          runId: item.runId,
-          taskId: item.taskId,
-          successorRunId: successorId,
-        }
-      : { kind: 'infra-cap-exhausted', runId: item.runId, taskId: item.taskId }
+    // Report what the batch DID, not what it can be inferred to have done.
+    // Reading "the successor insert wrote nothing" as "the cap is exhausted"
+    // conflates every other reason it can write nothing — the id already
+    // belongs to a run of this task, or the task stopped being live partway —
+    // and reports a cap exhaustion that did not happen. Each arm names the
+    // statement that actually fired; when none did, this sweep has nothing to
+    // report rather than something untrue.
+    if ((results.bookkeeping?.rowsAffected ?? 0) === 1) {
+      return {
+        kind: 'claim-timeout',
+        runId: item.runId,
+        taskId: item.taskId,
+        successorRunId: successorId,
+      }
+    }
+    if ((results['task-terminal']?.rowsAffected ?? 0) === 1) {
+      return { kind: 'infra-cap-exhausted', runId: item.runId, taskId: item.taskId }
+    }
+    return null
   }
 
   /**
@@ -666,11 +1157,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * sole authority and advisory signals never revoke it.
    */
   async expireLeaseNow(queue: string, runId: string, claimToken: string): Promise<boolean> {
+    const unexpired = runClaimUnexpired('runs', NOW_MS)
+    const owner = runOwnedByTask('runs', 't')
     const [expired] = await this.db.batch('expire-lease-now', [
       {
         sql: `UPDATE runs SET claim_expires_at_ms = ${NOW_MS}
               WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-                AND claim_expires_at_ms > ${NOW_MS}`,
+                AND ${unexpired}
+                AND EXISTS (
+                  SELECT 1 FROM tasks t
+                  WHERE ${owner}
+                )`,
         args: [runId, queue, claimToken],
       },
     ])
@@ -686,67 +1183,67 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
     await this.db.batch('driver-heartbeat', [
       {
-        sql: `INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
-              VALUES (?, ?, ${NOW_MS}, ${NOW_MS} + ?)
-              ON CONFLICT (queue, driver_id) DO UPDATE SET
-                last_beat_ms = excluded.last_beat_ms,
-                expires_at_ms = excluded.expires_at_ms`,
-        args: [queue, driverId, ttlMs],
-      },
-      // Self-cleaning: every beat also buries the expired (a fresh id per
-      // process restart must not grow the table forever — bounds are
-      // invariants too).
-      {
-        sql: `DELETE FROM drivers WHERE expires_at_ms < ${NOW_MS}`,
-        args: [],
+        sql: `INSERT INTO ${DRIVER_HEARTBEAT_INGRESS}
+                (queue, driver_id, last_beat_ms, expires_at_ms)
+              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?
+              WHERE ${epochAdditionFits(NOW_MS, '?')}`,
+        args: [queue, driverId, ttlMs, ttlMs],
       },
     ])
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
-    return this.cancelTransition('cancel-task', queue, taskId, false)
+    const batch = new FencedBatch('cancel-task', this.ids.token(), { now: NOW_MS })
+    return this.cancelTransition(batch, queue, taskId, false)
   }
 
   /**
    * Shared cancel transition. Two labels — 'cancel-task' (explicit API) and
    * 'sweep:cancel' (deadline enforcement) — because a label is the crash
    * injection/tracing address and one label must not cover two SQL shapes.
-   * The stamp lives in failure_reason (tasks have no free stamp column).
+   *
+   * The stamp used to be packed into failure_reason as JSON, because tasks
+   * had no column of their own; the follow-ons then read it back out with
+   * json_extract. That made a user-visible field carry engine bookkeeping and
+   * put a JSON parse on the fence path. Both are gone.
    */
   private async cancelTransition(
-    label: 'cancel-task' | 'sweep:cancel',
+    b: FencedBatch,
     queue: string,
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
-    const deadlineGuard = deadlineOnly ? `AND ${cancelDue('cancel_at_ms')}` : ''
-    const { won } = await new FencedBatch(label, this.ids.token())
-      .cas(
-        'cancel',
-        `UPDATE tasks SET
-           state = 'cancelled', cancelled_at_ms = ${NOW_MS}, cancel_at_ms = NULL,
-           failure_reason = json_object('name', '$Cancelled', 'stamp', ${STAMP})
-         WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}`,
-        [taskId, queue],
-      )
-      .followOn(
-        'runs',
-        `UPDATE runs SET state = 'cancelled', claimed_by = NULL, claim_expires_at_ms = NULL
-         WHERE task_id = ? AND state IN ${LIVE} AND EXISTS (
-           SELECT 1 FROM tasks
-           WHERE task_id = ? AND json_extract(failure_reason, '$.stamp') = ${STAMP}
-         )`,
-        [taskId, taskId],
-      )
-      .followOn(
-        'waits',
-        `DELETE FROM waits WHERE task_id = ? AND EXISTS (
-           SELECT 1 FROM tasks
-           WHERE task_id = ? AND json_extract(failure_reason, '$.stamp') = ${STAMP}
-         )`,
-        [taskId, taskId],
-      )
-      .run(this.db)
+    const deadlineGuard = deadlineOnly ? `AND ${cancelDue('tasks', NOW)}` : ''
+    b.cas(
+      'cancel',
+      'tasks',
+      `UPDATE tasks SET
+         state = 'cancelled', cancelled_at_ms = ${NOW}, cancel_at_ms = NULL,
+         failure_reason = ?, ${FENCE_SET}
+       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}
+         AND ${taskOwnsEveryRun('tasks')}`,
+      [REASON_CANCELLED, taskId, queue],
+    )
+    b.derived('runs', {
+      relation: 'tasks-to-runs',
+      fence: 'cancel',
+      where: 'f.task_id = ?',
+      whereArgs: [taskId],
+      set: { state: `'cancelled'`, claimed_by: 'NULL', claim_expires_at_ms: 'NULL' },
+      narrow: `state IN ${LIVE}`,
+      rows: 'source-keys',
+    })
+    b.derived('waits', {
+      // Wait ownership comes from the runs this transition actually
+      // cancelled, never from waits.task_id: that denormalized mirror may be
+      // corrupt, while waits.run_id is the authoritative relationship.
+      relation: 'runs-to-waits',
+      fence: 'runs',
+      where: `f.task_id = ? AND f.state = 'cancelled'`,
+      whereArgs: [taskId],
+      rows: 'source-keys',
+    })
+    const { won } = await b.run(this.db)
     return won === 'cancel'
   }
 
@@ -761,50 +1258,57 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: { inSeconds: number } | { atEpochMs: number },
+    wake: Wake,
     wakeDisposition: 'consume' | 'preserve' = 'consume',
   ): Promise<void> {
-    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`
-    const wakeArg =
-      'inSeconds' in wake
-        ? durationToMs('wake.inSeconds', wake.inSeconds)
-        : requireEpochMs('wake.atEpochMs', wake.atEpochMs)
+    const relativeWake = wakeHasOwn(wake, 'inSeconds')
+    const wakePlan = prepareWake(wake, relativeWake)
     // ONE SQL shape for both dispositions (a label is a crash-injection
     // address; the CASE keeps 'reschedule' one shape). 'preserve' is the
     // §3.8.2 deferral path: an undispatchable claim consumes nothing.
-    const { won } = await new FencedBatch('reschedule', this.ids.token())
-      .cas(
-        'suspend',
-        `UPDATE runs SET
-           state = CASE WHEN ${wakeExpr} <= ${NOW_MS} THEN 'pending' ELSE 'sleeping' END,
-           available_at_ms = ${wakeExpr},
-           wake_event = CASE WHEN ? = 'preserve' THEN wake_event ELSE NULL END,
-           event_payload = CASE WHEN ? = 'preserve' THEN event_payload ELSE NULL END,
-           wake_step = CASE WHEN ? = 'preserve' THEN wake_step ELSE NULL END,
-           claimed_by = ${STAMP}, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
-         WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-           AND EXISTS (SELECT 1 FROM tasks t
-                       WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
-        [
-          wakeArg,
-          wakeArg,
-          wakeDisposition,
-          wakeDisposition,
-          wakeDisposition,
-          runId,
-          queue,
-          claimToken,
-        ],
-      )
-      // The task mirrors the run's suspension state (LIVE-guarded: rule 6).
-      .followOn(
-        'task-mirror',
-        `UPDATE tasks SET state = (SELECT state FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-           AND state IN ${LIVE}`,
-        [runId, runId],
-      )
-      .run(this.db)
+    //
+    // The task must be ELIGIBLE, not merely live — the same predicate
+    // suspendRun uses, which is what its comment always claimed ("reschedule's
+    // exact transition plus the marker") while the two guards had quietly
+    // diverged. A suspension makes the run schedulable again, and the claim
+    // path already refuses to launch a task whose cancellation deadline is
+    // due; letting the run re-park itself would put it straight back into the
+    // queue that path is keeping it out of. Refusing surfaces AB002, so the
+    // worker stops now instead of being cancelled a moment later.
+    const b = new FencedBatch('reschedule', this.ids.token(), { now: NOW_MS })
+    b.cas(
+      'suspend',
+      'runs',
+      `UPDATE runs SET
+         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
+         available_at_ms = ${wakePlan.expression},
+         wake_event = CASE WHEN ? = 'preserve' THEN wake_event ELSE NULL END,
+         event_payload = CASE WHEN ? = 'preserve' THEN event_payload ELSE NULL END,
+         wake_step = CASE WHEN ? = 'preserve' THEN wake_step ELSE NULL END,
+         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND ${storedInteger('runs.attempt')}
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
+         ${wakePlan.fits}`,
+      [
+        ...wakePlan.expressionArgs,
+        ...wakePlan.expressionArgs,
+        wakeDisposition,
+        wakeDisposition,
+        wakeDisposition,
+        runId,
+        queue,
+        claimToken,
+        ...wakePlan.fitArgs,
+      ],
+    )
+    // A timer/deferral replaces any event wait attached to this run. Drive the
+    // mirror and cleanup from the run this CAS actually suspended: a corrupt
+    // pre-existing wait must not survive with the wake fields just cleared.
+    finishSuspension(b, runId)
+    const { won } = await b.run(this.db)
     if (won !== 'suspend') throw new LeaseLostError(`reschedule ${runId}`)
   }
 
@@ -818,49 +1322,56 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: { inSeconds: number } | { atEpochMs: number },
+    wake: Wake,
     checkpoint: { key: string; stateJson: string },
   ): Promise<void> {
-    const wakeExpr = 'inSeconds' in wake ? `${NOW_MS} + ?` : `?`
-    const wakeArg =
-      'inSeconds' in wake
-        ? durationToMs('wake.inSeconds', wake.inSeconds)
-        : requireEpochMs('wake.atEpochMs', wake.atEpochMs)
-    const { won } = await new FencedBatch('suspend', this.ids.token())
-      .cas(
-        'suspend',
-        `UPDATE runs SET
-           state = CASE WHEN ${wakeExpr} <= ${NOW_MS} THEN 'pending' ELSE 'sleeping' END,
-           available_at_ms = ${wakeExpr},
-           wake_event = NULL, event_payload = NULL, wake_step = NULL,
-           claimed_by = ${STAMP}, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
-         WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-           AND EXISTS (SELECT 1 FROM tasks t
-                       WHERE t.task_id = runs.task_id AND ${eligibleTask('t')})`,
-        [wakeArg, wakeArg, runId, queue, claimToken],
-      )
-      .followOn(
-        'marker',
-        `INSERT INTO checkpoints
-           (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-         SELECT r.task_id, ?, r.queue, ?, r.run_id, r.attempt, ${NOW_MS}
-         FROM runs r WHERE r.run_id = ? AND r.claimed_by = ${STAMP}
-         ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
-           state = excluded.state,
-           owner_run_id = excluded.owner_run_id,
-           owner_attempt = excluded.owner_attempt,
-           updated_at_ms = excluded.updated_at_ms
-         WHERE excluded.owner_attempt >= checkpoints.owner_attempt`,
-        [checkpoint.key, checkpoint.stateJson, runId],
-      )
-      .followOn(
-        'task-mirror',
-        `UPDATE tasks SET state = (SELECT state FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-           AND state IN ${LIVE}`,
-        [runId, runId],
-      )
-      .run(this.db)
+    const relativeWake = wakeHasOwn(wake, 'inSeconds')
+    const wakePlan = prepareWake(wake, relativeWake)
+    const b = new FencedBatch('suspend', this.ids.token(), { now: NOW_MS })
+    b.cas(
+      'suspend',
+      'runs',
+      `UPDATE runs SET
+         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
+         available_at_ms = ${wakePlan.expression},
+         wake_event = NULL, event_payload = NULL, wake_step = NULL,
+         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
+         AND ${validCheckpointConflict('runs', '?')}
+         ${wakePlan.fits}`,
+      [
+        ...wakePlan.expressionArgs,
+        ...wakePlan.expressionArgs,
+        runId,
+        queue,
+        claimToken,
+        checkpoint.key,
+        ...wakePlan.fitArgs,
+      ],
+    )
+    // The marker's timestamp is the park's instant, taken from the row the
+    // CAS stamped. This was the one follow-on with a legitimate need for the
+    // batch's clock, and the reason fence_at_ms is a column rather than a
+    // convention: without it, this statement would be a standing exemption to
+    // "a follow-on may not read the clock".
+    b.followOn(
+      'marker',
+      `INSERT INTO checkpoints
+         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
+       FROM runs f WHERE ${BY_RUN}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')}
+         AND f.fence_stamp = ${b.fence('suspend')}
+       ${CHECKPOINT_LWW}`,
+      [checkpoint.key, checkpoint.stateJson, runId],
+      'one',
+    )
+    finishSuspension(b, runId)
+    const { won } = await b.run(this.db)
     if (won !== 'suspend') throw new LeaseLostError(`suspendRun ${runId}`)
   }
 
@@ -870,31 +1381,35 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     resultJson: string,
   ): Promise<void> {
-    const { won } = await new FencedBatch('complete', this.ids.token())
-      .cas(
-        'complete',
-        `UPDATE runs SET
-           state = 'completed', completed_at_ms = ${NOW_MS}, result = ?,
-           wake_event = NULL, event_payload = NULL, wake_step = NULL,
-           claimed_by = ${STAMP}, claim_expires_at_ms = NULL
-         WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
-        [resultJson, runId, queue, claimToken],
-      )
-      .followOn(
-        'task',
-        `UPDATE tasks SET state = 'completed', completed_payload = ?, cancel_at_ms = NULL
-         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-           AND state IN ${LIVE}`,
-        [resultJson, runId],
-      )
-      .followOn(
-        'waits-gone',
-        `DELETE FROM waits WHERE run_id = ? AND EXISTS (
-           SELECT 1 FROM runs WHERE run_id = ? AND state = 'completed' AND claimed_by = ${STAMP}
+    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS })
+    b.cas(
+      'complete',
+      'runs',
+      `UPDATE runs SET
+         state = 'completed', completed_at_ms = ${NOW}, result = ?,
+         wake_event = NULL, event_payload = NULL, wake_step = NULL,
+         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE ${runOwnedByTask('runs', 't')}
+             AND (t.state NOT IN ${LIVE}
+               OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
          )`,
-        [runId, runId],
-      )
-      .run(this.db)
+      [resultJson, runId, queue, claimToken],
+    )
+    b.derived('task', {
+      relation: 'runs-to-tasks',
+      fence: 'complete',
+      where: 'f.run_id = ?',
+      whereArgs: [runId],
+      set: { state: `'completed'`, completed_payload: '?', cancel_at_ms: 'NULL' },
+      setArgs: [resultJson],
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+    waitsGone(b, runId, 'complete')
+    const { won } = await b.run(this.db)
     if (won !== 'complete') throw new LeaseLostError(`complete ${runId}`)
   }
 
@@ -914,85 +1429,133 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   ): Promise<void> {
     const successorId = retry ? this.ids.uuidv7() : null
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
-    const batch = new FencedBatch('fail', this.ids.token()).cas(
+    const retryDeadlineGuard =
+      retryDelayMs === null
+        ? ''
+        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts
+          OR ${epochAdditionFits(NOW, '?')})`
+    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS })
+    b.cas(
       'fail',
+      'runs',
       `UPDATE runs SET
-         state = 'failed', failed_at_ms = ${NOW_MS}, failure_reason = ?,
-         claimed_by = ${STAMP}, claim_expires_at_ms = NULL
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'`,
-      [failureJson, runId, queue, claimToken],
+         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,
+         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE ${runOwnedByTask('runs', 't')}
+             AND (t.state NOT IN ${LIVE}
+               OR (t.state IN ${LIVE}
+                 AND ${soleLiveRun('runs')}
+                 AND ${storedCurrentRunAccounting('runs', 't')}
+                 AND ${storedHighestOwnedOrdinal('runs')}
+                 ${retryDeadlineGuard}))
+         )`,
+      [failureJson, runId, queue, claimToken, ...(retryDelayMs === null ? [] : [retryDelayMs])],
     )
     if (retry && successorId) {
-      batch
-        // Guarded like the sweep's successor site: only a LIVE task with
-        // user budget remaining gets a retry run (attempts is pre-increment,
-        // so `attempts + 1 < max_attempts` == decideRetry's cap arithmetic).
-        .followOn(
-          'successor',
-          `INSERT INTO runs
-             (run_id, queue, task_id, attempt, state, available_at_ms,
-              wake_event, event_payload, wake_step, run_db, created_at_ms, claimed_by)
-           SELECT ?, r.queue, r.task_id, r.attempt + 1,
-                  CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
-                  ${NOW_MS} + ?,
-                  r.wake_event, r.event_payload, r.wake_step, r.run_db, ${NOW_MS}, ${STAMP}
-           FROM runs r JOIN tasks t ON t.task_id = r.task_id
-           WHERE r.run_id = ? AND r.state = 'failed' AND r.claimed_by = ${STAMP}
-             AND t.state IN ${LIVE} AND t.attempts + 1 < t.max_attempts`,
-          [successorId, retryDelayMs, retryDelayMs, runId],
-        )
-        .followOn(
-          'task-retrying',
-          `UPDATE tasks SET
-             attempts = attempts + 1,
-             state = (SELECT state FROM runs WHERE run_id = ? AND claimed_by = ${STAMP}),
-             last_attempt_run = ?
-           WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-             AND state IN ${LIVE}
-             AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
-          [successorId, successorId, runId, successorId],
-        )
-        // Cap refused (or task no longer live): terminal, same as no-retry.
-        .followOn(
-          'task-terminal',
-          `UPDATE tasks SET attempts = attempts + 1, state = 'failed', failure_reason = ?
-           WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-             AND state IN ${LIVE}
-             AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})`,
-          [failureJson, runId, successorId],
-        )
+      // Only a LIVE task with user budget remaining gets a retry run. The cap
+      // is expressed with the SAME user-ordinal definition the counter uses
+      // (`run.attempt - infra_retries`) rather than `attempts + 1`: two
+      // spellings of one quantity is how a stored counter that has drifted
+      // one ahead — from the historical blind-increment bug — refuses the
+      // last configured attempt while the accounting band still calls the
+      // state legal. The delay runs from the failure's own instant.
+      b.followOn(
+        'successor',
+        'runs',
+        `INSERT INTO runs
+           (run_id, queue, task_id, attempt, state, available_at_ms,
+            wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
+         SELECT ?, f.queue, f.task_id, f.attempt + 1,
+                CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
+                f.fence_at_ms + ?,
+                f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
+                ${STAMP}, f.fence_at_ms
+         FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
+         WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
+           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
+           AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
+           AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
+        [successorId, retryDelayMs, retryDelayMs, runId, successorId],
+        'one',
+      )
+      // attempts DERIVES from the failing run's own ordinal (the documented
+      // user ordinal: run.attempt counts every successor, infra_retries the
+      // infrastructure ones), so applying this twice equals applying it
+      // once — an exact replay cannot double-count.
+      b.derived('task-retrying', {
+        relation: 'runs-to-tasks',
+        fence: 'successor',
+        where: 'f.run_id = ?',
+        whereArgs: [successorId],
+        set: {
+          attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
+          state: `(SELECT f.state FROM runs f
+                   WHERE f.run_id = ? AND f.fence_stamp = ${b.fence('successor')})`,
+          last_attempt_run: '?',
+        },
+        setArgs: [runId, successorId, successorId],
+        narrow: `state IN ${LIVE}`,
+        rows: 'one',
+      })
+      // Cap refused (or task no longer live): terminal, same as no-retry.
+      b.derived('task-terminal', {
+        relation: 'runs-to-tasks',
+        fence: 'fail',
+        where: 'f.run_id = ?',
+        whereArgs: [runId],
+        set: {
+          attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
+          state: `'failed'`,
+          failure_reason: '?',
+        },
+        setArgs: [runId, failureJson],
+        narrow: `state IN ${LIVE}
+            AND NOT ${successorOwned(
+              '?',
+              'tasks.task_id',
+              '(SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?)',
+            )}`,
+        narrowArgs: [successorId, runId],
+        rows: 'one',
+      })
     } else {
-      batch.followOn(
-        'task',
-        `UPDATE tasks SET attempts = attempts + 1, state = 'failed', failure_reason = ?
-         WHERE task_id = (SELECT task_id FROM runs WHERE run_id = ? AND claimed_by = ${STAMP})
-           AND state IN ${LIVE}`,
-        [failureJson, runId],
-      )
+      b.derived('task', {
+        relation: 'runs-to-tasks',
+        fence: 'fail',
+        where: 'f.run_id = ?',
+        whereArgs: [runId],
+        set: {
+          attempts: USER_ATTEMPTS_FROM('?', b.fence('fail')),
+          state: `'failed'`,
+          failure_reason: '?',
+        },
+        setArgs: [runId, failureJson],
+        narrow: `state IN ${LIVE}`,
+        rows: 'one',
+      })
     }
-    const { won } = await batch
-      .followOn(
-        'waits-gone',
-        `DELETE FROM waits WHERE run_id = ? AND EXISTS (
-           SELECT 1 FROM runs WHERE run_id = ? AND state = 'failed' AND claimed_by = ${STAMP}
-         )`,
-        [runId, runId],
-      )
-      .run(this.db)
+    waitsGone(b, runId, 'fail')
+    const { won } = await b.run(this.db)
     if (won !== 'fail') throw new LeaseLostError(`fail ${runId}`)
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
+    const visibleThrough = requireRunOrdinal('getCheckpoints.attempt', attempt)
     const [rows] = await this.db.batch(
       'get-checkpoints',
       [
         {
-          sql: `SELECT checkpoint_name, state, owner_run_id, owner_attempt
-                FROM checkpoints
-                WHERE task_id = ? AND queue = ? AND status = 'committed'
-                  AND owner_attempt <= ?
-                ORDER BY checkpoint_name`,
-          args: [taskId, queue, attempt],
+          sql: `SELECT c.checkpoint_name, c.state, c.owner_run_id, c.owner_attempt
+                FROM checkpoints c
+                JOIN runs owner
+                  ON ${checkpointOwnerMatches('c', 'owner')}
+                WHERE c.task_id = ? AND c.queue = ? AND c.status = 'committed'
+                  AND c.owner_attempt <= ?
+                ORDER BY c.checkpoint_name`,
+          args: [taskId, queue, visibleThrough],
         },
       ],
       'read',
@@ -1001,16 +1564,34 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       checkpointName: String(row.checkpoint_name),
       stateJson: String(row.state),
       ownerRunId: String(row.owner_run_id),
-      ownerAttempt: Number(row.owner_attempt),
+      ownerAttempt: persistedRowInteger(
+        'getCheckpoints',
+        row,
+        CHECKPOINT_INTEGER_BOUNDS.owner_attempt,
+      ),
     }))
   }
 
   /**
-   * Lease-fenced checkpoint upsert (§3.4 rule 5). The claim token IS the
-   * batch stamp here — minted at claim, unique to this worker — because the
-   * lease must survive the write (the worker continues). Statement 2 keys on
-   * the token fence; the attempt guard is the LWW tiebreaker, never the
-   * fence. Throws LeaseLostError when the lease is gone (AB002).
+   * Lease-fenced checkpoint upsert (§3.4 rule 5). Throws LeaseLostError when
+   * the lease is gone (AB002).
+   *
+   * This was the last hand-rolled multi-statement write, exempt because rule 5
+   * says the claim token IS the stamp here: the lease has to survive the batch
+   * because the worker keeps working, so there was nowhere to put a per-batch
+   * stamp. `fence_stamp` is that place, and it does not compete with the
+   * lease — claimed_by is untouched, exactly the freedom activate gained. The
+   * exemption was a workaround for a problem that no longer exists.
+   *
+   * The upsert's task id and queue now come from the RUN ROW the
+   * compare-and-set stamped rather than from the caller's arguments. Rule 5
+   * requires the fence to bind the full surface — run id, task id, queue and
+   * token — and the compare-and-set checked all four, so reading them back off
+   * the winning row is that requirement met by construction instead of by
+   * repeating four guards in a second statement. `updated_at_ms` comes from
+   * `fence_at_ms` rather than from the heartbeat column it was borrowing,
+   * which was itself a smaller instance of the borrowed-column problem this
+   * whole change exists to remove.
    */
   async setCheckpoint(
     queue: string,
@@ -1022,35 +1603,38 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     extendLeaseSeconds: number,
   ): Promise<void> {
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
-    const [extended] = await this.db.batch('set-checkpoint', [
-      {
-        sql: `UPDATE runs SET
-                claim_expires_at_ms = ${NOW_MS} + ?, heartbeat_at_ms = ${NOW_MS}
-              WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
-                AND state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,
-        args: [extendMs, runId, queue, taskId, claimToken],
-      },
-      {
-        sql: `INSERT INTO checkpoints
-                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-              SELECT ?, ?, ?, ?, r.run_id, r.attempt, ${NOW_MS}
-              FROM runs r
-              WHERE r.run_id = ? AND r.task_id = ? AND r.queue = ? AND r.claimed_by = ?
-                AND r.state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t2
-                            WHERE t2.task_id = r.task_id AND t2.state IN ${LIVE})
-              ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
-                state = excluded.state,
-                owner_run_id = excluded.owner_run_id,
-                owner_attempt = excluded.owner_attempt,
-                updated_at_ms = excluded.updated_at_ms
-              WHERE excluded.owner_attempt >= checkpoints.owner_attempt`,
-        args: [taskId, checkpointName, queue, stateJson, runId, taskId, queue, claimToken],
-      },
-    ])
-    if ((extended?.rowsAffected ?? 0) !== 1) throw new LeaseLostError(`setCheckpoint ${runId}`)
+    const b = new FencedBatch('set-checkpoint', this.ids.token(), { now: NOW_MS })
+    b.cas(
+      'lease',
+      'runs',
+      `UPDATE runs SET
+         claim_expires_at_ms = ${NOW} + ?, heartbeat_at_ms = ${NOW}, ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
+         AND state = 'running'
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})
+         AND ${validCheckpointConflict('runs', '?')}
+         AND ${epochAdditionFits(NOW, '?')}`,
+      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],
+    )
+    // The attempt comparison inside CHECKPOINT_LWW is the last-writer-wins
+    // tiebreaker, never the fence: a lower-attempt writer under a still-valid
+    // lease is dropped silently and its lease still extends.
+    b.followOn(
+      'checkpoint',
+      `INSERT INTO checkpoints
+         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
+       FROM runs f WHERE ${BY_RUN}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')}
+         AND f.fence_stamp = ${b.fence('lease')}
+       ${CHECKPOINT_LWW}`,
+      [checkpointName, stateJson, runId],
+      'one',
+    )
+    const { won } = await b.run(this.db)
+    if (won !== 'lease') throw new LeaseLostError(`setCheckpoint ${runId}`)
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
@@ -1080,57 +1664,193 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'read',
     )
     const value = rows?.rows[0]?.wake_ms
-    return value === null || value === undefined ? null : Number(value)
+    return value === null || value === undefined
+      ? null
+      : requireDerivedInteger('nextWakeAtEpochMs.wake_ms', value, DERIVED_INTEGER_BOUNDS.epoch_ms)
   }
 
   // ── events (implements the TLC-verified EmitEvent / AwaitEvent actions) ─
 
   /**
-   * First write wins (EventImmutable): a second emit changes nothing and
-   * every waiter receives the STORED payload (PayloadMatchesEvent). The
-   * same batch delivers to all registered waiters: their runs wake with
-   * the event and its payload, their tasks mirror to pending, and the
-   * wait rows flip to delivered — one atomic action, so an interleaved
-   * await either sees the event row or gets woken, never neither.
+   * First write wins (EventImmutable): later emits cannot change the stored
+   * payload, and every waiter receives that payload (PayloadMatchesEvent).
+   * A fresh invocation may establish a fresh delivery fence at the event's
+   * original instant. The same batch delivers to all registered waiters:
+   * their runs wake with the event and its payload, their tasks mirror to
+   * pending, and the wait rows are consumed — one atomic action, so an
+   * interleaved await either sees the event row or gets woken, never neither.
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
-    await this.db.batch('emit-event', [
-      {
-        sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-              VALUES (?, ?, ?, ${NOW_MS})
-              ON CONFLICT (queue, event_name) DO NOTHING`,
-        args: [queue, eventName, payloadJson],
-      },
-      {
-        sql: `UPDATE runs SET
-                state = 'pending', available_at_ms = ${NOW_MS},
-                wake_event = ?,
-                event_payload = (SELECT payload FROM events WHERE queue = ? AND event_name = ?)
-              WHERE state = 'sleeping'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
-                AND run_id IN (
-                SELECT run_id FROM waits
-                WHERE queue = ? AND event_name = ? AND status = 'waiting'
-              )`,
-        args: [eventName, queue, eventName, queue, eventName],
-      },
-      {
-        sql: `UPDATE tasks SET state = 'pending'
-              WHERE state IN ${LIVE} AND task_id IN (
-                SELECT task_id FROM waits
-                WHERE queue = ? AND event_name = ? AND status = 'waiting'
-              )`,
-        args: [queue, eventName],
-      },
-      {
-        // DELETE, not a status flip: the wake fields on the run carry the
-        // delivery, and retained rows would leak forever (the verified
-        // inline shape — cancel deletes waits the same way).
-        sql: `DELETE FROM waits WHERE queue = ? AND event_name = ? AND status = 'waiting'`,
-        args: [queue, eventName],
-      },
-    ])
+    if (typeof payloadJson !== 'string') {
+      throw new RangeError('emitEvent payloadJson must be a string')
+    }
+    const b = new FencedBatch('emit-event', this.ids.token(), { now: NOW_MS })
+    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
+    // so a repaired/restored wait remains deliverable. Every conflict keeps
+    // the event's immutable emitted_at_ms as its provenance instant. The
+    // same-token guard avoids an unnecessary write while that token is
+    // current; the stored instant is what stays correct even after another
+    // invocation overwrites the token and the older batch replays.
+    b.cas(
+      'event',
+      'events',
+      `INSERT INTO events (queue, event_name, payload, emitted_at_ms, ${FENCE_COLS})
+       VALUES (?, ?, ?, ${NOW}, ${FENCE_VALS})
+       ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}
+       WHERE events.fence_stamp IS NOT ${STAMP}
+         AND typeof(events.payload) = 'text'
+         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`,
+      [queue, eventName, payloadJson],
+    )
+    const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
+    const emitted = fencedAt('events', thisEvent, b.fence('event'))
+    const runWait = registeredWait('runs')
+    // THE ONE FOLLOW-ON THAT CANNOT BE GENERATED, and the reason is worth
+    // stating rather than hiding. Every other follow-on selects its rows from
+    // a table THIS batch stamped, so the primitive can build the selection
+    // from the fence and the caller cannot widen it. This one selects from
+    // `waits` — rows some earlier await registered, which this batch never
+    // touched — and uses the event's fence only as a gate. That is a genuine
+    // exception, not an oversight, so it keeps the hand-written WHERE and the
+    // text checks that guard it. One documented escape is a better shape than
+    // a scanner defending every statement, which is the trade `openTail`
+    // already makes for reads.
+    //
+    // Waiters wake with the STORED payload, never the one this call carried:
+    // on a re-emit they must agree with the event row. The waits index is the
+    // access path; the event's stamp is the fence.
+    //
+    // `wake_event`/`wake_step` must match too. Trusting waits.run_id alone
+    // meant a leftover waiting row naming a run woke that run whatever it was
+    // actually doing — including a run asleep on a durable timer, which then
+    // resumed however long early its timer had left. The wait row that proved
+    // the mismatch was deleted in the same batch, so nothing afterwards looked
+    // wrong. A run parked by awaitEvent carries the event and step it parked
+    // on; a timer sleep carries neither.
+    //
+    // The step match is a SEPARATE existence probe rather than extra
+    // conditions on the IN subquery, and the difference is the whole query
+    // plan. Correlating that subquery to `runs` demotes it from the DRIVER to
+    // a filter, so the statement goes from `SEARCH runs USING PRIMARY KEY`
+    // over the handful of waiters to `SCAN runs USING INDEX runs_poll` — a
+    // full pass over the largest table in the engine, on every emit. Keeping
+    // it uncorrelated leaves the waits index driving and makes the step match
+    // a primary-key probe. Measured both ways.
+    //
+    // THE WITNESS IS THE WHOLE DECISION AND THE IN IS ONLY AN ACCESS PATH.
+    // Its full correlation is generated by registeredWait; otherwise two
+    // partial rows can answer separate probes, or a foreign-owned row can
+    // pass this wake while remaining invisible to the step backfill.
+    //
+    // A NULL wake_step matches ANY step of the event. Waits and events
+    // predate the wake_step column and its migration backfills nothing, so a
+    // run parked by the older code carries wake_event with no step, and
+    // `s.step_name = NULL` is never true. Without this arm such a run is
+    // never woken by any emit — on any upgraded database, and on any rolling
+    // deploy where an older process parks a run after a newer one migrated.
+    //
+    // It used to be worse than unwoken: the cleanup deleted its wait anyway,
+    // leaving an untimed await with nothing that a future delivery could use.
+    // The cleanup now follows the wake, so a run this predicate declines keeps
+    // its registration and shows up under `wait-for-fired-event`. Before
+    // consuming a legacy registration, the update copies its exact step into
+    // the run through the same full witness claim uses for timed wakes. That
+    // keeps the decoder from fabricating a step when an event name appeared at
+    // several call sites.
+    b.followOn(
+      'wake-runs',
+      'runs',
+      `UPDATE runs SET
+         state = 'pending',
+         available_at_ms = ${emitted},
+         wake_step = COALESCE(wake_step, ${runWait.step}),
+         wake_event = ?,
+         event_payload = (SELECT f.payload FROM events f
+                          WHERE ${thisEvent}),
+         ${fenceFrom('events', thisEvent, b.fence('event'))}
+       WHERE state = 'sleeping'
+         AND wake_event = ?
+         AND run_id IN (SELECT w.run_id FROM waits w
+                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')
+         AND ((runs.wake_step IS NOT NULL AND ${runWait.current})
+              OR (runs.wake_step IS NULL AND ${runWait.step} IS NOT NULL))
+         AND ${fenced('events', thisEvent, b.fence('event'))}
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
+      [eventName, eventName, eventName, eventName, eventName, queue, eventName, eventName],
+      { many: 'an emit wakes every registered waiter' },
+    )
+    // Driven by the runs this batch actually woke, and never by waits.task_id.
+    // Reading the task id straight off the wait row meant a corrupt wait —
+    // one belonging to run A but naming healthy task B — flipped B to pending
+    // while B's own run kept running: corrupt state amplified into a task
+    // that was never waiting at all.
+    b.derived('wake-tasks', {
+      relation: 'runs-to-tasks',
+      // UPDATE provenance is generated from the runs this statement follows.
+      // Every woken run carries the event's instant, so this is the same value
+      // without a caller-controlled stamping escape.
+      fence: 'wake-runs',
+      // The queue narrows the source to an index rather than scanning runs;
+      // `state = 'pending'` is what wake-runs just set on exactly these rows.
+      where: `f.queue = ? AND f.state = 'pending'`,
+      whereArgs: [queue],
+      set: { state: `'pending'` },
+      narrow: `state IN ${LIVE}`,
+      rows: 'source-keys',
+    })
+    // DELETE, not a status flip: the wake fields on the run carry the
+    // delivery, and retained rows would leak forever (cancel deletes waits
+    // the same way).
+    //
+    // Driven by the runs this emit WOKE, not by the event it fired. Keying it
+    // on the event name made the delete a second statement deciding which
+    // registrations count, under a weaker rule than the one above it — so
+    // every condition added to the wake predicate turned some run from "not
+    // woken" into "not woken, and its registration destroyed", and the event
+    // row is immutable, so nothing can deliver it afterwards. Every
+    // legitimate end of a wait already reaps its rows (complete, fail, both
+    // sweeps, cancel), so a row left here is either repairable or evidence of
+    // corruption, and deleting it is the only option that makes it neither.
+    //
+    // It also stops being the second statement in this batch selecting rows
+    // the batch did not write: the runs it deletes for are the ones
+    // `wake-runs` just stamped, so the primitive builds the selection and
+    // `wake-runs` is left as the only hand-written escape.
+    b.derived('waits-gone', {
+      relation: 'runs-to-waits',
+      fence: 'wake-runs',
+      // Same reason as wake-tasks: the queue narrows the source to an index,
+      // and `state = 'pending'` is what wake-runs just set on these rows.
+      where: `f.queue = ? AND f.state = 'pending'`,
+      whereArgs: [queue],
+      narrow: `event_name = ? AND status = 'waiting'`,
+      narrowArgs: [eventName],
+      rows: 'source-keys',
+    })
+    // `wake-runs` is an intermediate capability, not durable state. Once both
+    // dependents have consumed it, overwrite that statement stamp at the same
+    // instant. A delayed delivery of these exact compiled statements can no
+    // longer treat the first execution's wake as work performed by the replay.
+    b.seal('wake-finished', {
+      relation: 'runs-to-runs',
+      fence: 'wake-runs',
+      where: `f.queue = ? AND f.state = 'pending'`,
+      whereArgs: [queue],
+      rows: 'source-keys',
+    })
+    b.openTail(
+      'stored-event',
+      'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
+      `SELECT typeof(payload) AS payload_type
+       FROM events WHERE queue = ? AND event_name = ?`,
+      [queue, eventName],
+    )
+    const { results } = await b.run(this.db)
+    const stored = results['stored-event']?.rows[0]
+    if (stored?.payload_type !== 'text') {
+      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+    }
   }
 
   /**
@@ -1155,114 +1875,116 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       timeoutSeconds === null
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
-    const emittedGuard = `NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)`
-    // A fresh per-invocation stamp the park writes into claimed_by, so the
-    // task-mirror below fires ONLY when THIS batch's park succeeded — not on
-    // a run that merely happens to be sleeping (rule 1: a losing batch writes
-    // nothing). The same shape reschedule/suspendRun use for their marker.
-    const parkStamp = this.ids.token()
-    const [, park, , event] = await this.db.batch('await-event', [
-      {
-        // Wait registration FIRST, fenced on the LIVE claim token
-        // (claimed_by = this invocation's token) + running + task eligible:
-        // a stale invocation whose token was consumed matches zero and writes
-        // nothing, so a run left sleeping under the same wake_step (e.g. by a
-        // preserve reschedule) cannot have a wait recreated on it. The single
-        // eligibility decision — including the cancellation deadline, which is
-        // database time — and the timeout deadline are computed exactly once
-        // here; the park below COPIES timeout_at_ms, so the two never drift.
-        sql: `INSERT INTO waits
-                (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms, created_at_ms)
-              SELECT ?, ?, ?, ?, ?, 'waiting',
-                CASE WHEN ? IS NOT NULL THEN ${NOW_MS} + ? ELSE NULL END, ${NOW_MS}
-              WHERE ${emittedGuard}
-                AND EXISTS (SELECT 1 FROM runs r
-                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                              AND r.claimed_by = ? AND r.state = 'running')
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = ? AND ${eligibleTask('t')})
-              ON CONFLICT (run_id, step_name) DO NOTHING`,
-        args: [
-          runId,
-          stepName,
-          queue,
-          taskId,
-          eventName,
-          timeoutMs,
-          timeoutMs,
-          queue,
-          eventName,
-          runId,
-          queue,
-          taskId,
-          claimToken,
-          taskId,
-        ],
+    const b = new FencedBatch('await-event', this.ids.token(), { now: NOW_MS })
+    // Wait registration FIRST, fenced on the LIVE claim token + running + task
+    // eligible: a stale invocation whose token was consumed matches zero and
+    // writes nothing, so a run left sleeping under the same wake_step (e.g. by
+    // a preserve reschedule) cannot have a wait recreated on it. The single
+    // eligibility decision — including the cancellation deadline, which is
+    // database time — and the timeout deadline are computed exactly once here.
+    //
+    // ON CONFLICT DO NOTHING means a wait already at this (run, step) makes
+    // this lose, and losing is now the whole answer: the park below keys on
+    // the wait THIS statement inserted. It used to key on "some waiting wait
+    // for this event exists", so a stale untimed wait left by an earlier
+    // attempt was borrowed along with ITS null timeout, and a fresh
+    // 30-second await parked the run forever.
+    b.cas(
+      'register',
+      'waits',
+      `INSERT INTO waits
+         (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms,
+          created_at_ms, ${FENCE_COLS})
+       SELECT ?, ?, ?, ?, ?, 'waiting',
+         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}
+       WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)
+         AND EXISTS (SELECT 1 FROM runs r
+                     JOIN tasks t ON ${runOwnedByTask('r', 't')}
+                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
+                       AND r.claimed_by = ? AND r.state = 'running'
+                       AND ${eligibleTask('t', NOW)})
+         AND (? IS NULL OR ${epochAdditionFits(NOW, '?')})
+       ON CONFLICT (run_id, step_name) DO NOTHING`,
+      [
+        runId,
+        stepName,
+        queue,
+        taskId,
+        eventName,
+        timeoutMs,
+        timeoutMs,
+        queue,
+        eventName,
+        runId,
+        queue,
+        taskId,
+        claimToken,
+        timeoutMs,
+        timeoutMs,
+      ],
+    )
+    // available_at_ms IS this wait's own timeout_at_ms — copied from the row
+    // just inserted, so the two can never drift and the park physically
+    // cannot name the clock. claimed_by becomes NULL because a parked run
+    // holds no lease; it used to receive a second, hand-rolled stamp, which
+    // was this primitive reimplemented by hand.
+    const thisWait = `f.run_id = ? AND f.step_name = ?`
+    b.derived('park', {
+      relation: 'waits-to-runs',
+      fence: 'register',
+      where: `f.run_id = ? AND f.step_name = ? AND f.status = 'waiting'`,
+      whereArgs: [runId, stepName],
+      set: {
+        state: `'sleeping'`,
+        available_at_ms: `(SELECT f.timeout_at_ms FROM waits f
+                           WHERE ${thisWait} AND f.fence_stamp = ${b.fence('register')})`,
+        wake_event: '?',
+        event_payload: 'NULL',
+        wake_step: '?',
+        claimed_by: 'NULL',
+        claim_expires_at_ms: 'NULL',
+        heartbeat_at_ms: 'NULL',
       },
-      {
-        // The park fires IFF the wait above was just registered FOR THIS
-        // EVENT (post-state, rule 1) AND this invocation still owns the
-        // running run AND the owning task is LIVE — so a stale invocation
-        // cannot park, a pre-existing wait for a DIFFERENT event cannot be
-        // borrowed, and a terminal task's corrupt run is never parked
-        // (rule 6, state-only so no second NOW). available_at_ms IS this
-        // event's wait timeout_at_ms, one value.
-        sql: `UPDATE runs SET
-                state = 'sleeping',
-                available_at_ms = (SELECT timeout_at_ms FROM waits
-                                   WHERE run_id = ? AND step_name = ? AND event_name = ?),
-                wake_event = ?, event_payload = NULL, wake_step = ?,
-                claimed_by = ?, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL
-              WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
-                AND state = 'running'
-                AND EXISTS (SELECT 1 FROM tasks t
-                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})
-                AND EXISTS (SELECT 1 FROM waits
-                            WHERE run_id = ? AND step_name = ? AND event_name = ?
-                              AND status = 'waiting')`,
-        args: [
-          runId,
-          stepName,
-          eventName,
-          eventName,
-          stepName,
-          parkStamp,
-          runId,
-          queue,
-          taskId,
-          claimToken,
-          runId,
-          stepName,
-          eventName,
-        ],
-      },
-      {
-        // The mirror fires ONLY when THIS batch's park stamped the run
-        // (claimed_by = parkStamp): a losing invocation whose park matched
-        // zero rows never writes here, even against a run already sleeping.
-        sql: `UPDATE tasks SET state = 'sleeping'
-              WHERE task_id = ? AND state IN ${LIVE}
-                AND EXISTS (SELECT 1 FROM runs
-                            WHERE run_id = ? AND claimed_by = ? AND state = 'sleeping')`,
-        args: [taskId, runId, parkStamp],
-      },
-      {
-        // The HIT read is fenced too (the model's AwaitEventHit is a
-        // fenced action): a zombie must fall through to the park
-        // discriminator and get the lease error, never a success signal.
-        sql: `SELECT payload FROM events
-              WHERE queue = ? AND event_name = ?
-                AND EXISTS (SELECT 1 FROM runs r
-                            WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                              AND r.claimed_by = ? AND r.state = 'running')`,
-        args: [queue, eventName, runId, queue, taskId, claimToken],
-      },
-    ])
-    const row = event?.rows[0]
+      setArgs: [runId, stepName, eventName, stepName],
+      narrow: `queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
+            AND EXISTS (SELECT 1 FROM tasks t
+                        WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
+      narrowArgs: [queue, taskId, claimToken],
+      rows: 'one',
+    })
+    b.derived('task-mirror', {
+      relation: 'runs-to-tasks',
+      fence: 'park',
+      where: `f.run_id = ? AND f.state = 'sleeping'`,
+      whereArgs: [runId],
+      set: { state: `'sleeping'` },
+      narrow: `state IN ${LIVE}`,
+      rows: 'one',
+    })
+    // The event row belongs to whichever batch emitted it, so this read is
+    // fenced on the LIVE claim token instead: a zombie falls through to the
+    // register discriminator and gets the lease error, never a success signal.
+    b.openTail(
+      'hit',
+      'the event was written by the emitting batch, not this one; the live claim token is the fence here',
+      `SELECT payload, typeof(payload) AS payload_type FROM events
+       WHERE queue = ? AND event_name = ?
+         AND EXISTS (SELECT 1 FROM runs r
+                     JOIN tasks t ON ${runOwnedByTask('r', 't')}
+                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
+                       AND r.claimed_by = ? AND r.state = 'running'
+                       AND t.state IN ${LIVE})`,
+      [queue, eventName, runId, queue, taskId, claimToken],
+    )
+    const { won, results } = await b.run(this.db)
+    const row = results.hit?.rows[0]
     if (row !== undefined) {
+      if (row.payload_type !== 'text') {
+        throw new RangeError(`awaitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+      }
       return { emitted: true, payloadJson: String(row.payload) }
     }
-    if ((park?.rowsAffected ?? 0) !== 1) {
+    if (won !== 'register') {
       throw new LeaseLostError(`awaitEvent ${runId}`)
     }
     return { emitted: false }
@@ -1275,8 +1997,41 @@ function clampLimit(limit: number): number {
   return Math.max(0, Math.floor(limit))
 }
 
-function notYet(method: string): Promise<never> {
-  return Promise.reject(new Error(`LibsqlSchedulerStore.${method}: not implemented yet`))
+/**
+ * Decode one persisted field through the bounds branded for that exact field.
+ *
+ * The query supplies only its row and a field descriptor. The descriptor owns
+ * both the row key and the interval, so a caller cannot decode one property
+ * through another property's coincidentally equal bounds.
+ */
+export function persistedRowInteger(
+  scope: string,
+  row: SqlRow,
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+): number {
+  return decodePersistedRowInteger(scope, row, bounds)
+}
+
+function persistedPositiveClaimGeneration(scope: string, row: SqlRow): number {
+  return decodePersistedRowInteger(scope, row, POSITIVE_CLAIM_GENERATION_BOUNDS)
+}
+
+function decodePersistedRowInteger(
+  scope: string,
+  row: SqlRow,
+  bounds: PersistedIntegerBounds,
+): number {
+  const separator = bounds.field.indexOf('.')
+  if (separator < 0 || separator === bounds.field.length - 1) {
+    throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)
+  }
+  const column = bounds.field.slice(separator + 1)
+  const value = row[column]
+  const decoded = decodeBoundedInteger(value, bounds)
+  if (decoded.ok) return decoded.value
+  throw new RangeError(
+    `${scope}.${column} must be an exact SQL integer in [${bounds.min}, ${bounds.max}], got ${storageValueKind(value)} (${decoded.reason})`,
+  )
 }
 
 function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
@@ -1284,24 +2039,29 @@ function decodeClaimedRun(row: SqlRow, claimToken: string): ClaimedRun {
     runId: String(row.run_id),
     taskId: String(row.task_id),
     taskName: String(row.task_name),
-    attempt: Number(row.attempt),
-    infraRetries: Number(row.infra_retries),
-    claimGen: Number(row.claim_gen),
+    attempt: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.attempt),
+    infraRetries: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.infra_retries),
+    claimGen: persistedPositiveClaimGeneration('claim', row),
     claimToken,
-    claimExpiresAtEpochMs: Number(row.claim_expires_at_ms),
-    leaseSeconds: Number(row.lease_ms) / 1000,
+    claimExpiresAtEpochMs: persistedRowInteger(
+      'claim',
+      row,
+      RUN_INTEGER_BOUNDS.claim_expires_at_ms,
+    ),
+    leaseSeconds: persistedRowInteger('claim', row, RUN_INTEGER_BOUNDS.lease_ms) / 1000,
     paramsJson: String(row.params),
-    retryStrategy: JSON.parse(String(row.retry_strategy)) as RetryStrategy,
-    maxAttempts: Number(row.max_attempts),
+    retryStrategy: normalizeRetryStrategy(parseTaskValueJson(String(row.retry_strategy))),
+    maxAttempts: persistedRowInteger('claim', row, TASK_INTEGER_BOUNDS.max_attempts),
     headers:
-      row.headers === null ? {} : (JSON.parse(String(row.headers)) as Record<string, string>),
+      row.headers === null
+        ? {}
+        : (parseTaskValueJson(String(row.headers)) as Record<string, string>),
   }
   if (row.wake_event !== null && row.wake_step !== null) {
-    // A wake sets wake_event and wake_step together (park) and clears them
-    // together, so a set wake_event always has its wake_step — the SDK
-    // matches on the step key. A row with wake_event set but wake_step NULL
-    // cannot occur in this version (events were introduced with wake_step),
-    // and is ignored rather than mis-bound to a fabricated step.
+    // The SDK matches on the exact step key. Rows parked before schema v3
+    // carry it only in waits, so claim and emit copy it into the run before
+    // deleting that registration. Never fabricate a step from the event name:
+    // repeated awaits may share the event while using distinct step keys.
     const event = String(row.wake_event)
     const step = String(row.wake_step)
     claimed.wake =

@@ -46,16 +46,43 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
 6. **Launched reviewers report before merge** — MECHANIZED: main's branch
    protection requires the 'adversarial-review' commit status, which only
    scripts/review-attest.sh produces, and it refuses to attest unless the
-   codex log and the review-workflow journal verifiably COMPLETED (or the
-   PR body carries an explicit 'reviews-abandoned:<reason>' trailer, which
-   the status echoes publicly). Merging without reviews is an operation
+   codex log and the review-workflow journal are each bound to the current
+   PR head and verifiably COMPLETED (or the PR body carries an explicit
+   'reviews-abandoned:<reason>' trailer, which the status echoes publicly).
+   Merging without reviews is an operation
    GitHub refuses, not a rule to remember — it was forgotten under
    momentum twice; now the failure mode requires deliberately attesting
    falsely, a different and auditable class. The same script enforces the
    SEV rule FIRST — a mandatory `review-findings: <count>` line in the PR
    body, and for a nonzero count an added, filled-in postmortem (Part 6);
    the abandonment trailer never skips that gate.
-7. **Simplify + elegance pass ran** — before the final push, a dedicated
+7. **`pnpm verify:mutations` clean** — when the PR adds or
+   changes a guard. The command self-confines once, captures the clean
+   committed head, and uses isolated detached worktrees (`--jobs auto` by
+   default). It deletes each guard in turn and requires the exact attributable
+   verdict to fail. A survivor is a guard nothing is maintaining, and the next
+   refactor can drop it with the build still green. A STALE pattern, incomplete
+   worker, wrong-head/missing/duplicate/extra result, cleanup leak, or
+   process/report disagreement also fails the audit. The live aggregate cgroup
+   must preserve 25% of host memory and the host CPU reserve; merely finite
+   limits are not confinement. A missing, malformed, or signaled Vitest report
+   is infrastructure failure, never a completed wrong-path mutation. Do not
+   skip this because the suite is green — green is what it is testing the
+   meaning of. The final success line must name the current head, and the next
+   session-state check must show no mutation worktrees left behind.
+8. **`bash scripts/session-state.sh` clean** — before reporting a round
+   finished. Repository ownership comes from cwd, argv, and live ancestry;
+   unrelated host sleeps are not repository evidence.
+   The same snapshot covers registered worktrees, while Git reports stashes and
+   uncommitted files. Never grep the process table for tool names to decide
+   nothing is running: that answer was given once from
+   `ps | grep -E 'codex-cli|tla2tools|vitest'`, which cannot match a shell loop
+   sitting in `sleep`, and it missed two — one spinning for 38 hours from an
+   earlier session, and one whose own exit condition was `! pgrep -f "tla.sh"`,
+   which matched the waiter's own command line and so could never become true.
+   A negative claim needs a check that would visibly fail if the claim were
+   false.
+9. **Simplify + elegance pass ran** — before the final push, a dedicated
    simplification review over the FULL branch diff (`/simplify`, or an
    equivalent walk of Part 5): every accepted simplification lands in the
    PR, every rejected one gets a written reason in the PR body. "It works"

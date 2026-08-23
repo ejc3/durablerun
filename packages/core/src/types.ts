@@ -4,15 +4,48 @@
  * per-claim generations, activation state, and split retry accounting.
  */
 
-export type TaskState = 'pending' | 'running' | 'sleeping' | 'completed' | 'failed' | 'cancelled'
+/** Canonical runtime partitions for every task/run state consumer. */
+export const LIVE_STATES = Object.freeze(['pending', 'running', 'sleeping'] as const)
+export const TERMINAL_STATES = Object.freeze(['completed', 'failed', 'cancelled'] as const)
+
+export type LiveState = (typeof LIVE_STATES)[number]
+export type TerminalState = (typeof TERMINAL_STATES)[number]
+export type TaskState = LiveState | TerminalState
+
+const LIVE_STATE_SET: ReadonlySet<string> = new Set(LIVE_STATES)
+const TERMINAL_STATE_SET: ReadonlySet<string> = new Set(TERMINAL_STATES)
+
+export function isLiveState(value: unknown): value is LiveState {
+  return typeof value === 'string' && LIVE_STATE_SET.has(value)
+}
+
+export function isTerminalState(value: unknown): value is TerminalState {
+  return typeof value === 'string' && TERMINAL_STATE_SET.has(value)
+}
 
 export type RunState = TaskState
 
 /** Serialized as JSON in the `retry_strategy` column, same shape as Absurd. */
 export type RetryStrategy =
-  | { kind: 'none' }
-  | { kind: 'fixed'; baseSeconds: number }
-  | { kind: 'exponential'; baseSeconds: number; factor: number; maxSeconds: number }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'fixed'; readonly baseSeconds: number }
+  | {
+      readonly kind: 'exponential'
+      readonly baseSeconds: number
+      readonly factor: number
+      readonly maxSeconds: number
+    }
+
+declare class NormalizedRetryStrategyIdentity {
+  private readonly normalizedRetryStrategyIdentity: true
+}
+
+/**
+ * Exact, frozen, millisecond-canonical retry data produced only by
+ * normalizeRetryStrategy. Durable decoders and the scheduler store expose
+ * this type so retry math cannot consume an unchecked JSON cast.
+ */
+export type NormalizedRetryStrategy = RetryStrategy & NormalizedRetryStrategyIdentity
 
 /** Absurd's cancellation policy jsonb: both fields optional, in seconds. */
 export interface CancellationPolicy {
@@ -37,7 +70,17 @@ export interface SpawnOptions {
 
 export interface SpawnResult {
   taskId: string
-  runId: string
+  /**
+   * The run this call created, or — when it lost — the newest run the winning
+   * task already had.
+   *
+   * Null is a real answer, not an error: a task that already exists may have
+   * no run at all, and there is then nothing honest to report. It is typed
+   * nullable so callers have to decide what to do about that; the previous
+   * version returned the id it had minted and never inserted, so a caller
+   * polling that id found nothing, forever, with no way to tell.
+   */
+  runId: string | null
   /** False when the idempotency key matched an existing task. */
   created: boolean
 }
@@ -47,8 +90,12 @@ export interface SpawnResult {
  * fence every subsequent write (DESIGN.md §3.2): activation is a CAS on
  * `activated_gen < claim_gen`, never a one-shot flag.
  */
-export interface ClaimedRun {
+export interface LaunchIdentity {
   runId: string
+  claimToken: string
+}
+
+export interface ClaimedRun extends LaunchIdentity {
   taskId: string
   taskName: string
   /**
@@ -61,13 +108,12 @@ export interface ClaimedRun {
   /** Task-lifetime count of infra (`$ClaimTimeout`) successors. */
   infraRetries: number
   claimGen: number
-  claimToken: string
   /** Lease deadline as stamped by the claim — the worker's chaining budget. */
   claimExpiresAtEpochMs: number
   /** The lease length this claim was granted (worker heartbeat cadence). */
   leaseSeconds: number
   paramsJson: string
-  retryStrategy: RetryStrategy
+  retryStrategy: NormalizedRetryStrategy
   maxAttempts: number
   headers: Record<string, string>
   /** Present when this claim is an event or event-timeout wake. */

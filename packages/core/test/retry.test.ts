@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { decideRetry, retryDelaySeconds } from '../src/retry.js'
+import { decideRetry, normalizeRetryStrategy, retryDelaySeconds } from '../src/retry.js'
+import {
+  attributeExpectedFailure,
+  attributeReplacedFailure,
+  requireExpectedFailure,
+} from '../src/testing.js'
+import type { RetryStrategy } from '../src/types.js'
+import { MAX_DURATION_MS, requirePositiveInt } from '../src/validate.js'
 
 describe('retryDelaySeconds', () => {
   it('fixed strategy returns base delay regardless of attempt', () => {
@@ -19,6 +26,234 @@ describe('retryDelaySeconds', () => {
     const s = { kind: 'exponential', baseSeconds: 10, factor: 3, maxSeconds: 100 } as const
     expect(retryDelaySeconds(s, 4)).toBe(100)
     expect(retryDelaySeconds(s, 20)).toBe(100)
+  })
+
+  it('a zero base stays zero when exponentiation overflows', async () => {
+    const s = { kind: 'exponential', baseSeconds: 0, factor: 2, maxSeconds: 3600 } as const
+    const delay = await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'retry-zero-base-overflow' },
+      /zero-base exponential overflow produced a nonzero delay/,
+      async () => {
+        const value = retryDelaySeconds(s, 1025)
+        if (value !== 0) {
+          throw new Error('zero-base exponential overflow produced a nonzero delay')
+        }
+        return value
+      },
+    )
+    expect(delay).toBe(0)
+  })
+})
+
+describe('normalizeRetryStrategy', () => {
+  it('rejects a base above the durable duration bound', async () => {
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'retry-normalize-base-bound' },
+      /exceeds the 100-year duration bound/,
+      async () =>
+        normalizeRetryStrategy({
+          kind: 'fixed',
+          baseSeconds: MAX_DURATION_MS / 1000 + 1,
+        }),
+    )
+  })
+
+  it('rejects an exponential cap above the durable duration bound', async () => {
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'retry-normalize-max-bound' },
+      /exceeds the 100-year duration bound/,
+      async () =>
+        normalizeRetryStrategy({
+          kind: 'exponential',
+          baseSeconds: 1,
+          factor: 2,
+          maxSeconds: MAX_DURATION_MS / 1000 + 1,
+        }),
+    )
+  })
+
+  it('rejects a negative exponential factor', async () => {
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'retry-normalize-factor' },
+      /factor must be a finite non-negative number/,
+      async () =>
+        normalizeRetryStrategy({
+          kind: 'exponential',
+          baseSeconds: 1,
+          factor: -1,
+          maxSeconds: 60,
+        }),
+    )
+  })
+
+  it('rejects an unknown strategy kind', async () => {
+    await requireExpectedFailure(
+      { kind: 'behavior', mutation: 'retry-normalize-kind' },
+      /kind must be none, fixed, or exponential/,
+      async () => normalizeRetryStrategy({ kind: 'future-policy' }),
+    )
+  })
+
+  it('rebuilds exact frozen millisecond-canonical data', async () => {
+    const rawStrategies = [
+      [
+        {
+          kind: 'none' as const,
+          ignored: true,
+          toJSON: () => {
+            throw new Error('caller toJSON escaped')
+          },
+        },
+        '{"kind":"none"}',
+      ],
+      [
+        {
+          kind: 'fixed' as const,
+          baseSeconds: 0.0005,
+          ignored: true,
+          toJSON: () => {
+            throw new Error('caller toJSON escaped')
+          },
+        },
+        '{"kind":"fixed","baseSeconds":0.001}',
+      ],
+      [
+        {
+          kind: 'exponential' as const,
+          baseSeconds: 0.0005,
+          factor: 2,
+          maxSeconds: 60,
+          ignored: true,
+          toJSON: () => {
+            throw new Error('caller toJSON escaped')
+          },
+        },
+        '{"kind":"exponential","baseSeconds":0.001,"factor":2,"maxSeconds":60}',
+      ],
+    ] as const
+
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'retry-normalize-rebuild' },
+      /retry normalization did not rebuild exact canonical data/,
+      async () => {
+        for (const [raw, expectedJson] of rawStrategies) {
+          const value = normalizeRetryStrategy(raw)
+          if (
+            Object.is(value, raw) ||
+            !Object.isFrozen(value) ||
+            JSON.stringify(value) !== expectedJson
+          ) {
+            throw new Error('retry normalization did not rebuild exact canonical data')
+          }
+        }
+      },
+    )
+  })
+
+  it('canonicalizes negative zero before serialization', async () => {
+    await attributeExpectedFailure(
+      { kind: 'construction', mutation: 'retry-normalize-positive-zero' },
+      /retry normalization preserved negative zero/,
+      async () => {
+        const fixed = normalizeRetryStrategy({ kind: 'fixed', baseSeconds: -0 })
+        if (fixed.kind !== 'fixed' || Object.is(fixed.baseSeconds, -0)) {
+          throw new Error('retry normalization preserved negative zero')
+        }
+      },
+    )
+  })
+
+  it('canonicalizes a negative-zero exponential factor before serialization', () => {
+    const exponential = normalizeRetryStrategy({
+      kind: 'exponential',
+      baseSeconds: 1,
+      factor: -0,
+      maxSeconds: 60,
+    })
+    if (exponential.kind === 'exponential' && Object.is(exponential.factor, -0)) {
+      throw new Error('mutation-verdict:construction:retry-normalize-factor-positive-zero')
+    }
+  })
+
+  it('canonicalizes a negative-zero exponential maxSeconds before serialization', () => {
+    const exponential = normalizeRetryStrategy({
+      kind: 'exponential',
+      baseSeconds: 1,
+      factor: 2,
+      maxSeconds: -0,
+    })
+    if (exponential.kind === 'exponential' && Object.is(exponential.maxSeconds, -0)) {
+      throw new Error('mutation-verdict:construction:retry-normalize-max-positive-zero')
+    }
+  })
+
+  it('contains hostile getters at one field-reading boundary', async () => {
+    const hostileFields = [
+      ['kind', {}],
+      ['baseSeconds', { kind: 'fixed' }],
+      ['factor', { kind: 'exponential', baseSeconds: 1, maxSeconds: 60 }],
+      ['maxSeconds', { kind: 'exponential', baseSeconds: 1, factor: 2 }],
+    ] as const
+
+    for (const [field, partial] of hostileFields) {
+      const escaped = new Error(`raw retry ${field} getter escaped`)
+      const hostile = Object.defineProperty({ ...partial }, field, {
+        get: () => {
+          throw escaped
+        },
+      })
+      await attributeReplacedFailure(
+        { kind: 'behavior', mutation: 'retry-normalize-readable-fields' },
+        {
+          expectedError: (error) =>
+            error instanceof RangeError &&
+            error.message === `retry strategy ${field} is not readable`,
+          replacementError: (error) => error === escaped,
+        },
+        async () => normalizeRetryStrategy(hostile),
+      )
+    }
+  })
+
+  it('is the decision API boundary for invalid strategy objects', async () => {
+    const invalid = { kind: 'future-policy' } as unknown as RetryStrategy
+
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'retry-decision-normalization' },
+      /retry delay must be a finite non-negative number/,
+      async () => {
+        try {
+          decideRetry(invalid, 1, 2)
+        } catch (error) {
+          if (/retry strategy kind must be none, fixed, or exponential/.test(String(error))) return
+          throw error
+        }
+      },
+    )
+  })
+
+  it('is the delay API boundary for invalid strategy objects', async () => {
+    const invalid = {
+      kind: 'future-policy',
+    } as unknown as Exclude<RetryStrategy, { kind: 'none' }>
+
+    await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'retry-delay-normalization' },
+      /retry delay must be a finite non-negative number/,
+      async () => {
+        try {
+          retryDelaySeconds(invalid, 1)
+        } catch (error) {
+          if (
+            /retry strategy kind must be none, fixed, or exponential/.test(String(error)) ||
+            /retry delay requires a fixed or exponential strategy/.test(String(error))
+          ) {
+            return
+          }
+          throw error
+        }
+      },
+    )
   })
 })
 
@@ -45,5 +280,18 @@ describe('decideRetry', () => {
 
   it('rejects nonsensical attempt numbers', () => {
     expect(() => decideRetry({ kind: 'none' }, 0, 3)).toThrow(RangeError)
+  })
+})
+
+describe('attempt counts stay inside the range JavaScript can represent', () => {
+  it('refuses a maxAttempts that would push a run ordinal past MAX_SAFE_INTEGER', () => {
+    // The run ordinal counts every successor, so max_attempts bounds it. An
+    // accepted MAX_SAFE_INTEGER lets a successor be written at an ordinal
+    // SQLite stores happily and JavaScript cannot represent, after which
+    // every claim decoding that run throws and the task is stuck pending
+    // forever with no worker able to take it.
+    expect(() => requirePositiveInt('maxAttempts', Number.MAX_SAFE_INTEGER)).toThrow(RangeError)
+    expect(() => requirePositiveInt('maxAttempts', 1_000_001)).toThrow(RangeError)
+    expect(requirePositiveInt('maxAttempts', 1_000_000)).toBe(1_000_000)
   })
 })

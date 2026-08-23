@@ -1,9 +1,9 @@
-import { EventTimeoutError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
+import { EventTimeoutError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
-import { runClaimedRun, type TaskContext, type TaskRegistry } from '../src/index.js'
+import { type TaskContext, type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 
@@ -46,6 +46,7 @@ const VALUES: unknown[] = [
   Number.NaN, // JSON: null
   { date: new Date(1_700_000_000_000) }, // JSON: string
   { u: undefined, kept: 1 }, // JSON: field dropped
+  undefined, // JSON: top-level task result is pinned to null
   -0, // JSON: 0
 ]
 
@@ -116,8 +117,9 @@ function generateProgram(rng: Rng): ProgramOp[] {
       })
     } else if (roll < 0.52) {
       // The park→wake path: the driver loop emits ext* names every round
-      // (first-write-wins makes the repeats no-ops), so whether a schedule
-      // parks first or arrives late, the await resolves to the SAME payload.
+      // (first-write-wins keeps the stored payload unchanged), so whether a
+      // schedule parks first or arrives late, the await resolves to the SAME
+      // payload even if delivery provenance refreshes.
       const base = { kind: 'await-external' as const, valueIndex, nameIndex, eventName: `ext${i}` }
       ops.push(rng.next() < 0.5 ? { ...base, timeoutSeconds: 120 } : base)
     } else if (roll < 0.58) {
@@ -271,8 +273,9 @@ async function runProgram(
       if (done && done.state !== 'pending' && done.state !== 'running' && done.state !== 'sleeping')
         break
       // External wakes, delivered on a fixed cadence from round 2 on:
-      // first-write-wins makes the re-emits no-ops, so EVERY schedule sees
-      // the same payload whether its await parked early or arrived late.
+      // first-write-wins keeps the stored payload unchanged, so EVERY schedule
+      // sees the same result whether its await parked early or arrived late,
+      // even though a re-emit may refresh delivery provenance.
       if (round >= 2) {
         for (const name of externals) {
           await real.emitEvent(Q, name, JSON.stringify({ ext: name }))
@@ -333,7 +336,7 @@ describe('replay equivalence (generated programs x fault points x adversarial va
     it(`program ${seed}: every fault point yields the reference outcome`, async () => {
       const ops = generateProgram(new Rng(`program-${seed}`))
       const reference = await runProgram(ops, `ref-${seed}`, 0)
-      // Fault every store call the reference lifetime made (bounded scan).
+      // Fault a bounded odd-index sample through call 28.
       for (let call = 3; call <= 28; call += 2) {
         const faulted = await runProgram(ops, `fault-${seed}-${call}`, call)
         expect(faulted.result, `fault at call ${call}`).toBe(reference.result)

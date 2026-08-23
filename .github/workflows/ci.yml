@@ -33,3 +33,53 @@ jobs:
           java-version: 25
       - name: Model-check the scheduler protocol (CI scope)
         run: TLA_SCOPE=ci bash scripts/tla.sh
+
+  # The gate cannot be allowed to grade itself.
+  #
+  # `verify` above runs from the pull request's own checkout, and the list of
+  # checks it runs is a string in that same tree's package.json. Deleting
+  # `&& pnpm lint:clock` from it is therefore green by construction — the
+  # branch under review decides what reviews it. Every checker has the same
+  # shape: its rules live in the tree it grades. So this job runs the BASE
+  # branch's copies against the pull request's tree.
+  #
+  # Two limits, both found by this job's own first live run:
+  #
+  # 1. Older checkers derive their root from __file__ and ignore a supplied
+  #    root argument. The runner therefore stages the head tree in a temporary
+  #    directory and replaces its scripts/ directory with the base branch's
+  #    whole scripts/ directory. Base-owned code then resolves __file__ inside
+  #    the head-shaped tree. Its command inventory comes semantically from the
+  #    base package.json, includes both Python and shell checks, and must be
+  #    nonempty. Once the base owns this runner, its copy executes too; the
+  #    head copy is an explicit one-release bootstrap for a base that predates
+  #    gate-lint.py.
+  # 2. This workflow file comes from the pull request head, like everything
+  #    else. The threat model is CLAUDE.md's — "forgot under momentum", not a
+  #    determined edit — and against that a copy the branch did not write is
+  #    the defence. It is not a sandbox.
+  base-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check out the base commit beside it
+        run: git worktree add /tmp/base ${{ github.event.pull_request.base.sha }}
+      - name: The base gate's composition rules, applied to this tree
+        run: |
+          set -euo pipefail
+          if [ ! -f /tmp/base/scripts/gate-lint.py ]; then
+            echo "The base branch predates gate-lint.py, so there is no earlier"
+            echo "composition to compare this one against. True only until this merges."
+            exit 0
+          fi
+          python3 /tmp/base/scripts/gate-lint.py "$GITHUB_WORKSPACE" /tmp/base
+      - name: The base branch's checkers, applied to this tree
+        run: |
+          if [ -f /tmp/base/scripts/gate-lint.py ] && grep -q -- '--run-base HEAD BASE' /tmp/base/scripts/gate-lint.py; then
+            python3 /tmp/base/scripts/gate-lint.py --run-base "$GITHUB_WORKSPACE" /tmp/base
+          else
+            python3 scripts/gate-lint.py --run-base "$GITHUB_WORKSPACE" /tmp/base
+          fi

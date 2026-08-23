@@ -1,8 +1,9 @@
 import { EventTimeoutError, LeaseLostError } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { runClaimedRun, type TaskRegistry } from '../src/index.js'
+import { type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 class InstantClock {
@@ -21,9 +22,7 @@ class InstantClock {
   }
 }
 async function fx(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   const clock = new InstantClock()
@@ -177,14 +176,110 @@ describe('event regressions', () => {
     f.close()
   })
 
-  it('an invalid awaitEvent timeout is a PERMANENT user error', async () => {
-    const f = await fx('ev-bad-timeout')
+  it('prototype pollution cannot turn an event delivery into a timeout', async () => {
+    const f = await fx('ev-owned-timeout-discriminant')
+    let passes = 0
     const reg: TaskRegistry = new Map([
-      ['bad', async (ctx) => ctx.awaitEvent('go', { timeoutSeconds: Number.NaN })],
+      [
+        'waiter',
+        async (ctx) => {
+          passes++
+          if (passes === 1) return ctx.awaitEvent('go')
+          const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'timedOut')
+          Object.defineProperty(Object.prototype, 'timedOut', {
+            configurable: true,
+            value: true,
+          })
+          try {
+            return await ctx.awaitEvent('go')
+          } finally {
+            if (descriptor === undefined) Reflect.deleteProperty(Object.prototype, 'timedOut')
+            else Object.defineProperty(Object.prototype, 'timedOut', descriptor)
+          }
+        },
+      ],
     ])
-    const a = await f.store.spawn(Q, 'bad', '{}', { maxAttempts: 3 })
-    expect(await pass(f, reg, 'w1')).toEqual({ kind: 'failed' })
-    expect((await f.store.getTaskResult(Q, a.taskId))?.state).toBe('failed')
+    const spawned = await f.store.spawn(Q, 'waiter', '{}')
+    expect(await pass(f, reg, 'w1')).toEqual({ kind: 'suspended' })
+    await f.store.emitEvent(Q, 'go', '{"real":true}')
+    const outcome = await pass(f, reg, 'w2')
+    const result = await f.store.getTaskResult(Q, spawned.taskId)
+    expect(
+      { outcome, result },
+      'mutation-verdict:behavior:sdk-owned-event-timeout-discriminant',
+    ).toEqual({
+      outcome: { kind: 'completed' },
+      result: { state: 'completed', completedPayloadJson: '"{\\"real\\":true}"' },
+    })
+    f.close()
+  })
+
+  it('prototype pollution cannot turn an event timeout into a payload', async () => {
+    const f = await fx('ev-owned-payload-discriminant')
+    let passes = 0
+    const reg: TaskRegistry = new Map([
+      [
+        'waiter',
+        async (ctx) => {
+          passes++
+          if (passes === 1) return ctx.awaitEvent('go', { timeoutSeconds: 30 })
+          const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'payloadJson')
+          Object.defineProperty(Object.prototype, 'payloadJson', {
+            configurable: true,
+            value: '{"forged":true}',
+          })
+          try {
+            await ctx.awaitEvent('go', { timeoutSeconds: 30 })
+            return 'delivered'
+          } catch (error) {
+            if (!(error instanceof EventTimeoutError)) throw error
+            return 'timed-out'
+          } finally {
+            if (descriptor === undefined) {
+              Reflect.deleteProperty(Object.prototype, 'payloadJson')
+            } else Object.defineProperty(Object.prototype, 'payloadJson', descriptor)
+          }
+        },
+      ],
+    ])
+    const spawned = await f.store.spawn(Q, 'waiter', '{}')
+    expect(await pass(f, reg, 'w1')).toEqual({ kind: 'suspended' })
+    await f.advance(31_000)
+    expect(await pass(f, reg, 'w2')).toEqual({ kind: 'completed' })
+    expect(
+      await f.store.getTaskResult(Q, spawned.taskId),
+      'mutation-verdict:behavior:sdk-owned-event-payload-discriminant',
+    ).toEqual({ state: 'completed', completedPayloadJson: '"timed-out"' })
+    f.close()
+  })
+})
+
+/**
+ * The user boundary has validators for NAMES and for KNOBS. A VALUE had no
+ * home, so the one user input that is neither — an event payload — reached
+ * the database driver unchecked.
+ */
+describe('user-boundary values', () => {
+  it('stores equivalent event payloads in one canonical form', async () => {
+    const f = await fx('emit-canonical')
+    const reg: TaskRegistry = new Map([
+      [
+        'emitter',
+        async (ctx) => {
+          await ctx.emitEvent('go', `{ "a": 1 }`)
+          return null
+        },
+      ],
+    ])
+    await f.store.spawn(Q, 'emitter', '{}')
+
+    expect(await pass(f, reg, 'w1')).toEqual({ kind: 'completed' })
+    const [events] = await f.raw.batch(
+      'event-payload',
+      [{ sql: `SELECT payload FROM events WHERE event_name = ?`, args: ['go'] }],
+      'read',
+    )
+    expect(events?.rows[0]?.payload).toBe('{"a":1}')
     f.close()
   })
 })

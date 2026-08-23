@@ -99,6 +99,22 @@
 \* guard analyses -- see the [dup-class] tags in the BATCH-LABEL LEDGER.
 \*
 \* DELIBERATELY NOT MODELED (honest list):
+\*  - THE WAITS TABLE.  A wait is modeled as two per-run fields, waitEv[r]
+\*    and waitAt[r]: one registration per run, named by the run.  The
+\*    implementation stores waits in a TABLE keyed (run_id, step_name), so it
+\*    can hold rows the run is not parked on -- a leftover from an earlier
+\*    step, a row naming another task, a row whose deadline is not the run's.
+\*    None of those states exists here, so EmitEvent's guard can be the whole
+\*    truth (waitEv[r] = e) while the implementation needs five conditions to
+\*    approximate it.  This is not a small abstraction: EVERY emit defect
+\*    found by review -- waking a run parked on a timer, moving a task named
+\*    by a foreign wait row, and two rows answering one question between them
+\*    -- lives exactly in the gap, which is why TLC could not have found any
+\*    of them.  The model is not wrong; the implementation is not yet a
+\*    refinement of it.  PR3.8 (an immutable wait id plus runs.active_wait_id)
+\*    is what closes the gap, and it is this abstraction written down as
+\*    schema.  Until then the executable twin is a generated fault surface
+\*    over corrupt wait rows, not this spec.
 \*  - Checkpoint content, the data plane (RunStateStore), child tasks,
 \*    defer-unknown-task, multi-queue, multi-shard, sagas.
 \*  - SQL atomicity: assumed as action atomicity (see mapping above).
@@ -110,14 +126,20 @@
 \*    restriction is argued sound at DuplicateClaim).
 \*  - Pings, alarms, cron, EndingFeed, expireLeaseNow: by S3.9's
 \*    advisory-signal rule these may only ACCELERATE what lease expiry does
-\*    anyway; TimeAdvance already reaches lease expiry, so omitting them
-\*    removes no reachable states -- only timing, which fairness abstracts.
+\*    anyway, PROVIDED the signal preserves the exact (run, claim token)
+\*    identity. A mismatched or tokenless signal stutters; it may not expire
+\*    the run's current claim. TimeAdvance already reaches the exact claim's
+\*    lease expiry, so omitting identity-preserving acceleration removes no
+\*    reachable states -- only timing, which fairness abstracts. PR6.4 must
+\*    extend this spec before adding atomic tokenless heartbeat-cutoff
+\*    reconciliation.
 \*  - Heartbeat throttling, clock skew (engine time is the single `now` --
 \*    S3.4 rule 3 "engine time is database time" makes this faithful).
-\*  - Re-emit of an already-emitted event: the implementation's no-op branch
-\*    (first-write-wins insert loses; no waiter can exist for a fired event,
-\*    see WaitIntegrity) is a stutter step, which [][Next]_vars always
-\*    allows; the checked content is EventImmutable + WaitIntegrity.
+\*  - Re-emit of an already-emitted event: the implementation may refresh an
+\*    unmodeled delivery-provenance stamp while preserving the first payload
+\*    and emitted instant.  No valid waiter can exist for a fired event (see
+\*    WaitIntegrity), so the modeled state stutters, which [][Next]_vars
+\*    always allows; the checked content is EventImmutable + WaitIntegrity.
 \*  - Event GC / iterable events: events are one-shot by contract (S3.8.3);
 \*    occurrence ids live in the event NAME, outside the model.
 \*  - The dedicated-placement wait state 'delivered' (materialize-on-resume,
@@ -250,8 +272,9 @@
 \*   Activate -- one label, one action, even when the batch has follow-ons)
 \* Modeled ahead of implementation (the event implementation must use these labels and match
 \* these actions -- spec-first per the standing rule):
-\*   'emit-event' -> EmitEvent  [cas-fenced]  (first-write-wins insert:
-\*     the replay's insert loses; EventImmutable)
+\*   'emit-event' -> EmitEvent  [cas-fenced]  (first-write-wins fact:
+\*     replay may refresh unmodeled delivery provenance but preserves the
+\*     payload and first instant; EventImmutable)
 \*   'await-event' -> AwaitEventHit / AwaitEventMiss  [cas-fenced]  (hit
 \*     replay re-reads under a live fence; miss replay is zero-row -- the
 \*     run it parked is no longer 'running')
@@ -260,8 +283,9 @@
 \*     in the protocol reads it, and a replay re-applies the same row
 \*   'sweep:scan' [read] -- read-only discovery, no state transition
 \*   'expire-lease-now' [cas-fenced] -- advisory-only token-fenced write
-\*     (replay re-applies the same absolute value); omission argued sound
-\*     in the header (accelerates TimeAdvance-reachable states only)
+\*     for the exact signal claim identity (replay re-applies the same
+\*     absolute value; mismatched/tokenless signals stutter); omission argued
+\*     sound in the header (accelerates TimeAdvance-reachable states only)
 \*   'set-checkpoint' [cas-fenced] -- lease-fenced LWW upsert; a replay
 \*     re-applies the identical row (data-plane content unmodeled by
 \*     design -- header; its lease fence rides Heartbeat)
@@ -694,6 +718,19 @@ FailRunTerminal(c) ==
 \* SleepSuspend <-> reschedule() with a future wake (S3.2 sleepFor): SAME
 \* run row re-scheduled, no accounting consumed; context exits.  Parked
 \* wake fields are deliberately NOT cleared (header note).
+\*
+\* MODEL/IMPL GAP, deliberate and recorded in BUILD.md: Fenced(c) constrains
+\* only the RUN.  Both implementations additionally require the owning TASK to
+\* be eligible -- live, and not past a due cancellation deadline -- so a run
+\* whose task is about to be cancelled cannot re-park itself into the queue
+\* the claim path is already refusing to launch from.  That is STRICTLY
+\* NARROWER than this action, so every safety property proved here still
+\* holds of the implementation.  It is not free, though: the refusal reaches
+\* the worker as a lost lease, and whether that path preserves the liveness
+\* properties is NOT settled by this model, because the guard is not in it.
+\* Modelling it belongs with the cancellation-discovery work (PR3.2), which
+\* is where the "task terminal" and "fence lost" signals stop being the same
+\* thing.
 SleepSuspend(c) ==
   /\ c \in contexts
   /\ Fenced(c)
@@ -789,12 +826,26 @@ AwaitEventMiss(c, e) ==
 
 \* 'emit-event' (SPEC-FIRST): ONE atomic batch, first-write-wins
 \* (S3.8.3).  Guard: only the FIRST emit of a name transitions -- a re-emit
-\* is the impl's no-op branch (= stutter here; see header).  Every
+\* is a payload/first-instant no-op and may refresh only implementation
+\* provenance (= stutter here; see header).  Every
 \* registered waiter of the event flips sleeping -> pending due now with
 \* the payload parked on its run row, its wait row deleted, and its task
 \* flipped pending (durable-at-emit, inline placement).  Keying the flip on
-\* the WAIT ROWS -- never on runs.wake_event -- is what makes timed-out and
-\* cancelled waits non-resurrectable: their wait rows are already gone.
+\* the WAIT ROWS -- never on runs.wake_event ALONE -- is what makes timed-out
+\* and cancelled waits non-resurrectable: their wait rows are already gone.
+\*
+\* MODEL/IMPL GAP: here a run has AT MOST ONE wait
+\* (waitEv[r]), so "a wait row for e names run r" and "r is parked on e" are
+\* the same statement.  The implementation's waits table is keyed
+\* (run_id, step_name), so a run can carry a wait row while being parked on
+\* something else entirely -- a durable timer, say -- and keying the flip on
+\* the wait row alone woke it, up to its whole remaining sleep early.  The
+\* impl therefore intersects the two: the wait row AND the run's own
+\* wake_event/wake_step, and refuses a legacy NULL-step recovery when more
+\* than one full witness matches.  Those checks narrow the gap but do not
+\* prove that a matching row is the CURRENT registration.  PR3.8's immutable
+\* wait_id/runs.active_wait_id is still required before the implementation is
+\* a refinement of this one-wait-per-run action.
 EmitEvent(e, p) ==
   /\ eventState[e] = NoPayload
   /\ eventState' = [eventState EXCEPT ![e] = p]
@@ -1178,8 +1229,8 @@ LeaseAuthority ==
     ]_vars
 
 \* PROPERTY (events): first-write-wins immutability -- once an event's
-\* payload is written it NEVER changes (a re-emit is a no-op; there is no
-\* delete/GC in scope).
+\* payload is written it NEVER changes (a re-emit is a payload no-op; there
+\* is no delete/GC in scope).
 EventImmutable ==
   [][ \A e \in Events :
         eventState[e] # NoPayload => eventState'[e] = eventState[e]

@@ -1,10 +1,12 @@
 {
   "name": "@durablerun/core",
   "version": "0.0.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./testing": "./src/testing.js"
   },
   "scripts": {
     "test": "vitest run"

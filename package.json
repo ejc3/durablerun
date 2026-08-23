@@ -1,6 +1,7 @@
 {
   "name": "durablerun",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -14,19 +15,26 @@
     "format-check": "biome format .",
     "lint:determinism": "bash scripts/determinism-lint.sh",
     "lint:user-boundary": "bash scripts/user-boundary-lint.sh",
-    "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:user-boundary && pnpm lint:ledger && pnpm lint:fragments && pnpm lint:batches && pnpm lint:clock && pnpm format-check && pnpm typecheck && pnpm test",
+    "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:user-boundary && pnpm lint:ledger && pnpm lint:fragments && pnpm lint:batches && pnpm lint:clock && pnpm lint:deferrals && pnpm lint:mutation-verdicts && pnpm lint:selftest && pnpm lint:review-bots && pnpm lint:gate && pnpm format-check && pnpm typecheck && pnpm test",
     "lint:ledger": "python3 scripts/spec-ledger.py",
     "lint:fragments": "python3 scripts/fragment-lint.py",
     "lint:batches": "python3 scripts/batch-lint.py",
     "lint:clock": "python3 scripts/clock-lint.py",
+    "lint:mutation-verdicts": "python3 scripts/mutation-probe.py --self-test",
+    "verify:mutations": "python3 scripts/mutation-probe.py",
     "verify:tla": "bash scripts/confine.sh bash scripts/tla.sh",
     "verify:fuzz": "FUZZ_SEEDS=2000 FUZZ_STEPS=100 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test",
-    "verify:fuzz:deep": "FUZZ_SEEDS=100000 FUZZ_STEPS=150 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test"
+    "verify:fuzz:deep": "FUZZ_SEEDS=100000 FUZZ_STEPS=150 bash scripts/confine.sh pnpm exec vitest run packages/conformance/test",
+    "lint:selftest": "python3 scripts/lint-selftest.py",
+    "lint:deferrals": "python3 scripts/deferral-lint.py",
+    "lint:gate": "python3 scripts/gate-lint.py",
+    "lint:review-bots": "python3 scripts/review-bot-lint.py"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "tsx": "^4.23.1",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "yaml": "^2.9.0"
   }
 }

@@ -10,3 +10,17 @@ dist/
 .vercel/
 specs/states*/
 specs/*_TTrace_*
+
+# Review scratch. Adversarial reviewers run against this working tree and
+# write probe files and mutation tests into it, and twice their scratch was
+# swept into a commit by `git add -A`. Ignoring the names they use makes that
+# impossible rather than something to remember. Anything a reviewer produces
+# that is worth keeping gets rewritten by hand under a real name.
+__probe*.ts
+__dump*.ts
+zz-*.test.ts
+tmp-repro/
+
+# What the mutation probe saves when a source changes underneath it, so the
+# rescued version cannot be committed by accident either.
+*.probe-conflict

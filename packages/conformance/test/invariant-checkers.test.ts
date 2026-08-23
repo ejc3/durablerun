@@ -1,5 +1,18 @@
+import {
+  INFRA_RETRY_CAP,
+  MAX_COUNT,
+  MAX_EPOCH_MS,
+  MAX_RUN_ORDINAL,
+  RELAUNCH_CAP,
+  type SqlExecutor,
+  type SqlResult,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { engineInvariantViolations } from '../src/invariants.js'
+import {
+  bindInvariantSnapshotRows,
+  engineInvariantFindings,
+  engineInvariantViolations,
+} from '../src/invariants.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 /**
@@ -35,6 +48,33 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     return f
   }
+
+  it('flags a run whose owning task is missing', async () => {
+    const f = await seeded('run-owner-missing')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, created_at_ms)
+              VALUES ('orphan', ?, 'missing-task', 1, 'completed', ?)`,
+        args: [Q, NOW],
+      },
+    ])
+
+    expect(await engineInvariantViolations(f.raw)).toContain('run-owner-missing: orphan')
+    f.close()
+  })
+
+  it("flags a run whose queue disagrees with its owning task's queue", async () => {
+    const f = await seeded('run-task-queue-mismatch')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE runs SET queue = 'other-q' WHERE run_id = 'r1'`,
+        args: [],
+      },
+    ])
+
+    expect(await engineInvariantViolations(f.raw)).toContain('run-task-queue-mismatch: r1')
+    f.close()
+  })
 
   it('flags a wait row whose run belongs to a different task or queue', async () => {
     const f = await seeded('wait-cross-task')
@@ -191,9 +231,398 @@ describe('invariant checkers fire on constructed corruption', () => {
     f.close()
   })
 
+  it('flags attempt accounting above the run-derived band', async () => {
+    const f = await seeded('attempt-accounting-above')
+    await f.raw.batch('corrupt', [
+      { sql: `UPDATE tasks SET attempts = 2 WHERE task_id = 't1'`, args: [] },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain('attempt-accounting-drift: t1')
+    f.close()
+  })
+
+  it('flags attempt accounting below the run-derived band', async () => {
+    const f = await seeded('attempt-accounting-below')
+    await f.raw.batch('corrupt', [
+      { sql: `UPDATE runs SET attempt = 3 WHERE run_id = 'r1'`, args: [] },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain('attempt-accounting-drift: t1')
+    f.close()
+  })
+
+  it('flags a live run after the user-attempt budget is exhausted', async () => {
+    const f = await seeded('live-run-at-attempt-cap')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks SET attempts = max_attempts WHERE task_id = 't1'`,
+        args: [],
+      },
+      {
+        sql: `UPDATE runs SET attempt = 4 WHERE run_id = 'r1'`,
+        args: [],
+      },
+    ])
+
+    expect(
+      (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+    ).toContain('attempts/at-max-with-live-run')
+    f.close()
+  })
+
+  it('keeps atomic condition IDs while deduplicating the legacy public violation', async () => {
+    const f = await seeded('atomic-and-public')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('other-task', 'both', 'other-q', '{}', 'r1', 1, ?)`,
+        args: [NOW],
+      },
+    ])
+    expect(
+      (await engineInvariantFindings(f.raw))
+        .filter((finding) => finding.name === 'checkpoint-cross-task')
+        .map((finding) => finding.conditionId),
+    ).toEqual(['checkpoint/queue-mismatch', 'checkpoint/task-mismatch'])
+    expect(
+      (await engineInvariantViolations(f.raw)).filter(
+        (violation) => violation === 'checkpoint-cross-task: other-task/both',
+      ),
+    ).toHaveLength(1)
+    f.close()
+  })
+
+  it('keeps structured finding identities when rendered subjects collide', async () => {
+    const f = await seeded('structured-subject')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('a/b', 'c', 'q', '{}', 'r1', 1, ?)`,
+        args: [NOW],
+      },
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('a', 'b/c', 'q', '{}', 'r1', 1, ?)`,
+        args: [NOW],
+      },
+    ])
+    const collisions = (await engineInvariantFindings(f.raw)).filter(
+      (finding) =>
+        finding.conditionId === 'checkpoint/task-mismatch' && finding.subject === 'a/b/c',
+    )
+    expect(collisions).toHaveLength(2)
+    expect(new Set(collisions.map((finding) => JSON.stringify(finding.subjectIdentity))).size).toBe(
+      2,
+    )
+    f.close()
+  })
+
+  for (const [name, value, conditionId] of [
+    ['storage class', 'not-an-integer', 'counter/checkpoint-owner-attempt'],
+    ['upper bound', MAX_RUN_ORDINAL + 1, 'counter-bound/checkpoint-owner-attempt'],
+  ] as const) {
+    it(`flags checkpoint owner attempt ${name} corruption`, async () => {
+      const f = await seeded(`checkpoint-owner-attempt-${name}`)
+      await f.raw.batch('corrupt', [
+        {
+          sql: `INSERT INTO checkpoints
+                  (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+                VALUES ('t1', 's', ?, '{}', 'r1', ?, ?)`,
+          args: [Q, value, NOW],
+        },
+      ])
+
+      expect(
+        (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+      ).toContain(conditionId)
+      f.close()
+    })
+  }
+
+  it("flags a checkpoint owner attempt that disagrees with its owner run's ordinal", async () => {
+    const f = await seeded('checkpoint-owner-attempt-mismatch')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `INSERT INTO checkpoints
+                (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
+              VALUES ('t1', 's', ?, '{}', 'r1', 2, ?)`,
+        args: [Q, NOW],
+      },
+    ])
+
+    expect(
+      (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+    ).toContain('checkpoint/owner-attempt-mismatch')
+    f.close()
+  })
+
+  for (const [name, table, column, value, conditionId] of [
+    [
+      'infrastructure retry',
+      'tasks',
+      'infra_retries',
+      INFRA_RETRY_CAP + 1,
+      'counter-bound/task-infra-retries',
+    ],
+    [
+      'lost-launch relaunch',
+      'runs',
+      'relaunch_count',
+      RELAUNCH_CAP + 1,
+      'counter-bound/run-relaunch-count',
+    ],
+  ] as const) {
+    it(`uses the protocol cap for the ${name} counter`, async () => {
+      const f = await seeded(`${name.replaceAll(' ', '-')}-protocol-cap`)
+      const key = table === 'tasks' ? 'task_id' : 'run_id'
+      const id = table === 'tasks' ? 't1' : 'r1'
+      await f.raw.batch('corrupt', [
+        {
+          sql: `UPDATE ${table} SET ${column} = ? WHERE ${key} = ?`,
+          args: [value, id],
+        },
+      ])
+
+      expect(
+        (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+      ).toContain(conditionId)
+      f.close()
+    })
+  }
+
+  for (const column of ['available_at_ms', 'lease_ms'] as const) {
+    it(`rejects an ISO datetime string in numeric ${column}`, async () => {
+      const f = await seeded(`temporal-string-${column}`)
+      await f.raw.batch('corrupt', [
+        {
+          sql: `UPDATE runs SET ${column} = '2026-07-26T12:34:56.789Z'
+                WHERE run_id = 'r1'`,
+          args: [],
+        },
+      ])
+      expect(await engineInvariantViolations(f.raw)).toContain('temporal-storage-class: runs/r1')
+      f.close()
+    })
+  }
+
+  it('flags a zero stored lease as below the positive duration bound', async () => {
+    const f = await seeded('zero-lease-lower-bound')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE runs SET lease_ms = 0 WHERE run_id = 'r1'`,
+        args: [],
+      },
+    ])
+
+    expect(
+      (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
+    ).toContain('temporal-bound/runs.lease_ms')
+    f.close()
+  })
+
+  it('flags a dialect-exact bigint count above the public count contract', async () => {
+    const f = await seeded('counter-upper-bound')
+    const outOfRange: SqlExecutor = {
+      batch: async (label, statements, mode) => {
+        const results = await f.raw.batch(label, statements, mode)
+        if (label !== 'invariants') return results
+        return results.map((result, index) =>
+          index === 0
+            ? {
+                ...result,
+                rows: result.rows.map((row) =>
+                  row.task_id === 't1' ? { ...row, max_attempts: BigInt(MAX_COUNT) + 1n } : row,
+                ),
+              }
+            : result,
+        )
+      },
+    }
+
+    expect(await engineInvariantViolations(outOfRange)).toContain('counter-out-of-range: tasks/t1')
+    f.close()
+  })
+
+  it('flags a dialect-exact bigint instant beyond the epoch contract', async () => {
+    const f = await seeded('temporal-upper-bound')
+    const outOfRange: SqlExecutor = {
+      batch: async (label, statements, mode) => {
+        const results = await f.raw.batch(label, statements, mode)
+        if (label !== 'invariants') return results
+        return results.map((result, index) =>
+          index === 1
+            ? {
+                ...result,
+                rows: result.rows.map((row) =>
+                  row.run_id === 'r1'
+                    ? { ...row, available_at_ms: BigInt(MAX_EPOCH_MS) + 1n }
+                    : row,
+                ),
+              }
+            : result,
+        )
+      },
+    }
+
+    expect(await engineInvariantViolations(outOfRange)).toContain('temporal-out-of-range: runs/r1')
+    f.close()
+  })
+
+  for (const [table, column, identity] of [
+    ['tasks', 'attempts', 'tasks/t1'],
+    ['tasks', 'max_attempts', 'tasks/t1'],
+    ['tasks', 'infra_retries', 'tasks/t1'],
+    ['runs', 'attempt', 'runs/r1'],
+    ['runs', 'claim_gen', 'runs/r1'],
+    ['runs', 'activated_gen', 'runs/r1'],
+    ['runs', 'relaunch_count', 'runs/r1'],
+  ] as const) {
+    it(`reports counter storage corruption for non-integer ${table}.${column}`, async () => {
+      const f = await seeded(`counter-storage-${table}-${column}`)
+      try {
+        const key = table === 'tasks' ? 'task_id' : 'run_id'
+        const id = table === 'tasks' ? 't1' : 'r1'
+        await f.raw.batch('corrupt', [
+          {
+            sql: `UPDATE ${table} SET ${column} = 'not-an-integer' WHERE ${key} = ?`,
+            args: [id],
+          },
+        ])
+
+        expect(
+          await engineInvariantViolations(f.raw),
+          `mutation-verdict:behavior:counter-storage-${table}-${column}`,
+        ).toContain(`counter-storage-class: ${identity}`)
+      } finally {
+        f.close()
+      }
+    })
+  }
+
+  for (const [title, stamp, instant] of [
+    ['a stamp without an instant', 'seed:statement', null],
+    ['an instant without a stamp', null, NOW],
+    ['a stamp without a separator', 'seed', NOW],
+    ['a stamp with an empty seed', ':statement', NOW],
+    ['a stamp with an empty statement name', 'seed:', NOW],
+  ] as const) {
+    it(`flags ${title}`, async () => {
+      const f = await seeded(`provenance-${title.replaceAll(' ', '-')}`)
+      await f.raw.batch('corrupt', [
+        {
+          sql: `UPDATE tasks SET fence_stamp = ?, fence_at_ms = ? WHERE task_id = 't1'`,
+          args: [stamp, instant],
+        },
+      ])
+      expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
+      f.close()
+    })
+  }
+
+  it('flags a provenance instant stored outside the integer epoch-ms representation', async () => {
+    const f = await seeded('provenance-instant-type')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks
+              SET fence_stamp = 'seed:statement', fence_at_ms = 'not-an-instant'
+              WHERE task_id = 't1'`,
+        args: [],
+      },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
+    f.close()
+  })
+
+  it('flags a provenance statement name outside the builder grammar', async () => {
+    const f = await seeded('provenance-statement-name')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks
+              SET fence_stamp = 'seed:not a generated name', fence_at_ms = ?
+              WHERE task_id = 't1'`,
+        args: [NOW],
+      },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
+    f.close()
+  })
+
+  it('treats the final stamp segment as the statement name', async () => {
+    const f = await seeded('opaque-seed-same')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks SET fence_stamp = 'tenant:one:a', fence_at_ms = ?
+              WHERE task_id = 't1'`,
+        args: [NOW],
+      },
+      {
+        sql: `UPDATE runs SET fence_stamp = 'tenant:one:b', fence_at_ms = ?
+              WHERE run_id = 'r1'`,
+        args: [NOW + 1],
+      },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain(
+      `one-batch-two-instants: tenant:one saw ${NOW} and ${NOW + 1}`,
+    )
+    f.close()
+  })
+
+  it('does not merge independent opaque seeds that share a prefix', async () => {
+    const f = await seeded('opaque-seed-different')
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks SET fence_stamp = 'tenant:one:a', fence_at_ms = ?
+              WHERE task_id = 't1'`,
+        args: [NOW],
+      },
+      {
+        sql: `UPDATE runs SET fence_stamp = 'tenant:two:b', fence_at_ms = ?
+              WHERE run_id = 'r1'`,
+        args: [NOW + 1],
+      },
+    ])
+    expect(
+      (await engineInvariantViolations(f.raw)).filter((v) =>
+        v.startsWith('one-batch-two-instants:'),
+      ),
+    ).toEqual([])
+    f.close()
+  })
+
   it('stays silent on the consistent seed world', async () => {
     const f = await seeded('clean')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
     f.close()
+  })
+
+  it('binds every snapshot result through its projection table identity', () => {
+    const projections = [
+      { table: 'runs', columns: ['snapshot_table'] },
+      { table: 'checkpoints', columns: ['snapshot_table'] },
+      { table: 'events', columns: ['snapshot_table'] },
+      { table: 'waits', columns: ['snapshot_table'] },
+      { table: 'drivers', columns: ['snapshot_table'] },
+      { table: 'tasks', columns: ['snapshot_table'] },
+    ] as const
+    const results: readonly SqlResult[] = projections.map(({ table }) => ({
+      rows: [{ snapshot_table: table }],
+      rowsAffected: 1,
+    }))
+    const rowsByTable = bindInvariantSnapshotRows(projections, results)
+
+    expect(
+      {
+        size: rowsByTable.size,
+        bindings: projections.map(({ table }) => [
+          table,
+          rowsByTable.get(table)?.map((row) => row.snapshot_table),
+        ]),
+      },
+      'mutation-verdict:construction:invariant-snapshot-table-identity',
+    ).toEqual({
+      size: projections.length,
+      bindings: projections.map(({ table }) => [table, [table]]),
+    })
   })
 })

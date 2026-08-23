@@ -103,12 +103,21 @@ Per-queue tables: `t_<q>` tasks, `r_<q>` runs, `c_<q>` checkpoints, `e_<q>` even
 - **Sleep** = persist wake time as a checkpoint, then `schedule_run(run,wake_at)`
   (state='sleeping', available_at=wake_at) and throw an internal SuspendTask. Wake
   is purely "a poller notices available_at <= now".
-- **Events** are first-write-wins immutable rows in a queue-global namespace
-  (`emit_event` flips all sleeping waiters to pending and writes each waiter's
-  checkpoint atomically); `await_event` checkpoints-or-registers-a-wait.
+- **Events** are first-write-wins facts in a queue-global namespace: their key,
+  stored payload, and `emitted_at` never change. Delivery provenance may be
+  re-stamped by a fresh invocation, but always at that immutable emitted
+  instant; exact replay can therefore never move one seed to a second instant.
+  `emit_event` flips all sleeping waiters to pending and writes each waiter's
+  checkpoint atomically; `await_event` checkpoints-or-registers-a-wait.
 - **Retry math is data**: `retry_strategy` jsonb (fixed/exponential/none, base,
   factor, cap), computed at fail time; a new run row (attempt+1) is inserted with
-  `available_at = now + delay`.
+  `available_at = now + delay`. One total constructor validates spawned,
+  decoded, and directly calculated strategies, canonicalizes every duration to
+  milliseconds, and returns exact frozen nominal data bounded to 100 years.
+  Only an omitted spawn policy selects the default; explicit `null` is invalid.
+  Zero-base exponential retries stay zero even after exponentiation would
+  overflow; every other overflow clamps to the validated cap before the failure
+  transition is attempted.
 - Absurd uses **no** LISTEN/NOTIFY, no triggers, no advisory locks — strictly
   pull-based. This is why it ports. The main Postgres-isms (the corpus lists 15
   categories): plpgsql itself, SKIP LOCKED + FOR SHARE/KEY SHARE row locks,
@@ -299,13 +308,17 @@ tick():
      Batch fencing (§3.4 rule 1): the FIRST statement is the guarded CAS
      transition; later statements key on the post-transition state plus the
      batch's own stamp — never on the pre-condition the CAS just consumed.
-  2. claim: ONE fenced batch stamped with a fresh per-tick claim_token:
+  2. claim: ONE fenced batch with two distinct identities. The caller's
+     per-tick claim_token is the durable lease and retry receipt; the batch
+     also mints a fresh per-invocation provenance seed:
      UPDATE runs SET state='running', claimed_by=:token,
        claim_gen = claim_gen + 1, claim_expires_at=…
        WHERE run_id IN (SELECT … due, ORDER BY available_at LIMIT K)
        RETURNING run_id, task_id, attempt, claim_gen;
-     follow-on statements (task updates, expired-wait deletes, task-data join)
-     keyed strictly on claimed_by = :token.
+     mutating follow-ons (task updates and expired-wait deletes) key on the
+     claim CAS's statement stamp and post-state. The task-data receipt read
+     alone keys on claimed_by = :token so a same-token retry can return the
+     prior invocation's selection.
   3. launch: fire-and-forget one worker invocation per claimed run, payload
      {runId, attempt, claim_token, claim_gen} (HMAC-signed). The worker acks
      immediately and executes inside its OWN invocation — the tick never
@@ -333,8 +346,9 @@ Notes:
   every engine batch re-embeds its full fencing predicate (§3.4). Sweeping dead
   leases, enforcing cancellation, and claiming due runs in one tick is Absurd's
   `claim_task` contract, ported — but split into read-then-fenced-batches because
-  the retry-run insert needs data (retry_strategy, attempt) read from the expired
-  rows first.
+  each expired run gets its own atomic transition. The scan is advisory: successor
+  ordinals and task-terminal collision checks derive from the failed row carrying
+  this batch's fence, never from values returned by the earlier read.
 - Timer latency: resident mode sleeps until `min(next transition, poll ceiling)`,
   so wakes are as precise as the loop (ms). Serverless mode's re-arm makes it ≈
   alarm precision (seconds via QStash, ms via DO alarms on Cloudflare) instead of
@@ -344,11 +358,12 @@ Notes:
   not at-least-once**: Vercel never retries a failed or missed cron invocation,
   so budget a few cron periods of worst-case latency, not one. (QStash is the leg
   with real at-least-once semantics: retries + DLQ.)
-- Duplicate/concurrent ticks: harmless. Claims are fenced by fresh per-tick
-  claim tokens; re-arms dedupe per (shard, time); sweep batches re-check their
-  fences per statement. Herds are bounded by the K/K_s batch caps plus poll
-  jitter — deliberately NOT by a tick-singleton lease, which would break the
-  invariant that every trigger causes a look.
+- Duplicate/concurrent ticks: harmless. A fresh per-tick claim token owns the
+  durable lease and retry receipt, while a fresh FencedBatch seed fences each
+  invocation's mutations; re-arms dedupe per (shard, time); sweep batches
+  re-check their fences per statement. Herds are bounded by the K/K_s batch
+  caps plus poll jitter — deliberately NOT by a tick-singleton lease, which
+  would break the invariant that every trigger causes a look.
 - With zero work: a resident driver's idle tick is two indexed reads returning
   nothing (~0 rows scanned) and zero writes; in serverless mode no pings arrive,
   no alarm is armed, and the cron tick exits the same way. Either way the idle
@@ -366,10 +381,13 @@ One invocation executes one claimed run to its next suspension point:
   carries it; activation is
   `UPDATE runs SET activated_gen = :claim_gen, claim_expires_at = <re-extended>
   WHERE run_id=:r AND claimed_by=:token AND claim_gen=:claim_gen AND
-  activated_gen < :claim_gen`. Zero rows = a duplicate delivery already
-  activated this claim, the claim was superseded, or the lease was swept: exit
-  immediately. Activation re-extends the lease, so a launch that sat in the
-  channel for most of the lease doesn't start life nearly expired; and
+  activated_gen < :claim_gen AND <soleLiveRun(runs)>`. The final fragment
+  refuses activation if another live run now belongs to the task, including
+  corruption introduced after claim. Zero rows = a duplicate delivery already
+  activated this claim, the claim was superseded, the lease was swept, or the
+  task no longer has one live run: exit immediately. Activation re-extends the
+  lease, so a launch that sat in the channel for most of the lease doesn't
+  start life nearly expired; and
   `activated_gen < claim_gen` at sweep time is exactly what identifies a lost
   launch (§3.1 step 1).
 - Loads visible checkpoints (`c_` rows for the task, committed, owner attempt ≤
@@ -386,30 +404,83 @@ One invocation executes one claimed run to its next suspension point:
   table) or start with `$` (reserved for engine markers); both are refused
   as permanent failures. So are invalid numeric knobs (`sleepFor`,
   `sleepUntil`, `awaitEvent` timeouts): deterministic bad inputs must never
-  loop through lease recovery. Structurally, every user input crosses the
+  loop through lease recovery. Task option properties are read once before
+  validation: `awaitEvent.timeoutSeconds` is snapshotted into one lexical, and
+  that exact validated value is the one persisted by the atomic store call.
+  Structurally, every user input crosses the
   context through ONE classified boundary (core's `UserName.parse` /
   `userDurationToMs` / `userEpochMs`, which throw `FatalTaskError`
   directly); durable replay keys are only constructible from validated
-  names, so a future context method cannot re-open the class. Step results
-  are JSON; `undefined` pins to `null` on every pass.
-  Error taxonomy on a pass: infrastructure failures (typed
-  `StoreUnavailableError`, thrown at the executor boundary) abort the pass
-  with NO transition — recovery is the lease story and the user's retry
-  budget is never touched; only errors from user code spend user attempts.
+  names, so a future context method cannot re-open the class. Every durable
+  task value—step result, final result, and parsed event payload—crosses the
+  same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
+  top-level `undefined` pins to `null` on every pass, while functions, symbols,
+  bigint, cycles, and hostile serialization hooks are permanent
+  `FatalTaskError`s. Scheduler payloads obey the same source rule: spawn routes
+  normalized retry, an own-data-property cancellation snapshot, and headers
+  through the module-captured `serializeTaskValue`; claim decodes admitted retry
+  and headers through the matching captured parser. The canonical wire value,
+  not a second ambient JSON path, is the durable representation. At the
+  user-handler catch boundary, only controls minted
+  by that invocation's private runtime authority can suspend or abort; a public
+  `SuspendSignal`, `LeaseLostError`, or `StoreUnavailableError` constructed by
+  task code is an ordinary task failure. `FatalTaskError` is the intentionally
+  public policy signal that skips retries. Every other thrown value becomes one
+  owned canonical failure snapshot; error-like diagnostics come only from
+  guarded data-string descriptors, and uninspectable objects use one fixed JSON
+  spelling without invoking getters or coercion.
+  The operations that implement these durable boundaries are captured when the
+  core and SDK modules load: retry arithmetic and field reads, owned JSON graph
+  construction, name classification, replay maps, abort accessors, promise
+  adoption, registry lookup, and the production clock do not re-resolve their
+  public global or prototype properties after task code runs. Authentic Map
+  entries are handler authority even for Map subclasses; overridable `get`
+  methods may neither revoke a stored entry nor grant a missing one. A non-Map
+  structural registry remains trusted host resolver code and owns its own
+  dependencies.
+
+  This captured-operation contract is not a JavaScript sandbox. Handlers share
+  the worker process and are trusted with host-realm integrity: they must not
+  mutate unrelated platform/driver machinery or terminate the process.
+  Executing untrusted application code requires a separate process or realm;
+  enumerating more captured methods cannot provide that isolation. Hostile
+  values, getters, proxies, serialization hooks, and public control
+  construction at the named boundaries remain fully in contract.
+  Error taxonomy on a pass: infrastructure failures from the caught checkpoint
+  read and defer, complete, park, or fail transitions are classified at the
+  immediate catch; context store failures are enrolled before they cross the
+  handler boundary. Once the heartbeat pump starts, one outer cleanup scope
+  covers checkpoint loading, context construction, handler execution, and
+  finalization; every exit stops and joins the pump. Retry accounting uses the
+  worker-owned lexical attempt snapshot taken before task code and never
+  rereads the public context after the handler. Handler execution plus result
+  serialization and the completion write are lexically separate phases. Only
+  the former can enter user-failure accounting: an ordinary completion
+  rejection propagates and never calls `fail`, while an authenticated
+  completion-store control maps to its infrastructure outcome. Activation
+  errors still propagate to the worker caller, while an advisory heartbeat
+  error only ends that upkeep loop. A
+  classified infrastructure failure aborts the pass with NO ADDITIONAL
+  transition — a lost response may already have committed — so recovery is the
+  lease story and the user's retry budget is never touched; only errors from
+  user code spend user attempts.
 - Heartbeats via the scheduler-plane `heartbeat` CAS. Under `inline` placement
   this rides along with checkpoint writes (same DB); under `dedicated` placement
   it is a separate call on its own cadence — extend when remaining lease < ~50%,
-  throttled, so shard-DB write rate stays transitions + throttled heartbeats. A
+  throttled, so shard-DB write rate stays transitions + throttled heartbeats.
+  The cadence is derived from the exact lease milliseconds, including legal
+  subsecond leases; no one-second floor may outlive the lease it protects. A
   zero-row `heartbeat` is the AB002 equivalent (lease gone): abort the handler
   immediately.
-- On completion/failure: `complete_run` / `fail_run` — fenced batches
-  (`claimed_by=:token AND state='running'` on every statement, so a zombie whose
-  lease was swept cannot complete a run someone else now owns). Retry *policy*
-  lives client-side (same jsonb strategy) but all absolute timestamps are
-  computed in SQL (`unixepoch('subsec')` arithmetic) with clients passing only
-  relative durations — instance clock skew must never move engine time (Absurd's
-  `current_time()` discipline, ported; a nullable fake-now in the shard-meta row
-  recreates its test affordance).
+- On completion/failure: `complete_run` / `fail_run` — the leading CAS checks
+  `claimed_by=:token AND state='running'`, so a zombie whose lease was swept
+  cannot win; every mutating follow-on keys on that CAS's per-invocation
+  statement stamp and post-state. Retry *policy* lives client-side (same jsonb
+  strategy) but all absolute timestamps are computed in SQL
+  (`unixepoch('subsec')` arithmetic) with clients passing only relative
+  durations — instance clock skew must never move engine time (Absurd's
+  `current_time()` discipline, ported; a nullable fake-now in the shard-meta
+  row recreates its test affordance).
 - **After every suspension or terminal transition that leaves future work —
   sleep, await-with-timeout, retry scheduled, voluntary exit — the worker
   unconditionally pings the driver** (or arms an alarm for its wake time). Not
@@ -449,17 +520,19 @@ Every code path that makes work runnable **commits first, then pings**:
 
 - `spawn(task)` → INSERT (idempotency_key upsert) → `waitUntil(ping)`.
 - `emitEvent(name, payload)` → one atomic scheduler-plane batch: first-write-wins
-  event row; sleeping waiters flip to pending/`available_at=now`. Under `inline`
-  placement the waiters' checkpoints are written in the same batch (Absurd
-  verbatim — durable-at-emit); under `dedicated` placement the payload is parked
-  on the run row and wait rows flip to `delivered` for materialize-on-resume
-  (§3.8.3) → ping. The parked run carries `wake_step` — the replay key of the
-  await that registered the wait — alongside `wake_event`/`event_payload`, so a
-  delivered wake binds to the exact await that requested it. The SDK matches a
-  carried wake by `wake_step` (unique per await), never by the event name
-  (shared across a task's awaits of the same event), so one await can never
-  consume another's wake. `wake_step` travels with the wake through every
-  transition (suspend/reschedule consume or preserve it as a unit; failure and
+  payload and emitted instant; a fresh invocation may establish a new delivery
+  fence at that original instant, while exact replay preserves it. Sleeping
+  waiters flip to pending/`available_at=emitted_at`. Under `inline` placement
+  the waiters' checkpoints are written in the same batch (Absurd verbatim —
+  durable-at-emit); under `dedicated` placement the payload is parked on the
+  run row and wait rows flip to `delivered` for materialize-on-resume (§3.8.3)
+  → ping. The parked run carries `wake_step` — the replay key of the await that
+  registered the wait — alongside `wake_event`/`event_payload`, so a delivered
+  wake binds to the exact await that requested it. The SDK matches a carried
+  wake by `wake_step` (unique per await), never by the event name (shared across
+  a task's awaits of the same event), so one await can never consume another's
+  wake. `wake_step` travels with the wake through every transition
+  (suspend/reschedule consume or preserve it as a unit; failure and
   claim-timeout successors carry it forward).
 - Hook/webhook arrivals (HTTP routes) → same.
 - Worker suspending or finishing with any future work created (its own sleep, a
@@ -493,12 +566,29 @@ are load-bearing):
    NOT re-check the pre-condition the first statement just consumed. The
    pattern: the FIRST statement is the guarded CAS transition
    (`… WHERE run_id=:r AND state='running' AND claimed_by=:token`), and every
-   later statement keys on the post-transition state plus the batch's own
-   stamp (`… WHERE run_id=:r AND state='failed' AND claimed_by=:token`). A
+   later mutation keys on the post-transition state plus the winning
+   statement's per-invocation provenance stamp
+   (`… WHERE run_id=:r AND state='failed' AND fence_stamp=:seed:cas`). A
    stale actor's whole batch then matches zero rows on statement one and zero
    rows on every follow-on. Where a partial effect would still be corrupt, add
    an abort-sentinel statement that deliberately errors (CHECK violation) when
    the guard fails, rolling the batch back.
+   Successor replay identity is the immutable triple `(run_id, task_id,
+   attempt)`. An existing row may suppress a successor insert or its terminal
+   alternative only when all three fields equal the intended successor;
+   collision with the parent, a historical attempt of the same task, or a
+   foreign task must abort the whole transition. The schema's unique
+   `(task_id, attempt)` key makes two attempts of one task unable to claim the
+   same ordinal.
+   Run ownership is total: every run names an existing task in the same queue.
+   Spawn therefore admits its task insert only when no pre-existing run already
+   names the newly minted task id. Losing that ownership guard aborts with no
+   task or run written; it may never create a task after an orphan run and then
+   report a different, never-inserted run as the receipt. Its receipt has two
+   closed queue-scoped legs: the task-id leg may return only the inserted task,
+   and otherwise the idempotency leg may return only the same-queue winner. A
+   foreign task-id collision with no same-queue winner is an unexplained loss
+   and aborts rather than becoming a receipt.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:
@@ -512,21 +602,125 @@ are load-bearing):
    order). The timeout branch is part of the contract: a wait with a timeout
    sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
    payload is the TimeoutError path, and that claim batch deletes the wait row
-   so a later emit cannot resurrect a timed-out wait.
+   so a later emit cannot resurrect a timed-out wait. The SDK snapshots and
+   validates the optional timeout once before this atomic call; the store never
+   receives a second read from user-owned option state. That run-level NULL is
+   protocol branch state, not an event fact: an emitted `events.payload` must be
+   stored as TEXT. A SQL NULL or other non-TEXT event payload is corruption and
+   fails closed; it may never be decoded as the legitimate timeout sentinel.
+   A timer suspension replaces an event registration: `reschedule` and
+   `suspendRun` delete every wait belonging to the run their suspension CAS
+   stamped, in the same batch. Cancellation likewise deletes waits through
+   the `run_id`s of the runs its follow-on actually cancelled, never through
+   the denormalized `waits.task_id`; a corrupt mirror cannot redirect
+   ownership.
+   **A wake needs ONE wait row that justifies it, and the cleanup follows the
+   wake.** Emit selects waiters from `waits`, a table its batch never wrote,
+   so it is the one place the fence cannot decide which rows may be written
+   and a hand-written predicate does. Two obligations follow. First, a run
+   wakes only if a SINGLE row says all of: it belongs to this run, in this
+   queue, for this event, still waiting, at the run's `wake_step` (or the run
+   has none — parks predating the column match any step), with
+   `timeout_at_ms` equal to the run's `available_at_ms`. Where an index-driver
+   subquery is split out for the query plan, every condition on it must also
+   appear on the witness, or the two are answered by different rows and the
+   pair accepts what neither row would. Second, the cleanup deletes the
+   registrations of the runs the emit WOKE, never every registration naming
+   the event: those two sets are kept equal by nothing, and no later emit is
+   guaranteed to repair a registration whose evidence was deleted. A
+   registration the emit declines therefore survives, where
+   `wait-for-fired-event` names it as the lost wakeup it is.
+   Before claim or emit consumes a pre-`wake_step` registration whose run
+   still has `wake_step = NULL`, it copies the exact `step_name` from that same
+   full witness into the run. The decoder never infers a step from the event
+   name: one task may await the same event at several replay keys.
 3. **Engine time is database time.** All absolute timestamps are computed in SQL
-   (`unixepoch('subsec')` / `NOW(6)` / `clock_timestamp()`); clients pass only
+   (`unixepoch('subsec')` / `NOW(6)` / `statement_timestamp()`); clients pass only
    relative durations. User-supplied absolutes (`sleepUntil`) are the only
-   exception.
-4. **Claim is a fenced batch, not a lone statement.** The claim must also update
-   tasks, delete expired waits, and return run⋈task data; follow-on statements
-   key strictly on the fresh `claimed_by = :claim_token` (unique per tick), never
-   on a re-computed candidate set. Two additional predicates are contract:
-   a same-token RETRY is an idempotent receipt — it claims nothing new and
-   returns the original selection (guarded by "no running rows already carry
-   this token"), so a lost response cannot multiply the claim bound; and the
-   candidate set excludes tasks whose cancellation deadline is already due —
-   a sweep budget too small to cancel everything this pass must not leak
-   due-to-cancel tasks into launches.
+   exception. A wake union selects `{inSeconds}` versus `{atEpochMs}` only with
+   a captured own-property check, once per consumer; inherited `inSeconds`
+   never converts an absolute wake to a relative one. Each store suspension
+   consumer prepares one wake snapshot that supplies its SQL expression,
+   arguments, and epoch-headroom guard. Relative and absolute wakes are two
+   representations of the same `reschedule` or `suspend` transition, not two
+   label variants: within a dialect they use one ordered statement inventory,
+   SQL text, and bind arity, with only bind values selecting the mode. More
+   generally, a declared batch-label variant has one compiled signature;
+   genuinely different transition branches must be named or declared as
+   separate variants rather than hidden in representation-dependent SQL.
+   **The clock expression must be at least statement-stable**: every occurrence
+   within one statement — including inside a scalar subquery — must yield the
+   same value. Measured: SQLite `unixepoch('subsec')` is (4000/4000 identical);
+   MySQL `NOW(6)` is (it is the statement's start time), and `SYSDATE()` is NOT;
+   Postgres `statement_timestamp()` and `now()` are, and `clock_timestamp()` is
+   NOT — it re-reads the wall clock per call, so a single statement using it
+   twice can write two different instants. An earlier draft of this rule named
+   `clock_timestamp()`, which would have made rule 8 unsatisfiable on Postgres.
+   Stability does NOT extend across statements: the same expression in two
+   statements of one batch differs about 2% of the time on local SQLite (94 of
+   4000 measured) and far more over a network, which is what rule 8 exists for.
+   Database ownership of the clock does not exempt it from the numeric
+   contract. Every engine instant is an exact native integer in
+   `[0, MAX_EPOCH_MS]`, and every persisted relative duration is an exact
+   native integer in its field's duration domain. Before writing `now + delta`,
+   the authoritative statement proves both the instant and every delta valid
+   and proves `now <= MAX_EPOCH_MS - sum(delta)`. This applies to all fourteen
+   derived-deadline sites: spawn delay and cancellation, claim and activation
+   leases, activation max-duration, heartbeat, both sweep successors, driver
+   heartbeat, both suspension APIs, user retry, checkpoint extension, and
+   event timeout. A terminal arm that derives no successor remains legal at
+   the ceiling; an irrelevant future deadline may not prevent quiescence.
+   Persisted timestamp consumers enforce the same exact field contract at the
+   door that consumes it: before an ordered `LIMIT`, again at a winning CAS
+   after an advisory scan, and before copying or comparing it into another
+   durable value. A negative or over-ceiling deadline therefore cannot starve
+   healthy work, become due through comparison, or be laundered by a write.
+   Driver heartbeat is one atomic, one-statement transition for this purpose:
+   its upsert and expired-row cleanup derive from the same statement-stable
+   instant. If its derived expiry is unrepresentable, neither the heartbeat row
+   nor its cleanup may change. Cleanup also validates the stored last-beat and
+   expiry fields of both its source heartbeat and each deletion candidate;
+   corrupt observability rows are refused, not compared into authority or
+   deleted. `expireLeaseNow` likewise consumes only a native integer expiry
+   that is within range and strictly after the statement's instant; an invalid,
+   fractional, or already-expired value may not be rewritten into validity.
+4. **Claim is a fenced batch, not a lone statement.** It has two identities:
+   `claimed_by = :claim_token` is the durable lease and idempotent receipt,
+   while the FencedBatch invocation seed gives the claim CAS its fresh
+   per-statement provenance stamp. Mutating follow-ons update tasks and delete
+   expired waits strictly through the claim CAS stamp, never through the
+   durable token or a re-computed candidate set. The final receipt read uses
+   `claimed_by = :claim_token` as its durable identity rather than the CAS
+   stamp: a same-token retry claims nothing new and returns the original
+   selection (guarded by "no running rows already carry this token"), so a
+   lost response cannot multiply the claim bound.
+   The candidate set also excludes tasks whose cancellation deadline is
+   already due — a sweep budget too small to cancel everything this pass must
+   not leak due-to-cancel tasks into launches. All claim eligibility—live task,
+   sole live run, and unambiguous carried wait—must be applied inside BOTH the
+   pending and sleeping ordered candidate legs before each `LIMIT`. A late
+   outer join or filter is not equivalent: an earlier corrupt row can consume
+   the bounded budget before being refused and permanently starve later
+   healthy work. Durable worker payload admission is field-specific and shared:
+   `durableTaskRetryAdmissible` and `durableTaskHeadersAdmissible` both gate
+   each ordered candidate leg before its `LIMIT`, the same-token receipt before
+   it returns durable authority, and the activation CAS before it latches the
+   generation. Only after those store doors win may the captured parser decode
+   retry and headers; a stamped tail is not a substitute for gating the CAS.
+   Every newly claimed or
+   receipt-returned run must also be the task's sole live run: the canonical
+   `soleLiveRun(run)` eligibility fragment gates both the candidate CAS and the
+   final `picked` receipt tail. It rejects every run with another live sibling,
+   so a corrupt multiple-live-run task is refused rather than double-launched,
+   including when corruption appears between a successful claim and its
+   same-token retry. The activation CAS is the third door and composes the same
+   fragment: a live sibling appearing after claim but before activation
+   invalidates the issued launch. The task-book follow-on derives
+   `last_attempt_run` with
+   `MIN(f.run_id) … HAVING COUNT(*) = 1`; even if the sole-live guard
+   regresses, every dialect observes the same non-singleton
+   outcome rather than SQLite choosing an arbitrary scalar row while
+   PostgreSQL/MySQL reject it.
 5. **Checkpoint writes are lease-fenced in both placements.** Inline: the upsert
    joins the run-row guard (`claimed_by=:token AND state='running'`) — same DB,
    free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease
@@ -537,6 +731,10 @@ are load-bearing):
    `ON CONFLICT DO UPDATE … WHERE excluded.owner_attempt >= owner_attempt` —
    a lower-attempt writer under a still-valid lease is silently dropped (its
    lease still extends); replay determinism, not error, is the goal.
+   Any CAS whose follow-ons copy or derive an owner/ordinal from the stored
+   run attempt first requires that attempt to have the dialect's native integer
+   representation. A corrupt value refuses the whole suspend or sweep batch;
+   it may not park without its checkpoint or be coerced into a successor.
 6. **Terminal tasks are inert (TerminalStability, executable form).** No
    transition may mutate a terminal task's state, and none may create or
    revive a live run under a terminal task — even from externally corrupted
@@ -546,7 +744,11 @@ are load-bearing):
    reopen, heartbeat's extension, checkpoint's lease extension, successor
    inserts) additionally require the owning task live; run-TERMINALIZING
    CASes (complete/fail/sweep failure) stay valid under a terminal task —
-   they only quiesce. A refused suspension surfaces as AB002.
+   they only quiesce. When the owner task is still live, `complete`, `fail`, and
+   the sweep relaunch-cap arm may terminalize it only if the winning run is its
+   sole live run. An already-terminal owner may still let a matching live run
+   quiesce, because that cannot amplify task state. A refused suspension
+   surfaces as AB002.
 7. **Client numbers are validated at the port; SQL never multiplies them.**
    Every relative duration crosses the boundary through `durationToMs`
    (finite, ≥ 0, rounded to integer milliseconds, ≤ 100 years; leases and
@@ -557,8 +759,110 @@ are load-bearing):
    unchecked Infinity is an unexpirable lease, an unsafe integer poisons
    later reads with a driver RangeError, and a fractional product silently
    breaks the integer epoch-ms contract. Durations stored in JSON
-   (`cancellation.maxDurationSeconds`) are validated at spawn and their SQL
-   products CAST to INTEGER at use.
+   (`cancellation.maxDurationSeconds`) are validated at spawn and revalidated
+   when consumed from durable JSON. Their SQL conversion implements the same
+   rounded-millisecond result as `durationToMs`; a seconds value slightly above
+   the nominal seconds quotient is legal when rounding still yields exactly
+   `MAX_DURATION_MS`, while a value whose rounded result exceeds the ceiling is
+   refused. The administrative `fake_now` seam is a port too:
+   `setFakeNowEpochMs` crosses `requireEpochMs` before any metadata write.
+   Values coming back from a dialect cross
+   one dialect-neutral `decodeBoundedInteger` boundary before becoming
+   JavaScript numbers; it accepts only exact native number/bigint integers and
+   enforces the same semantic bounds the invariant evaluator uses. Run
+   ordinals have the distinct exact ceiling
+   `MAX_RUN_ORDINAL = MAX_COUNT + INFRA_RETRY_CAP`, because they count both
+   user attempts and infrastructure successors; all other durable counts use
+   `MAX_COUNT`.
+8. **Write provenance is a column, never a borrowed one.** Every table a CAS
+   targets — `tasks`, `runs`, `waits`, `events` (the contract list, `core`'s
+   `FENCED_TABLES`) — carries `fence_stamp TEXT` and `fence_at_ms INTEGER`.
+   A batch mints one seed; each stamp-writing statement writes
+   `<seed>:<statement name>`, together with the ONE instant that statement
+   read, into `fence_at_ms`. Every later statement in the batch filters on
+   that stamp and derives every instant it needs from `fence_at_ms`. Rule 1
+   says a follow-on keys on the post-transition state *plus the batch's own
+   stamp*; this rule says where the stamp LIVES, and it exists because the
+   answer used to be "some column that already meant something else" —
+   `runs.claimed_by` (the worker's lease) and `tasks.failure_reason` (a
+   user-visible string). A borrowed column can be written by something other
+   than this batch, so a follow-on keyed on it fires for a stale or
+   duplicated caller; that is not a coding mistake to be avoided but the
+   direct consequence of having nowhere correct to write.
+   Three consequences are contract, not implementation detail:
+   *(a)* the stamp names a STATEMENT, not just a batch. One stamp per batch
+   aliases across its statements, and a follow-on asking "does the row at
+   this id carry my batch's stamp" can then be answered by a *different* row
+   the same batch stamped — which is how a failing run whose successor id
+   collided with its own impersonated that successor. Statement names obey
+   the one contract grammar `[a-zA-Z0-9_-]+`; the builder and the persisted
+   provenance evaluator import that same definition, so an invalid suffix
+   cannot be accepted by one representation and emitted by the other.
+   *(b)* a follow-on may not read the clock at all. It has `fence_at_ms`, so
+   the class of bug where two statements of one batch disagree about "now"
+   has no remaining legal instance to hide in.
+   *(c)* every generated UPDATE follow-on writes its own stamp and copies the
+   instant from its earlier fenced source. When later statements use an
+   intermediate statement stamp as an execution capability, the batch
+   consumes it after the final dependent by re-stamping those source rows at
+   the same source instant. A delayed exact replay then cannot borrow work
+   that the first execution left behind. A first-write-wins fact may acquire
+   a fresh invocation's stamp, but its `fence_at_ms` stays the immutable
+   instant at which the fact first became true. The exception is enumerated
+   in the dialect-neutral contract, not supplied as SQL by a caller: the only
+   preserved fact instant is `(events, emitted_at_ms)`. An events upsert
+   conflict arm re-stamps `fence_stamp` while copying
+   `events.emitted_at_ms`; `$NOW$` and every other column are illegal there.
+   Adding another exception requires extending that enumeration and its
+   rejection tests. Its ordinary assignments are generated from a closed
+   per-table list of left-hand sides; callers provide scalar right-hand sides
+   only. Provenance columns and public primary identity are absent, so quoted
+   identifiers, duplicate assignments, and `runs.run_id` cannot compete with
+   the primitive's writes.
+   *(d)* generated follow-ons traverse one of the contract's closed logical-key
+   relations: `runs.task_id → tasks.task_id`, `runs.run_id → waits.run_id`,
+   `tasks.task_id → runs.task_id`, `waits.run_id → runs.run_id`, or the exact
+   self relation `runs.run_id → runs.run_id`. Callers name the relation; they
+   cannot spell either key independently. Queue policy is part of each closed
+   entry: runs→tasks, tasks→runs, and waits→runs require queue equality;
+   authoritative runs→waits cleanup deliberately ignores the wait's corrupt
+   denormalized queue; and the exact runs→runs self relation needs no additional
+   queue comparison. Construction also requires the
+   named fence to have stamped the relation's source table, and sealing
+   requires both source table and logical key to be identical. A
+   `rows: 'source-keys'` follow-on is therefore bounded structurally: its
+   distinct target keys are a subset of the stamped source keys, while several
+   physical target rows may share one key. This is a construction property,
+   not a count query checked after commit. Self-source reads are wrapped in a
+   non-mergeable `DISTINCT` derived table so the identical generated shape is
+   legal for MySQL updates as well as SQLite and Postgres. Raw
+   `{ many: reason }` remains only for emit's `wake-runs` pending the active
+   wait identity in PR3.8.
+   The columns are nullable, unindexed, and never a lookup key — a stamp is
+   only ever a filter, and every fenced statement is anchored by a primary key
+   or an existing index. Rows written before the provenance migration read
+   NULL, and NULL never equals a stamp, so no fence can match one.
+9. **A schema version is an exact fact, not a coercible hint.** The stored
+   `schema_version` wire form is a canonical nonnegative base-10 safe integer:
+   `0` is the only zero form and no positive value has a leading zero.
+   Migration reports success only when the recorded version equals the
+   binary's current version exactly; malformed, negative, unsafe, and future
+   versions fail closed. Only an actual absent metadata table means a fresh
+   database at version zero. The dialect adapter alone classifies the canonical
+   singleton version read's native missing-metadata error as
+   `SchemaNotInitializedError`; admin catches that type, never rendered text.
+   Validation of a returned row happens outside the read-error catch, so stored
+   text—even text identical to a missing-table diagnostic—or an unrelated
+   executor failure cannot enter the fresh-database path. Once metadata exists,
+   the version read returns exactly one result containing exactly one row;
+   zero, missing, or duplicated result/row shapes are schema mismatches, never
+   version zero. `migrate()` performs that typed read before issuing any
+   bootstrap DDL; only its explicit absent-metadata result authorizes
+   `CREATE meta` and the version-zero insert. `CREATE IF NOT EXISTS` is not
+   evidence of freshness and may not relabel an existing empty metadata table.
+   Malformed dialect-returned values are described only by non-coercive storage
+   kind; diagnostics may not invoke serialization or user hooks and change the
+   permanent `SchemaMismatchError` classification.
 
 **Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
 `setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
@@ -579,22 +883,211 @@ that makes its bug class unwritable or machine-caught, so compliance does
 not depend on careful reading:
 
 - *Eligibility fragments* (`store-*/src/fragments.ts`): what "live",
-  "cancellation due", and "eligible to proceed" mean is spelled once per
-  dialect; every door composes the fragments, and a lint in the verify
-  gate fails any store source containing an eligibility comparison or raw
-  state list elsewhere. A door cannot carry a stale copy of a predicate it
-  cannot spell.
+  "cancellation due", "sole live run", and "eligible to proceed" mean is
+  spelled once per dialect; every door composes the fragments, and a lint in
+  the verify gate fails any store source containing an eligibility comparison
+  or raw state list elsewhere. A door cannot carry a stale copy of a predicate
+  it cannot spell. Claim has one `candidateEligibility` composition—live task,
+  sole live run, and unambiguous wait—inserted into both state legs before
+  their per-leg limits. Shared conformance pins bounded progress; the libSQL
+  query-plan suite records the shipped CAS rather than a hand-written stand-in
+  and pins its indexed scans and sibling probes.
 - *Opaque launch outcomes* (`core/launch.ts`): a launcher's report has no
   readable fields; the only affordance is `LaunchOutcome.reconcile`, which
-  owns parsing, identity checking, and the single advisory-expiry door.
-  Trusting a report's content is a compile error, not a review catch.
+  owns parsing, exact `(runId, claimToken)` identity checking, and the single
+  advisory-expiry door. A mismatched or tokenless ending makes no write.
+  Authentication is a module-private WeakMap, not `instanceof`, an instance
+  field, or a TypeScript-private class property. Construction snapshots each
+  untrusted ending field exactly once inside a non-throwing guard, validates
+  the complete payload, and copies it; forged prototypes, throwing/changing
+  getters, and malformed payloads become `launch-failed`. Trusting a report's
+  content is a compile error, not a review catch.
 - *The generated fault matrix* (`conformance/src/fault-matrix.ts`): every
   batch label, harvested from source by the same script that checks the
   spec ledger, is classified write/read/exempt — a new label fails the
   build until classified, and classification enrolls it against
   crash-before, crash-after, and duplicated-request faults automatically,
   with invariants, the claim QUANTITY bound, and a post-fault progress
-  probe asserted. Fault coverage is enumerated, never curated.
+  probe asserted. Cap-edge seeds use a non-first claim generation, and when
+  the trace shows their transition reached the database the matrix requires
+  the exact task/run post-state — observing a label without crossing its
+  seeded edge is not coverage. Fault coverage is enumerated, never curated.
+  Dialects enter through the central fixture registry and one
+  `storeConformance` umbrella, which always enrolls scheduler, fault, poison,
+  and generated wake-witness behavior; a backend cannot select only the
+  cheaper sub-suites.
+- *The invariant condition inventory and poison matrix*
+  (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
+  one dialect-neutral read batch whose result cardinality is exact and every
+  slot/column is validated; a missing or malformed result is an error, never
+  an empty table. The poison snapshot's one closed descriptor owns all six
+  protocol/bookkeeping table names, their stable order, and every required
+  identity/ownership column. A row missing an authority column is rejected
+  before keys are constructed. Dialect adapters expose exact integers as
+  safe numbers or bigint, which the evaluator compares canonically without a
+  lossy Number conversion. For invalid native representations, the fixture
+  prepares a nonempty dialect statement and a narrow native-error classifier;
+  the shared runner alone executes the attempt through the raw executor. A
+  permissive store must verify the injection, while a strict schema receives
+  `structurally-rejected` credit only after an observed attempted write raises
+  the classified error. A fixture cannot return evidence by assertion.
+  TypeScript evaluates
+  one of 109 typed condition IDs for every semantic arm. The eight durable
+  counters and 23 temporal fields are decoded totally through core's
+  bounded decoder: a non-integer storage representation and an exact-but-
+  out-of-range value emit distinct typed findings and suppress dependent
+  arithmetic instead of aborting the invariant pass. Run→task existence and
+  queue ownership are checked explicitly. One frozen temporal inventory covers
+  all 23 `_ms` fields across tasks, runs, checkpoints, events, waits, and
+  drivers, derives the public condition/witness identity from the nominal
+  `table.column` bounds identity, records each field's epoch/duration kind and
+  exact nullability, and
+  generates both temporal conditions, the six-table snapshot projection, and
+  three witnesses per field: invalid storage, one below the lower bound, and
+  one above the upper bound. The migrated libSQL schema discovers every native
+  `INTEGER` column across those tables and compares the exact field/nullability
+  vector to the union of eight counter descriptors and 23 temporal descriptors:
+  all 31 durable integers are enrolled without relying on a name suffix.
+  Snapshot results are assembled by each projection's declared table key,
+  never by a second hard-coded positional table list.
+  Generated just-over-bound witnesses, along with the ownership witnesses,
+  keep the poison matrix complete. The poison surface crosses the 17 classified
+  write labels with 139 atomic corrupt-state witnesses covering that exact
+  condition inventory: 2,363 generated cells,
+  plus two inventory cases. Every injectable witness invokes its label; a
+  strict dialect may instead produce an observed `structurally-rejected`
+  attempt before invocation, the stronger result that the forbidden pre-state
+  is unwritable. Each invoked
+  cell freezes structured tuple keys for a protected pre-operation population
+  across every protocol/bookkeeping table, permits new rows only through
+  explicit complete ownership tuples, and rejects writes outside before-state
+  authority, new violations, live-run amplification, and worsening hidden
+  behind the same condition and structured subject. Severity is exact numeric evidence,
+  including absolute wait-deadline divergence and the span of instants under
+  one provenance seed.
+  A label proves progress only when a semantically healthy transition wins
+  and its individual store call produces a durable delta in the exact
+  six-table snapshot. State change, not SQL spelling or returned row count, is
+  the property: dialect DML beginning with a CTE counts, while SELECT rows and
+  no-op DML do not. The `cardinality/two-live-runs` claim witness is already
+  due, and exact behavioral mutations remove the sole-live guard from the
+  candidate CAS and receipt tail, so that generated cell cannot be satisfied
+  solely by an unrelated healthy delta or a stale same-token receipt. A
+  separate post-claim/pre-activate regression and exact mutation attack the
+  activation door; the generated `activate × two-pending-runs` cell alone
+  cannot prove that temporal placement because its target is not claimed.
+  Emit's one atomic exception is keyed to condition
+  `wait/fired-event` and the exact structured poisoned-run component; display
+  names cannot widen it. Counting names, delimiter-joining keys or findings,
+  observing that a label was called, or deriving authority from the
+  after-state are prohibited proxies. Sixteen adversarial oracle meta-tests
+  attack these distinctions.
+- *Timestamp-domain construction and consumption* (`core/src/validate.ts`,
+  `store-*/src/fragments.ts`, and the mandatory timestamp conformance surface):
+  the 23-field inventory above is the sole persisted temporal representation.
+  Fixed-field fragments own due/not-due comparisons, and one
+  `epochAdditionFits` constructor owns derived-epoch headroom. Each delta
+  expression appears exactly once in the generated predicate, so an anonymous
+  SQL placeholder consumes one argument rather than being duplicated by a
+  textual helper. The conformance registry enrolls the timestamp surface as a
+  peer of scheduler, fault, poison, and wake-witness coverage; nesting it
+  inside another suite is not enrollment. Fourteen exact-ceiling/overflow
+  pairs, bounded-discovery and post-scan interpositions, all four next-wake
+  sources, direct copy/compare consumers, fake-clock inputs, terminal-arm
+  controls, rounded-duration parity, and driver-cleanup atomicity pin the
+  contract independently of the global invariant.
+- *Attributable mutation verdicts* (`scripts/mutation-probe.py`): every
+  mutation names the exact behavioral or construction assertion that must
+  kill it — test file, full test name, and marker in its failure. Compilation
+  or bind failure, a different assertion, any suite-level error, malformed or
+  internally contradictory structured output, process/report disagreement,
+  or any other wrong path receives no credit. A marker matches only the
+  structured failure diagnostic's first line: bare, `Error: <marker>`, exact
+  `AssertionError: <marker>`, or `AssertionError: <marker>: …`; its appearance
+  later in rendered assertion source is not evidence. One mutation condition
+  has one decisive assertion owner: broader controls may remain in the test,
+  but they cannot fail before or alongside the registered owner. Both
+  `FencedBatch` compiler bind exits use one
+  module-captured `TypeError` factory and private brand. The three canonical
+  promise helpers propagate that brand before consulting a caller matcher, so
+  an argument-count or explicit-undefined failure cannot be laundered into an
+  exact semantic marker. An exact mutation deletes the private-brand read
+  itself, independently of both branded producers. Raw question-token
+  reconciliation is only a cheap source alarm; an executed equal-count
+  cancellation case defines its limit. A canonical-CLI injected fault withholds
+  all question-delta reasons in one live-inventory traversal and requires an
+  aggregate refusal; it proves enrollment is not a removable second call, not
+  each declaration independently.
+  The verify gate runs 20 classifier cases, nineteen promise-message source
+  cases, ten canonical helper-descriptor cases, two helper-binding cases,
+  three helper-marker cases, sixteen direct-marker cases, three title-owner
+  cases, six verdict-inventory cases, seven question-delta cases, eleven
+  mutant-syntax cases, and four live-enrollment attacks across all 421 live
+  mutations. A separate generated coordinator surface injects 40 faults
+  covering shard omission and overlap, wrong heads, missing/duplicate/extra
+  results, process/report disagreement, and non-owned cleanup targets, plus
+  unconfined execution, an unowned worker,
+  a skipped baseline barrier, an external workspace link, malformed identity
+  types, an interruptible cleanup, an orphaned descendant, oversized finite
+  memory and CPU ceilings, missing/malformed/signaled suite transport, and false
+  infrastructure-success classifications. An additional 18-fault routing
+  surface exercises the exact Vitest/typecheck baseline order, fail-fast
+  behavior, mutation dispatch, and registry-digest authority. Session-state
+  evidence classifies
+  Linux `Z`, `X`, and `x` through one `TERMINAL_PROCESS_STATES` definition and
+  one `process_is_gone` decision for the initial observation, failure rechecks
+  after owner, argv, and cwd phases, and the final-identity observation; a
+  generated phase matrix attacks each transition.
+  The parser requires all nine
+  aggregate counters to be nonnegative integers and internally consistent
+  within their reporter domains. Test counters match test rows; each file
+  status matches its own assertion/message rows; suite counters are not
+  equated with file counts because the reporter does not expose that topology.
+  Every status is type-checked before classification. A full audit binds itself
+  to one clean committed head, assigns every selected registry entry exactly
+  once in deterministic order, and runs each shard in a detached worktree at
+  that exact head. Every worktree gets an isolated frozen pnpm link farm whose
+  workspace packages resolve inside that worktree; sharing the source
+  checkout's `node_modules` could silently test unmutated code. All worker
+  baselines must pass before any mutation begins. The aggregate rejects a
+  wrong head or registry, missing/duplicate/extra/malformed result, incomplete
+  worker, or process/report disagreement. A missing, malformed, or signaled
+  Vitest report is transport failure and cannot become a domain verdict. The
+  coordinator and all raw Vitest children share one `scripts/confine.sh`
+  scope, with Vitest workers divided across shards; the live scope must cap
+  memory at no more than 75% of host memory, disable swap, and preserve the
+  host CPU reserve. Per-suite scopes are prohibited because their independent
+  memory ceilings would multiply. The source checkout is never mutated, and
+  cleanup may remove only manifest-owned worktrees. The first full clean-tree
+  audit classified 28 of 34 mutations as attributable and six as wrong-path;
+  after exact-call
+  construction wrappers, a single marked plan vector with a
+  behavior-preserving mutation, a discriminating A/B wake witness, and
+  explicit require/attribute failure helpers, that round's final audit
+  classified all **37 of 37 as attributable**. The registry later grew to 50;
+  its closing audit caught a promise verdict added outside the helper's
+  original package that still relied on Vitest's lossy custom message. The
+  promise helpers now have one package-neutral definition under
+  `@durablerun/core/testing`, their success, expected-error, replacement-error,
+  and unrelated-error arms have direct tests, and callers provide a structured
+  kind/name descriptor from which only the helper can construct a canonical,
+  undecorated marker. One TypeScript-compiler AST pass makes the verify gate
+  refuse every custom-message argument on a direct Vitest
+  `expect(...).rejects` or `.resolves` chain; compiler syntax owns nested
+  parentheses, optional generics, relational expressions, methods, and
+  constructors, while exact string-literal and helper-descriptor inventories
+  exclude comments and decorated names. The separate lightweight source lexer
+  preserves prefix/postfix state for TypeScript's non-null assertion so a
+  following division slash cannot hide executable batch calls as regex
+  contents. Verdict altitude follows the
+  earliest load-bearing boundary, not the downstream scenario story; a
+  construction wrapper encloses the exact call and exact error. Behavioral
+  mutations preserve unrelated semantics, every multi-part verdict has one
+  marked vector, and inverse promise outcomes use the shared helpers to emit
+  the marker directly rather than relying on framework custom-message
+  propagation. The mutation runner no longer imports its former
+  repository-local Python parser; the executable lint self-test rejects any
+  analyzer import artifact before a clean-tree audit can begin.
 - *Duplicate-delivery in the model*: the spec models a retried request per
   labeled action, and the ledger tags each label's duplicate semantics
   ([cas-fenced] / [receipt] / [read] / [setup]), machine-checked — so a
@@ -880,8 +1373,13 @@ safe: **the scheduler lease is the only source of truth for execution rights;
 every other signal is advisory** — it may be lost (lease timer recovers),
 duplicated (fences no-op), late, or wrong under split-brain (fences reject
 stale tokens) — and advisory signals get exactly one write:
-`expireLeaseNow(runId, claimToken)`, i.e. they may only *accelerate* what the
-lease timer would do anyway, never directly complete or fail a run.
+`expireLeaseNow(queue, runId, claimToken)`, i.e. they may only *accelerate* what
+the lease timer would do anyway, never directly complete or fail a run. It
+returns true only when that exact queue/run/token still names a running lease,
+the stored expiry is a native integer strictly in the future, and a task with
+the same id and queue owns the run; the write then shortens the lease to the
+database instant. Every mismatch, invalid expiry, or already-expired lease
+stutters.
 
 1. **SchedulerStore** (dialect port: Postgres | MySQL | SQLite/Turso) —
    scheduling only, every method one fenced idempotent tx/statement, DB-side
@@ -890,31 +1388,35 @@ lease timer would do anyway, never directly complete or fail a run.
    `heartbeat` (returns lease state so zombies learn they're dead),
    `reschedule`, `complete`, `fail` (retry policy in core, applied fenced),
    `sweep` (expired leases + cancellation, classified by activation state),
-   `expireLeaseNow`, `emitEvent`/`registerWait` (worker-initiated
-   registration is claim-fenced like every worker write), `nextWakeAt`, and
-   `driverHeartbeat` — an observability-only upsert of the driver's liveness
-   row (`drivers` table: queue+driver id, last beat, expiry at twice the
-   beat cadence; each beat also deletes expired rows so the registry is
-   self-cleaning). Nothing in the protocol reads it; a failed beat costs
+   `expireLeaseNow(queue, runId, claimToken)`, `emitEvent`/`registerWait`
+   (worker-initiated registration is claim-fenced like every worker write),
+   `nextWakeAt`, and `driverHeartbeat` — an observability-only upsert of the
+   driver's liveness row (`drivers` table: queue+driver id, last beat, expiry at
+   twice the beat cadence; each beat also deletes expired rows so the registry
+   is self-cleaning). Nothing in the protocol reads it; a failed beat costs
    nothing but visibility.
 2. **Launcher** (execution transport, agnostic on "how"):
    `launch({runId, attempt, claimToken, claimGen, shard, deadlineHint}) →`
    `accepted` (fire-and-forget ack — may still be lost) |
-   `ended` (sync HTTP: outcome observed inline — a reliable Ending; legal only
-   for drivers holding bounded launch slots, i.e. resident pools — serverless
-   ticks always fire-and-forget, §3.1 step 3) |
+   `ended({runId, claimToken, kind})` (sync HTTP: outcome observed inline — a
+   reliable Ending carrying the exact launch identity; reconcile makes no
+   write unless both fields match the invocation; legal only for drivers
+   holding bounded launch slots, i.e. resident pools — serverless ticks always
+   fire-and-forget, §3.1 step 3) |
    `launch-failed` (transport-level rejection → fenced immediate relaunch —
    still counted by the relaunch counter, since "never ran" is the launcher's
    claim, not a guarantee).
 3. **EndingFeed** (runner-termination log; honest contract: at-most-once,
    duplicated, delayed, split-brain-capable): events
-   `{runId, claimToken?, kind: completed|failed|crashed|timeout|unknown}`.
-   Consumers are stateless — any tick handler reconciles: *verify the run
-   already transitioned (controlled ending → no-op), else `expireLeaseNow`.*
-   A tokenless ending may only accelerate after a read-verify: read the run's
-   current token, confirm no heartbeat has landed since the ending's
-   timestamp, then `expireLeaseNow` with the token just read — still nothing
-   more than accelerated lease expiry.
+   `{queue, runId, claimToken?, endedAtEpochMs, kind:
+   completed|failed|crashed|timeout|unknown}`. A token-bearing consumer calls
+   `expireLeaseNow` only for that exact `(queue, runId, claimToken)`; a
+   mismatched signal stutters. Tokenless signals make no write until PR6.4 adds
+   the spec-first atomic heartbeat-cutoff operation: it must read the run's
+   current token, prove no heartbeat landed after the ending's cutoff, and
+   expire that same claim in one store action. A separate read followed by
+   `expireLeaseNow` races a new claim or heartbeat and is forbidden. Feed loss
+   therefore costs only acceleration, never correctness.
 4. **RunStateStore** (data plane, §3.8): `load`, attempt-guarded
    `saveCheckpoint`, streams; placements inline | per-run DB | local file+sync.
 5. **WakeSignals** (optional accelerators): `ping(shard)`, `alarmAt(shard,t)`,
@@ -923,9 +1425,10 @@ lease timer would do anyway, never directly complete or fail a run.
 Failure taxonomy → port mapping: lost fire-and-forget launch = claimed but
 never activated → sweep sees `activated_gen < claim_gen` at lease expiry → relaunch
 without burning an attempt (this is why activation is separate from claim).
-Sync launch = a Launcher whose EndingFeed is inline and reliable — identical
-reconcile path, better p50. Catastrophic ending = `expireLeaseNow` → reclaim
-now instead of at lease expiry. Split-brain "death" of a live zombie = the same
+Sync launch = a Launcher whose exact-identity EndingFeed is inline and reliable
+— identical reconcile path, better p50. Catastrophic ending =
+`expireLeaseNow` → reclaim now instead of at lease expiry. Split-brain "death"
+of a live zombie = the same
 brief-overlap window lease expiry already tolerates; the zombie's scheduler
 writes die on the stale token, its checkpoints on attempt guards, and its next
 `heartbeat` tells it to exit. Feed totally lost = reclaim latency degrades to

@@ -1,7 +1,22 @@
-import { type ClaimedRun, LeaseLostError } from '@durablerun/core'
-import { Rng, seededBuggify, SimWorld } from '@durablerun/harness'
+import {
+  type ClaimedRun,
+  INFRA_RETRY_CAP,
+  LeaseLostError,
+  MAX_COUNT,
+  MAX_DURATION_MS,
+  PERSISTED_INTEGER_BOUNDS,
+  RELAUNCH_CAP,
+  type SqlExecutor,
+} from '@durablerun/core'
+import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
+import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import {
+  type StoreFixture,
+  type StoreFixtureFactory,
+  executeStorageCorruption,
+  interposeAfterBatch,
+} from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 
 const Q = 'q'
@@ -71,9 +86,249 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(a.taskId).not.toBe(b.taskId)
         expect(b.created).toBe(true)
       })
+
+      it('rejects retry durations above the durable bound without writing', async () => {
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'retry-spawn-normalization' },
+          /exceeds the 100-year duration bound/,
+          async () =>
+            f.store.spawn(Q, 'oversized-retry', '{}', {
+              retryStrategy: {
+                kind: 'exponential',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+                factor: 2,
+                maxSeconds: MAX_DURATION_MS / 1000 + 1,
+              },
+            }),
+        )
+
+        const [count] = await f.raw.batch(
+          'retry-bound-probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
+      })
+
+      it('rejects an explicit null retry strategy without writing', async () => {
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'retry-spawn-null' },
+          /retry strategy must be an object/,
+          async () =>
+            f.store.spawn(Q, 'null-retry', '{}', {
+              retryStrategy: null as never,
+            }),
+        )
+
+        const [count] = await f.raw.batch(
+          'retry-null-probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
+      })
+
+      it('reads cancellation once and persists the value it validated', async () => {
+        let reads = 0
+        const valid = { maxDelaySeconds: 30 }
+        const changed = { maxDurationSeconds: -1 }
+        const opts = Object.defineProperty({}, 'cancellation', {
+          enumerable: true,
+          get: () => {
+            reads += 1
+            return reads <= 4 ? valid : changed
+          },
+        }) as { cancellation: { maxDelaySeconds?: number; maxDurationSeconds?: number } }
+
+        const spawned = await f.store.spawn(Q, 'changing-cancellation', '{}', opts)
+        const [rows] = await f.raw.batch(
+          'changing-cancellation:probe',
+          [
+            {
+              sql: `SELECT cancellation, cancel_at_ms FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+
+        expect(
+          {
+            reads,
+            cancellation: rows?.rows[0]?.cancellation,
+            cancelAtEpochMs: rows?.rows[0]?.cancel_at_ms,
+          },
+          'mutation-verdict:behavior:spawn-cancellation-single-read',
+        ).toEqual({
+          reads: 1,
+          cancellation: JSON.stringify(valid),
+          cancelAtEpochMs: 1_030_000,
+        })
+      })
     })
 
     describe('claim', () => {
+      it('leaves a candidate with a corrupt persisted retry strategy unclaimed', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-retry', '{}', {
+          retryStrategy: {
+            kind: 'fixed',
+            baseSeconds: 1,
+          },
+        })
+        await f.raw.batch('corrupt-retry-strategy', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [
+              JSON.stringify({
+                kind: 'fixed',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+              }),
+              spawned.taskId,
+            ],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, 'corrupt-retry-token', { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-payload-validation-atomic',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
+      })
+
+      it('leaves a candidate with corrupt persisted headers unclaimed', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-candidate-headers', '{}', {
+          headers: { trace: 'valid' },
+        })
+        await f.raw.batch('corrupt-candidate-headers', [
+          {
+            sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
+            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, 'corrupt-candidate-headers-token', { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-candidate-headers-admissible',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
+      })
+
+      it('same-token receipt refuses a corrupt persisted retry strategy', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-receipt-retry', '{}', {
+          retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+        })
+        const [run] = await f.store.claim(Q, 'corrupt-receipt-retry-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        if (!run) throw new Error('expected a claimable run')
+        await f.raw.batch('corrupt-receipt-retry', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [
+              JSON.stringify({
+                kind: 'fixed',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+              }),
+              spawned.taskId,
+            ],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, run.claimToken, { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-receipt-retry-admissible',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
+      })
+
+      it('same-token receipt refuses corrupt persisted headers', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-receipt-headers', '{}', {
+          headers: { trace: 'valid' },
+        })
+        const [run] = await f.store.claim(Q, 'corrupt-receipt-headers-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        if (!run) throw new Error('expected a claimable run')
+        await f.raw.batch('corrupt-receipt-headers', [
+          {
+            sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
+            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store
+          .claim(Q, run.claimToken, { leaseSeconds: 60, limit: 1 })
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            () => ({ kind: 'rejected' as const }),
+          )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:claim-receipt-headers-admissible',
+        ).toEqual({
+          observed: { kind: 'resolved', value: [] },
+          after: before,
+        })
+      })
+
+      it('normalizes an admissible persisted retry strategy before exposing it', async () => {
+        const spawned = await f.store.spawn(Q, 'canonical-retry', '{}', {
+          retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+        })
+        await f.raw.batch('noncanonical-retry-strategy', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [
+              JSON.stringify({ kind: 'fixed', baseSeconds: 0.0004, ignored: true }),
+              spawned.taskId,
+            ],
+          },
+        ])
+
+        const [claimed] = await f.store.claim(Q, 'canonical-retry-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        expect(
+          claimed?.retryStrategy,
+          'mutation-verdict:behavior:retry-persisted-normalization',
+        ).toEqual({ kind: 'fixed', baseSeconds: 0 })
+      })
+
       it('claims due runs oldest-first with claim_gen 1 and full task data', async () => {
         await f.store.spawn(Q, 'a', '{"n":1}')
         await f.store.spawn(Q, 'b', '{"n":2}')
@@ -102,6 +357,160 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.claim(Q, 't1', { leaseSeconds: 60, limit: 2 })).toHaveLength(2)
         expect(await f.store.claim(Q, 't2', { leaseSeconds: 60, limit: 10 })).toHaveLength(3)
       })
+
+      it('applies sole-live eligibility before the claim limit', async () => {
+        const corrupt = await f.store.spawn(Q, 'corrupt', '{}')
+        await f.raw.batch('t', [
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+                  VALUES ('corrupt-second', ?, ?, 2, 'pending', 1000000, 1000000)`,
+            args: [Q, corrupt.taskId],
+          },
+        ])
+        const corruptBefore = await snapshot(f, corrupt.taskId)
+
+        await f.admin.setFakeNowEpochMs(1_000_001)
+        const healthy = await f.store.spawn(Q, 'healthy', '{}')
+        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
+
+        expect(
+          claimed.map((run) => run.taskId),
+          'regression:claim-eligibility-before-limit',
+        ).toEqual([healthy.taskId])
+        expect(await snapshot(f, corrupt.taskId)).toEqual(corruptBefore)
+      })
+
+      it('applies the activation-generation relation before the claim limit', async () => {
+        const poisoned = await f.store.spawn(Q, 'activated-ahead', '{}')
+        await f.raw.batch('corrupt-activation-generation', [
+          {
+            sql: `UPDATE runs SET activated_gen = claim_gen + 1 WHERE run_id = ?`,
+            args: [poisoned.runId],
+          },
+        ])
+        const poisonedBefore = await snapshot(f, poisoned.taskId)
+
+        await f.admin.setFakeNowEpochMs(1_000_001)
+        const healthy = await f.store.spawn(Q, 'healthy-after-activated-ahead', '{}')
+        const claimed = await f.store.claim(Q, 'tick', { leaseSeconds: 60, limit: 1 })
+
+        expect(
+          claimed.map((run) => run.taskId),
+          'mutation-verdict:behavior:claim-requires-activation-generation-order',
+        ).toEqual([healthy.taskId])
+        expect(await snapshot(f, poisoned.taskId)).toEqual(poisonedBefore)
+      })
+
+      it('does not return an activated-ahead run from a same-token claim receipt', async () => {
+        const spawned = await f.store.spawn(Q, 'activated-ahead-receipt', '{}')
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toHaveLength(1)
+        await f.raw.batch('corrupt-receipt-activation-generation', [
+          {
+            sql: `UPDATE runs SET activated_gen = claim_gen + 1 WHERE run_id = ?`,
+            args: [spawned.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-requires-activation-generation-order',
+        ).toEqual([])
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('does not return an obsolete ordinal from a same-token claim receipt', async () => {
+        const spawned = await f.store.spawn(Q, 'obsolete-ordinal-receipt', '{}')
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toHaveLength(1)
+        await f.raw.batch('corrupt-receipt-historical-ordinal', [
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('receipt-historical-higher', ?, ?, 3, 'failed', 999999)`,
+            args: [Q, spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-requires-highest-owned-ordinal',
+        ).toEqual([])
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('does not return an out-of-range relaunch counter from a same-token claim receipt', async () => {
+        const spawned = await f.store.spawn(Q, 'relaunch-receipt', '{}')
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toHaveLength(1)
+        await f.raw.batch('corrupt-receipt-relaunch-count', [
+          {
+            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+            args: [RELAUNCH_CAP + 1, spawned.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+          'mutation-verdict:behavior:claim-receipt-requires-relaunch-bound',
+        ).toEqual([])
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('returns a same-token receipt at the maximum claimed generation', async () => {
+        const spawned = await f.store.spawn(Q, 'max-generation-receipt', '{}')
+        await f.raw.batch('seed-max-receipt-generation', [
+          {
+            sql: `UPDATE runs SET claim_gen = ? WHERE run_id = ?`,
+            args: [MAX_COUNT - 1, spawned.runId],
+          },
+        ])
+        const [claimed] = await f.store.claim(Q, 'receipt-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        expect(
+          claimed?.claimGen,
+          'mutation-verdict:behavior:claim-receipt-allows-max-generation',
+        ).toBe(MAX_COUNT)
+
+        expect(
+          await f.store.claim(Q, 'receipt-token', { leaseSeconds: 60, limit: 1 }),
+        ).toMatchObject([{ runId: spawned.runId, claimGen: MAX_COUNT }])
+      })
+
+      for (const claimGen of [MAX_COUNT, MAX_COUNT + 1]) {
+        it(`leaves a due run unchanged when claim generation ${claimGen} cannot be incremented safely`, async () => {
+          const spawned = await f.store.spawn(Q, `bounded-generation-${claimGen}`, '{}')
+          await f.raw.batch('corrupt-claim-generation', [
+            {
+              sql: `UPDATE runs SET claim_gen = ? WHERE run_id = ?`,
+              args: [claimGen, spawned.runId],
+            },
+          ])
+          const before = await snapshot(f, spawned.taskId)
+
+          const observed = await f.store
+            .claim(Q, `bounded-claim-${claimGen}`, { leaseSeconds: 60, limit: 1 })
+            .then(
+              (value) => ({ kind: 'resolved' as const, value }),
+              (error: unknown) => ({ kind: 'rejected' as const, error }),
+            )
+
+          expect(
+            await snapshot(f, spawned.taskId),
+            'mutation-verdict:behavior:claim-rejects-generation-overflow-atomically',
+          ).toEqual(before)
+          if (observed.kind === 'resolved') expect(observed.value).toEqual([])
+        })
+      }
     })
 
     describe('activate', () => {
@@ -111,6 +520,92 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         if (!run) throw new Error('expected a claimable run')
         return run
       }
+
+      it('rejects invalid claim-generation inputs before reaching the executor', async () => {
+        let executorCalls = 0
+        const forbiddenExecutor: SqlExecutor = {
+          batch: async () => {
+            executorCalls += 1
+            throw new Error('invalid claim generation reached the SQL executor')
+          },
+        }
+        const guardedStore = f.storeOver(forbiddenExecutor)
+        const invalidClaimGenerations = [
+          { name: 'string', value: '1' as unknown as number },
+          { name: 'bigint', value: 1n as unknown as number },
+          { name: 'fractional', value: 1.5 },
+          { name: 'non-safe', value: Number.MAX_SAFE_INTEGER + 1 },
+          { name: 'zero', value: 0 },
+          { name: 'negative', value: -1 },
+          { name: 'above-protocol-bound', value: MAX_COUNT + 1 },
+        ]
+        const observed: { name: string; rejectedBeforeSql: boolean }[] = []
+
+        for (const { name, value } of invalidClaimGenerations) {
+          const error = await guardedStore.activate(Q, 'run', 'token', value).then(
+            () => null,
+            (reason: unknown) => reason,
+          )
+          observed.push({ name, rejectedBeforeSql: error instanceof RangeError })
+        }
+
+        await f.raw.batch('invalid-activation-generation:seed', [
+          {
+            sql: `INSERT INTO tasks
+                    (task_id, queue, task_name, params, retry_strategy, max_attempts,
+                     cancellation, state, cancel_at_ms, enqueue_at_ms, created_at_ms)
+                  VALUES ('invalid-activation-task', ?, 'job', '{}', '{"kind":"none"}', 3,
+                    '{"maxDelaySeconds":30}', 'running', 1030000, 1000000, 1000000)`,
+            args: [Q],
+          },
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, claimed_by, claim_gen,
+                     activated_gen, claim_expires_at_ms, lease_ms, created_at_ms)
+                  VALUES ('invalid-activation-run', ?, 'invalid-activation-task', 1, 'running',
+                    'invalid-activation-token', 1, 0, 1060000, 60000, 1000000)`,
+            args: [Q],
+          },
+        ])
+        const deadlineError = await f.store
+          .activate(Q, 'invalid-activation-run', 'invalid-activation-token', 0)
+          .then(
+            () => null,
+            (reason: unknown) => reason,
+          )
+        const [deadline] = await f.raw.batch(
+          'invalid-activation-generation:deadline',
+          [
+            {
+              sql: `SELECT cancel_at_ms FROM tasks WHERE task_id = 'invalid-activation-task'`,
+              args: [],
+            },
+          ],
+          'read',
+        )
+
+        expect(
+          {
+            invalidInputs: observed,
+            executorCalls,
+            deadline: {
+              rejectedBeforeSql: deadlineError instanceof RangeError,
+              cancelAtEpochMs: deadline?.rows[0]?.cancel_at_ms,
+            },
+          },
+          'mutation-verdict:behavior:activate-validates-claim-generation-input',
+        ).toEqual({
+          invalidInputs: invalidClaimGenerations.map(({ name }) => ({
+            name,
+            rejectedBeforeSql: true,
+          })),
+          executorCalls: 0,
+          deadline: {
+            rejectedBeforeSql: true,
+            cancelAtEpochMs: 1_030_000,
+          },
+        })
+      })
 
       it('passes exactly once per claim generation and returns the worker payload', async () => {
         await f.store.spawn(Q, 'job', '{"k":1}')
@@ -122,6 +617,66 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(activated?.paramsJson).toBe('{"k":1}')
         // The duplicate delivery of the SAME claim must die on the CAS.
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).toBeNull()
+      })
+
+      it('leaves a claim unactivated when its persisted retry strategy becomes invalid', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-before-activate', '{}', {
+          retryStrategy: { kind: 'fixed', baseSeconds: 1 },
+        })
+        const run = await claimOne('tick-corrupt-before-activate')
+        await f.raw.batch('corrupt-before-activate', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: [
+              JSON.stringify({
+                kind: 'fixed',
+                baseSeconds: MAX_DURATION_MS / 1000 + 1,
+              }),
+              spawned.taskId,
+            ],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          () => ({ kind: 'rejected' as const }),
+        )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:activate-payload-validation-atomic',
+        ).toEqual({
+          observed: { kind: 'resolved', value: null },
+          after: before,
+        })
+      })
+
+      it('leaves a claim unactivated when its persisted headers become invalid', async () => {
+        const spawned = await f.store.spawn(Q, 'corrupt-headers-before-activate', '{}', {
+          headers: { trace: 'valid' },
+        })
+        const run = await claimOne('tick-corrupt-headers-before-activate')
+        await f.raw.batch('corrupt-headers-before-activate', [
+          {
+            sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
+            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const observed = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          () => ({ kind: 'rejected' as const }),
+        )
+        const after = await snapshot(f, spawned.taskId)
+
+        expect(
+          { observed, after },
+          'mutation-verdict:behavior:activate-headers-admissible',
+        ).toEqual({
+          observed: { kind: 'resolved', value: null },
+          after: before,
+        })
       })
 
       // fenceTwin('Activate') — the per-claim generation CAS refuses the
@@ -173,6 +728,65 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { sql: `SELECT first_started_at_ms FROM tasks WHERE task_id = ?`, args: [run.taskId] },
         ])
         expect(Number(row?.rows[0]?.first_started_at_ms)).toBe(1_000_000)
+      })
+
+      it('leaves a claimed run unchanged when its stored lease is zero', async () => {
+        const spawned = await f.store.spawn(Q, 'zero-lease', '{}')
+        const run = await claimOne('tick-zero-lease')
+        await f.raw.batch('corrupt-zero-lease', [
+          {
+            sql: `UPDATE runs SET lease_ms = 0 WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        const observed = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        )
+
+        expect(
+          await snapshot(f, spawned.taskId),
+          'mutation-verdict:behavior:activate-rejects-zero-lease-atomically',
+        ).toEqual(before)
+        if (observed.kind === 'resolved') expect(observed.value).toBeNull()
+      })
+
+      it('does not activate a claim whose relaunch counter became invalid', async () => {
+        const spawned = await f.store.spawn(Q, 'invalid-relaunch-at-activation', '{}')
+        const run = await claimOne('tick-invalid-relaunch')
+        await f.raw.batch('corrupt-relaunch-before-activation', [
+          {
+            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+            args: [RELAUNCH_CAP + 1, run.runId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+          'mutation-verdict:behavior:activate-requires-relaunch-bound',
+        ).toBeNull()
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
+      })
+
+      it('does not activate a claim whose live run is not the next accounted ordinal', async () => {
+        const spawned = await f.store.spawn(Q, 'invalid-accounting-at-activation', '{}')
+        const run = await claimOne('tick-invalid-accounting')
+        await f.raw.batch('corrupt-accounting-before-activation', [
+          {
+            sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+            args: [run.taskId],
+          },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+
+        expect(
+          await f.store.activate(Q, run.runId, run.claimToken, run.claimGen),
+          'mutation-verdict:behavior:activate-requires-current-run-accounting',
+        ).toBeNull()
+        expect(await snapshot(f, spawned.taskId)).toEqual(before)
       })
     })
 
@@ -327,12 +941,418 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(after?.rows[0]?.attempts).toBe(0)
       })
 
+      it('quiesces terminal activated timeouts across normal and corrupt-relaunch discovery paths', async () => {
+        async function observeTerminalTimeout(corruptRelaunch: boolean, nowEpochMs: number) {
+          const label = corruptRelaunch ? 'corrupt-relaunch' : 'normal'
+          const spawned = await f.store.spawn(Q, `terminal-timeout-${label}-aggregate`, '{}')
+          const run = await claimOne(`tick-terminal-timeout-${label}-aggregate`)
+          const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          await f.raw.batch(`terminalize-timeout-${label}-aggregate`, [
+            {
+              sql: `UPDATE tasks
+                    SET state = 'failed', attempts = max_attempts,
+                        failure_reason = '{"name":"External"}'
+                    WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+              args: [run.maxAttempts, run.runId],
+            },
+          ])
+          const corruptionDisposition = corruptRelaunch
+            ? await executeStorageCorruption(f, {
+                table: 'runs',
+                runId: run.runId,
+                column: 'relaunch_count',
+                invalidRepresentation: 'fractional-real',
+              })
+            : null
+          await f.admin.setFakeNowEpochMs(nowEpochMs)
+
+          const swept =
+            corruptionDisposition === 'injected'
+              ? await attributeExpectedFailure(
+                  { kind: 'behavior', mutation: 'terminal-timeout-decode-ignores-relaunch' },
+                  (error) =>
+                    error instanceof RangeError &&
+                    error.message ===
+                      `sweep.relaunch_count must be an exact SQL integer in [0, ${RELAUNCH_CAP}], got number (not-an-exact-integer)`,
+                  () => f.store.sweep(Q, 10),
+                )
+              : await f.store.sweep(Q, 10)
+          const [task, storedRun] = await f.raw.batch(
+            `terminal-timeout-${label}-aggregate:assert`,
+            [
+              {
+                sql: `SELECT state, attempts, max_attempts, failure_reason
+                      FROM tasks WHERE task_id = ?`,
+                args: [spawned.taskId],
+              },
+              {
+                sql: `SELECT state, claimed_by, relaunch_count FROM runs WHERE run_id = ?`,
+                args: [run.runId],
+              },
+            ],
+            'read',
+          )
+
+          return {
+            corruptionDisposition,
+            maxAttempts: run.maxAttempts,
+            observation: {
+              activated: activated !== null,
+              swept,
+              task: task?.rows[0],
+              run: storedRun?.rows[0],
+            },
+          }
+        }
+
+        const normal = await observeTerminalTimeout(false, 1_100_000)
+        const corrupt = await observeTerminalTimeout(true, 1_200_000)
+
+        expect(
+          normal.observation,
+          'mutation-verdict:behavior:sweep-quiesces-terminal-timeout-owner',
+        ).toEqual({
+          activated: true,
+          swept: [],
+          task: {
+            state: 'failed',
+            attempts: normal.maxAttempts,
+            max_attempts: normal.maxAttempts,
+            failure_reason: '{"name":"External"}',
+          },
+          run: { state: 'failed', claimed_by: null, relaunch_count: 0 },
+        })
+
+        if (corrupt.corruptionDisposition === 'structurally-rejected') {
+          expect(corrupt.observation).toEqual({
+            activated: true,
+            swept: [],
+            task: {
+              state: 'failed',
+              attempts: corrupt.maxAttempts,
+              max_attempts: corrupt.maxAttempts,
+              failure_reason: '{"name":"External"}',
+            },
+            run: { state: 'failed', claimed_by: null, relaunch_count: 0 },
+          })
+        } else {
+          expect(corrupt.corruptionDisposition).toBe('injected')
+          expect(
+            corrupt.observation,
+            'mutation-verdict:behavior:sweep-terminal-timeout-ignores-unrelated-relaunch-corruption',
+          ).toEqual({
+            activated: true,
+            swept: [],
+            task: {
+              state: 'failed',
+              attempts: corrupt.maxAttempts,
+              max_attempts: corrupt.maxAttempts,
+              failure_reason: '{"name":"External"}',
+            },
+            run: { state: 'failed', claimed_by: null, relaunch_count: 0.5 },
+          })
+        }
+      })
+
+      it('quiesces a relaunch-cap run under a terminal owner without reviving its task', async () => {
+        const spawned = await f.store.spawn(Q, 'terminal-relaunch-cap-owner', '{}')
+        const run = await claimOne('tick-terminal-relaunch-cap-owner')
+        await f.raw.batch('terminalize-relaunch-cap-owner', [
+          {
+            sql: `UPDATE tasks
+                  SET state = 'failed', attempts = max_attempts,
+                      failure_reason = '{"name":"External"}'
+                  WHERE task_id = ?`,
+            args: [spawned.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ?, relaunch_count = ? WHERE run_id = ?`,
+            args: [run.maxAttempts, RELAUNCH_CAP, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        expect(
+          await f.store.sweep(Q, 10),
+          'mutation-verdict:behavior:sweep-quiesces-terminal-relaunch-cap-owner',
+        ).toEqual([{ kind: 'relaunch-cap-exhausted', runId: run.runId, taskId: spawned.taskId }])
+        const [task, runs] = await f.raw.batch(
+          'terminal-relaunch-cap-owner:assert',
+          [
+            {
+              sql: `SELECT state, attempts, max_attempts
+                    FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `SELECT state, claimed_by FROM runs WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(task?.rows[0]).toMatchObject({
+          state: 'failed',
+          attempts: run.maxAttempts,
+          max_attempts: run.maxAttempts,
+        })
+        expect(runs?.rows).toEqual([{ state: 'failed', claimed_by: null }])
+      })
+
+      it('rechecks a terminal relaunch-cap generation after the advisory scan', async () => {
+        const spawned = await f.store.spawn(Q, 'terminal-relaunch-cap-generation-race', '{}')
+        const run = await claimOne('tick-terminal-relaunch-cap-generation-race')
+        await f.raw.batch('terminalize-relaunch-cap-generation-race', [
+          {
+            sql: `UPDATE tasks
+                  SET state = 'failed', attempts = max_attempts,
+                      failure_reason = '{"name":"External"}'
+                  WHERE task_id = ?`,
+            args: [spawned.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ?, relaunch_count = ? WHERE run_id = ?`,
+            args: [run.maxAttempts, RELAUNCH_CAP, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        let afterCorruption: unknown
+        const interposed = interposeAfterBatch(f.raw, 'sweep:scan', async () => {
+          await f.raw.batch('corrupt-generation-after-terminal-cap-scan', [
+            {
+              sql: `UPDATE runs SET activated_gen = -1 WHERE run_id = ?`,
+              args: [run.runId],
+            },
+          ])
+          afterCorruption = await snapshot(f, spawned.taskId)
+        })
+
+        const swept = await f.storeOver(interposed.executor).sweep(Q, 10)
+        expect(interposed.fired()).toBe(true)
+        expect(
+          swept,
+          'mutation-verdict:behavior:sweep-terminal-cap-rechecks-generation-lower-bound',
+        ).toEqual([])
+        expect(afterCorruption).toBeDefined()
+        expect(await snapshot(f, spawned.taskId)).toEqual(afterCorruption)
+      })
+
+      it('derives the timeout successor attempt from the fenced run, not the advisory scan', async () => {
+        const spawned = await f.store.spawn(Q, 'job', '{}')
+        const run = await claimOne('tick-1')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        const staleScan: SqlExecutor = {
+          batch: async (label, statements, mode) => {
+            const results = await f.raw.batch(label, statements, mode)
+            if (label !== 'sweep:scan') return results
+            return results.map((result, index) =>
+              index === 1
+                ? {
+                    ...result,
+                    rows: result.rows.map((row) =>
+                      row.run_id === run.runId ? { ...row, attempt: 0 } : row,
+                    ),
+                  }
+                : result,
+            )
+          },
+        }
+
+        const observed = await f
+          .storeOver(staleScan)
+          .sweep(Q, 10)
+          .then(
+            (value) => ({ kind: 'resolved' as const, value }),
+            (error: unknown) => ({ kind: 'rejected' as const, error }),
+          )
+        expect(observed.kind, 'regression:sweep-successor-attempt-from-fenced-row').toBe('resolved')
+        if (observed.kind !== 'resolved') return
+        expect(observed.value).toMatchObject([
+          {
+            kind: 'claim-timeout',
+            runId: run.runId,
+            taskId: spawned.taskId,
+          },
+        ])
+
+        const [runs, task] = await f.raw.batch(
+          't',
+          [
+            {
+              sql: `SELECT run_id, attempt, state FROM runs
+                    WHERE task_id = ? ORDER BY attempt, run_id`,
+              args: [spawned.taskId],
+            },
+            {
+              sql: `SELECT state, attempts, infra_retries FROM tasks WHERE task_id = ?`,
+              args: [spawned.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(runs?.rows).toMatchObject([
+          { run_id: run.runId, attempt: 1, state: 'failed' },
+          { attempt: 2, state: 'pending' },
+        ])
+        expect(task?.rows[0]).toMatchObject({
+          state: 'pending',
+          attempts: 0,
+          infra_retries: 1,
+        })
+      })
+
+      async function sweepAfterAccountingCorruption(activated: boolean) {
+        const classification = activated ? 'claim-timeout' : 'lost-launch'
+        const spawned = await f.store.spawn(Q, `${classification}-cas-recheck`, '{}')
+        const run = await claimOne(`tick-${classification}-cas-recheck`)
+        if (activated) {
+          expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        }
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        let afterCorruption: unknown
+        const interposed = interposeAfterBatch(f.raw, 'sweep:scan', async () => {
+          await f.raw.batch('corrupt-accounting-after-sweep-scan', [
+            {
+              sql: activated
+                ? `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`
+                : `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+              args: activated ? [INFRA_RETRY_CAP, run.taskId] : [run.taskId],
+            },
+          ])
+          afterCorruption = await snapshot(f, spawned.taskId)
+        })
+        const swept = await f.storeOver(interposed.executor).sweep(Q, 1)
+        return {
+          swept,
+          interposed: interposed.fired(),
+          afterCorruption,
+          after: await snapshot(f, spawned.taskId),
+        }
+      }
+
+      it('rechecks lost-launch accounting after the advisory sweep scan', async () => {
+        const observed = await sweepAfterAccountingCorruption(false)
+        expect(
+          observed.swept,
+          'mutation-verdict:behavior:sweep-lost-launch-rechecks-accounting',
+        ).toEqual([])
+        expect(observed.interposed).toBe(true)
+        expect(observed.afterCorruption).toBeDefined()
+        expect(observed.after).toEqual(observed.afterCorruption)
+      })
+
+      it('rechecks claim-timeout accounting after the advisory sweep scan', async () => {
+        const observed = await sweepAfterAccountingCorruption(true)
+        expect(
+          observed.swept,
+          'mutation-verdict:behavior:sweep-claim-timeout-rechecks-accounting',
+        ).toEqual([])
+        expect(observed.interposed).toBe(true)
+        expect(observed.afterCorruption).toBeDefined()
+        expect(observed.after).toEqual(observed.afterCorruption)
+      })
+
+      it('rechecks a corrupt stored attempt after discovery without partially sweeping the expired claim', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const run = await claimOne('tick-1')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        let injected = false
+        let afterCorruption: unknown
+        const interposed = interposeAfterBatch(f.raw, 'sweep:scan', async () => {
+          const disposition = await executeStorageCorruption(f, {
+            table: 'runs',
+            runId: run.runId,
+            column: 'attempt',
+            invalidRepresentation: 'non-integer',
+          })
+          injected = disposition === 'injected'
+          if (injected) afterCorruption = await snapshot(f, run.taskId)
+        })
+        const swept = await f.storeOver(interposed.executor).sweep(Q, 10)
+
+        expect(interposed.fired()).toBe(true)
+        if (!injected) return
+        expect(afterCorruption).toBeDefined()
+        expect(
+          { swept, after: await snapshot(f, run.taskId) },
+          'mutation-verdict:behavior:sweep-rejects-noninteger-attempt',
+        ).toEqual({ swept: [], after: afterCorruption })
+      })
+
+      it('leaves an expired claim unchanged when its ordinal exceeds the protocol bound', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
+        const spawned = await f.store.spawn(Q, 'overflowed-run-ordinal', '{}')
+        const run = await claimOne('tick-overflowed-run-ordinal')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.raw.batch('corrupt-run-ordinal', [
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [runOrdinalMaximum + 1, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        const before = await snapshot(f, spawned.taskId)
+
+        const observed = await f.store.sweep(Q, 10).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        )
+
+        expect(
+          await snapshot(f, spawned.taskId),
+          'regression:sweep-rejects-attempt-overflow-atomically',
+        ).toEqual(before)
+        if (observed.kind === 'resolved') expect(observed.value).toEqual([])
+      })
+
+      it('accepts the maximum ordinal at the terminal infra-cap branch', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
+        const maxUserAttempts = runOrdinalMaximum - INFRA_RETRY_CAP
+        await f.store.spawn(Q, 'max-run-ordinal', '{}', { maxAttempts: maxUserAttempts })
+        const run = await claimOne('tick-max-run-ordinal')
+        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        await f.raw.batch('seed-max-run-ordinal', [
+          {
+            sql: `UPDATE tasks
+                  SET attempts = ?, max_attempts = ?, infra_retries = ?
+                  WHERE task_id = ?`,
+            args: [maxUserAttempts - 1, maxUserAttempts, INFRA_RETRY_CAP, run.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [runOrdinalMaximum, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+
+        expect(
+          await f.store.sweep(Q, 10),
+          'sweep accepts the canonical run-ordinal maximum',
+        ).toEqual([{ kind: 'infra-cap-exhausted', runId: run.runId, taskId: run.taskId }])
+      })
+
       it('fails the task terminally at the infra-retry cap, no successor', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('tick-1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         await f.raw.batch('t', [
-          { sql: `UPDATE tasks SET infra_retries = 20 WHERE task_id = ?`, args: [run.taskId] },
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP, run.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, run.runId],
+          },
         ])
         await f.admin.setFakeNowEpochMs(1_100_000)
         const swept = await f.store.sweep(Q, 10)
@@ -393,6 +1413,42 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(swept.map((s) => s.kind)).toEqual(['cancelled'])
         // The cancelled worker's writes are fenced out from here on.
         expect((await f.store.heartbeat(Q, run.runId, run.claimToken, 60)).held).toBe(false)
+      })
+
+      it('refuses both suspension paths after the task cancellation deadline', async () => {
+        const spawned = await f.store.spawn(Q, 'deadline', '{}', {
+          cancellation: { maxDelaySeconds: 10 },
+        })
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 600, limit: 1 })
+        if (!run) throw new Error('expected a claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+            args: [1_000_001, spawned.taskId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_005_000)
+
+        await expect(
+          f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1 }),
+        ).rejects.toThrow(LeaseLostError)
+        await expect(
+          f.store.suspendRun(
+            Q,
+            run.runId,
+            run.claimToken,
+            { inSeconds: 1 },
+            { key: '$sleep', stateJson: '{}' },
+          ),
+        ).rejects.toThrow(LeaseLostError)
+
+        const [after] = await f.raw.batch(
+          't',
+          [{ sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] }],
+          'read',
+        )
+        expect(after?.rows[0]?.state).toBe('running')
       })
 
       it('cancelTask cancels explicitly regardless of deadlines', async () => {
@@ -477,7 +1533,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(rows?.rows[1]).toMatchObject({
           state: 'sleeping',
           attempt: 2,
-          available_at_ms: 1_030_000,
           wake_event: 'e1',
         })
         const [task] = await f.raw.batch('t', [
@@ -485,6 +1540,91 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         expect(task?.rows[0]).toMatchObject({ attempts: 1, state: 'sleeping' })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('leaves a claimed run unchanged when infrastructure retries exceed the protocol cap', async () => {
+        const run = await activatedRun('w-over-infra-cap')
+        await f.raw.batch('corrupt-infra-retry-cap', [
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, run.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 2, run.runId],
+          },
+        ])
+        const before = await snapshot(f, run.taskId)
+
+        const observed = await f.store
+          .fail(Q, run.runId, run.claimToken, '{"name":"CorruptAccounting"}', {
+            delaySeconds: 0,
+          })
+          .then(
+            () => ({ kind: 'resolved' as const }),
+            (error: unknown) => ({ kind: 'rejected' as const, error }),
+          )
+
+        expect(
+          await snapshot(f, run.taskId),
+          'regression:fail-rejects-infra-cap-overflow-atomically',
+        ).toEqual(before)
+        expect(observed.kind).toBe('rejected')
+      })
+
+      it('quiesces a claimed run under a terminal final-attempt owner', async () => {
+        const run = await activatedRun('w-terminal-owner')
+        await f.raw.batch('terminalize-fail-owner', [
+          {
+            sql: `UPDATE tasks
+                  SET state = 'failed', attempts = max_attempts,
+                      failure_reason = '{"name":"External"}'
+                  WHERE task_id = ?`,
+            args: [run.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [run.maxAttempts, run.runId],
+          },
+        ])
+
+        const observed = await f.store
+          .fail(Q, run.runId, run.claimToken, '{"name":"WorkerExit"}', {
+            delaySeconds: 0,
+          })
+          .then(
+            () => ({ kind: 'resolved' as const }),
+            (error: unknown) => ({ kind: 'rejected' as const, error }),
+          )
+        expect(observed.kind, 'mutation-verdict:behavior:fail-quiesces-terminal-owner').toBe(
+          'resolved',
+        )
+
+        const [task, runs] = await f.raw.batch(
+          'terminal-fail-owner:assert',
+          [
+            {
+              sql: `SELECT state, attempts, max_attempts, failure_reason
+                    FROM tasks WHERE task_id = ?`,
+              args: [run.taskId],
+            },
+            {
+              sql: `SELECT state, claimed_by, failure_reason
+                    FROM runs WHERE task_id = ? ORDER BY attempt`,
+              args: [run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(task?.rows[0]).toMatchObject({
+          state: 'failed',
+          attempts: run.maxAttempts,
+          max_attempts: run.maxAttempts,
+          failure_reason: '{"name":"External"}',
+        })
+        expect(runs?.rows).toEqual([
+          { state: 'failed', claimed_by: null, failure_reason: '{"name":"WorkerExit"}' },
+        ])
       })
 
       it('fail without retry is terminal and exposes the failure', async () => {
@@ -561,9 +1701,405 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           LeaseLostError,
         )
       })
+
+      it('suspendRun rejects a non-integer stored attempt atomically', async () => {
+        const run = await activatedRun()
+        const disposition = await executeStorageCorruption(f, {
+          table: 'runs',
+          runId: run.runId,
+          column: 'attempt',
+          invalidRepresentation: 'non-integer',
+        })
+        if (disposition === 'injected') {
+          const observed = await f.store
+            .suspendRun(
+              Q,
+              run.runId,
+              run.claimToken,
+              { inSeconds: 1 },
+              { key: 'poison-attempt', stateJson: '{}' },
+            )
+            .then(
+              () => ({ kind: 'resolved' as const }),
+              (error: unknown) => ({ kind: 'rejected' as const, error }),
+            )
+          expect(
+            observed.kind,
+            'mutation-verdict:behavior:suspend-rejects-noninteger-attempt',
+          ).toBe('rejected')
+          if (observed.kind === 'rejected') {
+            expect(observed.error).toBeInstanceOf(LeaseLostError)
+          }
+        }
+
+        const [storedRun, checkpoints] = await f.raw.batch(
+          'suspend-poison-attempt:assert',
+          [
+            { sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] },
+            {
+              sql: `SELECT COUNT(*) AS n FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = 'poison-attempt'`,
+              args: [run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(storedRun?.rows[0]?.state).toBe('running')
+        expect(Number(checkpoints?.rows[0]?.n)).toBe(0)
+      })
     })
 
     describe('checkpoints', () => {
+      async function checkpointWithNewerOwner(checkpointName: string, corruptOwner: boolean) {
+        await f.store.spawn(Q, `corrupt-${checkpointName}`, '{}')
+        const [run] = await f.store.claim(Q, `worker-${checkpointName}`, {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.raw.batch('checkpoint-corrupt-owner:seed', [
+          {
+            sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
+            args: [run.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = 2 WHERE run_id = ?`,
+            args: [run.runId],
+          },
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES (?, ?, ?, 3, 'failed', 1000000)`,
+            args: [`newer-owner-${checkpointName}`, Q, run.taskId],
+          },
+          {
+            sql: `INSERT INTO checkpoints
+                    (task_id, checkpoint_name, queue, state,
+                     owner_run_id, owner_attempt, updated_at_ms)
+                  VALUES (?, ?, ?, '{"newer":true}', ?, 3, 1000000)`,
+            args: [run.taskId, checkpointName, Q, `newer-owner-${checkpointName}`],
+          },
+        ])
+        if (corruptOwner) {
+          const disposition = await executeStorageCorruption(f, {
+            table: 'checkpoints',
+            taskId: run.taskId,
+            checkpointName,
+            column: 'owner_attempt',
+            invalidRepresentation: 'fractional-real',
+          })
+          if (disposition === 'structurally-rejected') return null
+        }
+        const [checkpoint] = await f.raw.batch(
+          'checkpoint-corrupt-owner:before',
+          [
+            {
+              sql: `SELECT checkpoint_name, state, owner_run_id, owner_attempt,
+                           updated_at_ms
+                    FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = ?`,
+              args: [run.taskId, checkpointName],
+            },
+          ],
+          'read',
+        )
+        return {
+          run,
+          before: await snapshot(f, run.taskId),
+          checkpointBefore: checkpoint?.rows,
+        }
+      }
+
+      type CheckpointConflictOperationId = 'checkpoint-write' | 'suspend'
+      type CheckpointConflictVerdict = (action: () => Promise<unknown>) => Promise<void>
+      type InvalidCheckpointConflictCase = Readonly<{
+        id: string
+        owner: Readonly<{
+          task: 'current' | 'foreign'
+          queue: string
+          attempt: number
+          id?: 'decoy'
+        }> | null
+        checkpointQueue: string
+        ownerAttempt: number
+        fractionalStorage?: true
+        requireFailure: Readonly<Record<CheckpointConflictOperationId, CheckpointConflictVerdict>>
+      }>
+
+      const aboveCheckpointOwnerAttempt = PERSISTED_INTEGER_BOUNDS.checkpoints.owner_attempt.max + 1
+      const invalidCheckpointConflictCases: readonly InvalidCheckpointConflictCase[] = [
+        {
+          id: 'missing-owner',
+          owner: null,
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-exists',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-exists',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'owner-id-mismatch',
+          owner: { task: 'current', queue: Q, attempt: 3, id: 'decoy' },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-owner-id',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-owner-id',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'owner-task-mismatch',
+          owner: { task: 'foreign', queue: Q, attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-owner-task',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-owner-task',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'owner-queue-mismatch',
+          owner: { task: 'current', queue: 'q-owner-mismatch', attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-owner-queue',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-owner-queue',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'owner-attempt-mismatch',
+          owner: { task: 'current', queue: Q, attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 4,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-owner-attempt',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-owner-attempt',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'owner-attempt-out-of-range',
+          owner: {
+            task: 'current',
+            queue: Q,
+            attempt: aboveCheckpointOwnerAttempt,
+          },
+          checkpointQueue: Q,
+          ownerAttempt: aboveCheckpointOwnerAttempt,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-owner-attempt-upper',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-owner-attempt-upper',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'owner-attempt-below-range',
+          owner: { task: 'current', queue: Q, attempt: 0 },
+          checkpointQueue: Q,
+          ownerAttempt: 0,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-owner-attempt-lower',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-owner-attempt-lower',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'owner-attempt-fractional-storage',
+          owner: { task: 'current', queue: Q, attempt: 3 },
+          checkpointQueue: Q,
+          ownerAttempt: 3,
+          fractionalStorage: true,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-owner-attempt-storage',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-owner-attempt-storage',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+        {
+          id: 'conflict-queue-mismatch',
+          owner: { task: 'current', queue: 'q-conflict-mismatch', attempt: 3 },
+          checkpointQueue: 'q-conflict-mismatch',
+          ownerAttempt: 3,
+          requireFailure: {
+            'checkpoint-write': (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'checkpoint-write-validates-existing-lww-owner-conflict-queue',
+                },
+                /setCheckpoint/,
+                action,
+              ),
+            suspend: (action) =>
+              requireExpectedFailure(
+                {
+                  kind: 'behavior',
+                  mutation: 'suspend-validates-existing-lww-owner-conflict-queue',
+                },
+                /suspendRun/,
+                action,
+              ),
+          },
+        },
+      ]
+
+      const checkpointConflictOperations: readonly Readonly<{
+        id: CheckpointConflictOperationId
+        execute: (run: ClaimedRun, checkpointName: string) => Promise<unknown>
+      }>[] = [
+        {
+          id: 'checkpoint-write',
+          execute: (run: ClaimedRun, checkpointName: string) =>
+            f.store.setCheckpoint(
+              Q,
+              run.taskId,
+              run.runId,
+              run.claimToken,
+              checkpointName,
+              '{"incoming":true}',
+              90,
+            ),
+        },
+        {
+          id: 'suspend',
+          execute: (run: ClaimedRun, checkpointName: string) =>
+            f.store.suspendRun(
+              Q,
+              run.runId,
+              run.claimToken,
+              { inSeconds: 10 },
+              { key: checkpointName, stateJson: '{"incoming":true}' },
+            ),
+        },
+      ]
+
       it('roundtrips, extends the lease, and sorts by name', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
@@ -606,14 +2142,34 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // Simulate a newer attempt having already committed this name.
         await f.raw.batch('t', [
           {
-            sql: `UPDATE checkpoints SET owner_attempt = 5, state = '{"v":5}'
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('newer-checkpoint-owner', ?, ?, 5, 'failed', 1000000)`,
+            args: [Q, run.taskId],
+          },
+          {
+            sql: `UPDATE checkpoints
+                  SET owner_run_id = 'newer-checkpoint-owner',
+                      owner_attempt = 5,
+                      state = '{"v":5}'
                   WHERE task_id = ? AND checkpoint_name = 's'`,
             args: [run.taskId],
           },
         ])
+        await f.admin.setFakeNowEpochMs(1_010_000)
         await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{"v":1}', 60)
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, 5)
         expect(checkpoints[0]?.stateJson).toBe('{"v":5}')
+        const [lease] = await f.raw.batch('t', [
+          {
+            sql: `SELECT heartbeat_at_ms, claim_expires_at_ms FROM runs WHERE run_id = ?`,
+            args: [run.runId],
+          },
+        ])
+        expect(lease?.rows[0]).toMatchObject({
+          heartbeat_at_ms: 1_010_000,
+          claim_expires_at_ms: 1_070_000,
+        })
       })
 
       it('a stale token writes nothing and throws LeaseLostError', async () => {
@@ -627,6 +2183,326 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.getCheckpoints(Q, run.taskId, 9)).toEqual([])
       })
 
+      it('rejects a fractional stored owner attempt before extending the lease', async () => {
+        await f.store.spawn(Q, 'fractional-checkpoint-owner', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const disposition = await executeStorageCorruption(f, {
+          table: 'runs',
+          runId: run.runId,
+          column: 'attempt',
+          invalidRepresentation: 'fractional-real',
+        })
+        if (disposition === 'structurally-rejected') return
+        const before = await snapshot(f, run.taskId)
+
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'checkpoint-write-rejects-fractional-owner-attempt' },
+          /setCheckpoint/,
+          () =>
+            f.store.setCheckpoint(
+              Q,
+              run.taskId,
+              run.runId,
+              run.claimToken,
+              'fractional-owner',
+              '{}',
+              60,
+            ),
+        )
+
+        expect(await snapshot(f, run.taskId)).toEqual(before)
+        expect(await f.store.getCheckpoints(Q, run.taskId, run.attempt)).toEqual([])
+      })
+
+      it('rejects an out-of-range stored owner attempt before extending the lease', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
+        await f.store.spawn(Q, 'overflowed-checkpoint-owner', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.raw.batch('corrupt-checkpoint-owner-bound', [
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [runOrdinalMaximum + 1, run.runId],
+          },
+        ])
+        const before = await snapshot(f, run.taskId)
+
+        await requireExpectedFailure(
+          { kind: 'behavior', mutation: 'checkpoint-write-rejects-owner-attempt-overflow' },
+          /setCheckpoint/,
+          () =>
+            f.store.setCheckpoint(
+              Q,
+              run.taskId,
+              run.runId,
+              run.claimToken,
+              'overflowed-owner',
+              '{}',
+              60,
+            ),
+        )
+
+        expect(await snapshot(f, run.taskId)).toEqual(before)
+        const [checkpoints] = await f.raw.batch(
+          'checkpoint-owner-bound:assert',
+          [
+            {
+              sql: `SELECT COUNT(*) AS n FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = 'overflowed-owner'`,
+              args: [run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(Number(checkpoints?.rows[0]?.n)).toBe(0)
+      })
+
+      it('refuses a corrupt existing LWW owner before extending the lease', async () => {
+        const seeded = await checkpointWithNewerOwner('corrupt-lww-set', true)
+        if (!seeded) return
+
+        await expect(
+          f.store.setCheckpoint(
+            Q,
+            seeded.run.taskId,
+            seeded.run.runId,
+            seeded.run.claimToken,
+            'corrupt-lww-set',
+            '{"stale":true}',
+            90,
+          ),
+        ).rejects.toThrow(/setCheckpoint/)
+
+        expect(await snapshot(f, seeded.run.taskId)).toEqual(seeded.before)
+        const [checkpoint] = await f.raw.batch(
+          'checkpoint-corrupt-owner:set-assert',
+          [
+            {
+              sql: `SELECT checkpoint_name, state, owner_run_id, owner_attempt,
+                           updated_at_ms
+                    FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = 'corrupt-lww-set'`,
+              args: [seeded.run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(checkpoint?.rows).toEqual(seeded.checkpointBefore)
+      })
+
+      it('refuses a corrupt existing LWW owner before suspending with a marker', async () => {
+        const seeded = await checkpointWithNewerOwner('corrupt-lww-suspend', true)
+        if (!seeded) return
+
+        await expect(
+          f.store.suspendRun(
+            Q,
+            seeded.run.runId,
+            seeded.run.claimToken,
+            { inSeconds: 10 },
+            { key: 'corrupt-lww-suspend', stateJson: '{"stale":true}' },
+          ),
+        ).rejects.toThrow(/suspendRun/)
+
+        expect(await snapshot(f, seeded.run.taskId)).toEqual(seeded.before)
+        const [checkpoint] = await f.raw.batch(
+          'checkpoint-corrupt-owner:suspend-assert',
+          [
+            {
+              sql: `SELECT checkpoint_name, state, owner_run_id, owner_attempt,
+                           updated_at_ms
+                    FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = 'corrupt-lww-suspend'`,
+              args: [seeded.run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(checkpoint?.rows).toEqual(seeded.checkpointBefore)
+      })
+
+      for (const relation of invalidCheckpointConflictCases) {
+        for (const operation of checkpointConflictOperations) {
+          it(`atomically refuses ${operation.id}/${relation.id} checkpoint ownership`, async () => {
+            await f.store.spawn(Q, `invalid-${relation.id}`, '{}')
+            const [run] = await f.store.claim(Q, `worker-${relation.id}`, {
+              leaseSeconds: 60,
+              limit: 1,
+            })
+            if (!run) throw new Error('expected claim')
+            await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+
+            const checkpointName = `invalid-${relation.id}`
+            const ownerRunId = `owner-${relation.id}`
+            if (relation.owner) {
+              await f.raw.batch('checkpoint-invalid-owner:seed-run', [
+                {
+                  sql: `INSERT INTO runs
+                        (run_id, queue, task_id, attempt, state, created_at_ms)
+                      VALUES (?, ?, ?, ?, 'failed', 1000000)`,
+                  args: [
+                    relation.owner.id === 'decoy' ? `decoy-${relation.id}` : ownerRunId,
+                    relation.owner.queue,
+                    relation.owner.task === 'current' ? run.taskId : `foreign-task-${relation.id}`,
+                    relation.owner.attempt,
+                  ],
+                },
+              ])
+            }
+            await f.raw.batch('checkpoint-invalid-owner:seed-checkpoint', [
+              {
+                sql: `INSERT INTO checkpoints
+                      (task_id, checkpoint_name, queue, state,
+                       owner_run_id, owner_attempt, updated_at_ms)
+                    VALUES (?, ?, ?, '{"existing":true}', ?, ?, 1000000)`,
+                args: [
+                  run.taskId,
+                  checkpointName,
+                  relation.checkpointQueue,
+                  ownerRunId,
+                  relation.ownerAttempt,
+                ],
+              },
+            ])
+            if (relation.fractionalStorage) {
+              const runDisposition = await executeStorageCorruption(f, {
+                table: 'runs',
+                runId: ownerRunId,
+                column: 'attempt',
+                invalidRepresentation: 'fractional-real',
+              })
+              if (runDisposition === 'structurally-rejected') return
+              const checkpointDisposition = await executeStorageCorruption(f, {
+                table: 'checkpoints',
+                taskId: run.taskId,
+                checkpointName,
+                column: 'owner_attempt',
+                invalidRepresentation: 'fractional-real',
+              })
+              if (checkpointDisposition === 'structurally-rejected') return
+            }
+
+            const before = await snapshot(f, run.taskId)
+            const readCheckpoint = async () =>
+              (
+                await f.raw.batch(
+                  'checkpoint-invalid-owner:read',
+                  [
+                    {
+                      sql: `SELECT checkpoint_name, queue, state, owner_run_id,
+                                 owner_attempt, updated_at_ms
+                          FROM checkpoints
+                          WHERE task_id = ? AND checkpoint_name = ?`,
+                      args: [run.taskId, checkpointName],
+                    },
+                  ],
+                  'read',
+                )
+              )[0]?.rows
+            const checkpointBefore = await readCheckpoint()
+
+            await relation.requireFailure[operation.id](() =>
+              operation.execute(run, checkpointName),
+            )
+            expect(await snapshot(f, run.taskId), `${operation.id}/${relation.id}: run`).toEqual(
+              before,
+            )
+            expect(await readCheckpoint(), `${operation.id}/${relation.id}: checkpoint`).toEqual(
+              checkpointBefore,
+            )
+          })
+        }
+      }
+
+      it('suspends under a valid higher LWW owner without replacing its checkpoint', async () => {
+        const seeded = await checkpointWithNewerOwner('valid-lww-suspend', false)
+        if (!seeded) throw new Error('valid checkpoint owner was unexpectedly rejected')
+
+        await attributeExpectedFailure(
+          { kind: 'behavior', mutation: 'suspend-preserves-valid-higher-lww' },
+          /suspendRun/,
+          () =>
+            f.store.suspendRun(
+              Q,
+              seeded.run.runId,
+              seeded.run.claimToken,
+              { inSeconds: 10 },
+              { key: 'valid-lww-suspend', stateJson: '{"stale":true}' },
+            ),
+        )
+
+        const [run, checkpoint] = await f.raw.batch(
+          'checkpoint-valid-owner:suspend-assert',
+          [
+            {
+              sql: `SELECT state FROM runs WHERE run_id = ?`,
+              args: [seeded.run.runId],
+            },
+            {
+              sql: `SELECT checkpoint_name, state, owner_run_id, owner_attempt, updated_at_ms
+                    FROM checkpoints
+                    WHERE task_id = ? AND checkpoint_name = 'valid-lww-suspend'`,
+              args: [seeded.run.taskId],
+            },
+          ],
+          'read',
+        )
+        expect(
+          run?.rows[0]?.state,
+          'mutation-verdict:behavior:suspend-preserves-valid-higher-lww',
+        ).toBe('sleeping')
+        expect(checkpoint?.rows).toEqual(seeded.checkpointBefore)
+      })
+
+      it('validates checkpoint visibility through the run-ordinal input domain', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
+        let executorCalls = 0
+        const forbiddenExecutor: SqlExecutor = {
+          batch: async () => {
+            executorCalls += 1
+            throw new Error('invalid run ordinal reached the SQL executor')
+          },
+        }
+        const guardedStore = f.storeOver(forbiddenExecutor)
+
+        const invalidAttempts = [
+          { name: 'zero', value: 0 },
+          { name: 'fractional', value: 1.5 },
+          { name: 'above-bound', value: runOrdinalMaximum + 1 },
+          { name: 'nan', value: Number.NaN },
+          { name: 'infinity', value: Number.POSITIVE_INFINITY },
+          { name: 'bigint', value: 1n as unknown as number },
+        ]
+        const observed: { name: string; rejectedBeforeSql: boolean }[] = []
+        for (const { name, value } of invalidAttempts) {
+          const error = await guardedStore.getCheckpoints(Q, 'missing-task', value).then(
+            () => null,
+            (reason: unknown) => reason,
+          )
+          observed.push({
+            name,
+            rejectedBeforeSql: error instanceof RangeError && /runs\.attempt/.test(error.message),
+          })
+        }
+
+        expect(
+          { invalidInputs: observed, executorCalls },
+          'mutation-verdict:behavior:checkpoint-read-validates-run-attempt-input',
+        ).toEqual({
+          invalidInputs: invalidAttempts.map(({ name }) => ({
+            name,
+            rejectedBeforeSql: true,
+          })),
+          executorCalls: 0,
+        })
+
+        expect(await f.store.getCheckpoints(Q, 'missing-task', 1)).toEqual([])
+        expect(await f.store.getCheckpoints(Q, 'missing-task', runOrdinalMaximum)).toEqual([])
+      })
+
       it('visibility filters by owner attempt', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
@@ -635,12 +2511,67 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
         await f.raw.batch('t', [
           {
-            sql: `UPDATE checkpoints SET owner_attempt = 3 WHERE task_id = ?`,
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('visible-checkpoint-owner', ?, ?, 3, 'failed', 1000000)`,
+            args: [Q, run.taskId],
+          },
+          {
+            sql: `UPDATE checkpoints
+                  SET owner_run_id = 'visible-checkpoint-owner', owner_attempt = 3
+                  WHERE task_id = ?`,
             args: [run.taskId],
           },
         ])
         expect(await f.store.getCheckpoints(Q, run.taskId, 2)).toEqual([])
         expect(await f.store.getCheckpoints(Q, run.taskId, 3)).toHaveLength(1)
+      })
+
+      it('does not surface a checkpoint whose owner ordinal is forged', async () => {
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await f.raw.batch('forge-checkpoint-owner-attempt', [
+          {
+            sql: `UPDATE checkpoints SET owner_attempt = owner_attempt + 1
+                  WHERE task_id = ? AND checkpoint_name = 's'`,
+            args: [run.taskId],
+          },
+        ])
+
+        expect(
+          await f.store.getCheckpoints(Q, run.taskId, run.attempt + 1),
+          'mutation-verdict:behavior:checkpoint-read-validates-owner-attempt',
+        ).toEqual([])
+      })
+
+      it('accepts the maximum legal run ordinal in checkpoint ownership', async () => {
+        const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
+        await f.store.spawn(Q, 'job', '{}')
+        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        if (!run) throw new Error('expected claim')
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await f.raw.batch('t', [
+          {
+            sql: `INSERT INTO runs
+                    (run_id, queue, task_id, attempt, state, created_at_ms)
+                  VALUES ('max-checkpoint-owner', ?, ?, ?, 'failed', 1000000)`,
+            args: [Q, run.taskId, runOrdinalMaximum],
+          },
+          {
+            sql: `UPDATE checkpoints
+                  SET owner_run_id = 'max-checkpoint-owner', owner_attempt = ?
+                  WHERE task_id = ? AND checkpoint_name = 's'`,
+            args: [runOrdinalMaximum, run.taskId],
+          },
+        ])
+
+        expect(await f.store.getCheckpoints(Q, run.taskId, runOrdinalMaximum)).toMatchObject([
+          { checkpointName: 's', ownerAttempt: runOrdinalMaximum },
+        ])
       })
     })
 
@@ -694,9 +2625,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(row?.rows[0]?.state).toBe('running') // still ours, not parked
       })
 
-      // fenceTwin('EmitEvent') — the duplicate emit's insert loses and the
-      // stored payload stays the first writer's.
-      it('first write wins: a second emit changes nothing for late awaiters', async () => {
+      // fenceTwin('EmitEvent') — the later emit may establish a delivery
+      // fence, but the stored payload stays the first writer's.
+      it('first write wins: a later emit cannot replace the payload', async () => {
         await f.store.emitEvent(Q, 'once', '{"v":"first"}')
         await f.store.emitEvent(Q, 'once', '{"v":"second"}')
         await f.store.spawn(Q, 'late', '{}')
@@ -807,7 +2738,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           await world.run()
           // Whoever won, the run woke EXACTLY ONCE with a consistent wake:
           // payload delivery or timeout — and the wait row is settled.
-          const [rows] = await fx.raw.batch('t', [
+          const [rows, waits] = await fx.raw.batch('t', [
             {
               sql: `SELECT wake_event, event_payload, state FROM runs WHERE run_id = ?`,
               args: [run.runId],
@@ -815,6 +2746,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             { sql: `SELECT COUNT(*) AS n FROM waits WHERE status = 'waiting'`, args: [] },
           ])
           expect(rows?.rows[0]?.wake_event, `seed ${seed}`).toBe('late')
+          expect(Number(waits?.rows[0]?.n), `seed ${seed}: wait settled exactly once`).toBe(0)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
           fx.close()
         }
@@ -1206,5 +3138,345 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }
       })
     })
+  })
+}
+
+const WAKE_EVENT = 'go'
+const WAKE_STEP = '$await:go'
+const WAKE_NOW = 1_000_000
+const WAKE_FIELDS = ['queue', 'event_name', 'status', 'step_name', 'timeout_at_ms'] as const
+type WakeField = (typeof WAKE_FIELDS)[number]
+
+interface WakeRow {
+  queue: string
+  event_name: string
+  status: string
+  step_name: string
+  timeout_at_ms: number | null
+}
+
+interface WakeDeadline {
+  label: string
+  healthy: number | null
+  corrupt: number | null
+}
+
+interface WakePark {
+  state: string
+  wake_event: string
+  wake_step: string | null
+  available_at_ms: number | null
+}
+
+interface WakeOwner {
+  label: string
+  state: string
+  live: boolean
+}
+
+export interface WakeWitnessCase {
+  label: string
+  owner: WakeOwner
+  park: WakePark
+  rows: WakeRow[]
+  preserveSplitRowEvidence?: boolean
+}
+
+const WAKE_DEADLINES: readonly WakeDeadline[] = [
+  { label: 'untimed', healthy: null, corrupt: WAKE_NOW + 5_000 },
+  { label: 'timed', healthy: WAKE_NOW + 30_000, corrupt: null },
+]
+
+const WAKE_OWNERS: readonly WakeOwner[] = [
+  { label: 'live-owner', state: 'running', live: true },
+  { label: 'terminal-owner', state: 'completed', live: false },
+]
+
+function healthyWakeRow(deadline: WakeDeadline): WakeRow {
+  return {
+    queue: Q,
+    event_name: WAKE_EVENT,
+    status: 'waiting',
+    step_name: WAKE_STEP,
+    timeout_at_ms: deadline.healthy,
+  }
+}
+
+function corruptWakeRow(deadline: WakeDeadline, fields: readonly WakeField[]): WakeRow {
+  const row = healthyWakeRow(deadline)
+  const wrong: WakeRow = {
+    queue: 'elsewhere',
+    event_name: 'other-event',
+    status: 'delivered',
+    step_name: `${WAKE_STEP}#stale`,
+    timeout_at_ms: deadline.corrupt,
+  }
+  for (const field of fields) Object.assign(row, { [field]: wrong[field] })
+  return row
+}
+
+function wakeParks(deadline: WakeDeadline): Record<string, WakePark> {
+  const parked = {
+    wake_event: WAKE_EVENT,
+    wake_step: WAKE_STEP,
+    available_at_ms: deadline.healthy,
+  }
+  return {
+    parked: { state: 'sleeping', ...parked },
+    'other-event': { state: 'sleeping', ...parked, wake_event: 'other-event' },
+    'legacy-null-step': { state: 'sleeping', ...parked, wake_step: null },
+    timer: { state: 'sleeping', ...parked, available_at_ms: deadline.corrupt },
+    running: { state: 'running', ...parked },
+    pending: { state: 'pending', ...parked },
+  }
+}
+
+function shouldWake(owner: WakeOwner, park: WakePark, rows: readonly WakeRow[]): boolean {
+  if (!owner.live || park.state !== 'sleeping' || park.wake_event !== WAKE_EVENT) return false
+  const matching = rows.filter(
+    (row) =>
+      row.queue === Q &&
+      row.event_name === WAKE_EVENT &&
+      row.status === 'waiting' &&
+      row.timeout_at_ms === park.available_at_ms,
+  )
+  if (park.wake_step === null) return matching.length === 1
+  return matching.some((row) => row.step_name === park.wake_step)
+}
+
+const WAKE_SUBSETS: WakeField[][] = Array.from({ length: 1 << WAKE_FIELDS.length }, (_, mask) =>
+  WAKE_FIELDS.filter((_field, index) => mask & (1 << index)),
+)
+
+function wakeFieldName(fields: readonly WakeField[]): string {
+  return fields.length === 0 ? 'healthy' : fields.join('+')
+}
+
+const WAKE_AXES = WAKE_DEADLINES.flatMap((deadline) =>
+  WAKE_OWNERS.flatMap((owner) =>
+    Object.entries(wakeParks(deadline)).map(([parkLabel, park]) => ({
+      deadline,
+      owner,
+      parkLabel,
+      park,
+    })),
+  ),
+)
+
+export const WAKE_SINGLE_CASES: readonly WakeWitnessCase[] = WAKE_AXES.flatMap(
+  ({ deadline, owner, parkLabel, park }) =>
+    WAKE_SUBSETS.map((fields) => ({
+      label: `${deadline.label} / ${owner.label} / ${parkLabel} / ${wakeFieldName(fields)}`,
+      owner,
+      park,
+      rows: [corruptWakeRow(deadline, fields)],
+    })),
+)
+
+const WAKE_AT_STEP = WAKE_SUBSETS.filter((fields) => !fields.includes('step_name'))
+// The exact step-only disagreement belongs to the dedicated historical case
+// below. The general pair matrix keeps every other cross-row combination
+// without duplicating that case or the legacy null-step ambiguity cases.
+const WAKE_AT_OTHER = WAKE_SUBSETS.filter(
+  (fields) => fields.includes('step_name') && fields.length > 1,
+)
+
+// Legacy parks have no step to correlate. Two otherwise identical matching
+// registrations at different steps are therefore their own pair dimension:
+// the scalar must decline to invent either step. Keeping this separate from
+// WAKE_AT_OTHER keeps the legacy null-step cardinality rule explicit in the
+// same correlated-witness surface.
+const WAKE_LEGACY_AMBIGUITY_CASES: readonly WakeWitnessCase[] = WAKE_AXES.filter(
+  ({ owner, park }) => owner.live && park.state === 'sleeping' && park.wake_step === null,
+).map(({ deadline, owner, parkLabel, park }) => ({
+  label: `${deadline.label} / ${owner.label} / ${parkLabel} / healthy | step_name`,
+  owner,
+  park,
+  rows: [healthyWakeRow(deadline), corruptWakeRow(deadline, ['step_name'])],
+}))
+
+const WAKE_SPLIT_ROW_CASES: readonly WakeWitnessCase[] = WAKE_AXES.filter(
+  ({ deadline, owner, parkLabel }) =>
+    deadline.label === 'untimed' && owner.live && parkLabel === 'parked',
+).map(({ deadline, owner, parkLabel, park }) => ({
+  label: `${deadline.label} / ${owner.label} / ${parkLabel} / queue | step_name`,
+  owner,
+  park,
+  rows: [corruptWakeRow(deadline, ['queue']), corruptWakeRow(deadline, ['step_name'])],
+  preserveSplitRowEvidence: true,
+}))
+
+export const WAKE_PAIR_CASES: readonly WakeWitnessCase[] = [
+  ...WAKE_AXES.flatMap(({ deadline, owner, parkLabel, park }) =>
+    WAKE_AT_STEP.flatMap((left) =>
+      WAKE_AT_OTHER.map((right) => ({
+        label: `${deadline.label} / ${owner.label} / ${parkLabel} / ${wakeFieldName(left)} | ${wakeFieldName(right)}`,
+        owner,
+        park,
+        rows: [corruptWakeRow(deadline, left), corruptWakeRow(deadline, right)],
+      })),
+    ),
+  ),
+  ...WAKE_SPLIT_ROW_CASES,
+  ...WAKE_LEGACY_AMBIGUITY_CASES,
+]
+
+async function wakeWitnessWrote(
+  fixture: StoreFixture,
+  queue: string,
+  owner: WakeOwner,
+  park: WakePark,
+  rows: readonly WakeRow[],
+  preserveSplitRowEvidence = false,
+): Promise<{
+  wrote: boolean
+  splitRowEvidence?: {
+    state: unknown
+    eventPayload: unknown
+    priorViolationsPreserved: boolean
+    firedEventViolation: boolean
+  }
+}> {
+  const id = queue
+  await fixture.raw.batch('setup', [
+    {
+      sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy,
+              max_attempts, cancellation, state, enqueue_at_ms, created_at_ms)
+            VALUES (?, ?, 'job', '{}', '{"kind":"none"}', 3,
+              '{"maxDurationSeconds":1}', ?, ?, ?)`,
+      args: [id, queue, owner.state, WAKE_NOW, WAKE_NOW],
+    },
+    {
+      sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, claim_gen, activated_gen,
+              wake_event, wake_step, available_at_ms, created_at_ms)
+            VALUES (?, ?, ?, 1, ?, 1, 1, ?, ?, ?, ?)`,
+      args: [
+        id,
+        queue,
+        id,
+        park.state,
+        park.wake_event,
+        park.wake_step,
+        park.available_at_ms,
+        WAKE_NOW,
+      ],
+    },
+    ...rows.map((row) => ({
+      sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
+              timeout_at_ms, created_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        id,
+        row.step_name,
+        row.queue === Q ? queue : row.queue,
+        id,
+        row.event_name,
+        row.status,
+        row.timeout_at_ms,
+        WAKE_NOW,
+      ],
+    })),
+  ])
+
+  const snapshot = async (): Promise<string> => {
+    const [result] = await fixture.raw.batch(
+      'probe',
+      [
+        {
+          sql: `SELECT state, available_at_ms, event_payload, wake_event, fence_stamp
+                FROM runs WHERE run_id = ?`,
+          args: [id],
+        },
+      ],
+      'read',
+    )
+    const row = result?.rows[0]
+    if (!row) throw new Error('wake witness run vanished')
+    return JSON.stringify(row)
+  }
+
+  const before = await snapshot()
+  const priorViolations = preserveSplitRowEvidence
+    ? await engineInvariantViolations(fixture.raw)
+    : undefined
+  await fixture.store.emitEvent(queue, WAKE_EVENT, '{"x":1}')
+  const after = await snapshot()
+  if (priorViolations === undefined) return { wrote: after !== before }
+
+  const [run] = await fixture.raw.batch(
+    'split-row-evidence',
+    [
+      {
+        sql: `SELECT state, event_payload FROM runs WHERE run_id = ?`,
+        args: [id],
+      },
+    ],
+    'read',
+  )
+  const currentViolations = await engineInvariantViolations(fixture.raw)
+  return {
+    wrote: after !== before,
+    splitRowEvidence: {
+      state: run?.rows[0]?.state,
+      eventPayload: run?.rows[0]?.event_payload,
+      priorViolationsPreserved: priorViolations.every((violation) =>
+        currentViolations.includes(violation),
+      ),
+      firedEventViolation: currentViolations.includes(
+        `wait-for-fired-event: ${id}/${WAKE_STEP}#stale`,
+      ),
+    },
+  }
+}
+
+export async function wakeWitnessDisagreements(
+  makeFixture: StoreFixtureFactory,
+  cases: readonly WakeWitnessCase[],
+): Promise<string[]> {
+  const fixture = await makeFixture('wake-witness')
+  try {
+    await fixture.admin.setFakeNowEpochMs(WAKE_NOW)
+    const wrong: string[] = []
+    for (const [index, testCase] of cases.entries()) {
+      const observation = await wakeWitnessWrote(
+        fixture,
+        `${Q}-wake-${index}`,
+        testCase.owner,
+        testCase.park,
+        testCase.rows,
+        testCase.preserveSplitRowEvidence,
+      )
+      if (observation.wrote !== shouldWake(testCase.owner, testCase.park, testCase.rows)) {
+        wrong.push(`${testCase.label}: woke=${observation.wrote}`)
+      }
+      if (
+        testCase.preserveSplitRowEvidence &&
+        (observation.splitRowEvidence?.state !== 'sleeping' ||
+          observation.splitRowEvidence.eventPayload !== null ||
+          !observation.splitRowEvidence.priorViolationsPreserved ||
+          !observation.splitRowEvidence.firedEventViolation)
+      ) {
+        wrong.push(
+          `${testCase.label}: split-row evidence=${JSON.stringify(observation.splitRowEvidence)}`,
+        )
+      }
+    }
+    return wrong
+  } finally {
+    fixture.close()
+  }
+}
+
+export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
+  describe(`wake witness conformance [${dialect}]`, () => {
+    it('decides every park through one correlated wait witness', async () => {
+      expect(
+        {
+          single: await wakeWitnessDisagreements(makeFixture, WAKE_SINGLE_CASES),
+          pairs: await wakeWitnessDisagreements(makeFixture, WAKE_PAIR_CASES),
+        },
+        'mutation-verdict:behavior:emit-wake-one-witness',
+      ).toEqual({ single: [], pairs: [] })
+    }, 30_000)
   })
 }

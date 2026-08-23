@@ -1,5 +1,20 @@
-import type { SqlExecutor, StoreAdmin } from '@durablerun/core'
-import { MIGRATIONS, type Migration } from './schema.js'
+import {
+  decodeBoundedInteger,
+  MAX_EPOCH_MS,
+  requireEpochMs,
+  SchemaNotInitializedError,
+  SchemaMismatchError,
+  storageValueKind,
+  type SqlExecutor,
+  type SqlResult,
+  type StoreAdmin,
+} from '@durablerun/core'
+import {
+  CURRENT_SCHEMA_VERSION,
+  MIGRATIONS,
+  type Migration,
+  SCHEMA_VERSION_READ_SQL,
+} from './schema.js'
 import { NOW_MS } from './time.js'
 
 export class LibsqlStoreAdmin implements StoreAdmin {
@@ -14,20 +29,26 @@ export class LibsqlStoreAdmin implements StoreAdmin {
    * version and continues; authors only ever write plain DDL.
    */
   async migrate(): Promise<void> {
-    await this.db.batch('migrate:bootstrap', [
-      {
-        sql: `CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-              ) WITHOUT ROWID`,
-        args: [],
-      },
-      {
-        sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
-              ON CONFLICT (key) DO NOTHING`,
-        args: [],
-      },
-    ])
+    // Bootstrap is authorized only by the typed absence result from the exact
+    // version read. CREATE IF NOT EXISTS cannot distinguish a fresh database
+    // from an existing, initialized-but-corrupt empty meta table; running it
+    // first launders the latter into a valid version-zero database.
+    if ((await this.readSchemaVersion()) === null) {
+      await this.db.batch('migrate:bootstrap', [
+        {
+          sql: `CREATE TABLE IF NOT EXISTS meta (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                ) WITHOUT ROWID`,
+          args: [],
+        },
+        {
+          sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
+                ON CONFLICT (key) DO NOTHING`,
+          args: [],
+        },
+      ])
+    }
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
       try {
@@ -39,24 +60,64 @@ export class LibsqlStoreAdmin implements StoreAdmin {
         throw error
       }
     }
+    // The post-condition, asserted rather than assumed. Each version bump is
+    // an UPDATE guarded on the previous value, in the same batch as the DDL —
+    // exactly the "a losing statement still writes" shape rule 1 forbids in
+    // engine SQL, and it was unchecked here. When the guard matches nothing
+    // the DDL still commits, so the database ends up physically migrated
+    // while recording the old version; the next process then re-applies the
+    // DDL and dies on a duplicate column, on every restart, while the process
+    // that caused it reported success. Checking the end state covers that and
+    // every other cause without having to enumerate them.
+    const version = await this.schemaVersion()
+    if (version !== CURRENT_SCHEMA_VERSION) {
+      throw new SchemaMismatchError(
+        `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
+      )
+    }
   }
 
   async schemaVersion(): Promise<number> {
+    return (await this.readSchemaVersion()) ?? 0
+  }
+
+  /**
+   * Null is the one typed fresh-database state. Once meta exists, every
+   * malformed result—including no schema_version row—throws closed.
+   */
+  private async readSchemaVersion(): Promise<number | null> {
+    let results: SqlResult[]
     try {
-      const [result] = await this.db.batch(
+      results = await this.db.batch(
         'migrate:version',
-        [{ sql: `SELECT value FROM meta WHERE key = 'schema_version'`, args: [] }],
+        [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }],
         'read',
       )
-      const row = result?.rows[0]
-      return row ? Number(row.value) : 0
     } catch (error) {
       // Only a genuinely fresh database reads as version 0; a transient
       // network/auth error must not masquerade as one (it would re-apply
       // every migration over a live schema).
-      if (String(error).includes('no such table')) return 0
+      if (error instanceof SchemaNotInitializedError) return null
       throw error
     }
+    const result = results.length === 1 ? results[0] : undefined
+    const row = result?.rows.length === 1 ? result.rows[0] : undefined
+    if (!row) {
+      throw new SchemaMismatchError(
+        `schema-version read must return exactly one result with one row, got ${results.length} results and ${result?.rows.length ?? 0} rows`,
+      )
+    }
+    const stored = row.value
+    if (typeof stored !== 'string' || !/^(0|[1-9][0-9]*)$/.test(stored)) {
+      throw new SchemaMismatchError(
+        `schema_version must be a canonical nonnegative integer, got ${storageValueKind(stored)}`,
+      )
+    }
+    const version = Number(stored)
+    if (!Number.isSafeInteger(version)) {
+      throw new SchemaMismatchError(`schema_version is outside the safe integer range: ${stored}`)
+    }
+    return version
   }
 
   async setFakeNowEpochMs(epochMs: number | null): Promise<void> {
@@ -66,11 +127,12 @@ export class LibsqlStoreAdmin implements StoreAdmin {
       ])
       return
     }
+    const validEpochMs = requireEpochMs('epochMs', epochMs)
     await this.db.batch('admin:set-fake-now', [
       {
         sql: `INSERT INTO meta (key, value) VALUES ('fake_now_ms', ?)
               ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-        args: [String(epochMs)],
+        args: [String(validEpochMs)],
       },
     ])
   }
@@ -81,7 +143,14 @@ export class LibsqlStoreAdmin implements StoreAdmin {
       [{ sql: `SELECT ${NOW_MS} AS now_ms`, args: [] }],
       'read',
     )
-    return Number(result?.rows[0]?.now_ms)
+    const raw = result?.rows[0]?.now_ms
+    const decoded = decodeBoundedInteger(raw, { min: 0, max: MAX_EPOCH_MS })
+    if (!decoded.ok) {
+      throw new RangeError(
+        `admin.now_ms must be an integer epoch-ms in [0, ${MAX_EPOCH_MS}] (${decoded.reason})`,
+      )
+    }
+    return decoded.value
   }
 }
 

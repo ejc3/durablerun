@@ -1,6 +1,7 @@
 import { LeaseLostError } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '../src/index.js'
+import { type LibsqlExecutor, LibsqlSchedulerStore } from '../src/index.js'
+import { openTestDb } from '../src/testing.js'
 
 const Q = 'q'
 const NOW = 1_000_000
@@ -11,15 +12,8 @@ const NOW = 1_000_000
  * these unreachable through the API) and drives the real awaitEvent.
  */
 async function fixture(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  await admin.setFakeNowEpochMs(NOW)
-  // Deterministic id source is irrelevant here; awaitEvent mints no ids.
-  const store = new LibsqlSchedulerStore(raw, {
-    uuidv7: () => `id-${seed}`,
-    token: () => `tok-${seed}`,
-  })
+  const { raw, admin, ids } = await openTestDb({ nowMs: NOW, idNamespace: seed })
+  const store = new LibsqlSchedulerStore(raw, ids)
   return { raw, admin, store, close: () => raw.close() }
 }
 

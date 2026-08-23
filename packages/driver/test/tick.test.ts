@@ -1,17 +1,16 @@
-import { type Buggify, type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
 import { engineInvariantViolations } from '@durablerun/conformance'
-import { Rng, seededIdSource, SimWorld } from '@durablerun/harness'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { type Buggify, type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
+import { Rng, SimWorld, seededIdSource } from '@durablerun/harness'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { tick, type TickOptions } from '../src/index.js'
+import { type TickOptions, tick } from '../src/index.js'
 
 const Q = 'q'
 const OPTS: TickOptions = { queue: Q, claimLimit: 3, sweepLimit: 5, leaseSeconds: 60 }
 
 async function fx(seed: string) {
-  const raw = LibsqlExecutor.open(':memory:')
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
+  const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(seed))
   const store = new LibsqlSchedulerStore(raw, ids)
   await admin.setFakeNowEpochMs(1_000_000)
@@ -97,7 +96,7 @@ describe('tick()', () => {
   it('launch-failed expires the lease advisorily: the NEXT tick reopens it without waiting out the lease', async () => {
     const f = await fx('tick-launch-failed')
     await f.store.spawn(Q, 'job', '{}')
-    const failing = new FakeLauncher(() => LaunchOutcome.launchFailed(new Error('conn refused')))
+    const failing = new FakeLauncher(() => LaunchOutcome.launchFailed())
     const first = await tick({ store: f.store, launcher: failing, ids: f.ids }, OPTS)
     expect(first).toMatchObject({ claimed: 1, launched: 0, launchFailed: 1 })
     // The advisory expiry SURFACES in next-wake: the caller is told to look
@@ -325,7 +324,7 @@ describe('tick() review regressions', () => {
         return Reflect.get(target, prop, receiver)
       },
     })
-    const launcher = new FakeLauncher(() => LaunchOutcome.launchFailed(new Error('no')))
+    const launcher = new FakeLauncher(() => LaunchOutcome.launchFailed())
     const result = await tick({ store: flaky, launcher, ids: f.ids }, OPTS)
     expect(result.launchFailed).toBe(2)
     expect(result.nextWakeAtEpochMs).not.toBeNull()
@@ -392,11 +391,57 @@ describe('tick() codex review regressions', () => {
     const confused = new FakeLauncher(async (inv) => {
       const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
       if (!run) throw new Error('activation lost')
-      return LaunchOutcome.ended({ runId: 'some-other-run', kind: 'crashed' })
+      return LaunchOutcome.ended({
+        runId: 'some-other-run',
+        claimToken: inv.claimToken,
+        kind: 'crashed',
+      })
     })
     await tick({ store: f.store, launcher: confused, ids: f.ids }, OPTS)
     // A signal about a different run says nothing about THIS run's lease:
     // no advisory expiry, so nothing is sweepable at unchanged time.
+    const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
+    expect(second.swept).toEqual([])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('an ending for an older claim of the same run is ignored', async () => {
+    const f = await fx('tick-stale-ending')
+    await f.store.spawn(Q, 'job', '{}')
+    const stale = new FakeLauncher(async (inv) => {
+      const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
+      if (!run) throw new Error('activation lost')
+      return LaunchOutcome.ended({
+        runId: inv.runId,
+        claimToken: `${inv.claimToken}-stale`,
+        kind: 'crashed',
+      })
+    })
+
+    await tick({ store: f.store, launcher: stale, ids: f.ids }, OPTS)
+    const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
+    expect(second.swept, 'mutation-verdict:behavior:ending-claim-identity').toEqual([])
+    expect(await engineInvariantViolations(f.raw)).toEqual([])
+    f.close()
+  })
+
+  it('a tokenless ending is ignored until an atomic heartbeat-cutoff port exists', async () => {
+    const f = await fx('tick-tokenless-ending')
+    await f.store.spawn(Q, 'job', '{}')
+    const tokenless = new FakeLauncher(async (inv) => {
+      const run = await f.store.activate(Q, inv.runId, inv.claimToken, inv.claimGen)
+      if (!run) throw new Error('activation lost')
+      // Hostile/untyped transport input: the public TypeScript type will make
+      // this shape unrepresentable, but reconciliation must still fail closed.
+      return LaunchOutcome.ended({
+        runId: inv.runId,
+        endedAtEpochMs: 1_000_000,
+        kind: 'crashed',
+      } as never)
+    })
+
+    await tick({ store: f.store, launcher: tokenless, ids: f.ids }, OPTS)
     const second = await tick({ store: f.store, launcher: new FakeLauncher(), ids: f.ids }, OPTS)
     expect(second.swept).toEqual([])
     expect(await engineInvariantViolations(f.raw)).toEqual([])
@@ -421,6 +466,48 @@ describe('tick() codex review regressions', () => {
     expect(result.nextWakeAtEpochMs).not.toBeNull()
     f.close()
   })
+
+  for (const [name, malformed] of [
+    ['a null ending', () => LaunchOutcome.ended(null as never)],
+    ['an ending with no identity', () => LaunchOutcome.ended({} as never)],
+    [
+      'an instance forged from the public prototype',
+      () => Object.create(LaunchOutcome.prototype) as LaunchOutcome,
+    ],
+  ] as const) {
+    it(`treats ${name} as launch-failed without poisoning sibling launches`, async () => {
+      const f = await fx(`tick-malformed-branded-${name.replaceAll(' ', '-')}`)
+      try {
+        await f.store.spawn(Q, 'a', '{}')
+        await f.store.spawn(Q, 'b', '{}')
+        let calls = 0
+        const launcher = new FakeLauncher(() => {
+          calls++
+          return calls === 1 ? malformed() : LaunchOutcome.accepted()
+        })
+
+        const outcome = await tick({ store: f.store, launcher, ids: f.ids }, OPTS).then(
+          (value) => ({ kind: 'resolved' as const, value }),
+          (error: unknown) => ({
+            kind: 'rejected' as const,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        )
+
+        expect(outcome).toMatchObject({
+          kind: 'resolved',
+          value: {
+            claimed: 2,
+            launched: 1,
+            launchFailed: 1,
+            ended: 0,
+          },
+        })
+      } finally {
+        f.close()
+      }
+    })
+  }
 })
 
 /**
