@@ -1529,8 +1529,9 @@ MUTATION_SPECS = [
         "poison-healthy-settlement",
         "packages/conformance/src/poison-matrix.ts",
         "outcome.target === responsibleTarget && outcome.status === 'rejected'",
-        "outcome.target === 'poison' && outcome.status === 'rejected'",
-        "the ambient settlement check watches the poison call instead of the healthy call",
+        "outcome.target === responsibleTarget && outcome.status === 'rejected' "
+        "&& !(outcome.target === 'healthy' && outcome.reason === undefined)",
+        "an undefined ambient rejection is mistaken for fulfillment",
     ),
     (
         "poison-targeted-settlement-owner",
