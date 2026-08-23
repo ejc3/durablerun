@@ -1528,15 +1528,9 @@ MUTATION_SPECS = [
     (
         "poison-healthy-settlement",
         "packages/conformance/src/poison-matrix.ts",
-        "  if (\n"
-        "    outcomes.some(\n"
-        "      (outcome) => outcome.target === responsibleTarget && outcome.status === 'rejected',\n"
-        "    )\n"
-        "  ) {\n"
-        "    errors.push('healthy trigger did not win: invocation rejected')\n"
-        "  }\n",
-        "",
-        "a healthy transition can reject after committing and still satisfy the durable-state oracle",
+        "outcome.target === responsibleTarget && outcome.status === 'rejected'",
+        "outcome.target === 'poison' && outcome.status === 'rejected'",
+        "the ambient settlement check watches the poison call instead of the healthy call",
     ),
     (
         "poison-targeted-settlement-owner",

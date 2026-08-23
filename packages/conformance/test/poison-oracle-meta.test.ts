@@ -5,7 +5,7 @@ import {
   type PersistedTemporalFieldDescriptor,
   type SqlExecutor,
 } from '@durablerun/core'
-import { requireExpectedFailure } from '@durablerun/core/testing'
+import { attributeReplacedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { executeStorageCorruption } from '../src/fixture.js'
 import { type EngineInvariantFinding, engineInvariantFindings } from '../src/invariants.js'
@@ -346,9 +346,12 @@ describe('poison/invariant mechanism self-tests', () => {
 
   it('rejects a targeted call that commits healthy progress and then rejects with undefined', async () => {
     let outcomes: readonly PoisonInvocationOutcome[] = []
-    await requireExpectedFailure(
+    await attributeReplacedFailure(
       { kind: 'behavior', mutation: 'poison-targeted-settlement-owner' },
-      /healthy trigger did not win: invocation rejected/,
+      {
+        expectedError: /healthy trigger did not win: invocation rejected/,
+        replacementError: /healthy trigger did not win: due trigger run was not claimed/,
+      },
       () =>
         runPoisonTargetCase(
           async (seed) => {
