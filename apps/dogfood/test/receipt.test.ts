@@ -49,6 +49,9 @@ describe('dogfood receipt verification', () => {
     expect(dogfoodReceiptErrors(receipt(), 'none')).toContain(
       'durable task parameters cover less than seven days',
     )
+    expect(
+      dogfoodReceiptErrors(receipt({ state: 'sleeping', completedResult: null }), 'none'),
+    ).toContain('durable task parameters cover less than seven days')
   })
 
   it.each(['failed', 'cancelled'])(

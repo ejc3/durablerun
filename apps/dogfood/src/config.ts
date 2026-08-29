@@ -1,5 +1,7 @@
 export type DogfoodFault = 'none' | 'driver-before-activation' | 'worker-after-checkpoint'
 
+export const DOGFOOD_MILESTONE_SPAN_MS = 7 * 24 * 60 * 60 * 1_000
+
 export interface DogfoodConfig {
   databaseUrl: string
   authToken?: string
@@ -22,7 +24,7 @@ const DEFAULTS = {
   repository: 'ejc3/durablerun',
   ref: 'main',
   cycles: 15,
-  intervalSeconds: 12 * 60 * 60,
+  intervalSeconds: DOGFOOD_MILESTONE_SPAN_MS / 1_000 / 14,
   leaseSeconds: 30,
   fault: 'none',
 } as const

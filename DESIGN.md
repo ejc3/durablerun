@@ -285,7 +285,10 @@ claimed worker synchronously until that worker completes or durably suspends,
 then exits under a workflow-level deadline. The schedule supplies later ticks,
 so no process remains resident while the task sleeps. This is a deliberately
 thin outcome probe; general serverless ticks still use asynchronous launches
-and the ping/alarm machinery above.
+and the ping/alarm machinery above. Its normal receipt gate requires the
+durable task parameters themselves to span at least seven days, so an
+idempotently reused shorter task fails validation instead of qualifying under
+new process configuration.
 
 Resident-driver launch watchdog: with an ASYNC (fire-and-forget) launcher,
 the loop abandons a launch call that has not acked within a deadline

@@ -1,4 +1,4 @@
-import type { DogfoodFault } from './config.js'
+import { DOGFOOD_MILESTONE_SPAN_MS, type DogfoodFault } from './config.js'
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -13,6 +13,7 @@ function exactInteger(value: unknown, expected: number): boolean {
 function journalEvidenceErrors(
   receipt: Record<string, unknown>,
   requireComplete: boolean,
+  minimumExpectedSpanMs = 0,
 ): string[] {
   const errors: string[] = []
   const expectedCount = receipt.expectedCheckpointCount
@@ -31,6 +32,8 @@ function journalEvidenceErrors(
     expectedSpanMs < 0
   ) {
     errors.push('expected checkpoint span is invalid')
+  } else if (expectedSpanMs < minimumExpectedSpanMs) {
+    errors.push('durable task parameters cover less than seven days')
   }
   const observedCount = receipt.observedCheckpointCount
   const observedCountIsValid =
@@ -105,9 +108,9 @@ export function dogfoodReceiptErrors(candidate: unknown, fault: DogfoodFault): r
     if (receipt.state === 'failed' || receipt.state === 'cancelled') {
       errors.push(`scheduled task ended in terminal state ${receipt.state}`)
     } else if (receipt.state === 'completed') {
-      errors.push(...journalEvidenceErrors(receipt, true))
+      errors.push(...journalEvidenceErrors(receipt, true, DOGFOOD_MILESTONE_SPAN_MS))
     } else if (['pending', 'running', 'sleeping'].includes(String(receipt.state))) {
-      errors.push(...journalEvidenceErrors(receipt, false))
+      errors.push(...journalEvidenceErrors(receipt, false, DOGFOOD_MILESTONE_SPAN_MS))
     } else {
       errors.push('scheduled task has an unknown state')
     }
