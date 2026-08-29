@@ -8,8 +8,10 @@ broadly, and fault evidence was not exact. Review of the first repair found a
 fourth, fix-induced defect in which the retained receipt was not the receipt
 the gate validated. Final workflow-contract review found two more failures in
 the proof path: `tee` could hide a failed producer, and the built-in repository
-token remained job-wide despite the narrower environment. All six defects are
-fixed before merge.
+token remained job-wide despite the narrower environment. Exact-head
+whole-system review then found that a pre-existing short task could satisfy the
+normal receipt policy without seven elapsed days. All seven defects are fixed
+before merge.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The question is what would have made these defects unwritable or
@@ -34,6 +36,11 @@ status. Separately, `contents: read` left the built-in repository token
 available throughout the job even after explicit `GITHUB_TOKEN` environment
 variables were narrowed to worker steps.
 
+The normal receipt policy also accepted any nonnegative span from durable task
+parameters. Because idempotent start preserves an existing task, a completed
+one-cycle task under the production key could pass a later workflow configured
+for fifteen cycles without providing the milestone's seven-day evidence.
+
 Finally, fault dispatches accepted lower-bound recovery counters and omitted
 exact checkpoint attempt ownership. Extra or misclassified recovery
 transitions, or a checkpoint rewritten on a later attempt, could look like the
@@ -49,6 +56,7 @@ promised single recovery.
 | 4 | The first receipt repair retained one status read and validated a second | The uploaded artifact could disagree with the value that made the job green | Single-representation receipt boundary | Write-receipt and verify-receipt steps independently queried the database | The verifier emits and validates the same value piped to `dogfood-after.json` (rung 1 current data flow with rung 2 topology test) |
 | 5 | Workflow pipelines ran under implicit `bash -e`, without `pipefail` | A failed tick, recovery command, or final receipt verifier could be masked by successful `tee`, leaving a green job and retained bad evidence | Workflow execution contract | Tests pinned command text and the verifier's semantics, not the shell that decides the command's exit status | Select GitHub's explicit `bash` shell for every run step and parse that default in a regression (rung 2) |
 | 6 | `contents: read` kept `github.token` available to every action | Checkout, setup, or upload code could receive repository read capability despite the claimed step scope | Workflow capability topology | The first repair and regression modeled named environment variables; GitHub's implicit token context bypassed that proxy | Give the job no repository permissions, check out the public source anonymously, and use only an optional dedicated read token on worker steps (rung 1 capability removal with rung 2 regression) |
+| 7 | Normal receipts accepted any nonnegative durable expected span | An idempotently reused one-cycle task could make the seven-day milestone workflow green immediately | Milestone receipt and durable-configuration reconciliation | Using durable parameters correctly removed current-process drift, but no fixed outcome floor constrained those parameters; the config test covered only newly created defaults | Define one seven-day milestone constant, derive the default schedule from it, and reject every normal live or completed receipt below it (rung 1 authority with rung 2 regression) |
 
 ## Detection ledger
 
@@ -57,16 +65,17 @@ promised single recovery.
 | Adversarial operability and whole-system reviewers of `e4e45bb` | 3 | no |
 | Adversarial mechanism review of the first receipt repair | 1 | no |
 | Final workflow-contract and evidence review | 2 | no |
+| Final exact-head whole-system review | 1 | no |
 | Existing tests, lints, and workflow gates before review | 0 | yes |
 
-Self-catch rate: **0 of 6, or 0%** (previous round: **103 of 151, or
+Self-catch rate: **0 of 7, or 0%** (previous round: **103 of 151, or
 68.2%**). This is a 68.2 percentage-point regression. The red tests reproduce
 the findings but were written after reviewers named them, so they do not count
 as self-catches.
 
 ## Recurrence
 
-All six findings recur at class level.
+All seven findings recur at class level.
 
 Findings 2 and 4 repeat partial evidence standing in for successful outcome.
 Earlier rounds rejected completion markers that survived later aborts and
@@ -91,6 +100,13 @@ for credential capability; it could not see GitHub's implicit token context.
 The replacement removes the job permission instead of adding another spelling
 check.
 
+Finding 7 is another partial-evidence proxy and exposes the boundary of finding
+2's repair. Durable parameters are the correct authority for what task was
+created, but they are not the milestone requirement itself. The earlier
+mechanism proved only that observed span matched stored intent; it did not
+prove that stored intent covered seven days. The fixed floor is now a separate
+authority shared by default construction and receipt validation.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -101,6 +117,7 @@ check.
 | One validated-and-retained receipt plus topology test | 1 current flow and 2 future edits | Insert a step after verification that overwrites `dogfood-after.json`; the current producer assertions still pass |
 | Explicit workflow `bash` default plus parsed regression | 2 | Begin a run block with `set +o pipefail`; the shell-default test still passes and `false \| tee` exits zero |
 | Empty job permissions, anonymous checkout, and built-in-token regression | 1 capability removal and 2 future edits | Pass a separate PAT secret through an action's `with.token`; permissions remain empty and the regression's `github.token` predicate still passes |
+| Shared seven-day milestone constant and normal-receipt floor | 1 authority and 2 semantics | Forge or restore two checkpoint timestamps seven days apart without seven days of execution; the receipt has the required stored span and still passes |
 
 The boundary probes were executed against `01e195d` and returned:
 
@@ -124,6 +141,15 @@ The two final mechanism probes were executed against `f0ee79e` and returned:
 }
 ```
 
+The seven-day-floor boundary probe was executed against `2ea505a` and
+returned:
+
+```json
+{
+  "forgedTimestampReceiptErrors": []
+}
+```
+
 Before the green repair, the partial-live probe used a sleeping receipt with
 seven user attempts, nine infrastructure retries, duplicate ordinal one, and
 zero contiguous checkpoints. It returned no errors. The repair rejects that
@@ -131,11 +157,11 @@ probe; it is finding 2's concrete false negative, not a residual.
 
 ## Fix-induced defects
 
-**One of six.** Finding 4 was introduced by the first fix for finding 2:
+**One of seven.** Finding 4 was introduced by the first fix for finding 2:
 adding `dogfood:verify` after `dogfood:status` created two independently timed
 representations. It was found by re-reviewing the repair as new code before
 the green commit, rather than by merely rerunning the original regressions.
-Findings 1 through 3, 5, and 6 were already present at `e4e45bb`.
+Findings 1 through 3 and 5 through 7 were already present at `e4e45bb`.
 
 ## Evidence
 
@@ -154,6 +180,10 @@ Findings 1 through 3, 5, and 6 were already present at `e4e45bb`.
   test files and 3,234 tests, plus lint, format-check, and typecheck.
 - Workflow fixes: commit `f0ee79e`; its confined `pnpm verify` passed all 91
   test files and 3,236 tests, plus lint, format-check, and typecheck.
+- Seven-day-floor red test: commit `3646ed7` produced exactly one failure
+  because a completed one-cycle, zero-span normal receipt returned no errors.
+- Seven-day-floor fix: commit `2ea505a`; its confined `pnpm verify` passed all
+  91 test files and 3,237 tests, plus lint, format-check, and typecheck.
 - Operability reviewer verdict: "scheduled normal seven-day job stays green
   after terminal task failure or bad completed evidence; only fault dispatch
   is validated" and "Turso credentials and GITHUB_TOKEN are job-level env,
@@ -168,6 +198,10 @@ Findings 1 through 3, 5, and 6 were already present at `e4e45bb`.
   the implicit shell omits `pipefail`, and "the credential scope claim remains
   false for `GITHUB_TOKEN`" because job permissions expose the built-in token
   context to actions.
+- Final whole-system verdict: "a completed one-cycle, zero-span normal journal
+  passes verification" and a real file-backed task under the reused key exited
+  zero even when current workflow configuration requested fifteen cycles and
+  seven days.
 - The active-wait identity concern did not reproduce through any public API
   sequence; its exact stale row required raw corruption, partial restore, or a
   mixed-version writer, so BUILD.md keeps it trigger-gated. Resident HTTP
@@ -185,7 +219,9 @@ workflow to define one fail-closed receipt contract, retain exactly the value
 it validated, enumerate exact fault outcomes, or declare least-privilege
 secret flow. The final misses came from two more proxies: naming a command was
 treated as propagating its exit status, and scanning explicit environments was
-treated as proving the absence of an implicit job capability.
+treated as proving the absence of an implicit job capability. Finally, matching
+observations to durable task intent was treated as matching the milestone,
+without separately pinning the milestone's minimum duration.
 
 ## Mechanisms
 
@@ -211,6 +247,10 @@ Built in this PR:
   dedicated read token exists only on ref-reading worker steps. Parsed-workflow
   regressions pin the current capability topology (rung 1 removal with rung 2
   future-edit coverage).
+- One `DOGFOOD_MILESTONE_SPAN_MS` constant owns the seven-day requirement,
+  derives the default schedule, and gates every normal live or completed
+  receipt regardless of current process configuration (rung 1 authority with
+  rung 2 state coverage).
 
 Deferred (recorded in BUILD.md):
 
@@ -234,3 +274,7 @@ remote Turso execution; the retained remote receipts remain required elapsed
 milestone evidence. A run block can explicitly disable `pipefail` after the
 workflow selects `bash`, and a future action can receive a separate token via
 `with`; both are demonstrated boundaries of the focused workflow regressions.
+Direct corruption, a partial restore, or a database-clock discontinuity can
+make stored checkpoint timestamps appear seven days apart without seven days
+of continuous execution; the dedicated database and retained per-run receipts
+remain the operational evidence around that boundary.
