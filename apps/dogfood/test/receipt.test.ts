@@ -45,6 +45,12 @@ function receipt(overrides: Partial<FoundReceipt> = {}): FoundReceipt {
 }
 
 describe('dogfood receipt verification', () => {
+  it('rejects a normal journal whose durable parameters cover less than seven days', () => {
+    expect(dogfoodReceiptErrors(receipt(), 'none')).toContain(
+      'durable task parameters cover less than seven days',
+    )
+  })
+
   it.each(['failed', 'cancelled'])(
     'rejects a normal scheduled receipt whose task is terminal %s',
     (state) => {
