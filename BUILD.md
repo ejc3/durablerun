@@ -23,10 +23,23 @@ reason.
 
 1. Add the minimum README, runnable example, and status inspection needed for
    the exit test.
-2. Close only the launcher, wake, shutdown, deadline, and SQL-error handling
-   gaps that prevent sustained execution.
+2. Close only sustained-execution gaps on the selected deployment path. The
+   bounded one-shot tick uses an inline worker, so resident HTTP launch, wake,
+   and host-shutdown hardening remain Phase 2 options rather than dogfood
+   blockers; the scheduled job itself must have a deadline and surface SQL or
+   task failures.
 3. Run the useful workload locally, then as the thin remote-Turso vertical
    slice; retain kill/recovery and idle evidence.
+
+**Implementation checkpoint (PR #14, 2026-08-29):** the clean-checkout
+commands, ref-journal workload, local/file replay, status receipt, bounded
+one-shot scheduler, remote Turso configuration, hourly opt-in workflow, and
+driver/worker deliberate-death probes are implemented. Local evidence is
+green, including exact recovery counters and checkpoint ownership. The only
+remaining exit evidence is external and elapsed: provision the dedicated
+Turso URL/token, dispatch `start`, set `DURABLERUN_DOGFOOD_ENABLED=true`, and
+retain the verified receipts for seven consecutive days. No additional engine
+or resident-transport work is authorized by that wait.
 
 **Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
 recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-
