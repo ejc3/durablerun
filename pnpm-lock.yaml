@@ -24,6 +24,21 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
 
+  apps/dogfood:
+    dependencies:
+      '@durablerun/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@durablerun/driver':
+        specifier: workspace:*
+        version: link:../../packages/driver
+      '@durablerun/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@durablerun/store-libsql':
+        specifier: workspace:*
+        version: link:../../packages/store-libsql
+
   packages/conformance:
     dependencies:
       '@durablerun/core':

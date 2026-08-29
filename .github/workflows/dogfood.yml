@@ -1,0 +1,69 @@
+name: dogfood
+
+on:
+  schedule:
+    - cron: '43 * * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Dogfood operation
+        required: true
+        default: tick
+        type: choice
+        options: [start, tick, status]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: durablerun-dogfood
+  cancel-in-progress: false
+
+jobs:
+  repo-health:
+    if: github.event_name == 'workflow_dispatch' || vars.DURABLERUN_DOGFOOD_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      DURABLERUN_DOGFOOD_QUEUE: dogfood
+      DURABLERUN_DOGFOOD_KEY: repo-health-v1
+      DURABLERUN_DOGFOOD_REPOSITORY: ${{ github.repository }}
+      DURABLERUN_DOGFOOD_REF: main
+      DURABLERUN_DOGFOOD_CYCLES: '15'
+      DURABLERUN_DOGFOOD_INTERVAL_SECONDS: '43200'
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require the dedicated Turso database
+        run: |
+          if [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; then
+            echo 'Configure repository secrets TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.' >&2
+            exit 1
+          fi
+      - name: Start the idempotent journal
+        if: github.event_name == 'schedule' || inputs.operation == 'start'
+        run: pnpm --silent dogfood:start
+      - name: Run one bounded tick
+        if: github.event_name == 'schedule' || inputs.operation == 'tick'
+        run: pnpm --silent dogfood:tick
+      - name: Write status receipt
+        if: always()
+        run: pnpm --silent dogfood:status | tee dogfood-receipt.json
+      - name: Retain status receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dogfood-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dogfood-receipt.json
+          if-no-files-found: warn
+          retention-days: 30

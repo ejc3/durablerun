@@ -8,6 +8,9 @@
   },
   "packageManager": "pnpm@10.29.1",
   "scripts": {
+    "dogfood:start": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts start",
+    "dogfood:tick": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts tick",
+    "dogfood:status": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts status",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit",
     "test": "vitest run",
     "lint": "biome lint .",
