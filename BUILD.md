@@ -21,19 +21,19 @@ reason.
 
 **Critical path:**
 
-1. Close the active-wait identity hole if events remain in the public surface.
-2. Add the minimum README, runnable example, and status inspection needed for
+1. Add the minimum README, runnable example, and status inspection needed for
    the exit test.
-3. Close only the launcher, wake, shutdown, deadline, and SQL-error handling
+2. Close only the launcher, wake, shutdown, deadline, and SQL-error handling
    gaps that prevent sustained execution.
-4. Run the useful workload locally, then as the thin remote-Turso vertical
+3. Run the useful workload locally, then as the thin remote-Turso vertical
    slice; retain kill/recovery and idle evidence.
 
-**Non-goals for this milestone:** the PR3.9 all-operation SQL rewrite, PR3.10
-mutation-attribution expansion, child workflows, sagas, MySQL, sharding,
-dedicated placement, EndingFeed, and the WDK wrapper. PostgreSQL follows this
-milestone if pluggable SQL remains a product promise; otherwise that promise is
-removed from the v0 scope.
+**Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
+recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-
+attribution expansion, child workflows, sagas, MySQL, sharding, dedicated
+placement, EndingFeed, and the WDK wrapper. PostgreSQL follows this milestone
+if pluggable SQL remains a product promise; otherwise that promise is removed
+from the v0 scope.
 
 Companion to DESIGN.md (the spec). Rules for every PR: lands green (lint,
 format, unit + conformance) before the next branches off it; adds the
@@ -561,10 +561,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
   statement of what a legitimate registration is, across every corruption of a
   wait row in ones and pairs, both timeout arms, both task-liveness arms, and
   every shape of park — 6,912 cases.
-  The gap that remains after all of it is owned by PR3.8.
+  The residual is recorded as the trigger-based PR3.8 option below.
 
-- **PR3.8 active-wait identity** (SPEC-FIRST). Everything above makes a wait row
-  hard to misuse; none of it lets one PROVE it is current. Emit infers that
+- **PR3.8 active-wait identity** (TRIGGERED OPTION; SPEC-FIRST IF ACTIVATED).
+  The 2026-08-29 reachability audit found no valid public-API sequence that can
+  create the stale, exactly matching wait row this change would reject:
+  registration and parking are atomic, and timeout, suspension, cancellation,
+  and terminal transitions reap their waits. The known counterexamples require
+  direct SQL/corruption, a partial restore, or a mixed-version writer. Events
+  remain public, and the generated wake-witness surface remains their defense.
+  Activate this work only when the product supports an in-place v5 upgrade or
+  mixed-version writers, accepts external writers or partial restores, or gains
+  a public-API counterexample. Until then it is outside the current milestone.
+
+  Everything above makes a wait row hard to misuse; none of it lets one PROVE
+  it is current. Emit infers that
   from five fields agreeing — run, queue, event, step, deadline — which is
   inference, and three rounds of review each found a row that satisfied
   whatever subset existed at the time. The structural answer, proposed by codex
