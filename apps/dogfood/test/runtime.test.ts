@@ -1,7 +1,10 @@
+import { StoreUnavailableError } from '@durablerun/core'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DogfoodConfig } from '../src/config.js'
+import { dogfoodReceiptErrors } from '../src/receipt.js'
 import type { RefObservation } from '../src/ref-journal.js'
 import { DogfoodRuntime } from '../src/runtime.js'
-import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const config: DogfoodConfig = {
   databaseUrl: ':memory:',
@@ -85,5 +88,35 @@ describe('ref-journal dogfood runtime', () => {
 
     await expect(runtime.tick()).resolves.toMatchObject({ claimed: 0, ended: 0 })
     expect(snapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it('surfaces an observed store outage from the bounded worker slot', async () => {
+    const runtime = await DogfoodRuntime.open({
+      ...config,
+      cycles: 15,
+      intervalSeconds: 43_200,
+    })
+    open.push(runtime)
+    await runtime.start()
+    const checkpointRead = vi
+      .spyOn(LibsqlSchedulerStore.prototype, 'getCheckpoints')
+      .mockRejectedValueOnce(new StoreUnavailableError('injected outage'))
+    const error = await runtime.tick().then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    checkpointRead.mockRestore()
+
+    const status = await runtime.status()
+    expect(status).toMatchObject({
+      found: true,
+      state: 'running',
+      attempts: 0,
+      infraRetries: 0,
+      observedCheckpointCount: 0,
+    })
+    expect(dogfoodReceiptErrors(status, 'none')).toEqual([])
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).toContain('dogfood tick observed infrastructure failure')
   })
 })
