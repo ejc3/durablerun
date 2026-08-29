@@ -1,10 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DogfoodConfig } from '../src/config.js'
+import { testIdSource } from '@durablerun/store-libsql/testing'
+import { describe, expect, it, vi } from 'vitest'
+import { type DogfoodConfig, dogfoodConfigFromEnv } from '../src/config.js'
 import type { RefObservation } from '../src/ref-journal.js'
 import { DogfoodRuntime } from '../src/runtime.js'
-import { describe, expect, it, vi } from 'vitest'
 
 function snapshot(serial: number): RefObservation {
   return {
@@ -31,6 +32,54 @@ function config(databaseUrl: string, idempotencyKey: string, cycles: number): Do
 }
 
 describe('dogfood milestone receipts', () => {
+  it('isolates a deliberate-death probe from due normal work', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'durablerun-dogfood-fault-isolation-'))
+    const databaseUrl = `file:${join(directory, 'journal.db')}`
+    const normalConfig = dogfoodConfigFromEnv({
+      TURSO_DATABASE_URL: databaseUrl,
+      DURABLERUN_DOGFOOD_CYCLES: '1',
+      DURABLERUN_DOGFOOD_INTERVAL_SECONDS: '0',
+    })
+    const normal = await DogfoodRuntime.open(normalConfig, { ids: testIdSource('a-normal') })
+    try {
+      await normal.start()
+    } finally {
+      normal.close()
+    }
+
+    const faultConfig = dogfoodConfigFromEnv({
+      TURSO_DATABASE_URL: databaseUrl,
+      DURABLERUN_DOGFOOD_KEY: 'fresh-probe',
+      DURABLERUN_DOGFOOD_CYCLES: '1',
+      DURABLERUN_DOGFOOD_INTERVAL_SECONDS: '0',
+      DURABLERUN_DOGFOOD_LEASE_SECONDS: '1',
+      DURABLERUN_DOGFOOD_FAULT: 'driver-before-activation',
+    })
+    const hardExit = vi.fn((): never => {
+      throw new Error('hard exit')
+    })
+    const fault = await DogfoodRuntime.open(faultConfig, {
+      ids: testIdSource('z-fault'),
+      hardExit,
+    })
+    try {
+      await fault.start()
+      await fault.tick()
+      expect(hardExit).toHaveBeenCalledOnce()
+      await expect(fault.status()).resolves.toMatchObject({ found: true, state: 'running' })
+    } finally {
+      fault.close()
+    }
+
+    const normalStatus = await DogfoodRuntime.open(normalConfig)
+    try {
+      await expect(normalStatus.status()).resolves.toMatchObject({ found: true, state: 'pending' })
+    } finally {
+      normalStatus.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('reports every checkpoint past ordinal ten with auditable contiguous ownership', async () => {
     let calls = 0
     const runtime = await DogfoodRuntime.open(config(':memory:', 'twelve', 12), {
