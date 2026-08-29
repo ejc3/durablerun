@@ -49,6 +49,8 @@ export function dogfoodConfigFromEnv(env: Environment = process.env): DogfoodCon
   const cycles = nonnegativeInteger(env, 'DURABLERUN_DOGFOOD_CYCLES', DEFAULTS.cycles)
   if (cycles < 1) throw new RangeError('DURABLERUN_DOGFOOD_CYCLES must be at least 1')
   const authToken = env.TURSO_AUTH_TOKEN?.trim()
+  const configuredQueue = nonempty(env, 'DURABLERUN_DOGFOOD_QUEUE', DEFAULTS.queue)
+  const idempotencyKey = nonempty(env, 'DURABLERUN_DOGFOOD_KEY', DEFAULTS.idempotencyKey)
   const fault = nonempty(env, 'DURABLERUN_DOGFOOD_FAULT', DEFAULTS.fault)
   if (
     fault !== 'none' &&
@@ -68,8 +70,11 @@ export function dogfoodConfigFromEnv(env: Environment = process.env): DogfoodCon
   return {
     databaseUrl: nonempty(env, 'TURSO_DATABASE_URL', DEFAULTS.databaseUrl),
     ...(authToken ? { authToken } : {}),
-    queue: nonempty(env, 'DURABLERUN_DOGFOOD_QUEUE', DEFAULTS.queue),
-    idempotencyKey: nonempty(env, 'DURABLERUN_DOGFOOD_KEY', DEFAULTS.idempotencyKey),
+    // A deliberate-death tick has claimLimit=1. Giving its fresh task a
+    // key-derived queue makes it impossible for older due journal work to
+    // consume the injected crash before the probe does.
+    queue: fault === 'none' ? configuredQueue : `${configuredQueue}-fault-${idempotencyKey}`,
+    idempotencyKey,
     repository: nonempty(env, 'DURABLERUN_DOGFOOD_REPOSITORY', DEFAULTS.repository),
     ref: nonempty(env, 'DURABLERUN_DOGFOOD_REF', DEFAULTS.ref),
     cycles,

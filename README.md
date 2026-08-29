@@ -59,6 +59,6 @@ repository anonymously. If authenticated GitHub API reads are needed, add an
 optional read-only `DOGFOOD_GITHUB_TOKEN` secret; only the worker steps receive
 it. First dispatch `start`, then enable the schedule. `workflow_dispatch` can
 also run either deliberate death probe. Each probe uses a fresh one-checkpoint
-journal, records status before the fault, hard-exits at the selected actor
-boundary, waits through the short test lease/backoff, runs normal recovery
-ticks, and records status afterward.
+journal on a key-derived isolated queue, records status before the fault,
+hard-exits at the selected actor boundary, waits through the short test
+lease/backoff, runs normal recovery ticks, and records status afterward.

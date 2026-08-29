@@ -288,7 +288,10 @@ thin outcome probe; general serverless ticks still use asynchronous launches
 and the ping/alarm machinery above. Its normal receipt gate requires the
 durable task parameters themselves to span at least seven days, so an
 idempotently reused shorter task fails validation instead of qualifying under
-new process configuration.
+new process configuration. A deliberate-death probe derives an isolated queue
+from its fresh idempotency key; its one-slot tick therefore cannot inject the
+fault into older due journal work instead of the task whose recovery receipt
+will be verified.
 
 Resident-driver launch watchdog: with an ASYNC (fire-and-forget) launcher,
 the loop abandons a launch call that has not acked within a deadline

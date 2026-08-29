@@ -40,8 +40,9 @@ workflow's retained receipt fails closed on producer errors, and the job has no
 repository-token permission; an optional `DOGFOOD_GITHUB_TOKEN` is scoped to
 worker steps. Normal receipt validation enforces the fixed seven-day floor
 against durable task parameters, so reusing a shorter idempotent task cannot
-qualify. The only remaining exit evidence is external and elapsed: provision
-the dedicated Turso URL/token, dispatch `start`, set
+qualify. Fresh fault probes also derive isolated queues, so due normal work
+cannot consume the deliberate death. The only remaining exit evidence is
+external and elapsed: provision the dedicated Turso URL/token, dispatch `start`, set
 `DURABLERUN_DOGFOOD_ENABLED=true`, and retain the verified receipts for seven
 consecutive days. No additional engine or resident-transport work is
 authorized by that wait.
