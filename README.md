@@ -52,7 +52,10 @@ The opt-in GitHub Actions workflow runs one tick each hour, prevents overlap,
 and retains every status receipt for 30 days. Configure the repository secrets
 `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, then set the repository variable
 `DURABLERUN_DOGFOOD_ENABLED=true`. It remains skipped until that variable is
-set. First dispatch `start`, then enable the schedule. `workflow_dispatch` can
+set. The job has no repository-token permissions and checks out this public
+repository anonymously. If authenticated GitHub API reads are needed, add an
+optional read-only `DOGFOOD_GITHUB_TOKEN` secret; only the worker steps receive
+it. First dispatch `start`, then enable the schedule. `workflow_dispatch` can
 also run either deliberate death probe. Each probe uses a fresh one-checkpoint
 journal, records status before the fault, hard-exits at the selected actor
 boundary, waits through the short test lease/backoff, runs normal recovery

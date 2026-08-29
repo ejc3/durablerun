@@ -279,6 +279,14 @@ deployment:
 Either way, every trigger — poll timer, ping, alarm, cron — means the same thing:
 *"there may be runnable work; look."*
 
+The current remote-Turso dogfood uses a bounded validation host, not a third
+production drive mode: one scheduled process owns one launch slot, runs one
+claimed worker synchronously until that worker completes or durably suspends,
+then exits under a workflow-level deadline. The schedule supplies later ticks,
+so no process remains resident while the task sleeps. This is a deliberately
+thin outcome probe; general serverless ticks still use asynchronous launches
+and the ping/alarm machinery above.
+
 Resident-driver launch watchdog: with an ASYNC (fire-and-forget) launcher,
 the loop abandons a launch call that has not acked within a deadline
 (default 10s) and treats it as a failed launch — the run recovers through
@@ -323,7 +331,8 @@ tick():
      {runId, attempt, claim_token, claim_gen} (HMAC-signed). The worker acks
      immediately and executes inside its OWN invocation — the tick never
      waits on run duration and returns in <1s. (Sync launchers — §3.9 — are
-     for bounded-slot resident drivers only, never serverless ticks.)
+     for bounded-slot hosts only, including the one-slot dogfood host; general
+     serverless ticks always launch asynchronously.)
   4. next-wake: t = min( available_at over pending/sleeping,
                          claim_expires_at over running,
                          cancellation deadlines )
@@ -1401,8 +1410,8 @@ stutters.
    `ended({runId, claimToken, kind})` (sync HTTP: outcome observed inline — a
    reliable Ending carrying the exact launch identity; reconcile makes no
    write unless both fields match the invocation; legal only for drivers
-   holding bounded launch slots, i.e. resident pools — serverless ticks always
-   fire-and-forget, §3.1 step 3) |
+   holding bounded launch slots, including the one-slot dogfood host — general
+   serverless ticks always fire-and-forget, §3.1 step 3) |
    `launch-failed` (transport-level rejection → fenced immediate relaunch —
    still counted by the relaunch counter, since "never ran" is the launcher's
    claim, not a guarantee).

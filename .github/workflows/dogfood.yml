@@ -18,8 +18,11 @@ on:
         type: choice
         options: [none, driver-before-activation, worker-after-checkpoint]
 
-permissions:
-  contents: read
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
 
 concurrency:
   group: durablerun-dogfood
@@ -40,9 +43,15 @@ jobs:
       DURABLERUN_DOGFOOD_LEASE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && '1' || '30' }}
       DURABLERUN_DOGFOOD_FAULT: ${{ github.event_name == 'workflow_dispatch' && inputs.fault || 'none' }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Check out this public repository without a token
+        env:
+          DURABLERUN_SOURCE_REPOSITORY: ${{ github.repository }}
+          DURABLERUN_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${DURABLERUN_SOURCE_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$DURABLERUN_SOURCE_SHA"
+          git checkout --detach FETCH_HEAD
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -80,14 +89,14 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.DOGFOOD_GITHUB_TOKEN }}
         run: pnpm --silent dogfood:tick | tee dogfood-operation.log
       - name: Hard-exit at the selected actor boundary
         if: github.event_name == 'workflow_dispatch' && inputs.fault != 'none'
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.DOGFOOD_GITHUB_TOKEN }}
         run: |
           case "$DURABLERUN_DOGFOOD_FAULT" in
             driver-before-activation) expected=86 ;;
@@ -106,7 +115,7 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           DURABLERUN_DOGFOOD_FAULT: none
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.DOGFOOD_GITHUB_TOKEN }}
         run: |
           sleep 2
           node --import tsx apps/dogfood/src/cli.ts tick | tee -a dogfood-operation.log

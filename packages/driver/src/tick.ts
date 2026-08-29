@@ -42,7 +42,7 @@ export interface TickResult {
    * tick's sweep reopens them as lost-launch without waiting out the lease.
    */
   launchFailed: number
-  /** Sync-launcher endings observed inline (bounded-slot resident mode). */
+  /** Sync-launcher endings observed inline by a bounded-slot host. */
   ended: number
   /** min(next transition) across the queue, for the caller's re-arm. */
   nextWakeAtEpochMs: number | null
