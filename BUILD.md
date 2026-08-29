@@ -35,11 +35,14 @@ reason.
 commands, ref-journal workload, local/file replay, status receipt, bounded
 one-shot scheduler, remote Turso configuration, hourly opt-in workflow, and
 driver/worker deliberate-death probes are implemented. Local evidence is
-green, including exact recovery counters and checkpoint ownership. The only
-remaining exit evidence is external and elapsed: provision the dedicated
-Turso URL/token, dispatch `start`, set `DURABLERUN_DOGFOOD_ENABLED=true`, and
-retain the verified receipts for seven consecutive days. No additional engine
-or resident-transport work is authorized by that wait.
+green, including exact recovery counters and checkpoint ownership. The
+workflow's retained receipt fails closed on producer errors, and the job has no
+repository-token permission; an optional `DOGFOOD_GITHUB_TOKEN` is scoped to
+worker steps. The only remaining exit evidence is external and elapsed:
+provision the dedicated Turso URL/token, dispatch `start`, set
+`DURABLERUN_DOGFOOD_ENABLED=true`, and retain the verified receipts for seven
+consecutive days. No additional engine or resident-transport work is
+authorized by that wait.
 
 **Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
 recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-

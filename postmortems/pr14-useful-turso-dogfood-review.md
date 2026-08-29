@@ -6,7 +6,10 @@ found that the workload was runnable but its green workflow did not yet prove
 the milestone: normal receipts were not validated, credentials were scoped too
 broadly, and fault evidence was not exact. Review of the first repair found a
 fourth, fix-induced defect in which the retained receipt was not the receipt
-the gate validated. All four defects are fixed before merge.
+the gate validated. Final workflow-contract review found two more failures in
+the proof path: `tee` could hide a failed producer, and the built-in repository
+token remained job-wide despite the narrower environment. All six defects are
+fixed before merge.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The question is what would have made these defects unwritable or
@@ -25,6 +28,12 @@ while its partial journal was discontinuous. A later repair retained one
 status read but validated another. Those defects could produce a green run and
 an unvalidated artifact for the milestone's central no-lost-effects claim.
 
+The workflow also relied on GitHub's implicit Linux shell. Its pipelines
+therefore returned `tee`'s status rather than a failing tick or verifier's
+status. Separately, `contents: read` left the built-in repository token
+available throughout the job even after explicit `GITHUB_TOKEN` environment
+variables were narrowed to worker steps.
+
 Finally, fault dispatches accepted lower-bound recovery counters and omitted
 exact checkpoint attempt ownership. Extra or misclassified recovery
 transitions, or a checkpoint rewritten on a later attempt, could look like the
@@ -38,6 +47,8 @@ promised single recovery.
 | 2 | Normal scheduled receipts were not validated, including terminal, incomplete completed, and inconsistent partial-live states | Seven days of green jobs could coexist with a failed task or a journal that did not prove contiguous progress | Dogfood outcome gate and receipt contract | Artifact creation and command success stood in for semantic success; only deliberate faults had a verifier | One receipt-policy authority validates every normal state against durable count, span, continuity, attempts, result, and failure evidence (rung 1 authority with rung 2 cases) |
 | 3 | Fault recovery accepted lower-bound counters and omitted exact `ownerAttempt` | Extra failures, wrong recovery classification, or checkpoint rewriting could satisfy a probe | Fault-edge progress oracle | Aggregate presence was treated as exact causal evidence, and the new dogfood layer was outside the generated store fault surface | Require exact complementary counters, zero user attempts, one exact checkpoint, ordinal one, and owner attempt one (rung 2) |
 | 4 | The first receipt repair retained one status read and validated a second | The uploaded artifact could disagree with the value that made the job green | Single-representation receipt boundary | Write-receipt and verify-receipt steps independently queried the database | The verifier emits and validates the same value piped to `dogfood-after.json` (rung 1 current data flow with rung 2 topology test) |
+| 5 | Workflow pipelines ran under implicit `bash -e`, without `pipefail` | A failed tick, recovery command, or final receipt verifier could be masked by successful `tee`, leaving a green job and retained bad evidence | Workflow execution contract | Tests pinned command text and the verifier's semantics, not the shell that decides the command's exit status | Select GitHub's explicit `bash` shell for every run step and parse that default in a regression (rung 2) |
+| 6 | `contents: read` kept `github.token` available to every action | Checkout, setup, or upload code could receive repository read capability despite the claimed step scope | Workflow capability topology | The first repair and regression modeled named environment variables; GitHub's implicit token context bypassed that proxy | Give the job no repository permissions, check out the public source anonymously, and use only an optional dedicated read token on worker steps (rung 1 capability removal with rung 2 regression) |
 
 ## Detection ledger
 
@@ -45,16 +56,17 @@ promised single recovery.
 |----------|----------|-------|
 | Adversarial operability and whole-system reviewers of `e4e45bb` | 3 | no |
 | Adversarial mechanism review of the first receipt repair | 1 | no |
+| Final workflow-contract and evidence review | 2 | no |
 | Existing tests, lints, and workflow gates before review | 0 | yes |
 
-Self-catch rate: **0 of 4, or 0%** (previous round: **103 of 151, or
+Self-catch rate: **0 of 6, or 0%** (previous round: **103 of 151, or
 68.2%**). This is a 68.2 percentage-point regression. The red tests reproduce
 the findings but were written after reviewers named them, so they do not count
 as self-catches.
 
 ## Recurrence
 
-All four findings recur at class level.
+All six findings recur at class level.
 
 Findings 2 and 4 repeat partial evidence standing in for successful outcome.
 Earlier rounds rejected completion markers that survived later aborts and
@@ -71,6 +83,14 @@ but the new dogfood receipt surface was not generated or enrolled at birth.
 The recurring defect is therefore layer enrollment, not a failure of the
 narrow checks to do what they claimed.
 
+Finding 5 repeats the repository's execution-proxy class: command text said
+the verifier ran, but the shell's pipeline verdict did not carry its failure.
+Finding 6 is a recurrence of finding 1 inside this same round and proves the
+first mechanism insufficient. Scanning explicit step environments was a proxy
+for credential capability; it could not see GitHub's implicit token context.
+The replacement removes the job permission instead of adding another spelling
+check.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -79,6 +99,8 @@ narrow checks to do what they claimed.
 | Shared normal receipt policy | 1 authority and 2 semantics | Give the checkpoint commit A and the completed-result observation commit B with matching counts and span; the policy returns no errors |
 | Exact fault counters and checkpoint attempt | 2 | Give an otherwise exact driver receipt an empty `ownerRunId`; exact counters and `ownerAttempt` still pass |
 | One validated-and-retained receipt plus topology test | 1 current flow and 2 future edits | Insert a step after verification that overwrites `dogfood-after.json`; the current producer assertions still pass |
+| Explicit workflow `bash` default plus parsed regression | 2 | Begin a run block with `set +o pipefail`; the shell-default test still passes and `false \| tee` exits zero |
+| Empty job permissions, anonymous checkout, and built-in-token regression | 1 capability removal and 2 future edits | Pass a separate PAT secret through an action's `with.token`; permissions remain empty and the regression's `github.token` predicate still passes |
 
 The boundary probes were executed against `01e195d` and returned:
 
@@ -91,6 +113,17 @@ The boundary probes were executed against `01e195d` and returned:
 }
 ```
 
+The two final mechanism probes were executed against `f0ee79e` and returned:
+
+```json
+{
+  "shellDefaultStillPasses": true,
+  "disabledPipefailExit": 0,
+  "tokenPredicateStillPasses": true,
+  "actionReceivesSecret": true
+}
+```
+
 Before the green repair, the partial-live probe used a sleeping receipt with
 seven user attempts, nine infrastructure retries, duplicate ordinal one, and
 zero contiguous checkpoints. It returned no errors. The repair rejects that
@@ -98,11 +131,11 @@ probe; it is finding 2's concrete false negative, not a residual.
 
 ## Fix-induced defects
 
-**One of four.** Finding 4 was introduced by the first fix for finding 2:
+**One of six.** Finding 4 was introduced by the first fix for finding 2:
 adding `dogfood:verify` after `dogfood:status` created two independently timed
 representations. It was found by re-reviewing the repair as new code before
 the green commit, rather than by merely rerunning the original regressions.
-Findings 1 through 3 were already present at `e4e45bb`.
+Findings 1 through 3, 5, and 6 were already present at `e4e45bb`.
 
 ## Evidence
 
@@ -112,8 +145,15 @@ Findings 1 through 3 were already present at `e4e45bb`.
 - Expanded red tests: commit `7cb27ca` was run before its repair and produced
   exactly two failures: corrupt partial-live evidence and a retained receipt
   that was not the validated representation.
-- Fixes: commit `01e195d`; the confined `pnpm verify` after the fix passed all
-  89 test files and 3,234 tests, plus lint, format-check, and typecheck.
+- Pipeline red test: commit `d94f945` produced exactly one failure because the
+  workflow shell default was absent.
+- Token-capability red test: commit `91fc3cb` produced exactly one failure
+  because permissions were `contents: read` and the workflow passed
+  `github.token`.
+- Receipt fixes: commit `01e195d`; its confined `pnpm verify` passed all 89
+  test files and 3,234 tests, plus lint, format-check, and typecheck.
+- Workflow fixes: commit `f0ee79e`; its confined `pnpm verify` passed all 91
+  test files and 3,236 tests, plus lint, format-check, and typecheck.
 - Operability reviewer verdict: "scheduled normal seven-day job stays green
   after terminal task failure or bad completed evidence; only fault dispatch
   is validated" and "Turso credentials and GITHUB_TOKEN are job-level env,
@@ -124,6 +164,10 @@ Findings 1 through 3 were already present at `e4e45bb`.
 - Repair-audit verdict: "dogfood-after.json comes from dogfood:status, then
   dogfood:verify opens the database and validates a second status read; the
   retained artifact is not the value the gate validated."
+- Final workflow-contract verdict: "all `tee` pipelines fail open" because
+  the implicit shell omits `pipefail`, and "the credential scope claim remains
+  false for `GITHUB_TOKEN`" because job permissions expose the built-in token
+  context to actions.
 - The active-wait identity concern did not reproduce through any public API
   sequence; its exact stale row required raw corruption, partial restore, or a
   mixed-version writer, so BUILD.md keeps it trigger-gated. Resident HTTP
@@ -139,7 +183,9 @@ fault recovery, and credential scope. Existing mechanisms belonged to older
 engine, mutation, and workflow layers. Nothing required a new outcome-bearing
 workflow to define one fail-closed receipt contract, retain exactly the value
 it validated, enumerate exact fault outcomes, or declare least-privilege
-secret flow.
+secret flow. The final misses came from two more proxies: naming a command was
+treated as propagating its exit status, and scanning explicit environments was
+treated as proving the absence of an implicit job capability.
 
 ## Mechanisms
 
@@ -157,9 +203,14 @@ Built in this PR:
   attempts, ordinal one, and owner attempt one (rung 2).
 - The validated value is the same value retained for upload, removing the
   second database read (rung 1 for the current flow).
-- Turso credentials exist only on database steps and `GITHUB_TOKEN` only on
-  ref-reading execution steps; parsed-workflow regressions pin this current
-  topology (rung 2).
+- Every run step uses GitHub's explicit `bash` contract, whose `pipefail`
+  behavior makes producer failures authoritative; a parsed-workflow regression
+  pins the shell selection (rung 2).
+- Turso credentials exist only on database steps. The job has no repository
+  permissions and checks out this public repository anonymously; an optional
+  dedicated read token exists only on ref-reading worker steps. Parsed-workflow
+  regressions pin the current capability topology (rung 1 removal with rung 2
+  future-edit coverage).
 
 Deferred (recorded in BUILD.md):
 
@@ -180,4 +231,6 @@ alternate writer, but the verifier does not prove causal run identity. A
 future step inserted after verification could overwrite the retained receipt
 before upload. Finally, no local gate can establish seven consecutive days of
 remote Turso execution; the retained remote receipts remain required elapsed
-milestone evidence.
+milestone evidence. A run block can explicitly disable `pipefail` after the
+workflow selects `bash`, and a future action can receive a separate token via
+`with`; both are demonstrated boundaries of the focused workflow regressions.
