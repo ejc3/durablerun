@@ -6,11 +6,13 @@ describe('dogfood configuration', () => {
     expect(dogfoodConfigFromEnv({})).toEqual({
       databaseUrl: 'file:dogfood.db',
       queue: 'dogfood',
-      idempotencyKey: 'repo-health-v1',
+      idempotencyKey: 'ref-journal-v1',
       repository: 'ejc3/durablerun',
       ref: 'main',
       cycles: 15,
       intervalSeconds: 43_200,
+      leaseSeconds: 30,
+      fault: 'none',
     })
     const config = dogfoodConfigFromEnv({})
     expect((config.cycles - 1) * config.intervalSeconds).toBeGreaterThanOrEqual(7 * 24 * 60 * 60)
@@ -32,5 +34,8 @@ describe('dogfood configuration', () => {
   it('rejects vacuous or noncanonical cycle settings', () => {
     expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_CYCLES: '0' })).toThrow(/at least 1/)
     expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_CYCLES: '01' })).toThrow(/canonical/)
+    expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_FAULT: 'maybe' })).toThrow(
+      /supported fault/,
+    )
   })
 })

@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DogfoodConfig } from '../src/config.js'
-import type { RepositorySnapshot } from '../src/repo-health.js'
+import type { RefObservation } from '../src/ref-journal.js'
 import { DogfoodRuntime } from '../src/runtime.js'
 import { describe, expect, it, vi } from 'vitest'
 
-function snapshot(serial: number): RepositorySnapshot {
+function snapshot(serial: number): RefObservation {
   return {
     repository: 'ejc3/durablerun',
     ref: 'main',
@@ -25,6 +25,8 @@ function config(databaseUrl: string, idempotencyKey: string, cycles: number): Do
     ref: 'main',
     cycles,
     intervalSeconds: 0,
+    leaseSeconds: 30,
+    fault: 'none',
   }
 }
 
@@ -32,7 +34,7 @@ describe('dogfood milestone receipts', () => {
   it('reports every checkpoint past ordinal ten with auditable contiguous ownership', async () => {
     let calls = 0
     const runtime = await DogfoodRuntime.open(config(':memory:', 'twelve', 12), {
-      snapshot: async () => snapshot(++calls),
+      observe: async () => snapshot(++calls),
     })
     try {
       await runtime.start()
@@ -43,6 +45,7 @@ describe('dogfood milestone receipts', () => {
         expectedCheckpointCount: 12,
         observedCheckpointCount: 12,
         contiguousCheckpointCount: 12,
+        checkpointSpanMs: expect.any(Number),
       })
       const receipt = status as unknown as {
         refObservations: Array<Record<string, unknown>>
@@ -65,7 +68,7 @@ describe('dogfood milestone receipts', () => {
     const directory = mkdtempSync(join(tmpdir(), 'durablerun-dogfood-reopen-'))
     const cfg = config(`file:${join(directory, 'journal.db')}`, 'reopen', 2)
     const firstSnapshot = vi.fn(async () => snapshot(1))
-    const first = await DogfoodRuntime.open(cfg, { snapshot: firstSnapshot })
+    const first = await DogfoodRuntime.open(cfg, { observe: firstSnapshot })
     try {
       await first.start()
       await first.tick()
@@ -73,7 +76,7 @@ describe('dogfood milestone receipts', () => {
       first.close()
     }
     const secondSnapshot = vi.fn(async () => snapshot(2))
-    const second = await DogfoodRuntime.open(cfg, { snapshot: secondSnapshot })
+    const second = await DogfoodRuntime.open(cfg, { observe: secondSnapshot })
     try {
       await second.tick()
       await expect(second.status()).resolves.toMatchObject({
@@ -98,10 +101,10 @@ describe('dogfood milestone receipts', () => {
         throw exit
       })
       const runtime = await DogfoodRuntime.open(config(':memory:', fault, 1), {
-        snapshot: async () => snapshot(1),
+        observe: async () => snapshot(1),
         fault,
         hardExit,
-      } as never)
+      })
       try {
         await runtime.start()
         await runtime.tick()

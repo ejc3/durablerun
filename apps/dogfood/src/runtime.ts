@@ -10,13 +10,13 @@ import {
 import { tick, type TickResult } from '@durablerun/driver'
 import { runClaimedRun, type WorkerOutcome } from '@durablerun/sdk'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
-import type { DogfoodConfig } from './config.js'
+import type { DogfoodConfig, DogfoodFault } from './config.js'
 import {
-  repoHealthRegistry,
-  type RepositorySnapshot,
-  type SnapshotRepository,
-  snapshotGitHubRepository,
-} from './repo-health.js'
+  type ObserveRepositoryRef,
+  observeGitHubRef,
+  type RefObservation,
+  refJournalRegistry,
+} from './ref-journal.js'
 
 export interface DogfoodStartResult {
   taskId: string
@@ -24,6 +24,15 @@ export interface DogfoodStartResult {
   created: boolean
   queue: string
   idempotencyKey: string
+}
+
+export interface RefObservationCheckpoint {
+  ordinal: number
+  key: string
+  observedAtEpochMs: number
+  ownerRunId: string
+  ownerAttempt: number
+  snapshot: RefObservation
 }
 
 export type DogfoodStatus =
@@ -38,11 +47,12 @@ export type DogfoodStatus =
       infraRetries: number
       failureReason: unknown | null
       completedResult: unknown | null
-      integrityCheckpoints: readonly RepositorySnapshot[]
+      expectedCheckpointCount: number | null
+      observedCheckpointCount: number
+      contiguousCheckpointCount: number
+      refObservations: readonly RefObservationCheckpoint[]
       relaunches: number
-      firstStartedAtEpochMs: number | null
-      lastCheckpointAtEpochMs: number | null
-      observedSpanMs: number | null
+      checkpointSpanMs: number | null
     }
 
 function endingKind(outcome: WorkerOutcome): 'completed' | 'failed' | 'crashed' | 'unknown' {
@@ -57,9 +67,18 @@ function optionalJson(value: unknown): unknown | null {
 }
 
 function checkpointOrdinal(name: string): number | null {
-  if (name === 'integrity') return 1
-  const match = /^integrity#([2-9][0-9]*)$/.exec(name)
-  return match ? Number(match[1]) : null
+  if (name === 'observe-ref') return 1
+  const match = /^observe-ref#([1-9][0-9]*)$/.exec(name)
+  if (!match) return null
+  const ordinal = Number(match[1])
+  return Number.isSafeInteger(ordinal) && ordinal >= 2 ? ordinal : null
+}
+
+function expectedCheckpointCount(value: unknown): number | null {
+  const parsed = optionalJson(value)
+  if (parsed === null || typeof parsed !== 'object') return null
+  const cycles = (parsed as Record<string, unknown>).cycles
+  return typeof cycles === 'number' && Number.isSafeInteger(cycles) && cycles >= 1 ? cycles : null
 }
 
 export class DogfoodRuntime {
@@ -68,18 +87,28 @@ export class DogfoodRuntime {
   readonly #config: DogfoodConfig
   readonly #ids: IdSource
   readonly #clock: Clock
-  readonly #snapshot: SnapshotRepository
+  readonly #observe: ObserveRepositoryRef
+  readonly #fault: DogfoodFault
+  readonly #hardExit: (code: number) => never
 
   private constructor(
     raw: LibsqlExecutor,
     config: DogfoodConfig,
-    deps: { ids: IdSource; clock: Clock; snapshot: SnapshotRepository },
+    deps: {
+      ids: IdSource
+      clock: Clock
+      observe: ObserveRepositoryRef
+      fault: DogfoodFault
+      hardExit: (code: number) => never
+    },
   ) {
     this.#raw = raw
     this.#config = config
     this.#ids = deps.ids
     this.#clock = deps.clock
-    this.#snapshot = deps.snapshot
+    this.#observe = deps.observe
+    this.#fault = deps.fault
+    this.#hardExit = deps.hardExit
     this.#store = new LibsqlSchedulerStore(raw, deps.ids)
   }
 
@@ -88,7 +117,9 @@ export class DogfoodRuntime {
     deps: {
       ids?: IdSource
       clock?: Clock
-      snapshot?: SnapshotRepository
+      observe?: ObserveRepositoryRef
+      fault?: DogfoodFault
+      hardExit?: (code: number) => never
     } = {},
   ): Promise<DogfoodRuntime> {
     const raw = LibsqlExecutor.open(config.databaseUrl, config.authToken)
@@ -97,7 +128,9 @@ export class DogfoodRuntime {
       return new DogfoodRuntime(raw, config, {
         ids: deps.ids ?? systemIdSource(),
         clock: deps.clock ?? systemClock(),
-        snapshot: deps.snapshot ?? snapshotGitHubRepository,
+        observe: deps.observe ?? observeGitHubRef,
+        fault: deps.fault ?? config.fault,
+        hardExit: deps.hardExit ?? ((code): never => process.exit(code)),
       })
     } catch (error) {
       raw.close()
@@ -106,13 +139,13 @@ export class DogfoodRuntime {
   }
 
   async start(): Promise<DogfoodStartResult> {
-    const paramsJson = serializeTaskValue('repo-health parameters', {
+    const paramsJson = serializeTaskValue('ref-journal parameters', {
       repository: this.#config.repository,
       ref: this.#config.ref,
       cycles: this.#config.cycles,
       intervalSeconds: this.#config.intervalSeconds,
     })
-    const result = await this.#store.spawn(this.#config.queue, 'repo-health', paramsJson, {
+    const result = await this.#store.spawn(this.#config.queue, 'ref-journal', paramsJson, {
       idempotencyKey: this.#config.idempotencyKey,
     })
     return {
@@ -123,13 +156,16 @@ export class DogfoodRuntime {
   }
 
   async tick(): Promise<TickResult> {
-    const registry = repoHealthRegistry(this.#snapshot)
+    const registry = refJournalRegistry(this.#observe, () => {
+      if (this.#fault === 'worker-after-checkpoint') this.#hardExit(87)
+    })
     return tick(
       {
         store: this.#store,
         ids: this.#ids,
         launcher: {
           launch: async (invocation) => {
+            if (this.#fault === 'driver-before-activation') this.#hardExit(86)
             const outcome = await runClaimedRun(
               { store: this.#store, clock: this.#clock, registry },
               invocation,
@@ -142,7 +178,12 @@ export class DogfoodRuntime {
           },
         },
       },
-      { queue: this.#config.queue, claimLimit: 1, sweepLimit: 10, leaseSeconds: 30 },
+      {
+        queue: this.#config.queue,
+        claimLimit: 1,
+        sweepLimit: 10,
+        leaseSeconds: this.#config.leaseSeconds,
+      },
     )
   }
 
@@ -152,7 +193,7 @@ export class DogfoodRuntime {
       [
         {
           sql: `SELECT task_id, state, attempts, infra_retries, failure_reason,
-                       completed_payload, first_started_at_ms
+                       completed_payload, params
                 FROM tasks WHERE queue = ? AND idempotency_key = ?`,
           args: [this.#config.queue, this.#config.idempotencyKey],
         },
@@ -172,7 +213,7 @@ export class DogfoodRuntime {
       'dogfood:status-details',
       [
         {
-          sql: `SELECT checkpoint_name, state, updated_at_ms
+          sql: `SELECT checkpoint_name, state, updated_at_ms, owner_run_id, owner_attempt
                 FROM checkpoints WHERE task_id = ? AND queue = ?`,
           args: [taskId, this.#config.queue],
         },
@@ -184,21 +225,26 @@ export class DogfoodRuntime {
       ],
       'read',
     )
-    const integrity = (checkpoints?.rows ?? [])
+    const observations = (checkpoints?.rows ?? [])
       .map((row) => ({
         ordinal: checkpointOrdinal(String(row.checkpoint_name)),
         snapshot: optionalJson(row.state),
-        updatedAt: Number(row.updated_at_ms),
+        key: String(row.checkpoint_name),
+        observedAtEpochMs: Number(row.updated_at_ms),
+        ownerRunId: String(row.owner_run_id),
+        ownerAttempt: Number(row.owner_attempt),
       }))
       .filter(
-        (item): item is { ordinal: number; snapshot: RepositorySnapshot; updatedAt: number } =>
-          item.ordinal !== null && item.snapshot !== null,
+        (item): item is RefObservationCheckpoint => item.ordinal !== null && item.snapshot !== null,
       )
       .sort((a, b) => a.ordinal - b.ordinal)
-    const firstStartedAtEpochMs =
-      task.first_started_at_ms === null ? null : Number(task.first_started_at_ms)
-    const lastCheckpointAtEpochMs =
-      integrity.length === 0 ? null : Math.max(...integrity.map((item) => item.updatedAt))
+    let contiguousCheckpointCount = 0
+    for (const observation of observations) {
+      if (observation.ordinal !== contiguousCheckpointCount + 1) break
+      contiguousCheckpointCount++
+    }
+    const first = observations[0]
+    const last = observations.at(-1)
     return {
       found: true,
       queue: this.#config.queue,
@@ -209,14 +255,15 @@ export class DogfoodRuntime {
       infraRetries: Number(task.infra_retries),
       failureReason: optionalJson(task.failure_reason),
       completedResult: optionalJson(task.completed_payload),
-      integrityCheckpoints: integrity.map((item) => item.snapshot),
+      expectedCheckpointCount: expectedCheckpointCount(task.params),
+      observedCheckpointCount: observations.length,
+      contiguousCheckpointCount,
+      refObservations: observations,
       relaunches: Number(runs?.rows[0]?.relaunches ?? 0),
-      firstStartedAtEpochMs,
-      lastCheckpointAtEpochMs,
-      observedSpanMs:
-        firstStartedAtEpochMs === null || lastCheckpointAtEpochMs === null
+      checkpointSpanMs:
+        first === undefined || last === undefined
           ? null
-          : lastCheckpointAtEpochMs - firstStartedAtEpochMs,
+          : last.observedAtEpochMs - first.observedAtEpochMs,
     }
   }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { snapshotGitHubRepository } from '../src/repo-health.js'
+import { observeGitHubRef } from '../src/ref-journal.js'
 
-describe('repository integrity snapshot', () => {
+describe('repository ref observation', () => {
   it('records commit and tree identity from GitHub', async () => {
     const fetcher = vi.fn(async () =>
       Response.json({
@@ -9,7 +9,7 @@ describe('repository integrity snapshot', () => {
         commit: { tree: { sha: 'tree-1' }, committer: { date: '2026-08-29T00:00:00Z' } },
       }),
     )
-    await expect(snapshotGitHubRepository('ejc3/durablerun', 'main', fetcher)).resolves.toEqual({
+    await expect(observeGitHubRef('ejc3/durablerun', 'main', fetcher)).resolves.toEqual({
       repository: 'ejc3/durablerun',
       ref: 'main',
       commitSha: 'commit-1',
@@ -25,9 +25,9 @@ describe('repository integrity snapshot', () => {
   })
 
   it('fails clearly on an invalid target or incomplete response', async () => {
-    await expect(snapshotGitHubRepository('../private', 'main')).rejects.toThrow(/owner\/name/)
+    await expect(observeGitHubRef('../private', 'main')).rejects.toThrow(/owner\/name/)
     await expect(
-      snapshotGitHubRepository(
+      observeGitHubRef(
         'ejc3/durablerun',
         'main',
         vi.fn(async () => Response.json({ sha: 'only-one-field' })),

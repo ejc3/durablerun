@@ -1,3 +1,5 @@
+export type DogfoodFault = 'none' | 'driver-before-activation' | 'worker-after-checkpoint'
+
 export interface DogfoodConfig {
   databaseUrl: string
   authToken?: string
@@ -7,6 +9,8 @@ export interface DogfoodConfig {
   ref: string
   cycles: number
   intervalSeconds: number
+  leaseSeconds: number
+  fault: DogfoodFault
 }
 
 type Environment = Readonly<Record<string, string | undefined>>
@@ -14,11 +18,13 @@ type Environment = Readonly<Record<string, string | undefined>>
 const DEFAULTS = {
   databaseUrl: 'file:dogfood.db',
   queue: 'dogfood',
-  idempotencyKey: 'repo-health-v1',
+  idempotencyKey: 'ref-journal-v1',
   repository: 'ejc3/durablerun',
   ref: 'main',
   cycles: 15,
   intervalSeconds: 12 * 60 * 60,
+  leaseSeconds: 30,
+  fault: 'none',
 } as const
 
 function nonempty(env: Environment, name: string, fallback: string): string {
@@ -41,6 +47,22 @@ export function dogfoodConfigFromEnv(env: Environment = process.env): DogfoodCon
   const cycles = nonnegativeInteger(env, 'DURABLERUN_DOGFOOD_CYCLES', DEFAULTS.cycles)
   if (cycles < 1) throw new RangeError('DURABLERUN_DOGFOOD_CYCLES must be at least 1')
   const authToken = env.TURSO_AUTH_TOKEN?.trim()
+  const fault = nonempty(env, 'DURABLERUN_DOGFOOD_FAULT', DEFAULTS.fault)
+  if (
+    fault !== 'none' &&
+    fault !== 'driver-before-activation' &&
+    fault !== 'worker-after-checkpoint'
+  ) {
+    throw new RangeError('DURABLERUN_DOGFOOD_FAULT is not a supported fault')
+  }
+  const leaseSeconds = nonnegativeInteger(
+    env,
+    'DURABLERUN_DOGFOOD_LEASE_SECONDS',
+    DEFAULTS.leaseSeconds,
+  )
+  if (leaseSeconds < 1) {
+    throw new RangeError('DURABLERUN_DOGFOOD_LEASE_SECONDS must be at least 1')
+  }
   return {
     databaseUrl: nonempty(env, 'TURSO_DATABASE_URL', DEFAULTS.databaseUrl),
     ...(authToken ? { authToken } : {}),
@@ -54,5 +76,7 @@ export function dogfoodConfigFromEnv(env: Environment = process.env): DogfoodCon
       'DURABLERUN_DOGFOOD_INTERVAL_SECONDS',
       DEFAULTS.intervalSeconds,
     ),
+    leaseSeconds,
+    fault,
   }
 }

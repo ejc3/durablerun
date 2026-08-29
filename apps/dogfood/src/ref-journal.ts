@@ -1,6 +1,6 @@
 import type { TaskRegistry } from '@durablerun/sdk'
 
-export interface RepositorySnapshot {
+export interface RefObservation {
   repository: string
   ref: string
   commitSha: string
@@ -8,7 +8,7 @@ export interface RepositorySnapshot {
   committedAt: string
 }
 
-export type SnapshotRepository = (repository: string, ref: string) => Promise<RepositorySnapshot>
+export type ObserveRepositoryRef = (repository: string, ref: string) => Promise<RefObservation>
 
 interface GitHubCommitResponse {
   sha?: unknown
@@ -26,11 +26,11 @@ function repositoryPath(repository: string): string {
   return parts.map((part) => encodeURIComponent(part)).join('/')
 }
 
-export async function snapshotGitHubRepository(
+export async function observeGitHubRef(
   repository: string,
   ref: string,
   fetcher: typeof fetch = fetch,
-): Promise<RepositorySnapshot> {
+): Promise<RefObservation> {
   if (!ref) throw new RangeError('repository ref must be non-empty')
   const response = await fetcher(
     `https://api.github.com/repos/${repositoryPath(repository)}/commits/${encodeURIComponent(ref)}`,
@@ -61,15 +61,15 @@ export async function snapshotGitHubRepository(
   return { repository, ref, commitSha, treeSha, committedAt }
 }
 
-interface RepoHealthParams {
+interface RefJournalParams {
   repository: string
   ref: string
   cycles: number
   intervalSeconds: number
 }
 
-function params(value: unknown): RepoHealthParams {
-  if (value === null || typeof value !== 'object') throw new TypeError('repo-health params')
+function params(value: unknown): RefJournalParams {
+  if (value === null || typeof value !== 'object') throw new TypeError('ref-journal params')
   const candidate = value as Record<string, unknown>
   const repository = candidate.repository
   const ref = candidate.ref
@@ -85,25 +85,29 @@ function params(value: unknown): RepoHealthParams {
     !Number.isSafeInteger(intervalSeconds) ||
     intervalSeconds < 0
   ) {
-    throw new TypeError('invalid repo-health params')
+    throw new TypeError('invalid ref-journal params')
   }
   return { repository, ref, cycles, intervalSeconds }
 }
 
-export function repoHealthRegistry(
-  snapshot: SnapshotRepository = snapshotGitHubRepository,
+export function refJournalRegistry(
+  observe: ObserveRepositoryRef = observeGitHubRef,
+  afterCheckpoint: (ordinal: number) => void = () => {},
 ): TaskRegistry {
   return new Map([
     [
-      'repo-health',
+      'ref-journal',
       async (ctx, raw) => {
         const input = params(raw)
-        const snapshots: RepositorySnapshot[] = []
+        const observations: RefObservation[] = []
         for (let cycle = 0; cycle < input.cycles; cycle++) {
-          snapshots.push(await ctx.step('integrity', () => snapshot(input.repository, input.ref)))
+          observations.push(
+            await ctx.step('observe-ref', () => observe(input.repository, input.ref)),
+          )
+          afterCheckpoint(cycle + 1)
           if (cycle + 1 < input.cycles) await ctx.sleepFor(input.intervalSeconds)
         }
-        return { cycles: snapshots.length, snapshots }
+        return { cycles: observations.length, observations }
       },
     ],
   ])
