@@ -14,5 +14,9 @@ it('retains the exact status read that the workflow verifies', () => {
 
   expect(verifier).toHaveLength(1)
   expect(verifier[0]).toContain('tee dogfood-after.json')
-  expect(commands.filter((run) => run.includes('dogfood:status'))).toEqual([])
+  expect(
+    commands.filter(
+      (run) => run.includes('dogfood:status') && run.includes('tee dogfood-after.json'),
+    ),
+  ).toEqual([])
 })

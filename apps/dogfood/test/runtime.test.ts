@@ -73,6 +73,8 @@ describe('ref-journal dogfood runtime', () => {
       state: 'completed',
       attempts: 0,
       infraRetries: 0,
+      expectedCheckpointCount: 2,
+      expectedCheckpointSpanMs: 0,
       refObservations: [
         { snapshot: { commitSha: 'commit-1' } },
         { snapshot: { commitSha: 'commit-2' } },

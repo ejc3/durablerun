@@ -48,6 +48,7 @@ export type DogfoodStatus =
       failureReason: unknown | null
       completedResult: unknown | null
       expectedCheckpointCount: number | null
+      expectedCheckpointSpanMs: number | null
       observedCheckpointCount: number
       contiguousCheckpointCount: number
       refObservations: readonly RefObservationCheckpoint[]
@@ -74,11 +75,27 @@ function checkpointOrdinal(name: string): number | null {
   return Number.isSafeInteger(ordinal) && ordinal >= 2 ? ordinal : null
 }
 
-function expectedCheckpointCount(value: unknown): number | null {
+function expectedCheckpointEvidence(value: unknown): {
+  count: number | null
+  spanMs: number | null
+} {
   const parsed = optionalJson(value)
-  if (parsed === null || typeof parsed !== 'object') return null
-  const cycles = (parsed as Record<string, unknown>).cycles
-  return typeof cycles === 'number' && Number.isSafeInteger(cycles) && cycles >= 1 ? cycles : null
+  if (parsed === null || typeof parsed !== 'object') return { count: null, spanMs: null }
+  const candidate = parsed as Record<string, unknown>
+  const cycles = candidate.cycles
+  const intervalSeconds = candidate.intervalSeconds
+  if (
+    typeof cycles !== 'number' ||
+    !Number.isSafeInteger(cycles) ||
+    cycles < 1 ||
+    typeof intervalSeconds !== 'number' ||
+    !Number.isSafeInteger(intervalSeconds) ||
+    intervalSeconds < 0
+  ) {
+    return { count: null, spanMs: null }
+  }
+  const spanMs = (cycles - 1) * intervalSeconds * 1_000
+  return Number.isSafeInteger(spanMs) ? { count: cycles, spanMs } : { count: cycles, spanMs: null }
 }
 
 export class DogfoodRuntime {
@@ -245,6 +262,7 @@ export class DogfoodRuntime {
     }
     const first = observations[0]
     const last = observations.at(-1)
+    const expected = expectedCheckpointEvidence(task.params)
     return {
       found: true,
       queue: this.#config.queue,
@@ -255,7 +273,8 @@ export class DogfoodRuntime {
       infraRetries: Number(task.infra_retries),
       failureReason: optionalJson(task.failure_reason),
       completedResult: optionalJson(task.completed_payload),
-      expectedCheckpointCount: expectedCheckpointCount(task.params),
+      expectedCheckpointCount: expected.count,
+      expectedCheckpointSpanMs: expected.spanMs,
       observedCheckpointCount: observations.length,
       contiguousCheckpointCount,
       refObservations: observations,
