@@ -31,6 +31,24 @@ describe('dogfood configuration', () => {
     expect(dogfoodConfigFromEnv({ TURSO_AUTH_TOKEN: '  ' })).not.toHaveProperty('authToken')
   })
 
+  it('keeps a fault probe on its isolated queue after clearing the one-shot fault', () => {
+    const probeEnvironment = {
+      DURABLERUN_DOGFOOD_QUEUE: 'dogfood',
+      DURABLERUN_DOGFOOD_KEY: 'fresh-probe',
+      DURABLERUN_DOGFOOD_PROBE: 'true',
+    }
+    const injected = dogfoodConfigFromEnv({
+      ...probeEnvironment,
+      DURABLERUN_DOGFOOD_FAULT: 'driver-before-activation',
+    })
+    const recovery = dogfoodConfigFromEnv({
+      ...probeEnvironment,
+      DURABLERUN_DOGFOOD_FAULT: 'none',
+    })
+
+    expect(recovery.queue).toBe(injected.queue)
+  })
+
   it('rejects vacuous or noncanonical cycle settings', () => {
     expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_CYCLES: '0' })).toThrow(/at least 1/)
     expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_CYCLES: '01' })).toThrow(/canonical/)
