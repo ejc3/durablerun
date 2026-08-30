@@ -1,5 +1,6 @@
 import {
   DOGFOOD_MILESTONE_SPAN_MS,
+  DOGFOOD_PROGRESS_GRACE_MS,
   DOGFOOD_TASK_NAME,
   type DogfoodFault,
   type DogfoodWorkloadIntent,
@@ -72,6 +73,38 @@ function journalEvidenceErrors(
     if (!observation || !exactInteger(observation.ordinal, index + 1)) {
       errors.push('receipt checkpoint ordinals are not contiguous')
       break
+    }
+  }
+
+  if (!requireComplete && observedCountIsValid && observations.length === observedCount) {
+    const taskCreatedAtEpochMs = receipt.taskCreatedAtEpochMs
+    const databaseNowEpochMs = receipt.databaseNowEpochMs
+    const lastObservation = observedCount === 0 ? null : record(observations.at(-1))
+    const progressAnchorEpochMs =
+      observedCount === 0 ? taskCreatedAtEpochMs : lastObservation?.observedAtEpochMs
+    const intervalBeforeNextMs =
+      observedCount === 0 || observedCount === expectedCount ? 0 : workload.intervalSeconds * 1_000
+    if (
+      typeof taskCreatedAtEpochMs !== 'number' ||
+      !Number.isSafeInteger(taskCreatedAtEpochMs) ||
+      taskCreatedAtEpochMs < 0 ||
+      typeof databaseNowEpochMs !== 'number' ||
+      !Number.isSafeInteger(databaseNowEpochMs) ||
+      databaseNowEpochMs < taskCreatedAtEpochMs ||
+      typeof progressAnchorEpochMs !== 'number' ||
+      !Number.isSafeInteger(progressAnchorEpochMs) ||
+      progressAnchorEpochMs < taskCreatedAtEpochMs ||
+      progressAnchorEpochMs > databaseNowEpochMs ||
+      !Number.isSafeInteger(intervalBeforeNextMs) ||
+      intervalBeforeNextMs < 0 ||
+      !Number.isSafeInteger(intervalBeforeNextMs + DOGFOOD_PROGRESS_GRACE_MS)
+    ) {
+      errors.push('live journal timing evidence is invalid')
+    } else if (
+      databaseNowEpochMs - progressAnchorEpochMs >
+      intervalBeforeNextMs + DOGFOOD_PROGRESS_GRACE_MS
+    ) {
+      errors.push('live journal is overdue for checkpoint progress')
     }
   }
 

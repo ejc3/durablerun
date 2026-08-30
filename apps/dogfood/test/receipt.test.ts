@@ -40,6 +40,8 @@ function receipt(overrides: Partial<FoundReceipt> = {}): FoundReceipt {
       cycles: 1,
       intervalSeconds: 0,
     },
+    taskCreatedAtEpochMs: 900_000,
+    databaseNowEpochMs: 1_100_000,
     observedCheckpointCount: 1,
     contiguousCheckpointCount: 1,
     refObservations: [firstObservation],

@@ -10,7 +10,12 @@ import {
 } from '@durablerun/core'
 import { type TickResult, tick } from '@durablerun/driver'
 import { type WorkerOutcome, runClaimedRun } from '@durablerun/sdk'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import {
+  LibsqlExecutor,
+  LibsqlSchedulerStore,
+  LibsqlStoreAdmin,
+  NOW_MS,
+} from '@durablerun/store-libsql'
 import {
   DOGFOOD_CHECKPOINT_NAME,
   DOGFOOD_TASK_NAME,
@@ -60,6 +65,8 @@ export type DogfoodStatus =
       failureReason: unknown | null
       completedResult: unknown | null
       durableParameters: DogfoodJournalParameters | null
+      taskCreatedAtEpochMs: number
+      databaseNowEpochMs: number
       observedCheckpointCount: number
       contiguousCheckpointCount: number
       refObservations: readonly RefObservationCheckpoint[]
@@ -232,7 +239,8 @@ export class DogfoodRuntime {
       [
         {
           sql: `SELECT task_id, task_name, state, attempts, infra_retries, failure_reason,
-                       completed_payload, params
+                       completed_payload, params, created_at_ms,
+                       ${NOW_MS} AS database_now_ms
                 FROM tasks WHERE queue = ? AND idempotency_key = ?`,
           args: [this.#config.queue, this.#config.idempotencyKey],
         },
@@ -296,6 +304,8 @@ export class DogfoodRuntime {
       failureReason: optionalJson(task.failure_reason),
       completedResult: optionalJson(task.completed_payload),
       durableParameters: parseDogfoodJournalParameters(optionalJson(task.params)),
+      taskCreatedAtEpochMs: Number(task.created_at_ms),
+      databaseNowEpochMs: Number(task.database_now_ms),
       observedCheckpointCount: observations.length,
       contiguousCheckpointCount,
       refObservations: observations,

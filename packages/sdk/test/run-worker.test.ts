@@ -1130,7 +1130,7 @@ describe('runClaimedRun', () => {
         const sleep = f.clock.sleep.bind(f.clock)
         f.clock.sleep = (ms, interrupt) => {
           const pending = sleep(ms, interrupt)
-          if (ownFinalizationCause && ms === 5_000 && interrupt === undefined) {
+          if (ownFinalizationCause && ms === 5_000) {
             Object.defineProperty(pending, 'cause', {
               value: new Error('finalization sentinel cause'),
             })

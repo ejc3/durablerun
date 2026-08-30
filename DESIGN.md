@@ -291,7 +291,11 @@ configured workload intent exactly, and the durable interval span itself to
 cover at least seven days. An idempotently reused wrong-target, short, or
 long-cadence task therefore fails both start and receipt validation instead of
 qualifying under new process configuration. The task handler, status reader,
-and receipt verifier share one parser for that durable workload shape. A
+and receipt verifier share one parser for that durable workload shape. A live
+receipt uses database time and rolls a two-hour freshness deadline from task
+creation or the latest contiguous checkpoint; exceeding the next durable
+interval plus that grace fails the scheduled run, so zero or stalled progress
+cannot remain green for seven days. A
 deliberate-death probe derives
 an isolated queue from its fresh idempotency key; its probe identity remains
 set while the one-shot injection hook is cleared, so start, injection,
@@ -476,7 +480,9 @@ One invocation executes one claimed run to its next suspension point:
   immediate catch; context store failures are enrolled before they cross the
   handler boundary. Once the heartbeat pump starts, one outer cleanup scope
   covers checkpoint loading, context construction, handler execution, and
-  finalization; every exit stops and joins the pump. Retry accounting uses the
+  finalization; every exit stops and joins the pump. The join is bounded, and
+  its losing deadline is cancelled so a completed short-lived host retains no
+  idle timer. Retry accounting uses the
   worker-owned lexical attempt snapshot taken before task code and never
   rereads the public context after the handler. Handler execution plus result
   serialization and the completion write are lexically separate phases. Only

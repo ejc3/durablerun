@@ -42,11 +42,15 @@ worker steps. Normal receipt validation enforces the fixed seven-day floor
 and exact task type, target, count, and cadence against durable parameters, so
 reusing a wrong-target, shorter, or long-cadence idempotent task cannot qualify;
 the handler, status reader, and receipt verifier share the same workload parser.
+Live receipts also compare database-clock task/checkpoint age with the next
+configured interval and fail after two missed hourly slots, so a stalled task
+cannot supply seven days of vacuously green evidence.
 Fresh fault probes also derive isolated queues, and that probe identity remains
 set after the one-shot fault hook is cleared for recovery, so due normal work
 cannot consume the deliberate death and recovery cannot switch queues. The
-bounded host also fails its invocation
-after observing an inline task, infrastructure, registry, or launcher failure.
+bounded host also fails its invocation after observing an inline task,
+infrastructure, registry, or launcher failure, and a completed worker cancels
+its losing finalization deadline instead of retaining idle process time.
 The only remaining exit evidence is external and elapsed: provision the
 dedicated Turso URL/token, dispatch `start`, set
 `DURABLERUN_DOGFOOD_ENABLED=true`, and retain the verified receipts for seven

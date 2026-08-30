@@ -7,7 +7,8 @@ timestamp, then sleeps without keeping a worker alive.
 
 ## Run locally
 
-Requires Node 22 and pnpm 10.
+Requires a Node version satisfying `package.json`'s `engines.node` declaration
+and pnpm 10.
 
 ```sh
 pnpm install
@@ -50,8 +51,10 @@ cycles contain 14 12-hour intervals, so that span is at least seven days.
 Changing repository, ref, cycles, or interval does not mutate an existing
 idempotent task. Both `start` and the receipt verifier reject a durable task
 whose type or complete parameters differ from the current intent; the verifier
-also rejects spans below seven days. Give `DURABLERUN_DOGFOOD_KEY` a new value
-to start a new workload.
+also rejects spans below seven days. While a journal is live, its database-clock
+receipt must advance by the configured interval within two hourly scheduling
+slots; a stalled ordinal therefore fails instead of producing vacuously green
+evidence. Give `DURABLERUN_DOGFOOD_KEY` a new value to start a new workload.
 
 The opt-in GitHub Actions workflow runs one tick each hour, prevents overlap,
 and retains every status receipt for 30 days. Configure the repository secrets

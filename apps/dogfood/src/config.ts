@@ -1,6 +1,7 @@
 export type DogfoodFault = 'none' | 'driver-before-activation' | 'worker-after-checkpoint'
 
 export const DOGFOOD_MILESTONE_SPAN_MS = 7 * 24 * 60 * 60 * 1_000
+export const DOGFOOD_PROGRESS_GRACE_MS = 2 * 60 * 60 * 1_000
 export const DOGFOOD_TASK_NAME = 'ref-journal'
 export const DOGFOOD_CHECKPOINT_NAME = 'observe-ref'
 

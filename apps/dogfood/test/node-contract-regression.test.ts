@@ -11,10 +11,14 @@ it('declares the Node floor required by the dogfood command line', () => {
   const dogfoodCommands = Object.entries(manifest.scripts ?? {}).filter(([name]) =>
     name.startsWith('dogfood:'),
   )
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
 
   expect(dogfoodCommands).not.toEqual([])
   expect(dogfoodCommands.every(([, command]) => command.includes('--env-file-if-exists'))).toBe(
     true,
   )
-  expect(manifest.engines?.node).toBe('>=22.9')
+  expect({
+    engine: manifest.engines?.node,
+    readmeDelegatesToEngine: readme.includes('package.json') && readme.includes('engines.node'),
+  }).toEqual({ engine: '>=22.12.0', readmeDelegatesToEngine: true })
 })

@@ -235,6 +235,11 @@ export async function runClaimedRun(
     // Bounded finalization: a heartbeat call that never settles must not
     // retain this pass (and its HTTP request) forever after the run's
     // transition already committed.
-    await trustedPromiseRace(pump, clock.sleep(5_000))
+    const finalizationStop = new TaskAbortController()
+    try {
+      await trustedPromiseRace(pump, clock.sleep(5_000, abortControllerSignal(finalizationStop)))
+    } finally {
+      abortControllerAbort(finalizationStop)
+    }
   }
 }
