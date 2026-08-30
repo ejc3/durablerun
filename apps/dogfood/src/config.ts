@@ -1,6 +1,18 @@
 export type DogfoodFault = 'none' | 'driver-before-activation' | 'worker-after-checkpoint'
 
 export const DOGFOOD_MILESTONE_SPAN_MS = 7 * 24 * 60 * 60 * 1_000
+export const DOGFOOD_TASK_NAME = 'ref-journal'
+
+export interface DogfoodJournalParameters {
+  repository: string
+  ref: string
+  cycles: number
+  intervalSeconds: number
+}
+
+export interface DogfoodWorkloadIntent extends DogfoodJournalParameters {
+  taskName: typeof DOGFOOD_TASK_NAME
+}
 
 export interface DogfoodConfig {
   databaseUrl: string
@@ -13,6 +25,19 @@ export interface DogfoodConfig {
   intervalSeconds: number
   leaseSeconds: number
   fault: DogfoodFault
+}
+
+export function dogfoodJournalParameters(config: DogfoodConfig): DogfoodJournalParameters {
+  return {
+    repository: config.repository,
+    ref: config.ref,
+    cycles: config.cycles,
+    intervalSeconds: config.intervalSeconds,
+  }
+}
+
+export function dogfoodWorkloadIntent(config: DogfoodConfig): DogfoodWorkloadIntent {
+  return { taskName: DOGFOOD_TASK_NAME, ...dogfoodJournalParameters(config) }
 }
 
 type Environment = Readonly<Record<string, string | undefined>>

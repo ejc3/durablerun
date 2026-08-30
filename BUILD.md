@@ -39,8 +39,9 @@ green, including exact recovery counters and checkpoint ownership. The
 workflow's retained receipt fails closed on producer errors, and the job has no
 repository-token permission; an optional `DOGFOOD_GITHUB_TOKEN` is scoped to
 worker steps. Normal receipt validation enforces the fixed seven-day floor
-against durable task parameters, so reusing a shorter idempotent task cannot
-qualify. Fresh fault probes also derive isolated queues, so due normal work
+and exact task type, target, count, and cadence against durable parameters, so
+reusing a wrong-target, shorter, or long-cadence idempotent task cannot qualify.
+Fresh fault probes also derive isolated queues, so due normal work
 cannot consume the deliberate death. The bounded host also fails its invocation
 after observing an inline task, infrastructure, registry, or launcher failure.
 The only remaining exit evidence is external and elapsed: provision the

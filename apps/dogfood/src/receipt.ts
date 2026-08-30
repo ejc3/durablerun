@@ -1,4 +1,9 @@
-import { DOGFOOD_MILESTONE_SPAN_MS, type DogfoodFault } from './config.js'
+import {
+  DOGFOOD_MILESTONE_SPAN_MS,
+  DOGFOOD_TASK_NAME,
+  type DogfoodFault,
+  type DogfoodWorkloadIntent,
+} from './config.js'
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -10,28 +15,57 @@ function exactInteger(value: unknown, expected: number): boolean {
   return typeof value === 'number' && Number.isSafeInteger(value) && value === expected
 }
 
+function receiptWorkload(receipt: Record<string, unknown>): DogfoodWorkloadIntent | null {
+  const taskName = receipt.taskName
+  const parameters = record(receipt.durableParameters)
+  const repository = parameters?.repository
+  const ref = parameters?.ref
+  const cycles = parameters?.cycles
+  const intervalSeconds = parameters?.intervalSeconds
+  if (
+    taskName !== DOGFOOD_TASK_NAME ||
+    typeof repository !== 'string' ||
+    repository.length === 0 ||
+    typeof ref !== 'string' ||
+    ref.length === 0 ||
+    typeof cycles !== 'number' ||
+    !Number.isSafeInteger(cycles) ||
+    cycles < 1 ||
+    typeof intervalSeconds !== 'number' ||
+    !Number.isSafeInteger(intervalSeconds) ||
+    intervalSeconds < 0
+  ) {
+    return null
+  }
+  return { taskName, repository, ref, cycles, intervalSeconds }
+}
+
+function workloadIntentErrors(
+  workload: DogfoodWorkloadIntent | null,
+  intent: DogfoodWorkloadIntent,
+): string[] {
+  if (workload === null) return ['durable journal workload is invalid']
+  return workload.taskName === intent.taskName &&
+    workload.repository === intent.repository &&
+    workload.ref === intent.ref &&
+    workload.cycles === intent.cycles &&
+    workload.intervalSeconds === intent.intervalSeconds
+    ? []
+    : ['durable journal workload does not match configured intent']
+}
+
 function journalEvidenceErrors(
   receipt: Record<string, unknown>,
+  workload: DogfoodWorkloadIntent | null,
   requireComplete: boolean,
   minimumExpectedSpanMs = 0,
 ): string[] {
   const errors: string[] = []
-  const expectedCount = receipt.expectedCheckpointCount
-  const expectedSpanMs = receipt.expectedCheckpointSpanMs
-  if (
-    typeof expectedCount !== 'number' ||
-    !Number.isSafeInteger(expectedCount) ||
-    expectedCount < 1
-  ) {
-    errors.push('expected checkpoint count is invalid')
-    return errors
-  }
-  if (
-    typeof expectedSpanMs !== 'number' ||
-    !Number.isSafeInteger(expectedSpanMs) ||
-    expectedSpanMs < 0
-  ) {
-    errors.push('expected checkpoint span is invalid')
+  if (workload === null) return errors
+  const expectedCount = workload.cycles
+  const expectedSpanMs = (expectedCount - 1) * workload.intervalSeconds * 1_000
+  if (!Number.isSafeInteger(expectedSpanMs)) {
+    errors.push('durable checkpoint span is invalid')
   } else if (expectedSpanMs < minimumExpectedSpanMs) {
     errors.push('durable task parameters cover less than seven days')
   }
@@ -98,19 +132,38 @@ function journalEvidenceErrors(
   return errors
 }
 
-export function dogfoodReceiptErrors(candidate: unknown, fault: DogfoodFault): readonly string[] {
+export function dogfoodWorkloadErrors(
+  candidate: unknown,
+  intent: DogfoodWorkloadIntent,
+): readonly string[] {
+  const receipt = record(candidate)
+  if (!receipt || receipt.found !== true) return ['dogfood task was not found']
+  return workloadIntentErrors(receiptWorkload(receipt), intent)
+}
+
+export function requireDogfoodWorkload(candidate: unknown, intent: DogfoodWorkloadIntent): void {
+  const errors = dogfoodWorkloadErrors(candidate, intent)
+  if (errors.length > 0) throw new Error(errors.join('; '))
+}
+
+export function dogfoodReceiptErrors(
+  candidate: unknown,
+  fault: DogfoodFault,
+  intent: DogfoodWorkloadIntent,
+): readonly string[] {
   const receipt = record(candidate)
   if (!receipt || receipt.found !== true) return ['dogfood task was not found']
 
-  const errors: string[] = []
+  const workload = receiptWorkload(receipt)
+  const errors = workloadIntentErrors(workload, intent)
   if (fault === 'none') {
     if (!exactInteger(receipt.attempts, 0)) errors.push('scheduled task spent user attempts')
     if (receipt.state === 'failed' || receipt.state === 'cancelled') {
       errors.push(`scheduled task ended in terminal state ${receipt.state}`)
     } else if (receipt.state === 'completed') {
-      errors.push(...journalEvidenceErrors(receipt, true, DOGFOOD_MILESTONE_SPAN_MS))
+      errors.push(...journalEvidenceErrors(receipt, workload, true, DOGFOOD_MILESTONE_SPAN_MS))
     } else if (['pending', 'running', 'sleeping'].includes(String(receipt.state))) {
-      errors.push(...journalEvidenceErrors(receipt, false, DOGFOOD_MILESTONE_SPAN_MS))
+      errors.push(...journalEvidenceErrors(receipt, workload, false, DOGFOOD_MILESTONE_SPAN_MS))
     } else {
       errors.push('scheduled task has an unknown state')
     }
@@ -118,12 +171,12 @@ export function dogfoodReceiptErrors(candidate: unknown, fault: DogfoodFault): r
   }
 
   if (receipt.state !== 'completed') errors.push('fault probe did not complete')
-  else errors.push(...journalEvidenceErrors(receipt, true))
+  else errors.push(...journalEvidenceErrors(receipt, workload, true))
   if (!exactInteger(receipt.attempts, 0)) errors.push('fault probe spent user attempts')
-  if (!exactInteger(receipt.expectedCheckpointCount, 1)) {
+  if (!exactInteger(workload?.cycles, 1)) {
     errors.push('expected checkpoint count is not one')
   }
-  if (!exactInteger(receipt.expectedCheckpointSpanMs, 0)) {
+  if (!exactInteger(workload?.intervalSeconds, 0)) {
     errors.push('expected checkpoint span is not zero')
   }
   if (!exactInteger(receipt.observedCheckpointCount, 1)) {
@@ -156,7 +209,11 @@ export function dogfoodReceiptErrors(candidate: unknown, fault: DogfoodFault): r
   return errors
 }
 
-export function requireDogfoodReceipt(candidate: unknown, fault: DogfoodFault): void {
-  const errors = dogfoodReceiptErrors(candidate, fault)
+export function requireDogfoodReceipt(
+  candidate: unknown,
+  fault: DogfoodFault,
+  intent: DogfoodWorkloadIntent,
+): void {
+  const errors = dogfoodReceiptErrors(candidate, fault, intent)
   if (errors.length > 0) throw new Error(`invalid dogfood receipt:\n- ${errors.join('\n- ')}`)
 }

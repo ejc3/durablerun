@@ -48,9 +48,10 @@ accounting, relaunches, and the first-to-last checkpoint span. The default 15
 cycles contain 14 12-hour intervals, so that span is at least seven days.
 
 Changing repository, ref, cycles, or interval does not mutate an existing
-idempotent task. The verifier rejects durable parameters that span less than
-seven days even when current process settings are longer. Give
-`DURABLERUN_DOGFOOD_KEY` a new value to start a new run.
+idempotent task. Both `start` and the receipt verifier reject a durable task
+whose type or complete parameters differ from the current intent; the verifier
+also rejects spans below seven days. Give `DURABLERUN_DOGFOOD_KEY` a new value
+to start a new workload.
 
 The opt-in GitHub Actions workflow runs one tick each hour, prevents overlap,
 and retains every status receipt for 30 days. Configure the repository secrets

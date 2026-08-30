@@ -1,7 +1,7 @@
 import { StoreUnavailableError } from '@durablerun/core'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { DogfoodConfig } from '../src/config.js'
+import { type DogfoodConfig, dogfoodWorkloadIntent } from '../src/config.js'
 import { dogfoodReceiptErrors } from '../src/receipt.js'
 import type { RefObservation } from '../src/ref-journal.js'
 import { DogfoodRuntime } from '../src/runtime.js'
@@ -76,8 +76,12 @@ describe('ref-journal dogfood runtime', () => {
       state: 'completed',
       attempts: 0,
       infraRetries: 0,
-      expectedCheckpointCount: 2,
-      expectedCheckpointSpanMs: 0,
+      durableParameters: {
+        repository: 'ejc3/durablerun',
+        ref: 'main',
+        cycles: 2,
+        intervalSeconds: 0,
+      },
       refObservations: [
         { snapshot: { commitSha: 'commit-1' } },
         { snapshot: { commitSha: 'commit-2' } },
@@ -115,7 +119,13 @@ describe('ref-journal dogfood runtime', () => {
       infraRetries: 0,
       observedCheckpointCount: 0,
     })
-    expect(dogfoodReceiptErrors(status, 'none')).toEqual([])
+    expect(
+      dogfoodReceiptErrors(
+        status,
+        'none',
+        dogfoodWorkloadIntent({ ...config, cycles: 15, intervalSeconds: 43_200 }),
+      ),
+    ).toEqual([])
     expect(error).toBeInstanceOf(Error)
     expect(String(error)).toContain('dogfood tick observed infrastructure failure')
   })

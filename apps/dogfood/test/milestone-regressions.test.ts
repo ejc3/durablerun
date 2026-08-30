@@ -143,7 +143,7 @@ describe('dogfood milestone receipts', () => {
       const status = await runtime.status()
       expect(status).toMatchObject({
         found: true,
-        expectedCheckpointCount: 12,
+        durableParameters: { cycles: 12, intervalSeconds: 0 },
         observedCheckpointCount: 12,
         contiguousCheckpointCount: 12,
         checkpointSpanMs: expect.any(Number),

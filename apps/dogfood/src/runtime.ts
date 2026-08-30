@@ -8,14 +8,22 @@ import {
   systemClock,
   systemIdSource,
 } from '@durablerun/core'
-import { tick, type TickResult } from '@durablerun/driver'
-import { runClaimedRun, type WorkerOutcome } from '@durablerun/sdk'
+import { type TickResult, tick } from '@durablerun/driver'
+import { type WorkerOutcome, runClaimedRun } from '@durablerun/sdk'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
-import type { DogfoodConfig, DogfoodFault } from './config.js'
+import {
+  DOGFOOD_TASK_NAME,
+  type DogfoodConfig,
+  type DogfoodFault,
+  type DogfoodJournalParameters,
+  dogfoodJournalParameters,
+  dogfoodWorkloadIntent,
+} from './config.js'
+import { requireDogfoodWorkload } from './receipt.js'
 import {
   type ObserveRepositoryRef,
-  observeGitHubRef,
   type RefObservation,
+  observeGitHubRef,
   refJournalRegistry,
 } from './ref-journal.js'
 
@@ -43,13 +51,13 @@ export type DogfoodStatus =
       queue: string
       idempotencyKey: string
       taskId: string
+      taskName: string
       state: string
       attempts: number
       infraRetries: number
       failureReason: unknown | null
       completedResult: unknown | null
-      expectedCheckpointCount: number | null
-      expectedCheckpointSpanMs: number | null
+      durableParameters: DogfoodJournalParameters | null
       observedCheckpointCount: number
       contiguousCheckpointCount: number
       refObservations: readonly RefObservationCheckpoint[]
@@ -85,16 +93,19 @@ function checkpointOrdinal(name: string): number | null {
   return Number.isSafeInteger(ordinal) && ordinal >= 2 ? ordinal : null
 }
 
-function expectedCheckpointEvidence(value: unknown): {
-  count: number | null
-  spanMs: number | null
-} {
+function durableJournalParameters(value: unknown): DogfoodJournalParameters | null {
   const parsed = optionalJson(value)
-  if (parsed === null || typeof parsed !== 'object') return { count: null, spanMs: null }
+  if (parsed === null || typeof parsed !== 'object') return null
   const candidate = parsed as Record<string, unknown>
+  const repository = candidate.repository
+  const ref = candidate.ref
   const cycles = candidate.cycles
   const intervalSeconds = candidate.intervalSeconds
   if (
+    typeof repository !== 'string' ||
+    repository.length === 0 ||
+    typeof ref !== 'string' ||
+    ref.length === 0 ||
     typeof cycles !== 'number' ||
     !Number.isSafeInteger(cycles) ||
     cycles < 1 ||
@@ -102,10 +113,9 @@ function expectedCheckpointEvidence(value: unknown): {
     !Number.isSafeInteger(intervalSeconds) ||
     intervalSeconds < 0
   ) {
-    return { count: null, spanMs: null }
+    return null
   }
-  const spanMs = (cycles - 1) * intervalSeconds * 1_000
-  return Number.isSafeInteger(spanMs) ? { count: cycles, spanMs } : { count: cycles, spanMs: null }
+  return { repository, ref, cycles, intervalSeconds }
 }
 
 export class DogfoodRuntime {
@@ -166,15 +176,16 @@ export class DogfoodRuntime {
   }
 
   async start(): Promise<DogfoodStartResult> {
-    const paramsJson = serializeTaskValue('ref-journal parameters', {
-      repository: this.#config.repository,
-      ref: this.#config.ref,
-      cycles: this.#config.cycles,
-      intervalSeconds: this.#config.intervalSeconds,
-    })
-    const result = await this.#store.spawn(this.#config.queue, 'ref-journal', paramsJson, {
+    const paramsJson = serializeTaskValue(
+      'ref-journal parameters',
+      dogfoodJournalParameters(this.#config),
+    )
+    const result = await this.#store.spawn(this.#config.queue, DOGFOOD_TASK_NAME, paramsJson, {
       idempotencyKey: this.#config.idempotencyKey,
     })
+    if (!result.created) {
+      requireDogfoodWorkload(await this.status(), dogfoodWorkloadIntent(this.#config))
+    }
     return {
       ...result,
       queue: this.#config.queue,
@@ -246,7 +257,7 @@ export class DogfoodRuntime {
       'dogfood:status-task',
       [
         {
-          sql: `SELECT task_id, state, attempts, infra_retries, failure_reason,
+          sql: `SELECT task_id, task_name, state, attempts, infra_retries, failure_reason,
                        completed_payload, params
                 FROM tasks WHERE queue = ? AND idempotency_key = ?`,
           args: [this.#config.queue, this.#config.idempotencyKey],
@@ -299,19 +310,18 @@ export class DogfoodRuntime {
     }
     const first = observations[0]
     const last = observations.at(-1)
-    const expected = expectedCheckpointEvidence(task.params)
     return {
       found: true,
       queue: this.#config.queue,
       idempotencyKey: this.#config.idempotencyKey,
       taskId,
+      taskName: String(task.task_name),
       state: String(task.state),
       attempts: Number(task.attempts),
       infraRetries: Number(task.infra_retries),
       failureReason: optionalJson(task.failure_reason),
       completedResult: optionalJson(task.completed_payload),
-      expectedCheckpointCount: expected.count,
-      expectedCheckpointSpanMs: expected.spanMs,
+      durableParameters: durableJournalParameters(task.params),
       observedCheckpointCount: observations.length,
       contiguousCheckpointCount,
       refObservations: observations,
