@@ -66,7 +66,7 @@ it('builds the write-plan schema through the production migration contract', asy
 })
 
 describe('claim candidate legs', () => {
-  async function shippedClaimStatement(): Promise<{ sql: string; args: unknown[] }> {
+  async function shippedClaimStatements(): Promise<{ sql: string; args: unknown[] }[]> {
     const seen: { sql: string; args: unknown[] }[] = []
     const recorder: SqlExecutor = {
       batch: (label, statements, mode) => {
@@ -76,6 +76,11 @@ describe('claim candidate legs', () => {
     }
     const store = new LibsqlSchedulerStore(recorder, testIdSource('claim-query-plan'))
     await store.claim('q', 'worker', { leaseSeconds: 60, limit: 10 })
+    return seen
+  }
+
+  async function shippedClaimStatement(): Promise<{ sql: string; args: unknown[] }> {
+    const seen = await shippedClaimStatements()
     const updates = seen.filter(
       (st) => /^\s*UPDATE runs\b/.test(st.sql) && st.sql.includes('claim_gen = claim_gen + 1'),
     )
@@ -84,6 +89,28 @@ describe('claim candidate legs', () => {
     if (!only) throw new Error('unreachable')
     return only
   }
+
+  function ungroupedHavingClauses(sql: string): string[] {
+    const upper = sql.toUpperCase()
+    return [...upper.matchAll(/\bHAVING\b/g)]
+      .filter((match) => {
+        const before = upper.slice(0, match.index)
+        return before.lastIndexOf('GROUP BY') < before.lastIndexOf('SELECT')
+      })
+      .map((match) => sql.slice(match.index, match.index + 40).replace(/\s+/g, ' '))
+  }
+
+  it('rejects the aggregate HAVING shape that remote Turso cannot parse', () => {
+    expect(ungroupedHavingClauses('SELECT COUNT(*) FROM t HAVING COUNT(*) = 1')).toHaveLength(1)
+    expect(ungroupedHavingClauses('SELECT key FROM t GROUP BY key HAVING COUNT(*) > 1')).toEqual([])
+  })
+
+  it('the shipped claim contains no aggregate HAVING without GROUP BY', async () => {
+    const unsupported = (await shippedClaimStatements()).flatMap((st) =>
+      ungroupedHavingClauses(st.sql),
+    )
+    expect(unsupported, 'regression:remote-turso-claim-sql').toEqual([])
+  })
 
   it('the shipped claim seeks eligible candidates before its per-leg limits', async () => {
     const st = await shippedClaimStatement()
