@@ -60,6 +60,7 @@ import {
   runClaimExpired,
   runClaimUnexpired,
   runOwnedByTask,
+  singletonAggregate,
   soleLiveRun,
   storedCurrentRunAccounting,
   storedHighestOwnedOrdinal,
@@ -661,10 +662,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         // scalar even under a guard regression so every dialect exposes that
         // regression as the same poisoned-state change instead of SQLite
         // choosing a row while PostgreSQL/MySQL abort the batch.
-        last_attempt_run: `(SELECT MIN(f.run_id) FROM runs f
-                            WHERE f.task_id = tasks.task_id
-                              AND f.fence_stamp = ${b.fence('claim')}
-                            HAVING COUNT(*) = 1)`,
+        last_attempt_run: singletonAggregate(
+          'f.run_id',
+          'runs f',
+          `f.task_id = tasks.task_id AND f.fence_stamp = ${b.fence('claim')}`,
+        ).value,
       },
       narrow: `state IN ${LIVE}`,
       rows: 'source-keys',

@@ -53,6 +53,26 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
   `fence_stamp = ${STAMP}, fence_at_ms = ${fencedAt(table, key, fence)}`
 
 /**
+ * A scalar owned only when its source predicate identifies exactly one row.
+ *
+ * Remote Turso rejects aggregate HAVING without GROUP BY even though local
+ * libSQL accepts it. CASE keeps the cardinality rule inside one portable
+ * aggregate, and one builder prevents singleton projections from drifting
+ * back to the local-only spelling.
+ */
+export const singletonAggregate = (
+  value: string,
+  source: string,
+  where: string,
+): { value: string; atMostOne: string } => ({
+  value: `(SELECT CASE WHEN COUNT(*) = 1 THEN MIN(${value}) ELSE NULL END
+           FROM ${source}
+           WHERE ${where})`,
+  atMostOne: `((SELECT COUNT(*) FROM ${source}
+                WHERE ${where}) <= 1)`,
+})
+
+/**
  * The exact wait registration owned by a parked run.
  *
  * `wake_step` did not exist until schema v3, but waits always carried the step.
@@ -76,19 +96,16 @@ export const registeredWait = (
         OR ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.runs.available_at_ms, run)})
       AND (w.timeout_at_ms IS NULL
         OR ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms, 'w')})`
+  const registration = singletonAggregate('w.step_name', 'waits w', witness)
   return {
-    step: `(SELECT MIN(w.step_name) FROM waits w
-            WHERE ${witness}
-            HAVING COUNT(*) = 1)`,
+    step: registration.value,
     current: `EXISTS (SELECT 1 FROM waits w
                       WHERE ${witness}
                         AND w.step_name = ${run}.wake_step)`,
     // Zero matches can mean there is no active event wait (a successor may
     // legitimately carry historical wake fields). More than one is the
     // unsafe state: no caller may consume it by guessing a step.
-    unambiguous: `NOT EXISTS (SELECT COUNT(*) FROM waits w
-                              WHERE ${witness}
-                              HAVING COUNT(*) > 1)`,
+    unambiguous: registration.atMostOne,
     temporallySafe: `NOT EXISTS (
       SELECT 1 FROM waits w
       WHERE w.run_id = ${run}.run_id AND w.status = 'waiting'
