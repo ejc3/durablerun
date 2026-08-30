@@ -16,8 +16,11 @@ an observed inline-worker outage could leave the scheduled invocation green,
 and an idempotently reused wrong-target or year-cadence task could satisfy the
 receipt. Release-candidate review then found that clearing the one-shot fault
 hook also cleared the probe's isolated queue identity, so recovery polled the
-ordinary queue and never recovered the crashed probe. All eleven defects are
-fixed before merge.
+ordinary queue and never recovered the crashed probe. The last release-contract
+pass found three more operability failures: a live journal could remain green
+without timely progress, the advertised Node floor did not support the dogfood
+entrypoint flag, and a productive bounded worker retained its losing five-second
+finalization timer. All fourteen defects are fixed before merge.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The question is what would have made these defects unwritable or
@@ -60,6 +63,15 @@ The workflow cleared that hook before recovery, which silently switched both
 recovery ticks to the ordinary queue; the probe remained crashed while normal
 work could run instead.
 
+A structurally valid live receipt could also remain green indefinitely with no
+checkpoint or with a stale last checkpoint, so seven days of scheduled success
+still did not prove seven days of progress. Local users on supported early Node
+22 releases failed before the dogfood CLI started because
+`--env-file-if-exists` was added only in Node 22.9; the locked test toolchain in
+fact requires Node 22.12. Finally, every productive bounded worker could keep
+its short-lived Node process alive for five idle seconds because
+`Promise.race` did not cancel its losing finalization deadline.
+
 Finally, fault dispatches accepted lower-bound recovery counters and omitted
 exact checkpoint attempt ownership. Extra or misclassified recovery
 transitions, or a checkpoint rewritten on a later attempt, could look like the
@@ -80,6 +92,9 @@ promised single recovery.
 | 9 | The bounded host flattened `aborted`, lease-lost, task-failure, and launcher-failure outcomes into a successful tick | A Turso outage or task failure observed by the inline worker could leave the scheduled workflow green | Bounded-host outcome boundary | Generic SDK/driver recovery correctly preserved the lease story, but the dogfood host had no exhaustive success/failure policy above it | Exhaustively map every `WorkerOutcome` with `satisfies Record`, reconcile first, then reject the invocation on task/infrastructure/registry/launcher failures or nonzero `launchFailed` (rung 1 single/exhaustive authority with rung 2 outage regression) |
 | 10 | Receipt validation bound only durable count/span and a seven-day minimum, not the complete configured workload | A reused key could journal the wrong repository/ref or a two-cycle, one-year cadence while hourly jobs stayed green | Durable workload identity | The durable parameters were treated as self-authenticating intent; status discarded target fields and kept derived count/span as a second representation | Persist and expose one durable workload object, compare task type/repository/ref/cycles/interval exactly in both start and verify, and derive evidence math from that object (rung 1 single representation with rung 2 real-runtime cases) |
 | 11 | The isolated queue was derived from the one-shot fault hook rather than persistent probe identity | Clearing the hook for recovery switched both ticks to the ordinary queue, leaving either deliberate-death probe unrecovered | Fault-probe lifecycle identity | Finding 8 isolated injection but treated transient injection mode as the lasting route; tests stopped after target selection and never exercised injection to recovery configuration | Require an explicit persistent probe identity, derive routing from it, reject fault injection without it, and remove the runtime-only fault override (rung 1 single configuration path with rung 2 workflow/config regression) |
+| 12 | Live receipts enforced shape but no elapsed-time progress floor | An hourly workflow could stay green for seven days with zero or stalled checkpoints | Milestone liveness and receipt policy | Contiguity and span checks described existing evidence but never compared its age with the configured cadence | Read task creation, checkpoint time, and current time from the database; fail after the next durable interval plus a two-hour scheduling grace (rung 1 database-time authority with rung 2 boundary cases) |
+| 13 | Dogfood scripts used `--env-file-if-exists` while the support contract declared Node `>=22` | Supported Node 22.0-22.8 users failed before the CLI ran; the locked test stack also requires Node 22.12 | Runtime support contract | No check reconciled entrypoint features and locked tool requirements with the root engine declaration or README | Raise the single root floor to `>=22.12.0`, make README delegate to it, and pin the observed contract in a focused regression (rung 1 declaration with rung 2 synchronization) |
+| 14 | Bounded worker finalization left the losing five-second sleep referenced | Every productive one-shot tick could retain five seconds of idle process time | Worker finalization lifetime | Tests asserted the winning worker result; neither `Promise.race` nor the fake clock cancelled the losing deadline | Give the finalization deadline its own abort owner and cancel it after either race outcome; assert no pending fake-clock deadline remains (rung 1 lifetime ownership with rung 2 regression) |
 
 ## Detection ledger
 
@@ -92,16 +107,17 @@ promised single recovery.
 | Final exact-head Codex outcome review | 2 | no |
 | Bounded re-review of the repaired dogfood slice | 1 | no |
 | Release-candidate whole-system and simplification review | 1 | no |
+| Final release-contract and bounded-exit review | 3 | no |
 | Existing tests, lints, and workflow gates before review | 0 | yes |
 
-Self-catch rate: **0 of 11, or 0%** (previous round: **103 of 151, or
+Self-catch rate: **0 of 14, or 0%** (previous round: **103 of 151, or
 68.2%**). This is a 68.2 percentage-point regression. The red tests reproduce
 the findings but were written after reviewers named them, so they do not count
 as self-catches.
 
 ## Recurrence
 
-All eleven findings recur at class level.
+All fourteen findings recur at class level.
 
 Findings 2 and 4 repeat partial evidence standing in for successful outcome.
 Earlier rounds rejected completion markers that survived later aborts and
@@ -146,6 +162,14 @@ received the injected death, but injection mode was a proxy for the probe's
 longer lifecycle. A route that must survive start, death, recovery, and
 verification cannot be derived from the hook that recovery deliberately clears.
 
+Finding 12 is the liveness counterpart of findings 2 and 7: internally
+consistent evidence was again a proxy for the milestone, this time without any
+requirement that it advance on schedule. Finding 13 repeats finding 5's
+execution-contract class: the label "Node 22" stood in for the precise runtime
+features and locked tools the commands execute. Finding 14 repeats finding 9 at
+the process boundary: a successful returned outcome stood in for a quiescent
+bounded host, while an unowned losing promise kept the process alive.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -161,6 +185,9 @@ verification cannot be derived from the hook that recovery deliberately clears.
 | Exhaustive bounded-host outcome disposition | 1 authority and 2 semantics | Make the observer return well-formed but stale or wrong data without throwing; the worker reports normal suspension, so no failure outcome exists for the host to surface |
 | Single durable workload representation plus exact intent comparison | 1 authority and 2 real-runtime cases | Return a checkpoint snapshot naming another repository/ref while the durable workload still matches intent; receipt validation does not compare snapshot metadata to the parameters |
 | Persistent probe identity, one validated fault configuration, and workflow topology regression | 1 configuration path and 2 future edits | Export a different `DURABLERUN_DOGFOOD_KEY` inside the recovery run block; the parsed workflow still has no step-level key override, but the recovery queue changes |
+| Database-time live-progress deadline | 1 time authority and 2 boundary cases | Forward-shift the task creation or latest-checkpoint timestamp along with database time; the stalled receipt looks fresh and still passes |
+| Root Node floor plus README delegation and focused contract test | 1 declaration and 2 synchronization | Add a future dependency requiring Node 24 outside the enrolled dogfood commands; the fixed `>=22.12.0` assertion still passes |
+| Owned, abortable worker-finalization deadline | 1 lifetime ownership and 2 regression | Supply a contract-violating `Clock` that ignores the abort signal; its losing five-second timer remains pending after the productive worker returns |
 
 The boundary probes were executed against `01e195d` and returned:
 
@@ -234,6 +261,18 @@ The release-candidate queue-lifecycle reproduction was executed against
 }
 ```
 
+The final mechanism-boundary probe was executed against `6044339` and exited
+zero:
+
+```json
+{
+  "shiftedTimingErrors": [],
+  "hypotheticalDependencyFloor": ">=24.0.0",
+  "nodeContractTestStillPasses": true,
+  "customClockPendingAfterTick": [5000]
+}
+```
+
 Before the green repair, the partial-live probe used a sleeping receipt with
 seven user attempts, nine infrastructure retries, duplicate ordinal one, and
 zero contiguous checkpoints. It returned no errors. The repair rejects that
@@ -241,13 +280,15 @@ probe; it is finding 2's concrete false negative, not a residual.
 
 ## Fix-induced defects
 
-**Two of eleven.** Finding 4 was introduced by the first fix for finding 2:
+**Two of fourteen.** Finding 4 was introduced by the first fix for finding 2:
 adding `dogfood:verify` after `dogfood:status` created two independently timed
 representations. It was found by re-reviewing the repair as new code before
 the green commit, rather than by merely rerunning the original regressions.
 Finding 11 was introduced by finding 8's isolation fix: injection moved to a
 key-derived queue, but recovery still cleared the value that selected it.
-Findings 1 through 3 and 5 through 10 were already present at `e4e45bb`.
+Findings 12 through 14 were not fix-induced: their outcome failures predated
+their regressions and repairs. Findings 1 through 3, 5 through 10, and 12
+through 14 were already present at `e4e45bb`.
 
 ## Evidence
 
@@ -289,6 +330,13 @@ Findings 1 through 3 and 5 through 10 were already present at `e4e45bb`.
   to `dogfood`.
 - Probe-lifecycle fix: commit `5623f61`; its confined `pnpm verify` passed all
   91 test files and 3,243 tests, plus every lint, format-check, and typecheck.
+- Final release-contract red tests: commit `9374554`; the focused run produced
+  exactly three failures: the stale live receipt returned `[]`, the manifest
+  declared `>=22` instead of the then-required `>=22.9`, and the productive
+  worker left `[5000]` in the fake clock's pending deadlines.
+- Final release-contract fixes: commit `6044339`; the focused five-file run
+  passed all 64 tests, and confined `pnpm verify` passed all 92 test files and
+  3,247 tests, plus lint, format-check, and typecheck.
 - Operability reviewer verdict: "scheduled normal seven-day job stays green
   after terminal task failure or bad completed evidence; only fault dispatch
   is validated" and "Turso credentials and GITHUB_TOKEN are job-level env,
@@ -318,6 +366,11 @@ Findings 1 through 3 and 5 through 10 were already present at `e4e45bb`.
   file-backed reproduction left the isolated probe running, recovery claimed
   zero work from the ordinary queue, and final receipt validation reported no
   completion, checkpoint, or relaunch.
+- Final release-contract review showed that an aged zero-progress live receipt
+  passed, Node 22.0-22.8 could not parse the dogfood entrypoint flag, and a
+  productive tick took about 5.27 seconds because its losing finalization timer
+  remained referenced. After `6044339`, the same real `systemClock`
+  one-checkpoint tick exited zero in 0.26 seconds.
 - The active-wait identity concern did not reproduce through any public API
   sequence; its exact stale row required raw corruption, partial restore, or a
   mixed-version writer, so BUILD.md keeps it trigger-gated. Resident HTTP
@@ -342,7 +395,10 @@ misses repeated the same shape at new boundaries: receipt identity stood in for
 fault-target identity, lease-safe reconciliation stood in for host success, and
 a minimum durable span stood in for the exact configured workload. The final
 fix-induced miss used transient injection mode as a proxy for the probe's
-persistent routing identity.
+persistent routing identity. The final release-contract misses repeated that
+substitution three ways: valid evidence shape stood in for timely progress, a
+major-version label stood in for the precise entrypoint and locked-tool floor,
+and a resolved race stood in for cancellation of its losing process resource.
 
 ## Mechanisms
 
@@ -359,6 +415,11 @@ Built in this PR:
 - Live receipts validate bounded contiguous progress; completed receipts also
   require full count, minimum seven-day span, completed-result shape, zero user
   attempts, and no failure reason (rung 2).
+- Live receipts carry task creation, latest contiguous checkpoint time, and
+  current time from the database. One progress rule rolls a deadline from that
+  durable anchor by the next configured interval plus two hourly scheduling
+  slots, so zero or stalled progress fails closed (rung 1 time authority with
+  rung 2 before/after boundary cases).
 - Fault receipts require exact driver or worker counter pairs, zero user
   attempts, ordinal one, and owner attempt one (rung 2).
 - The validated value is the same value retained for upload, removing the
@@ -385,6 +446,15 @@ Built in this PR:
   task, infrastructure, registry, or launcher failure and any generic failed
   launch. The total table is rung 1 authority; the injected-outage regression
   pins the semantic classification at rung 2.
+- The root manifest declares the actual `>=22.12.0` floor required by both the
+  dogfood entrypoint and locked test toolchain, while README delegates to that
+  single declaration. A focused regression pins the observed contract (rung 1
+  declaration with rung 2 synchronization).
+- Worker finalization owns an abort controller for its bounded deadline and
+  aborts that deadline after either race outcome. The losing sleep therefore
+  cannot retain a compliant clock or short-lived host, and the fake-clock
+  regression requires no pending deadline (rung 1 lifetime ownership with rung
+  2 regression).
 
 Deferred (recorded in BUILD.md):
 
@@ -418,3 +488,10 @@ throwing; the shipped workflow and production observer do neither, and the
 executed boundary probes above document those limits. A recovery run block can
 still export a different key after workflow parsing; the current workflow does
 not, and the persistent job-level key is visible in every retained receipt.
+Forward-shifted task/checkpoint timing or a database-clock rollback can make a
+stalled journal look fresh. A future dependency or entrypoint outside the
+focused Node-contract enrollment can raise the real runtime floor without
+changing the pinned declaration. A `Clock` implementation that violates its
+interrupt contract can retain the finalization timer after abort. The executed
+boundary probe documents each limit; none occurs in the selected database,
+locked toolchain, or production `systemClock` path.
