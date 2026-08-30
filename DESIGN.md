@@ -753,9 +753,10 @@ are load-bearing):
    `last_attempt_run` with the shared portable singleton aggregate
    `CASE WHEN COUNT(*) = 1 THEN MIN(f.run_id) ELSE NULL END`; even if the
    sole-live guard regresses, every dialect observes the same non-singleton
-   outcome rather than choosing an arbitrary scalar row. Singleton aggregates
-   never use aggregate `HAVING` without `GROUP BY`: remote Turso rejects that
-   spelling even though local libSQL accepts it.
+   outcome rather than choosing an arbitrary scalar row. The shared builder
+   emits no aggregate `HAVING` without `GROUP BY`, and every current claim
+   singleton projection uses it: remote Turso rejects that spelling even
+   though local libSQL accepts it.
 5. **Checkpoint writes are lease-fenced in both placements.** Inline: the upsert
    joins the run-row guard (`claimed_by=:token AND state='running'`) — same DB,
    free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease

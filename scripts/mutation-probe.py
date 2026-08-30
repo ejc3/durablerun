@@ -720,15 +720,15 @@ MUTATION_SPECS = [
     (
         "legacy-wait-step-unique-scalar",
         "packages/store-libsql/src/fragments.ts",
-        "    step: registration.value,",
-        "    step: `(SELECT MIN(w.step_name) FROM waits w WHERE ${witness})`,",
+        "  value: `(SELECT CASE WHEN COUNT(*) = 1 THEN MIN(${value}) ELSE NULL END\n",
+        "  value: `(SELECT CASE WHEN COUNT(*) >= 1 THEN MIN(${value}) ELSE NULL END\n",
         "an emit invents one step when several legacy registrations match",
     ),
     (
         "legacy-wait-claim-cardinality",
         "packages/store-libsql/src/fragments.ts",
-        "    unambiguous: registration.atMostOne,",
-        "    unambiguous: registration.atMostOne.replace('<= 1', '<= 2'),",
+        "                WHERE ${where}) <= 1)`,",
+        "                WHERE ${where}) <= 2)`,",
         "claim consumes a legacy run whose active wait cannot be identified",
     ),
     (

@@ -90,7 +90,11 @@ describe('claim candidate legs', () => {
     return only
   }
 
-  function ungroupedHavingClauses(sql: string): string[] {
+  // This deliberately recognizes the exact topology that escaped; it is not a
+  // SQL parser. Nested SELECTs and keyword-looking string literals are known
+  // false negatives, while the hosted dogfood run owns compatibility for the
+  // selected claim path.
+  function measuredUngroupedHavingClauses(sql: string): string[] {
     const upper = sql.toUpperCase()
     return [...upper.matchAll(/\bHAVING\b/g)]
       .filter((match) => {
@@ -101,13 +105,17 @@ describe('claim candidate legs', () => {
   }
 
   it('rejects the aggregate HAVING shape that remote Turso cannot parse', () => {
-    expect(ungroupedHavingClauses('SELECT COUNT(*) FROM t HAVING COUNT(*) = 1')).toHaveLength(1)
-    expect(ungroupedHavingClauses('SELECT key FROM t GROUP BY key HAVING COUNT(*) > 1')).toEqual([])
+    expect(
+      measuredUngroupedHavingClauses('SELECT COUNT(*) FROM t HAVING COUNT(*) = 1'),
+    ).toHaveLength(1)
+    expect(
+      measuredUngroupedHavingClauses('SELECT key FROM t GROUP BY key HAVING COUNT(*) > 1'),
+    ).toEqual([])
   })
 
-  it('the shipped claim contains no aggregate HAVING without GROUP BY', async () => {
+  it('the shipped claim avoids the measured remote-Turso aggregate shape', async () => {
     const unsupported = (await shippedClaimStatements()).flatMap((st) =>
-      ungroupedHavingClauses(st.sql),
+      measuredUngroupedHavingClauses(st.sql),
     )
     expect(unsupported, 'regression:remote-turso-claim-sql').toEqual([])
   })
