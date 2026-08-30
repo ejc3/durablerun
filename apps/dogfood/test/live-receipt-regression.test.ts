@@ -41,3 +41,34 @@ it('rejects corrupt partial evidence while the seven-day journal is still live',
     ),
   ).not.toEqual([])
 })
+
+it('rejects a live seven-day journal that makes no progress across two hourly slots', () => {
+  expect(
+    dogfoodReceiptErrors(
+      {
+        found: true,
+        taskName: DOGFOOD_TASK_NAME,
+        state: 'pending',
+        attempts: 0,
+        infraRetries: 0,
+        failureReason: null,
+        completedResult: null,
+        durableParameters: {
+          repository: intent.repository,
+          ref: intent.ref,
+          cycles: intent.cycles,
+          intervalSeconds: intent.intervalSeconds,
+        },
+        taskCreatedAtEpochMs: 1_000_000,
+        databaseNowEpochMs: 1_000_000 + 2 * 60 * 60 * 1_000 + 1,
+        observedCheckpointCount: 0,
+        contiguousCheckpointCount: 0,
+        refObservations: [],
+        relaunches: 0,
+        checkpointSpanMs: null,
+      },
+      'none',
+      intent,
+    ),
+  ).toContain('live journal is overdue for checkpoint progress')
+})

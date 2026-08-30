@@ -309,6 +309,17 @@ async function replacePropertyAsync<T>(
 }
 
 describe('runClaimedRun', () => {
+  it('cancels the bounded-finalization deadline when the heartbeat pump stops first', async () => {
+    const f = await fx('sdk-finalization-deadline')
+    await f.store.spawn(Q, 'job', '{}')
+
+    expect(await claimAndRun(f, registry({ job: async () => 'done' }), 'w1')).toEqual({
+      kind: 'completed',
+    })
+    expect(f.clock.fired.map(({ deadline }) => deadline - f.clock.now)).toEqual([])
+    f.close()
+  })
+
   it('steps execute exactly once across suspend/resume; the sleep replays as a no-op', async () => {
     const f = await fx('sdk-replay')
     const executions: string[] = []
