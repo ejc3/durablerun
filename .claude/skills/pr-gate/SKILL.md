@@ -56,20 +56,57 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    SEV rule FIRST — a mandatory `review-findings: <count>` line in the PR
    body, and for a nonzero count an added, filled-in postmortem (Part 6);
    the abandonment trailer never skips that gate.
-7. **`pnpm verify:mutations` clean** — when the PR adds or
-   changes a guard. The command self-confines once, captures the clean
-   committed head, and uses isolated detached worktrees (`--jobs auto` by
-   default). It deletes each guard in turn and requires the exact attributable
-   verdict to fail. A survivor is a guard nothing is maintaining, and the next
-   refactor can drop it with the build still green. A STALE pattern, incomplete
-   worker, wrong-head/missing/duplicate/extra result, cleanup leak, or
-   process/report disagreement also fails the audit. The live aggregate cgroup
-   must preserve 25% of host memory and the host CPU reserve; merely finite
-   limits are not confinement. A missing, malformed, or signaled Vitest report
-   is infrastructure failure, never a completed wrong-path mutation. Do not
-   skip this because the suite is green — green is what it is testing the
-   meaning of. The final success line must name the current head, and the next
-   session-state check must show no mutation worktrees left behind.
+7. **Affected mutation evidence for guard-changing PRs** — before running,
+   enumerate the affected mutation closure. Include a canonical mutation name
+   when the diff touches its mutation target, its attributable verdict owner,
+   or the shared fixture and execution path that exercises the guard. Because
+   `-k` accepts one substring, run one self-confined
+   `pnpm verify:mutations -k '<unique full mutation name>'` invocation per
+   name. A common substring may cover several names only after the declared
+   closure and the runner's actual selected inventory are shown to be
+   identical.
+
+   The PR body lists every selected mutation and its observed exact expected
+   owner verdict, and labels the evidence an affected-subset audit. Never call
+   a filtered run a full audit. A PR that changes this cadence or waives a full
+   sweep required below also includes `gate-changes:` with the old and new
+   gate, bounded closure, and property-preservation justification.
+
+   Run unfiltered `pnpm verify:mutations` when the PR changes the mutation
+   runner; runner-wide registry schema, inventory generation, or selection
+   machinery; the verdict classifier, orchestration, checkpoint/resume logic,
+   confinement, or a shared verifier; when the affected closure cannot be
+   bounded and explicitly enumerated; for a scheduled audit with a named owner
+   and cadence; or for an explicit pre-release audit. An isolated new or
+   re-aimed registry/verdict entry runs its affected closure unless that closure
+   is unbounded. In every mode the exact attributable verdict must fail:
+   collateral failures never substitute for that owner. A `survived` mutant is
+   a product survivor. Every other non-caught outcome also blocks, except for
+   the narrowly evidenced deviation below.
+
+   The current classifier reports exact-owner plus collateral failures as
+   `wrong-path`, so the run remains non-clean even though the guard is not a
+   product survivor. Until the classifier distinguishes that case, its
+   transcript can support only an explicit PR-body gate deviation that proves
+   the exact owner fired; names the exact mutation target and the head diff that
+   owns it; quotes every collateral's exact file, test title, and message; and
+   provides base-versus-head evidence for each collateral, preferring
+   reproduction on the base when the mutation target exists there. If base
+   reproduction is impossible, explain why and provide an equivalent
+   controlled comparison. Absent that proof, the outcome blocks. With it,
+   record the collateral as audit/tooling debt. Do not relabel the run clean or
+   widen the outcome PR to repair that debt.
+
+   Subset and full runs keep the same no-proxy and transport guarantees. The
+   command self-confines once, captures the clean committed head, and uses
+   isolated detached worktrees (`--jobs auto` by default). A STALE pattern,
+   incomplete worker, wrong-head/missing/duplicate/extra result, cleanup leak,
+   or process/report disagreement fails the audit. The aggregate cgroup must
+   preserve 25% of host memory and the host CPU reserve; merely finite limits
+   are not confinement. A missing, malformed, or signaled Vitest report is
+   infrastructure failure, never a completed wrong-path mutation. The final
+   success line must name the current head, and the next session-state check
+   must show no mutation worktrees left behind.
 8. **`bash scripts/session-state.sh` clean** — before reporting a round
    finished. Repository ownership comes from cwd, argv, and live ancestry;
    unrelated host sleeps are not repository evidence.

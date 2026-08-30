@@ -54,11 +54,21 @@ cannot consume the deliberate death and recovery cannot switch queues. The
 bounded host also fails its invocation after observing an inline task,
 infrastructure, registry, or launcher failure, and a completed worker cancels
 its losing finalization deadline instead of retaining idle process time.
-The only remaining exit evidence is external and elapsed: provision the
-dedicated Turso URL/token and the independent URL pin, dispatch `start`, set
-`DURABLERUN_DOGFOOD_ENABLED=true`, and retain the verified receipts for seven
-consecutive days. No additional engine or resident-transport work is
-authorized by that wait.
+  The dedicated Turso database, database-scoped token, and independent URL pin
+  were provisioned on 2026-08-30. The first hosted `start` succeeded, while the
+  first hosted tick rejected the claim batch before mutation because remote
+  Turso does not parse aggregate `HAVING` without `GROUP BY`, a spelling the
+  local libSQL fixture accepts.
+
+**Live deployment checkpoint (PR #15, 2026-08-30):** red `ef6148b` captures
+the four incompatible clauses from the exact emitted claim inventory. Green
+`1814b50` routes the wait witness and task-book projection through one portable
+singleton aggregate. On that head, the normal hosted tick retained checkpoint
+one, and both driver-before-activation and worker-after-checkpoint probes
+completed with their exact relaunch/infrastructure-retry receipts. Once PR #15
+merges, enable the hourly schedule. The only remaining exit evidence is then
+elapsed: retain verified receipts for seven consecutive days. No additional
+engine or resident-transport work is authorized by that wait.
 
 **Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
 recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-
@@ -783,6 +793,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PRC.1 Turso Cloud store wiring**: remote `libsql://` URLs + auth in
   store-libsql; the remote-claw readiness gate; env scheme (marketplace
   per-db creds vs fleet `TURSO_API_TOKEN`/`TURSO_GROUP_AUTH_TOKEN`).
+  - **Triggered residual — full hosted dialect enrollment:** PR #15 proves the
+    selected claim path against the deployed Turso parser, not every labeled
+    batch. Enroll the identical conformance fixture against an isolated hosted
+    database when PRC.1 supplies safe ephemeral database lifecycle and
+    credential handling; do not turn the current production dogfood database
+    into a destructive all-operation test fixture.
 - **PRC.2 Vercel app + serverless tick**: `apps/web` routes (`/api/tick` GET
   cron + POST ping/QStash with auth, `/api/worker` HMAC, tasks/events/inspect);
   QStash alarms with (shard,t) dedup; `vercel.json` cron; preview-deploy e2e
