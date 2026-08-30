@@ -70,12 +70,21 @@ function nonnegativeInteger(env: Environment, name: string, fallback: number): n
   return value
 }
 
+function booleanSetting(env: Environment, name: string, fallback: boolean): boolean {
+  const raw = env[name]?.trim()
+  if (!raw) return fallback
+  if (raw === 'true') return true
+  if (raw === 'false') return false
+  throw new RangeError(`${name} must be true or false`)
+}
+
 export function dogfoodConfigFromEnv(env: Environment = process.env): DogfoodConfig {
   const cycles = nonnegativeInteger(env, 'DURABLERUN_DOGFOOD_CYCLES', DEFAULTS.cycles)
   if (cycles < 1) throw new RangeError('DURABLERUN_DOGFOOD_CYCLES must be at least 1')
   const authToken = env.TURSO_AUTH_TOKEN?.trim()
   const configuredQueue = nonempty(env, 'DURABLERUN_DOGFOOD_QUEUE', DEFAULTS.queue)
   const idempotencyKey = nonempty(env, 'DURABLERUN_DOGFOOD_KEY', DEFAULTS.idempotencyKey)
+  const faultProbe = booleanSetting(env, 'DURABLERUN_DOGFOOD_PROBE', false)
   const fault = nonempty(env, 'DURABLERUN_DOGFOOD_FAULT', DEFAULTS.fault)
   if (
     fault !== 'none' &&
@@ -83,6 +92,9 @@ export function dogfoodConfigFromEnv(env: Environment = process.env): DogfoodCon
     fault !== 'worker-after-checkpoint'
   ) {
     throw new RangeError('DURABLERUN_DOGFOOD_FAULT is not a supported fault')
+  }
+  if (fault !== 'none' && !faultProbe) {
+    throw new RangeError('DURABLERUN_DOGFOOD_FAULT requires DURABLERUN_DOGFOOD_PROBE=true')
   }
   const leaseSeconds = nonnegativeInteger(
     env,
@@ -95,10 +107,9 @@ export function dogfoodConfigFromEnv(env: Environment = process.env): DogfoodCon
   return {
     databaseUrl: nonempty(env, 'TURSO_DATABASE_URL', DEFAULTS.databaseUrl),
     ...(authToken ? { authToken } : {}),
-    // A deliberate-death tick has claimLimit=1. Giving its fresh task a
-    // key-derived queue makes it impossible for older due journal work to
-    // consume the injected crash before the probe does.
-    queue: fault === 'none' ? configuredQueue : `${configuredQueue}-fault-${idempotencyKey}`,
+    // Probe identity outlives its one-shot fault hook: start, injection,
+    // recovery, and verification must all select the same isolated queue.
+    queue: faultProbe ? `${configuredQueue}-fault-${idempotencyKey}` : configuredQueue,
     idempotencyKey,
     repository: nonempty(env, 'DURABLERUN_DOGFOOD_REPOSITORY', DEFAULTS.repository),
     ref: nonempty(env, 'DURABLERUN_DOGFOOD_REF', DEFAULTS.ref),

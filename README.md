@@ -63,5 +63,6 @@ optional read-only `DOGFOOD_GITHUB_TOKEN` secret; only the worker steps receive
 it. First dispatch `start`, then enable the schedule. `workflow_dispatch` can
 also run either deliberate death probe. Each probe uses a fresh one-checkpoint
 journal on a key-derived isolated queue, records status before the fault,
-hard-exits at the selected actor boundary, waits through the short test
+hard-exits at the selected actor boundary, clears only the one-shot injection
+hook while retaining the probe queue identity, waits through the short test
 lease/backoff, runs normal recovery ticks, and records status afterward.

@@ -135,7 +135,6 @@ export class DogfoodRuntime {
       ids: IdSource
       clock: Clock
       observe: ObserveRepositoryRef
-      fault: DogfoodFault
       hardExit: (code: number) => never
     },
   ) {
@@ -144,7 +143,7 @@ export class DogfoodRuntime {
     this.#ids = deps.ids
     this.#clock = deps.clock
     this.#observe = deps.observe
-    this.#fault = deps.fault
+    this.#fault = config.fault
     this.#hardExit = deps.hardExit
     this.#store = new LibsqlSchedulerStore(raw, deps.ids)
   }
@@ -155,7 +154,6 @@ export class DogfoodRuntime {
       ids?: IdSource
       clock?: Clock
       observe?: ObserveRepositoryRef
-      fault?: DogfoodFault
       hardExit?: (code: number) => never
     } = {},
   ): Promise<DogfoodRuntime> {
@@ -166,7 +164,6 @@ export class DogfoodRuntime {
         ids: deps.ids ?? systemIdSource(),
         clock: deps.clock ?? systemClock(),
         observe: deps.observe ?? observeGitHubRef,
-        fault: deps.fault ?? config.fault,
         hardExit: deps.hardExit ?? ((code): never => process.exit(code)),
       })
     } catch (error) {

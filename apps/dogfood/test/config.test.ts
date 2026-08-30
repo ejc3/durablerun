@@ -52,6 +52,12 @@ describe('dogfood configuration', () => {
   it('rejects vacuous or noncanonical cycle settings', () => {
     expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_CYCLES: '0' })).toThrow(/at least 1/)
     expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_CYCLES: '01' })).toThrow(/canonical/)
+    expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_PROBE: 'yes' })).toThrow(
+      /must be true or false/,
+    )
+    expect(() =>
+      dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_FAULT: 'driver-before-activation' }),
+    ).toThrow(/requires DURABLERUN_DOGFOOD_PROBE=true/)
     expect(() => dogfoodConfigFromEnv({ DURABLERUN_DOGFOOD_FAULT: 'maybe' })).toThrow(
       /supported fault/,
     )

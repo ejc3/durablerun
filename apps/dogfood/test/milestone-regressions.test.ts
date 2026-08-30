@@ -53,6 +53,7 @@ describe('dogfood milestone receipts', () => {
       DURABLERUN_DOGFOOD_CYCLES: '1',
       DURABLERUN_DOGFOOD_INTERVAL_SECONDS: '0',
       DURABLERUN_DOGFOOD_LEASE_SECONDS: '1',
+      DURABLERUN_DOGFOOD_PROBE: 'true',
       DURABLERUN_DOGFOOD_FAULT: 'driver-before-activation',
     })
     const hardExit = vi.fn((): never => {
@@ -201,9 +202,16 @@ describe('dogfood milestone receipts', () => {
       const hardExit = vi.fn((): never => {
         throw exit
       })
-      const runtime = await DogfoodRuntime.open(config(':memory:', fault, 1), {
+      const faultConfig = dogfoodConfigFromEnv({
+        TURSO_DATABASE_URL: ':memory:',
+        DURABLERUN_DOGFOOD_KEY: fault,
+        DURABLERUN_DOGFOOD_CYCLES: '1',
+        DURABLERUN_DOGFOOD_INTERVAL_SECONDS: '0',
+        DURABLERUN_DOGFOOD_PROBE: 'true',
+        DURABLERUN_DOGFOOD_FAULT: fault,
+      })
+      const runtime = await DogfoodRuntime.open(faultConfig, {
         observe: async () => snapshot(1),
-        fault,
         hardExit,
       })
       try {

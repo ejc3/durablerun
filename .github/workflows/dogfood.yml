@@ -41,6 +41,7 @@ jobs:
       DURABLERUN_DOGFOOD_CYCLES: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && '1' || '15' }}
       DURABLERUN_DOGFOOD_INTERVAL_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && '0' || '43200' }}
       DURABLERUN_DOGFOOD_LEASE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && '1' || '30' }}
+      DURABLERUN_DOGFOOD_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && 'true' || 'false' }}
       DURABLERUN_DOGFOOD_FAULT: ${{ github.event_name == 'workflow_dispatch' && inputs.fault || 'none' }}
     steps:
       - name: Check out this public repository without a token

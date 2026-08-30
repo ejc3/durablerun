@@ -41,8 +41,10 @@ repository-token permission; an optional `DOGFOOD_GITHUB_TOKEN` is scoped to
 worker steps. Normal receipt validation enforces the fixed seven-day floor
 and exact task type, target, count, and cadence against durable parameters, so
 reusing a wrong-target, shorter, or long-cadence idempotent task cannot qualify.
-Fresh fault probes also derive isolated queues, so due normal work
-cannot consume the deliberate death. The bounded host also fails its invocation
+Fresh fault probes also derive isolated queues, and that probe identity remains
+set after the one-shot fault hook is cleared for recovery, so due normal work
+cannot consume the deliberate death and recovery cannot switch queues. The
+bounded host also fails its invocation
 after observing an inline task, infrastructure, registry, or launcher failure.
 The only remaining exit evidence is external and elapsed: provision the
 dedicated Turso URL/token, dispatch `start`, set

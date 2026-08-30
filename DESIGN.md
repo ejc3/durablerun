@@ -291,7 +291,9 @@ configured workload intent exactly, and the durable interval span itself to
 cover at least seven days. An idempotently reused wrong-target, short, or
 long-cadence task therefore fails both start and receipt validation instead of
 qualifying under new process configuration. A deliberate-death probe derives
-an isolated queue from its fresh idempotency key; its one-slot tick therefore
+an isolated queue from its fresh idempotency key; its probe identity remains
+set while the one-shot injection hook is cleared, so start, injection,
+recovery, and verification all select that queue. Its one-slot tick therefore
 cannot inject the fault into older due journal work instead of the task whose
 recovery receipt will be verified. After advisory lease reconciliation, this
 bounded host fails the scheduled invocation when its inline slot observes a

@@ -22,6 +22,7 @@ it('scopes dogfood credentials and executes the receipt verifier', () => {
   expect(jobEnvironment).not.toHaveProperty('TURSO_DATABASE_URL')
   expect(jobEnvironment).not.toHaveProperty('TURSO_AUTH_TOKEN')
   expect(jobEnvironment).not.toHaveProperty('GITHUB_TOKEN')
+  expect(jobEnvironment.DURABLERUN_DOGFOOD_PROBE).toContain("inputs.fault != 'none'")
 
   const steps = job?.steps ?? []
   for (const step of steps.filter((candidate) => candidate.uses !== undefined)) {
@@ -36,4 +37,9 @@ it('scopes dogfood credentials and executes the receipt verifier', () => {
     TURSO_DATABASE_URL: '${{ secrets.TURSO_DATABASE_URL }}',
     TURSO_AUTH_TOKEN: '${{ secrets.TURSO_AUTH_TOKEN }}',
   })
+
+  const recovery = steps.find((step) => step.name === 'Recover after deliberate death')
+  expect(recovery?.env).toMatchObject({ DURABLERUN_DOGFOOD_FAULT: 'none' })
+  expect(recovery?.env).not.toHaveProperty('DURABLERUN_DOGFOOD_PROBE')
+  expect(recovery?.env).not.toHaveProperty('DURABLERUN_DOGFOOD_QUEUE')
 })
