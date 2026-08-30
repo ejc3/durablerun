@@ -1,12 +1,6 @@
 import { createHash } from 'node:crypto'
-import { PERSISTED_COUNTER_FIELDS, PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import {
-  CURRENT_SCHEMA_VERSION,
-  LibsqlExecutor,
-  LibsqlStoreAdmin,
-  MIGRATIONS,
-} from '../src/index.js'
+import { LibsqlExecutor, LibsqlStoreAdmin, MIGRATIONS } from '../src/index.js'
 
 let db: LibsqlExecutor
 let admin: LibsqlStoreAdmin
@@ -21,18 +15,6 @@ afterEach(() => {
 })
 
 describe('migrations', () => {
-  it('migrates a fresh database to the current schema version', async () => {
-    expect(await admin.schemaVersion()).toBe(0)
-    await admin.migrate()
-    expect(await admin.schemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
-  })
-
-  it('is idempotent — migrating twice is a no-op', async () => {
-    await admin.migrate()
-    await admin.migrate()
-    expect(await admin.schemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
-  })
-
   it('creates every scheduler-plane table', async () => {
     await admin.migrate()
     const [result] = await db.batch('test:tables', [
@@ -45,43 +27,6 @@ describe('migrations', () => {
     for (const t of ['meta', 'tasks', 'runs', 'checkpoints', 'events', 'waits', 'drivers']) {
       expect(names).toContain(t)
     }
-  })
-
-  it('enrolls every migrated integer column with exact nullability', async () => {
-    await admin.migrate()
-    const persistedIntegers = [
-      ...PERSISTED_COUNTER_FIELDS.map((field) => ({ ...field, nullable: false })),
-      ...PERSISTED_TEMPORAL_FIELDS,
-    ]
-    const tables = [...new Set(persistedIntegers.map((field) => field.table))]
-    const results = await db.batch(
-      'test:temporal-schema',
-      tables.map((table) => ({ sql: `PRAGMA table_info(${table})`, args: [] })),
-      'read',
-    )
-    const observed = results
-      .flatMap((result, index) => {
-        const table = tables[index]
-        if (table === undefined) throw new Error(`missing temporal table at index ${index}`)
-        return result.rows
-          .filter((row) => String(row.type).toUpperCase() === 'INTEGER')
-          .map((row) => ({
-            field: `${table}.${String(row.name)}`,
-            nullable: row.notnull === 0 || row.notnull === 0n,
-          }))
-      })
-      .sort((left, right) => left.field.localeCompare(right.field))
-    const expected = persistedIntegers
-      .map(({ table, column, nullable }) => ({
-        field: `${table}.${column}`,
-        nullable,
-      }))
-      .sort((left, right) => left.field.localeCompare(right.field))
-
-    expect(observed, 'mutation-verdict:construction:migrated-integer-inventory-complete').toEqual(
-      expected,
-    )
-    expect(observed).toHaveLength(31)
   })
 })
 

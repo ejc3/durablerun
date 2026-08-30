@@ -9,12 +9,12 @@ import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 const REGISTRY = `${ROOT}/packages/conformance/test/dialect-fixtures.ts`
 const EXPECTED_SURFACE_IDS = [
-  'schema-admin',
   'scheduler',
   'fault-matrix',
   'poison-matrix',
   'timestamp-boundaries',
   'wake-witness',
+  'schema-admin',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres'] as const
 

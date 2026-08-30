@@ -3253,13 +3253,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "migrated-integer-inventory-complete",
-            "packages/store-libsql/test/schema.test.ts",
-            "          .filter((row) => String(row.type).toUpperCase() === 'INTEGER')",
-            "          .filter(\n"
-            "            (row) =>\n"
-            "              String(row.type).toUpperCase() === 'INTEGER' &&\n"
-            "              String(row.name).endsWith('_ms'),\n"
-            "          )",
+            "packages/conformance/test/fixture-libsql.ts",
+            "                   type AS native_type,",
+            "                   CASE WHEN name LIKE '%_ms' THEN type ELSE 'TEXT' END AS native_type,",
             "schema enrollment regresses to the _ms spelling proxy and omits persisted counters",
         ),
         (
@@ -4544,7 +4540,7 @@ MUTATION_SPECS.extend(
 SHARED_CONFORMANCE_REGISTRY_VERDICT = ExpectedVerdict(
     "construction",
     "packages/conformance/test/enrollment.test.ts",
-    "shared conformance enrollment is one indivisible door owns five surfaces and executable dispatch through one callable registry",
+    "shared conformance enrollment is one indivisible door owns six surfaces and executable dispatch through one callable registry",
     "mutation-verdict:construction:shared-conformance-runner-registry",
 )
 
@@ -5824,9 +5820,10 @@ VERDICTS.update(
         ),
         "migrated-integer-inventory-complete": ExpectedVerdict(
             "construction",
-            "packages/store-libsql/test/schema.test.ts",
-            "migrations enrolls every migrated integer column with exact nullability",
+            "packages/conformance/test/libsql.test.ts",
+            "schema/admin conformance [libsql] enrolls every persisted native-integer column with exact nullability",
             "mutation-verdict:construction:migrated-integer-inventory-complete",
+            "packages/conformance/src/schema-admin.ts",
         ),
         "invariant-snapshot-table-identity": ExpectedVerdict(
             "construction",

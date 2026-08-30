@@ -1,7 +1,31 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
-import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
-import type { StorageCorruption, StorageCorruptionAttempt, StoreFixture } from '../src/index.js'
+import type {
+  PersistedNumericTable,
+  StorageCorruption,
+  StorageCorruptionAttempt,
+  StoreFixture,
+  StoreFixtureOptions,
+} from '../src/index.js'
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`
+}
+
+function persistedIntegerCatalogStatements(tables: readonly PersistedNumericTable[]) {
+  return tables.map((table) => {
+    const tableLiteral = sqlStringLiteral(table)
+    return {
+      sql: `SELECT ${tableLiteral} AS table_name,
+                   name AS column_name,
+                   type AS native_type,
+                   CASE WHEN "notnull" = 0 THEN 1 ELSE 0 END AS nullable
+            FROM pragma_table_info(${tableLiteral})`,
+      args: [],
+    }
+  })
+}
 
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
   const fractionalValue =
@@ -87,17 +111,23 @@ function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorrupt
   }
 }
 
-export async function makeLibsqlFixture(seed: number | string): Promise<StoreFixture> {
+export async function makeLibsqlFixture(
+  seed: number | string,
+  options: StoreFixtureOptions = {},
+): Promise<StoreFixture> {
   const encodedSeed = [...String(seed)]
     .map((character) => character.codePointAt(0)?.toString(16))
     .join('_')
   const { raw, admin, ids } = await openTestDb({
     idNamespace: `conformance-${encodedSeed || 'empty'}`,
+    ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
   return {
     store: new LibsqlSchedulerStore(raw, ids),
     admin,
+    adminOver: (db: SqlExecutor) => new LibsqlStoreAdmin(db),
     raw,
+    persistedIntegerCatalogStatements,
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new LibsqlSchedulerStore(db, ids, buggify),
     close: async () => raw.close(),

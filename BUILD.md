@@ -419,12 +419,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     conditions, the portable snapshot columns, and 69 storage/lower/upper
     poison witnesses.
     The complete matrix is 109 conditions, 139 witnesses, and 2,363 ambient
-    cells. LibSQL migration conformance discovers every native `INTEGER`
-    column and compares the exact field/nullability vector to the union of all
-    eight counter plus 23 temporal descriptors—31 durable integer fields,
-    without a naming proxy. Invariant result assembly keys each projection by
-    its declared table rather than rebinding the six result slots through
-    another positional table list.
+    cells. The central schema/admin conformance surface discovers every native
+    integer column and compares the exact field/64-bit-width/nullability vector
+    to the union of all eight counter plus 23 temporal descriptors—31 durable
+    integer fields, without a naming proxy. LibSQL supplies real
+    `PRAGMA table_info` statements while the shared runner owns their execution
+    and comparison. Invariant result assembly keys each projection by its
+    declared table rather than rebinding the six result slots through another
+    positional table list.
     Fourteen derived-deadline sites prove exact headroom before addition, while
     fixed-field fragments reject corrupt persisted instants before ordered
     limits, at post-scan CASes, in all four next-wake sources, and before direct
@@ -759,24 +761,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `ON CONFLICT`; the `SqlResult` normalization contract must state
     matched-not-changed semantics.
   From PR3.7:
-  - **Migration-version conformance**: lift PR3.7's libSQL schema gate into the
-    shared admin contract. Every dialect must accept only the canonical
+  - **Migration-version conformance**: the sixth indivisible `schema-admin`
+    surface lifts PR3.7's libSQL schema gate into the shared admin contract.
+    Every dialect must accept only the canonical
     nonnegative safe base-10 representation, require exact equality with the
     binary's current version, and classify an actually absent metadata table
     at the dialect boundary without allowing stored error-like text or an
     unrelated read failure to impersonate a fresh database.
   - **Temporal schema enrollment for each new dialect**: the 23-field temporal
-    contract, conditions, snapshots, and corruption witnesses are already
-    dialect-neutral. Each dialect migration must additionally prove its native
-    numeric/time encoding and nullability against the combined 31-field durable
-    integer inventory (the present `PRAGMA table_info` proof is intentionally
-    libSQL-specific); no dialect may declare itself conformant by running the
-    behavioral surface alone.
+    contract, conditions, snapshots, and corruption witnesses are
+    dialect-neutral. The shared schema/admin runner now checks the combined
+    31-field durable integer inventory; each fixture supplies only its native
+    catalog projection (`PRAGMA table_info` for libSQL). No dialect may declare
+    itself conformant without exact 64-bit numeric encoding and nullability.
 
 - **PR4.2 store-postgres**: transliterate absurd.sql (SKIP LOCKED CTE, row-lock
   awaitEvent); **oracle tests**: same scenario on real Absurd (docker) vs our
   engine, diff outcomes.
-- **PR4.3 store-mysql**: token claim, READ COMMITTED, DATETIME(6), tx-per-
+- **PR4.3 store-mysql**: token claim, READ COMMITTED, BIGINT epoch-ms, tx-per-
   transition; MySQL 8 container in CI; optional PlanetScale smoke job.
 
 ## Phase 5 — operations + sharding

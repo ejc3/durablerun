@@ -28,6 +28,7 @@ import {
   unknownCoveredConditionIds,
 } from './poison-matrix.js'
 import { schedulerConformance, wakeWitnessConformance } from './suite.js'
+import { schemaAdminConformance } from './schema-admin.js'
 import { timestampBoundaryConformance } from './time-boundaries.js'
 
 const FAULT_SEEDS = [1, 2] as const
@@ -1216,7 +1217,7 @@ export function bindStoreConformanceSurfaces<const Id extends string>(
 /**
  * The one enrollment door for a dialect. Adding a store fixture necessarily
  * runs every shared behavioral surface; individual backends cannot silently
- * opt out of the expensive fault, poison, or wake dimensions.
+ * opt out of the fault, poison, wake, timestamp, or schema/admin dimensions.
  */
 export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'scheduler', run: schedulerConformance },
@@ -1224,4 +1225,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'poison-matrix', run: poisonMatrixConformance },
   { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
   { id: 'wake-witness', run: wakeWitnessConformance },
+  { id: 'schema-admin', run: schemaAdminConformance },
 ] as const)

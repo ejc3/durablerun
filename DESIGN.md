@@ -179,9 +179,9 @@ Per-queue tables: `t_<q>` tasks, `r_<q>` runs, `c_<q>` checkpoints, `e_<q>` even
 - PlanetScale-style serverless MySQL: 20s transaction cap, concurrent-transaction
   pool ceiling → prefer the token claim.
 - No partial indexes (use composite `(state, priority, available_at)` or a separate
-  ready-rows table à la Solid Queue); `DATETIME(6)` explicitly (default precision
-  is whole seconds and it *rounds*, which can round `run_at` up); upsert is
-  `ON DUPLICATE KEY UPDATE` (no conflict target) vs `ON CONFLICT` elsewhere.
+  ready-rows table à la Solid Queue); temporal fields use exact BIGINT epoch-ms,
+  matching the shared integer contract; upsert is `ON DUPLICATE KEY UPDATE` (no
+  conflict target) vs `ON CONFLICT` elsewhere.
 - MySQL also cannot wake external compute (no NOTIFY, triggers are SQL-only, EVENT
   scheduler runs SQL only) — **the driver/tick architecture is required for every
   backend, so it is the portable core of the design, not a Turso workaround.**
@@ -950,8 +950,11 @@ not depend on careful reading:
   seeded edge is not coverage. Fault coverage is enumerated, never curated.
   Dialects enter through the central fixture registry and one
   `storeConformance` umbrella, which always enrolls scheduler, fault, poison,
-  and generated wake-witness behavior; a backend cannot select only the
-  cheaper sub-suites.
+  timestamp-boundary, generated wake-witness, and schema/admin behavior; a
+  backend cannot select only the cheaper sub-suites. The schema/admin surface
+  starts from both current and genuinely uninitialized fixtures, injects the
+  dialect's real admin over hostile result/error executors, and executes the
+  dialect's catalog statements through the fixture's real raw executor.
 - *The invariant condition inventory and poison matrix*
   (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
   one dialect-neutral read batch whose result cardinality is exact and every
@@ -980,10 +983,13 @@ not depend on careful reading:
   exact nullability, and
   generates both temporal conditions, the six-table snapshot projection, and
   three witnesses per field: invalid storage, one below the lower bound, and
-  one above the upper bound. The migrated libSQL schema discovers every native
-  `INTEGER` column across those tables and compares the exact field/nullability
-  vector to the union of eight counter descriptors and 23 temporal descriptors:
-  all 31 durable integers are enrolled without relying on a name suffix.
+  one above the upper bound. The shared schema/admin surface discovers every
+  native integer column across those tables and compares the exact
+  field/64-bit-width/nullability vector to the union of eight counter
+  descriptors and 23 temporal descriptors: all 31 durable integers are
+  enrolled without relying on a name suffix. Catalog SQL remains
+  dialect-owned—libSQL projects real `PRAGMA table_info` rows—but the shared
+  runner executes, validates, and compares the evidence.
   Snapshot results are assembled by each projection's declared table key,
   never by a second hard-coded positional table list.
   Generated just-over-bound witnesses, along with the ownership witnesses,
@@ -1137,7 +1143,7 @@ Dialect implementations:
 |---|---|---|---|
 | claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; token claim: `UPDATE…ORDER BY…LIMIT k` + `SELECT WHERE claimed_by=:token` (no RETURNING) | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
 | atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | short tx (READ COMMITTED) for every multi-statement transition — autocommit only for genuinely single-statement ops (20s PlanetScale cap is ample for 2–3-stmt claims) | normal tx |
-| timestamps | INTEGER epoch-ms | `DATETIME(6)` (default rounds to seconds!) | timestamptz |
+| timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
 | ids | UUIDv7 client-generated (time-ordered; Absurd orders by run_id) | same | same |

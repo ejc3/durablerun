@@ -153,6 +153,8 @@ export interface SchedulerStore {
 /** Test/simulation-only surface; never used by engine actors. */
 export interface StoreAdmin {
   migrate(): Promise<void>
+  /** Canonically decoded recorded version; a genuinely fresh database also reports zero. */
+  schemaVersion(): Promise<number>
   /** Engine time override (shard-meta fake_now); null restores real time. */
   setFakeNowEpochMs(epochMs: number | null): Promise<void>
   nowEpochMs(): Promise<number>
