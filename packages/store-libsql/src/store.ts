@@ -666,6 +666,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           'f.run_id',
           'runs f',
           `f.task_id = tasks.task_id AND f.fence_stamp = ${b.fence('claim')}`,
+          'f.task_id',
         ).value,
       },
       narrow: `state IN ${LIVE}`,

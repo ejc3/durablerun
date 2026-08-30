@@ -751,12 +751,12 @@ are load-bearing):
    fragment: a live sibling appearing after claim but before activation
    invalidates the issued launch. The task-book follow-on derives
    `last_attempt_run` with the shared portable singleton aggregate
-   `CASE WHEN COUNT(*) = 1 THEN MIN(f.run_id) ELSE NULL END`; even if the
-   sole-live guard regresses, every dialect observes the same non-singleton
-   outcome rather than choosing an arbitrary scalar row. The shared builder
-   emits no aggregate `HAVING` without `GROUP BY`, and every current claim
-   singleton projection uses it: remote Turso rejects that spelling even
-   though local libSQL accepts it.
+   grouped on `f.task_id`, which its predicate equality-fixes to the task; even
+   if the sole-live guard regresses, every dialect observes the same
+   non-singleton outcome rather than choosing an arbitrary scalar row. The
+   shared builder pairs every aggregate `HAVING` with that fixed-key `GROUP BY`,
+   and every current claim singleton projection uses it: remote Turso rejects
+   ungrouped aggregate `HAVING` even though local libSQL accepts it.
 5. **Checkpoint writes are lease-fenced in both placements.** Inline: the upsert
    joins the run-row guard (`claimed_by=:token AND state='running'`) — same DB,
    free. Dedicated: `heartbeat` CAS on the scheduler first (zero rows = lease

@@ -54,7 +54,7 @@ different realizations hidden behind one package.
 
 | Mechanism | Rung | Code that still has the bug and still passes |
 |-----------|------|----------------------------------------------|
-| Shared `singletonAggregate` builder | 1 for enrolled call sites | A future operation can hand-write `(SELECT COUNT(*) FROM x HAVING COUNT(*) = 1)` without calling the builder; current structure does not make arbitrary store SQL use it |
+| Shared `singletonAggregate` builder | 1 for enrolled call sites | A future operation can hand-write `(SELECT COUNT(*) FROM x HAVING COUNT(*) = 1)` without calling the builder, or pass a group key its predicate does not equality-fix; current structure owns the two audited call sites, not arbitrary store SQL |
 | Exact emitted-claim ungrouped-`HAVING` regression | 2, syntactic | Executed controls `SELECT COUNT(*) FROM (SELECT key FROM t GROUP BY key) s HAVING COUNT(*) = 1` and `SELECT COUNT(*) FROM t WHERE 'GROUP BY' = 'GROUP BY' HAVING COUNT(*) = 1` both returned zero findings because the scanner sees an earlier `GROUP BY`; remote would still reject the ungrouped outer `HAVING` |
 | Hosted normal tick plus both actor-death probes | 3, real implementation | A remote-only syntax defect in an operation those three paths do not reach remains invisible until that operation is exercised |
 | Re-aimed legacy-wait mutations | 3, semantic attacks | A new raw singleton projection outside `registeredWait` can be nonportable while both wait mutations still reach their exact expected verdicts |
@@ -65,15 +65,15 @@ the hosted execution is the property check.
 
 ## Fix-induced defects
 
-Zero findings were caused by repairs in this round. The conditional aggregate
-was compared with the old expression at zero, one, and two source rows before
-the hosted rerun, and the existing generated conformance and mutation surfaces
-were rerun after the change.
+Zero findings were caused by repairs in this round. The final fixed-key grouped
+aggregate was compared with the old expression at zero, one, and two source
+rows, and the existing generated conformance and mutation surfaces were rerun
+after the change.
 
 ## Evidence
 
 - Red test: commit `ef6148bf0b64034f509806997a5f704373f923b4` was run against buggy `0c91786d90271b7fe43274b009eb314590175251`. One test failed and reported all four incompatible clauses from the exact emitted claim batch; its grouped-`HAVING` control passed.
-- Fix: commit `1814b5023872e46306c0e7b13c4d592d105e9c6e`. The focused SQL, legacy-row, and shared conformance run passed 2,601 tests; confined `pnpm verify` passed 93 files and 3,250 tests. All three `legacy-wait` mutations were caught by their exact attributable verdicts.
+- Fix: commit `1814b5023872e46306c0e7b13c4d592d105e9c6e` introduced the shared representation; the base-gate follow-up expresses it as grouped `MIN`/`COUNT` on equality-fixed keys so the existing semantic mutation addresses remain live without compatibility-only code. The focused SQL, legacy-row, and shared conformance run passed 2,601 tests; confined `pnpm verify` passed 93 files and 3,250 tests. All three `legacy-wait` mutations were caught by their exact attributable verdicts.
 - Finder: hosted run [33332639022](https://github.com/ejc3/durablerun/actions/runs/33332639022) on the merged head failed with: `batch(claim) failed: ... SQL_PARSE_ERROR: SQL string could not be parsed: near HAVING`. The independent driver probe [33332639190](https://github.com/ejc3/durablerun/actions/runs/33332639190) reached the same error.
 - Real-implementation green proof on `1814b50`: normal tick [33333407198](https://github.com/ejc3/durablerun/actions/runs/33333407198) retained one contiguous checkpoint; driver probe [33333437968](https://github.com/ejc3/durablerun/actions/runs/33333437968) completed with one relaunch and zero infrastructure retries; worker probe [33333476630](https://github.com/ejc3/durablerun/actions/runs/33333476630) completed with zero relaunches and one infrastructure retry.
 - Data loss did not reproduce. The failed batch left both normal and probe tasks pending with zero attempts and zero checkpoints; the same normal task produced checkpoint one after the repaired claim ran.
@@ -95,8 +95,9 @@ Built in this PR:
 
 - `singletonAggregate` is the one constructor for the wait and task-book
   singleton projections. It expresses exact-one ownership with portable
-  `CASE`, `COUNT`, and `MIN` and exposes the at-most-one predicate from the same
-  source description (rung 1 for the observed shape).
+  grouped `COUNT` and `MIN`; each caller supplies a key its predicate
+  equality-fixes, and the same source description exposes the at-most-one
+  predicate (rung 1 for the two audited call sites).
 - The query-plan suite records every exact emitted claim statement and rejects
   the measured ungrouped aggregate-`HAVING` form, with a grouped negative
   control (rung 2, honestly syntactic).

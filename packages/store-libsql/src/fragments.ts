@@ -56,20 +56,26 @@ export const fenceFrom = (table: string, key: string, fence: string): string =>
  * A scalar owned only when its source predicate identifies exactly one row.
  *
  * Remote Turso rejects aggregate HAVING without GROUP BY even though local
- * libSQL accepts it. CASE keeps the cardinality rule inside one portable
- * aggregate, and one builder prevents singleton projections from drifting
- * back to the local-only spelling.
+ * libSQL accepts it. The caller supplies a key that its predicate equality-
+ * fixes to one value, so both projections use one portable grouped aggregate.
+ * One builder prevents singleton projections from drifting back to the
+ * local-only spelling.
  */
 export const singletonAggregate = (
   value: string,
   source: string,
   where: string,
+  fixedGroupKey: string,
 ): { value: string; atMostOne: string } => ({
-  value: `(SELECT CASE WHEN COUNT(*) = 1 THEN MIN(${value}) ELSE NULL END
+  value: `(SELECT MIN(${value})
            FROM ${source}
-           WHERE ${where})`,
-  atMostOne: `((SELECT COUNT(*) FROM ${source}
-                WHERE ${where}) <= 1)`,
+           WHERE ${where}
+           GROUP BY ${fixedGroupKey}
+            HAVING COUNT(*) = 1)`,
+  atMostOne: `NOT EXISTS (SELECT 1 FROM ${source}
+                          WHERE ${where}
+                          GROUP BY ${fixedGroupKey}
+                              HAVING COUNT(*) > 1)`,
 })
 
 /**
@@ -96,7 +102,7 @@ export const registeredWait = (
         OR ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.runs.available_at_ms, run)})
       AND (w.timeout_at_ms IS NULL
         OR ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.waits.timeout_at_ms, 'w')})`
-  const registration = singletonAggregate('w.step_name', 'waits w', witness)
+  const registration = singletonAggregate('w.step_name', 'waits w', witness, 'w.run_id')
   return {
     step: registration.value,
     current: `EXISTS (SELECT 1 FROM waits w
