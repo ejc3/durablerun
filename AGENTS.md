@@ -122,6 +122,18 @@ buggify for legal-rare paths, FencedBatch for structural fencing. If a bug
 cannot be expressed as a red test, that is a missing seam — build the seam
 first.
 
+## Standing rule: mutation effort follows the changed guard
+
+Guard-changing PRs run the affected mutation closure and record the selected
+names and exact verdicts under the rules owned by `/pr-gate`. A filtered run is
+never a full audit. Full runs are reserved for mutation machinery or shared
+verification changes, unbounded closures, explicitly owned scheduled audits,
+and pre-release audits.
+
+Any change to this cadence, or deviation from a full run required by
+`/pr-gate`, needs a PR-body `gate-changes:` entry explaining the old and new
+gate and why the property remains protected.
+
 ## Standing rule: prevention analysis on every correctness finding
 
 When a bug or design issue affecting correctness is found (by review, sim,
