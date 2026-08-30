@@ -1,5 +1,6 @@
 import {
   type Clock,
+  type Ending,
   type IdSource,
   LaunchOutcome,
   parseTaskValueJson,
@@ -56,12 +57,21 @@ export type DogfoodStatus =
       checkpointSpanMs: number | null
     }
 
-function endingKind(outcome: WorkerOutcome): 'completed' | 'failed' | 'crashed' | 'unknown' {
-  if (outcome.kind === 'completed') return 'completed'
-  if (outcome.kind === 'failed') return 'failed'
-  if (outcome.kind === 'aborted' || outcome.kind === 'lease-lost') return 'crashed'
-  return 'unknown'
-}
+type DogfoodWorkerDisposition = Readonly<{
+  endingKind: Ending['kind']
+  failureKind: 'task' | 'infrastructure' | null
+}>
+
+const DOGFOOD_WORKER_DISPOSITIONS = {
+  completed: { endingKind: 'completed', failureKind: null },
+  suspended: { endingKind: 'unknown', failureKind: null },
+  'retry-scheduled': { endingKind: 'unknown', failureKind: 'task' },
+  failed: { endingKind: 'failed', failureKind: 'task' },
+  superseded: { endingKind: 'unknown', failureKind: null },
+  'lease-lost': { endingKind: 'crashed', failureKind: 'infrastructure' },
+  aborted: { endingKind: 'crashed', failureKind: 'infrastructure' },
+  deferred: { endingKind: 'unknown', failureKind: 'task' },
+} as const satisfies Record<WorkerOutcome['kind'], DogfoodWorkerDisposition>
 
 function optionalJson(value: unknown): unknown | null {
   return typeof value === 'string' ? parseTaskValueJson(value) : null
@@ -173,25 +183,42 @@ export class DogfoodRuntime {
   }
 
   async tick(): Promise<TickResult> {
+    let observedFailure:
+      | { kind: 'worker'; failureKind: 'task' | 'infrastructure'; outcome: WorkerOutcome['kind'] }
+      | { kind: 'launcher'; cause: unknown }
+      | undefined
     const registry = refJournalRegistry(this.#observe, () => {
       if (this.#fault === 'worker-after-checkpoint') this.#hardExit(87)
     })
-    return tick(
+    const result = await tick(
       {
         store: this.#store,
         ids: this.#ids,
         launcher: {
           launch: async (invocation) => {
-            if (this.#fault === 'driver-before-activation') this.#hardExit(86)
-            const outcome = await runClaimedRun(
-              { store: this.#store, clock: this.#clock, registry },
-              invocation,
-            )
-            return LaunchOutcome.ended({
-              runId: invocation.runId,
-              claimToken: invocation.claimToken,
-              kind: endingKind(outcome),
-            })
+            try {
+              if (this.#fault === 'driver-before-activation') this.#hardExit(86)
+              const outcome = await runClaimedRun(
+                { store: this.#store, clock: this.#clock, registry },
+                invocation,
+              )
+              const disposition = DOGFOOD_WORKER_DISPOSITIONS[outcome.kind]
+              if (disposition.failureKind !== null) {
+                observedFailure = {
+                  kind: 'worker',
+                  failureKind: disposition.failureKind,
+                  outcome: outcome.kind,
+                }
+              }
+              return LaunchOutcome.ended({
+                runId: invocation.runId,
+                claimToken: invocation.claimToken,
+                kind: disposition.endingKind,
+              })
+            } catch (cause) {
+              observedFailure = { kind: 'launcher', cause }
+              throw cause
+            }
           },
         },
       },
@@ -202,6 +229,16 @@ export class DogfoodRuntime {
         leaseSeconds: this.#config.leaseSeconds,
       },
     )
+    if (observedFailure?.kind === 'worker') {
+      throw new Error(
+        `dogfood tick observed ${observedFailure.failureKind} failure (${observedFailure.outcome})`,
+      )
+    }
+    if (observedFailure?.kind === 'launcher') {
+      throw new Error('dogfood tick observed launcher failure', { cause: observedFailure.cause })
+    }
+    if (result.launchFailed !== 0) throw new Error('dogfood tick observed launcher failure')
+    return result
   }
 
   async status(): Promise<DogfoodStatus> {

@@ -21,6 +21,8 @@ idempotent: rerunning it returns the task selected by
 `DURABLERUN_DOGFOOD_KEY`. `tick` performs one bounded scheduler pass, runs a
 claimed worker inline, and exits. Run it from cron or another scheduler; an
 idle tick launches no worker process and retains no idle compute.
+An observed task, store, lease, registry, or launcher failure makes that tick
+exit nonzero after the engine has performed its normal lease reconciliation.
 
 For a quick two-pass demonstration:
 

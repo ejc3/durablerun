@@ -291,7 +291,10 @@ idempotently reused shorter task fails validation instead of qualifying under
 new process configuration. A deliberate-death probe derives an isolated queue
 from its fresh idempotency key; its one-slot tick therefore cannot inject the
 fault into older due journal work instead of the task whose recovery receipt
-will be verified.
+will be verified. After advisory lease reconciliation, this bounded host fails
+the scheduled invocation when its inline slot observes a task failure, a store
+outage, lease loss, an unknown task type, or a failed launcher; quiescent
+suspension and a stale duplicate delivery remain successful outcomes.
 
 Resident-driver launch watchdog: with an ASYNC (fire-and-forget) launcher,
 the loop abandons a launch call that has not acked within a deadline

@@ -64,7 +64,7 @@ describe('dogfood milestone receipts', () => {
     })
     try {
       await fault.start()
-      await fault.tick()
+      await fault.tick().catch(() => undefined)
       expect(hardExit).toHaveBeenCalledOnce()
       await expect(fault.status()).resolves.toMatchObject({ found: true, state: 'running' })
     } finally {
@@ -156,7 +156,7 @@ describe('dogfood milestone receipts', () => {
       })
       try {
         await runtime.start()
-        await runtime.tick()
+        await runtime.tick().catch(() => undefined)
         expect(hardExit).toHaveBeenCalledOnce()
         if (fault === 'worker-after-checkpoint') {
           await expect(runtime.status()).resolves.toMatchObject({ observedCheckpointCount: 1 })
