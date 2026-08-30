@@ -39,7 +39,7 @@ interface Fixture {
   raw: LibsqlExecutor
   store: LibsqlSchedulerStore
   storeOver: (db: SqlExecutor) => LibsqlSchedulerStore
-  close: () => void
+  close: () => Promise<void>
 }
 
 /**
@@ -63,7 +63,7 @@ async function fixture(ids: string[] = [], tokens: string[] = []): Promise<Fixtu
     // SAME compiled statements, which is what the sim's duplicate injection
     // does below the store.
     storeOver: (db: SqlExecutor) => new LibsqlSchedulerStore(db, idSource()),
-    close: () => raw.close(),
+    close: async () => raw.close(),
   }
 }
 
@@ -315,7 +315,7 @@ async function observeClaimTimeoutReplay(infraRetries: number, worldSeed: string
       invariantViolations: await engineInvariantViolations(f.raw),
     }
   } finally {
-    f.close()
+    await f.close()
   }
 }
 
@@ -374,7 +374,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:complete-terminalization-requires-sole-live-run',
       ).toEqual({ outcome: 'rejected', after: before })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -396,7 +396,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:fail-terminalization-requires-sole-live-run',
       ).toEqual({ outcome: 'rejected', after: before })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -420,7 +420,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:relaunch-cap-terminalization-requires-sole-live-run',
       ).toEqual({ swept: [], after: before })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -470,7 +470,7 @@ describe('fence provenance', () => {
         invariants: await engineInvariantViolations(f.raw),
       }
     } finally {
-      f.close()
+      await f.close()
     }
   }
 
@@ -516,7 +516,7 @@ describe('fence provenance', () => {
         invariants: await engineInvariantViolations(f.raw),
       }
     } finally {
-      f.close()
+      await f.close()
     }
   }
 
@@ -595,7 +595,7 @@ describe('fence provenance', () => {
         runs: [{ run_id: 'ORPHAN', task_id: 'NEW-TASK' }],
       })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -630,7 +630,7 @@ describe('fence provenance', () => {
       ).toBe('{"maxDelaySeconds":30,"maxDurationSeconds":60}')
     } finally {
       restoreOwnProperty(Object.prototype, 'maxDelaySeconds', inheritedMaxDelay)
-      f.close()
+      await f.close()
     }
   })
 
@@ -669,7 +669,7 @@ describe('fence provenance', () => {
       created: false,
       runId: 'OLD-RUN',
     })
-    f.close()
+    await f.close()
   })
 
   it('claim rejects a dialect-exact bigint that cannot cross the JavaScript port losslessly', async () => {
@@ -698,7 +698,7 @@ describe('fence provenance', () => {
 
       expect(outcome).toEqual({ kind: 'rejected' })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -727,7 +727,7 @@ describe('fence provenance', () => {
       })
       expect(await engineInvariantViolations(f.raw)).toEqual([])
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -761,7 +761,7 @@ describe('fence provenance', () => {
         )
       expect(error).toBeInstanceOf(RangeError)
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -791,7 +791,7 @@ describe('fence provenance', () => {
     // ...and nothing was attached to the task whose id merely collided.
     const runsOfX = await query(f.raw, `SELECT run_id FROM runs WHERE task_id = 'X'`)
     expect(runsOfX).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('spawn receipt prefers the same-queue idempotency winner over a same-key foreign queue id collision', async () => {
@@ -830,7 +830,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:spawn-receipt-idempotency-priority-is-queue-scoped',
       ).toEqual({ created: false, taskId: 'Z', runId: 'rZ' })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -877,7 +877,7 @@ describe('fence provenance', () => {
         runs: [{ run_id: 'rA', queue: 'other', task_id: 'A' }],
       })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -902,7 +902,7 @@ describe('fence provenance', () => {
         run: { state: 'pending', claimed_by: null, claim_gen: 0 },
       })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -934,7 +934,7 @@ describe('fence provenance', () => {
         after: before,
       })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -961,7 +961,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:expire-lease-requires-run-task-queue-ownership',
       ).toEqual({ expired: false, after: before })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1000,7 +1000,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:reschedule-requires-run-task-queue-ownership',
       ).toEqual({ outcome: 'lease-lost', after: before })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1050,7 +1050,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:suspend-requires-run-task-queue-ownership',
       ).toEqual({ outcome: 'lease-lost', after: before, checkpoints: [] })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1092,7 +1092,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:set-checkpoint-requires-run-task-queue-ownership',
       ).toEqual({ outcome: 'lease-lost', after: before, checkpoints: [] })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1132,7 +1132,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:await-event-register-requires-run-task-queue-ownership',
       ).toEqual({ outcome: 'lease-lost', after: before, waits: [] })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1192,7 +1192,7 @@ describe('fence provenance', () => {
         'mutation-verdict:behavior:emit-event-requires-run-task-queue-ownership',
       ).toEqual({ outcome: 'resolved', after: before })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1288,7 +1288,7 @@ describe('fence provenance', () => {
         waitsToRuns: [{ state: 'pending' }],
       })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1326,7 +1326,7 @@ describe('fence provenance', () => {
         'regression:generated-runs-to-waits-authoritative-cleanup',
       ).toEqual([])
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1384,7 +1384,7 @@ describe('fence provenance', () => {
         waits: [{ status: 'waiting' }],
       })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -1428,7 +1428,7 @@ describe('fence provenance', () => {
       // Parked under ITS OWN 30-second deadline, never the stale row's NULL.
       expect(run?.available_at_ms).toBe(NOW + 30_000)
     }
-    f.close()
+    await f.close()
   })
 
   it('emitEvent does not wake a task that a corrupt wait row merely names', async () => {
@@ -1459,6 +1459,6 @@ describe('fence provenance', () => {
 
     const [taskB] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = 'B'`)
     expect(taskB?.state).toBe('running') // B was never waiting; it must not move
-    f.close()
+    await f.close()
   })
 })

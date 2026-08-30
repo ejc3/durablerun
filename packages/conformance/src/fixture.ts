@@ -108,7 +108,8 @@ export interface StoreFixture {
    * actors against one database.
    */
   storeOver(db: SqlExecutor, buggify?: Buggify): SchedulerStore
-  close(): void
+  /** Fully release every fixture-owned resource before resolving. */
+  close(): Promise<void>
 }
 
 export type StoreFixtureFactory = (seed: number | string) => Promise<StoreFixture>

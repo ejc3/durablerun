@@ -48,8 +48,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       await f.admin.setFakeNowEpochMs(1_000_000)
     })
 
-    afterEach(() => {
-      f.close()
+    afterEach(async () => {
+      await f.close()
     })
 
     describe('spawn', () => {
@@ -2711,7 +2711,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             expect(inline, `seed ${seed}`).toBe('{"r":1}')
           }
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -2748,7 +2748,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(rows?.rows[0]?.wake_event, `seed ${seed}`).toBe('late')
           expect(Number(waits?.rows[0]?.n), `seed ${seed}: wait settled exactly once`).toBe(0)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -2842,7 +2842,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect([held, swept], `seed ${seed}`).not.toEqual([true, 1])
           expect([held, swept], `seed ${seed}`).not.toEqual([false, 0])
           expect(await engineInvariantViolations(fx.raw)).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -2872,7 +2872,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const swept = await fx.store.sweep(Q, 10)
         expect(swept[0]?.kind).toBe('claim-timeout')
         expect(await engineInvariantViolations(fx.raw)).toEqual([])
-        fx.close()
+        await fx.close()
       })
 
       it('a sweeper crashing mid-sweep leaves a resweepable, invariant-clean state', async () => {
@@ -2909,7 +2909,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ])
           expect(Number(successors?.rows[0]?.n), `seed ${seed}`).toBe(2)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -2943,7 +2943,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         // attempts counts USER failures only; infra successors never touched it.
         expect(task?.rows[0]).toMatchObject({ attempts: 1, infra_retries: 2 })
-        fx.close()
+        await fx.close()
       })
 
       it('expireLeaseNow is advisory: a live heartbeat revives the lease', async () => {
@@ -2958,7 +2958,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // intended §3.9 semantics (the lease is the sole authority).
         expect((await fx.store.heartbeat(Q, run.runId, run.claimToken, 600)).held).toBe(true)
         expect(await fx.store.sweep(Q, 10)).toEqual([])
-        fx.close()
+        await fx.close()
       })
 
       it('relaunch backoff arithmetic is pinned: 5s then 10s', async () => {
@@ -2980,7 +2980,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { sql: `SELECT available_at_ms FROM runs`, args: [] },
         ])
         expect(Number(second?.rows[0]?.available_at_ms)).toBe(1_300_000 + 10_000)
-        fx.close()
+        await fx.close()
       })
 
       it('a stale nonzero activated_gen still classifies a lost launch correctly', async () => {
@@ -3003,7 +3003,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { sql: `SELECT infra_retries FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
         ])
         expect(Number(task?.rows[0]?.infra_retries)).toBe(0)
-        fx.close()
+        await fx.close()
       })
     })
 
@@ -3067,7 +3067,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(reopenedTasks, `seed ${seed}`).toBe(1)
           // Invariants at quiescence, not only the scenario's own counts.
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
     })
@@ -3097,7 +3097,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(all.length, `seed ${seed}: total claims`).toBe(4)
           expect(new Set(all).size, `seed ${seed}: distinct runs`).toBe(4)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -3134,7 +3134,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ])
           expect(Number(running?.rows[0]?.n), `seed ${seed}: no ownerless running run`).toBe(0)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
     })
@@ -3463,7 +3463,7 @@ export async function wakeWitnessDisagreements(
     }
     return wrong
   } finally {
-    fixture.close()
+    await fixture.close()
   }
 }
 

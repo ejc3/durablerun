@@ -552,7 +552,7 @@ async function boundaryTargetsAt(
     await prepared.invoke()
     return await prepared.targets()
   } finally {
-    fixture.close()
+    await fixture.close()
   }
 }
 
@@ -681,7 +681,7 @@ async function infraTerminalObservation(
       ...(await terminalTaskSnapshot(fixture, run.taskId)),
     }
   } finally {
-    fixture.close()
+    await fixture.close()
   }
 }
 
@@ -704,7 +704,7 @@ async function terminalUserFailureObservation(
       ...(await terminalTaskSnapshot(fixture, run.taskId)),
     }
   } finally {
-    fixture.close()
+    await fixture.close()
   }
 }
 
@@ -747,7 +747,7 @@ export function timestampBoundaryConformance(
           await prepared.invoke().catch(() => undefined)
           expect(await durableSnapshot(fixture), testCase.overflowMarker).toEqual(before)
         } finally {
-          fixture.close()
+          await fixture.close()
         }
       })
     }
@@ -802,7 +802,7 @@ export function timestampBoundaryConformance(
           'mutation-verdict:behavior:timestamp-driver-heartbeat-overflow-preserves-cleanup-inputs',
         ).toEqual({ before: expected, after: expected })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -825,7 +825,7 @@ export function timestampBoundaryConformance(
           },
         ])
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -848,7 +848,7 @@ export function timestampBoundaryConformance(
           },
         ])
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -876,7 +876,7 @@ export function timestampBoundaryConformance(
           },
         ])
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1003,7 +1003,7 @@ export function timestampBoundaryConformance(
           runClaimExpiresAtMs: MAX_EPOCH_MS - 1,
         })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1084,7 +1084,7 @@ export function timestampBoundaryConformance(
           },
         })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1129,7 +1129,7 @@ export function timestampBoundaryConformance(
           available_at_ms: -1,
         })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1216,7 +1216,7 @@ export function timestampBoundaryConformance(
         })
         expect(poisonedWait?.rows[0]).toMatchObject({ timeout_at_ms: -1 })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1257,7 +1257,7 @@ export function timestampBoundaryConformance(
           'mutation-verdict:behavior:timestamp-claim-cancellation-upper-before-limit',
         ).toEqual([healthy.runId])
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1346,7 +1346,7 @@ export function timestampBoundaryConformance(
             claim_expires_at_ms: -1,
           })
         } finally {
-          fixture.close()
+          await fixture.close()
         }
       })
 
@@ -1395,7 +1395,7 @@ export function timestampBoundaryConformance(
           expect(afterCorruption).toBeDefined()
           expect(await durableSnapshot(fixture)).toEqual(afterCorruption)
         } finally {
-          fixture.close()
+          await fixture.close()
         }
       })
     }
@@ -1427,7 +1427,7 @@ export function timestampBoundaryConformance(
           healthyWake,
         )
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1464,7 +1464,7 @@ export function timestampBoundaryConformance(
           healthyWake,
         )
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1497,7 +1497,7 @@ export function timestampBoundaryConformance(
           healthyWake,
         )
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1536,7 +1536,7 @@ export function timestampBoundaryConformance(
           healthyWake,
         )
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1564,7 +1564,7 @@ export function timestampBoundaryConformance(
         ).toEqual(before)
         expect(expired).toBe(false)
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1669,7 +1669,7 @@ export function timestampBoundaryConformance(
           event: { payload: '{"ok":true}', emitted_at_ms: NORMAL_NOW_MS },
         })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1710,7 +1710,7 @@ export function timestampBoundaryConformance(
         expect(await durableSnapshot(fixture)).toEqual(before)
         expect(activation).toBeNull()
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1743,7 +1743,7 @@ export function timestampBoundaryConformance(
         ).toEqual(before)
         expect(activation).toBeNull()
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1781,7 +1781,7 @@ export function timestampBoundaryConformance(
         ).toEqual(before)
         expect(activation).toBeNull()
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1814,7 +1814,7 @@ export function timestampBoundaryConformance(
         ).toEqual(before)
         expect(activation).toBeNull()
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1852,7 +1852,7 @@ export function timestampBoundaryConformance(
           'mutation-verdict:behavior:timestamp-emit-validates-existing-emitted-lower',
         ).toEqual(before)
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1892,7 +1892,7 @@ export function timestampBoundaryConformance(
           'mutation-verdict:behavior:timestamp-emit-validates-existing-emitted-upper',
         ).toEqual(before)
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -1961,7 +1961,7 @@ export function timestampBoundaryConformance(
           registrationCount: 0,
         })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -2034,7 +2034,7 @@ export function timestampBoundaryConformance(
         })
         expect(poisonedRun?.rows[0]).toMatchObject({ state: 'pending' })
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
 
@@ -2067,7 +2067,7 @@ export function timestampBoundaryConformance(
         expect(afterCorruption).toBeDefined()
         expect(await durableSnapshot(fixture)).toEqual(afterCorruption)
       } finally {
-        fixture.close()
+        await fixture.close()
       }
     })
   })

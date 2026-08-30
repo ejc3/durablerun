@@ -468,6 +468,6 @@ export async function runFaultMatrixCase(
       throw new Error(`matrix ${cell} final: ${finalViolations.join('; ')}`)
     }
   } finally {
-    f.close()
+    await f.close()
   }
 }

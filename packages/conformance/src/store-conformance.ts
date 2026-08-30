@@ -740,7 +740,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
           })
           receiptAfter = await snapshot()
         } finally {
-          receiptFixture.close()
+          await receiptFixture.close()
         }
 
         expect(

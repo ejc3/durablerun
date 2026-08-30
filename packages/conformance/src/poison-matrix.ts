@@ -2895,7 +2895,7 @@ async function preparePoisonCase(
     const beforeFindings = await engineInvariantFindings(fixture.raw)
     return { caseName, fixture, corruptionDisposition, beforeFindings }
   } catch (error) {
-    fixture.close()
+    await fixture.close()
     throw error
   }
 }
@@ -2925,7 +2925,7 @@ async function observePoisonAggregateWitnessCase(
       corruptionDisposition: prepared.corruptionDisposition,
     }
   } finally {
-    prepared.fixture.close()
+    await prepared.fixture.close()
   }
 }
 
@@ -3077,7 +3077,7 @@ export async function runPoisonMatrixCase(
       corruptionDisposition,
     }
   } finally {
-    f.close()
+    await f.close()
   }
 }
 

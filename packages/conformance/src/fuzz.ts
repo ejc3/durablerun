@@ -47,7 +47,7 @@ export async function runFuzzScenario(
   try {
     return await runWalk(f, seed, steps)
   } finally {
-    f.close()
+    await f.close()
   }
 }
 

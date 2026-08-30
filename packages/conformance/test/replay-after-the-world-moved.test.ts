@@ -31,7 +31,7 @@ async function fixture() {
     admin,
     store: new LibsqlSchedulerStore(raw, ids),
     storeOver: (db: SqlExecutor) => new LibsqlSchedulerStore(db, ids),
-    close: () => raw.close(),
+    close: async () => raw.close(),
   }
 }
 
@@ -114,7 +114,7 @@ describe('a replay after the world moved on', () => {
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
     expect(task?.state).toBe('running')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('does not reuse one emit provenance seed at a later instant', async () => {
@@ -124,7 +124,7 @@ describe('a replay after the world moved on', () => {
     await rec.replay('emit-event')
 
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('does not reuse an emit seed after a fresh emit overwrites its receipt', async () => {
@@ -136,7 +136,7 @@ describe('a replay after the world moved on', () => {
     await rec.replay('emit-event')
 
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('does not let a delayed emit replay delete a restored registration', async () => {
@@ -159,7 +159,7 @@ describe('a replay after the world moved on', () => {
       [run.runId, step],
     )
     expect(Number(restored?.n)).toBe(1)
-    f.close()
+    await f.close()
   })
 
   for (const suspension of ['reschedule', 'suspend'] as const) {
@@ -210,7 +210,7 @@ describe('a replay after the world moved on', () => {
           [later.runId],
         ),
       ).toEqual([{ event_name: 'later' }])
-      f.close()
+      await f.close()
     })
   }
 })
@@ -249,7 +249,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     expect(after?.state).toBe('sleeping') // still asleep
     expect(after?.available_at_ms).toBe(NOW + 1_000_000) // at its own deadline
     expect(after?.wake_event).toBeNull()
-    f.close()
+    await f.close()
   })
 
   it('does not wake a run whose park is not this wait', async () => {
@@ -301,7 +301,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
       state: 'sleeping',
       at: NOW + 1_000_000, // its own deadline, untouched
     })
-    f.close()
+    await f.close()
   })
 
   it('keeps the registration of a waiter it did not wake', async () => {
@@ -352,7 +352,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     expect(await engineInvariantViolations(f.raw)).toContain(
       `wait-for-fired-event: ${rb.runId}/$await:go`,
     )
-    f.close()
+    await f.close()
   })
 
   it('does not re-deliver to a run whose timeout was already selected', async () => {
@@ -425,7 +425,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
       at: NOW + 31_000 + 1_000_000, // the deferral's wake time, untouched
       payload: null, // still the timeout it already selected
     })
-    f.close()
+    await f.close()
   })
 
   it('still wakes a run parked before wake_step existed', async () => {
@@ -455,7 +455,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     ])
     expect(after?.state).toBe('pending')
     expect(after?.event_payload).toBe('{"x":1}')
-    f.close()
+    await f.close()
   })
 
   it('still wakes a run that really is parked on the event', async () => {
@@ -484,7 +484,7 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     expect(after?.event_payload).toBe('{"x":1}')
     const [task] = await query(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [spawned.taskId])
     expect(task?.state).toBe('pending')
-    f.close()
+    await f.close()
   })
 })
 
@@ -573,7 +573,7 @@ describe('successor identity includes its task and intended attempt', () => {
         invariants: await engineInvariantViolations(f.raw),
       }
     } finally {
-      f.close()
+      await f.close()
     }
   }
 
@@ -614,7 +614,7 @@ describe('successor identity includes its task and intended attempt', () => {
         invariants: await engineInvariantViolations(f.raw),
       }
     } finally {
-      f.close()
+      await f.close()
     }
   }
 
@@ -652,7 +652,7 @@ describe('successor identity includes its task and intended attempt', () => {
         invariants: await engineInvariantViolations(f.raw),
       }
     } finally {
-      f.close()
+      await f.close()
     }
   }
 
@@ -730,6 +730,6 @@ describe('an exact replay of spawn', () => {
     )
     expect(counts).toMatchObject({ tasks: 1, runs: 1 })
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 })
