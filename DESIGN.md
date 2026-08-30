@@ -290,7 +290,9 @@ durable task type, repository, ref, cycle count, and interval to match the
 configured workload intent exactly, and the durable interval span itself to
 cover at least seven days. An idempotently reused wrong-target, short, or
 long-cadence task therefore fails both start and receipt validation instead of
-qualifying under new process configuration. A deliberate-death probe derives
+qualifying under new process configuration. The task handler, status reader,
+and receipt verifier share one parser for that durable workload shape. A
+deliberate-death probe derives
 an isolated queue from its fresh idempotency key; its probe identity remains
 set while the one-shot injection hook is cleared, so start, injection,
 recovery, and verification all select that queue. Its one-slot tick therefore

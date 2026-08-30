@@ -1,4 +1,9 @@
 import type { TaskRegistry } from '@durablerun/sdk'
+import {
+  DOGFOOD_CHECKPOINT_NAME,
+  DOGFOOD_TASK_NAME,
+  parseDogfoodJournalParameters,
+} from './config.js'
 
 export interface RefObservation {
   repository: string
@@ -61,48 +66,20 @@ export async function observeGitHubRef(
   return { repository, ref, commitSha, treeSha, committedAt }
 }
 
-interface RefJournalParams {
-  repository: string
-  ref: string
-  cycles: number
-  intervalSeconds: number
-}
-
-function params(value: unknown): RefJournalParams {
-  if (value === null || typeof value !== 'object') throw new TypeError('ref-journal params')
-  const candidate = value as Record<string, unknown>
-  const repository = candidate.repository
-  const ref = candidate.ref
-  const cycles = candidate.cycles
-  const intervalSeconds = candidate.intervalSeconds
-  if (
-    typeof repository !== 'string' ||
-    typeof ref !== 'string' ||
-    typeof cycles !== 'number' ||
-    !Number.isSafeInteger(cycles) ||
-    cycles < 1 ||
-    typeof intervalSeconds !== 'number' ||
-    !Number.isSafeInteger(intervalSeconds) ||
-    intervalSeconds < 0
-  ) {
-    throw new TypeError('invalid ref-journal params')
-  }
-  return { repository, ref, cycles, intervalSeconds }
-}
-
 export function refJournalRegistry(
   observe: ObserveRepositoryRef = observeGitHubRef,
   afterCheckpoint: (ordinal: number) => void = () => {},
 ): TaskRegistry {
   return new Map([
     [
-      'ref-journal',
+      DOGFOOD_TASK_NAME,
       async (ctx, raw) => {
-        const input = params(raw)
+        const input = parseDogfoodJournalParameters(raw)
+        if (input === null) throw new TypeError('invalid ref-journal params')
         const observations: RefObservation[] = []
         for (let cycle = 0; cycle < input.cycles; cycle++) {
           observations.push(
-            await ctx.step('observe-ref', () => observe(input.repository, input.ref)),
+            await ctx.step(DOGFOOD_CHECKPOINT_NAME, () => observe(input.repository, input.ref)),
           )
           afterCheckpoint(cycle + 1)
           if (cycle + 1 < input.cycles) await ctx.sleepFor(input.intervalSeconds)

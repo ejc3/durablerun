@@ -14,7 +14,10 @@ normal receipt policy without seven elapsed days. The final exact-head pass
 found three more outcome failures: a fault probe could kill ordinary due work,
 an observed inline-worker outage could leave the scheduled invocation green,
 and an idempotently reused wrong-target or year-cadence task could satisfy the
-receipt. All ten defects are fixed before merge.
+receipt. Release-candidate review then found that clearing the one-shot fault
+hook also cleared the probe's isolated queue identity, so recovery polled the
+ordinary queue and never recovered the crashed probe. All eleven defects are
+fixed before merge.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The question is what would have made these defects unwritable or
@@ -52,6 +55,11 @@ the receipt bound only a minimum durable span, not the task type, target, count,
 and cadence: the production key could journal another repository or sleep for a
 year while every hourly workflow stayed green.
 
+The first queue-isolation repair coupled routing to the transient fault hook.
+The workflow cleared that hook before recovery, which silently switched both
+recovery ticks to the ordinary queue; the probe remained crashed while normal
+work could run instead.
+
 Finally, fault dispatches accepted lower-bound recovery counters and omitted
 exact checkpoint attempt ownership. Extra or misclassified recovery
 transitions, or a checkpoint rewritten on a later attempt, could look like the
@@ -71,6 +79,7 @@ promised single recovery.
 | 8 | A fresh deliberate-death task shared the normal journal queue | An older due run could receive the crash, so the retained probe receipt did not test the promised recovery edge | Fault-target identity | A fresh idempotency key identified the receipt but `tick` selected by the shared queue with `claimLimit=1` | Derive an isolated queue from every fault probe's fresh key and reproduce competition with real file-backed tasks (rung 1 routing shape with rung 2 regression) |
 | 9 | The bounded host flattened `aborted`, lease-lost, task-failure, and launcher-failure outcomes into a successful tick | A Turso outage or task failure observed by the inline worker could leave the scheduled workflow green | Bounded-host outcome boundary | Generic SDK/driver recovery correctly preserved the lease story, but the dogfood host had no exhaustive success/failure policy above it | Exhaustively map every `WorkerOutcome` with `satisfies Record`, reconcile first, then reject the invocation on task/infrastructure/registry/launcher failures or nonzero `launchFailed` (rung 1 single/exhaustive authority with rung 2 outage regression) |
 | 10 | Receipt validation bound only durable count/span and a seven-day minimum, not the complete configured workload | A reused key could journal the wrong repository/ref or a two-cycle, one-year cadence while hourly jobs stayed green | Durable workload identity | The durable parameters were treated as self-authenticating intent; status discarded target fields and kept derived count/span as a second representation | Persist and expose one durable workload object, compare task type/repository/ref/cycles/interval exactly in both start and verify, and derive evidence math from that object (rung 1 single representation with rung 2 real-runtime cases) |
+| 11 | The isolated queue was derived from the one-shot fault hook rather than persistent probe identity | Clearing the hook for recovery switched both ticks to the ordinary queue, leaving either deliberate-death probe unrecovered | Fault-probe lifecycle identity | Finding 8 isolated injection but treated transient injection mode as the lasting route; tests stopped after target selection and never exercised injection to recovery configuration | Require an explicit persistent probe identity, derive routing from it, reject fault injection without it, and remove the runtime-only fault override (rung 1 single configuration path with rung 2 workflow/config regression) |
 
 ## Detection ledger
 
@@ -82,16 +91,17 @@ promised single recovery.
 | Final exact-head whole-system review | 1 | no |
 | Final exact-head Codex outcome review | 2 | no |
 | Bounded re-review of the repaired dogfood slice | 1 | no |
+| Release-candidate whole-system and simplification review | 1 | no |
 | Existing tests, lints, and workflow gates before review | 0 | yes |
 
-Self-catch rate: **0 of 10, or 0%** (previous round: **103 of 151, or
+Self-catch rate: **0 of 11, or 0%** (previous round: **103 of 151, or
 68.2%**). This is a 68.2 percentage-point regression. The red tests reproduce
 the findings but were written after reviewers named them, so they do not count
 as self-catches.
 
 ## Recurrence
 
-All ten findings recur at class level.
+All eleven findings recur at class level.
 
 Findings 2 and 4 repeat partial evidence standing in for successful outcome.
 Earlier rounds rejected completion markers that survived later aborts and
@@ -131,6 +141,11 @@ Finding 10 is the next false negative of findings 2 and 7: a minimum span was a
 proxy for the exact workload. Durable intent must be compared with configured
 intent, not merely trusted because it is durable.
 
+Finding 11 recurs inside finding 8's repair. The key-derived queue fixed who
+received the injected death, but injection mode was a proxy for the probe's
+longer lifecycle. A route that must survive start, death, recovery, and
+verification cannot be derived from the hook that recovery deliberately clears.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -145,6 +160,7 @@ intent, not merely trusted because it is durable.
 | Key-derived isolated fault queue | 1 routing shape and 2 regression | Manually configure ordinary work to use the derived fault queue; the config layer permits the namespace collision even though the shipped workflow never does |
 | Exhaustive bounded-host outcome disposition | 1 authority and 2 semantics | Make the observer return well-formed but stale or wrong data without throwing; the worker reports normal suspension, so no failure outcome exists for the host to surface |
 | Single durable workload representation plus exact intent comparison | 1 authority and 2 real-runtime cases | Return a checkpoint snapshot naming another repository/ref while the durable workload still matches intent; receipt validation does not compare snapshot metadata to the parameters |
+| Persistent probe identity, one validated fault configuration, and workflow topology regression | 1 configuration path and 2 future edits | Export a different `DURABLERUN_DOGFOOD_KEY` inside the recovery run block; the parsed workflow still has no step-level key override, but the recovery queue changes |
 
 The boundary probes were executed against `01e195d` and returned:
 
@@ -205,6 +221,19 @@ returned:
 }
 ```
 
+The release-candidate queue-lifecycle reproduction was executed against
+`00daaf4` and returned:
+
+```json
+{
+  "injectedQueue": "dogfood-fault-ref-journal-fault-123-1",
+  "recoveryQueue": "dogfood",
+  "sameQueue": false,
+  "recoveryClaimed": 0,
+  "probeStateAfterRecovery": "running"
+}
+```
+
 Before the green repair, the partial-live probe used a sleeping receipt with
 seven user attempts, nine infrastructure retries, duplicate ordinal one, and
 zero contiguous checkpoints. It returned no errors. The repair rejects that
@@ -212,10 +241,12 @@ probe; it is finding 2's concrete false negative, not a residual.
 
 ## Fix-induced defects
 
-**One of ten.** Finding 4 was introduced by the first fix for finding 2:
+**Two of eleven.** Finding 4 was introduced by the first fix for finding 2:
 adding `dogfood:verify` after `dogfood:status` created two independently timed
 representations. It was found by re-reviewing the repair as new code before
 the green commit, rather than by merely rerunning the original regressions.
+Finding 11 was introduced by finding 8's isolation fix: injection moved to a
+key-derived queue, but recovery still cleared the value that selected it.
 Findings 1 through 3 and 5 through 10 were already present at `e4e45bb`.
 
 ## Evidence
@@ -253,6 +284,11 @@ Findings 1 through 3 and 5 through 10 were already present at `e4e45bb`.
 - Workload-binding fix: commit `4e38cda`; its exact-tree confined `pnpm verify`
   passed all 91 test files and 3,242 tests, plus every lint, format-check, and
   typecheck.
+- Probe-lifecycle red test: commit `669913e` produced exactly one failure
+  because clearing the one-shot fault changed `dogfood-fault-fresh-probe` back
+  to `dogfood`.
+- Probe-lifecycle fix: commit `5623f61`; its confined `pnpm verify` passed all
+  91 test files and 3,243 tests, plus every lint, format-check, and typecheck.
 - Operability reviewer verdict: "scheduled normal seven-day job stays green
   after terminal task failure or bad completed evidence; only fault dispatch
   is validated" and "Turso credentials and GITHUB_TOKEN are job-level env,
@@ -278,6 +314,10 @@ Findings 1 through 3 and 5 through 10 were already present at `e4e45bb`.
 - Final bounded outcome review reproduced a file-backed reused key observing
   `wrong-owner/wrong-repo@release` while verification returned no errors, plus
   a two-cycle one-year cadence whose hourly no-progress receipts also passed.
+- Release-candidate reviewer verdict: "fault recovery changes queues"; its
+  file-backed reproduction left the isolated probe running, recovery claimed
+  zero work from the ordinary queue, and final receipt validation reported no
+  completion, checkpoint, or relaunch.
 - The active-wait identity concern did not reproduce through any public API
   sequence; its exact stale row required raw corruption, partial restore, or a
   mixed-version writer, so BUILD.md keeps it trigger-gated. Resident HTTP
@@ -300,7 +340,9 @@ observations to durable task intent was treated as matching the milestone,
 without separately pinning the milestone's minimum duration. The last three
 misses repeated the same shape at new boundaries: receipt identity stood in for
 fault-target identity, lease-safe reconciliation stood in for host success, and
-a minimum durable span stood in for the exact configured workload.
+a minimum durable span stood in for the exact configured workload. The final
+fix-induced miss used transient injection mode as a proxy for the probe's
+persistent routing identity.
 
 ## Mechanisms
 
@@ -311,8 +353,9 @@ Built in this PR:
   (rung 1 authority, rung 2 semantic coverage).
 - One durable workload representation carries task type, repository, ref,
   cycles, and interval. Start and receipt verification compare it exactly with
-  configured intent, and all count/span evidence is derived from it; the former
-  derived duplicate fields were deleted (rung 1).
+  configured intent, the handler, status reader, and verifier share one parser,
+  and all count/span evidence is derived from it; the former derived duplicate
+  fields were deleted (rung 1).
 - Live receipts validate bounded contiguous progress; completed receipts also
   require full count, minimum seven-day span, completed-result shape, zero user
   attempts, and no failure reason (rung 2).
@@ -332,9 +375,11 @@ Built in this PR:
   derives the default schedule, and gates every normal live or completed
   receipt regardless of current process configuration (rung 1 authority with
   rung 2 state coverage).
-- Fault probes derive an isolated queue from their fresh idempotency key, so a
-  one-slot tick cannot spend the injected death on ordinary due work (rung 1
-  routing shape with a real-runtime regression).
+- Fault probes derive an isolated queue from their fresh idempotency key and an
+  explicit probe identity that remains set after the one-shot hook is cleared.
+  The runtime has no second fault override, so start, injection, recovery, and
+  verification share one validated configuration path (rung 1 routing shape
+  with rung 2 real-runtime and topology regressions).
 - One exhaustive `WorkerOutcome` disposition table owns the bounded host's
   success policy. It preserves advisory reconciliation, then rejects observed
   task, infrastructure, registry, or launcher failure and any generic failed
@@ -370,4 +415,6 @@ remain the operational evidence around that boundary. A manually configured
 normal task can still choose the derived fault queue namespace, and a buggy
 observer can return well-formed stale or wrong-target snapshot metadata without
 throwing; the shipped workflow and production observer do neither, and the
-executed boundary probes above document those limits.
+executed boundary probes above document those limits. A recovery run block can
+still export a different key after workflow parsing; the current workflow does
+not, and the persistent job-level key is visible in every retained receipt.

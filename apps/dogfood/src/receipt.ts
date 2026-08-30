@@ -3,6 +3,7 @@ import {
   DOGFOOD_TASK_NAME,
   type DogfoodFault,
   type DogfoodWorkloadIntent,
+  parseDogfoodJournalParameters,
 } from './config.js'
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -17,27 +18,8 @@ function exactInteger(value: unknown, expected: number): boolean {
 
 function receiptWorkload(receipt: Record<string, unknown>): DogfoodWorkloadIntent | null {
   const taskName = receipt.taskName
-  const parameters = record(receipt.durableParameters)
-  const repository = parameters?.repository
-  const ref = parameters?.ref
-  const cycles = parameters?.cycles
-  const intervalSeconds = parameters?.intervalSeconds
-  if (
-    taskName !== DOGFOOD_TASK_NAME ||
-    typeof repository !== 'string' ||
-    repository.length === 0 ||
-    typeof ref !== 'string' ||
-    ref.length === 0 ||
-    typeof cycles !== 'number' ||
-    !Number.isSafeInteger(cycles) ||
-    cycles < 1 ||
-    typeof intervalSeconds !== 'number' ||
-    !Number.isSafeInteger(intervalSeconds) ||
-    intervalSeconds < 0
-  ) {
-    return null
-  }
-  return { taskName, repository, ref, cycles, intervalSeconds }
+  const parameters = parseDogfoodJournalParameters(receipt.durableParameters)
+  return taskName === DOGFOOD_TASK_NAME && parameters !== null ? { taskName, ...parameters } : null
 }
 
 function workloadIntentErrors(

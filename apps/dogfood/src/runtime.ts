@@ -12,12 +12,14 @@ import { type TickResult, tick } from '@durablerun/driver'
 import { type WorkerOutcome, runClaimedRun } from '@durablerun/sdk'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import {
+  DOGFOOD_CHECKPOINT_NAME,
   DOGFOOD_TASK_NAME,
   type DogfoodConfig,
   type DogfoodFault,
   type DogfoodJournalParameters,
   dogfoodJournalParameters,
   dogfoodWorkloadIntent,
+  parseDogfoodJournalParameters,
 } from './config.js'
 import { requireDogfoodWorkload } from './receipt.js'
 import {
@@ -86,36 +88,11 @@ function optionalJson(value: unknown): unknown | null {
 }
 
 function checkpointOrdinal(name: string): number | null {
-  if (name === 'observe-ref') return 1
-  const match = /^observe-ref#([1-9][0-9]*)$/.exec(name)
+  if (name === DOGFOOD_CHECKPOINT_NAME) return 1
+  const match = /^#([1-9][0-9]*)$/.exec(name.slice(DOGFOOD_CHECKPOINT_NAME.length))
   if (!match) return null
   const ordinal = Number(match[1])
   return Number.isSafeInteger(ordinal) && ordinal >= 2 ? ordinal : null
-}
-
-function durableJournalParameters(value: unknown): DogfoodJournalParameters | null {
-  const parsed = optionalJson(value)
-  if (parsed === null || typeof parsed !== 'object') return null
-  const candidate = parsed as Record<string, unknown>
-  const repository = candidate.repository
-  const ref = candidate.ref
-  const cycles = candidate.cycles
-  const intervalSeconds = candidate.intervalSeconds
-  if (
-    typeof repository !== 'string' ||
-    repository.length === 0 ||
-    typeof ref !== 'string' ||
-    ref.length === 0 ||
-    typeof cycles !== 'number' ||
-    !Number.isSafeInteger(cycles) ||
-    cycles < 1 ||
-    typeof intervalSeconds !== 'number' ||
-    !Number.isSafeInteger(intervalSeconds) ||
-    intervalSeconds < 0
-  ) {
-    return null
-  }
-  return { repository, ref, cycles, intervalSeconds }
 }
 
 export class DogfoodRuntime {
@@ -318,7 +295,7 @@ export class DogfoodRuntime {
       infraRetries: Number(task.infra_retries),
       failureReason: optionalJson(task.failure_reason),
       completedResult: optionalJson(task.completed_payload),
-      durableParameters: durableJournalParameters(task.params),
+      durableParameters: parseDogfoodJournalParameters(optionalJson(task.params)),
       observedCheckpointCount: observations.length,
       contiguousCheckpointCount,
       refObservations: observations,

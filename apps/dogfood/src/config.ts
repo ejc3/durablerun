@@ -2,6 +2,7 @@ export type DogfoodFault = 'none' | 'driver-before-activation' | 'worker-after-c
 
 export const DOGFOOD_MILESTONE_SPAN_MS = 7 * 24 * 60 * 60 * 1_000
 export const DOGFOOD_TASK_NAME = 'ref-journal'
+export const DOGFOOD_CHECKPOINT_NAME = 'observe-ref'
 
 export interface DogfoodJournalParameters {
   repository: string
@@ -14,17 +15,37 @@ export interface DogfoodWorkloadIntent extends DogfoodJournalParameters {
   taskName: typeof DOGFOOD_TASK_NAME
 }
 
-export interface DogfoodConfig {
+export interface DogfoodConfig extends DogfoodJournalParameters {
   databaseUrl: string
   authToken?: string
   queue: string
   idempotencyKey: string
-  repository: string
-  ref: string
-  cycles: number
-  intervalSeconds: number
   leaseSeconds: number
   fault: DogfoodFault
+}
+
+export function parseDogfoodJournalParameters(value: unknown): DogfoodJournalParameters | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  const repository = candidate.repository
+  const ref = candidate.ref
+  const cycles = candidate.cycles
+  const intervalSeconds = candidate.intervalSeconds
+  if (
+    typeof repository !== 'string' ||
+    repository.length === 0 ||
+    typeof ref !== 'string' ||
+    ref.length === 0 ||
+    typeof cycles !== 'number' ||
+    !Number.isSafeInteger(cycles) ||
+    cycles < 1 ||
+    typeof intervalSeconds !== 'number' ||
+    !Number.isSafeInteger(intervalSeconds) ||
+    intervalSeconds < 0
+  ) {
+    return null
+  }
+  return { repository, ref, cycles, intervalSeconds }
 }
 
 export function dogfoodJournalParameters(config: DogfoodConfig): DogfoodJournalParameters {
