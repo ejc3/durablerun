@@ -20,7 +20,10 @@ ordinary queue and never recovered the crashed probe. The last release-contract
 pass found three more operability failures: a live journal could remain green
 without timely progress, the advertised Node floor did not support the dogfood
 entrypoint flag, and a productive bounded worker retained its losing five-second
-finalization timer. All fourteen defects are fixed before merge.
+finalization timer. The final release-safety review found that the credential
+gate could migrate any nonempty `libsql://` target before independently proving
+it was the intended dogfood database. All fifteen defects are fixed before
+merge.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The question is what would have made these defects unwritable or
@@ -77,6 +80,11 @@ exact checkpoint attempt ownership. Extra or misclassified recovery
 transitions, or a checkpoint rewritten on a later attempt, could look like the
 promised single recovery.
 
+The credential gate also accepted any nonempty `libsql://` URL. Because every
+dogfood command migrated its database as it opened, a drifted secret could
+create or alter un-namespaced durablerun tables in another application's
+database before any command-specific validation ran.
+
 ## Findings
 
 | # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
@@ -95,6 +103,7 @@ promised single recovery.
 | 12 | Live receipts enforced shape but no elapsed-time progress floor | An hourly workflow could stay green for seven days with zero or stalled checkpoints | Milestone liveness and receipt policy | Contiguity and span checks described existing evidence but never compared its age with the configured cadence | Read task creation, checkpoint time, and current time from the database; fail after the next durable interval plus a two-hour scheduling grace (rung 1 database-time authority with rung 2 boundary cases) |
 | 13 | Dogfood scripts used `--env-file-if-exists` while the support contract declared Node `>=22` | Supported Node 22.0-22.8 users failed before the CLI ran; the locked test stack also requires Node 22.12 | Runtime support contract | No check reconciled entrypoint features and locked tool requirements with the root engine declaration or README | Raise the single root floor to `>=22.12.0`, make README delegate to it, and pin the observed contract in a focused regression (rung 1 declaration with rung 2 synchronization) |
 | 14 | Bounded worker finalization left the losing five-second sleep referenced | Every productive one-shot tick could retain five seconds of idle process time | Worker finalization lifetime | Tests asserted the winning worker result; neither `Promise.race` nor the fake clock cancelled the losing deadline | Give the finalization deadline its own abort owner and cancel it after either race outcome; assert no pending fake-clock deadline remains (rung 1 lifetime ownership with rung 2 regression) |
+| 15 | The credential gate accepted any nonempty `libsql://` URL before commands migrated it | Secret drift could create or alter durablerun tables in another application's Turso database before proving the target was dedicated | Remote database target identity | The URL scheme and the word "dedicated" stood in for an executable identity check; the workflow had only one source for the target | Compare the secret exactly with an independently configured repository variable before any database command; execute the actual gate for missing, mismatched, and equal values (rung 3 refusal with rung 2 regression) |
 
 ## Detection ledger
 
@@ -108,16 +117,17 @@ promised single recovery.
 | Bounded re-review of the repaired dogfood slice | 1 | no |
 | Release-candidate whole-system and simplification review | 1 | no |
 | Final release-contract and bounded-exit review | 3 | no |
+| Exact-head Codex release-safety review | 1 | no |
 | Existing tests, lints, and workflow gates before review | 0 | yes |
 
-Self-catch rate: **0 of 14, or 0%** (previous round: **103 of 151, or
+Self-catch rate: **0 of 15, or 0%** (previous round: **103 of 151, or
 68.2%**). This is a 68.2 percentage-point regression. The red tests reproduce
 the findings but were written after reviewers named them, so they do not count
 as self-catches.
 
 ## Recurrence
 
-All fourteen findings recur at class level.
+All fifteen findings recur at class level.
 
 Findings 2 and 4 repeat partial evidence standing in for successful outcome.
 Earlier rounds rejected completion markers that survived later aborts and
@@ -170,6 +180,14 @@ features and locked tools the commands execute. Finding 14 repeats finding 9 at
 the process boundary: a successful returned outcome stood in for a quiescent
 bounded host, while an unowned losing promise kept the process alive.
 
+Finding 15 repeats the proxy-for-property class at the provisioning boundary.
+The `libsql://` scheme and documentation naming a dedicated database stood in
+for executable target identity. It also exposes a boundary of finding 1's
+repair: least-privilege scoping limits where a credential flows, but does not
+prove which database that credential names. The replacement uses an
+independently configured value before migration instead of another descriptive
+label.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -188,6 +206,7 @@ bounded host, while an unowned losing promise kept the process alive.
 | Database-time live-progress deadline | 1 time authority and 2 boundary cases | Forward-shift the task creation or latest-checkpoint timestamp along with database time; the stalled receipt looks fresh and still passes |
 | Root Node floor plus README delegation and focused contract test | 1 declaration and 2 synchronization | Add a future dependency requiring Node 24 outside the enrolled dogfood commands; the fixed `>=22.12.0` assertion still passes |
 | Owned, abortable worker-finalization deadline | 1 lifetime ownership and 2 regression | Supply a contract-violating `Clock` that ignores the abort signal; its losing five-second timer remains pending after the productive worker returns |
+| Independent dogfood URL pin plus actual-gate regression | 3 refusal and 2 regression | Change both `TURSO_DATABASE_URL` and `DURABLERUN_DOGFOOD_DATABASE_URL` to the same wrong `libsql://` URL; their exact match passes the gate |
 
 The boundary probes were executed against `01e195d` and returned:
 
@@ -273,6 +292,21 @@ zero:
 }
 ```
 
+The database-target boundary was executed by the actual workflow-gate
+regression against `2b68acf` and returned:
+
+```json
+{
+  "secretUrl": "libsql://other-application.example",
+  "pinnedUrl": "libsql://other-application.example",
+  "exactStatus": 0
+}
+```
+
+This is the deliberate boundary of an independent configuration pin: a joint
+change to both sources is accepted. It does not justify widening this milestone
+into a database-marker or schema-inventory ownership protocol.
+
 Before the green repair, the partial-live probe used a sleeping receipt with
 seven user attempts, nine infrastructure retries, duplicate ordinal one, and
 zero contiguous checkpoints. It returned no errors. The repair rejects that
@@ -280,15 +314,15 @@ probe; it is finding 2's concrete false negative, not a residual.
 
 ## Fix-induced defects
 
-**Two of fourteen.** Finding 4 was introduced by the first fix for finding 2:
+**Two of fifteen.** Finding 4 was introduced by the first fix for finding 2:
 adding `dogfood:verify` after `dogfood:status` created two independently timed
 representations. It was found by re-reviewing the repair as new code before
 the green commit, rather than by merely rerunning the original regressions.
 Finding 11 was introduced by finding 8's isolation fix: injection moved to a
 key-derived queue, but recovery still cleared the value that selected it.
-Findings 12 through 14 were not fix-induced: their outcome failures predated
+Findings 12 through 15 were not fix-induced: their outcome failures predated
 their regressions and repairs. Findings 1 through 3, 5 through 10, and 12
-through 14 were already present at `e4e45bb`.
+through 15 were already present at `e4e45bb`.
 
 ## Evidence
 
@@ -337,6 +371,11 @@ through 14 were already present at `e4e45bb`.
 - Final release-contract fixes: commit `6044339`; the focused five-file run
   passed all 64 tests, and confined `pnpm verify` passed all 92 test files and
   3,247 tests, plus lint, format-check, and typecheck.
+- Database-target red test: commit `911e482` executed the workflow's actual
+  gate and failed because the independent variable binding was absent and both
+  a missing pin and a mismatched pin exited zero.
+- Database-target fix: commit `2b68acf`; the actual-gate regression now rejects
+  missing and mismatched pins and accepts an exact match.
 - Operability reviewer verdict: "scheduled normal seven-day job stays green
   after terminal task failure or bad completed evidence; only fault dispatch
   is validated" and "Turso credentials and GITHUB_TOKEN are job-level env,
@@ -371,6 +410,11 @@ through 14 were already present at `e4e45bb`.
   productive tick took about 5.27 seconds because its losing finalization timer
   remained referenced. After `6044339`, the same real `systemClock`
   one-checkpoint tick exited zero in 0.26 seconds.
+- Exact-head Codex review artifact
+  `/tmp/durablerun-pr14-codex-final6-jhErjf.log` reported: "remote dogfood can
+  migrate the wrong Turso database before proving it is dedicated." It traced
+  the path from the scheme-only workflow gate through migrate-on-open and found
+  no other actionable reachable defect in the reviewed slice.
 - The active-wait identity concern did not reproduce through any public API
   sequence; its exact stale row required raw corruption, partial restore, or a
   mixed-version writer, so BUILD.md keeps it trigger-gated. Resident HTTP
@@ -399,6 +443,9 @@ persistent routing identity. The final release-contract misses repeated that
 substitution three ways: valid evidence shape stood in for timely progress, a
 major-version label stood in for the precise entrypoint and locked-tool floor,
 and a resolved race stood in for cancellation of its losing process resource.
+The last miss repeated the same substitution at provisioning time: a URL scheme
+and human configuration instruction stood in for an identity check, while the
+first database operation was already a migration.
 
 ## Mechanisms
 
@@ -455,6 +502,11 @@ Built in this PR:
   cannot retain a compliant clock or short-lived host, and the fake-clock
   regression requires no pending deadline (rung 1 lifetime ownership with rung
   2 regression).
+- Before any database command, the workflow requires the secret URL to equal
+  the independently configured `DURABLERUN_DOGFOOD_DATABASE_URL` repository
+  variable. Missing or mismatched values fail closed, and a focused regression
+  executes the actual shell gate for all three outcomes (rung 3 refusal with
+  rung 2 regression).
 
 Deferred (recorded in BUILD.md):
 
@@ -494,4 +546,8 @@ focused Node-contract enrollment can raise the real runtime floor without
 changing the pinned declaration. A `Clock` implementation that violates its
 interrupt contract can retain the finalization timer after abort. The executed
 boundary probe documents each limit; none occurs in the selected database,
-locked toolchain, or production `systemClock` path.
+locked toolchain, or production `systemClock` path. Jointly changing the secret
+and its independent repository-variable pin to the same wrong URL still passes
+the pre-migration gate. That administrative joint-reconfiguration boundary is
+explicitly tested and does not turn a one-source drift repair into a new
+database-marker protocol for this milestone.
