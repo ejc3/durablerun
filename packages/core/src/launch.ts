@@ -43,7 +43,7 @@ export class LaunchOutcome {
     return authenticateLaunchOutcome({ kind: 'accepted' })
   }
 
-  /** A sync (bounded-slot resident) launcher observed the worker end. */
+  /** A sync bounded-slot launcher observed the worker end. */
   static ended(ending: Ending): LaunchOutcome {
     const snapshot = snapshotEnding(ending)
     if (snapshot.status !== 'identified') {

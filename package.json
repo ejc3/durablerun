@@ -4,10 +4,14 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "packageManager": "pnpm@10.29.1",
   "scripts": {
+    "dogfood:start": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts start",
+    "dogfood:tick": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts tick",
+    "dogfood:status": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts status",
+    "dogfood:verify": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts verify",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit",
     "test": "vitest run",
     "lint": "biome lint .",

@@ -1,0 +1,147 @@
+name: dogfood
+
+on:
+  schedule:
+    - cron: '43 * * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Dogfood operation
+        required: true
+        default: tick
+        type: choice
+        options: [start, tick, status]
+      fault:
+        description: Deliberate actor death (uses a fresh probe task)
+        required: true
+        default: none
+        type: choice
+        options: [none, driver-before-activation, worker-after-checkpoint]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: durablerun-dogfood
+  cancel-in-progress: false
+
+jobs:
+  ref-journal:
+    if: github.event_name == 'workflow_dispatch' || vars.DURABLERUN_DOGFOOD_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DURABLERUN_DOGFOOD_QUEUE: dogfood
+      DURABLERUN_DOGFOOD_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && format('ref-journal-fault-{0}-{1}', github.run_id, github.run_attempt) || 'ref-journal-v1' }}
+      DURABLERUN_DOGFOOD_REPOSITORY: ${{ github.repository }}
+      DURABLERUN_DOGFOOD_REF: main
+      DURABLERUN_DOGFOOD_CYCLES: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && '1' || '15' }}
+      DURABLERUN_DOGFOOD_INTERVAL_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && '0' || '43200' }}
+      DURABLERUN_DOGFOOD_LEASE_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && '1' || '30' }}
+      DURABLERUN_DOGFOOD_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.fault != 'none' && 'true' || 'false' }}
+      DURABLERUN_DOGFOOD_FAULT: ${{ github.event_name == 'workflow_dispatch' && inputs.fault || 'none' }}
+    steps:
+      - name: Check out this public repository without a token
+        env:
+          DURABLERUN_SOURCE_REPOSITORY: ${{ github.repository }}
+          DURABLERUN_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${DURABLERUN_SOURCE_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$DURABLERUN_SOURCE_SHA"
+          git checkout --detach FETCH_HEAD
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require the pinned dedicated Turso database
+        id: credentials
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          DURABLERUN_DOGFOOD_EXPECTED_DATABASE_URL: ${{ vars.DURABLERUN_DOGFOOD_DATABASE_URL }}
+        run: |
+          if [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; then
+            echo 'Configure repository secrets TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.' >&2
+            exit 1
+          fi
+          if [ -z "$DURABLERUN_DOGFOOD_EXPECTED_DATABASE_URL" ]; then
+            echo 'Configure repository variable DURABLERUN_DOGFOOD_DATABASE_URL.' >&2
+            exit 1
+          fi
+          case "$TURSO_DATABASE_URL" in
+            libsql://*) ;;
+            *) echo 'TURSO_DATABASE_URL must name the dedicated remote libsql database.' >&2; exit 1 ;;
+          esac
+          if [ "$TURSO_DATABASE_URL" != "$DURABLERUN_DOGFOOD_EXPECTED_DATABASE_URL" ]; then
+            echo 'TURSO_DATABASE_URL does not match the pinned dogfood database.' >&2
+            exit 1
+          fi
+      - name: Start the idempotent journal
+        if: github.event_name == 'schedule' || inputs.operation == 'start' || (github.event_name == 'workflow_dispatch' && inputs.fault != 'none')
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: pnpm --silent dogfood:start
+      - name: Record status before deliberate death
+        if: github.event_name == 'workflow_dispatch' && inputs.fault != 'none'
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: pnpm --silent dogfood:status | tee dogfood-before.json
+      - name: Run one bounded tick
+        if: github.event_name == 'schedule' || (inputs.operation == 'tick' && inputs.fault == 'none')
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.DOGFOOD_GITHUB_TOKEN }}
+        run: pnpm --silent dogfood:tick | tee dogfood-operation.log
+      - name: Hard-exit at the selected actor boundary
+        if: github.event_name == 'workflow_dispatch' && inputs.fault != 'none'
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.DOGFOOD_GITHUB_TOKEN }}
+        run: |
+          case "$DURABLERUN_DOGFOOD_FAULT" in
+            driver-before-activation) expected=86 ;;
+            worker-after-checkpoint) expected=87 ;;
+            *) exit 2 ;;
+          esac
+          set +e
+          node --import tsx apps/dogfood/src/cli.ts tick 2>&1 | tee dogfood-operation.log
+          code=${PIPESTATUS[0]}
+          set -e
+          printf '{"fault":"%s","exitCode":%s}\n' "$DURABLERUN_DOGFOOD_FAULT" "$code" | tee -a dogfood-operation.log
+          test "$code" -eq "$expected"
+      - name: Recover after deliberate death
+        if: github.event_name == 'workflow_dispatch' && inputs.fault != 'none'
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          DURABLERUN_DOGFOOD_FAULT: none
+          GITHUB_TOKEN: ${{ secrets.DOGFOOD_GITHUB_TOKEN }}
+        run: |
+          sleep 2
+          node --import tsx apps/dogfood/src/cli.ts tick | tee -a dogfood-operation.log
+          sleep 6
+          node --import tsx apps/dogfood/src/cli.ts tick | tee -a dogfood-operation.log
+      - name: Write and verify final status receipt
+        if: always() && steps.credentials.outcome == 'success'
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: pnpm --silent dogfood:verify | tee dogfood-after.json
+      - name: Retain operation and status receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dogfood-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dogfood-*
+          if-no-files-found: warn
+          retention-days: 30

@@ -279,6 +279,37 @@ deployment:
 Either way, every trigger — poll timer, ping, alarm, cron — means the same thing:
 *"there may be runnable work; look."*
 
+The current remote-Turso dogfood uses a bounded validation host, not a third
+production drive mode: one scheduled process owns one launch slot, runs one
+claimed worker synchronously until that worker completes or durably suspends,
+then exits under a workflow-level deadline. The schedule supplies later ticks,
+so no process remains resident while the task sleeps. This is a deliberately
+thin outcome probe; general serverless ticks still use asynchronous launches
+and the ping/alarm machinery above. Before any remote command can migrate or
+query state, the workflow requires its secret database URL to equal an
+independently configured repository-variable pin for the dedicated dogfood
+database. A missing or mismatched pin fails the job without opening the
+database. Its normal receipt gate requires the
+durable task type, repository, ref, cycle count, and interval to match the
+configured workload intent exactly, and the durable interval span itself to
+cover at least seven days. An idempotently reused wrong-target, short, or
+long-cadence task therefore fails both start and receipt validation instead of
+qualifying under new process configuration. The task handler, status reader,
+and receipt verifier share one parser for that durable workload shape. A live
+receipt uses database time and rolls a two-hour freshness deadline from task
+creation or the latest contiguous checkpoint; exceeding the next durable
+interval plus that grace fails the scheduled run, so zero or stalled progress
+cannot remain green for seven days. A deliberate-death probe derives
+an isolated queue from its fresh idempotency key; its probe identity remains
+set while the one-shot injection hook is cleared, so start, injection,
+recovery, and verification all select that queue. Its one-slot tick therefore
+cannot inject the fault into older due journal work instead of the task whose
+recovery receipt will be verified. After advisory lease reconciliation, this
+bounded host fails the scheduled invocation when its inline slot observes a
+task failure, a store outage, lease loss, an unknown task type, or a failed
+launcher. Quiescent suspension and a stale duplicate delivery remain
+successful outcomes.
+
 Resident-driver launch watchdog: with an ASYNC (fire-and-forget) launcher,
 the loop abandons a launch call that has not acked within a deadline
 (default 10s) and treats it as a failed launch — the run recovers through
@@ -323,7 +354,8 @@ tick():
      {runId, attempt, claim_token, claim_gen} (HMAC-signed). The worker acks
      immediately and executes inside its OWN invocation — the tick never
      waits on run duration and returns in <1s. (Sync launchers — §3.9 — are
-     for bounded-slot resident drivers only, never serverless ticks.)
+     for bounded-slot hosts only, including the one-slot dogfood host; general
+     serverless ticks always launch asynchronously.)
   4. next-wake: t = min( available_at over pending/sleeping,
                          claim_expires_at over running,
                          cancellation deadlines )
@@ -451,7 +483,9 @@ One invocation executes one claimed run to its next suspension point:
   immediate catch; context store failures are enrolled before they cross the
   handler boundary. Once the heartbeat pump starts, one outer cleanup scope
   covers checkpoint loading, context construction, handler execution, and
-  finalization; every exit stops and joins the pump. Retry accounting uses the
+  finalization; every exit stops and joins the pump. The join is bounded, and
+  its losing deadline is cancelled so a completed short-lived host retains no
+  idle timer. Retry accounting uses the
   worker-owned lexical attempt snapshot taken before task code and never
   rereads the public context after the handler. Handler execution plus result
   serialization and the completion write are lexically separate phases. Only
@@ -1401,8 +1435,8 @@ stutters.
    `ended({runId, claimToken, kind})` (sync HTTP: outcome observed inline — a
    reliable Ending carrying the exact launch identity; reconcile makes no
    write unless both fields match the invocation; legal only for drivers
-   holding bounded launch slots, i.e. resident pools — serverless ticks always
-   fire-and-forget, §3.1 step 3) |
+   holding bounded launch slots, including the one-slot dogfood host — general
+   serverless ticks always fire-and-forget, §3.1 step 3) |
    `launch-failed` (transport-level rejection → fenced immediate relaunch —
    still counted by the relaunch counter, since "never ran" is the launcher's
    claim, not a guarantee).
