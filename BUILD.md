@@ -38,7 +38,10 @@ driver/worker deliberate-death probes are implemented. Local evidence is
 green, including exact recovery counters and checkpoint ownership. The
 workflow's retained receipt fails closed on producer errors, and the job has no
 repository-token permission; an optional `DOGFOOD_GITHUB_TOKEN` is scoped to
-worker steps. Normal receipt validation enforces the fixed seven-day floor
+worker steps. Before any remote command can migrate the database, the workflow
+requires the secret URL to equal the independently configured
+`DURABLERUN_DOGFOOD_DATABASE_URL` repository-variable pin. Normal receipt
+validation enforces the fixed seven-day floor
 and exact task type, target, count, and cadence against durable parameters, so
 reusing a wrong-target, shorter, or long-cadence idempotent task cannot qualify;
 the handler, status reader, and receipt verifier share the same workload parser.
@@ -52,7 +55,7 @@ bounded host also fails its invocation after observing an inline task,
 infrastructure, registry, or launcher failure, and a completed worker cancels
 its losing finalization deadline instead of retaining idle process time.
 The only remaining exit evidence is external and elapsed: provision the
-dedicated Turso URL/token, dispatch `start`, set
+dedicated Turso URL/token and the independent URL pin, dispatch `start`, set
 `DURABLERUN_DOGFOOD_ENABLED=true`, and retain the verified receipts for seven
 consecutive days. No additional engine or resident-transport work is
 authorized by that wait.

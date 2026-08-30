@@ -59,20 +59,29 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Require the dedicated Turso database
+      - name: Require the pinned dedicated Turso database
         id: credentials
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          DURABLERUN_DOGFOOD_EXPECTED_DATABASE_URL: ${{ vars.DURABLERUN_DOGFOOD_DATABASE_URL }}
         run: |
           if [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; then
             echo 'Configure repository secrets TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.' >&2
+            exit 1
+          fi
+          if [ -z "$DURABLERUN_DOGFOOD_EXPECTED_DATABASE_URL" ]; then
+            echo 'Configure repository variable DURABLERUN_DOGFOOD_DATABASE_URL.' >&2
             exit 1
           fi
           case "$TURSO_DATABASE_URL" in
             libsql://*) ;;
             *) echo 'TURSO_DATABASE_URL must name the dedicated remote libsql database.' >&2; exit 1 ;;
           esac
+          if [ "$TURSO_DATABASE_URL" != "$DURABLERUN_DOGFOOD_EXPECTED_DATABASE_URL" ]; then
+            echo 'TURSO_DATABASE_URL does not match the pinned dogfood database.' >&2
+            exit 1
+          fi
       - name: Start the idempotent journal
         if: github.event_name == 'schedule' || inputs.operation == 'start' || (github.event_name == 'workflow_dispatch' && inputs.fault != 'none')
         env:

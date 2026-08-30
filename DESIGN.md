@@ -285,7 +285,11 @@ claimed worker synchronously until that worker completes or durably suspends,
 then exits under a workflow-level deadline. The schedule supplies later ticks,
 so no process remains resident while the task sleeps. This is a deliberately
 thin outcome probe; general serverless ticks still use asynchronous launches
-and the ping/alarm machinery above. Its normal receipt gate requires the
+and the ping/alarm machinery above. Before any remote command can migrate or
+query state, the workflow requires its secret database URL to equal an
+independently configured repository-variable pin for the dedicated dogfood
+database. A missing or mismatched pin fails the job without opening the
+database. Its normal receipt gate requires the
 durable task type, repository, ref, cycle count, and interval to match the
 configured workload intent exactly, and the durable interval span itself to
 cover at least seven days. An idempotently reused wrong-target, short, or
@@ -295,8 +299,7 @@ and receipt verifier share one parser for that durable workload shape. A live
 receipt uses database time and rolls a two-hour freshness deadline from task
 creation or the latest contiguous checkpoint; exceeding the next durable
 interval plus that grace fails the scheduled run, so zero or stalled progress
-cannot remain green for seven days. A
-deliberate-death probe derives
+cannot remain green for seven days. A deliberate-death probe derives
 an isolated queue from its fresh idempotency key; its probe identity remains
 set while the one-shot injection hook is cleared, so start, injection,
 recovery, and verification all select that queue. Its one-slot tick therefore

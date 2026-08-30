@@ -58,14 +58,17 @@ evidence. Give `DURABLERUN_DOGFOOD_KEY` a new value to start a new workload.
 
 The opt-in GitHub Actions workflow runs one tick each hour, prevents overlap,
 and retains every status receipt for 30 days. Configure the repository secrets
-`TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, then set the repository variable
-`DURABLERUN_DOGFOOD_ENABLED=true`. It remains skipped until that variable is
-set. The job has no repository-token permissions and checks out this public
-repository anonymously. If authenticated GitHub API reads are needed, add an
-optional read-only `DOGFOOD_GITHUB_TOKEN` secret; only the worker steps receive
-it. First dispatch `start`, then enable the schedule. `workflow_dispatch` can
-also run either deliberate death probe. Each probe uses a fresh one-checkpoint
-journal on a key-derived isolated queue, records status before the fault,
-hard-exits at the selected actor boundary, clears only the one-shot injection
-hook while retaining the probe queue identity, waits through the short test
-lease/backoff, runs normal recovery ticks, and records status afterward.
+`TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, and independently pin the same
+dedicated URL in the repository variable `DURABLERUN_DOGFOOD_DATABASE_URL`.
+The workflow refuses a missing or mismatched pin before any command can run the
+migrator. Then set `DURABLERUN_DOGFOOD_ENABLED=true`; the schedule remains
+skipped until that variable is set. The job has no repository-token permissions
+and checks out this public repository anonymously. If authenticated GitHub API
+reads are needed, add an optional read-only `DOGFOOD_GITHUB_TOKEN` secret; only
+the worker steps receive it. First dispatch `start`, then enable the schedule.
+`workflow_dispatch` can also run either deliberate death probe. Each probe uses
+a fresh one-checkpoint journal on a key-derived isolated queue, records status
+before the fault, hard-exits at the selected actor boundary, clears only the
+one-shot injection hook while retaining the probe queue identity, waits through
+the short test lease/backoff, runs normal recovery ticks, and records status
+afterward.
