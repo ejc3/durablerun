@@ -80,6 +80,58 @@ describe('dogfood milestone receipts', () => {
     }
   })
 
+  it.each([
+    [
+      'repository target',
+      { repository: 'wrong-owner/wrong-repo', ref: 'release', cycles: 15, intervalSeconds: 43_200 },
+    ],
+    [
+      'journal cadence',
+      {
+        repository: 'ejc3/durablerun',
+        ref: 'main',
+        cycles: 2,
+        intervalSeconds: 31_536_000,
+      },
+    ],
+  ] as const)(
+    'rejects an idempotently reused task with a different durable %s',
+    async (_name, seededParameters) => {
+      const directory = mkdtempSync(join(tmpdir(), 'durablerun-dogfood-workload-binding-'))
+      const databaseUrl = `file:${join(directory, 'journal.db')}`
+      const desired: DogfoodConfig = {
+        databaseUrl,
+        queue: 'dogfood',
+        idempotencyKey: 'reused-journal',
+        repository: 'ejc3/durablerun',
+        ref: 'main',
+        cycles: 15,
+        intervalSeconds: 43_200,
+        leaseSeconds: 30,
+        fault: 'none',
+      }
+      const seeded = await DogfoodRuntime.open({ ...desired, ...seededParameters })
+      try {
+        await seeded.start()
+      } finally {
+        seeded.close()
+      }
+
+      const reopened = await DogfoodRuntime.open(desired)
+      try {
+        const error = await reopened.start().then(
+          () => null,
+          (reason: unknown) => reason,
+        )
+        expect(error).toBeInstanceOf(Error)
+        expect(String(error)).toContain('durable journal workload does not match configured intent')
+      } finally {
+        reopened.close()
+        rmSync(directory, { recursive: true, force: true })
+      }
+    },
+  )
+
   it('reports every checkpoint past ordinal ten with auditable contiguous ownership', async () => {
     let calls = 0
     const runtime = await DogfoodRuntime.open(config(':memory:', 'twelve', 12), {

@@ -1,7 +1,7 @@
+import { describe, expect, it } from 'vitest'
 import type { DogfoodFault } from '../src/config.js'
 import { dogfoodReceiptErrors } from '../src/receipt.js'
 import type { DogfoodStatus, RefObservationCheckpoint } from '../src/runtime.js'
-import { describe, expect, it } from 'vitest'
 
 type FoundReceipt = Extract<DogfoodStatus, { found: true }>
 
@@ -45,6 +45,35 @@ function receipt(overrides: Partial<FoundReceipt> = {}): FoundReceipt {
 }
 
 describe('dogfood receipt verification', () => {
+  it('binds the complete durable workload to the configured intent', () => {
+    const expected = {
+      taskName: 'ref-journal',
+      repository: 'ejc3/durablerun',
+      ref: 'main',
+      cycles: 15,
+      intervalSeconds: 43_200,
+    }
+    const live = receipt({
+      state: 'sleeping',
+      completedResult: null,
+      expectedCheckpointCount: 15,
+      expectedCheckpointSpanMs: 604_800_000,
+    })
+    for (const durableParameters of [
+      { ...expected, repository: 'wrong-owner/wrong-repo', ref: 'release' },
+      { ...expected, cycles: 2, intervalSeconds: 31_536_000 },
+    ]) {
+      expect(
+        dogfoodReceiptErrors(
+          { ...live, taskName: 'ref-journal', durableParameters },
+          'none',
+          // @ts-expect-error Regression first: the repair adds the configured intent boundary.
+          expected,
+        ),
+      ).toContain('durable journal workload does not match configured intent')
+    }
+  })
+
   it('rejects a normal journal whose durable parameters cover less than seven days', () => {
     expect(dogfoodReceiptErrors(receipt(), 'none')).toContain(
       'durable task parameters cover less than seven days',
