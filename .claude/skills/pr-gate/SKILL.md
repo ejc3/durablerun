@@ -73,21 +73,29 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    gate, bounded closure, and property-preservation justification.
 
    Run unfiltered `pnpm verify:mutations` when the PR changes the mutation
-   runner, registry, verdict classifier, orchestration, checkpoint/resume
-   logic, confinement, or a shared verifier; when the affected closure cannot
-   be bounded and explicitly enumerated; for a scheduled audit with a named
-   owner and cadence; or for an explicit pre-release audit. In every mode the
-   exact attributable verdict must fail: collateral failures never substitute
-   for that owner. A missing exact owner is a product survivor and blocks the
-   guard change.
+   runner; runner-wide registry schema, inventory generation, or selection
+   machinery; the verdict classifier, orchestration, checkpoint/resume logic,
+   confinement, or a shared verifier; when the affected closure cannot be
+   bounded and explicitly enumerated; for a scheduled audit with a named owner
+   and cadence; or for an explicit pre-release audit. An isolated new or
+   re-aimed registry/verdict entry runs its affected closure unless that closure
+   is unbounded. In every mode the exact attributable verdict must fail:
+   collateral failures never substitute for that owner. A `survived` mutant is
+   a product survivor. Every other non-caught outcome also blocks, except for
+   the narrowly evidenced deviation below.
 
    The current classifier reports exact-owner plus collateral failures as
    `wrong-path`, so the run remains non-clean even though the guard is not a
    product survivor. Until the classifier distinguishes that case, its
    transcript can support only an explicit PR-body gate deviation that proves
-   the exact owner fired, quotes the collateral failures, and records them as
-   audit/tooling debt. Do not relabel the run clean or widen the outcome PR to
-   repair that debt.
+   the exact owner fired; names the exact mutation target and the head diff that
+   owns it; quotes every collateral's exact file, test title, and message; and
+   provides base-versus-head evidence for each collateral, preferring
+   reproduction on the base when the mutation target exists there. If base
+   reproduction is impossible, explain why and provide an equivalent
+   controlled comparison. Absent that proof, the outcome blocks. With it,
+   record the collateral as audit/tooling debt. Do not relabel the run clean or
+   widen the outcome PR to repair that debt.
 
    Subset and full runs keep the same no-proxy and transport guarantees. The
    command self-confines once, captures the clean committed head, and uses
