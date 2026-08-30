@@ -4,23 +4,26 @@ import { describe, expect, it } from 'vitest'
 import type { StoreFixtureFactory } from '../src/fixture.js'
 import * as conformance from '../src/index.js'
 import { bindStoreConformanceSurfaces, storeConformance } from '../src/store-conformance.js'
+import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 const REGISTRY = `${ROOT}/packages/conformance/test/dialect-fixtures.ts`
 const EXPECTED_SURFACE_IDS = [
+  'schema-admin',
   'scheduler',
   'fault-matrix',
   'poison-matrix',
   'timestamp-boundaries',
   'wake-witness',
 ] as const
+const EXPECTED_DIALECTS = ['libsql', 'postgres'] as const
 
 describe('shared conformance enrollment is one indivisible door', () => {
   it('exports one umbrella instead of asking dialects to select sub-suites', () => {
     expect(conformance, 'regression:shared-conformance-umbrella').toHaveProperty('storeConformance')
   })
 
-  it('owns five surfaces and executable dispatch through one callable registry', () => {
+  it('enrolls every promised dialect through the complete callable conformance door', () => {
     const probeCalls: { id: string; dialect: string; sameFixture: boolean }[] = []
     const probeFixture = (() => {
       throw new Error('the registry probe must not construct a fixture')
@@ -40,6 +43,7 @@ describe('shared conformance enrollment is one indivisible door', () => {
         registryBinder: typeof bindStoreConformanceSurfaces,
         probeIsCallable: typeof probe === 'function',
         probeCalls,
+        registeredDialects: DIALECT_FIXTURES.map(({ dialect }) => dialect),
         umbrellaIsCallable: typeof storeConformance === 'function',
         umbrellaSurfaceIds: storeConformance.surfaces.map(({ id }) => id),
       },
@@ -52,6 +56,7 @@ describe('shared conformance enrollment is one indivisible door', () => {
         dialect: 'probe-dialect',
         sameFixture: true,
       })),
+      registeredDialects: EXPECTED_DIALECTS,
       umbrellaIsCallable: true,
       umbrellaSurfaceIds: EXPECTED_SURFACE_IDS,
     })
