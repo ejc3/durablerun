@@ -36,6 +36,25 @@ describe('serializeTaskValue', () => {
     expect(() => serializeTaskValue('result', Symbol('not-json'))).toThrow(FatalTaskError)
   })
 
+  it('rejects every JSON string position that cannot round-trip through storage', () => {
+    const invalid = [
+      ['NUL', '\u0000'],
+      ['high lone surrogate', '\uD800'],
+      ['low lone surrogate', '\uDC00'],
+    ] as const
+
+    for (const [kind, text] of invalid) {
+      expect(() => serializeTaskValue('headers', text), `${kind} scalar`).toThrow(FatalTaskError)
+      expect(() => serializeTaskValue('headers', { value: text }), `${kind} value`).toThrow(
+        FatalTaskError,
+      )
+      expect(() => serializeTaskValue('headers', { [text]: 'value' }), `${kind} key`).toThrow(
+        FatalTaskError,
+      )
+    }
+    expect(serializeTaskValue('headers', { '📦': 'välue' })).toBe('{"📦":"välue"}')
+  })
+
   it('classifies a serialization hook whose thrown value cannot be coerced', () => {
     const hostile = {
       [Symbol.toPrimitive](): never {

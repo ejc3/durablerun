@@ -87,6 +87,38 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(b.created).toBe(true)
       })
 
+      it('rejects non-round-tripping header keys and values before persistence', async () => {
+        let executorCalls = 0
+        const observed = f.storeOver({
+          batch: (label, statements, control) => {
+            executorCalls += 1
+            return f.raw.batch(label, statements, control)
+          },
+        })
+        const invalidHeaders = [
+          { id: 'nul-key', headers: { 'bad\u0000key': 'value' } },
+          { id: 'nul-value', headers: { key: 'bad\u0000value' } },
+          { id: 'high-surrogate-key', headers: { 'bad\uD800key': 'value' } },
+          { id: 'high-surrogate-value', headers: { key: 'bad\uD800value' } },
+          { id: 'low-surrogate-key', headers: { 'bad\uDC00key': 'value' } },
+          { id: 'low-surrogate-value', headers: { key: 'bad\uDC00value' } },
+        ] as const
+
+        for (const { id, headers } of invalidHeaders) {
+          await expect(
+            observed.spawn(Q, `invalid-headers-${id}`, '{}', { headers }),
+            id,
+          ).rejects.toThrow(/task headers is not a JSON value/)
+        }
+        expect(executorCalls).toBe(0)
+        const [count] = await f.raw.batch(
+          'invalid-headers:probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
+      })
+
       it('rejects retry durations above the durable bound without writing', async () => {
         await requireExpectedFailure(
           { kind: 'behavior', mutation: 'retry-spawn-normalization' },
@@ -3073,6 +3105,79 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     describe('concurrent claim exclusivity (simulated)', () => {
+      it('uses the backend native concurrency primitive without overlapping receipts', async () => {
+        for (let seed = 0; seed < 5; seed++) {
+          const fx = await makeFixture(`native-claim-${seed}`)
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          for (let i = 0; i < 8; i++) await fx.store.spawn(Q, `native-job-${i}`, '{}')
+
+          // Do not route this through SimWorld: this case exists specifically
+          // to exercise the backend's real transaction and row-lock behavior.
+          const receipts = await Promise.all(
+            Array.from({ length: 4 }, (_, index) =>
+              fx.store.claim(Q, `native-tick-${index}`, { leaseSeconds: 60, limit: 2 }),
+            ),
+          )
+          const runIds = receipts.flatMap((receipt) => receipt.map(({ runId }) => runId))
+
+          expect(
+            receipts.every((receipt) => receipt.length <= 2),
+            `seed ${seed}: claim bound`,
+          ).toBe(true)
+          expect(runIds, `seed ${seed}: every due run claimed`).toHaveLength(8)
+          expect(new Set(runIds).size, `seed ${seed}: no overlapping receipts`).toBe(8)
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          await fx.close()
+        }
+      })
+
+      it('serializes concurrent same-token retries before candidate selection', async () => {
+        const fx = await makeFixture('native-same-token')
+        await fx.admin.setFakeNowEpochMs(1_000_000)
+        for (let i = 0; i < 16; i++) await fx.store.spawn(Q, `same-token-job-${i}`, '{}')
+
+        // Establish the backend's concurrent connections before the measured
+        // requests. Otherwise connection handshakes can accidentally
+        // serialize a broken claim implementation and make the race vanish.
+        await Promise.all(
+          Array.from({ length: 16 }, (_, index) =>
+            fx.raw.batch(
+              `native-same-token:warm-${index}`,
+              [{ sql: 'SELECT 1 AS ready', args: [] }],
+              'read',
+            ),
+          ),
+        )
+
+        const receipts = await Promise.all(
+          Array.from({ length: 16 }, () =>
+            fx.store.claim(Q, 'one-logical-request', { leaseSeconds: 60, limit: 1 }),
+          ),
+        )
+        const runIds = receipts.flatMap((receipt) => receipt.map(({ runId }) => runId))
+        const [durable] = await fx.raw.batch(
+          'native-same-token:durable',
+          [
+            {
+              sql: `SELECT COUNT(*) AS count
+                    FROM runs
+                    WHERE queue = ? AND state = 'running' AND claimed_by = ?`,
+              args: [Q, 'one-logical-request'],
+            },
+          ],
+          'read',
+        )
+
+        expect(
+          receipts.every((receipt) => receipt.length === 1),
+          'same bounded receipt',
+        ).toBe(true)
+        expect(new Set(runIds).size, 'every retry returns the original selection').toBe(1)
+        expect(Number(durable?.rows[0]?.count), 'one durable selection for one token').toBe(1)
+        expect(await engineInvariantViolations(fx.raw)).toEqual([])
+        await fx.close()
+      })
+
       it('never double-claims a run across concurrent ticks, any seed', async () => {
         for (let seed = 0; seed < 10; seed++) {
           const fx = await makeFixture(seed)
