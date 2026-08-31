@@ -350,6 +350,10 @@ export const durableTaskRetryAdmissible = (task: string): string => {
     END)`
   }
   const factor = `((${retry}::jsonb ->> 'factor')::numeric)`
+  const factorAdmissible = `(CASE
+      WHEN jsonb_typeof(${retry}::jsonb -> 'factor') <> 'number' THEN FALSE
+      ELSE ${factor} BETWEEN 0 AND 1.7976931348623157e308
+    END)`
   return `(
     CASE
       WHEN NOT ${jsonbInputValid(retry)} THEN 0
@@ -359,8 +363,7 @@ export const durableTaskRetryAdmissible = (task: string): string => {
       WHEN (${kind}) = 'fixed' THEN CASE WHEN ${duration('baseSeconds')} THEN 1 ELSE 0 END
       WHEN (${kind}) = 'exponential' THEN CASE
         WHEN ${duration('baseSeconds')}
-          AND jsonb_typeof(${retry}::jsonb -> 'factor') = 'number'
-          AND (${factor}) BETWEEN 0 AND 1.7976931348623157e308
+          AND ${factorAdmissible}
           AND ${duration('maxSeconds')}
         THEN 1 ELSE 0 END
       ELSE 0

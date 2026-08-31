@@ -298,7 +298,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
     The verifier runs its classifier, source-owner, and generated-construction
-    surfaces across all **422 live mutations**. Every TypeScript replacement is
+    surfaces across all **423 live mutations**. Every TypeScript replacement is
     materialized and parsed before enrollment. Every mutant routed to Vitest
     also passes an incremental compiler value-binding comparison against its
     original source, so a newly unbound runtime identifier is rejected before
@@ -595,7 +595,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     pre-existing relative-only timestamp mutants as wrong-path because the new
     shape control also failed. Green `1d005de` rewrites their relative `CASE`
     arm without changing the compiled wake signature, and both focused audits
-    are exact. A clean final-head 422/422 audit is still the final mutation gate.
+    are exact. A clean final-head 423/423 audit is still the final mutation gate.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
@@ -718,11 +718,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   compiler-bind, completion-origin, task-option, wake-discriminant, payload,
   relation-policy, advisory-expiry, generated-syntax, static-title, and
   intrinsic-dispatch arms. Two closing settlement owners brought that registry
-  to **421**; PostgreSQL JSON-input validity is the current 422nd owner. A
-  final-head 422/422 exact audit is required to prove those
-  current declarations; even that receipt cannot prove that a
-  future semantic arm is enrolled. PR3.10 must derive both the cases and their
-  mutation/verdict ownership from the same layer descriptor.
+  to **421**; PostgreSQL JSON-input validity is the 422nd owner and the nested
+  retry-factor cast guard is the current 423rd. A final-head 423/423 exact
+  audit is required to prove those current declarations; even that receipt
+  cannot prove that a future semantic arm is enrolled. PR3.10 must derive both
+  the cases and their mutation/verdict ownership from the same layer descriptor.
   The same gate must verify each postmortem's cited red and green hashes are
   distinct, ordered commits and that the red commit demonstrably leaves the
   named probe failing; the final attribution closeout showed that prose-only

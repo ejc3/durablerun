@@ -2019,6 +2019,19 @@ MUTATION_SPECS = [
         "PostgreSQL casts syntactically valid but jsonb-inadmissible durable JSON and aborts a bounded claim",
     ),
     (
+        "postgres-retry-factor-type-guard",
+        "packages/store-postgres/src/fragments.ts",
+        "  const factorAdmissible = `(CASE\n"
+        "      WHEN jsonb_typeof(${retry}::jsonb -> 'factor') <> 'number' THEN FALSE\n"
+        "      ELSE ${factor} BETWEEN 0 AND 1.7976931348623157e308\n"
+        "    END)`",
+        "  const factorAdmissible = `(\n"
+        "      jsonb_typeof(${retry}::jsonb -> 'factor') = 'number'\n"
+        "      AND ${factor} BETWEEN 0 AND 1.7976931348623157e308\n"
+        "    )` // MUTATION",
+        "PostgreSQL may evaluate a retry factor numeric cast before its sibling JSON type predicate",
+    ),
+    (
         "claim-receipt-retry-admissible",
         "packages/store-libsql/src/store.ts",
         "         AND t.state IN ${LIVE}\n"
@@ -5587,6 +5600,12 @@ VERDICTS = {
         "scheduler conformance [postgres] claim leaves a candidate with corrupt persisted headers unclaimed",
         "mutation-verdict:behavior:claim-candidate-headers-admissible",
         "packages/conformance/src/suite.ts",
+    ),
+    "postgres-retry-factor-type-guard": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/fragments.test.ts",
+        "PostgreSQL SQL fragments puts the exponential factor cast behind a typed CASE arm",
+        "mutation-verdict:construction:postgres-retry-factor-type-guard",
     ),
     "claim-receipt-retry-admissible": ExpectedVerdict(
         "behavior",
@@ -9297,7 +9316,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 422:
+        if len(MUTATIONS) != 423:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
