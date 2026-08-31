@@ -1,17 +1,23 @@
 # Postmortem: PostgreSQL conformance review (PR #16)
 
 PR #16 makes PostgreSQL 17 the second real scheduler dialect and enrolls it in
-the same six conformance surfaces as libSQL. Adversarial review found six
-defects before merge: same-token claim retries could select several runs, the
-first locking repair retained one durable sentinel per fresh token, libSQL
-could persist header strings PostgreSQL could not later interpret,
+the same six conformance surfaces as libSQL. Adversarial and release-gate
+review found eight defects before merge: same-token claim retries could select
+several runs, the first locking repair retained one durable sentinel per fresh
+token, libSQL could persist header strings PostgreSQL could not later interpret,
 PostgreSQL could abort a bounded claim on JSON that passed its preliminary
 syntax predicate but overflowed `jsonb`, and privately owned pools plus
 checked-out clients left PostgreSQL `error` events without an owner. A final
 conversion review then found that the exponential retry-factor check still
 put a raising `::numeric` cast beside its type predicate in an `AND`
-expression instead of behind a selected `CASE` arm. The repairs close the five
-reproduced failures and the sixth construction-level hazard and add native
+expression instead of behind a selected `CASE` arm. CodeRabbit then found that
+fresh-catalog bootstrap did not share the migration loop's concurrent-winner
+recovery, so simultaneous cold starts could reject after another process had
+already brought the schema current. The final release-gate audit found that
+PostgreSQL migrations v1-v5 had no frozen content hashes, leaving shipped
+history editable without a build failure. The repairs close six reproduced
+product failures, one construction-level conversion hazard, and one
+release-safety gap, and add native
 concurrency, conversion, and connection-lifecycle evidence; the honest
 verdict is that review, not the branch's original machinery, found every one.
 
@@ -76,6 +82,23 @@ database disconnect could terminate every scheduler or worker sharing that
 process instead of failing one store operation. An active errored client also
 had no recorded reason forcing its removal from the pool.
 
+Concurrent cold start was a separate availability failure. In each of five red
+runs, eight PostgreSQL migrators against one empty schema produced one
+fulfillment and seven SQLSTATE `23505` rejections, even though the winner
+brought the schema current. A fan-out deployment could therefore fail seven
+otherwise healthy processes and depend on caller or orchestrator retry. No
+partial schema or durable-state corruption reproduced—the losing DDL
+transactions rolled back—but `migrate()` did not uphold convergence.
+
+PostgreSQL migration history was also unfrozen. The tests pinned version labels
+and selected present-day DDL properties, but not the complete body of each
+migration. After release, an unasserted edit to v1-v5 could pass the build: a
+fresh database would execute the edited history, while an upgraded database
+would skip it because its stored version already claimed the migration. Both
+would report the same current version while carrying different schemas.
+PostgreSQL has not yet shipped, so no deployed database was stranded; this is a
+pre-release safety failure whose impact begins with the first release.
+
 ## Findings
 
 | # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
@@ -86,6 +109,8 @@ had no recorded reason forcing its removal from the pool.
 | 4 | PostgreSQL used JSON syntax as a proxy for successful `jsonb` conversion and then performed raising casts inside claim and activation guards | One `1e1000000` durable value aborted an atomic claim and starved a healthy bounded candidate | Dialect-native corrupt-storage conformance and a mutation at the conversion guard | The shared cases covered malformed and out-of-domain JSON, but not syntactically valid values outside PostgreSQL `jsonb` and `numeric` range | `pg_input_is_valid(value, 'jsonb')` gates the current PostgreSQL TEXT-to-`jsonb` retry, header, and cancellation conversions; exact overflow cases and the `postgres-jsonb-input-validity` mutation attack that authority (rung 1 within the current fragment inventory, rung 2 and 3 at its boundary) |
 | 5 | Privately created pools and directly checked-out clients had no EventEmitter `error` owner | An idle disconnect or active socket failure could terminate the Node process; an errored checked-out client could also be returned without the event forcing its discard | The PostgreSQL adapter's generated connection-lifecycle fault surface | Existing executor cases modeled transport failures as rejected promises, so every `try`/`catch` and error-classification assertion could pass while the driver's second failure channel remained unowned | `createOwnedPostgresPool` inseparably installs the private pool listener, and `PgExecutor.batch` owns active-client errors from checkout through release and discards an errored client; direct idle and active emission cases exercise both intervals (rung 1 for the current ownership shapes, rung 3 for driver semantics) |
 | 6 | The exponential retry-factor guard placed `jsonb_typeof(...) = 'number'` beside a raising `::numeric` cast in an `AND` expression | Correct inert refusal at candidate, receipt, and activation depended on PostgreSQL choosing a short-circuit order; another legal evaluation order could abort the transition on corrupt durable JSON | Generated-SQL construction coverage for each raising conversion, backed by adversarial values at every worker-authority door | Runtime cases exercised outcomes under the current PostgreSQL 17 plan, and `jsonbInputValid` proved only the outer TEXT-to-`jsonb` conversion; neither required the nested scalar cast to be subordinate to its type test | The factor cast now exists only in the `ELSE` arm of its type-rejecting `CASE`; `postgres-retry-factor-type-guard` reverts it to the unsafe sibling-`AND` shape and has an exact construction owner, while shared conformance exercises candidate, receipt, and activation (rung 1 for the current expression, rung 2 for construction, rung 3 for runtime outcomes) |
+| 7 | Fresh PostgreSQL bootstrap relied on `CREATE TABLE IF NOT EXISTS` without the version-authoritative concurrent-write recovery used by later migration batches | Simultaneous first-start processes could fail after another process completed the schema; every observed eight-way run produced seven SQLSTATE `23505` failures requiring retry | Native schema-admin concurrency conformance plus one recovery primitive for every schema-version write | Fresh-schema conformance used one caller, while concurrent-winner recovery was scoped only to the post-bootstrap migration loop; `IF NOT EXISTS` suppresses an already-visible object but does not serialize simultaneous PostgreSQL catalog insertion | `applyVersionedWrite` is the single current bootstrap-and-migration recovery boundary: after an error it re-reads the authoritative version and succeeds only when metadata exists at or beyond that write's target; shared conformance runs eight cold-start migrators against the real backend (rung 1 for current write shape, rung 3 for native semantics) |
+| 8 | PostgreSQL migrations v1-v5 lacked the frozen content hashes required for append-only history | A later edit to an already-shipped migration could pass the build and split fresh from upgraded schemas while both reported the same current version | Per-dialect `schema.test.ts` content-hash freeze required by `/pr-gate` | PostgreSQL tests pinned `[1, 2, 3, 4, 5]` and selected columns, types, and sentinels; those are proxies for complete historical identity, and the existing libSQL freezer did not enroll the new dialect | PostgreSQL schema tests compare every `statements.join('\n')` SHA-256 digest with an independent frozen literal and reconcile frozen-entry cardinality with `MIGRATIONS` (rung 2) |
 
 ## Detection ledger
 
@@ -97,13 +122,15 @@ had no recorded reason forcing its removal from the pool.
 | PostgreSQL conversion and bounded-progress review | 1 | No |
 | PostgreSQL pool and checked-out-client lifecycle review | 1 | No |
 | Final PostgreSQL nested-conversion review | 1 | No |
+| CodeRabbit PostgreSQL bootstrap-concurrency review | 1 | No |
+| Final `/pr-gate` migration-history audit | 1 | No |
 
-Self-catch rate: **0 of 6, or 0%** (previous round: **100% after merge, but
+Self-catch rate: **0 of 8, or 0%** (previous round: **100% after merge, but
 0% before merge**). There is no pre-merge improvement over PR #15. The red
 tests in this branch were written after the reviewers named these failures, so
 they are reproductions, not self-catches. Existing shared conformance did catch
 the separate safe-`int8` representation mismatch before review; that is the
-machinery working, but it is not one of these six escaped findings and does
+machinery working, but it is not one of these eight escaped findings and does
 not improve this ledger.
 
 ## Recurrence
@@ -159,6 +186,25 @@ one conversion boundary while proxying the next one, and the existing runtime
 tests could remain green precisely because the current PostgreSQL 17 plan
 chose the favorable operand order.
 
+Finding 7 recurs in both the native-concurrency and single-definition classes.
+The migration loop already re-read the authoritative schema version after a
+concurrent writer won, but bootstrap reimplemented the write without that
+recovery. `CREATE TABLE IF NOT EXISTS` was treated as a concurrency mechanism
+even though it only suppresses an object visible to that statement; it does
+not prevent simultaneous catalog uniqueness conflicts. The mechanism was
+scoped to the `migrate:v*` loop rather than to the property “a schema write is
+complete when the authoritative version has reached its target.”
+
+Finding 8 is a direct recurrence of the migration-history class that created
+the libSQL freezer: editing an old migration can strand databases that already
+recorded its version. The repository already had both the mechanism and an
+explicit `/pr-gate` rule, but they were scoped to the existing dialect rather
+than structurally enrolled with every new migration-bearing store.
+PostgreSQL's version-list assertion proved only labels, and its selected DDL
+assertions proved only sampled properties of the fresh schema; both stayed
+green while unasserted historical content remained writable. This is the
+new-layer mechanism-travel failure in its simplest form.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -175,8 +221,12 @@ chose the favorable operand order.
 | `createOwnedPostgresPool` | 1 for pools constructed through the factory | Add another private adapter pool with `new Pool(config)` instead of the factory. Both current lifecycle cases still pass because they attack `PgExecutor.open` and an active client, not every future construction site; the new idle pool can still emit a process-fatal unowned `error`. |
 | Checked-out-client error ownership and discard | 1 for the current `batch` checkout interval, rung 3 for the emitted-event probe | Add a new executor method that calls `pool.connect()` and uses the client directly without the scoped listener. Existing `batch` lifecycle coverage remains green while that new active client has the original fatal event gap. Also, the listener owns the event but does not independently settle a driver query that emits and then hangs forever; connection timeout/progress remains a separate operability property. |
 | Idle and active pool-lifecycle regressions | 3 | Replace a future private control pool with raw `new Pool()` or add a direct checkout outside `PgExecutor.batch`; the two existing emit probes still pass because their enumerated sites retain owners. These tests prove the two current intervals, not structural enrollment of every future pool use. |
+| Shared `applyVersionedWrite` target check | 1 for the current PostgreSQL `migrate()` write inventory | Add a future schema-admin entry point that calls `db.batch` directly for a catalog write. Current bootstrap and `MIGRATIONS` remain protected and the cold-start case stays green, while concurrent use of that new entry point can repeat the lost-winner failure. The helper closes the current inventory; its use is not type-enforced for every future schema write. |
+| Eight-way concurrent cold-start conformance | 3 | Configure the PostgreSQL fixture pool with `max: 1` and restore the old bootstrap. The eight promises serialize and pass despite the missing recovery. The current fixture exercises real parallel connections, but the assertion alone does not prove that future fixture configuration preserves concurrency. |
+| PostgreSQL version-list and selected-DDL assertions | 2, incomplete proxy | Append `CREATE INDEX drivers_expiry ON drivers (queue, expires_at_ms)` to PostgreSQL v2. The old three schema tests pass, a fresh database receives the index, and an already-v2 database never does. These checks describe parts of today's schema, not historical identity. |
+| Frozen PostgreSQL migration hashes | 2 | Edit a shipped migration and update its expected digest in the same commit. The hash test passes while upgraded databases still skip the edit. The mechanism catches unpaired history rewrites and makes a paired refresh review-visible; it does not make old history unwritable. |
 
-The first five failures were also executed, not inferred. Removing the
+Findings 1-5 and 7 were also executed, not inferred. Removing the
 same-token prelude produced ten running rows from sixteen concurrent
 `limit: 1` calls. The provisional sentinel representation inserted one new
 key for each fresh token. The first broad serializer repair made the opaque
@@ -186,6 +236,10 @@ raised SQLSTATE `22003` and returned no healthy bounded receipt. Against the
 unrepaired pool lifecycle, both `pool.emit('error', idleError)` and
 `client.emit('error', activeError)` synchronously threw the emitted error
 because neither interval had a listener.
+
+Against the unrepaired bootstrap, five independent eight-way cold-start rounds
+each produced one fulfillment and seven SQLSTATE `23505` rejections while
+still leaving the schema at the current version.
 
 Finding 6 is deliberately not represented as a reproduced runtime incident.
 On buggy parent `26f7861`, the data-driven candidate, same-token receipt, and
@@ -204,9 +258,11 @@ and widened the public contract beyond the failing boundary. Red commit
 `3953e60f25f106671cb6788228635ac5699728d7` captured the regression before the
 repair was accepted. The replacement was re-reviewed as new code and splits
 `serializeTaskHeaders` from the unchanged opaque serializer; it was not merely
-declared safe because the original header tests turned green. Finding 6 did
-not increase the fix-induced count: the unsafe factor expression predated the
-finding 4 repair rather than being introduced by it.
+declared safe because the original header tests turned green. Findings 6-8 did
+not increase the fix-induced count. The unsafe factor expression predated the
+finding 4 repair, and both the bootstrap asymmetry and missing PostgreSQL
+history freeze existed in the original dialect implementation rather than
+being introduced by an earlier repair in this round.
 
 ## Evidence
 
@@ -215,6 +271,11 @@ finding 4 repair rather than being introduced by it.
 - Red commit `34956e565a0afcbabfdc69a026ae93099326696d`, run against buggy parent `3953e60f25f106671cb6788228635ac5699728d7`, adds PostgreSQL `jsonb` overflow candidates. The retry probe raised SQLSTATE `22003` and starved the healthy row behind the poison candidate.
 - Red commit `73a88a22b1d0182ac42dfbd2687d1b21ec160c34`, run against buggy parent `34956e565a0afcbabfdc69a026ae93099326696d`, adds two direct EventEmitter probes. Before repair, both the private pool's idle-client emission and the checked-out client's active emission threw synchronously instead of remaining owned; the active case also requires the emitted error to be passed to `release` and its temporary listener removed.
 - Red commit `90e1d13`, run against buggy parent `26f7861`, adds the three shared malformed-factor door cases and the generated-SQL construction assertion. The three PostgreSQL 17 runtime cases were green; the construction assertion was observed red because the numeric cast was not inside a typed `CASE` arm.
+- Red commit `2baf3f7c54225af13fcd768c277d0682ee94069a`, run against buggy parent `b6ec4db`, adds the shared eight-way cold-start case. A separate five-round PostgreSQL probe produced one fulfilled migration and seven SQLSTATE `23505` rejections in every round, even though the schema reached its current version. The confined targeted command `bash scripts/confine.sh pnpm exec vitest run packages/conformance/test/libsql.test.ts --maxWorkers=1 -t 'lets concurrent cold-start migrators converge on the current schema'` then passed the libSQL case and reproduced the PostgreSQL failure with one fulfillment and seven rejections.
+- Green commit `390da296cf5ac24e12644a9059194dacb0a4b5e1` routes both bootstrap target zero and every versioned migration through `applyVersionedWrite`. The same confined targeted command completed with 2 passed and 5,146 skipped.
+- Red commit `8e786a0ee720c50bc88dbe63cee10d72b5cd1075`, run against buggy parent `390da296cf5ac24e12644a9059194dacb0a4b5e1`, adds the independent append-only PostgreSQL hash assertion with an empty frozen inventory. The targeted PostgreSQL schema test was observed red with 1 failed and 3 passed: `migration v1 is not frozen`.
+- Green commit `3663053b399069ab9fed2fe0d3b4c0ddf5400497` freezes the exact SHA-256 digest of `statements.join('\n')` for PostgreSQL v1-v5 and reconciles the frozen inventory with `MIGRATIONS`; the targeted schema suite passed 4 of 4.
+- The migration-freeze negative control appended `CREATE INDEX drivers_expiry ON drivers (queue, expires_at_ms)` to PostgreSQL v2 at `390da296cf5ac24e12644a9059194dacb0a4b5e1`. The old schema suite passed 3 of 3 while fresh and already-v2 schemas would diverge. Under the new guard, the same edit produced 1 failed and 3 passed at v2: the frozen digest was `74b6c407aff872af263b439a96147a7a542931434b381f8950058ea77770f183`, while the edited history produced `7079ac510a30bceea349691116d6072ad70ef61e30a060eff0cf0b4ba8d5c49b`. Restoring the original migration returned all 4 tests to green.
 - Earlier fixes culminate in commit `e68cf6d`. Green commit `f41999a` moves the factor cast into the selected `CASE` arm and enrolls `postgres-retry-factor-type-guard` as live mutation 423. Focused green evidence before that final factor fix was 31 of 31 PostgreSQL package tests, 2 native same-token dialect cases, 2 header-ingress dialect cases, 8 of 8 PostgreSQL JSON hazard cases, 13 of 13 task-value cases, and 2 of 2 PostgreSQL pool-lifecycle cases. The final-head full verify, TLC, fuzz, and mutation results belong to the PR gate record and are not pre-claimed by this draft.
 - Finder, native-claim review, quoted verdict: "Sixteen concurrent limit-one calls with one token created ten running rows; candidate row locks do not serialize the logical receipt."
 - Finder, lifecycle re-review, quoted verdict: "Claim tokens are fresh, so a durable lock row turns correct scheduler traffic into an unbounded sentinel table."
@@ -223,7 +284,10 @@ finding 4 repair rather than being introduced by it.
 - Finder, connection-lifecycle review, quoted verdict: "Privately owned `pg` pools and directly checked-out clients have no EventEmitter error owner; a backend or socket failure can terminate Node."
 - Finder, final conversion review, quoted verdict: "PostgreSQL retry factor guard can still raise inside claim/activate."
 - Finder, final conversion review, quoted verdict: "one PostgreSQL JSON conversion guard remains raising instead of inert."
+- Finder, CodeRabbit PostgreSQL admin review, quoted verdict: "`migrate()` then throws on a cold start even though the database reached the correct state. Callers must retry."
+- Finder, final `/pr-gate` migration-history audit, quoted rule: "Migrations are APPEND-ONLY, machine-enforced: schema.test.ts freezes every migration's content hash."
 - The sixth finding did not reproduce as a PostgreSQL 17 runtime failure: candidate, same-token receipt, and activation all refused the corrupt value without changing durable state, and the broader malformed-factor probes listed above were also green. This disconfirmation is why the red and mutation owners are construction-level rather than a claimed runtime counterexample.
+- No deployed fresh/upgraded divergence was reproduced for finding 8 because PostgreSQL is being enrolled before its first release. The controlled v2 historical edit demonstrates the release-gate false negative rather than claiming a production incident.
 - Event loss did not reproduce in the repaired implementation: the native await/emit race lost 0 of 24 wakeups, while the deliberately stripped control lost 47 of 48. This establishes the harness's sensitivity but is not counted as an additional product finding.
 - Distinct-token overlap did not reproduce: the native `SKIP LOCKED` case returned eight unique runs across four bounded claimers. Advisory-key collisions cannot allow overlap; PostgreSQL serializes equal 64-bit keys, so a collision can only reduce concurrency.
 - The safe-`int8` mismatch did not survive to review: existing shared conformance rejected bigint values inside JavaScript's safe range, and the executor now canonicalizes those to numbers while preserving unsafe exact values as bigint.
@@ -240,19 +304,27 @@ structurally owned the later cast that could raise. It also modeled driver
 failures only as Promise rejections, not as `error` events whose ownership
 changes when a client moves between idle and checked-out states. SimWorld made
 batch scheduling deterministic by treating the batch as one suspension point;
-that strength also made native transaction races invisible. A new backend
-therefore arrived without a generated fault surface for the adapter behaviors
-unique to its birth.
+that strength also made native transaction races invisible. Fresh-schema
+conformance had only one actor, and the implementation treated `IF NOT EXISTS`
+as proof of concurrent convergence while authoritative-version recovery lived
+only around batches executed after metadata already existed. The new dialect
+also copied logical migration numbers and sampled schema assertions without
+carrying over the existing history freezer. A new backend therefore arrived
+without a generated fault surface for the adapter behaviors unique to its
+birth or structural enrollment in an existing release-safety mechanism.
 
 The deeper recurrence is scope by implementation artifact instead of property.
 The SQL contained a token guard, the lock used a row, the value was valid JSON,
-serialization was centralized, the factor had a type predicate, and Promise
-failures were caught; each statement was true while the required property was
-false. In the factor case, even the observed runtime result was correct while
-the construction depended on unspecified evaluation order. The repairs move
-current paths toward the properties and add real-backend counterexamples or an
-exact construction owner where the current backend plan masks the hazard, but
-the mechanism audit records where those guarantees still end.
+serialization was centralized, the factor had a type predicate, Promise
+failures were caught, bootstrap said `IF NOT EXISTS`, and the migration list
+was `[1, 2, 3, 4, 5]`; each statement was true while the required property was
+false. The version list and sampled DDL properties said nothing about complete
+historical identity. In the factor case, even the observed runtime result was
+correct while the construction depended on unspecified evaluation order. The
+repairs move current paths toward the properties and add real-backend
+counterexamples or an exact construction owner where the current backend plan
+masks the hazard, but the mechanism audit records where those guarantees still
+end.
 
 ## Mechanisms
 
@@ -292,6 +364,17 @@ Built in this PR:
   pool ownership. Direct idle and active emission cases prove the two current
   lifecycle intervals (rung 1 for the current resource shapes, rung 3 for the
   driver's EventEmitter behavior).
+- `PostgresStoreAdmin.applyVersionedWrite` is the single current recovery
+  boundary for bootstrap target zero and every versioned migration target.
+  After any write error it re-reads the canonical schema version and absorbs
+  the error only when the target is already complete. DESIGN records the same
+  rule, and shared schema/admin conformance launches eight migrators against
+  one genuinely fresh backend (rung 1 for the current write inventory, rung 3
+  for the PostgreSQL race).
+- PostgreSQL's append-only schema test independently freezes the SHA-256
+  content of migrations v1-v5 and requires exact one-for-one enrollment with
+  `MIGRATIONS`. Any unpaired edit to shipped history now fails the build, so a
+  schema change must append a new version and hash (rung 2).
 
 Deferred (recorded in BUILD.md):
 
@@ -304,7 +387,7 @@ Deferred (recorded in BUILD.md):
   two mutations at the changed outer and nested JSON conversion authorities
   and therefore requires the full audit recorded in the PR gate evidence
   because the shared conformance registry changed; broader attribution
-  machinery is not needed to close these six findings.
+  machinery is not needed to close these eight findings.
 - No finding-specific product correction is deferred. MySQL conformance and
   PostgreSQL oracle parity remain milestone non-goals rather than evidence for
   the PostgreSQL 17 exit test.
@@ -342,3 +425,16 @@ but it does not itself impose a deadline on a driver call that emits and then
 never settles. The next backend must therefore add its native concurrency,
 conversion, connection ownership, and lifecycle surface with its first
 implementation, not after a reviewer demonstrates the missing property again.
+
+A future PostgreSQL schema-admin write can bypass `applyVersionedWrite`; no
+closed type currently makes such an unenrolled write impossible. The native
+regression can also become a false green if its fixture is changed to serialize
+all eight calls through one connection. Either shape could restore failed
+cold-start convergence while today's current-path evidence remains green.
+
+A coordinated edit to an old migration and its expected digest can still pass;
+the literal hash makes that change conspicuous in review but does not make it
+unwritable. Schema-changing SQL introduced outside `MIGRATIONS` also lies
+outside the freezer. Either shape could split fresh and upgraded databases, so
+the mechanism's honest boundary is accidental or unpaired mutation of the
+enrolled migration bodies.
