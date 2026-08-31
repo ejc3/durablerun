@@ -42,8 +42,8 @@ import {
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
-  serializeTaskValue,
   serializeTaskHeaders,
+  serializeTaskValue,
   storageValueKind,
 } from '@durablerun/core'
 import {
@@ -437,7 +437,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
     }
 
     const headersInput = opts.headers
-    const headersJson = headersInput === undefined ? null : serializeTaskHeaders(headersInput)
+    const headersJson =
+      headersInput === undefined ? null : serializeTaskHeaders('task headers', headersInput)
     const key = opts.idempotencyKey ?? null
     const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
     // Idempotent task insert: loses silently when the key already exists.
@@ -588,7 +589,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     }
     const candidateEligibility = claimEligibility('r', 't')
     const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS })
-    b.lockClaim(queue, claimToken)
+    b.lockClaim({ queue, claimToken })
     // Due runs of live tasks → running, holding the caller's lease token AND
     // this batch's provenance. The two are now different things, which is the
     // point: the token survives the batch by contract (the worker keeps
@@ -1677,7 +1678,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       throw new RangeError('emitEvent payloadJson must be a string')
     }
     const b = new FencedBatch('emit-event', this.ids.token(), { now: NOW_MS })
-    b.lockEvent(queue, eventName)
+    b.lockEvent({ queue, eventName })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
     // the event's immutable emitted_at_ms as its provenance instant. The
@@ -1869,7 +1870,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
     const b = new FencedBatch('await-event', this.ids.token(), { now: NOW_MS })
-    b.lockEvent(queue, eventName)
+    b.lockEvent({ queue, eventName })
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
     // writes nothing, so a run left sleeping under the same wake_step (e.g. by

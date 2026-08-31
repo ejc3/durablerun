@@ -49,10 +49,15 @@ describe('serializeTaskValue', () => {
     ] as const
 
     for (const [kind, text] of invalid) {
-      expect(() => serializeTaskHeaders({ value: text }), `${kind} value`).toThrow(FatalTaskError)
-      expect(() => serializeTaskHeaders({ [text]: 'value' }), `${kind} key`).toThrow(FatalTaskError)
+      expect(() => serializeTaskHeaders('task headers', { value: text }), `${kind} value`).toThrow(
+        FatalTaskError,
+      )
+      expect(
+        () => serializeTaskHeaders('task headers', { [text]: 'value' }),
+        `${kind} key`,
+      ).toThrow(FatalTaskError)
     }
-    expect(serializeTaskHeaders({ '📦': 'välue' })).toBe('{"📦":"välue"}')
+    expect(serializeTaskHeaders('task headers', { '📦': 'välue' })).toBe('{"📦":"välue"}')
   })
 
   it('preserves escaped NUL and lone surrogates in opaque JSON values', () => {

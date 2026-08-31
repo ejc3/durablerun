@@ -68,6 +68,16 @@ export type SqlTransactionLock =
       readonly claimToken: string
     }
 
+export type SqlEventLockCoordinates = Omit<
+  Extract<SqlTransactionLock, { readonly kind: 'event' }>,
+  'kind'
+>
+
+export type SqlClaimLockCoordinates = Omit<
+  Extract<SqlTransactionLock, { readonly kind: 'claim' }>,
+  'kind'
+>
+
 /**
  * The lock travels in the existing batch-control position so every executor
  * wrapper forwards mode and lock as one value. A separate optional argument

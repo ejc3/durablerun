@@ -1967,8 +1967,8 @@ MUTATION_SPECS = [
     (
         "spawn-headers-captured-serializer",
         "packages/store-libsql/src/store.ts",
-        "    const headersJson = headersInput === undefined ? null : serializeTaskHeaders(headersInput)",
-        "    const headersJson = headersInput === undefined ? null : JSON.stringify(headersInput) // MUTATION",
+        "      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)",
+        "      headersInput === undefined ? null : JSON.stringify(headersInput)",
         "spawn serializes headers through an ambient JSON hook",
     ),
     (
@@ -4079,12 +4079,8 @@ MUTATION_SPECS.extend(
         (
             "task-value-captured-stringify",
             "packages/core/src/validate.ts",
-            "    const serialized = stringifyJson(\n"
-            "      snapshotTaskValue(root, new TrustedWeakSet(), requirePortableStrings),\n"
-            "    )",
-            "    const serialized = JSON.stringify(\n"
-            "      snapshotTaskValue(root, new TrustedWeakSet(), requirePortableStrings),\n"
-            "    ) // MUTATION",
+            "    const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))",
+            "    const serialized = JSON.stringify(snapshotTaskValue(root, new TrustedWeakSet())) // MUTATION",
             "task-value serialization resolves mutable ambient JSON.stringify after task initialization",
         ),
         (
@@ -4209,19 +4205,19 @@ MUTATION_SPECS.extend(
         (
             "user-name-captured-regexp-exec",
             "packages/core/src/validate.ts",
-            "  return !stringIncludes(value, '\\u0000') && regexpExec(/\\p{Surrogate}/u, value) === null",
-            "  return !stringIncludes(value, '\\u0000') && /\\p{Surrogate}/u.exec(value) === null // MUTATION",
+            "    if (stringIncludes(raw, '\\u0000') || regexpExec(/\\p{Surrogate}/u, raw) !== null) {",
+            "    if (stringIncludes(raw, '\\u0000') || /\\p{Surrogate}/u.exec(raw) !== null) { // MUTATION",
             "user-name validation resolves mutable RegExp.prototype.exec after task initialization",
         ),
         (
             "user-name-captured-regexp-test",
             "packages/core/src/validate.ts",
-            "  return !stringIncludes(value, '\\u0000') && regexpExec(/\\p{Surrogate}/u, value) === null",
-            "  return (\n"
-            "    !stringIncludes(value, '\\u0000') &&\n"
-            "    (regexpExec(/\\p{Surrogate}/u, value) === null ||\n"
-            "      (value.length !== 1 && !/\\p{Surrogate}/u.test(value)))\n"
-            "  ) // MUTATION",
+            "    if (stringIncludes(raw, '\\u0000') || regexpExec(/\\p{Surrogate}/u, raw) !== null) {",
+            "    if (\n"
+            "      stringIncludes(raw, '\\u0000') ||\n"
+            "      (regexpExec(/\\p{Surrogate}/u, raw) !== null &&\n"
+            "        (raw.length === 1 || /\\p{Surrogate}/u.test(raw)))\n"
+            "    ) { // MUTATION",
             "a non-leading lone surrogate is rechecked through mutable RegExp.prototype.test and can be accepted",
         ),
         (

@@ -132,7 +132,7 @@ describe('closed transaction lock prelude', () => {
     const sqlShapedCoordinate = `q'; DELETE FROM events; --`
     const db = new FakeDb([1])
     const b = batch('emit-event')
-      .lockEvent(sqlShapedCoordinate, sqlShapedCoordinate)
+      .lockEvent({ queue: sqlShapedCoordinate, eventName: sqlShapedCoordinate })
       .cas('win', 'events', `UPDATE events SET ${FENCE_SET} WHERE queue = ?`, ['q'])
     await b.run(db)
 
@@ -152,12 +152,14 @@ describe('closed transaction lock prelude', () => {
   })
 
   it('must be declared once, before SQL, and followed immediately by a CAS', () => {
-    expect(() => withCas().lockEvent('q', 'e')).toThrow(/before every SQL statement/)
+    expect(() => withCas().lockEvent({ queue: 'q', eventName: 'e' })).toThrow(
+      /before every SQL statement/,
+    )
 
-    const duplicate = batch().lockEvent('q', 'e')
-    expect(() => duplicate.lockClaim('q', 'token')).toThrow(/already has/)
+    const duplicate = batch().lockEvent({ queue: 'q', eventName: 'e' })
+    expect(() => duplicate.lockClaim({ queue: 'q', claimToken: 'token' })).toThrow(/already has/)
 
-    const readFirst = batch().lockEvent('q', 'e')
+    const readFirst = batch().lockEvent({ queue: 'q', eventName: 'e' })
     expect(() => readFirst.openTail('probe', 'diagnostic read', 'SELECT 1')).toThrow(
       /followed immediately by a CAS/,
     )
@@ -165,24 +167,24 @@ describe('closed transaction lock prelude', () => {
 
   it('is available only to a write transaction', async () => {
     const b = batch()
-      .lockEvent('q', 'e')
+      .lockEvent({ queue: 'q', eventName: 'e' })
       .cas('win', 'events', `UPDATE events SET ${FENCE_SET} WHERE queue = ?`, ['q'])
     await expect(b.run(new FakeDb([1]), 'read')).rejects.toThrow(/requires a write batch/)
   })
 
   it('rejects a non-string coordinate for either closed lock kind', () => {
-    expect(() => batch().lockEvent(undefined as unknown as string, 'e')).toThrow(
-      /coordinates must be strings/,
-    )
-    expect(() => batch().lockClaim('q', undefined as unknown as string)).toThrow(
-      /coordinates must be strings/,
-    )
+    expect(() =>
+      batch().lockEvent({ queue: undefined as unknown as string, eventName: 'e' }),
+    ).toThrow(/coordinates must be strings/)
+    expect(() =>
+      batch().lockClaim({ queue: 'q', claimToken: undefined as unknown as string }),
+    ).toThrow(/coordinates must be strings/)
   })
 
   it('passes only inert claim coordinates ahead of the fenced claim CAS', async () => {
     const db = new FakeDb([1])
     const b = batch('claim')
-      .lockClaim('q', `token'; DELETE FROM runs; --`)
+      .lockClaim({ queue: 'q', claimToken: `token'; DELETE FROM runs; --` })
       .casMany('claim', 'runs', 1, `UPDATE runs SET ${FENCE_SET} WHERE queue = ?`, ['q'])
     await b.run(db)
 

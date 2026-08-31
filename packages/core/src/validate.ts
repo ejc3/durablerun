@@ -727,16 +727,21 @@ function dataProperty(value: unknown, enumerable: boolean): PropertyDescriptor {
  * them and later expose a different value. One predicate owns the domain for
  * both JSON keys/values and durable protocol names.
  */
-function storageStringRoundTrips(value: string): boolean {
-  return !stringIncludes(value, '\u0000') && regexpExec(/\p{Surrogate}/u, value) === null
-}
+const storageStringRoundTrips = freeze({
+  check(raw: string): boolean {
+    if (stringIncludes(raw, '\u0000') || regexpExec(/\p{Surrogate}/u, raw) !== null) {
+      return false
+    }
+    return true
+  },
+}).check
 
 /**
  * Copy one task value into data owned by the runtime. The copy has no
  * attacker-controlled prototype or toJSON hook, and every source field is
  * read once. This is the representation JSON.stringify receives.
  */
-function snapshotTaskValue(
+function snapshotTaskValueWithStringDomain(
   value: unknown,
   ancestors: WeakSet<object>,
   requirePortableStrings: boolean,
@@ -778,7 +783,11 @@ function snapshotTaskValue(
       }
       for (let index = 0; index < length; index++) {
         const key = stringFrom(index)
-        const item = snapshotTaskValue(reflectGet(value, key), ancestors, requirePortableStrings)
+        const item = snapshotTaskValueWithStringDomain(
+          reflectGet(value, key),
+          ancestors,
+          requirePortableStrings,
+        )
         defineProperty(owned, key, dataProperty(item === undefined ? null : item, true))
       }
       return owned
@@ -796,7 +805,11 @@ function snapshotTaskValue(
       if (requirePortableStrings && !storageStringRoundTrips(key)) {
         throw new TrustedTypeError('JSON object key does not round-trip through storage')
       }
-      const item = snapshotTaskValue(reflectGet(value, key), ancestors, requirePortableStrings)
+      const item = snapshotTaskValueWithStringDomain(
+        reflectGet(value, key),
+        ancestors,
+        requirePortableStrings,
+      )
       if (item !== undefined) {
         defineProperty(owned, key, dataProperty(item, true))
       }
@@ -823,10 +836,10 @@ function serializeTaskValueWithStringDomain(
   requirePortableStrings: boolean,
 ): string {
   const root = value === undefined ? null : value
+  const snapshotTaskValue = (candidate: unknown, ancestors: WeakSet<object>): unknown =>
+    snapshotTaskValueWithStringDomain(candidate, ancestors, requirePortableStrings)
   try {
-    const serialized = stringifyJson(
-      snapshotTaskValue(root, new TrustedWeakSet(), requirePortableStrings),
-    )
+    const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))
     if (serialized === undefined) {
       throw new TrustedTypeError(`${describe(root)} has no JSON representation`)
     }
@@ -847,8 +860,8 @@ export function serializeTaskValue(what: string, value: unknown): string {
  * Headers are later inspected by every dialect as JSON object data. Keep
  * their string domain portable without narrowing opaque task/result payloads.
  */
-export function serializeTaskHeaders(value: unknown): string {
-  return serializeTaskValueWithStringDomain('task headers', value, true)
+export function serializeTaskHeaders(what: 'task headers', value: unknown): string {
+  return serializeTaskValueWithStringDomain(what, value, true)
 }
 
 /** Parse with the JSON operation captured before task initialization. */

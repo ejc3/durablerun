@@ -87,7 +87,7 @@ describe('batch control forwarding', () => {
     const world = new SimWorld(real, 'locked-batch')
     world.actor('a', async (db) => {
       const batch = new FencedBatch('emit-event', 'seed', { now: '1' })
-        .lockEvent('q', 'e')
+        .lockEvent({ queue: 'q', eventName: 'e' })
         .cas('event', 'events', `UPDATE events SET ${FENCE_SET} WHERE queue = ?`, ['q'])
       await batch.run(db)
     })

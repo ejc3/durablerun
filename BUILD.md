@@ -86,9 +86,11 @@ second-dialect promise while the dogfood clock runs. Red enrollment requires
 `postgres` in the central fixture registry. Shared async teardown and the
 sixth schema/admin surface are integrated; the implementation is split into
 executor, schema/fixture, closed event- and same-token-claim lock preludes, and
-scheduler SQL lanes.
-The first green target is affected PostgreSQL schema/admin, spawn/claim, native
-concurrency, and event-race conformance before the complete surface sweep.
+scheduler SQL lanes. The checkpoint is complete: PostgreSQL 17 passes the
+identical six-surface conformance door, including schema/admin, every scheduler
+transition, native same-token and disjoint-receipt claim concurrency, and the
+emit/await event race. The clean outcome head passes `pnpm verify`; remaining
+closeout is final gate evidence and merge, not additional product scope.
 
 **Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
 recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-

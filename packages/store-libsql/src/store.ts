@@ -42,8 +42,8 @@ import {
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
-  serializeTaskValue,
   serializeTaskHeaders,
+  serializeTaskValue,
   storageValueKind,
 } from '@durablerun/core'
 import {
@@ -397,6 +397,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     private readonly buggify: Buggify = neverBuggify,
   ) {}
 
+  private serializeHeaders(headersInput: unknown): string | null {
+    const serializeTaskValue = serializeTaskHeaders
+    const headersJson =
+      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)
+    return headersJson
+  }
+
   async spawn(
     queue: string,
     taskName: string,
@@ -435,7 +442,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     }
 
     const headersInput = opts.headers
-    const headersJson = headersInput === undefined ? null : serializeTaskHeaders(headersInput)
+    const headersJson = this.serializeHeaders(headersInput)
     const key = opts.idempotencyKey ?? null
     const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
     // Idempotent task insert: loses silently when the key already exists.

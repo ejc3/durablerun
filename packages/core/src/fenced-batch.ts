@@ -13,6 +13,8 @@ import {
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type {
   SqlBatchMode,
+  SqlClaimLockCoordinates,
+  SqlEventLockCoordinates,
   SqlExecutor,
   SqlResult,
   SqlStatement,
@@ -273,7 +275,8 @@ export class FencedBatch {
    * be declared before the batch's first statement, and the first statement
    * after it must be the fenced CAS whose branch the lock protects.
    */
-  lockEvent(queue: string, eventName: string): this {
+  lockEvent(coordinates: SqlEventLockCoordinates): this {
+    const { queue, eventName } = coordinates
     return this.addTransactionLock({ kind: 'event', queue, eventName })
   }
 
@@ -281,7 +284,8 @@ export class FencedBatch {
    * Serialize same-token claim attempts before either selects candidates.
    * Candidate row locks alone are disjoint, so they cannot provide this gate.
    */
-  lockClaim(queue: string, claimToken: string): this {
+  lockClaim(coordinates: SqlClaimLockCoordinates): this {
+    const { queue, claimToken } = coordinates
     return this.addTransactionLock({ kind: 'claim', queue, claimToken })
   }
 
