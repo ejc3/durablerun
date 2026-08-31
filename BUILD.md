@@ -298,7 +298,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
     The verifier runs its classifier, source-owner, and generated-construction
-    surfaces across all **421 live mutations**. Every TypeScript replacement is
+    surfaces across all **422 live mutations**. Every TypeScript replacement is
     materialized and parsed before enrollment. Every mutant routed to Vitest
     also passes an incremental compiler value-binding comparison against its
     original source, so a newly unbound runtime identifier is rejected before
@@ -588,13 +588,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     aliases, retains runtime class heritage, and proves rejection precedes
     checkpoint/worktree creation. The exact focused rerun is 2/2. The closing
     simplify pass then added two exact poison-settlement mutations, bringing the
-    current registry to **421**. The clean `a00fc27` checkpoint had already
+    registry at that checkpoint to **421**. The clean `a00fc27` checkpoint had
+    already
     caught all 419 then-declared entries; those two additions supersede that
     historical receipt. The first 421-entry run at `5cf87d5` then refused two
     pre-existing relative-only timestamp mutants as wrong-path because the new
     shape control also failed. Green `1d005de` rewrites their relative `CASE`
     arm without changing the compiled wake signature, and both focused audits
-    are exact. A clean final-head 421/421 audit is still the final mutation gate.
+    are exact. A clean final-head 422/422 audit is still the final mutation gate.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
@@ -716,8 +717,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   classifier, codec, replay, worker, clock, collision,
   compiler-bind, completion-origin, task-option, wake-discriminant, payload,
   relation-policy, advisory-expiry, generated-syntax, static-title, and
-  intrinsic-dispatch arms. Two closing settlement owners make the current
-  registry **421**. A final-head 421/421 exact audit is required to prove those
+  intrinsic-dispatch arms. Two closing settlement owners brought that registry
+  to **421**; PostgreSQL JSON-input validity is the current 422nd owner. A
+  final-head 422/422 exact audit is required to prove those
   current declarations; even that receipt cannot prove that a
   future semantic arm is enrolled. PR3.10 must derive both the cases and their
   mutation/verdict ownership from the same layer descriptor.

@@ -243,8 +243,9 @@ Deferred (recorded in BUILD.md):
   named conversion sites have a single helper, exact native regressions, and a
   live mutation; a new SQL framework would delay the PostgreSQL outcome.
 - PR3.10's per-condition mutation expansion remains deferred. This PR adds the
-  one mutation at the newly changed JSON conversion authority and runs the
-  required full audit because the shared conformance registry changed; broader
+  one mutation at the newly changed JSON conversion authority and therefore
+  requires the full audit recorded in the PR gate evidence because the shared
+  conformance registry changed; broader
   attribution machinery is not needed to close these five findings.
 - No finding-specific product correction is deferred. MySQL conformance and
   PostgreSQL oracle parity remain milestone non-goals rather than evidence for
