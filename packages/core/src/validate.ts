@@ -736,6 +736,15 @@ const storageStringRoundTrips = freeze({
   },
 }).check
 
+type TaskValueDomain = 'opaque' | 'headers'
+
+function requireJsonDataObject(value: object): void {
+  const prototype = getPrototypeOf(value)
+  if (prototype !== null && prototype !== objectPrototype) {
+    throw new TrustedTypeError('task value must use the JSON data model')
+  }
+}
+
 /**
  * Copy one task value into data owned by the runtime. The copy has no
  * attacker-controlled prototype or toJSON hook, and every source field is
@@ -744,12 +753,31 @@ const storageStringRoundTrips = freeze({
 function snapshotTaskValueWithStringDomain(
   value: unknown,
   ancestors: WeakSet<object>,
-  requirePortableStrings: boolean,
+  domain: TaskValueDomain,
 ): unknown {
-  if (typeof value === 'string') {
-    if (requirePortableStrings && !storageStringRoundTrips(value)) {
-      throw new TrustedTypeError('JSON string does not round-trip through storage')
+  if (domain === 'headers') {
+    if (typeof value !== 'object' || value === null || isArray(value)) {
+      throw new TrustedTypeError('task headers must be an object of strings')
     }
+    requireJsonDataObject(value)
+    const owned = createObject(null) as Record<string, string>
+    const keys = objectKeys(value)
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index]
+      if (key === undefined) continue
+      if (!storageStringRoundTrips(key)) {
+        throw new TrustedTypeError('JSON object key does not round-trip through storage')
+      }
+      const item = reflectGet(value, key)
+      if (typeof item !== 'string' || !storageStringRoundTrips(item)) {
+        throw new TrustedTypeError('task headers must contain portable strings')
+      }
+      defineProperty(owned, key, dataProperty(item, true))
+    }
+    return owned
+  }
+
+  if (typeof value === 'string') {
     return value
   }
   if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
@@ -783,33 +811,19 @@ function snapshotTaskValueWithStringDomain(
       }
       for (let index = 0; index < length; index++) {
         const key = stringFrom(index)
-        const item = snapshotTaskValueWithStringDomain(
-          reflectGet(value, key),
-          ancestors,
-          requirePortableStrings,
-        )
+        const item = snapshotTaskValueWithStringDomain(reflectGet(value, key), ancestors, domain)
         defineProperty(owned, key, dataProperty(item === undefined ? null : item, true))
       }
       return owned
     }
 
-    const prototype = getPrototypeOf(value)
-    if (prototype !== null && prototype !== objectPrototype) {
-      throw new TrustedTypeError('task value must use the JSON data model')
-    }
+    requireJsonDataObject(value)
     const owned = createObject(null) as Record<string, unknown>
     const keys = objectKeys(value)
     for (let index = 0; index < keys.length; index++) {
       const key = keys[index]
       if (key === undefined) continue
-      if (requirePortableStrings && !storageStringRoundTrips(key)) {
-        throw new TrustedTypeError('JSON object key does not round-trip through storage')
-      }
-      const item = snapshotTaskValueWithStringDomain(
-        reflectGet(value, key),
-        ancestors,
-        requirePortableStrings,
-      )
+      const item = snapshotTaskValueWithStringDomain(reflectGet(value, key), ancestors, domain)
       if (item !== undefined) {
         defineProperty(owned, key, dataProperty(item, true))
       }
@@ -833,11 +847,11 @@ function snapshotTaskValueWithStringDomain(
 function serializeTaskValueWithStringDomain(
   what: string,
   value: unknown,
-  requirePortableStrings: boolean,
+  domain: TaskValueDomain,
 ): string {
   const root = value === undefined ? null : value
   const snapshotTaskValue = (candidate: unknown, ancestors: WeakSet<object>): unknown =>
-    snapshotTaskValueWithStringDomain(candidate, ancestors, requirePortableStrings)
+    snapshotTaskValueWithStringDomain(candidate, ancestors, domain)
   try {
     const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))
     if (serialized === undefined) {
@@ -853,15 +867,16 @@ function serializeTaskValueWithStringDomain(
 }
 
 export function serializeTaskValue(what: string, value: unknown): string {
-  return serializeTaskValueWithStringDomain(what, value, false)
+  return serializeTaskValueWithStringDomain(what, value, 'opaque')
 }
 
 /**
- * Headers are later inspected by every dialect as JSON object data. Keep
- * their string domain portable without narrowing opaque task/result payloads.
+ * Headers are later inspected by every dialect as JSON object data. Own one
+ * string-record snapshot here, including the portable string domain, without
+ * narrowing opaque task/result payloads.
  */
 export function serializeTaskHeaders(what: 'task headers', value: unknown): string {
-  return serializeTaskValueWithStringDomain(what, value, true)
+  return serializeTaskValueWithStringDomain(what, value, 'headers')
 }
 
 /** Parse with the JSON operation captured before task initialization. */

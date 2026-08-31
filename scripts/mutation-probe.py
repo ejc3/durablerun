@@ -1968,8 +1968,12 @@ MUTATION_SPECS = [
         "spawn-headers-captured-serializer",
         "packages/store-libsql/src/store.ts",
         "      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)",
-        "      headersInput === undefined ? null : JSON.stringify(headersInput)",
-        "spawn serializes headers through an ambient JSON hook",
+        "      headersInput === undefined\n"
+        "        ? null\n"
+        "        : JSON.stringify(\n"
+        "            parseTaskValueJson(serializeTaskValue('task headers', headersInput)),\n"
+        "          )",
+        "spawn reserializes validated headers through an ambient JSON hook",
     ),
     (
         "claim-retry-captured-parser",
@@ -4223,8 +4227,8 @@ MUTATION_SPECS.extend(
         (
             "task-value-rejects-exotic-objects",
             "packages/core/src/validate.ts",
-            "    if (prototype !== null && prototype !== objectPrototype) {",
-            "    if (false && prototype !== null && prototype !== objectPrototype) { // MUTATION",
+            "  if (prototype !== null && prototype !== objectPrototype) {",
+            "  if (false && prototype !== null && prototype !== objectPrototype) { // MUTATION",
             "boxed and exotic objects are silently reinterpreted as plain JSON records",
         ),
         (

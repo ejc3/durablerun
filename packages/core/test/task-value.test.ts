@@ -60,6 +60,20 @@ describe('serializeTaskValue', () => {
     expect(serializeTaskHeaders('task headers', { '📦': 'välue' })).toBe('{"📦":"välue"}')
   })
 
+  it('snapshots each header value exactly once', () => {
+    let reads = 0
+    const headers = {
+      get trace(): string {
+        reads += 1
+        if (reads > 1) throw new Error('header getter read twice')
+        return 'value'
+      },
+    }
+
+    expect(serializeTaskHeaders('task headers', headers)).toBe('{"trace":"value"}')
+    expect(reads).toBe(1)
+  })
+
   it('preserves escaped NUL and lone surrogates in opaque JSON values', () => {
     expect(serializeTaskValue('result', '\u0000')).toBe('"\\u0000"')
     expect(serializeTaskValue('result', '\uD800')).toBe('"\\ud800"')

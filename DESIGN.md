@@ -449,13 +449,17 @@ One invocation executes one claimed run to its next suspension point:
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
   `FatalTaskError`s. Scheduler headers, which dialect SQL later parses as an
-  object before issuing worker authority, have a narrower portable string
-  domain: actual NUL and lone UTF-16 surrogates in their keys or values are
-  rejected before SQL. Opaque result, checkpoint, parameter, and event JSON
+  object before issuing worker authority, must enter as a plain object whose
+  own enumerable string-keyed values are strings. Their keys and values also
+  have a narrower portable string domain: actual NUL and lone UTF-16 surrogates
+  are rejected before SQL. Runtime type escapes fail permanently before
+  executor I/O, so a successful spawn cannot create a task the claim predicate
+  refuses.
+  Opaque result, checkpoint, parameter, and event JSON
   retains ordinary JSON string semantics. Scheduler payloads obey the same source rule: spawn routes
   normalized retry, an own-data-property cancellation snapshot, and headers
-  through the module-captured `serializeTaskValue`; claim decodes admitted retry
-  and headers through the matching captured parser. The canonical wire value,
+  through the module-captured task-value and header serializers; claim decodes
+  admitted retry and headers through the matching captured parser. The canonical wire value,
   not a second ambient JSON path, is the durable representation. At the
   user-handler catch boundary, only controls minted
   by that invocation's private runtime authority can suspend or abort; a public
@@ -764,6 +768,9 @@ are load-bearing):
    it returns durable authority, and the activation CAS before it latches the
    generation. Only after those store doors win may the captured parser decode
    retry and headers; a stamped tail is not a substitute for gating the CAS.
+   Those durable guards are corruption backstops, not an alternate ingress
+   contract: successful spawn already admits the same object-of-strings header
+   domain before SQL.
    Every newly claimed or
    receipt-returned run must also be the task's sole live run: the canonical
    `soleLiveRun(run)` eligibility fragment gates both the candidate CAS and the
