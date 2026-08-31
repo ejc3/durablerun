@@ -2,7 +2,7 @@
 
 PR #16 makes PostgreSQL 17 the second real scheduler dialect and enrolls it in
 the same six conformance surfaces as libSQL. Adversarial and release-gate
-review found eight defects before merge: same-token claim retries could select
+review found nine defects before merge: same-token claim retries could select
 several runs, the first locking repair retained one durable sentinel per fresh
 token, libSQL could persist header strings PostgreSQL could not later interpret,
 PostgreSQL could abort a bounded claim on JSON that passed its preliminary
@@ -15,8 +15,12 @@ fresh-catalog bootstrap did not share the migration loop's concurrent-winner
 recovery, so simultaneous cold starts could reject after another process had
 already brought the schema current. The final release-gate audit found that
 PostgreSQL migrations v1-v5 had no frozen content hashes, leaving shipped
-history editable without a build failure. The repairs close six reproduced
-product failures, one construction-level conversion hazard, and one
+history editable without a build failure. The exact-head whole-system review
+then found that the header repair still trusted the compile-time
+`Record<string, string>` shape at runtime: non-object roots and non-string
+values could be persisted and then refused by claim admission, while an
+undefined-valued entry silently disappeared. The repairs close seven
+reproduced product failures, one construction-level conversion hazard, and one
 release-safety gap, and add native
 concurrency, conversion, and connection-lifecycle evidence; the honest
 verdict is that review, not the branch's original machinery, found every one.
@@ -24,8 +28,8 @@ verdict is that review, not the branch's original machinery, found every one.
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The implementation defects are smaller than the assurance failure:
 logical conformance and simulated interleavings were treated as proof of a new
-dialect boundary whose native locking, storage lifetime, string domain, and
-conversion and connection-ownership behavior they did not execute.
+dialect boundary whose native locking, storage lifetime, header runtime domain,
+and conversion and connection-ownership behavior they did not execute.
 
 ## Severity
 
@@ -50,6 +54,17 @@ repair widened the restriction to every opaque JSON value and thereby caused
 one fix-induced compatibility defect: valid result and event strings were
 rejected even though their protocol paths never require `jsonb` object
 inspection.
+
+The narrower header repair still did not enforce the header container and
+value shape at runtime. TypeScript callers saw `Record<string, string>`, but
+JavaScript and values crossing `unknown` or `any` could supply null, arrays,
+primitive roots, nested values, or undefined-valued fields. The generic JSON
+snapshot admitted those values before either store wrote them. A persisted
+non-object or non-string-valued header is then deliberately refused by the
+claim, same-token receipt, and activation guards, stranding a task whose spawn
+reported success; an undefined-valued field instead disappeared during JSON
+serialization. Source admission and durable admission therefore described two
+different header domains.
 
 Finally, PostgreSQL's `IS JSON` predicate accepted a numeric literal such as
 `1e1000000`, but converting that value to `jsonb` or `numeric` raised SQLSTATE
@@ -111,6 +126,7 @@ pre-release safety failure whose impact begins with the first release.
 | 6 | The exponential retry-factor guard placed `jsonb_typeof(...) = 'number'` beside a raising `::numeric` cast in an `AND` expression | Correct inert refusal at candidate, receipt, and activation depended on PostgreSQL choosing a short-circuit order; another legal evaluation order could abort the transition on corrupt durable JSON | Generated-SQL construction coverage for each raising conversion, backed by adversarial values at every worker-authority door | Runtime cases exercised outcomes under the current PostgreSQL 17 plan, and `jsonbInputValid` proved only the outer TEXT-to-`jsonb` conversion; neither required the nested scalar cast to be subordinate to its type test | The factor cast now exists only in the `ELSE` arm of its type-rejecting `CASE`; `postgres-retry-factor-type-guard` reverts it to the unsafe sibling-`AND` shape and has an exact construction owner, while shared conformance exercises candidate, receipt, and activation (rung 1 for the current expression, rung 2 for construction, rung 3 for runtime outcomes) |
 | 7 | Fresh PostgreSQL bootstrap relied on `CREATE TABLE IF NOT EXISTS` without the version-authoritative concurrent-write recovery used by later migration batches | Simultaneous first-start processes could fail after another process completed the schema; every observed eight-way run produced seven SQLSTATE `23505` failures requiring retry | Native schema-admin concurrency conformance plus one recovery primitive for every schema-version write | Fresh-schema conformance used one caller, while concurrent-winner recovery was scoped only to the post-bootstrap migration loop; `IF NOT EXISTS` suppresses an already-visible object but does not serialize simultaneous PostgreSQL catalog insertion | `applyVersionedWrite` is the single current bootstrap-and-migration recovery boundary: after an error it re-reads the authoritative version and succeeds only when metadata exists at or beyond that write's target; shared conformance runs eight cold-start migrators against the real backend (rung 1 for current write shape, rung 3 for native semantics) |
 | 8 | PostgreSQL migrations v1-v5 lacked the frozen content hashes required for append-only history | A later edit to an already-shipped migration could pass the build and split fresh from upgraded schemas while both reported the same current version | Per-dialect `schema.test.ts` content-hash freeze required by `/pr-gate` | PostgreSQL tests pinned `[1, 2, 3, 4, 5]` and selected columns, types, and sentinels; those are proxies for complete historical identity, and the existing libSQL freezer did not enroll the new dialect | PostgreSQL schema tests compare every `statements.join('\n')` SHA-256 digest with an independent frozen literal and reconcile frozen-entry cardinality with `MIGRATIONS` (rung 2) |
+| 9 | `serializeTaskHeaders` enforced portable characters but reused the generic JSON-value domain, so runtime values outside an object of strings survived ingress | Spawn could report success for durable work that claim admission would never return; an undefined-valued header was silently omitted instead | Exact runtime header-domain validation plus shared pre-SQL conformance on every dialect | The compile-time `Record<string, string>` was treated as runtime evidence, and finding 3's cases attacked string encoding without attacking root/value shapes or proving that rejection preceded executor I/O | `serializeTaskHeaders` now owns one snapshot that accepts only a plain or null-prototype object with portable string keys and own enumerable string-keyed values; shared conformance attacks invalid roots and values through both stores and proves zero executor calls and rows (rung 1 for current ingress, rung 3 for cross-dialect semantics) |
 
 ## Detection ledger
 
@@ -124,13 +140,14 @@ pre-release safety failure whose impact begins with the first release.
 | Final PostgreSQL nested-conversion review | 1 | No |
 | CodeRabbit PostgreSQL bootstrap-concurrency review | 1 | No |
 | Final `/pr-gate` migration-history audit | 1 | No |
+| Exact-head adversarial Codex header-domain review | 1 | No |
 
-Self-catch rate: **0 of 8, or 0%** (previous round: **100% after merge, but
+Self-catch rate: **0 of 9, or 0%** (previous round: **100% after merge, but
 0% before merge**). There is no pre-merge improvement over PR #15. The red
 tests in this branch were written after the reviewers named these failures, so
 they are reproductions, not self-catches. Existing shared conformance did catch
 the separate safe-`int8` representation mismatch before review; that is the
-machinery working, but it is not one of these eight escaped findings and does
+machinery working, but it is not one of these nine escaped findings and does
 not improve this ledger.
 
 ## Recurrence
@@ -205,6 +222,17 @@ assertions proved only sampled properties of the fresh schema; both stayed
 green while unasserted historical content remained writable. This is the
 new-layer mechanism-travel failure in its simplest form.
 
+Finding 9 is a direct recurrence of finding 3 in the same review round. The
+repair gave headers their own serializer, but that serializer enforced only a
+property of strings it happened to encounter, not the complete runtime header
+value. The compile-time `Record<string, string>` and generic JSON normalization
+were proxies for the actual object-of-strings contract; an undefined value was
+even erased before any check could reject it. The database admission guards
+correctly enforced the narrower domain, so source and consumer retained two
+representations of what a valid header was. The mechanism for finding 3 did not
+close the class because its tests enumerated encoding hazards without asking
+whether every successful spawn was claim-admissible.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -213,7 +241,8 @@ new-layer mechanism-travel failure in its simplest form.
 | Warmed sixteen-client same-token case | 3 | Configure the fixture pool with `max: 1` and remove `acquireTransactionLock`; the pool serializes the sixteen promises and the receipt assertions pass. The production fixture explicitly warms independent clients, but the test proves the configured concurrency path, not every deployment pool. |
 | Advisory lock with no durable claim representation | 1 in the current PostgreSQL executor | A future executor can acquire the advisory lock and also insert every token into `receipt_gates`; exclusion remains correct and all claim outcomes pass while storage again grows without bound. The executor's current source has no such write, but that absence is not a cross-dialect type property. |
 | Exact `claim_locks` schema rejection | 2, syntactic | `CREATE TABLE receipt_gates (queue TEXT, token TEXT, PRIMARY KEY (queue, token))` plus an insert in the lock prelude still passes `expect(ddl).not.toContain('claim_locks')`; the checker pins the reviewed representation, not the lifetime property. |
-| Shared `serializeTaskHeaders` ingress | 1 for the two current store implementations | A future import or alternate spawn path can persist `JSON.stringify({trace: '\u0000'})` directly. Existing spawn conformance remains green because it exercises the centralized public ingress, not arbitrary administrative writes. PostgreSQL's read guard keeps such raw corruption inert rather than making it portable. |
+| Shared `serializeTaskHeaders` ingress | 1 for the two current store implementations | A future import or alternate spawn path can persist `JSON.stringify({trace: 1})` or `JSON.stringify({trace: '\u0000'})` directly. Existing spawn conformance remains green because it exercises the centralized public ingress, not arbitrary administrative writes. The durable read guards keep such raw corruption inert rather than making it portable. |
+| Shared runtime header-domain conformance | 3 | Add a header-only special case that accepts a `Date` root before the exact object-domain check. The eight named invalid inputs and zero-I/O assertion still pass while that unlisted runtime value is silently normalized or persisted outside the claimed header domain. The source predicate owns the class; the vector proves the current store ingresses and representative shapes. |
 | Opaque-value preservation regression | 2 | A new checkpoint path can call `serializeTaskHeaders('task headers', state)` while the current result and event payload preservation assertions remain green. The test protects the audited opaque paths, not a type-level distinction between inspectable objects and opaque JSON. |
 | `jsonbInputValid` shared fragment plus exact mutation | 1 for current callers, rung 3 for semantics | Add a future `t.params::jsonb` projection outside `durableTaskRetryAdmissible`, `durableTaskHeadersAdmissible`, and cancellation admission. Replacing the current helper with `TRUE` is still caught, but the new unregistered cast is outside that mutation and the current overflow cases pass. |
 | Factor `CASE` plus `postgres-retry-factor-type-guard` | 1 for the current factor expression, 2 for the exact construction owner | Add a future numeric retry field whose guard is `jsonb_typeof(value) = 'number' AND value::numeric > 0`. The factor-specific `CASE` and mutation still pass while the new field again depends on unspecified operand evaluation. |
@@ -226,7 +255,7 @@ new-layer mechanism-travel failure in its simplest form.
 | PostgreSQL version-list and selected-DDL assertions | 2, incomplete proxy | Append `CREATE INDEX drivers_expiry ON drivers (queue, expires_at_ms)` to PostgreSQL v2. The old three schema tests pass, a fresh database receives the index, and an already-v2 database never does. These checks describe parts of today's schema, not historical identity. |
 | Frozen PostgreSQL migration hashes | 2 | Edit a shipped migration and update its expected digest in the same commit. The hash test passes while upgraded databases still skip the edit. The mechanism catches unpaired history rewrites and makes a paired refresh review-visible; it does not make old history unwritable. |
 
-Findings 1-5 and 7 were also executed, not inferred. Removing the
+Findings 1-5, 7, and 9 were also executed, not inferred. Removing the
 same-token prelude produced ten running rows from sixteen concurrent
 `limit: 1` calls. The provisional sentinel representation inserted one new
 key for each fresh token. The first broad serializer repair made the opaque
@@ -240,6 +269,12 @@ because neither interval had a listener.
 Against the unrepaired bootstrap, five independent eight-way cold-start rounds
 each produced one fulfillment and seven SQLSTATE `23505` rejections while
 still leaving the schema at the current version.
+
+Against the unrepaired runtime header boundary, both dialect instances resolved
+the null-root spawn with created task and run identifiers instead of rejecting
+before SQL. The persisted `null` header is outside both dialects' durable
+object-of-strings admission predicate, so the successful spawn created work its
+claim path would refuse.
 
 Finding 6 is deliberately not represented as a reproduced runtime incident.
 On buggy parent `26f7861`, the data-driven candidate, same-token receipt, and
@@ -258,16 +293,21 @@ and widened the public contract beyond the failing boundary. Red commit
 `3953e60f25f106671cb6788228635ac5699728d7` captured the regression before the
 repair was accepted. The replacement was re-reviewed as new code and splits
 `serializeTaskHeaders` from the unchanged opaque serializer; it was not merely
-declared safe because the original header tests turned green. Findings 6-8 did
+declared safe because the original header tests turned green. Findings 6-9 did
 not increase the fix-induced count. The unsafe factor expression predated the
 finding 4 repair, and both the bootstrap asymmetry and missing PostgreSQL
 history freeze existed in the original dialect implementation rather than
-being introduced by an earlier repair in this round.
+being introduced by an earlier repair in this round. Runtime-invalid header
+shapes were also admitted before finding 3 and remained admitted after its
+narrow repair: finding 9 is a failed class closure, not a defect caused by that
+repair.
 
 ## Evidence
 
 - Red commit `df8424bc67989d3270a9cb4b43e4bd39adc1a36e`, run against buggy parent `ab6f67a5a1e391d099a908cc26294a5c2805c141`, adds both the portable-header ingress cases and real same-token concurrency. Before repair, sixteen `limit: 1` calls with token `one-logical-request` left ten running rows instead of one; the invalid-header cases reached SQL instead of failing at ingress.
 - Red commit `3953e60f25f106671cb6788228635ac5699728d7`, run against the first broad serializer repair, proves that opaque NUL and lone-surrogate result/event JSON must remain canonical JSON rather than inherit the header restriction.
+- Red commit `6a01730770d9f8b7805b3fbdf2f16f5ecbe74065`, run against buggy parent `f631ccfeb853b48a59b97f73ae8249b9f8b14492`, adds the shared runtime header-domain case and requires rejection before executor I/O. The confined command `pnpm exec vitest run packages/conformance/test/libsql.test.ts --maxWorkers=1 -t 'rejects runtime header shapes outside an object of strings before persistence'` reported one failed file, 2 failed and 5,148 skipped; both dialect promises resolved with created task and run identifiers instead of rejecting.
+- Green commit `bde74f54fb23e50604dd5247c51615e4d35c0725` gives `serializeTaskHeaders` an exact object-of-portable-strings snapshot while preserving the opaque JSON path. The same confined targeted command reported one passed file, 2 passed and 5,148 skipped. Confined `pnpm verify` then passed 99 files and 5,884 tests; the shared conformance file ran 5,150 tests in 402.4 seconds.
 - Red commit `34956e565a0afcbabfdc69a026ae93099326696d`, run against buggy parent `3953e60f25f106671cb6788228635ac5699728d7`, adds PostgreSQL `jsonb` overflow candidates. The retry probe raised SQLSTATE `22003` and starved the healthy row behind the poison candidate.
 - Red commit `73a88a22b1d0182ac42dfbd2687d1b21ec160c34`, run against buggy parent `34956e565a0afcbabfdc69a026ae93099326696d`, adds two direct EventEmitter probes. Before repair, both the private pool's idle-client emission and the checked-out client's active emission threw synchronously instead of remaining owned; the active case also requires the emitted error to be passed to `release` and its temporary listener removed.
 - Red commit `90e1d13`, run against buggy parent `26f7861`, adds the three shared malformed-factor door cases and the generated-SQL construction assertion. The three PostgreSQL 17 runtime cases were green; the construction assertion was observed red because the numeric cast was not inside a typed `CASE` arm.
@@ -286,6 +326,7 @@ being introduced by an earlier repair in this round.
 - Finder, final conversion review, quoted verdict: "one PostgreSQL JSON conversion guard remains raising instead of inert."
 - Finder, CodeRabbit PostgreSQL admin review, quoted verdict: "`migrate()` then throws on a cold start even though the database reached the correct state. Callers must retry."
 - Finder, final `/pr-gate` migration-history audit, quoted rule: "Migrations are APPEND-ONLY, machine-enforced: schema.test.ts freezes every migration's content hash."
+- Finder, exact-head adversarial Codex header review, quoted verdict: "spawn can persist headers that PostgreSQL later refuses to claim." Release triage accepted it as finding 9 because a successful spawn followed by an admission-inert task violates the PostgreSQL outcome regardless of when the gap originated.
 - The sixth finding did not reproduce as a PostgreSQL 17 runtime failure: candidate, same-token receipt, and activation all refused the corrupt value without changing durable state, and the broader malformed-factor probes listed above were also green. This disconfirmation is why the red and mutation owners are construction-level rather than a claimed runtime counterexample.
 - No deployed fresh/upgraded divergence was reproduced for finding 8 because PostgreSQL is being enrolled before its first release. The controlled v2 historical edit demonstrates the release-gate false negative rather than claiming a production incident.
 - Event loss did not reproduce in the repaired implementation: the native await/emit race lost 0 of 24 wakeups, while the deliberately stripped control lost 47 of 48. This establishes the harness's sensitivity but is not counted as an additional product finding.
@@ -298,9 +339,10 @@ The common machinery failure was treating dialect-neutral logical outcomes as
 proof of dialect-native boundary behavior. The original suite was strong at
 fenced state transitions once one batch executed, but it did not own what
 happened before the batch on two real clients, how a lock primitive's state
-aged after commit, which JSON strings a second backend could represent, or
-whether a preliminary PostgreSQL predicate and each nested scalar-type check
-structurally owned the later cast that could raise. It also modeled driver
+aged after commit, which runtime values satisfied the complete header wire
+domain, which JSON strings a second backend could represent, or whether a
+preliminary PostgreSQL predicate and each nested scalar-type check structurally
+owned the later cast that could raise. It also modeled driver
 failures only as Promise rejections, not as `error` events whose ownership
 changes when a client moves between idle and checked-out states. SimWorld made
 batch scheduling deterministic by treating the batch as one suspension point;
@@ -315,16 +357,17 @@ birth or structural enrollment in an existing release-safety mechanism.
 
 The deeper recurrence is scope by implementation artifact instead of property.
 The SQL contained a token guard, the lock used a row, the value was valid JSON,
-serialization was centralized, the factor had a type predicate, Promise
-failures were caught, bootstrap said `IF NOT EXISTS`, and the migration list
-was `[1, 2, 3, 4, 5]`; each statement was true while the required property was
-false. The version list and sampled DDL properties said nothing about complete
-historical identity. In the factor case, even the observed runtime result was
-correct while the construction depended on unspecified evaluation order. The
-repairs move current paths toward the properties and add real-backend
-counterexamples or an exact construction owner where the current backend plan
-masks the hazard, but the mechanism audit records where those guarantees still
-end.
+header serialization was centralized and statically typed, the factor had a
+type predicate, Promise failures were caught, bootstrap said `IF NOT EXISTS`,
+and the migration list was `[1, 2, 3, 4, 5]`; each statement was true while the
+required property was false. The header type was compile-time only and the
+serializer checked characters rather than the complete runtime shape. The
+version list and sampled DDL properties said nothing about complete historical
+identity. In the factor case, even the observed runtime result was correct
+while the construction depended on unspecified evaluation order. The repairs
+move current paths toward the properties and add real-backend counterexamples
+or an exact construction owner where the current backend plan masks the hazard,
+but the mechanism audit records where those guarantees still end.
 
 ## Mechanisms
 
@@ -341,8 +384,13 @@ Built in this PR:
   representation, while the executor contains no durable claim-lock write
   (rung 2 supporting a rung 1 current implementation).
 - `serializeTaskHeaders` is the single narrow source boundary for headers in
-  both stores; `serializeTaskValue` continues to preserve opaque JSON strings
-  (rung 1 for current ingresses, with shared conformance at rung 3).
+  both stores. It snapshots the raw runtime value once and accepts only a plain
+  or null-prototype object whose keys and own enumerable string-keyed values
+  are portable strings, before JSON omission can normalize an invalid field.
+  `serializeTaskValue` continues to preserve opaque JSON strings. Shared
+  conformance proves representative invalid roots and values make no executor
+  call and leave no row (rung 1 for current ingresses, with shared conformance
+  at rung 3).
 - `jsonbInputValid` is the single outer TEXT-to-`jsonb` conversion predicate
   used before current retry, header, and cancellation `jsonb` operations.
   Corrupt-storage cases cover candidate and same-token receipt paths, and the
@@ -384,10 +432,10 @@ Deferred (recorded in BUILD.md):
   guards, exact native and construction regressions, and two live conversion
   mutations; a new SQL framework would delay the PostgreSQL outcome.
 - PR3.10's per-condition mutation expansion remains deferred. This PR adds the
-  two mutations at the changed outer and nested JSON conversion authorities
-  and therefore requires the full audit recorded in the PR gate evidence
-  because the shared conformance registry changed; broader attribution
-  machinery is not needed to close these eight findings.
+  two mutations at the changed outer and nested JSON conversion authorities.
+  This PR records the exact affected closure; the unfiltered audit is deferred
+  under the explicit PR-body gate change to its scheduled/pre-release owner.
+  Broader attribution machinery is not needed to close these nine findings.
 - No finding-specific product correction is deferred. MySQL conformance and
   PostgreSQL oracle parity remain milestone non-goals rather than evidence for
   the PostgreSQL 17 exit test.
