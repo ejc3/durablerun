@@ -51,7 +51,7 @@ describe('PostgresStoreAdmin', () => {
     await admin.migrate()
     expect(await admin.schemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
 
-    const migrationCalls = db.calls.filter(({ label }) => label.startsWith('migrate:v'))
+    const migrationCalls = db.calls.filter(({ label }) => /^migrate:v[0-9]+$/.test(label))
     expect(migrationCalls.map(({ label }) => label)).toEqual(
       MIGRATIONS.map(({ version }) => `migrate:v${version}`),
     )
