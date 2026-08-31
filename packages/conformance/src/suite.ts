@@ -107,7 +107,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         for (const { id, headers } of invalidHeaders) {
           await expect(
             observed.spawn(Q, `invalid-headers-${id}`, '{}', { headers }),
-            id,
           ).rejects.toThrow(/task headers is not a JSON value/)
         }
         expect(executorCalls).toBe(0)
@@ -237,6 +236,27 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      it('skips a jsonb-overflowing retry before the bounded claim limit', async () => {
+        const poison = await f.store.spawn(Q, 'overflowing-retry', '{}')
+        const healthy = await f.store.spawn(Q, 'healthy-after-overflowing-retry', '{}')
+        await f.raw.batch('overflowing-retry-strategy', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: ['{"kind":"fixed","baseSeconds":1e1000000}', poison.taskId],
+          },
+        ])
+
+        const claimed = await f.store.claim(Q, 'overflowing-retry-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        expect(claimed.map((run) => run.taskId)).toEqual([healthy.taskId])
+        const [poisonRun] = await f.raw.batch('overflowing-retry:probe', [
+          { sql: `SELECT state FROM runs WHERE task_id = ?`, args: [poison.taskId] },
+        ])
+        expect(poisonRun?.rows[0]?.state).toBe('pending')
+      })
+
       it('leaves a candidate with corrupt persisted headers unclaimed', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-candidate-headers', '{}', {
           headers: { trace: 'valid' },
@@ -244,7 +264,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('corrupt-candidate-headers', [
           {
             sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
-            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+            args: ['{"trace":1e1000000}', spawned.taskId],
           },
         ])
         const before = await snapshot(f, spawned.taskId)
@@ -2743,6 +2763,88 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             expect(inline, `seed ${seed}`).toBe('{"r":1}')
           }
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          await fx.close()
+        }
+      })
+
+      it('serializes real concurrent await and emit batches without losing a wakeup', async () => {
+        const fx = await makeFixture('native-event-race')
+        try {
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          const races = []
+          for (let index = 0; index < 12; index++) {
+            const queue = `native-event-${index}`
+            const spawned = await fx.store.spawn(queue, 'racer', '{}')
+            const [run] = await fx.store.claim(queue, `native-event-claim-${index}`, {
+              leaseSeconds: 60,
+              limit: 1,
+            })
+            if (!run || run.taskId !== spawned.taskId) throw new Error('expected native race claim')
+            await fx.store.activate(queue, run.runId, run.claimToken, run.claimGen)
+            races.push({ queue, run })
+          }
+
+          // Establish concurrent backend connections before the measured
+          // requests. SimWorld schedules whole batches, so it cannot prove the
+          // transaction prelude that serializes two real PostgreSQL clients.
+          await Promise.all(
+            Array.from({ length: 12 }, (_, index) =>
+              fx.raw.batch(
+                `native-event:warm-${index}`,
+                [{ sql: 'SELECT 1 AS ready', args: [] }],
+                'read',
+              ),
+            ),
+          )
+
+          const observations = await Promise.all(
+            races.map(async ({ queue, run }) => {
+              const [awaited] = await Promise.all([
+                fx.store.awaitEvent(
+                  queue,
+                  run.taskId,
+                  run.runId,
+                  run.claimToken,
+                  'step',
+                  'event',
+                  null,
+                ),
+                fx.store.emitEvent(queue, 'event', '{"race":true}'),
+              ])
+              const [stored] = await fx.raw.batch(
+                'native-event:stored',
+                [
+                  {
+                    sql: `SELECT state, event_payload
+                          FROM runs WHERE run_id = ?`,
+                    args: [run.runId],
+                  },
+                ],
+                'read',
+              )
+              return { awaited, stored: stored?.rows[0] }
+            }),
+          )
+
+          for (const { awaited, stored } of observations) {
+            expect(
+              awaited.emitted
+                ? { outcome: 'inline', state: stored?.state, payload: stored?.event_payload }
+                : { outcome: 'woken', state: stored?.state, payload: stored?.event_payload },
+            ).toEqual(
+              awaited.emitted
+                ? { outcome: 'inline', state: 'running', payload: null }
+                : { outcome: 'woken', state: 'pending', payload: '{"race":true}' },
+            )
+          }
+          const [waits] = await fx.raw.batch(
+            'native-event:waits',
+            [{ sql: `SELECT COUNT(*) AS count FROM waits`, args: [] }],
+            'read',
+          )
+          expect(Number(waits?.rows[0]?.count), 'no registration is stranded').toBe(0)
+          expect(await engineInvariantViolations(fx.raw)).toEqual([])
+        } finally {
           await fx.close()
         }
       })

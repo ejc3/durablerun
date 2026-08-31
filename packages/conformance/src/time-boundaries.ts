@@ -1785,6 +1785,36 @@ export function timestampBoundaryConformance(
       }
     })
 
+    it('activation refuses a jsonb-overflowing stored max-duration atomically', async () => {
+      const fixture = await fixtureAt(makeFixture, 'consumer:activation-duration-jsonb-overflow')
+      try {
+        await spawned(fixture, 'activation-jsonb-overflow-duration', {
+          cancellation: { maxDurationSeconds: 60 },
+        })
+        const run = await claimOne(fixture, 'activation-jsonb-overflow-duration-token')
+        const supported = await tryInjectCorruption(
+          fixture,
+          'time-boundary:activation-jsonb-overflow-duration',
+          [
+            {
+              sql: `UPDATE tasks SET cancellation = ? WHERE task_id = ?`,
+              args: ['{"maxDurationSeconds":1e1000000}', run.taskId],
+            },
+          ],
+        )
+        if (!supported) return
+        const before = await durableSnapshot(fixture)
+
+        const activation = await fixture.store
+          .activate(Q, run.runId, run.claimToken, run.claimGen)
+          .catch((error: unknown) => error)
+        expect(await durableSnapshot(fixture)).toEqual(before)
+        expect(activation).toBeNull()
+      } finally {
+        await fixture.close()
+      }
+    })
+
     it('activation refuses a coercible string max-duration atomically', async () => {
       const fixture = await fixtureAt(makeFixture, 'consumer:activation-duration-storage')
       try {
