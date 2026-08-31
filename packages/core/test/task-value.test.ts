@@ -55,6 +55,13 @@ describe('serializeTaskValue', () => {
     expect(serializeTaskValue('headers', { '📦': 'välue' })).toBe('{"📦":"välue"}')
   })
 
+  it('preserves escaped NUL and lone surrogates in opaque JSON values', () => {
+    expect(serializeTaskValue('result', '\u0000')).toBe('"\\u0000"')
+    expect(serializeTaskValue('result', '\uD800')).toBe('"\\ud800"')
+    expect(serializeTaskValue('result', '\uDC00')).toBe('"\\udc00"')
+    expect(userJsonValue('event payload', '"\\u0000"')).toBe('"\\u0000"')
+  })
+
   it('classifies a serialization hook whose thrown value cannot be coerced', () => {
     const hostile = {
       [Symbol.toPrimitive](): never {
