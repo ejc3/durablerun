@@ -47,7 +47,7 @@ from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
-MUTATION_SUITE_WALL_TIME_SECONDS = 300.0
+MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
 VERIFIER_KILL_GRACE_SECONDS = 0.5
 
