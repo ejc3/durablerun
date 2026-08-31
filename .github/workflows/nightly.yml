@@ -12,6 +12,22 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: durablerun
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d durablerun"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v4
         with:

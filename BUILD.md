@@ -6,7 +6,7 @@ This top-of-file block is the sole normative suite transport contract:
 structurally valid `SuiteResult` reaches verdict classification.
 <!-- mutation-suite-transport-contract:end -->
 
-## Current milestone — useful Turso dogfood
+## Current milestone — dogfood evidence plus PostgreSQL portability
 
 The default product thesis is a Turso-first TypeScript durable-workflow engine.
 The historical phase inventory below is an options map, not permission to run
@@ -17,7 +17,11 @@ useful workflow in under 30 minutes; the same workload runs against remote
 Turso for seven consecutive days, survives deliberate driver and worker
 deaths, and shows no lost work or duplicated checkpointed effects. Quiescent
 work produces no idle worker compute, and terminal failures have an inspectable
-reason.
+reason. While that elapsed evidence accrues, PostgreSQL becomes the second real
+dialect: its fixture passes the identical six-surface conformance door against
+PostgreSQL 17, including native concurrent claims with disjoint receipts and
+the emit/await event-lock race. `pnpm verify` runs that matrix against a local
+or CI PostgreSQL service.
 
 **Critical path:**
 
@@ -30,6 +34,11 @@ reason.
    task failures.
 3. Run the useful workload locally, then as the thin remote-Turso vertical
    slice; retain kill/recovery and idle evidence.
+4. Use the external seven-day wait rather than implementation time: land one
+   PostgreSQL outcome PR that supplies the native executor, schema/admin
+   fixture, `SKIP LOCKED` claim, event-lock transaction prelude, and complete
+   shared-conformance enrollment. MySQL and oracle/gold-plating work remain
+   deferred.
 
 **Implementation checkpoint (PR #14, 2026-08-29):** the clean-checkout
 commands, ref-journal workload, local/file replay, status receipt, bounded
@@ -66,16 +75,27 @@ the four incompatible clauses from the exact emitted claim inventory. Green
 singleton aggregate. On that head, the normal hosted tick retained checkpoint
 one, and both driver-before-activation and worker-after-checkpoint probes
 completed with their exact relaunch/infrastructure-retry receipts. Once PR #15
-merges, enable the hourly schedule. The only remaining exit evidence is then
-elapsed: retain verified receipts for seven consecutive days. No additional
-engine or resident-transport work is authorized by that wait.
+merged as `79a6d53`, the `43 * * * *` schedule was enabled. Its first
+scheduled run completed green on merged `main` with one sleeping task, one
+retained checkpoint, and zero attempts, retries, or relaunches. The hourly
+watcher owns the remaining seven-day elapsed evidence; it is not an
+implementation work queue.
+
+**PostgreSQL checkpoint (2026-08-31):** explicit owner direction activated the
+second-dialect promise while the dogfood clock runs. Red enrollment requires
+`postgres` in the central fixture registry. Shared async teardown and the
+sixth schema/admin surface are integrated; the implementation is split into
+executor, schema/fixture, closed event- and same-token-claim lock preludes, and
+scheduler SQL lanes.
+The first green target is affected PostgreSQL schema/admin, spawn/claim, native
+concurrency, and event-race conformance before the complete surface sweep.
 
 **Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
 recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-
 attribution expansion, child workflows, sagas, MySQL, sharding, dedicated
-placement, EndingFeed, and the WDK wrapper. PostgreSQL follows this milestone
-if pluggable SQL remains a product promise; otherwise that promise is removed
-from the v0 scope.
+placement, EndingFeed, the WDK wrapper, and PostgreSQL oracle parity
+against the upstream Absurd implementation. Those do not block the real
+PostgreSQL conformance outcome.
 
 Companion to DESIGN.md (the spec). Rules for every PR: lands green (lint,
 format, unit + conformance) before the next branches off it; adds the
@@ -758,7 +778,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - **Closed lock preludes**: `FencedBatch.lockEvent` and `lockClaim` pass only
     their typed coordinates to the executor before the fenced SQL. They do not
     accept SQL or contribute a result slot, so the new dialect can acquire its
-    sentinel/row locks without opening an unfenced-write escape.
+    transaction lock without opening an unfenced-write escape.
   - **MySQL cannot derive the winner from row counts alone** — no targeted
     `ON CONFLICT`; the `SqlResult` normalization contract must state
     matched-not-changed semantics.
@@ -777,9 +797,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     catalog projection (`PRAGMA table_info` for libSQL). No dialect may declare
     itself conformant without exact 64-bit numeric encoding and nullability.
 
-- **PR4.2 store-postgres**: transliterate absurd.sql (SKIP LOCKED CTE, row-lock
-  awaitEvent); **oracle tests**: same scenario on real Absurd (docker) vs our
-  engine, diff outcomes.
+- **PR4.2 store-postgres**: native executor/schema, `SKIP LOCKED` claim, closed
+  event and same-token claim lock preludes, and the identical six-surface
+  conformance suite against PostgreSQL 17. Upstream Absurd oracle parity
+  remains deferred by the current milestone.
 - **PR4.3 store-mysql**: token claim, READ COMMITTED, BIGINT epoch-ms, tx-per-
   transition; MySQL 8 container in CI; optional PlanetScale smoke job.
 

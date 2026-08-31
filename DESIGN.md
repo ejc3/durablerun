@@ -448,7 +448,11 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. Scheduler payloads obey the same source rule: spawn routes
+  `FatalTaskError`s. Scheduler headers, which dialect SQL later parses as an
+  object before issuing worker authority, have a narrower portable string
+  domain: actual NUL and lone UTF-16 surrogates in their keys or values are
+  rejected before SQL. Opaque result, checkpoint, parameter, and event JSON
+  retains ordinary JSON string semantics. Scheduler payloads obey the same source rule: spawn routes
   normalized retry, an own-data-property cancellation snapshot, and headers
   through the module-captured `serializeTaskValue`; claim decodes admitted retry
   and headers through the matching captured parser. The canonical wire value,
@@ -739,7 +743,14 @@ are load-bearing):
    candidate rows are not that serialization: simultaneous retries can lock
    disjoint candidates before either token becomes visible, multiplying one
    logical receipt. The closed claim coordinate is acquired before the claim
-   CAS and held through its receipt read.
+   CAS and held through its receipt read. PostgreSQL realizes that lock as the
+   transaction-scoped expression
+   `pg_advisory_xact_lock(hashtextextended(jsonb_build_array(current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text)::text, 0))`:
+   the database, schema, fixed domain tag, queue, and token determine one
+   server-computed key; collisions only over-serialize. The executor binds the
+   coordinates, discards the prelude's void result, and runs the claim SQL on
+   that same client and transaction, so commit, rollback, or disconnect
+   releases the lock without durable sentinel garbage.
    The candidate set also excludes tasks whose cancellation deadline is
    already due — a sweep budget too small to cancel everything this pass must
    not leak due-to-cancel tasks into launches. All claim eligibility—live task,
@@ -814,10 +825,14 @@ are load-bearing):
    `MAX_DURATION_MS`, while a value whose rounded result exceeds the ceiling is
    refused. The administrative `fake_now` seam is a port too:
    `setFakeNowEpochMs` crosses `requireEpochMs` before any metadata write.
-   Values coming back from a dialect cross
-   one dialect-neutral `decodeBoundedInteger` boundary before becoming
-   JavaScript numbers; it accepts only exact native number/bigint integers and
-   enforces the same semantic bounds the invariant evaluator uses. Run
+   Integer values are canonicalized at the dialect boundary before shared
+   decoding. PostgreSQL `int8` values inside JavaScript's safe-integer range
+   become numbers, preserving the ordinary protocol representation shared
+   with libSQL; exact values outside that range remain bigint so corruption
+   and bound checks retain full evidence. A decimal string or lossy Number
+   conversion never crosses the integer port. The dialect-neutral
+   `decodeBoundedInteger` boundary then enforces each field's semantic bounds
+   before the value becomes engine state. Run
    ordinals have the distinct exact ceiling
    `MAX_RUN_ORDINAL = MAX_COUNT + INFRA_RETRY_CAP`, because they count both
    user attempts and infrastructure successors; all other durable counts use

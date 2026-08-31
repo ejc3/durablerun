@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "@durablerun/store-libsql": "workspace:*",
+    "@durablerun/store-postgres": "workspace:*",
     "vitest": "^3.2.4"
   }
 }

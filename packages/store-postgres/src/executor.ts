@@ -1,12 +1,16 @@
 import {
   SchemaMismatchError,
   SchemaNotInitializedError,
+  type SqlBatchControl,
   type SqlBatchMode,
   type SqlExecutor,
   type SqlResult,
   type SqlRow,
   type SqlStatement,
+  type SqlTransactionLock,
   StoreUnavailableError,
+  sqlBatchMode,
+  sqlTransactionLock,
 } from '@durablerun/core'
 import {
   DatabaseError,
@@ -43,6 +47,19 @@ interface PreparedStatement {
 
 class PostgresResultContractError extends TypeError {}
 
+/**
+ * Construct a pool whose idle-client failures have an EventEmitter owner.
+ * pg-pool removes the failed idle client before emitting; the listener keeps
+ * that recoverable pool maintenance event from terminating the Node process.
+ */
+export function createOwnedPostgresPool(config: string | PoolConfig = {}): Pool {
+  const pool = new Pool(typeof config === 'string' ? { connectionString: config } : config)
+  pool.on('error', (error) => {
+    void error
+  })
+  return pool
+}
+
 function prepareStatements(
   label: string,
   statements: readonly SqlStatement[],
@@ -66,11 +83,19 @@ function prepareStatements(
   })
 }
 
-function normalizeInt8(value: unknown, column: string): bigint | null {
+function canonicalInt8(value: bigint): number | bigint {
+  return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(value)
+    : value
+}
+
+function normalizeInt8(value: unknown, column: string): number | bigint | null {
   if (value === null || value === undefined) return null
-  if (typeof value === 'bigint') return value
-  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value)
-  if (typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value)) return BigInt(value)
+  if (typeof value === 'bigint') return canonicalInt8(value)
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return value
+  if (typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value)) {
+    return canonicalInt8(BigInt(value))
+  }
   throw new PostgresResultContractError(
     `PostgreSQL int8 column ${column} returned a non-integral value`,
   )
@@ -113,6 +138,40 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
     rows,
     rowsAffected: result.fields.length > 0 ? rows.length : (result.rowCount ?? 0),
   }
+}
+
+async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
+  if (lock.kind === 'event') {
+    const args = [lock.queue, lock.eventName]
+    await client.query(
+      `INSERT INTO event_locks (queue, event_name)
+       VALUES ($1, $2)
+       ON CONFLICT (queue, event_name) DO NOTHING`,
+      args,
+    )
+    await client.query(
+      `SELECT 1 FROM event_locks
+       WHERE queue = $1 AND event_name = $2
+       FOR UPDATE`,
+      args,
+    )
+    return
+  }
+
+  // Claim tokens are fresh per tick, so a durable row sentinel would grow
+  // without bound. A transaction-scoped advisory lock has exactly the needed
+  // lifetime. PostgreSQL computes the key from bound coordinates plus the
+  // database/schema and a fixed domain tag; a hash collision can only
+  // over-serialize unrelated claims, never let equal coordinates overlap.
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtextextended(
+       jsonb_build_array(
+         current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text
+       )::text,
+       0
+     ))`,
+    [lock.queue, lock.claimToken],
+  )
 }
 
 function isSchemaVersionRead(
@@ -180,8 +239,7 @@ export class PgExecutor implements SqlExecutor {
   ) {}
 
   static open(config: string | PoolConfig = {}): PgExecutor {
-    const pool = new Pool(typeof config === 'string' ? { connectionString: config } : config)
-    return new PgExecutor(pool, true)
+    return new PgExecutor(createOwnedPostgresPool(config), true)
   }
 
   static fromPool(pool: Pool): PgExecutor {
@@ -191,10 +249,12 @@ export class PgExecutor implements SqlExecutor {
   async batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode: SqlBatchMode = 'write',
+    control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
     const prepared = prepareStatements(label, statements)
     if (prepared.length === 0) return []
+    const mode = sqlBatchMode(control)
+    const transactionLock = sqlTransactionLock(control)
     const schemaVersionRead = isSchemaVersionRead(label, statements, mode)
 
     let client: PoolClient
@@ -204,6 +264,16 @@ export class PgExecutor implements SqlExecutor {
       throw classifyError(error, label, false)
     }
 
+    // pg-pool removes its idle listener while a client is checked out. Own
+    // errors for exactly that interval so a backend/socket loss rejects the
+    // active query instead of also becoming an unhandled process-fatal event.
+    // The recorded error discards the client even if rollback happens to work.
+    let clientError: Error | undefined
+    const onClientError = (error: Error): void => {
+      clientError ??= error
+    }
+    client.on('error', onClientError)
+
     let transactionStarted = false
     let releaseError: Error | undefined
     let activeStatementIndex: number | null = null
@@ -212,6 +282,10 @@ export class PgExecutor implements SqlExecutor {
         mode === 'read' ? 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN',
       )
       transactionStarted = true
+
+      if (transactionLock !== undefined) {
+        await acquireTransactionLock(client, transactionLock)
+      }
 
       const results: SqlResult[] = []
       for (const [statementIndex, statement] of prepared.entries()) {
@@ -238,7 +312,12 @@ export class PgExecutor implements SqlExecutor {
       }
       throw classifyError(error, label, failedSchemaVersionRead)
     } finally {
-      client.release(releaseError)
+      try {
+        client.release(releaseError ?? clientError)
+      } finally {
+        // release() synchronously restores pg-pool's idle listener first.
+        client.removeListener('error', onClientError)
+      }
     }
   }
 

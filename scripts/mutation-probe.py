@@ -1967,8 +1967,8 @@ MUTATION_SPECS = [
     (
         "spawn-headers-captured-serializer",
         "packages/store-libsql/src/store.ts",
-        "      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)",
-        "      headersInput === undefined ? null : JSON.stringify(headersInput)",
+        "    const headersJson = headersInput === undefined ? null : serializeTaskHeaders(headersInput)",
+        "    const headersJson = headersInput === undefined ? null : JSON.stringify(headersInput) // MUTATION",
         "spawn serializes headers through an ambient JSON hook",
     ),
     (
@@ -2010,6 +2010,13 @@ MUTATION_SPECS = [
         "               AND 1 = 1\n"
         "               AND ${soleLiveRun(run)}\n",
         "claim changes candidate state before discovering undecodable headers",
+    ),
+    (
+        "postgres-jsonb-input-validity",
+        "packages/store-postgres/src/fragments.ts",
+        "export const jsonbInputValid = (value: string): string => `pg_input_is_valid(${value}, 'jsonb')`",
+        "export const jsonbInputValid = (_value: string): string => `TRUE` // MUTATION",
+        "PostgreSQL casts syntactically valid but jsonb-inadmissible durable JSON and aborts a bounded claim",
     ),
     (
         "claim-receipt-retry-admissible",
@@ -4059,8 +4066,12 @@ MUTATION_SPECS.extend(
         (
             "task-value-captured-stringify",
             "packages/core/src/validate.ts",
-            "    const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))",
-            "    const serialized = JSON.stringify(snapshotTaskValue(root, new TrustedWeakSet())) // MUTATION",
+            "    const serialized = stringifyJson(\n"
+            "      snapshotTaskValue(root, new TrustedWeakSet(), requirePortableStrings),\n"
+            "    )",
+            "    const serialized = JSON.stringify(\n"
+            "      snapshotTaskValue(root, new TrustedWeakSet(), requirePortableStrings),\n"
+            "    ) // MUTATION",
             "task-value serialization resolves mutable ambient JSON.stringify after task initialization",
         ),
         (
@@ -4185,19 +4196,19 @@ MUTATION_SPECS.extend(
         (
             "user-name-captured-regexp-exec",
             "packages/core/src/validate.ts",
-            "    if (stringIncludes(raw, '\\u0000') || regexpExec(/\\p{Surrogate}/u, raw) !== null) {",
-            "    if (stringIncludes(raw, '\\u0000') || /\\p{Surrogate}/u.exec(raw) !== null) { // MUTATION",
+            "  return !stringIncludes(value, '\\u0000') && regexpExec(/\\p{Surrogate}/u, value) === null",
+            "  return !stringIncludes(value, '\\u0000') && /\\p{Surrogate}/u.exec(value) === null // MUTATION",
             "user-name validation resolves mutable RegExp.prototype.exec after task initialization",
         ),
         (
             "user-name-captured-regexp-test",
             "packages/core/src/validate.ts",
-            "    if (stringIncludes(raw, '\\u0000') || regexpExec(/\\p{Surrogate}/u, raw) !== null) {",
-            "    if (\n"
-            "      stringIncludes(raw, '\\u0000') ||\n"
-            "      (regexpExec(/\\p{Surrogate}/u, raw) !== null &&\n"
-            "        (raw.length === 1 || /\\p{Surrogate}/u.test(raw)))\n"
-            "    ) { // MUTATION",
+            "  return !stringIncludes(value, '\\u0000') && regexpExec(/\\p{Surrogate}/u, value) === null",
+            "  return (\n"
+            "    !stringIncludes(value, '\\u0000') &&\n"
+            "    (regexpExec(/\\p{Surrogate}/u, value) === null ||\n"
+            "      (value.length !== 1 && !/\\p{Surrogate}/u.test(value)))\n"
+            "  ) // MUTATION",
             "a non-leading lone surrogate is rechecked through mutable RegExp.prototype.test and can be accepted",
         ),
         (
@@ -4540,7 +4551,7 @@ MUTATION_SPECS.extend(
 SHARED_CONFORMANCE_REGISTRY_VERDICT = ExpectedVerdict(
     "construction",
     "packages/conformance/test/enrollment.test.ts",
-    "shared conformance enrollment is one indivisible door owns six surfaces and executable dispatch through one callable registry",
+    "shared conformance enrollment is one indivisible door enrolls every promised dialect through the complete callable conformance door",
     "mutation-verdict:construction:shared-conformance-runner-registry",
 )
 
@@ -5567,6 +5578,13 @@ VERDICTS = {
         "behavior",
         "packages/conformance/test/libsql.test.ts",
         "scheduler conformance [libsql] claim leaves a candidate with corrupt persisted headers unclaimed",
+        "mutation-verdict:behavior:claim-candidate-headers-admissible",
+        "packages/conformance/src/suite.ts",
+    ),
+    "postgres-jsonb-input-validity": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [postgres] claim leaves a candidate with corrupt persisted headers unclaimed",
         "mutation-verdict:behavior:claim-candidate-headers-admissible",
         "packages/conformance/src/suite.ts",
     ),
@@ -9279,7 +9297,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 421:
+        if len(MUTATIONS) != 422:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

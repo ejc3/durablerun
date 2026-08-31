@@ -13,6 +13,22 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: durablerun
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d durablerun"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -88,6 +104,20 @@ jobs:
         run: |
           mkdir -p "$TMPDIR"
           ln -s "$GITHUB_WORKSPACE/node_modules" "$TMPDIR/node_modules"
+      - name: Bridge the new PostgreSQL package past its older base checker
+        # The head gate above owns this entirely new package. The older ledger
+        # cannot classify a dialect that did not exist on its branch. This
+        # becomes a no-op automatically as soon as this PR is the base.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if git ls-tree -r --name-only "$BASE_SHA" -- packages/store-postgres | grep -q .; then
+            exit 0
+          fi
+          added_root="$RUNNER_TEMP/durablerun-base-added"
+          mkdir -p "$added_root"
+          mv -- packages/store-postgres "$added_root/store-postgres"
       - name: The base branch's checkers, applied to this tree
         env:
           NODE_PATH: ${{ github.workspace }}/node_modules

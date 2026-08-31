@@ -68,7 +68,7 @@ describe('PostgreSQL schema', () => {
     expect(observed).toHaveLength(31)
   })
 
-  it('keeps wire JSON and ids as TEXT and provides a lockable absent-event sentinel', () => {
+  it('keeps wire JSON and ids as TEXT and provides the event lock sentinel', () => {
     const ddl = MIGRATIONS.flatMap(({ statements }) => statements).join('\n')
 
     for (const field of [
@@ -93,5 +93,6 @@ describe('PostgreSQL schema', () => {
         event_name TEXT NOT NULL,
         PRIMARY KEY (queue, event_name)
       )`)
+    expect(ddl).not.toContain('claim_locks')
   })
 })

@@ -34,6 +34,22 @@ DURABLERUN_DOGFOOD_CYCLES=2 DURABLERUN_DOGFOOD_INTERVAL_SECONDS=0 pnpm dogfood:t
 DURABLERUN_DOGFOOD_CYCLES=2 DURABLERUN_DOGFOOD_INTERVAL_SECONDS=0 pnpm dogfood:status
 ```
 
+## Run PostgreSQL conformance
+
+The shared conformance matrix requires PostgreSQL 17 through
+`DURABLERUN_POSTGRES_URL`. For a disposable local service:
+
+```sh
+podman run --rm --name durablerun-postgres-17 \
+  -e POSTGRES_DB=durablerun -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:5432:5432 -d postgres:17-alpine
+DURABLERUN_POSTGRES_URL=postgresql://postgres:postgres@127.0.0.1:5432/durablerun \
+  bash scripts/confine.sh pnpm verify
+```
+
+CI and nightly jobs provide the same PostgreSQL service; no repository secret
+is required.
+
 ## Run against remote Turso
 
 Copy `.env.example` to `.env` and set `TURSO_DATABASE_URL` and

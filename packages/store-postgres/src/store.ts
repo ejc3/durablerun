@@ -48,6 +48,7 @@ import {
 } from '@durablerun/core'
 import {
   LIVE,
+  QUEUED,
   cancelDue,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
@@ -56,6 +57,7 @@ import {
   fenceFrom,
   fenced,
   fencedAt,
+  jsonbInputValid,
   registeredWait,
   runAvailableDue,
   runClaimExpired,
@@ -73,7 +75,6 @@ import {
   successorOwned,
   taskOwnsEveryRun,
 } from './fragments.js'
-import { DRIVER_HEARTBEAT_INGRESS } from './schema.js'
 import { NOW_MS } from './time.js'
 
 const DEFAULT_RETRY = normalizeRetryStrategy({
@@ -127,7 +128,7 @@ function prepareWake(
     // stored verbatim after requireEpochMs validates them above.
     expression: `(CASE WHEN ? = 1 THEN ${NOW_MS} + ? ELSE ? END)`,
     expressionArgs: [mode, relativeMs, absoluteMs],
-    fits: `AND (CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE 1 END)`,
+    fits: `AND (CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE TRUE END)`,
     fitArgs: [mode, relativeMs],
   }
 }
@@ -143,16 +144,17 @@ function prepareWake(
  */
 function activationDurationAdmissible(task: string, at: string): string {
   const cancellation = `${task}.cancellation`
-  const path = `'$.maxDurationSeconds'`
-  const seconds = `json_extract(${cancellation}, ${path})`
+  const seconds = `((${cancellation}::jsonb ->> 'maxDurationSeconds')::numeric)`
   const durationMs = taskMaxDurationMs(task)
   const firstStarted = `${task}.first_started_at_ms`
   return `(CASE
     WHEN ${cancellation} IS NULL THEN 1
-    WHEN NOT json_valid(${cancellation}) THEN 0
-    WHEN json_type(${cancellation}, ${path}) IS NULL THEN 1
-    WHEN json_type(${cancellation}, ${path}) NOT IN ('integer','real') THEN 0
-    WHEN (${seconds}) < 0 OR (${durationMs}) > ${MAX_DURATION_MS} THEN 0
+    WHEN NOT ${jsonbInputValid(cancellation)} THEN 0
+    WHEN NOT (${cancellation} IS JSON OBJECT WITH UNIQUE KEYS) THEN 0
+    WHEN (${cancellation}::jsonb -> 'maxDurationSeconds') IS NULL THEN 1
+    WHEN jsonb_typeof(${cancellation}::jsonb -> 'maxDurationSeconds') <> 'number' THEN 0
+    WHEN (${seconds}) < 0 OR (${seconds}) > ${MAX_DURATION_MS} THEN 0
+    WHEN (${durationMs}) > ${MAX_DURATION_MS} THEN 0
     WHEN NOT ${epochAdditionFits(`COALESCE(${firstStarted}, ${at})`, durationMs)} THEN 0
     ELSE 1
   END = 1)`
@@ -160,8 +162,8 @@ function activationDurationAdmissible(task: string, at: string): string {
 
 function taskMaxDurationMs(task: string): string {
   return `CAST(ROUND(
-    json_extract(${task}.cancellation, '$.maxDurationSeconds') * 1000
-  ) AS INTEGER)`
+    ((${task}.cancellation::jsonb ->> 'maxDurationSeconds')::numeric) * 1000
+  ) AS BIGINT)`
 }
 
 /**
@@ -385,12 +387,12 @@ async function mapLimit<T, R>(
 }
 
 /**
- * SchedulerStore on SQLite/libsql (DESIGN.md §3.4). Every method is ONE
+ * SchedulerStore on PostgreSQL (DESIGN.md §3.4). Every method is ONE
  * atomic labeled batch; single-item transitions go through FencedBatch so
  * follow-ons structurally key on the batch's own stamp (§3.4 rule 1); all
  * timestamps come from NOW_MS (rule 3).
  */
-export class LibsqlSchedulerStore implements SchedulerStore {
+export class PostgresSchedulerStore implements SchedulerStore {
   constructor(
     private readonly db: SqlExecutor,
     private readonly ids: IdSource,
@@ -456,12 +458,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
          cancel_at_ms, created_at_ms, ${FENCE_COLS})
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,
-         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,
+         CASE WHEN CAST(? AS BIGINT) IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,
          ${NOW}, ${FENCE_VALS}
        WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
          AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)
          AND ${epochAdditionFits(NOW, '?')}
-         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})
+         AND (CAST(? AS BIGINT) IS NULL OR ${epochAdditionFits(NOW, '?', '?')})
        ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
        DO NOTHING`,
       [
@@ -531,7 +533,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          UNION ALL
          SELECT t.task_id, t.queue, 0 AS priority
          FROM tasks t
-         WHERE ? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
+         WHERE CAST(? AS TEXT) IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
            AND t.task_id <> ?
        ) winner
        ORDER BY winner.priority, winner.task_id
@@ -586,14 +588,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     }
     const candidateEligibility = claimEligibility('r', 't')
     const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS })
+    b.lockClaim(queue, claimToken)
     // Due runs of live tasks → running, holding the caller's lease token AND
     // this batch's provenance. The two are now different things, which is the
     // point: the token survives the batch by contract (the worker keeps
     // working), so it cannot tell one delivery of a claim from another. The
-    // candidate subselect remains a bounded per-state UNION: after eligibility
-    // each leg is an ordered index scan of at most K rows rather than a temp
-    // b-tree over the backlog, a shape the query-plan suite pins. The generation
-    // bump is safe here because the CAS's own guard consumes the pre-state.
+    // The materialized candidate CTE takes PostgreSQL row locks before the
+    // update. SKIP LOCKED makes concurrent claimers select disjoint queue
+    // slices instead of re-evaluating and overwriting one another.
     b.casMany(
       'claim',
       'runs',
@@ -608,46 +610,24 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          wake_step = COALESCE(wake_step, ${claimedWait.step}),
          ${FENCE_SET}
        WHERE run_id IN (
-         SELECT c.run_id FROM (
-           SELECT * FROM (
-             SELECT r.run_id, r.available_at_ms FROM runs r
-             JOIN tasks t ON ${runOwnedByTask('r', 't')}
-             WHERE r.queue = ? AND r.state = 'pending'
-               AND ${runAvailableDue('r', NOW)}
-               AND ${candidateEligibility}
-             ORDER BY r.available_at_ms, r.run_id LIMIT ?
-           )
-           UNION ALL
-           SELECT * FROM (
-             SELECT r.run_id, r.available_at_ms FROM runs r
-             JOIN tasks t ON ${runOwnedByTask('r', 't')}
-             WHERE r.queue = ? AND r.state = 'sleeping'
-               AND ${runAvailableDue('r', NOW)}
-               AND ${candidateEligibility}
-             ORDER BY r.available_at_ms, r.run_id LIMIT ?
-           )
-         ) c
-         ORDER BY c.available_at_ms, c.run_id
-         LIMIT ?
+         WITH candidates AS MATERIALIZED (
+           SELECT r.run_id
+           FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
+           WHERE r.queue = ? AND r.state IN ${QUEUED}
+             AND ${runAvailableDue('r', NOW)}
+             AND ${candidateEligibility}
+           ORDER BY r.available_at_ms, r.run_id
+           LIMIT ?
+           FOR UPDATE OF r SKIP LOCKED
+         )
+         SELECT run_id FROM candidates
        )
        AND NOT EXISTS (
          SELECT 1 FROM runs held
          WHERE held.queue = ? AND held.state = 'running' AND held.claimed_by = ?
        )
        AND ${epochAdditionFits(NOW, '?')}`,
-      [
-        claimToken,
-        leaseMs,
-        leaseMs,
-        queue,
-        effectiveLimit,
-        queue,
-        effectiveLimit,
-        effectiveLimit,
-        queue,
-        claimToken,
-        leaseMs,
-      ],
+      [claimToken, leaseMs, leaseMs, queue, effectiveLimit, queue, claimToken, leaseMs],
     )
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
@@ -660,8 +640,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         state: `'running'`,
         // The eligibility guard makes this exactly one. Keep the expression
         // scalar even under a guard regression so every dialect exposes that
-        // regression as the same poisoned-state change instead of SQLite
-        // choosing a row while PostgreSQL/MySQL abort the batch.
+        // regression as the same poisoned-state change instead of relying on
+        // a backend's treatment of a multi-row scalar subquery.
         last_attempt_run: singletonAggregate(
           'f.run_id',
           'runs f',
@@ -790,7 +770,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         // headroom of the addition. Keep conversion in one shared expression
         // so the guard and write cannot disagree below a millisecond.
         cancel_at_ms: `CASE
-          WHEN json_type(cancellation, '$.maxDurationSeconds') IS NOT NULL THEN
+          WHEN (cancellation::jsonb -> 'maxDurationSeconds') IS NOT NULL THEN
             COALESCE(first_started_at_ms, ${activated}) + ${taskMaxDurationMs('tasks')}
           ELSE NULL
         END`,
@@ -949,7 +929,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const b = new FencedBatch('sweep:lost-launch', this.ids.token(), { now: NOW_MS })
     const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
                    AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
-    const relaunchDelayMs = `MIN(
+    const relaunchDelayMs = `LEAST(
       (relaunch_count + 1) * ${RELAUNCH_BACKOFF_BASE_SECONDS},
       ${RELAUNCH_BACKOFF_MAX_SECONDS}
     ) * 1000`
@@ -1186,10 +1166,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const ttlMs = durationToMs('ttlSeconds', ttlSeconds, { positive: true })
     await this.db.batch('driver-heartbeat', [
       {
-        sql: `INSERT INTO ${DRIVER_HEARTBEAT_INGRESS}
-                (queue, driver_id, last_beat_ms, expires_at_ms)
-              SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?
-              WHERE ${epochAdditionFits(NOW_MS, '?')}`,
+        sql: `WITH beat AS (
+                INSERT INTO drivers (queue, driver_id, last_beat_ms, expires_at_ms)
+                SELECT ?, ?, ${NOW_MS}, ${NOW_MS} + ?
+                WHERE ${epochAdditionFits(NOW_MS, '?')}
+                ON CONFLICT (queue, driver_id) DO UPDATE SET
+                  last_beat_ms = excluded.last_beat_ms,
+                  expires_at_ms = excluded.expires_at_ms
+                RETURNING last_beat_ms
+              )
+              DELETE FROM drivers d USING beat
+              WHERE d.expires_at_ms < beat.last_beat_ms
+                AND d.last_beat_ms BETWEEN 0 AND ${PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms.max}
+                AND d.expires_at_ms BETWEEN 0 AND ${PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms.max}`,
         args: [queue, driverId, ttlMs, ttlMs],
       },
     ])
@@ -1472,7 +1461,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
            (run_id, queue, task_id, attempt, state, available_at_ms,
             wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
          SELECT ?, f.queue, f.task_id, f.attempt + 1,
-                CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
+                CASE WHEN CAST(? AS BIGINT) <= 0 THEN 'pending' ELSE 'sleeping' END,
                 f.fence_at_ms + ?,
                 f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
                 ${STAMP}, f.fence_at_ms
@@ -1688,6 +1677,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       throw new RangeError('emitEvent payloadJson must be a string')
     }
     const b = new FencedBatch('emit-event', this.ids.token(), { now: NOW_MS })
+    b.lockEvent(queue, eventName)
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
     // the event's immutable emitted_at_ms as its provenance instant. The
@@ -1700,8 +1690,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `INSERT INTO events (queue, event_name, payload, emitted_at_ms, ${FENCE_COLS})
        VALUES (?, ?, ?, ${NOW}, ${FENCE_VALS})
        ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}
-       WHERE events.fence_stamp IS NOT ${STAMP}
-         AND typeof(events.payload) = 'text'
+       WHERE events.fence_stamp IS DISTINCT FROM ${STAMP}
+         AND events.payload IS NOT NULL
          AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`,
       [queue, eventName, payloadJson],
     )
@@ -1845,7 +1835,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.openTail(
       'stored-event',
       'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
-      `SELECT typeof(payload) AS payload_type
+      `SELECT CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END AS payload_type
        FROM events WHERE queue = ? AND event_name = ?`,
       [queue, eventName],
     )
@@ -1859,9 +1849,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   /**
    * Checkpoint-or-register in ONE batch (§3.4 rule 2): if the event is
    * already emitted, nothing suspends and the stored payload returns; if
-   * not, the wait registers and the run parks — the single writer
-   * serializes this against emit, so the wakeup cannot be lost between
-   * the check and the park. A timed wait also sets available_at: the
+   * not, the wait registers and the run parks. The event-lock prelude
+   * serializes this transaction against emit, so the wakeup cannot be lost
+   * between the check and the park. A timed wait also sets available_at: the
    * claim path already delivers the timeout wake (event set, payload
    * NULL) and deletes the expired wait row.
    */
@@ -1879,6 +1869,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
     const b = new FencedBatch('await-event', this.ids.token(), { now: NOW_MS })
+    b.lockEvent(queue, eventName)
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
     // writes nothing, so a run left sleeping under the same wake_step (e.g. by
@@ -1899,14 +1890,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms,
           created_at_ms, ${FENCE_COLS})
        SELECT ?, ?, ?, ?, ?, 'waiting',
-         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}
+         CASE WHEN CAST(? AS BIGINT) IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}
        WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)
          AND EXISTS (SELECT 1 FROM runs r
                      JOIN tasks t ON ${runOwnedByTask('r', 't')}
                      WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
                        AND r.claimed_by = ? AND r.state = 'running'
                        AND ${eligibleTask('t', NOW)})
-         AND (? IS NULL OR ${epochAdditionFits(NOW, '?')})
+         AND (CAST(? AS BIGINT) IS NULL OR ${epochAdditionFits(NOW, '?')})
        ON CONFLICT (run_id, step_name) DO NOTHING`,
       [
         runId,
@@ -1970,7 +1961,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.openTail(
       'hit',
       'the event was written by the emitting batch, not this one; the live claim token is the fence here',
-      `SELECT payload, typeof(payload) AS payload_type FROM events
+      `SELECT payload, CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END AS payload_type FROM events
        WHERE queue = ? AND event_name = ?
          AND EXISTS (SELECT 1 FROM runs r
                      JOIN tasks t ON ${runOwnedByTask('r', 't')}
@@ -1994,7 +1985,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 }
 
-/** SQLite parses LIMIT -1 as unlimited (reviewed): clamp and floor. */
+/** Normalize the public limit before it reaches dialect SQL. */
 function clampLimit(limit: number): number {
   if (!Number.isFinite(limit)) throw new RangeError(`limit ${limit}`)
   return Math.max(0, Math.floor(limit))

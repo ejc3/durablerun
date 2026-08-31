@@ -3,6 +3,7 @@ import {
   SchemaNotInitializedError,
   StoreUnavailableError,
 } from '@durablerun/core'
+import { EventEmitter } from 'node:events'
 import { DatabaseError, type FieldDef, type Pool, type QueryResult } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { PgExecutor } from '../src/executor.js'
@@ -47,7 +48,7 @@ interface QueryCall {
   args: unknown[] | undefined
 }
 
-class FakeClient {
+class FakeClient extends EventEmitter {
   readonly calls: QueryCall[] = []
   readonly releases: (Error | boolean | undefined)[] = []
 
@@ -56,7 +57,9 @@ class FakeClient {
       text: string,
       args: unknown[] | undefined,
     ) => QueryResult<Record<string, unknown>> | Promise<QueryResult<Record<string, unknown>>>,
-  ) {}
+  ) {
+    super()
+  }
 
   async query(text: string, args?: unknown[]): Promise<QueryResult<Record<string, unknown>>> {
     this.calls.push({ text, args })
@@ -135,6 +138,68 @@ describe('PgExecutor transactions', () => {
     expect(pool.connectCalls).toBe(1)
   })
 
+  it('acquires the event row lock before protocol SQL without adding a result', async () => {
+    const client = new FakeClient((text) => {
+      if (text === 'SELECT value FROM protocol_state') {
+        return result([{ value: 'ready' }], [field('value', 25)])
+      }
+      return EMPTY_RESULT
+    })
+
+    const results = await executor(new FakePool(client)).batch(
+      'locked-event',
+      [{ sql: 'SELECT value FROM protocol_state', args: [] }],
+      {
+        mode: 'write',
+        transactionLock: { kind: 'event', queue: 'q', eventName: `e'; SELECT 1; --` },
+      },
+    )
+
+    expect(client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim())).toEqual([
+      'BEGIN',
+      'INSERT INTO event_locks (queue, event_name) VALUES ($1, $2) ON CONFLICT (queue, event_name) DO NOTHING',
+      'SELECT 1 FROM event_locks WHERE queue = $1 AND event_name = $2 FOR UPDATE',
+      'SELECT value FROM protocol_state',
+      'COMMIT',
+    ])
+    expect(client.calls.slice(1, 3).map(({ args }) => args)).toEqual([
+      ['q', `e'; SELECT 1; --`],
+      ['q', `e'; SELECT 1; --`],
+    ])
+    expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
+  })
+
+  it('acquires a scoped claim advisory lock before protocol SQL without durable garbage', async () => {
+    const client = new FakeClient((text) => {
+      if (text === 'SELECT value FROM protocol_state') {
+        return result([{ value: 'ready' }], [field('value', 25)])
+      }
+      return EMPTY_RESULT
+    })
+
+    const results = await executor(new FakePool(client)).batch(
+      'locked-claim',
+      [{ sql: 'SELECT value FROM protocol_state', args: [] }],
+      {
+        mode: 'write',
+        transactionLock: {
+          kind: 'claim',
+          queue: 'q',
+          claimToken: `receipt'; SELECT 1; --`,
+        },
+      },
+    )
+
+    expect(client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim())).toEqual([
+      'BEGIN',
+      "SELECT pg_advisory_xact_lock(hashtextextended( jsonb_build_array( current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text )::text, 0 ))",
+      'SELECT value FROM protocol_state',
+      'COMMIT',
+    ])
+    expect(client.calls[1]?.args).toEqual(['q', `receipt'; SELECT 1; --`])
+    expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
+  })
+
   it('rolls back the same client before releasing it after a failed statement', async () => {
     const failure = databaseError('40001', 'serialization failure')
     const client = new FakeClient((text) => {
@@ -186,11 +251,11 @@ describe('PgExecutor primitive normalization', () => {
   it('compiles binds and normalizes int8, bytea, and row counts at the source', async () => {
     const bytes = Buffer.from([1, 2, 3, 255])
     const client = new FakeClient((text, args) => {
-      if (text === 'UPDATE t SET value = $1 WHERE id = $2 RETURNING count, bytes') {
+      if (text === 'UPDATE t SET value = $1 WHERE id = $2 RETURNING count, safe_count, bytes') {
         expect(args).toEqual(['next', 7n])
         return result(
-          [{ count: '9007199254740993', bytes }],
-          [field('count', 20), field('bytes', 17)],
+          [{ count: '9007199254740993', safe_count: '42', bytes }],
+          [field('count', 20), field('safe_count', 20), field('bytes', 17)],
         )
       }
       if (text === 'UPDATE t SET value = $1') return result([], [], 4)
@@ -200,14 +265,14 @@ describe('PgExecutor primitive normalization', () => {
 
     const [returning, plain] = await db.batch('normalize', [
       {
-        sql: 'UPDATE t SET value = ? WHERE id = ? RETURNING count, bytes',
+        sql: 'UPDATE t SET value = ? WHERE id = ? RETURNING count, safe_count, bytes',
         args: ['next', 7n],
       },
       { sql: 'UPDATE t SET value = ?', args: ['final'] },
     ])
 
     expect(returning).toEqual({
-      rows: [{ count: 9007199254740993n, bytes: new Uint8Array([1, 2, 3, 255]) }],
+      rows: [{ count: 9007199254740993n, safe_count: 42, bytes: new Uint8Array([1, 2, 3, 255]) }],
       rowsAffected: 1,
     })
     expect(returning?.rows[0]?.bytes).toBeInstanceOf(Uint8Array)

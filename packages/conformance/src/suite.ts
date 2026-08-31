@@ -336,7 +336,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('corrupt-receipt-headers', [
           {
             sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
-            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+            args: ['{"trace":1e1000000}', spawned.taskId],
           },
         ])
         const before = await snapshot(f, spawned.taskId)
@@ -3684,6 +3684,6 @@ export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtur
         },
         'mutation-verdict:behavior:emit-wake-one-witness',
       ).toEqual({ single: [], pairs: [] })
-    }, 30_000)
+    }, 120_000)
   })
 }

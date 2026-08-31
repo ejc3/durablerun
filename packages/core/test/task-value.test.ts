@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { FatalTaskError, serializeTaskValue, userJsonValue } from '../src/index.js'
+import {
+  FatalTaskError,
+  serializeTaskHeaders,
+  serializeTaskValue,
+  userJsonValue,
+} from '../src/index.js'
 
 const ILLEGAL_VALUES: readonly (readonly [string, () => unknown])[] = [
   ['bigint', () => 1n],
@@ -44,15 +49,10 @@ describe('serializeTaskValue', () => {
     ] as const
 
     for (const [kind, text] of invalid) {
-      expect(() => serializeTaskValue('headers', text), `${kind} scalar`).toThrow(FatalTaskError)
-      expect(() => serializeTaskValue('headers', { value: text }), `${kind} value`).toThrow(
-        FatalTaskError,
-      )
-      expect(() => serializeTaskValue('headers', { [text]: 'value' }), `${kind} key`).toThrow(
-        FatalTaskError,
-      )
+      expect(() => serializeTaskHeaders({ value: text }), `${kind} value`).toThrow(FatalTaskError)
+      expect(() => serializeTaskHeaders({ [text]: 'value' }), `${kind} key`).toThrow(FatalTaskError)
     }
-    expect(serializeTaskValue('headers', { '📦': 'välue' })).toBe('{"📦":"välue"}')
+    expect(serializeTaskHeaders({ '📦': 'välue' })).toBe('{"📦":"välue"}')
   })
 
   it('preserves escaped NUL and lone surrogates in opaque JSON values', () => {

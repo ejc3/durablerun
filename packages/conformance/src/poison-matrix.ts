@@ -329,10 +329,9 @@ const taskState = (state: string): SqlStatement =>
 
 const runState = (state: string): SqlStatement =>
   sql(
-    `UPDATE runs SET state = ?, claimed_by = CASE WHEN ? = 'running' THEN ? ELSE NULL END,
-       claim_expires_at_ms = CASE WHEN ? = 'running' THEN ? ELSE NULL END
+    `UPDATE runs SET state = ?, claimed_by = ?, claim_expires_at_ms = ?
      WHERE run_id = ?`,
-    [state, state, TOKEN, state, NOW + 60_000, RUN],
+    [state, state === 'running' ? TOKEN : null, state === 'running' ? NOW + 60_000 : null, RUN],
   )
 
 function park(

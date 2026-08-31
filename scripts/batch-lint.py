@@ -103,6 +103,9 @@ DYNAMIC = {
     ("packages/store-libsql/src/admin.ts", "migrate:v"): (
         "one batch per migration version, labelled by version"
     ),
+    ("packages/store-postgres/src/admin.ts", "migrate:v"): (
+        "one batch per migration version, labelled by version"
+    ),
 }
 DYNAMIC_LABELS = {"migrate:v*"}
 
@@ -111,6 +114,11 @@ DYNAMIC_LABELS = {"migrate:v*"}
 # independent structural mechanism that owns it.
 OPAQUE_STATEMENT_LISTS = {
     ("packages/store-libsql/src/admin.ts", "migrate:v*"): (
+        "fencedBatch(migration)",
+        "the migration runner prepends an applied:vN primary-key sentinel "
+        "and schema tests execute and freeze every generated migration",
+    ),
+    ("packages/store-postgres/src/admin.ts", "migrate:v*"): (
         "fencedBatch(migration)",
         "the migration runner prepends an applied:vN primary-key sentinel "
         "and schema tests execute and freeze every generated migration",

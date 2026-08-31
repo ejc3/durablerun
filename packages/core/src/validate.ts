@@ -722,11 +722,31 @@ function dataProperty(value: unknown, enumerable: boolean): PropertyDescriptor {
 }
 
 /**
+ * The portable durable-string domain. PostgreSQL's JSON parser rejects NUL
+ * escapes and unpaired UTF-16 surrogates, while other backends may accept
+ * them and later expose a different value. One predicate owns the domain for
+ * both JSON keys/values and durable protocol names.
+ */
+function storageStringRoundTrips(value: string): boolean {
+  return !stringIncludes(value, '\u0000') && regexpExec(/\p{Surrogate}/u, value) === null
+}
+
+/**
  * Copy one task value into data owned by the runtime. The copy has no
  * attacker-controlled prototype or toJSON hook, and every source field is
  * read once. This is the representation JSON.stringify receives.
  */
-function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown {
+function snapshotTaskValue(
+  value: unknown,
+  ancestors: WeakSet<object>,
+  requirePortableStrings: boolean,
+): unknown {
+  if (typeof value === 'string') {
+    if (requirePortableStrings && !storageStringRoundTrips(value)) {
+      throw new TrustedTypeError('JSON string does not round-trip through storage')
+    }
+    return value
+  }
   if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
     throw new TrustedTypeError(`${typeof value} is not a JSON value`)
   }
@@ -758,7 +778,7 @@ function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown 
       }
       for (let index = 0; index < length; index++) {
         const key = stringFrom(index)
-        const item = snapshotTaskValue(reflectGet(value, key), ancestors)
+        const item = snapshotTaskValue(reflectGet(value, key), ancestors, requirePortableStrings)
         defineProperty(owned, key, dataProperty(item === undefined ? null : item, true))
       }
       return owned
@@ -773,7 +793,10 @@ function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown 
     for (let index = 0; index < keys.length; index++) {
       const key = keys[index]
       if (key === undefined) continue
-      const item = snapshotTaskValue(reflectGet(value, key), ancestors)
+      if (requirePortableStrings && !storageStringRoundTrips(key)) {
+        throw new TrustedTypeError('JSON object key does not round-trip through storage')
+      }
+      const item = snapshotTaskValue(reflectGet(value, key), ancestors, requirePortableStrings)
       if (item !== undefined) {
         defineProperty(owned, key, dataProperty(item, true))
       }
@@ -794,10 +817,16 @@ function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown 
  * instead of becoming ordinary retryable handler errors after side effects
  * have already run.
  */
-export function serializeTaskValue(what: string, value: unknown): string {
+function serializeTaskValueWithStringDomain(
+  what: string,
+  value: unknown,
+  requirePortableStrings: boolean,
+): string {
   const root = value === undefined ? null : value
   try {
-    const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))
+    const serialized = stringifyJson(
+      snapshotTaskValue(root, new TrustedWeakSet(), requirePortableStrings),
+    )
     if (serialized === undefined) {
       throw new TrustedTypeError(`${describe(root)} has no JSON representation`)
     }
@@ -808,6 +837,18 @@ export function serializeTaskValue(what: string, value: unknown): string {
     // coercion throws; diagnostics must not reopen the permanent-error gate.
     throw new FatalTaskError(`${what} is not a JSON value`)
   }
+}
+
+export function serializeTaskValue(what: string, value: unknown): string {
+  return serializeTaskValueWithStringDomain(what, value, false)
+}
+
+/**
+ * Headers are later inspected by every dialect as JSON object data. Keep
+ * their string domain portable without narrowing opaque task/result payloads.
+ */
+export function serializeTaskHeaders(value: unknown): string {
+  return serializeTaskValueWithStringDomain('task headers', value, true)
 }
 
 /** Parse with the JSON operation captured before task initialization. */
@@ -860,7 +901,7 @@ export class UserName {
     // (not well-formed UTF-16) is re-encoded to U+FFFD — either way two
     // distinct JS names collide or a name silently changes, and its wake
     // never matches. Reject both at the single mint point.
-    if (stringIncludes(raw, '\u0000') || regexpExec(/\p{Surrogate}/u, raw) !== null) {
+    if (!storageStringRoundTrips(raw)) {
       throw new FatalTaskError(
         `${what} '${raw}' contains characters that do not round-trip through storage (NUL or a lone surrogate)`,
       )
