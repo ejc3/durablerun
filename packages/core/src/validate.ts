@@ -738,12 +738,14 @@ const storageStringRoundTrips = freeze({
 
 type TaskValueDomain = 'opaque' | 'headers'
 
-function requireJsonDataObject(value: object): void {
-  const prototype = getPrototypeOf(value)
-  if (prototype !== null && prototype !== objectPrototype) {
-    throw new TrustedTypeError('task value must use the JSON data model')
-  }
-}
+const requireJsonDataObject = freeze({
+  check(value: object): void {
+    const prototype = getPrototypeOf(value)
+    if (prototype !== null && prototype !== objectPrototype) {
+      throw new TrustedTypeError('task value must use the JSON data model')
+    }
+  },
+}).check
 
 /**
  * Copy one task value into data owned by the runtime. The copy has no

@@ -4227,8 +4227,8 @@ MUTATION_SPECS.extend(
         (
             "task-value-rejects-exotic-objects",
             "packages/core/src/validate.ts",
-            "  if (prototype !== null && prototype !== objectPrototype) {",
-            "  if (false && prototype !== null && prototype !== objectPrototype) { // MUTATION",
+            "    if (prototype !== null && prototype !== objectPrototype) {",
+            "    if (false && prototype !== null && prototype !== objectPrototype) { // MUTATION",
             "boxed and exotic objects are silently reinterpreted as plain JSON records",
         ),
         (
