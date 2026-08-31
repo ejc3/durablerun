@@ -118,6 +118,41 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(Number(count?.rows[0]?.n)).toBe(0)
       })
 
+      it('rejects runtime header shapes outside an object of strings before persistence', async () => {
+        let executorCalls = 0
+        const observed = f.storeOver({
+          batch: (label, statements, control) => {
+            executorCalls += 1
+            return f.raw.batch(label, statements, control)
+          },
+        })
+        const invalidHeaders = [
+          { id: 'null-root', headers: null },
+          { id: 'array-root', headers: ['value'] },
+          { id: 'string-root', headers: 'value' },
+          { id: 'number-value', headers: { trace: 1 } },
+          { id: 'null-value', headers: { trace: null } },
+          { id: 'array-value', headers: { trace: ['value'] } },
+          { id: 'object-value', headers: { trace: { nested: 'value' } } },
+          { id: 'undefined-value', headers: { trace: undefined } },
+        ] as const
+
+        for (const { id, headers } of invalidHeaders) {
+          await expect(
+            observed.spawn(Q, `invalid-header-shape-${id}`, '{}', {
+              headers: headers as unknown as Record<string, string>,
+            }),
+          ).rejects.toThrow(/task headers is not a JSON value/)
+        }
+        expect(executorCalls).toBe(0)
+        const [count] = await f.raw.batch(
+          'invalid-header-shapes:probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
+      })
+
       it('rejects retry durations above the durable bound without writing', async () => {
         await requireExpectedFailure(
           { kind: 'behavior', mutation: 'retry-spawn-normalization' },
