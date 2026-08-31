@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { PERSISTED_COUNTER_FIELDS, PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from '../src/schema.js'
@@ -94,5 +95,17 @@ describe('PostgreSQL schema', () => {
         PRIMARY KEY (queue, event_name)
       )`)
     expect(ddl).not.toContain('claim_locks')
+  })
+})
+
+describe('PostgreSQL migrations are append-only', () => {
+  const FROZEN: Record<number, string> = {}
+
+  it('matches every migration to an independently frozen content hash', () => {
+    for (const migration of MIGRATIONS) {
+      const hash = createHash('sha256').update(migration.statements.join('\n')).digest('hex')
+      expect(FROZEN[migration.version], `migration v${migration.version} is not frozen`).toBe(hash)
+    }
+    expect(Object.keys(FROZEN)).toHaveLength(MIGRATIONS.length)
   })
 })
