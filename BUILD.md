@@ -755,8 +755,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - **Postgres double-claim**: `casMany` guarantees a win rule, not a
     concurrency semantics; store-pg needs `FOR UPDATE SKIP LOCKED` and a
     conformance scenario before it is DONE.
-  - **Rule 2's lock prelude**: the primitive has no statement kind for
-    acquiring a lock, and every non-tail statement must carry a fence.
+  - **Closed lock preludes**: `FencedBatch.lockEvent` and `lockClaim` pass only
+    their typed coordinates to the executor before the fenced SQL. They do not
+    accept SQL or contribute a result slot, so the new dialect can acquire its
+    sentinel/row locks without opening an unfenced-write escape.
   - **MySQL cannot derive the winner from row counts alone** — no targeted
     `ON CONFLICT`; the `SqlResult` normalization contract must state
     matched-not-changed semantics.

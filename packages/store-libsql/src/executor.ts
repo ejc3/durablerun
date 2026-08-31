@@ -1,13 +1,14 @@
-import { type Client, createClient, LibsqlError } from '@libsql/client'
 import {
-  SchemaNotInitializedError,
   SchemaMismatchError,
-  type SqlBatchMode,
+  SchemaNotInitializedError,
+  type SqlBatchControl,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
   StoreUnavailableError,
+  sqlBatchMode,
 } from '@durablerun/core'
+import { type Client, LibsqlError, createClient } from '@libsql/client'
 import { SCHEMA_VERSION_READ_SQL } from './schema.js'
 
 /**
@@ -65,8 +66,12 @@ export class LibsqlExecutor implements SqlExecutor {
   async batch(
     _label: string,
     statements: readonly SqlStatement[],
-    mode: SqlBatchMode = 'write',
+    control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
+    // A lock-bearing write remains an ordinary libSQL write batch: its single
+    // writer already provides the mutual exclusion the explicit lock requests
+    // from multi-writer dialects.
+    const mode = sqlBatchMode(control)
     // An `undefined` bind is a programming error, not an outage. Letting it
     // reach the driver put its TypeError inside the catch below, where every
     // driver throw becomes StoreUnavailableError — so a deterministic bad

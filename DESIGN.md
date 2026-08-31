@@ -631,10 +631,16 @@ are load-bearing):
    name=:e) IS NULL`; sleep the run under the same guard; checkpoint `… WHERE
    payload IS NOT NULL`; final SELECT tells the SDK which branch won) — the
    single writer serializes it. On Postgres/MySQL a batch is NOT serialized
-   against emit: use a short transaction taking Absurd's original row locks
-   (event row first, then run row — FOR SHARE/FOR UPDATE, same documented lock
-   order). The timeout branch is part of the contract: a wait with a timeout
-   sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
+   against emit: use a short transaction taking Absurd's original row locks.
+   `FencedBatch.lockEvent(queue, eventName)` carries only that closed lock
+   coordinate — never caller SQL — to the dialect executor, which acquires it
+   before the first fenced CAS and holds it through commit or rollback. The
+   executor binds both coordinate values as data, returns no result slot for
+   the prelude, and matching event coordinates are mutually exclusive. A
+   dialect may realize the coordinate with a durable sentinel row. Any further
+   row locks retain the documented order: event first, then run (FOR
+   SHARE/FOR UPDATE). The timeout branch is part of the contract: a wait with
+   a timeout sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
    payload is the TimeoutError path, and that claim batch deletes the wait row
    so a later emit cannot resurrect a timed-out wait. The SDK snapshots and
    validates the optional timeout once before this atomic call; the store never
@@ -728,6 +734,12 @@ are load-bearing):
    stamp: a same-token retry claims nothing new and returns the original
    selection (guarded by "no running rows already carry this token"), so a
    lost response cannot multiply the claim bound.
+   Multi-writer dialects serialize `(queue, claim_token)` before candidate
+   selection with `FencedBatch.lockClaim(queue, claimToken)`. `SKIP LOCKED`
+   candidate rows are not that serialization: simultaneous retries can lock
+   disjoint candidates before either token becomes visible, multiplying one
+   logical receipt. The closed claim coordinate is acquired before the claim
+   CAS and held through its receipt read.
    The candidate set also excludes tasks whose cancellation deadline is
    already due — a sweep budget too small to cancel everything this pass must
    not leak due-to-cancel tasks into launches. All claim eligibility—live task,

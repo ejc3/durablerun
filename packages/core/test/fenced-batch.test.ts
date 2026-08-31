@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
   FENCE_COLS,
   FENCE_SET,
@@ -6,11 +6,16 @@ import {
   FencedBatch,
   NOW,
   STAMP,
+  type SqlBatchControl,
   type SqlBatchMode,
   type SqlExecutor,
+  type SqlLockedBatch,
   type SqlResult,
   type SqlStatement,
+  type SqlTransactionLock,
   fenceSetAt,
+  sqlBatchMode,
+  sqlTransactionLock,
 } from '../src/index.js'
 
 /**
@@ -85,7 +90,13 @@ describe('execution identity', () => {
 })
 
 class FakeDb implements SqlExecutor {
-  calls: { label: string; statements: SqlStatement[]; mode: SqlBatchMode }[] = []
+  calls: {
+    label: string
+    statements: SqlStatement[]
+    mode: SqlBatchMode
+    control: SqlBatchControl
+    transactionLock: SqlTransactionLock | undefined
+  }[] = []
   constructor(
     private readonly counts: number[] = [],
     private readonly resultLimit?: number,
@@ -93,9 +104,15 @@ class FakeDb implements SqlExecutor {
   batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode: SqlBatchMode = 'write',
+    control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
-    this.calls.push({ label, statements: [...statements], mode })
+    this.calls.push({
+      label,
+      statements: [...statements],
+      mode: sqlBatchMode(control),
+      control,
+      transactionLock: sqlTransactionLock(control),
+    })
     return Promise.resolve(
       statements
         .slice(0, this.resultLimit)
@@ -103,6 +120,80 @@ class FakeDb implements SqlExecutor {
     )
   }
 }
+
+describe('closed transaction lock prelude', () => {
+  it('passes only inert event coordinates ahead of the fenced SQL', async () => {
+    type EventLock = Extract<SqlTransactionLock, { kind: 'event' }>
+    type ClaimLock = Extract<SqlTransactionLock, { kind: 'claim' }>
+    expectTypeOf<keyof EventLock>().toEqualTypeOf<'kind' | 'queue' | 'eventName'>()
+    expectTypeOf<keyof ClaimLock>().toEqualTypeOf<'kind' | 'queue' | 'claimToken'>()
+    expectTypeOf<keyof SqlLockedBatch>().toEqualTypeOf<'mode' | 'transactionLock'>()
+
+    const sqlShapedCoordinate = `q'; DELETE FROM events; --`
+    const db = new FakeDb([1])
+    const b = batch('emit-event')
+      .lockEvent(sqlShapedCoordinate, sqlShapedCoordinate)
+      .cas('win', 'events', `UPDATE events SET ${FENCE_SET} WHERE queue = ?`, ['q'])
+    await b.run(db)
+
+    const call = db.calls[0]
+    expect(call?.transactionLock).toEqual({
+      kind: 'event',
+      queue: sqlShapedCoordinate,
+      eventName: sqlShapedCoordinate,
+    })
+    expect(call?.transactionLock).not.toHaveProperty('sql')
+    expect(Object.isFrozen(call?.transactionLock)).toBe(true)
+    expect(Reflect.set(call?.transactionLock ?? {}, 'sql', 'DELETE FROM events')).toBe(false)
+    expect(call?.control).toEqual({ mode: 'write', transactionLock: call?.transactionLock })
+    expect(Object.isFrozen(call?.control)).toBe(true)
+    expect(call?.statements).toHaveLength(1)
+    expect(call?.statements[0]?.sql).not.toContain(sqlShapedCoordinate)
+  })
+
+  it('must be declared once, before SQL, and followed immediately by a CAS', () => {
+    expect(() => withCas().lockEvent('q', 'e')).toThrow(/before every SQL statement/)
+
+    const duplicate = batch().lockEvent('q', 'e')
+    expect(() => duplicate.lockClaim('q', 'token')).toThrow(/already has/)
+
+    const readFirst = batch().lockEvent('q', 'e')
+    expect(() => readFirst.openTail('probe', 'diagnostic read', 'SELECT 1')).toThrow(
+      /followed immediately by a CAS/,
+    )
+  })
+
+  it('is available only to a write transaction', async () => {
+    const b = batch()
+      .lockEvent('q', 'e')
+      .cas('win', 'events', `UPDATE events SET ${FENCE_SET} WHERE queue = ?`, ['q'])
+    await expect(b.run(new FakeDb([1]), 'read')).rejects.toThrow(/requires a write batch/)
+  })
+
+  it('rejects a non-string coordinate for either closed lock kind', () => {
+    expect(() => batch().lockEvent(undefined as unknown as string, 'e')).toThrow(
+      /coordinates must be strings/,
+    )
+    expect(() => batch().lockClaim('q', undefined as unknown as string)).toThrow(
+      /coordinates must be strings/,
+    )
+  })
+
+  it('passes only inert claim coordinates ahead of the fenced claim CAS', async () => {
+    const db = new FakeDb([1])
+    const b = batch('claim')
+      .lockClaim('q', `token'; DELETE FROM runs; --`)
+      .casMany('claim', 'runs', 1, `UPDATE runs SET ${FENCE_SET} WHERE queue = ?`, ['q'])
+    await b.run(db)
+
+    expect(db.calls[0]?.transactionLock).toEqual({
+      kind: 'claim',
+      queue: 'q',
+      claimToken: `token'; DELETE FROM runs; --`,
+    })
+    expect(db.calls[0]?.transactionLock).not.toHaveProperty('sql')
+  })
+})
 
 describe('a CAS must write its own provenance', () => {
   it('rejects an UPDATE that does not set the fence columns', () => {

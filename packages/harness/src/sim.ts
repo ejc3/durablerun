@@ -1,4 +1,11 @@
-import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from '@durablerun/core'
+import {
+  type SqlBatchControl,
+  type SqlBatchMode,
+  type SqlExecutor,
+  type SqlResult,
+  type SqlStatement,
+  sqlBatchMode,
+} from '@durablerun/core'
 import { Rng } from './rng.js'
 
 /**
@@ -68,6 +75,7 @@ interface PendingCall {
   actor: ActorState
   label: string
   statements: readonly SqlStatement[]
+  control: SqlBatchControl
   mode: SqlBatchMode
   resolve: (r: SqlResult[]) => void
   reject: (e: unknown) => void
@@ -140,7 +148,7 @@ export class SimWorld {
       finished: Promise.resolve({ status: 'done' }),
     }
     const db: SqlExecutor = {
-      batch: (label, statements, mode = 'write') => {
+      batch: (label, statements, control = 'write') => {
         if (state.crashed) return handledRejection(new SimCrash(name, label, 'before'))
         if (state.condemned) {
           return handledRejection(
@@ -150,7 +158,15 @@ export class SimWorld {
           )
         }
         return new Promise<SqlResult[]>((resolve, reject) => {
-          this.pending.push({ actor: state, label, statements, mode, resolve, reject })
+          this.pending.push({
+            actor: state,
+            label,
+            statements,
+            control,
+            mode: sqlBatchMode(control),
+            resolve,
+            reject,
+          })
         })
       },
     }
@@ -246,10 +262,10 @@ export class SimWorld {
     let results: SqlResult[]
     try {
       if (duplicate) {
-        await this.real.batch(call.label, call.statements, call.mode)
+        await this.real.batch(call.label, call.statements, call.control)
         this.record(call, 'dup')
       }
-      results = await this.real.batch(call.label, call.statements, call.mode)
+      results = await this.real.batch(call.label, call.statements, call.control)
     } catch (error) {
       this.record(call, 'error')
       call.reject(error)

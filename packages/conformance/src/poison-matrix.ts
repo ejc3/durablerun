@@ -7,6 +7,7 @@ import {
   type PersistedCounterFieldId,
   type PersistedTemporalFieldDescriptor,
   type SchedulerStore,
+  type SqlBatchControl,
   type SqlBatchMode,
   type SqlExecutor,
   type SqlResult,
@@ -15,6 +16,7 @@ import {
   isLiveState,
   isTerminalState,
   parseFenceStamp,
+  sqlBatchMode,
 } from '@durablerun/core'
 import { MATRIX_WRITE_LABELS } from './fault-matrix.js'
 import {
@@ -1254,12 +1256,13 @@ class RecordingExecutor implements SqlExecutor {
   async batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode: SqlBatchMode = 'write',
+    control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
+    const mode = sqlBatchMode(control)
     const call: RecordedCall = { label, mode, changedState: false }
     this.calls.push(call)
     const before = mode === 'write' ? await snapshot(this.real) : undefined
-    const results = await this.real.batch(label, statements, mode)
+    const results = await this.real.batch(label, statements, control)
     if (before !== undefined) {
       call.changedState = !same(before, await snapshot(this.real))
     }

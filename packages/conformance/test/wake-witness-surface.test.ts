@@ -1,4 +1,4 @@
-import type { SqlStatement } from '@durablerun/core'
+import type { SqlBatchControl, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixtureFactory } from '../src/fixture.js'
 import { WAKE_PAIR_CASES, WAKE_SINGLE_CASES, wakeWitnessDisagreements } from '../src/suite.js'
@@ -38,8 +38,8 @@ function mutatingFixture(mutate: StatementMutator): StoreFixtureFactory {
   return async (seed) => {
     const fixture = await makeLibsqlFixture(seed)
     const db = {
-      batch: (label: string, statements: readonly SqlStatement[], mode?: 'read' | 'write') =>
-        fixture.raw.batch(label, mutate(label, statements), mode),
+      batch: (label: string, statements: readonly SqlStatement[], control?: SqlBatchControl) =>
+        fixture.raw.batch(label, mutate(label, statements), control),
     }
     return { ...fixture, store: fixture.storeOver(db) }
   }

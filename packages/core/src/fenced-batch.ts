@@ -11,10 +11,16 @@ import {
   isFenceStatementName,
 } from './contract.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { SqlBatchMode, SqlExecutor, SqlResult, SqlStatement } from './primitives.js'
+import type {
+  SqlBatchMode,
+  SqlExecutor,
+  SqlResult,
+  SqlStatement,
+  SqlTransactionLock,
+} from './primitives.js'
 
 /**
- * Structural enforcement of DESIGN.md §3.4 rules 1 and 8.
+ * Structural enforcement of DESIGN.md §3.4 rules 1, 2 and 8.
  *
  * A FencedBatch is one engine transition: one or more mutually exclusive
  * compare-and-set statements, each of which WRITES its own provenance into
@@ -229,6 +235,7 @@ export interface FencedResult {
 
 export class FencedBatch {
   private readonly statements: Named[] = []
+  private readonly transactionLocks: SqlTransactionLock[] = []
   private readonly now: string
 
   /**
@@ -255,6 +262,46 @@ export class FencedBatch {
     // The statements array remains mutable, so the builder API still works;
     // only the instance's identity and own properties are sealed.
     Object.freeze(this)
+  }
+
+  /**
+   * Serialize this event transition against every transition for the same
+   * `(queue, eventName)` coordinate.
+   *
+   * The lock is a transaction prelude rather than a statement: callers name
+   * only inert key data, while the dialect executor owns the lock SQL. It must
+   * be declared before the batch's first statement, and the first statement
+   * after it must be the fenced CAS whose branch the lock protects.
+   */
+  lockEvent(queue: string, eventName: string): this {
+    return this.addTransactionLock({ kind: 'event', queue, eventName })
+  }
+
+  /**
+   * Serialize same-token claim attempts before either selects candidates.
+   * Candidate row locks alone are disjoint, so they cannot provide this gate.
+   */
+  lockClaim(queue: string, claimToken: string): this {
+    return this.addTransactionLock({ kind: 'claim', queue, claimToken })
+  }
+
+  private addTransactionLock(lock: SqlTransactionLock): this {
+    const coordinate = lock.kind === 'event' ? lock.eventName : lock.claimToken
+    if (typeof lock.queue !== 'string' || typeof coordinate !== 'string') {
+      throw new TypeError(
+        `FencedBatch[${this.label}] ${lock.kind} lock coordinates must be strings`,
+      )
+    }
+    if (this.statements.length !== 0) {
+      throw new Error(
+        `FencedBatch[${this.label}] ${lock.kind} lock must be declared before every SQL statement`,
+      )
+    }
+    if (this.transactionLocks.length !== 0) {
+      throw new Error(`FencedBatch[${this.label}] already has a transaction lock`)
+    }
+    this.transactionLocks.push(Object.freeze({ ...lock }))
+    return this
   }
 
   /**
@@ -596,6 +643,16 @@ export class FencedBatch {
   }): this {
     const { name, sql, kind, target } = s
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
+    if (
+      this.transactionLocks.length !== 0 &&
+      this.statements.length === 0 &&
+      kind !== 'cas' &&
+      kind !== 'casMany'
+    ) {
+      throw new Error(
+        `FencedBatch[${this.label}] transaction lock must be followed immediately by a CAS`,
+      )
+    }
     if (!isFenceStatementName(name)) {
       throw new Error(`${at}: name must match ^${FENCE_STATEMENT_NAME_SOURCE}$`)
     }
@@ -699,7 +756,17 @@ export class FencedBatch {
       throw new Error(`FencedBatch[${this.label}] has no CAS`)
     }
     const compiled = this.statements.map((s) => this.compile(s))
-    const raw = await db.batch(this.label, compiled, mode)
+    const transactionLock = this.transactionLocks[0]
+    if (transactionLock !== undefined && mode !== 'write') {
+      throw new Error(`FencedBatch[${this.label}] transaction lock requires a write batch`)
+    }
+    // Preserve the string control used by every existing libSQL transition.
+    // Only a batch that explicitly declared a lock exercises the structured
+    // control variant.
+    const raw =
+      transactionLock === undefined
+        ? await db.batch(this.label, compiled, mode)
+        : await db.batch(this.label, compiled, Object.freeze({ mode: 'write', transactionLock }))
     if (raw.length !== compiled.length) {
       throw new Error(
         `FencedBatch[${this.label}] executor returned ${raw.length} results for ${compiled.length} statements — the batch audit cannot run`,
