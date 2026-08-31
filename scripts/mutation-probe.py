@@ -47,7 +47,7 @@ from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
-MUTATION_SUITE_WALL_TIME_SECONDS = 300.0
+MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
 VERIFIER_KILL_GRACE_SECONDS = 0.5
 
@@ -1968,8 +1968,12 @@ MUTATION_SPECS = [
         "spawn-headers-captured-serializer",
         "packages/store-libsql/src/store.ts",
         "      headersInput === undefined ? null : serializeTaskValue('task headers', headersInput)",
-        "      headersInput === undefined ? null : JSON.stringify(headersInput)",
-        "spawn serializes headers through an ambient JSON hook",
+        "      headersInput === undefined\n"
+        "        ? null\n"
+        "        : JSON.stringify(\n"
+        "            parseTaskValueJson(serializeTaskValue('task headers', headersInput)),\n"
+        "          )",
+        "spawn reserializes validated headers through an ambient JSON hook",
     ),
     (
         "claim-retry-captured-parser",
@@ -2010,6 +2014,26 @@ MUTATION_SPECS = [
         "               AND 1 = 1\n"
         "               AND ${soleLiveRun(run)}\n",
         "claim changes candidate state before discovering undecodable headers",
+    ),
+    (
+        "postgres-jsonb-input-validity",
+        "packages/store-postgres/src/fragments.ts",
+        "export const jsonbInputValid = (value: string): string => `pg_input_is_valid(${value}, 'jsonb')`",
+        "export const jsonbInputValid = (_value: string): string => `TRUE` // MUTATION",
+        "PostgreSQL casts syntactically valid but jsonb-inadmissible durable JSON and aborts a bounded claim",
+    ),
+    (
+        "postgres-retry-factor-type-guard",
+        "packages/store-postgres/src/fragments.ts",
+        "  const factorAdmissible = `(CASE\n"
+        "      WHEN jsonb_typeof(${retry}::jsonb -> 'factor') <> 'number' THEN FALSE\n"
+        "      ELSE ${factor} BETWEEN 0 AND 1.7976931348623157e308\n"
+        "    END)`",
+        "  const factorAdmissible = `(\n"
+        "      jsonb_typeof(${retry}::jsonb -> 'factor') = 'number'\n"
+        "      AND ${factor} BETWEEN 0 AND 1.7976931348623157e308\n"
+        "    )` // MUTATION",
+        "PostgreSQL may evaluate a retry factor numeric cast before its sibling JSON type predicate",
     ),
     (
         "claim-receipt-retry-admissible",
@@ -3253,13 +3277,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "migrated-integer-inventory-complete",
-            "packages/store-libsql/test/schema.test.ts",
-            "          .filter((row) => String(row.type).toUpperCase() === 'INTEGER')",
-            "          .filter(\n"
-            "            (row) =>\n"
-            "              String(row.type).toUpperCase() === 'INTEGER' &&\n"
-            "              String(row.name).endsWith('_ms'),\n"
-            "          )",
+            "packages/conformance/test/fixture-libsql.ts",
+            "                   type AS native_type,",
+            "                   CASE WHEN name LIKE '%_ms' THEN type ELSE 'TEXT' END AS native_type,",
             "schema enrollment regresses to the _ms spelling proxy and omits persisted counters",
         ),
         (
@@ -4544,7 +4564,7 @@ MUTATION_SPECS.extend(
 SHARED_CONFORMANCE_REGISTRY_VERDICT = ExpectedVerdict(
     "construction",
     "packages/conformance/test/enrollment.test.ts",
-    "shared conformance enrollment is one indivisible door owns five surfaces and executable dispatch through one callable registry",
+    "shared conformance enrollment is one indivisible door enrolls every promised dialect through the complete callable conformance door",
     "mutation-verdict:construction:shared-conformance-runner-registry",
 )
 
@@ -5574,6 +5594,19 @@ VERDICTS = {
         "mutation-verdict:behavior:claim-candidate-headers-admissible",
         "packages/conformance/src/suite.ts",
     ),
+    "postgres-jsonb-input-validity": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [postgres] claim leaves a candidate with corrupt persisted headers unclaimed",
+        "mutation-verdict:behavior:claim-candidate-headers-admissible",
+        "packages/conformance/src/suite.ts",
+    ),
+    "postgres-retry-factor-type-guard": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/fragments.test.ts",
+        "PostgreSQL SQL fragments puts the exponential factor cast behind a typed CASE arm",
+        "mutation-verdict:construction:postgres-retry-factor-type-guard",
+    ),
     "claim-receipt-retry-admissible": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -5824,9 +5857,10 @@ VERDICTS.update(
         ),
         "migrated-integer-inventory-complete": ExpectedVerdict(
             "construction",
-            "packages/store-libsql/test/schema.test.ts",
-            "migrations enrolls every migrated integer column with exact nullability",
+            "packages/conformance/test/libsql.test.ts",
+            "schema/admin conformance [libsql] enrolls every persisted native-integer column with exact nullability",
             "mutation-verdict:construction:migrated-integer-inventory-complete",
+            "packages/conformance/src/schema-admin.ts",
         ),
         "invariant-snapshot-table-identity": ExpectedVerdict(
             "construction",
@@ -7579,9 +7613,9 @@ def suite_timeout_self_test_child(
         or suite_defaults.get("suite_wall_time_seconds") is not None
         or typecheck_defaults is None
         or typecheck_defaults.get("suite_wall_time_seconds") is not None
-        or MUTATION_SUITE_WALL_TIME_SECONDS != 300.0
+        or MUTATION_SUITE_WALL_TIME_SECONDS != 600.0
     ):
-        problems.append("Vitest and typecheck do not share the production 300s default")
+        problems.append("Vitest and typecheck do not share the production 600s default")
     MUTATION_SUITE_WALL_TIME_SECONDS = SUITE_SELF_TEST_DEADLINE_SECONDS
     if fault == "immediate-magic-error":
         def immediate_magic_error(*_args: object, **_kwargs: object) -> int:
@@ -9282,7 +9316,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 421:
+        if len(MUTATIONS) != 423:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

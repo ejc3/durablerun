@@ -1,9 +1,11 @@
 import {
   MAX_EPOCH_MS,
-  type SqlBatchMode,
+  type SqlBatchControl,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
+  sqlBatchMode,
+  sqlTransactionLock,
 } from '@durablerun/core'
 import { type LibsqlExecutor, LibsqlSchedulerStore, NOW_MS } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -54,10 +56,14 @@ class JitteringExecutor implements SqlExecutor {
   async batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode: SqlBatchMode = 'write',
+    control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
+    const mode = sqlBatchMode(control)
+    if (sqlTransactionLock(control) !== undefined) {
+      throw new Error(`clock-jitter executor cannot decompose a transaction-locked batch`)
+    }
     if (mode === 'read' || label.startsWith('admin:') || label.startsWith('migrate')) {
-      return this.real.batch(label, statements, mode)
+      return this.real.batch(label, statements, control)
     }
     const [clock] = await this.real.batch(
       'jitter:clock',
@@ -281,6 +287,20 @@ async function run(
 }
 
 describe('moving the clock between statements changes neither progress nor state', () => {
+  it('fails closed instead of stripping a transaction lock while decomposing a batch', async () => {
+    const { raw } = await openTestDb({ nowMs: NOW, idNamespace: 'clock-locked-batch' })
+    try {
+      await expect(
+        new JitteringExecutor(raw, 1).batch('emit-event', [], {
+          mode: 'write',
+          transactionLock: { kind: 'event', queue: Q, eventName: 'go' },
+        }),
+      ).rejects.toThrow(/cannot decompose a transaction-locked batch/)
+    } finally {
+      raw.close()
+    }
+  })
+
   it('distinguishes a retry stranded by a second database-clock read', async () => {
     const control = await run(997, 'retry')
     const broken = await run(997, 'retry', retryAvailabilityFromSecondClock)

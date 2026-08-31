@@ -60,7 +60,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     ])
 
     expect(await engineInvariantViolations(f.raw)).toContain('run-owner-missing: orphan')
-    f.close()
+    await f.close()
   })
 
   it("flags a run whose queue disagrees with its owning task's queue", async () => {
@@ -73,7 +73,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     ])
 
     expect(await engineInvariantViolations(f.raw)).toContain('run-task-queue-mismatch: r1')
-    f.close()
+    await f.close()
   })
 
   it('flags a wait row whose run belongs to a different task or queue', async () => {
@@ -91,7 +91,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     const violations = await engineInvariantViolations(f.raw)
     expect(violations.some((v) => v.startsWith('wait-cross-task:'))).toBe(true)
-    f.close()
+    await f.close()
   })
 
   it('flags a waiting wait row on a run that is not sleeping (a wait implies a parked run)', async () => {
@@ -114,7 +114,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     const violations = await engineInvariantViolations(f.raw)
     expect(violations.some((v) => v.startsWith('wait-on-non-sleeping-run:'))).toBe(true)
-    f.close()
+    await f.close()
   })
 
   it('flags a parked run whose carried wake name disagrees with its wait row', async () => {
@@ -135,7 +135,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     const violations = await engineInvariantViolations(f.raw)
     expect(violations.some((v) => v.startsWith('wait-wake-name-mismatch:'))).toBe(true)
-    f.close()
+    await f.close()
   })
 
   it("flags a timed wait whose deadline disagrees with its run's wake time", async () => {
@@ -160,7 +160,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     const violations = await engineInvariantViolations(f.raw)
     expect(violations.some((v) => v.startsWith('wait-timeout-availability-mismatch:'))).toBe(true)
-    f.close()
+    await f.close()
   })
 
   it('flags a waiting wait row for an event that has already fired (a lost wakeup)', async () => {
@@ -183,7 +183,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     const violations = await engineInvariantViolations(f.raw)
     expect(violations.some((v) => v.startsWith('wait-for-fired-event:'))).toBe(true)
-    f.close()
+    await f.close()
   })
 
   it('flags a delivered wake payload that disagrees with the stored event', async () => {
@@ -208,7 +208,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     const violations = await engineInvariantViolations(f.raw)
     expect(violations.some((v) => v.startsWith('wake-payload-mismatch:'))).toBe(true)
-    f.close()
+    await f.close()
   })
 
   it('flags a wake payload carried for an event that does not exist', async () => {
@@ -228,7 +228,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     )
     const violations = await engineInvariantViolations(f.raw)
     expect(violations.some((v) => v.startsWith('wake-payload-mismatch:'))).toBe(true)
-    f.close()
+    await f.close()
   })
 
   it('flags attempt accounting above the run-derived band', async () => {
@@ -237,7 +237,7 @@ describe('invariant checkers fire on constructed corruption', () => {
       { sql: `UPDATE tasks SET attempts = 2 WHERE task_id = 't1'`, args: [] },
     ])
     expect(await engineInvariantViolations(f.raw)).toContain('attempt-accounting-drift: t1')
-    f.close()
+    await f.close()
   })
 
   it('flags attempt accounting below the run-derived band', async () => {
@@ -246,7 +246,7 @@ describe('invariant checkers fire on constructed corruption', () => {
       { sql: `UPDATE runs SET attempt = 3 WHERE run_id = 'r1'`, args: [] },
     ])
     expect(await engineInvariantViolations(f.raw)).toContain('attempt-accounting-drift: t1')
-    f.close()
+    await f.close()
   })
 
   it('flags a live run after the user-attempt budget is exhausted', async () => {
@@ -265,7 +265,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     expect(
       (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
     ).toContain('attempts/at-max-with-live-run')
-    f.close()
+    await f.close()
   })
 
   it('keeps atomic condition IDs while deduplicating the legacy public violation', async () => {
@@ -288,7 +288,7 @@ describe('invariant checkers fire on constructed corruption', () => {
         (violation) => violation === 'checkpoint-cross-task: other-task/both',
       ),
     ).toHaveLength(1)
-    f.close()
+    await f.close()
   })
 
   it('keeps structured finding identities when rendered subjects collide', async () => {
@@ -315,7 +315,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     expect(new Set(collisions.map((finding) => JSON.stringify(finding.subjectIdentity))).size).toBe(
       2,
     )
-    f.close()
+    await f.close()
   })
 
   for (const [name, value, conditionId] of [
@@ -336,7 +336,7 @@ describe('invariant checkers fire on constructed corruption', () => {
       expect(
         (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
       ).toContain(conditionId)
-      f.close()
+      await f.close()
     })
   }
 
@@ -354,7 +354,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     expect(
       (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
     ).toContain('checkpoint/owner-attempt-mismatch')
-    f.close()
+    await f.close()
   })
 
   for (const [name, table, column, value, conditionId] of [
@@ -387,7 +387,7 @@ describe('invariant checkers fire on constructed corruption', () => {
       expect(
         (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
       ).toContain(conditionId)
-      f.close()
+      await f.close()
     })
   }
 
@@ -402,7 +402,7 @@ describe('invariant checkers fire on constructed corruption', () => {
         },
       ])
       expect(await engineInvariantViolations(f.raw)).toContain('temporal-storage-class: runs/r1')
-      f.close()
+      await f.close()
     })
   }
 
@@ -418,7 +418,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     expect(
       (await engineInvariantFindings(f.raw)).map((finding) => finding.conditionId as string),
     ).toContain('temporal-bound/runs.lease_ms')
-    f.close()
+    await f.close()
   })
 
   it('flags a dialect-exact bigint count above the public count contract', async () => {
@@ -441,7 +441,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     }
 
     expect(await engineInvariantViolations(outOfRange)).toContain('counter-out-of-range: tasks/t1')
-    f.close()
+    await f.close()
   })
 
   it('flags a dialect-exact bigint instant beyond the epoch contract', async () => {
@@ -466,7 +466,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     }
 
     expect(await engineInvariantViolations(outOfRange)).toContain('temporal-out-of-range: runs/r1')
-    f.close()
+    await f.close()
   })
 
   for (const [table, column, identity] of [
@@ -495,7 +495,7 @@ describe('invariant checkers fire on constructed corruption', () => {
           `mutation-verdict:behavior:counter-storage-${table}-${column}`,
         ).toContain(`counter-storage-class: ${identity}`)
       } finally {
-        f.close()
+        await f.close()
       }
     })
   }
@@ -516,7 +516,7 @@ describe('invariant checkers fire on constructed corruption', () => {
         },
       ])
       expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
-      f.close()
+      await f.close()
     })
   }
 
@@ -531,7 +531,7 @@ describe('invariant checkers fire on constructed corruption', () => {
       },
     ])
     expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
-    f.close()
+    await f.close()
   })
 
   it('flags a provenance statement name outside the builder grammar', async () => {
@@ -545,7 +545,7 @@ describe('invariant checkers fire on constructed corruption', () => {
       },
     ])
     expect(await engineInvariantViolations(f.raw)).toContain('provenance-pair-broken: tasks/t1')
-    f.close()
+    await f.close()
   })
 
   it('treats the final stamp segment as the statement name', async () => {
@@ -565,7 +565,7 @@ describe('invariant checkers fire on constructed corruption', () => {
     expect(await engineInvariantViolations(f.raw)).toContain(
       `one-batch-two-instants: tenant:one saw ${NOW} and ${NOW + 1}`,
     )
-    f.close()
+    await f.close()
   })
 
   it('does not merge independent opaque seeds that share a prefix', async () => {
@@ -587,13 +587,13 @@ describe('invariant checkers fire on constructed corruption', () => {
         v.startsWith('one-batch-two-instants:'),
       ),
     ).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('stays silent on the consistent seed world', async () => {
     const f = await seeded('clean')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('binds every snapshot result through its projection table identity', () => {

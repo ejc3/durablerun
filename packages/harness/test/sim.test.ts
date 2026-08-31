@@ -1,3 +1,10 @@
+import {
+  FENCE_SET,
+  FencedBatch,
+  type SqlExecutor,
+  type SqlTransactionLock,
+  sqlTransactionLock,
+} from '@durablerun/core'
 import { LibsqlExecutor } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { SimWorld, type TraceEntry } from '../src/index.js'
@@ -65,6 +72,28 @@ describe('deterministic scheduling', () => {
     // Some schedules serialize the increments (2), some interleave the racy
     // read-modify-write and lose one (1). Both MUST occur across 30 seeds.
     expect(values).toEqual(new Set([1, 2]))
+  })
+})
+
+describe('batch control forwarding', () => {
+  it('keeps an event transaction lock attached through the simulated port', async () => {
+    let observed: SqlTransactionLock | undefined
+    const real: SqlExecutor = {
+      batch: async (_label, statements, control) => {
+        observed = sqlTransactionLock(control)
+        return statements.map(() => ({ rows: [], rowsAffected: 1 }))
+      },
+    }
+    const world = new SimWorld(real, 'locked-batch')
+    world.actor('a', async (db) => {
+      const batch = new FencedBatch('emit-event', 'seed', { now: '1' })
+        .lockEvent({ queue: 'q', eventName: 'e' })
+        .cas('event', 'events', `UPDATE events SET ${FENCE_SET} WHERE queue = ?`, ['q'])
+      await batch.run(db)
+    })
+
+    await world.run()
+    expect(observed).toEqual({ kind: 'event', queue: 'q', eventName: 'e' })
   })
 })
 

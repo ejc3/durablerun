@@ -127,7 +127,7 @@ describe('transition-layer review regressions (second round)', () => {
     // The rejected calls fenced nothing: the lease is intact and usable.
     await f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('temporal columns keep INTEGER storage class under fractional-second inputs', async () => {
@@ -145,7 +145,7 @@ describe('transition-layer review regressions (second round)', () => {
     await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 90.7009)
     await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1.0007 })
     expect(await nonIntegerTemporalRows(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('reschedule classifies an absolute wake by its own discriminant', async () => {
@@ -174,7 +174,7 @@ describe('transition-layer review regressions (second round)', () => {
         'mutation-verdict:behavior:reschedule-wake-own-discriminant',
       ).toBe(1_030_000)
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -218,7 +218,7 @@ describe('transition-layer review regressions (second round)', () => {
         'mutation-verdict:behavior:suspend-wake-own-discriminant',
       ).toEqual({ availableAtMs: 1_030_000, marker: '{"atEpochMs":1030000}' })
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -268,7 +268,7 @@ describe('transition-layer review regressions (second round)', () => {
     ])
     expect(foreign?.rows[0]).toMatchObject({ state: 'pending', task_id: 'foreign-task' })
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('complete() under a (corrupt) terminal task leaves the task state alone', async () => {
@@ -294,7 +294,7 @@ describe('transition-layer review regressions (second round)', () => {
     ])
     expect(task?.rows[0]?.state).toBe('cancelled')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('reschedule() under a (corrupt) terminal task refuses instead of reviving it', async () => {
@@ -323,7 +323,7 @@ describe('transition-layer review regressions (second round)', () => {
     ])
     expect(taskRow?.rows[0]?.state).toBe('cancelled')
     expect(runRow?.rows[0]).toMatchObject({ state: 'running', claimed_by: run.claimToken })
-    f.close()
+    await f.close()
   })
 
   it("reschedule with 'preserve' keeps a carried event wake for the next claimer", async () => {
@@ -346,7 +346,7 @@ describe('transition-layer review regressions (second round)', () => {
     const [again] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
     expect(again?.runId).toBe(run.runId)
     expect(again?.wake).toMatchObject({ payloadJson: '{"x":1}' })
-    f.close()
+    await f.close()
   })
 
   it('spawn under an id collision with a terminal task creates no run (rule 6)', async () => {
@@ -382,7 +382,7 @@ describe('transition-layer review regressions (second round)', () => {
       { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [collidingId] },
     ])
     expect(task?.rows[0]?.state).toBe('completed')
-    f.close()
+    await f.close()
   })
 
   it('spawn loses rather than crashing when only the task id collides', async () => {
@@ -422,7 +422,7 @@ describe('transition-layer review regressions (second round)', () => {
       },
     ])
     expect(rows?.rows[0]).toMatchObject({ runs: 0, task_name: 'other' })
-    f.close()
+    await f.close()
   })
 
   it('a same-token claim receipt never revives a terminal task (rule 6)', async () => {
@@ -446,7 +446,7 @@ describe('transition-layer review regressions (second round)', () => {
     ])
     expect(task?.rows[0]?.state).toBe('completed') // not revived
     expect(again).toHaveLength(0) // no terminal run handed back
-    f.close()
+    await f.close()
   })
 
   it('a same-token claim receipt refuses a task with multiple live runs', async () => {
@@ -461,7 +461,7 @@ describe('transition-layer review regressions (second round)', () => {
     expect(receipt, 'mutation-verdict:behavior:claim-receipt-requires-sole-live-run').toHaveLength(
       0,
     )
-    f.close()
+    await f.close()
   })
 
   it('activate refuses a claim whose task acquired another live run', async () => {
@@ -481,7 +481,7 @@ describe('transition-layer review regressions (second round)', () => {
       },
     ])
     expect(row?.rows[0]).toMatchObject({ activated_gen: 0, started_at_ms: null })
-    f.close()
+    await f.close()
   })
 
   it('a losing duplicate activate never re-arms a terminal task deadline (rule 6)', async () => {
@@ -508,7 +508,7 @@ describe('transition-layer review regressions (second round)', () => {
     ])
     expect(task?.rows[0]?.state).toBe('completed')
     expect(task?.rows[0]?.cancel_at_ms).toBeNull() // deadline not re-armed
-    f.close()
+    await f.close()
   })
 })
 
@@ -536,7 +536,7 @@ describe('transition-layer review regressions (first round)', () => {
     ])
     expect(task?.rows[0]).toMatchObject({ state: 'failed', attempts: 2 })
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('setCheckpoint rejects a task_id that does not belong to the fencing run', async () => {
@@ -555,7 +555,7 @@ describe('transition-layer review regressions (first round)', () => {
       { sql: `SELECT COUNT(*) AS n FROM checkpoints WHERE task_id = ?`, args: [other.taskId] },
     ])
     expect(Number(rows?.rows[0]?.n)).toBe(0)
-    f.close()
+    await f.close()
   })
 
   it('a consumed event wake is cleared by reschedule — timer wakes do not replay it', async () => {
@@ -586,7 +586,7 @@ describe('transition-layer review regressions (first round)', () => {
     expect(timerWake?.runId).toBe(run.runId)
     // A pure timer wake must NOT re-present the consumed event.
     expect(timerWake?.wake).toBeUndefined()
-    f.close()
+    await f.close()
   })
 
   it('fail() with retry under a terminal task creates no successor (sweep-site parity)', async () => {
@@ -616,7 +616,7 @@ describe('transition-layer review regressions (first round)', () => {
     ])
     // No live successor may exist under a terminal task.
     expect(Number(rows?.rows[0]?.n)).toBe(0)
-    f.close()
+    await f.close()
   })
 })
 
@@ -660,7 +660,7 @@ describe('sweep and cancellation review regressions', () => {
 
       const violations = await engineInvariantViolations(f.raw)
       if (violations.length > 0) corruptSeeds.push(seed)
-      f.close()
+      await f.close()
     }
     expect(corruptSeeds, 'seeds reaching an invariant-violating state').toEqual([])
   })
@@ -684,7 +684,7 @@ describe('sweep and cancellation review regressions', () => {
       { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [run.taskId] },
     ])
     expect(task?.rows[0]?.state).toBe('running')
-    f.close()
+    await f.close()
   })
 
   it('a lost-launch reopen mirrors the task back to pending (no phantom running task)', async () => {
@@ -700,7 +700,7 @@ describe('sweep and cancellation review regressions', () => {
     ])
     expect(task?.rows[0]?.state).toBe('pending')
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it("sweep-terminal transitions delete the dead run's waits (no orphan waits)", async () => {
@@ -725,7 +725,7 @@ describe('sweep and cancellation review regressions', () => {
     ])
     expect(Number(waits?.rows[0]?.n)).toBe(0)
     expect(await engineInvariantViolations(f.raw)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('claim does not move tasks.attempts — it moves only on user failures (TLA accounting)', async () => {
@@ -737,7 +737,7 @@ describe('sweep and cancellation review regressions', () => {
       { sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
     ])
     expect(Number(task?.rows[0]?.attempts)).toBe(0)
-    f.close()
+    await f.close()
   })
 
   it('sweep(limit) bounds TOTAL transitions across cancellations and expiries', async () => {
@@ -755,7 +755,7 @@ describe('sweep and cancellation review regressions', () => {
     await f.admin.setFakeNowEpochMs(1_200_000)
     const swept = await f.store.sweep(Q, 2)
     expect(swept.length).toBeLessThanOrEqual(2)
-    f.close()
+    await f.close()
   })
 
   it('negative and zero sweep limits do nothing (SQLite LIMIT -1 is unlimited)', async () => {
@@ -766,7 +766,7 @@ describe('sweep and cancellation review regressions', () => {
     await f.admin.setFakeNowEpochMs(1_100_000)
     expect(await f.store.sweep(Q, -1)).toEqual([])
     expect(await f.store.sweep(Q, 0)).toEqual([])
-    f.close()
+    await f.close()
   })
 
   it('expireLeaseNow returns false for an already-expired lease', async () => {
@@ -781,7 +781,7 @@ describe('sweep and cancellation review regressions', () => {
       await f.store.expireLeaseNow(Q, run.runId, run.claimToken),
       'mutation-verdict:behavior:expire-lease-requires-future-expiry',
     ).toBe(false)
-    f.close()
+    await f.close()
   })
 
   it('expireLeaseNow refuses to launder a fractional stored expiry', async () => {
@@ -813,7 +813,7 @@ describe('sweep and cancellation review regressions', () => {
       expired: false,
       row: { claim_expires_at_ms: 1_000_000.5, storage_type: 'real' },
     })
-    f.close()
+    await f.close()
   })
 
   it('a successor-id collision fails loudly instead of booking a foreign run', async () => {
@@ -851,7 +851,7 @@ describe('sweep and cancellation review regressions', () => {
     ])
     expect(Number(task?.rows[0]?.infra_retries)).toBe(0)
     expect(task?.rows[0]?.last_attempt_run).not.toBe(predictedSuccessor)
-    f.close()
+    await f.close()
   })
 
   // fenceTwin('CancelExplicit') — the losing cancel CAS returns false and
@@ -876,6 +876,6 @@ describe('sweep and cancellation review regressions', () => {
     ])
     // The loser's CAS matched nothing, so its follow-ons must touch nothing.
     expect(row?.rows[0]?.state).toBe('pending')
-    f.close()
+    await f.close()
   })
 })

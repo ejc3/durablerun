@@ -43,8 +43,9 @@ export function testIdSource(
 }
 
 /**
- * An in-memory database migrated to the current schema, with the engine
- * clock frozen when `nowMs` is given.
+ * An in-memory database migrated to the current schema by default, with the
+ * engine clock frozen when `nowMs` is given. Admin conformance can request the
+ * same fixture before migration with `migrate: false`.
  *
  * Four lines, and every test file that wanted a database wrote its own copy
  * of them — twenty-two of them, across five packages. That is not a tidiness
@@ -62,7 +63,9 @@ export function testIdSource(
  * store's own tests. Exported under `@durablerun/store-libsql/testing` so it
  * stays out of the package's main barrel.
  */
-export async function openTestDb(opts: { nowMs?: number; idNamespace?: string } = {}): Promise<{
+export async function openTestDb(
+  opts: { nowMs?: number; idNamespace?: string; migrate?: boolean } = {},
+): Promise<{
   raw: LibsqlExecutor
   admin: LibsqlStoreAdmin
   ids: IdSource
@@ -71,7 +74,7 @@ export async function openTestDb(opts: { nowMs?: number; idNamespace?: string } 
   const raw = LibsqlExecutor.open(':memory:')
   const admin = new LibsqlStoreAdmin(raw)
   const ids = testIdSource(opts.idNamespace)
-  await admin.migrate()
+  if (opts.migrate !== false) await admin.migrate()
   if (opts.nowMs !== undefined) await admin.setFakeNowEpochMs(opts.nowMs)
   return { raw, admin, ids, close: () => raw.close() }
 }

@@ -43,11 +43,70 @@ export interface SqlResult {
  */
 export type SqlBatchMode = 'read' | 'write'
 
+/**
+ * A closed transaction prelude for dialects whose ordinary write batches do
+ * not serialize event delivery against wait registration or concurrent claim
+ * retries carrying the same durable receipt token.
+ *
+ * This is deliberately control data, not a `SqlStatement`: the executor owns
+ * the dialect SQL that acquires the lock, executes it before every supplied
+ * statement in the same transaction, and returns no result slot for it.
+ * Callers therefore cannot smuggle an unfenced write into a FencedBatch under
+ * the name "lock". Matching coordinates of the same kind must be mutually
+ * exclusive until the transaction commits or rolls back.
+ * Coordinate values are data and must be bound, never spliced into lock SQL.
+ */
+export type SqlTransactionLock =
+  | {
+      readonly kind: 'event'
+      readonly queue: string
+      readonly eventName: string
+    }
+  | {
+      readonly kind: 'claim'
+      readonly queue: string
+      readonly claimToken: string
+    }
+
+export type SqlEventLockCoordinates = Omit<
+  Extract<SqlTransactionLock, { readonly kind: 'event' }>,
+  'kind'
+>
+
+export type SqlClaimLockCoordinates = Omit<
+  Extract<SqlTransactionLock, { readonly kind: 'claim' }>,
+  'kind'
+>
+
+/**
+ * The lock travels in the existing batch-control position so every executor
+ * wrapper forwards mode and lock as one value. A separate optional argument
+ * is unsafe here: an otherwise correct wrapper can forward the first three
+ * arguments, silently discard the lock, and reopen the protocol race.
+ */
+export interface SqlLockedBatch {
+  readonly mode: 'write'
+  readonly transactionLock: SqlTransactionLock
+}
+
+export type SqlBatchControl = SqlBatchMode | SqlLockedBatch
+
+export function sqlBatchMode(control: SqlBatchControl | undefined): SqlBatchMode {
+  if (control === undefined) return 'write'
+  return typeof control === 'string' ? control : control.mode
+}
+
+export function sqlTransactionLock(
+  control: SqlBatchControl | undefined,
+): SqlTransactionLock | undefined {
+  return typeof control === 'object' ? control.transactionLock : undefined
+}
+
 export interface SqlExecutor {
   batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode?: SqlBatchMode,
+    control?: SqlBatchControl,
   ): Promise<SqlResult[]>
 }
 

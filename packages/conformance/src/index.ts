@@ -2,8 +2,10 @@ export type {
   StorageCorruption,
   StorageCorruptionAttempt,
   StorageCorruptionDisposition,
+  PersistedNumericTable,
   StoreFixture,
   StoreFixtureFactory,
+  StoreFixtureOptions,
 } from './fixture.js'
 export { executeStorageCorruption } from './fixture.js'
 export {

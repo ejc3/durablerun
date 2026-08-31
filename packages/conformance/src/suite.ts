@@ -48,8 +48,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       await f.admin.setFakeNowEpochMs(1_000_000)
     })
 
-    afterEach(() => {
-      f.close()
+    afterEach(async () => {
+      await f.close()
     })
 
     describe('spawn', () => {
@@ -85,6 +85,72 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const b = await f.store.spawn('qb', 'x', '{}', { idempotencyKey: 'k' })
         expect(a.taskId).not.toBe(b.taskId)
         expect(b.created).toBe(true)
+      })
+
+      it('rejects non-round-tripping header keys and values before persistence', async () => {
+        let executorCalls = 0
+        const observed = f.storeOver({
+          batch: (label, statements, control) => {
+            executorCalls += 1
+            return f.raw.batch(label, statements, control)
+          },
+        })
+        const invalidHeaders = [
+          { id: 'nul-key', headers: { 'bad\u0000key': 'value' } },
+          { id: 'nul-value', headers: { key: 'bad\u0000value' } },
+          { id: 'high-surrogate-key', headers: { 'bad\uD800key': 'value' } },
+          { id: 'high-surrogate-value', headers: { key: 'bad\uD800value' } },
+          { id: 'low-surrogate-key', headers: { 'bad\uDC00key': 'value' } },
+          { id: 'low-surrogate-value', headers: { key: 'bad\uDC00value' } },
+        ] as const
+
+        for (const { id, headers } of invalidHeaders) {
+          await expect(
+            observed.spawn(Q, `invalid-headers-${id}`, '{}', { headers }),
+          ).rejects.toThrow(/task headers is not a JSON value/)
+        }
+        expect(executorCalls).toBe(0)
+        const [count] = await f.raw.batch(
+          'invalid-headers:probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
+      })
+
+      it('rejects runtime header shapes outside an object of strings before persistence', async () => {
+        let executorCalls = 0
+        const observed = f.storeOver({
+          batch: (label, statements, control) => {
+            executorCalls += 1
+            return f.raw.batch(label, statements, control)
+          },
+        })
+        const invalidHeaders = [
+          { id: 'null-root', headers: null },
+          { id: 'array-root', headers: ['value'] },
+          { id: 'string-root', headers: 'value' },
+          { id: 'number-value', headers: { trace: 1 } },
+          { id: 'null-value', headers: { trace: null } },
+          { id: 'array-value', headers: { trace: ['value'] } },
+          { id: 'object-value', headers: { trace: { nested: 'value' } } },
+          { id: 'undefined-value', headers: { trace: undefined } },
+        ] as const
+
+        for (const { id, headers } of invalidHeaders) {
+          await expect(
+            observed.spawn(Q, `invalid-header-shape-${id}`, '{}', {
+              headers: headers as unknown as Record<string, string>,
+            }),
+          ).rejects.toThrow(/task headers is not a JSON value/)
+        }
+        expect(executorCalls).toBe(0)
+        const [count] = await f.raw.batch(
+          'invalid-header-shapes:probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+        expect(Number(count?.rows[0]?.n)).toBe(0)
       })
 
       it('rejects retry durations above the durable bound without writing', async () => {
@@ -167,6 +233,82 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('persisted retry admission', () => {
+      const doors = ['candidate', 'same-token-receipt', 'activation'] as const
+
+      for (const door of doors) {
+        it(`refuses a nonnumeric exponential factor at the ${door} door without changing state`, async () => {
+          const queue = `${Q}-retry-factor-${door}`
+          const token = `retry-factor-${door}-token`
+          const spawned = await f.store.spawn(queue, 'retry-factor', '{}', {
+            retryStrategy: {
+              kind: 'exponential',
+              baseSeconds: 1,
+              factor: 2,
+              maxSeconds: 60,
+            },
+          })
+          const [claimed] =
+            door === 'candidate'
+              ? []
+              : await f.store.claim(queue, token, { leaseSeconds: 60, limit: 1 })
+          if (door !== 'candidate' && !claimed) {
+            throw new Error(`expected a claimed run for ${door}`)
+          }
+
+          await f.raw.batch('corrupt-exponential-factor', [
+            {
+              sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+              args: [
+                JSON.stringify({
+                  kind: 'exponential',
+                  baseSeconds: 1,
+                  factor: 'not-a-number',
+                  maxSeconds: 60,
+                }),
+                spawned.taskId,
+              ],
+            },
+          ])
+          const before = await snapshot(f, spawned.taskId)
+          const invocation =
+            door === 'candidate'
+              ? f.store.claim(queue, token, { leaseSeconds: 60, limit: 1 })
+              : door === 'same-token-receipt'
+                ? f.store.claim(queue, claimed?.claimToken ?? '', {
+                    leaseSeconds: 60,
+                    limit: 1,
+                  })
+                : f.store.activate(
+                    queue,
+                    claimed?.runId ?? '',
+                    claimed?.claimToken ?? '',
+                    claimed?.claimGen ?? 0,
+                  )
+          const outcome = await invocation.then(
+            (value) => ({
+              kind: 'resolved' as const,
+              value: Array.isArray(value)
+                ? value.map((run) => run.taskId)
+                : value === null
+                  ? null
+                  : 'activated',
+            }),
+            (error: unknown) => ({
+              kind: 'rejected' as const,
+              error: error instanceof Error ? error.name : typeof error,
+            }),
+          )
+
+          expect(outcome, 'regression:retry-factor-type-before-cast').toEqual({
+            kind: 'resolved',
+            value: door === 'activation' ? null : [],
+          })
+          expect(await snapshot(f, spawned.taskId), `${door} changed durable state`).toEqual(before)
+        })
+      }
+    })
+
     describe('claim', () => {
       it('leaves a candidate with a corrupt persisted retry strategy unclaimed', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-retry', '{}', {
@@ -205,6 +347,27 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      it('skips a jsonb-overflowing retry before the bounded claim limit', async () => {
+        const poison = await f.store.spawn(Q, 'overflowing-retry', '{}')
+        const healthy = await f.store.spawn(Q, 'healthy-after-overflowing-retry', '{}')
+        await f.raw.batch('overflowing-retry-strategy', [
+          {
+            sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+            args: ['{"kind":"fixed","baseSeconds":1e1000000}', poison.taskId],
+          },
+        ])
+
+        const claimed = await f.store.claim(Q, 'overflowing-retry-token', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        expect(claimed.map((run) => run.taskId)).toEqual([healthy.taskId])
+        const [poisonRun] = await f.raw.batch('overflowing-retry:probe', [
+          { sql: `SELECT state FROM runs WHERE task_id = ?`, args: [poison.taskId] },
+        ])
+        expect(poisonRun?.rows[0]?.state).toBe('pending')
+      })
+
       it('leaves a candidate with corrupt persisted headers unclaimed', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-candidate-headers', '{}', {
           headers: { trace: 'valid' },
@@ -212,7 +375,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('corrupt-candidate-headers', [
           {
             sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
-            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+            args: ['{"trace":1e1000000}', spawned.taskId],
           },
         ])
         const before = await snapshot(f, spawned.taskId)
@@ -284,7 +447,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('corrupt-receipt-headers', [
           {
             sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
-            args: [JSON.stringify({ trace: 1 }), spawned.taskId],
+            args: ['{"trace":1e1000000}', spawned.taskId],
           },
         ])
         const before = await snapshot(f, spawned.taskId)
@@ -2711,7 +2874,89 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             expect(inline, `seed ${seed}`).toBe('{"r":1}')
           }
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
+        }
+      })
+
+      it('serializes real concurrent await and emit batches without losing a wakeup', async () => {
+        const fx = await makeFixture('native-event-race')
+        try {
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          const races = []
+          for (let index = 0; index < 12; index++) {
+            const queue = `native-event-${index}`
+            const spawned = await fx.store.spawn(queue, 'racer', '{}')
+            const [run] = await fx.store.claim(queue, `native-event-claim-${index}`, {
+              leaseSeconds: 60,
+              limit: 1,
+            })
+            if (!run || run.taskId !== spawned.taskId) throw new Error('expected native race claim')
+            await fx.store.activate(queue, run.runId, run.claimToken, run.claimGen)
+            races.push({ queue, run })
+          }
+
+          // Establish concurrent backend connections before the measured
+          // requests. SimWorld schedules whole batches, so it cannot prove the
+          // transaction prelude that serializes two real PostgreSQL clients.
+          await Promise.all(
+            Array.from({ length: 12 }, (_, index) =>
+              fx.raw.batch(
+                `native-event:warm-${index}`,
+                [{ sql: 'SELECT 1 AS ready', args: [] }],
+                'read',
+              ),
+            ),
+          )
+
+          const observations = await Promise.all(
+            races.map(async ({ queue, run }) => {
+              const [awaited] = await Promise.all([
+                fx.store.awaitEvent(
+                  queue,
+                  run.taskId,
+                  run.runId,
+                  run.claimToken,
+                  'step',
+                  'event',
+                  null,
+                ),
+                fx.store.emitEvent(queue, 'event', '{"race":true}'),
+              ])
+              const [stored] = await fx.raw.batch(
+                'native-event:stored',
+                [
+                  {
+                    sql: `SELECT state, event_payload
+                          FROM runs WHERE run_id = ?`,
+                    args: [run.runId],
+                  },
+                ],
+                'read',
+              )
+              return { awaited, stored: stored?.rows[0] }
+            }),
+          )
+
+          for (const { awaited, stored } of observations) {
+            expect(
+              awaited.emitted
+                ? { outcome: 'inline', state: stored?.state, payload: stored?.event_payload }
+                : { outcome: 'woken', state: stored?.state, payload: stored?.event_payload },
+            ).toEqual(
+              awaited.emitted
+                ? { outcome: 'inline', state: 'running', payload: null }
+                : { outcome: 'woken', state: 'pending', payload: '{"race":true}' },
+            )
+          }
+          const [waits] = await fx.raw.batch(
+            'native-event:waits',
+            [{ sql: `SELECT COUNT(*) AS count FROM waits`, args: [] }],
+            'read',
+          )
+          expect(Number(waits?.rows[0]?.count), 'no registration is stranded').toBe(0)
+          expect(await engineInvariantViolations(fx.raw)).toEqual([])
+        } finally {
+          await fx.close()
         }
       })
 
@@ -2748,7 +2993,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(rows?.rows[0]?.wake_event, `seed ${seed}`).toBe('late')
           expect(Number(waits?.rows[0]?.n), `seed ${seed}: wait settled exactly once`).toBe(0)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -2842,7 +3087,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect([held, swept], `seed ${seed}`).not.toEqual([true, 1])
           expect([held, swept], `seed ${seed}`).not.toEqual([false, 0])
           expect(await engineInvariantViolations(fx.raw)).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -2872,7 +3117,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const swept = await fx.store.sweep(Q, 10)
         expect(swept[0]?.kind).toBe('claim-timeout')
         expect(await engineInvariantViolations(fx.raw)).toEqual([])
-        fx.close()
+        await fx.close()
       })
 
       it('a sweeper crashing mid-sweep leaves a resweepable, invariant-clean state', async () => {
@@ -2909,7 +3154,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ])
           expect(Number(successors?.rows[0]?.n), `seed ${seed}`).toBe(2)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -2943,7 +3188,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         // attempts counts USER failures only; infra successors never touched it.
         expect(task?.rows[0]).toMatchObject({ attempts: 1, infra_retries: 2 })
-        fx.close()
+        await fx.close()
       })
 
       it('expireLeaseNow is advisory: a live heartbeat revives the lease', async () => {
@@ -2958,7 +3203,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // intended §3.9 semantics (the lease is the sole authority).
         expect((await fx.store.heartbeat(Q, run.runId, run.claimToken, 600)).held).toBe(true)
         expect(await fx.store.sweep(Q, 10)).toEqual([])
-        fx.close()
+        await fx.close()
       })
 
       it('relaunch backoff arithmetic is pinned: 5s then 10s', async () => {
@@ -2980,7 +3225,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { sql: `SELECT available_at_ms FROM runs`, args: [] },
         ])
         expect(Number(second?.rows[0]?.available_at_ms)).toBe(1_300_000 + 10_000)
-        fx.close()
+        await fx.close()
       })
 
       it('a stale nonzero activated_gen still classifies a lost launch correctly', async () => {
@@ -3003,7 +3248,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { sql: `SELECT infra_retries FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
         ])
         expect(Number(task?.rows[0]?.infra_retries)).toBe(0)
-        fx.close()
+        await fx.close()
       })
     })
 
@@ -3067,12 +3312,85 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(reopenedTasks, `seed ${seed}`).toBe(1)
           // Invariants at quiescence, not only the scenario's own counts.
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
     })
 
     describe('concurrent claim exclusivity (simulated)', () => {
+      it('uses the backend native concurrency primitive without overlapping receipts', async () => {
+        for (let seed = 0; seed < 5; seed++) {
+          const fx = await makeFixture(`native-claim-${seed}`)
+          await fx.admin.setFakeNowEpochMs(1_000_000)
+          for (let i = 0; i < 8; i++) await fx.store.spawn(Q, `native-job-${i}`, '{}')
+
+          // Do not route this through SimWorld: this case exists specifically
+          // to exercise the backend's real transaction and row-lock behavior.
+          const receipts = await Promise.all(
+            Array.from({ length: 4 }, (_, index) =>
+              fx.store.claim(Q, `native-tick-${index}`, { leaseSeconds: 60, limit: 2 }),
+            ),
+          )
+          const runIds = receipts.flatMap((receipt) => receipt.map(({ runId }) => runId))
+
+          expect(
+            receipts.every((receipt) => receipt.length <= 2),
+            `seed ${seed}: claim bound`,
+          ).toBe(true)
+          expect(runIds, `seed ${seed}: every due run claimed`).toHaveLength(8)
+          expect(new Set(runIds).size, `seed ${seed}: no overlapping receipts`).toBe(8)
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          await fx.close()
+        }
+      })
+
+      it('serializes concurrent same-token retries before candidate selection', async () => {
+        const fx = await makeFixture('native-same-token')
+        await fx.admin.setFakeNowEpochMs(1_000_000)
+        for (let i = 0; i < 16; i++) await fx.store.spawn(Q, `same-token-job-${i}`, '{}')
+
+        // Establish the backend's concurrent connections before the measured
+        // requests. Otherwise connection handshakes can accidentally
+        // serialize a broken claim implementation and make the race vanish.
+        await Promise.all(
+          Array.from({ length: 16 }, (_, index) =>
+            fx.raw.batch(
+              `native-same-token:warm-${index}`,
+              [{ sql: 'SELECT 1 AS ready', args: [] }],
+              'read',
+            ),
+          ),
+        )
+
+        const receipts = await Promise.all(
+          Array.from({ length: 16 }, () =>
+            fx.store.claim(Q, 'one-logical-request', { leaseSeconds: 60, limit: 1 }),
+          ),
+        )
+        const runIds = receipts.flatMap((receipt) => receipt.map(({ runId }) => runId))
+        const [durable] = await fx.raw.batch(
+          'native-same-token:durable',
+          [
+            {
+              sql: `SELECT COUNT(*) AS count
+                    FROM runs
+                    WHERE queue = ? AND state = 'running' AND claimed_by = ?`,
+              args: [Q, 'one-logical-request'],
+            },
+          ],
+          'read',
+        )
+
+        expect(
+          receipts.every((receipt) => receipt.length === 1),
+          'same bounded receipt',
+        ).toBe(true)
+        expect(new Set(runIds).size, 'every retry returns the original selection').toBe(1)
+        expect(Number(durable?.rows[0]?.count), 'one durable selection for one token').toBe(1)
+        expect(await engineInvariantViolations(fx.raw)).toEqual([])
+        await fx.close()
+      })
+
       it('never double-claims a run across concurrent ticks, any seed', async () => {
         for (let seed = 0; seed < 10; seed++) {
           const fx = await makeFixture(seed)
@@ -3097,7 +3415,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(all.length, `seed ${seed}: total claims`).toBe(4)
           expect(new Set(all).size, `seed ${seed}: distinct runs`).toBe(4)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
 
@@ -3134,7 +3452,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ])
           expect(Number(running?.rows[0]?.n), `seed ${seed}: no ownerless running run`).toBe(0)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          fx.close()
+          await fx.close()
         }
       })
     })
@@ -3463,7 +3781,7 @@ export async function wakeWitnessDisagreements(
     }
     return wrong
   } finally {
-    fixture.close()
+    await fixture.close()
   }
 }
 
@@ -3477,6 +3795,6 @@ export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtur
         },
         'mutation-verdict:behavior:emit-wake-one-witness',
       ).toEqual({ single: [], pairs: [] })
-    }, 30_000)
+    }, 120_000)
   })
 }

@@ -10,6 +10,7 @@ import type {
 } from '@durablerun/core'
 
 type PersistedNumericField = PersistedCounterFieldDescriptor | PersistedTemporalFieldDescriptor
+export type PersistedNumericTable = PersistedNumericField['table']
 type PersistedNumericColumn<Table extends PersistedNumericField['table']> = Extract<
   PersistedNumericField,
   { readonly table: Table }
@@ -98,8 +99,22 @@ export interface StorageCorruptionAttempt {
 export interface StoreFixture {
   store: SchedulerStore
   admin: StoreAdmin
+  /** Construct the dialect's real admin over an injected executor. */
+  adminOver(db: SqlExecutor): StoreAdmin
   /** The real executor — for raw shared-schema assertions and SimWorld. */
   raw: SqlExecutor
+  /**
+   * Dialect catalog reads projected into the shared schema-evidence columns:
+   * `table_name`, `column_name`, raw `native_type`, and `nullable`.
+   * The statements return every column in the requested tables; they must not
+   * filter to the contract inventory, or a missing/wrongly typed field could
+   * disappear before the shared comparison sees it.
+   * The shared runner executes and validates the statements; fixtures cannot
+   * award themselves conformance by returning a success token.
+   */
+  persistedIntegerCatalogStatements(
+    tables: readonly PersistedNumericTable[],
+  ): readonly SqlStatement[]
   /** Prepare, but do not execute, the dialect's invalid-storage write. */
   storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt
   /**
@@ -108,10 +123,19 @@ export interface StoreFixture {
    * actors against one database.
    */
   storeOver(db: SqlExecutor, buggify?: Buggify): SchedulerStore
-  close(): void
+  /** Fully release every fixture-owned resource before resolving. */
+  close(): Promise<void>
 }
 
-export type StoreFixtureFactory = (seed: number | string) => Promise<StoreFixture>
+export interface StoreFixtureOptions {
+  /** Defaults to true. False exposes a genuinely fresh database to admin conformance. */
+  readonly migrate?: boolean
+}
+
+export type StoreFixtureFactory = (
+  seed: number | string,
+  options?: StoreFixtureOptions,
+) => Promise<StoreFixture>
 
 export function interposeAfterBatch(
   delegate: SqlExecutor,

@@ -93,7 +93,7 @@ async function fixture() {
     raw,
     admin,
     store: new LibsqlSchedulerStore(raw, ids),
-    close: () => raw.close(),
+    close: async () => raw.close(),
   }
 }
 
@@ -188,7 +188,7 @@ describe('rows written before a column existed', () => {
         `${table}.${column} NULL leaves the run asleep with no wait to wake it`,
       ).toBe(false)
       expect(await engineInvariantViolations(f.raw)).toEqual([])
-      f.close()
+      await f.close()
     })
 
     it(`the lifecycle still completes when ${table}.${column} is NULL (pre-v${version})`, async () => {
@@ -205,7 +205,7 @@ describe('rows written before a column existed', () => {
       const result = await f.store.getTaskResult(Q, spawned.taskId)
       expect(result?.state).toBe('completed')
       expect(await engineInvariantViolations(f.raw)).toEqual([])
-      f.close()
+      await f.close()
     })
 
     it(`a timed wake still decodes when ${table}.${column} is NULL (pre-v${version})`, async () => {
@@ -235,7 +235,7 @@ describe('rows written before a column existed', () => {
       )
       expect(Number(waits?.rows[0]?.n)).toBe(0)
       expect(await engineInvariantViolations(f.raw)).toEqual([])
-      f.close()
+      await f.close()
     })
   }
 })
@@ -267,7 +267,7 @@ describe('ambiguous legacy wait registrations', () => {
       'read',
     )
     expect(waits?.rows).toEqual([{ step_name: f.staleStep }, { step_name: f.currentStep }])
-    f.close()
+    await f.close()
   })
 
   it('does not recover a legacy step from a foreign-owned registration', async () => {
@@ -297,6 +297,6 @@ describe('ambiguous legacy wait registrations', () => {
       'read',
     )
     expect(Number(waits?.rows[0]?.n)).toBe(1)
-    f.close()
+    await f.close()
   })
 })

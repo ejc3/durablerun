@@ -1,22 +1,21 @@
 {
-  "name": "@durablerun/conformance",
+  "name": "@durablerun/store-postgres",
   "version": "0.0.0",
   "license": "MIT",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./testing": "./src/testing.js"
   },
   "scripts": {
     "test": "vitest run"
   },
   "dependencies": {
     "@durablerun/core": "workspace:*",
-    "@durablerun/harness": "workspace:*"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
-    "@durablerun/store-libsql": "workspace:*",
-    "@durablerun/store-postgres": "workspace:*",
-    "vitest": "^3.2.4"
+    "@types/pg": "^8.23.1"
   }
 }

@@ -6,7 +6,7 @@ This top-of-file block is the sole normative suite transport contract:
 structurally valid `SuiteResult` reaches verdict classification.
 <!-- mutation-suite-transport-contract:end -->
 
-## Current milestone — useful Turso dogfood
+## Current milestone — dogfood evidence plus PostgreSQL portability
 
 The default product thesis is a Turso-first TypeScript durable-workflow engine.
 The historical phase inventory below is an options map, not permission to run
@@ -17,7 +17,11 @@ useful workflow in under 30 minutes; the same workload runs against remote
 Turso for seven consecutive days, survives deliberate driver and worker
 deaths, and shows no lost work or duplicated checkpointed effects. Quiescent
 work produces no idle worker compute, and terminal failures have an inspectable
-reason.
+reason. While that elapsed evidence accrues, PostgreSQL becomes the second real
+dialect: its fixture passes the identical six-surface conformance door against
+PostgreSQL 17, including native concurrent claims with disjoint receipts and
+the emit/await event-lock race. `pnpm verify` runs that matrix against a local
+or CI PostgreSQL service.
 
 **Critical path:**
 
@@ -30,6 +34,11 @@ reason.
    task failures.
 3. Run the useful workload locally, then as the thin remote-Turso vertical
    slice; retain kill/recovery and idle evidence.
+4. Use the external seven-day wait rather than implementation time: land one
+   PostgreSQL outcome PR that supplies the native executor, schema/admin
+   fixture, `SKIP LOCKED` claim, event-lock transaction prelude, and complete
+   shared-conformance enrollment. MySQL and oracle/gold-plating work remain
+   deferred.
 
 **Implementation checkpoint (PR #14, 2026-08-29):** the clean-checkout
 commands, ref-journal workload, local/file replay, status receipt, bounded
@@ -66,16 +75,29 @@ the four incompatible clauses from the exact emitted claim inventory. Green
 singleton aggregate. On that head, the normal hosted tick retained checkpoint
 one, and both driver-before-activation and worker-after-checkpoint probes
 completed with their exact relaunch/infrastructure-retry receipts. Once PR #15
-merges, enable the hourly schedule. The only remaining exit evidence is then
-elapsed: retain verified receipts for seven consecutive days. No additional
-engine or resident-transport work is authorized by that wait.
+merged as `79a6d53`, the `43 * * * *` schedule was enabled. Its first
+scheduled run completed green on merged `main` with one sleeping task, one
+retained checkpoint, and zero attempts, retries, or relaunches. The hourly
+watcher owns the remaining seven-day elapsed evidence; it is not an
+implementation work queue.
+
+**PostgreSQL checkpoint (2026-08-31):** explicit owner direction activated the
+second-dialect promise while the dogfood clock runs. Red enrollment requires
+`postgres` in the central fixture registry. Shared async teardown and the
+sixth schema/admin surface are integrated; the implementation is split into
+executor, schema/fixture, closed event- and same-token-claim lock preludes, and
+scheduler SQL lanes. The checkpoint is complete: PostgreSQL 17 passes the
+identical six-surface conformance door, including schema/admin, every scheduler
+transition, native same-token and disjoint-receipt claim concurrency, and the
+emit/await event race. The clean outcome head passes `pnpm verify`; remaining
+closeout is final gate evidence and merge, not additional product scope.
 
 **Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
 recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-
 attribution expansion, child workflows, sagas, MySQL, sharding, dedicated
-placement, EndingFeed, and the WDK wrapper. PostgreSQL follows this milestone
-if pluggable SQL remains a product promise; otherwise that promise is removed
-from the v0 scope.
+placement, EndingFeed, the WDK wrapper, and PostgreSQL oracle parity
+against the upstream Absurd implementation. Those do not block the real
+PostgreSQL conformance outcome.
 
 Companion to DESIGN.md (the spec). Rules for every PR: lands green (lint,
 format, unit + conformance) before the next branches off it; adds the
@@ -278,7 +300,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
     The verifier runs its classifier, source-owner, and generated-construction
-    surfaces across all **421 live mutations**. Every TypeScript replacement is
+    surfaces across all **423 live mutations**. Every TypeScript replacement is
     materialized and parsed before enrollment. Every mutant routed to Vitest
     also passes an incremental compiler value-binding comparison against its
     original source, so a newly unbound runtime identifier is rejected before
@@ -419,12 +441,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     conditions, the portable snapshot columns, and 69 storage/lower/upper
     poison witnesses.
     The complete matrix is 109 conditions, 139 witnesses, and 2,363 ambient
-    cells. LibSQL migration conformance discovers every native `INTEGER`
-    column and compares the exact field/nullability vector to the union of all
-    eight counter plus 23 temporal descriptors—31 durable integer fields,
-    without a naming proxy. Invariant result assembly keys each projection by
-    its declared table rather than rebinding the six result slots through
-    another positional table list.
+    cells. The central schema/admin conformance surface discovers every native
+    integer column and compares the exact field/64-bit-width/nullability vector
+    to the union of all eight counter plus 23 temporal descriptors—31 durable
+    integer fields, without a naming proxy. LibSQL supplies real
+    `PRAGMA table_info` statements while the shared runner owns their execution
+    and comparison. Invariant result assembly keys each projection by its
+    declared table rather than rebinding the six result slots through another
+    positional table list.
     Fourteen derived-deadline sites prove exact headroom before addition, while
     fixed-field fragments reject corrupt persisted instants before ordered
     limits, at post-scan CASes, in all four next-wake sources, and before direct
@@ -566,13 +590,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     aliases, retains runtime class heritage, and proves rejection precedes
     checkpoint/worktree creation. The exact focused rerun is 2/2. The closing
     simplify pass then added two exact poison-settlement mutations, bringing the
-    current registry to **421**. The clean `a00fc27` checkpoint had already
+    registry at that checkpoint to **421**. The clean `a00fc27` checkpoint had
+    already
     caught all 419 then-declared entries; those two additions supersede that
     historical receipt. The first 421-entry run at `5cf87d5` then refused two
     pre-existing relative-only timestamp mutants as wrong-path because the new
     shape control also failed. Green `1d005de` rewrites their relative `CASE`
     arm without changing the compiled wake signature, and both focused audits
-    are exact. A clean final-head 421/421 audit is still the final mutation gate.
+    are exact. A clean final-head 423/423 audit is still the final mutation gate.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver
@@ -694,11 +719,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   classifier, codec, replay, worker, clock, collision,
   compiler-bind, completion-origin, task-option, wake-discriminant, payload,
   relation-policy, advisory-expiry, generated-syntax, static-title, and
-  intrinsic-dispatch arms. Two closing settlement owners make the current
-  registry **421**. A final-head 421/421 exact audit is required to prove those
-  current declarations; even that receipt cannot prove that a
-  future semantic arm is enrolled. PR3.10 must derive both the cases and their
-  mutation/verdict ownership from the same layer descriptor.
+  intrinsic-dispatch arms. Two closing settlement owners brought that registry
+  to **421**; PostgreSQL JSON-input validity is the 422nd owner and the nested
+  retry-factor cast guard is the current 423rd. A final-head 423/423 exact
+  audit is required to prove those current declarations; even that receipt
+  cannot prove that a future semantic arm is enrolled. PR3.10 must derive both
+  the cases and their mutation/verdict ownership from the same layer descriptor.
   The same gate must verify each postmortem's cited red and green hashes are
   distinct, ordered commits and that the red commit demonstrably leaves the
   named probe failing; the final attribution closeout showed that prose-only
@@ -753,30 +779,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - **Postgres double-claim**: `casMany` guarantees a win rule, not a
     concurrency semantics; store-pg needs `FOR UPDATE SKIP LOCKED` and a
     conformance scenario before it is DONE.
-  - **Rule 2's lock prelude**: the primitive has no statement kind for
-    acquiring a lock, and every non-tail statement must carry a fence.
+  - **Closed lock preludes**: `FencedBatch.lockEvent` and `lockClaim` pass only
+    their typed coordinates to the executor before the fenced SQL. They do not
+    accept SQL or contribute a result slot, so the new dialect can acquire its
+    transaction lock without opening an unfenced-write escape.
   - **MySQL cannot derive the winner from row counts alone** — no targeted
     `ON CONFLICT`; the `SqlResult` normalization contract must state
     matched-not-changed semantics.
   From PR3.7:
-  - **Migration-version conformance**: lift PR3.7's libSQL schema gate into the
-    shared admin contract. Every dialect must accept only the canonical
+  - **Migration-version conformance**: the sixth indivisible `schema-admin`
+    surface lifts PR3.7's libSQL schema gate into the shared admin contract.
+    Every dialect must accept only the canonical
     nonnegative safe base-10 representation, require exact equality with the
     binary's current version, and classify an actually absent metadata table
     at the dialect boundary without allowing stored error-like text or an
     unrelated read failure to impersonate a fresh database.
   - **Temporal schema enrollment for each new dialect**: the 23-field temporal
-    contract, conditions, snapshots, and corruption witnesses are already
-    dialect-neutral. Each dialect migration must additionally prove its native
-    numeric/time encoding and nullability against the combined 31-field durable
-    integer inventory (the present `PRAGMA table_info` proof is intentionally
-    libSQL-specific); no dialect may declare itself conformant by running the
-    behavioral surface alone.
+    contract, conditions, snapshots, and corruption witnesses are
+    dialect-neutral. The shared schema/admin runner now checks the combined
+    31-field durable integer inventory; each fixture supplies only its native
+    catalog projection (`PRAGMA table_info` for libSQL). No dialect may declare
+    itself conformant without exact 64-bit numeric encoding and nullability.
 
-- **PR4.2 store-postgres**: transliterate absurd.sql (SKIP LOCKED CTE, row-lock
-  awaitEvent); **oracle tests**: same scenario on real Absurd (docker) vs our
-  engine, diff outcomes.
-- **PR4.3 store-mysql**: token claim, READ COMMITTED, DATETIME(6), tx-per-
+- **PR4.2 store-postgres**: native executor/schema, `SKIP LOCKED` claim, closed
+  event and same-token claim lock preludes, and the identical six-surface
+  conformance suite against PostgreSQL 17. Upstream Absurd oracle parity
+  remains deferred by the current milestone.
+- **PR4.3 store-mysql**: token claim, READ COMMITTED, BIGINT epoch-ms, tx-per-
   transition; MySQL 8 container in CI; optional PlanetScale smoke job.
 
 ## Phase 5 — operations + sharding

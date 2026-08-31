@@ -75,7 +75,7 @@ describe('poison/invariant mechanism self-tests', () => {
       }
       await expect(engineInvariantFindings(truncated)).rejects.toThrow(/result count/)
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -93,7 +93,7 @@ describe('poison/invariant mechanism self-tests', () => {
       }
       await expect(engineInvariantFindings(malformed)).rejects.toThrow(/no rows array/)
     } finally {
-      f.close()
+      await f.close()
     }
   })
 
@@ -258,7 +258,7 @@ describe('poison/invariant mechanism self-tests', () => {
           ),
       )
     } finally {
-      f.close()
+      await f.close()
     }
   })
 

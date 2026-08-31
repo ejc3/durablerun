@@ -1,30 +1,33 @@
 import type { Buggify, SqlExecutor } from '@durablerun/core'
-import { LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
-import { openTestDb } from '@durablerun/store-libsql/testing'
+import { PostgresSchedulerStore, PostgresStoreAdmin } from '@durablerun/store-postgres'
+import {
+  openPostgresTestDb,
+  postgresPersistedIntegerCatalogStatements,
+} from '@durablerun/store-postgres/testing'
 import type {
-  PersistedNumericTable,
   StorageCorruption,
   StorageCorruptionAttempt,
   StoreFixture,
   StoreFixtureOptions,
 } from '../src/index.js'
 
-function sqlStringLiteral(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`
-}
+const STRUCTURAL_NUMERIC_SQLSTATES = new Set([
+  '22003', // numeric_value_out_of_range
+  '22021', // character_not_in_repertoire
+  '22P02', // invalid_text_representation
+  '42804', // datatype_mismatch
+  '42846', // cannot_coerce
+])
 
-function persistedIntegerCatalogStatements(tables: readonly PersistedNumericTable[]) {
-  return tables.map((table) => {
-    const tableLiteral = sqlStringLiteral(table)
-    return {
-      sql: `SELECT ${tableLiteral} AS table_name,
-                   name AS column_name,
-                   type AS native_type,
-                   CASE WHEN "notnull" = 0 THEN 1 ELSE 0 END AS nullable
-            FROM pragma_table_info(${tableLiteral})`,
-      args: [],
-    }
-  })
+function sqlState(error: unknown): string | undefined {
+  let current = error
+  for (let depth = 0; depth < 6; depth++) {
+    if (typeof current !== 'object' || current === null) return undefined
+    const candidate = current as { readonly code?: unknown; readonly cause?: unknown }
+    if (typeof candidate.code === 'string') return candidate.code
+    current = candidate.cause
+  }
+  return undefined
 }
 
 function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt {
@@ -37,10 +40,13 @@ function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorrupt
       : 0.5
   const value =
     corruption.invalidRepresentation === 'non-integer'
-      ? 'bad-time'
+      ? 'bad-integer'
       : corruption.invalidRepresentation === 'fractional-real'
         ? fractionalValue
-        : new Uint8Array([112, 111, 105, 115, 111, 110])
+        : new Uint8Array([0xff])
+  const assignment =
+    corruption.invalidRepresentation === 'non-text' ? "convert_from(CAST(? AS BYTEA), 'UTF8')" : '?'
+
   let table: 'checkpoints' | 'drivers' | 'events' | 'runs' | 'tasks' | 'waits'
   let where: string
   let identityArgs: string[]
@@ -76,60 +82,46 @@ function storageCorruptionAttempt(corruption: StorageCorruption): StorageCorrupt
       identityArgs = [corruption.queue, corruption.driverId]
       break
   }
+
   return {
     statements: [
       {
-        sql: `UPDATE ${table} SET ${corruption.column} = ? WHERE ${where}`,
+        sql: `UPDATE ${table} SET ${corruption.column} = ${assignment} WHERE ${where}`,
         args: [value, ...identityArgs],
       },
-      {
-        sql: `SELECT typeof(${corruption.column}) AS storage_type,
-                     ${corruption.column} AS stored_value
-              FROM ${table} WHERE ${where}`,
-        args: identityArgs,
-      },
     ],
-    isStructuralRejection: () => false,
-    verify: (results) => {
-      const observed = results[1]
-      const expectedStorageType =
-        corruption.invalidRepresentation === 'non-integer'
-          ? 'text'
-          : corruption.invalidRepresentation === 'fractional-real'
-            ? 'real'
-            : 'blob'
-      const row = observed?.rows[0]
-      if (
-        row?.storage_type !== expectedStorageType ||
-        (corruption.invalidRepresentation !== 'non-text' && row.stored_value !== value)
-      ) {
-        throw new Error(
-          `storage corruption was not preserved as ${expectedStorageType} ${String(value)}; got ${String(row?.storage_type)} ${String(row?.stored_value)}`,
-        )
-      }
+    isStructuralRejection: (error) => {
+      const state = sqlState(error)
+      return state !== undefined && STRUCTURAL_NUMERIC_SQLSTATES.has(state)
+    },
+    verify: () => {
+      throw new Error(
+        `PostgreSQL accepted invalid ${corruption.invalidRepresentation} storage for ${table}.${corruption.column}`,
+      )
     },
   }
 }
 
-export async function makeLibsqlFixture(
+export async function makePostgresFixture(
   seed: number | string,
   options: StoreFixtureOptions = {},
 ): Promise<StoreFixture> {
   const encodedSeed = [...String(seed)]
     .map((character) => character.codePointAt(0)?.toString(16))
     .join('_')
-  const { raw, admin, ids } = await openTestDb({
+  const opened = await openPostgresTestDb({
     idNamespace: `conformance-${encodedSeed || 'empty'}`,
     ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
   })
+  const { raw, admin, ids } = opened
   return {
-    store: new LibsqlSchedulerStore(raw, ids),
+    store: new PostgresSchedulerStore(raw, ids),
     admin,
-    adminOver: (db: SqlExecutor) => new LibsqlStoreAdmin(db),
+    adminOver: (db: SqlExecutor) => new PostgresStoreAdmin(db),
     raw,
-    persistedIntegerCatalogStatements,
+    persistedIntegerCatalogStatements: postgresPersistedIntegerCatalogStatements,
     storageCorruptionAttempt,
-    storeOver: (db: SqlExecutor, buggify?: Buggify) => new LibsqlSchedulerStore(db, ids, buggify),
-    close: async () => raw.close(),
+    storeOver: (db: SqlExecutor, buggify?: Buggify) => new PostgresSchedulerStore(db, ids, buggify),
+    close: opened.close,
   }
 }

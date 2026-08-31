@@ -1,12 +1,7 @@
 import { createHash } from 'node:crypto'
 import { PERSISTED_COUNTER_FIELDS, PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import {
-  CURRENT_SCHEMA_VERSION,
-  LibsqlExecutor,
-  LibsqlStoreAdmin,
-  MIGRATIONS,
-} from '../src/index.js'
+import { LibsqlExecutor, LibsqlStoreAdmin, MIGRATIONS } from '../src/index.js'
 
 let db: LibsqlExecutor
 let admin: LibsqlStoreAdmin
@@ -21,18 +16,6 @@ afterEach(() => {
 })
 
 describe('migrations', () => {
-  it('migrates a fresh database to the current schema version', async () => {
-    expect(await admin.schemaVersion()).toBe(0)
-    await admin.migrate()
-    expect(await admin.schemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
-  })
-
-  it('is idempotent — migrating twice is a no-op', async () => {
-    await admin.migrate()
-    await admin.migrate()
-    expect(await admin.schemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
-  })
-
   it('creates every scheduler-plane table', async () => {
     await admin.migrate()
     const [result] = await db.batch('test:tables', [

@@ -312,6 +312,7 @@ export async function runFaultMatrixCase(
 
     world.actor('driver', async (simDb) => {
       const store = f.storeOver(simDb)
+      const admin = f.adminOver(simDb)
       // Every call is fault-tolerant: a crash rejection means "this call's
       // process died" — the workload carries on, like real traffic would.
       const go = async <T>(op: () => Promise<T>): Promise<T | null> => {
@@ -415,7 +416,7 @@ export async function runFaultMatrixCase(
       // Cross every deadline and lease, then sweep: cancel + lost-launch +
       // claim-timeout arms all fire in one call.
       now += 40_000
-      await go(() => f.admin.setFakeNowEpochMs(now))
+      await go(() => admin.setFakeNowEpochMs(now))
       await go(() => store.sweep(Q, 10))
       if (t2) await go(() => store.getTaskResult(Q, t2.taskId))
       await go(() => store.nextWakeAtEpochMs(Q))
@@ -468,6 +469,6 @@ export async function runFaultMatrixCase(
       throw new Error(`matrix ${cell} final: ${finalViolations.join('; ')}`)
     }
   } finally {
-    f.close()
+    await f.close()
   }
 }

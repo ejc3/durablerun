@@ -179,9 +179,9 @@ Per-queue tables: `t_<q>` tasks, `r_<q>` runs, `c_<q>` checkpoints, `e_<q>` even
 - PlanetScale-style serverless MySQL: 20s transaction cap, concurrent-transaction
   pool ceiling → prefer the token claim.
 - No partial indexes (use composite `(state, priority, available_at)` or a separate
-  ready-rows table à la Solid Queue); `DATETIME(6)` explicitly (default precision
-  is whole seconds and it *rounds*, which can round `run_at` up); upsert is
-  `ON DUPLICATE KEY UPDATE` (no conflict target) vs `ON CONFLICT` elsewhere.
+  ready-rows table à la Solid Queue); temporal fields use exact BIGINT epoch-ms,
+  matching the shared integer contract; upsert is `ON DUPLICATE KEY UPDATE` (no
+  conflict target) vs `ON CONFLICT` elsewhere.
 - MySQL also cannot wake external compute (no NOTIFY, triggers are SQL-only, EVENT
   scheduler runs SQL only) — **the driver/tick architecture is required for every
   backend, so it is the portable core of the design, not a Turso workaround.**
@@ -448,10 +448,18 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. Scheduler payloads obey the same source rule: spawn routes
+  `FatalTaskError`s. Scheduler headers, which dialect SQL later parses as an
+  object before issuing worker authority, must enter as a plain object whose
+  own enumerable string-keyed values are strings. Their keys and values also
+  have a narrower portable string domain: actual NUL and lone UTF-16 surrogates
+  are rejected before SQL. Runtime type escapes fail permanently before
+  executor I/O, so a successful spawn cannot create a task the claim predicate
+  refuses.
+  Opaque result, checkpoint, parameter, and event JSON
+  retains ordinary JSON string semantics. Scheduler payloads obey the same source rule: spawn routes
   normalized retry, an own-data-property cancellation snapshot, and headers
-  through the module-captured `serializeTaskValue`; claim decodes admitted retry
-  and headers through the matching captured parser. The canonical wire value,
+  through the module-captured task-value and header serializers; claim decodes
+  admitted retry and headers through the matching captured parser. The canonical wire value,
   not a second ambient JSON path, is the durable representation. At the
   user-handler catch boundary, only controls minted
   by that invocation's private runtime authority can suspend or abort; a public
@@ -631,10 +639,16 @@ are load-bearing):
    name=:e) IS NULL`; sleep the run under the same guard; checkpoint `… WHERE
    payload IS NOT NULL`; final SELECT tells the SDK which branch won) — the
    single writer serializes it. On Postgres/MySQL a batch is NOT serialized
-   against emit: use a short transaction taking Absurd's original row locks
-   (event row first, then run row — FOR SHARE/FOR UPDATE, same documented lock
-   order). The timeout branch is part of the contract: a wait with a timeout
-   sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
+   against emit: use a short transaction taking Absurd's original row locks.
+   `FencedBatch.lockEvent({ queue, eventName })` carries only that closed lock
+   coordinate — never caller SQL — to the dialect executor, which acquires it
+   before the first fenced CAS and holds it through commit or rollback. The
+   executor binds both coordinate values as data, returns no result slot for
+   the prelude, and matching event coordinates are mutually exclusive. A
+   dialect may realize the coordinate with a durable sentinel row. Any further
+   row locks retain the documented order: event first, then run (FOR
+   SHARE/FOR UPDATE). The timeout branch is part of the contract: a wait with
+   a timeout sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
    payload is the TimeoutError path, and that claim batch deletes the wait row
    so a later emit cannot resurrect a timed-out wait. The SDK snapshots and
    validates the optional timeout once before this atomic call; the store never
@@ -728,6 +742,19 @@ are load-bearing):
    stamp: a same-token retry claims nothing new and returns the original
    selection (guarded by "no running rows already carry this token"), so a
    lost response cannot multiply the claim bound.
+   Multi-writer dialects serialize `(queue, claim_token)` before candidate
+   selection with `FencedBatch.lockClaim({ queue, claimToken })`. `SKIP LOCKED`
+   candidate rows are not that serialization: simultaneous retries can lock
+   disjoint candidates before either token becomes visible, multiplying one
+   logical receipt. The closed claim coordinate is acquired before the claim
+   CAS and held through its receipt read. PostgreSQL realizes that lock as the
+   transaction-scoped expression
+   `pg_advisory_xact_lock(hashtextextended(jsonb_build_array(current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text)::text, 0))`:
+   the database, schema, fixed domain tag, queue, and token determine one
+   server-computed key; collisions only over-serialize. The executor binds the
+   coordinates, discards the prelude's void result, and runs the claim SQL on
+   that same client and transaction, so commit, rollback, or disconnect
+   releases the lock without durable sentinel garbage.
    The candidate set also excludes tasks whose cancellation deadline is
    already due — a sweep budget too small to cancel everything this pass must
    not leak due-to-cancel tasks into launches. All claim eligibility—live task,
@@ -741,6 +768,9 @@ are load-bearing):
    it returns durable authority, and the activation CAS before it latches the
    generation. Only after those store doors win may the captured parser decode
    retry and headers; a stamped tail is not a substitute for gating the CAS.
+   Those durable guards are corruption backstops, not an alternate ingress
+   contract: successful spawn already admits the same object-of-strings header
+   domain before SQL.
    Every newly claimed or
    receipt-returned run must also be the task's sole live run: the canonical
    `soleLiveRun(run)` eligibility fragment gates both the candidate CAS and the
@@ -802,10 +832,14 @@ are load-bearing):
    `MAX_DURATION_MS`, while a value whose rounded result exceeds the ceiling is
    refused. The administrative `fake_now` seam is a port too:
    `setFakeNowEpochMs` crosses `requireEpochMs` before any metadata write.
-   Values coming back from a dialect cross
-   one dialect-neutral `decodeBoundedInteger` boundary before becoming
-   JavaScript numbers; it accepts only exact native number/bigint integers and
-   enforces the same semantic bounds the invariant evaluator uses. Run
+   Integer values are canonicalized at the dialect boundary before shared
+   decoding. PostgreSQL `int8` values inside JavaScript's safe-integer range
+   become numbers, preserving the ordinary protocol representation shared
+   with libSQL; exact values outside that range remain bigint so corruption
+   and bound checks retain full evidence. A decimal string or lossy Number
+   conversion never crosses the integer port. The dialect-neutral
+   `decodeBoundedInteger` boundary then enforces each field's semantic bounds
+   before the value becomes engine state. Run
    ordinals have the distinct exact ceiling
    `MAX_RUN_ORDINAL = MAX_COUNT + INFRA_RETRY_CAP`, because they count both
    user attempts and infrastructure successors; all other durable counts use
@@ -896,6 +930,11 @@ are load-bearing):
    bootstrap DDL; only its explicit absent-metadata result authorizes
    `CREATE meta` and the version-zero insert. `CREATE IF NOT EXISTS` is not
    evidence of freshness and may not relabel an existing empty metadata table.
+   Concurrent cold-start migrators converge: after an error from bootstrap or
+   a versioned migration batch, the loser re-reads the authoritative version
+   and treats the write as complete only when metadata now exists at or beyond
+   that batch's target. An absent or behind version rethrows the original
+   failure; `IF NOT EXISTS` alone is never the concurrency mechanism.
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
@@ -950,8 +989,11 @@ not depend on careful reading:
   seeded edge is not coverage. Fault coverage is enumerated, never curated.
   Dialects enter through the central fixture registry and one
   `storeConformance` umbrella, which always enrolls scheduler, fault, poison,
-  and generated wake-witness behavior; a backend cannot select only the
-  cheaper sub-suites.
+  timestamp-boundary, generated wake-witness, and schema/admin behavior; a
+  backend cannot select only the cheaper sub-suites. The schema/admin surface
+  starts from both current and genuinely uninitialized fixtures, injects the
+  dialect's real admin over hostile result/error executors, and executes the
+  dialect's catalog statements through the fixture's real raw executor.
 - *The invariant condition inventory and poison matrix*
   (`conformance/src/invariants.ts`, `poison-matrix.ts`): invariant evidence is
   one dialect-neutral read batch whose result cardinality is exact and every
@@ -980,10 +1022,13 @@ not depend on careful reading:
   exact nullability, and
   generates both temporal conditions, the six-table snapshot projection, and
   three witnesses per field: invalid storage, one below the lower bound, and
-  one above the upper bound. The migrated libSQL schema discovers every native
-  `INTEGER` column across those tables and compares the exact field/nullability
-  vector to the union of eight counter descriptors and 23 temporal descriptors:
-  all 31 durable integers are enrolled without relying on a name suffix.
+  one above the upper bound. The shared schema/admin surface discovers every
+  native integer column across those tables and compares the exact
+  field/64-bit-width/nullability vector to the union of eight counter
+  descriptors and 23 temporal descriptors: all 31 durable integers are
+  enrolled without relying on a name suffix. Catalog SQL remains
+  dialect-owned—libSQL projects real `PRAGMA table_info` rows—but the shared
+  runner executes, validates, and compares the evidence.
   Snapshot results are assembled by each projection's declared table key,
   never by a second hard-coded positional table list.
   Generated just-over-bound witnesses, along with the ownership witnesses,
@@ -1058,7 +1103,7 @@ not depend on careful reading:
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
   three helper-marker cases, sixteen direct-marker cases, three title-owner
   cases, six verdict-inventory cases, seven question-delta cases, eleven
-  mutant-syntax cases, and four live-enrollment attacks across all 421 live
+  mutant-syntax cases, and four live-enrollment attacks across all 423 live
   mutations. A separate generated coordinator surface injects 40 faults
   covering shard omission and overlap, wrong heads, missing/duplicate/extra
   results, process/report disagreement, and non-owned cleanup targets, plus
@@ -1137,7 +1182,7 @@ Dialect implementations:
 |---|---|---|---|
 | claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; token claim: `UPDATE…ORDER BY…LIMIT k` + `SELECT WHERE claimed_by=:token` (no RETURNING) | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
 | atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | short tx (READ COMMITTED) for every multi-statement transition — autocommit only for genuinely single-statement ops (20s PlanetScale cap is ample for 2–3-stmt claims) | normal tx |
-| timestamps | INTEGER epoch-ms | `DATETIME(6)` (default rounds to seconds!) | timestamptz |
+| timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
 | ids | UUIDv7 client-generated (time-ordered; Absurd orders by run_id) | same | same |

@@ -7,6 +7,7 @@ import {
   type PersistedCounterFieldId,
   type PersistedTemporalFieldDescriptor,
   type SchedulerStore,
+  type SqlBatchControl,
   type SqlBatchMode,
   type SqlExecutor,
   type SqlResult,
@@ -15,6 +16,7 @@ import {
   isLiveState,
   isTerminalState,
   parseFenceStamp,
+  sqlBatchMode,
 } from '@durablerun/core'
 import { MATRIX_WRITE_LABELS } from './fault-matrix.js'
 import {
@@ -327,10 +329,9 @@ const taskState = (state: string): SqlStatement =>
 
 const runState = (state: string): SqlStatement =>
   sql(
-    `UPDATE runs SET state = ?, claimed_by = CASE WHEN ? = 'running' THEN ? ELSE NULL END,
-       claim_expires_at_ms = CASE WHEN ? = 'running' THEN ? ELSE NULL END
+    `UPDATE runs SET state = ?, claimed_by = ?, claim_expires_at_ms = ?
      WHERE run_id = ?`,
-    [state, state, TOKEN, state, NOW + 60_000, RUN],
+    [state, state === 'running' ? TOKEN : null, state === 'running' ? NOW + 60_000 : null, RUN],
   )
 
 function park(
@@ -1254,12 +1255,13 @@ class RecordingExecutor implements SqlExecutor {
   async batch(
     label: string,
     statements: readonly SqlStatement[],
-    mode: SqlBatchMode = 'write',
+    control: SqlBatchControl = 'write',
   ): Promise<SqlResult[]> {
+    const mode = sqlBatchMode(control)
     const call: RecordedCall = { label, mode, changedState: false }
     this.calls.push(call)
     const before = mode === 'write' ? await snapshot(this.real) : undefined
-    const results = await this.real.batch(label, statements, mode)
+    const results = await this.real.batch(label, statements, control)
     if (before !== undefined) {
       call.changedState = !same(before, await snapshot(this.real))
     }
@@ -2895,7 +2897,7 @@ async function preparePoisonCase(
     const beforeFindings = await engineInvariantFindings(fixture.raw)
     return { caseName, fixture, corruptionDisposition, beforeFindings }
   } catch (error) {
-    fixture.close()
+    await fixture.close()
     throw error
   }
 }
@@ -2925,7 +2927,7 @@ async function observePoisonAggregateWitnessCase(
       corruptionDisposition: prepared.corruptionDisposition,
     }
   } finally {
-    prepared.fixture.close()
+    await prepared.fixture.close()
   }
 }
 
@@ -3077,7 +3079,7 @@ export async function runPoisonMatrixCase(
       corruptionDisposition,
     }
   } finally {
-    f.close()
+    await f.close()
   }
 }
 

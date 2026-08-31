@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { FatalTaskError, serializeTaskValue, userJsonValue } from '../src/index.js'
+import {
+  FatalTaskError,
+  serializeTaskHeaders,
+  serializeTaskValue,
+  userJsonValue,
+} from '../src/index.js'
 
 const ILLEGAL_VALUES: readonly (readonly [string, () => unknown])[] = [
   ['bigint', () => 1n],
@@ -36,6 +41,46 @@ describe('serializeTaskValue', () => {
     expect(() => serializeTaskValue('result', Symbol('not-json'))).toThrow(FatalTaskError)
   })
 
+  it('rejects every JSON string position that cannot round-trip through storage', () => {
+    const invalid = [
+      ['NUL', '\u0000'],
+      ['high lone surrogate', '\uD800'],
+      ['low lone surrogate', '\uDC00'],
+    ] as const
+
+    for (const [kind, text] of invalid) {
+      expect(() => serializeTaskHeaders('task headers', { value: text }), `${kind} value`).toThrow(
+        FatalTaskError,
+      )
+      expect(
+        () => serializeTaskHeaders('task headers', { [text]: 'value' }),
+        `${kind} key`,
+      ).toThrow(FatalTaskError)
+    }
+    expect(serializeTaskHeaders('task headers', { '📦': 'välue' })).toBe('{"📦":"välue"}')
+  })
+
+  it('snapshots each header value exactly once', () => {
+    let reads = 0
+    const headers = {
+      get trace(): string {
+        reads += 1
+        if (reads > 1) throw new Error('header getter read twice')
+        return 'value'
+      },
+    }
+
+    expect(serializeTaskHeaders('task headers', headers)).toBe('{"trace":"value"}')
+    expect(reads).toBe(1)
+  })
+
+  it('preserves escaped NUL and lone surrogates in opaque JSON values', () => {
+    expect(serializeTaskValue('result', '\u0000')).toBe('"\\u0000"')
+    expect(serializeTaskValue('result', '\uD800')).toBe('"\\ud800"')
+    expect(serializeTaskValue('result', '\uDC00')).toBe('"\\udc00"')
+    expect(userJsonValue('event payload', '"\\u0000"')).toBe('"\\u0000"')
+  })
+
   it('classifies a serialization hook whose thrown value cannot be coerced', () => {
     const hostile = {
       [Symbol.toPrimitive](): never {
@@ -63,6 +108,8 @@ describe('serializeTaskValue', () => {
       () => serializeTaskValue('result', new Number(7)),
       'mutation-verdict:behavior:task-value-rejects-exotic-objects',
     ).toThrow(FatalTaskError)
+    const headers = Object.assign(Object.create({ inherited: 'ignored' }), { trace: 'value' })
+    expect(() => serializeTaskHeaders('task headers', headers)).toThrow(FatalTaskError)
     for (const value of [new Boolean(true), new String('ab'), Object(1n)]) {
       expect(() => serializeTaskValue('result', value)).toThrow(FatalTaskError)
     }

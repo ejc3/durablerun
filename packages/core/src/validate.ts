@@ -722,11 +722,66 @@ function dataProperty(value: unknown, enumerable: boolean): PropertyDescriptor {
 }
 
 /**
+ * The portable durable-string domain. PostgreSQL's JSON parser rejects NUL
+ * escapes and unpaired UTF-16 surrogates, while other backends may accept
+ * them and later expose a different value. One predicate owns the domain for
+ * both JSON keys/values and durable protocol names.
+ */
+const storageStringRoundTrips = freeze({
+  check(raw: string): boolean {
+    if (stringIncludes(raw, '\u0000') || regexpExec(/\p{Surrogate}/u, raw) !== null) {
+      return false
+    }
+    return true
+  },
+}).check
+
+type TaskValueDomain = 'opaque' | 'headers'
+
+const requireJsonDataObject = freeze({
+  check(value: object): void {
+    const prototype = getPrototypeOf(value)
+    if (prototype !== null && prototype !== objectPrototype) {
+      throw new TrustedTypeError('task value must use the JSON data model')
+    }
+  },
+}).check
+
+/**
  * Copy one task value into data owned by the runtime. The copy has no
  * attacker-controlled prototype or toJSON hook, and every source field is
  * read once. This is the representation JSON.stringify receives.
  */
-function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown {
+function snapshotTaskValueWithStringDomain(
+  value: unknown,
+  ancestors: WeakSet<object>,
+  domain: TaskValueDomain,
+): unknown {
+  if (domain === 'headers') {
+    if (typeof value !== 'object' || value === null || isArray(value)) {
+      throw new TrustedTypeError('task headers must be an object of strings')
+    }
+    requireJsonDataObject(value)
+    const owned = createObject(null) as Record<string, string>
+    const keys = objectKeys(value)
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index]
+      if (key === undefined) continue
+      if (!storageStringRoundTrips(key)) {
+        throw new TrustedTypeError('JSON object key does not round-trip through storage')
+      }
+      const item = reflectGet(value, key)
+      if (typeof item !== 'string' || !storageStringRoundTrips(item)) {
+        throw new TrustedTypeError('task headers must contain portable strings')
+      }
+      defineProperty(owned, key, dataProperty(item, true))
+    }
+    return owned
+  }
+
+  if (typeof value === 'string') {
+    return value
+  }
   if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
     throw new TrustedTypeError(`${typeof value} is not a JSON value`)
   }
@@ -758,22 +813,19 @@ function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown 
       }
       for (let index = 0; index < length; index++) {
         const key = stringFrom(index)
-        const item = snapshotTaskValue(reflectGet(value, key), ancestors)
+        const item = snapshotTaskValueWithStringDomain(reflectGet(value, key), ancestors, domain)
         defineProperty(owned, key, dataProperty(item === undefined ? null : item, true))
       }
       return owned
     }
 
-    const prototype = getPrototypeOf(value)
-    if (prototype !== null && prototype !== objectPrototype) {
-      throw new TrustedTypeError('task value must use the JSON data model')
-    }
+    requireJsonDataObject(value)
     const owned = createObject(null) as Record<string, unknown>
     const keys = objectKeys(value)
     for (let index = 0; index < keys.length; index++) {
       const key = keys[index]
       if (key === undefined) continue
-      const item = snapshotTaskValue(reflectGet(value, key), ancestors)
+      const item = snapshotTaskValueWithStringDomain(reflectGet(value, key), ancestors, domain)
       if (item !== undefined) {
         defineProperty(owned, key, dataProperty(item, true))
       }
@@ -794,8 +846,14 @@ function snapshotTaskValue(value: unknown, ancestors: WeakSet<object>): unknown 
  * instead of becoming ordinary retryable handler errors after side effects
  * have already run.
  */
-export function serializeTaskValue(what: string, value: unknown): string {
+function serializeTaskValueWithStringDomain(
+  what: string,
+  value: unknown,
+  domain: TaskValueDomain,
+): string {
   const root = value === undefined ? null : value
+  const snapshotTaskValue = (candidate: unknown, ancestors: WeakSet<object>): unknown =>
+    snapshotTaskValueWithStringDomain(candidate, ancestors, domain)
   try {
     const serialized = stringifyJson(snapshotTaskValue(root, new TrustedWeakSet()))
     if (serialized === undefined) {
@@ -808,6 +866,19 @@ export function serializeTaskValue(what: string, value: unknown): string {
     // coercion throws; diagnostics must not reopen the permanent-error gate.
     throw new FatalTaskError(`${what} is not a JSON value`)
   }
+}
+
+export function serializeTaskValue(what: string, value: unknown): string {
+  return serializeTaskValueWithStringDomain(what, value, 'opaque')
+}
+
+/**
+ * Headers are later inspected by every dialect as JSON object data. Own one
+ * string-record snapshot here, including the portable string domain, without
+ * narrowing opaque task/result payloads.
+ */
+export function serializeTaskHeaders(what: 'task headers', value: unknown): string {
+  return serializeTaskValueWithStringDomain(what, value, 'headers')
 }
 
 /** Parse with the JSON operation captured before task initialization. */
@@ -860,7 +931,7 @@ export class UserName {
     // (not well-formed UTF-16) is re-encoded to U+FFFD — either way two
     // distinct JS names collide or a name silently changes, and its wake
     // never matches. Reject both at the single mint point.
-    if (stringIncludes(raw, '\u0000') || regexpExec(/\p{Surrogate}/u, raw) !== null) {
+    if (!storageStringRoundTrips(raw)) {
       throw new FatalTaskError(
         `${what} '${raw}' contains characters that do not round-trip through storage (NUL or a lone surrogate)`,
       )
