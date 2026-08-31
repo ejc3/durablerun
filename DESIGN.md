@@ -636,7 +636,7 @@ are load-bearing):
    payload IS NOT NULL`; final SELECT tells the SDK which branch won) — the
    single writer serializes it. On Postgres/MySQL a batch is NOT serialized
    against emit: use a short transaction taking Absurd's original row locks.
-   `FencedBatch.lockEvent(queue, eventName)` carries only that closed lock
+   `FencedBatch.lockEvent({ queue, eventName })` carries only that closed lock
    coordinate — never caller SQL — to the dialect executor, which acquires it
    before the first fenced CAS and holds it through commit or rollback. The
    executor binds both coordinate values as data, returns no result slot for
@@ -739,7 +739,7 @@ are load-bearing):
    selection (guarded by "no running rows already carry this token"), so a
    lost response cannot multiply the claim bound.
    Multi-writer dialects serialize `(queue, claim_token)` before candidate
-   selection with `FencedBatch.lockClaim(queue, claimToken)`. `SKIP LOCKED`
+   selection with `FencedBatch.lockClaim({ queue, claimToken })`. `SKIP LOCKED`
    candidate rows are not that serialization: simultaneous retries can lock
    disjoint candidates before either token becomes visible, multiplying one
    logical receipt. The closed claim coordinate is acquired before the claim

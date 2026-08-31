@@ -258,7 +258,7 @@ the mechanism audit records where those guarantees still end.
 
 Built in this PR:
 
-- `FencedBatch.lockClaim(queue, claimToken)` carries a closed coordinate, must
+- `FencedBatch.lockClaim({ queue, claimToken })` carries a closed coordinate, must
   precede the first fenced CAS, and cannot carry caller SQL. `PgExecutor` maps
   it to a namespaced transaction advisory lock on the same client and
   transaction as the claim batch (rung 1 for the current path).
