@@ -74,6 +74,12 @@ describe('serializeTaskValue', () => {
     expect(reads).toBe(1)
   })
 
+  it('rejects a header record with a custom prototype', () => {
+    const headers = Object.assign(Object.create({ inherited: 'ignored' }), { trace: 'value' })
+
+    expect(() => serializeTaskHeaders('task headers', headers)).toThrow(FatalTaskError)
+  })
+
   it('preserves escaped NUL and lone surrogates in opaque JSON values', () => {
     expect(serializeTaskValue('result', '\u0000')).toBe('"\\u0000"')
     expect(serializeTaskValue('result', '\uD800')).toBe('"\\ud800"')
