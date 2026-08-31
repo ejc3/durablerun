@@ -923,6 +923,11 @@ are load-bearing):
    bootstrap DDL; only its explicit absent-metadata result authorizes
    `CREATE meta` and the version-zero insert. `CREATE IF NOT EXISTS` is not
    evidence of freshness and may not relabel an existing empty metadata table.
+   Concurrent cold-start migrators converge: after an error from bootstrap or
+   a versioned migration batch, the loser re-reads the authoritative version
+   and treats the write as complete only when metadata now exists at or beyond
+   that batch's target. An absent or behind version rethrows the original
+   failure; `IF NOT EXISTS` alone is never the concurrency mechanism.
    Malformed dialect-returned values are described only by non-coercive storage
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.

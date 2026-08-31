@@ -25,34 +25,32 @@ export class PostgresStoreAdmin implements StoreAdmin {
     // The executor turns undefined_table into this typed result only for the
     // canonical version read. No message matching occurs at this layer.
     if ((await this.readSchemaVersion()) === null) {
-      await this.db.batch('migrate:bootstrap', [
-        {
-          sql: `CREATE TABLE IF NOT EXISTS meta (
-                  key TEXT PRIMARY KEY,
-                  value TEXT NOT NULL
-                )`,
-          args: [],
-        },
-        {
-          sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
-                ON CONFLICT (key) DO NOTHING`,
-          args: [],
-        },
-      ])
+      await this.applyVersionedWrite(
+        () =>
+          this.db.batch('migrate:bootstrap', [
+            {
+              sql: `CREATE TABLE IF NOT EXISTS meta (
+                      key TEXT PRIMARY KEY,
+                      value TEXT NOT NULL
+                    )`,
+              args: [],
+            },
+            {
+              sql: `INSERT INTO meta (key, value) VALUES ('schema_version', '0')
+                    ON CONFLICT (key) DO NOTHING`,
+              args: [],
+            },
+          ]),
+        0,
+      )
     }
 
     for (const migration of MIGRATIONS) {
       if ((await this.schemaVersion()) >= migration.version) continue
-      try {
-        await this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration))
-      } catch (error) {
-        // A concurrent migrator can lose the sentinel insert after the winner
-        // commits. Re-read the authoritative version before treating it as a
-        // failure; all other errors remain permanent or transient as typed by
-        // the executor.
-        if ((await this.schemaVersion()) >= migration.version) continue
-        throw error
-      }
+      await this.applyVersionedWrite(
+        () => this.db.batch(`migrate:v${migration.version}`, fencedBatch(migration)),
+        migration.version,
+      )
     }
 
     const version = await this.schemaVersion()
@@ -60,6 +58,25 @@ export class PostgresStoreAdmin implements StoreAdmin {
       throw new SchemaMismatchError(
         `migrate finished with the schema recorded at version ${version}, expected ${CURRENT_SCHEMA_VERSION} — the database is in an inconsistent state and must be repaired by hand`,
       )
+    }
+  }
+
+  /**
+   * A concurrent migrator can win either the fresh-catalog bootstrap or a
+   * version sentinel. PostgreSQL may report the losing CREATE as a catalog
+   * uniqueness error even with IF NOT EXISTS, so the authoritative version —
+   * not the error code — decides whether the write already completed.
+   */
+  private async applyVersionedWrite(
+    write: () => Promise<unknown>,
+    minimumVersion: number,
+  ): Promise<void> {
+    try {
+      await write()
+    } catch (error) {
+      const version = await this.readSchemaVersion()
+      if (version !== null && version >= minimumVersion) return
+      throw error
     }
   }
 
