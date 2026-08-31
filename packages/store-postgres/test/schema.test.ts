@@ -99,7 +99,13 @@ describe('PostgreSQL schema', () => {
 })
 
 describe('PostgreSQL migrations are append-only', () => {
-  const FROZEN: Record<number, string> = {}
+  const FROZEN: Record<number, string> = {
+    1: 'b63246f941c492fad05ec1dd586214d80d29a1208235ca0c4b6ab16384907cb9',
+    2: '74b6c407aff872af263b439a96147a7a542931434b381f8950058ea77770f183',
+    3: '2d990218bab811ebf1a8ebecc5d4da1370bfd2e61eba077ba6cca68a9bfe4eee',
+    4: '69daf94f2004f75f5f8c03f93261fec5a61e7f98a22a07b718bac4163beb8c92',
+    5: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  }
 
   it('matches every migration to an independently frozen content hash', () => {
     for (const migration of MIGRATIONS) {
