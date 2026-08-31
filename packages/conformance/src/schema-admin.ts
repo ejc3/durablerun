@@ -168,6 +168,22 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
       }
     })
 
+    it('lets concurrent cold-start migrators converge on the current schema', async () => {
+      const fixture = await makeFixture('schema-admin-concurrent-fresh', { migrate: false })
+      try {
+        const migrations = await Promise.allSettled(
+          Array.from({ length: 8 }, () => fixture.admin.migrate()),
+        )
+
+        expect(migrations.map(({ status }) => status)).toEqual(
+          Array.from({ length: 8 }, () => 'fulfilled'),
+        )
+        expect(await fixture.admin.schemaVersion()).toBeGreaterThan(0)
+      } finally {
+        await fixture.close()
+      }
+    })
+
     it('accepts only canonical nonnegative safe base-10 schema versions', async () => {
       const fixture = await makeFixture('schema-admin-canonical')
       try {
