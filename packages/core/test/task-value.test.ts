@@ -74,12 +74,6 @@ describe('serializeTaskValue', () => {
     expect(reads).toBe(1)
   })
 
-  it('rejects a header record with a custom prototype', () => {
-    const headers = Object.assign(Object.create({ inherited: 'ignored' }), { trace: 'value' })
-
-    expect(() => serializeTaskHeaders('task headers', headers)).toThrow(FatalTaskError)
-  })
-
   it('preserves escaped NUL and lone surrogates in opaque JSON values', () => {
     expect(serializeTaskValue('result', '\u0000')).toBe('"\\u0000"')
     expect(serializeTaskValue('result', '\uD800')).toBe('"\\ud800"')
@@ -114,6 +108,8 @@ describe('serializeTaskValue', () => {
       () => serializeTaskValue('result', new Number(7)),
       'mutation-verdict:behavior:task-value-rejects-exotic-objects',
     ).toThrow(FatalTaskError)
+    const headers = Object.assign(Object.create({ inherited: 'ignored' }), { trace: 'value' })
+    expect(() => serializeTaskHeaders('task headers', headers)).toThrow(FatalTaskError)
     for (const value of [new Boolean(true), new String('ab'), Object(1n)]) {
       expect(() => serializeTaskValue('result', value)).toThrow(FatalTaskError)
     }
