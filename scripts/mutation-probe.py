@@ -7609,9 +7609,9 @@ def suite_timeout_self_test_child(
         or suite_defaults.get("suite_wall_time_seconds") is not None
         or typecheck_defaults is None
         or typecheck_defaults.get("suite_wall_time_seconds") is not None
-        or MUTATION_SUITE_WALL_TIME_SECONDS != 300.0
+        or MUTATION_SUITE_WALL_TIME_SECONDS != 600.0
     ):
-        problems.append("Vitest and typecheck do not share the production 300s default")
+        problems.append("Vitest and typecheck do not share the production 600s default")
     MUTATION_SUITE_WALL_TIME_SECONDS = SUITE_SELF_TEST_DEADLINE_SECONDS
     if fault == "immediate-magic-error":
         def immediate_magic_error(*_args: object, **_kwargs: object) -> int:
