@@ -198,6 +198,82 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('persisted retry admission', () => {
+      const doors = ['candidate', 'same-token-receipt', 'activation'] as const
+
+      for (const door of doors) {
+        it(`refuses a nonnumeric exponential factor at the ${door} door without changing state`, async () => {
+          const queue = `${Q}-retry-factor-${door}`
+          const token = `retry-factor-${door}-token`
+          const spawned = await f.store.spawn(queue, 'retry-factor', '{}', {
+            retryStrategy: {
+              kind: 'exponential',
+              baseSeconds: 1,
+              factor: 2,
+              maxSeconds: 60,
+            },
+          })
+          const [claimed] =
+            door === 'candidate'
+              ? []
+              : await f.store.claim(queue, token, { leaseSeconds: 60, limit: 1 })
+          if (door !== 'candidate' && !claimed) {
+            throw new Error(`expected a claimed run for ${door}`)
+          }
+
+          await f.raw.batch('corrupt-exponential-factor', [
+            {
+              sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
+              args: [
+                JSON.stringify({
+                  kind: 'exponential',
+                  baseSeconds: 1,
+                  factor: 'not-a-number',
+                  maxSeconds: 60,
+                }),
+                spawned.taskId,
+              ],
+            },
+          ])
+          const before = await snapshot(f, spawned.taskId)
+          const invocation =
+            door === 'candidate'
+              ? f.store.claim(queue, token, { leaseSeconds: 60, limit: 1 })
+              : door === 'same-token-receipt'
+                ? f.store.claim(queue, claimed?.claimToken ?? '', {
+                    leaseSeconds: 60,
+                    limit: 1,
+                  })
+                : f.store.activate(
+                    queue,
+                    claimed?.runId ?? '',
+                    claimed?.claimToken ?? '',
+                    claimed?.claimGen ?? 0,
+                  )
+          const outcome = await invocation.then(
+            (value) => ({
+              kind: 'resolved' as const,
+              value: Array.isArray(value)
+                ? value.map((run) => run.taskId)
+                : value === null
+                  ? null
+                  : 'activated',
+            }),
+            (error: unknown) => ({
+              kind: 'rejected' as const,
+              error: error instanceof Error ? error.name : typeof error,
+            }),
+          )
+
+          expect(outcome, 'regression:retry-factor-type-before-cast').toEqual({
+            kind: 'resolved',
+            value: door === 'activation' ? null : [],
+          })
+          expect(await snapshot(f, spawned.taskId), `${door} changed durable state`).toEqual(before)
+        })
+      }
+    })
+
     describe('claim', () => {
       it('leaves a candidate with a corrupt persisted retry strategy unclaimed', async () => {
         const spawned = await f.store.spawn(Q, 'corrupt-retry', '{}', {
