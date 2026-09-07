@@ -36,6 +36,17 @@ terms used by each Apache-licensed component below. The embedded
 BSD-3-Clause terms and 2023 copyright are restored as `JLine-LICENSE.txt`.
 Notices stripped by the upstream shading recipe are restored beside the JAR.
 
+### TLA+ Formatter import 7aa6a56
+
+Classes under `formatter/` were imported from Apache-2.0-licensed
+[`tlaplus-formatter` commit `7aa6a566138d7b17043cadb16a9d2af62ae4944a`](https://github.com/tlaplus/tlaplus-formatter/tree/7aa6a566138d7b17043cadb16a9d2af62ae4944a).
+The [TLA+ integration](https://github.com/tlaplus/tlaplus/commit/cf62ffd63fad8e89773854a39376117c2247e799)
+modified the imported files: their packages were renamed to `formatter`, and
+dependencies, command-line parsing, logging, and test plumbing were replaced.
+The complete Apache-2.0 terms are in
+`CommonsMath-LICENSE.txt`; the corresponding shipped source is the `formatter/`
+directory in the pinned TLA+ source tree.
+
 ### Gson 2.14.0
 
 Classes under `com/google/gson/` and their multi-release module descriptor are
