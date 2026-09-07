@@ -1,5 +1,4 @@
 import { type Clock, type SchedulerStore, parseTaskValueJson, systemClock } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
 import type { TaskRegistry } from '@durablerun/sdk'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -50,9 +49,8 @@ async function fixture(
     recordStoreCalls?: string[]
   } = {},
 ) {
-  const { raw, admin } = await openTestDb()
+  const { raw, admin, ids, close } = await openTestDb({ idNamespace: seed })
   await admin.setFakeNowEpochMs(1_000_000)
-  const ids = seededIdSource(new Rng(seed))
   const baseStore = new LibsqlSchedulerStore(raw, ids)
   const store =
     options.recordStoreCalls === undefined
@@ -73,7 +71,7 @@ async function fixture(
       ? base
       : { ...base, onWorkAvailable: options.onWorkAvailable },
   )
-  return { raw, store: baseStore, router, close: () => raw.close() }
+  return { raw, store: baseStore, router, close }
 }
 
 describe('hosted-alpha Web Request router', () => {

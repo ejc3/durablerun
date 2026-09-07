@@ -69,6 +69,7 @@ capability is preferable to adding machinery around it.
 | Mechanism | Rung | Code that still has the bug and still passes |
 |-----------|------|----------------------------------------------|
 | Module-private operation tuple, with the public union and runtime membership derived from it | 1 for external mutation of the authority source | No in-scope external-mutation false negative: no reference to the tuple crosses the module boundary. Source code in this module can intentionally add another operation; that is a code change, not authority granted to a plugin. |
+| Router-private dispatch authorizes the selected operation before invoking its route callback | 1 within `HostedRouter.handle` | A host can expose the deliberately unauthenticated `runTick()` method through a separate HTTP entrypoint; the package's router tests still pass. The structural guarantee covers the supplied `handle()` boundary, while trusted host wiring remains responsible for keeping direct tick acceleration private. |
 | Require `task.delete` to produce `invalid-operation` | 3 | The test names one unknown value. Experiment A added a second acceptance arm for `task.cancel`; the focused tests still passed and a direct `task.cancel` call returned `{"principal":"admin"}`. The private single source removes accidental external widening, not deliberate source changes. |
 
 Experiment A was written and run in a disposable checkout of fix commit

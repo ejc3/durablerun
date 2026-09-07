@@ -1224,11 +1224,12 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   `Cache-Control: no-store`. The checked-in external example fixes its Vercel
   install command to npm so the enclosing repository's pnpm workspace cannot
   suppress its release-asset dependencies.
-- **Driver hosting**: Vercel itself cannot host the resident driver, so either
-  (a) run the tiny driver elsewhere (Fly/Railway/container/VM — or later the
-  target platform) with it POSTing worker launches to `/api/worker` on the Vercel
-  deployment, keeping all heavyweight compute on Vercel; or (b) go fully
-  serverless with the tick machinery below. Both use the same engine code.
+- **Driver hosting**: the hosted alpha is fully serverless. Each accepted
+  mutation gives the host a best-effort opportunity to run the same bounded
+  inline tick, and the daily cron is its coarse recovery floor. Vercel itself
+  cannot host the resident driver; a separately hosted resident driver,
+  `/api/worker`, and detached HTTP workers are future placement options and are
+  not part of the exact four-route alpha surface above.
 - **Hosted authorization port**: task enqueue, event emit, tick, and inspection
   routes own the closed operations `task.enqueue`, `event.emit`, `tick.run`, and
   `task.inspect`. Before parsing or doing work, the router reads its body once,

@@ -72,6 +72,7 @@ was restored immediately, and `git diff --exit-code` returned zero.
 | Mechanism | Rung | Code that still has the bug and still passes |
 |-----------|------|----------------------------------------------|
 | Shared durable-string validator plus portable spawn and hosted regressions | 1 for the one predicate and ingress snapshots; 3 for the regressions | The exact-value predicate shown above retains the class for `novel\uDC00` while both reviewed examples pass. The shipped predicate checks actual NUL and the entire Unicode surrogate category; the audit proves that the tests are finite evidence, not a semantic proof of that implementation. |
+| `InvalidDurableStringError` maps the store rejection to hosted `400 invalid_request` | 1 for the current error taxonomy; 3 for the hosted regression | A future `SchedulerStore` can enforce the same durable-string domain but throw a generic `TypeError`; the two enrolled dialects and the libSQL-backed hosted test still pass, while that store receives HTTP 500. The mapping is proved for the current store implementations, not made part of the `SchedulerStore` type. |
 
 ## Fix-induced defects
 

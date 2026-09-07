@@ -1,5 +1,4 @@
 import { LaunchOutcome, systemClock } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,11 +7,10 @@ import { inlineLauncher, inlineTick, tick } from '../src/index.js'
 const Q = 'inline'
 
 async function fx(seed: string) {
-  const { raw, admin } = await openTestDb()
-  const ids = seededIdSource(new Rng(seed))
+  const { raw, admin, ids, close } = await openTestDb({ idNamespace: seed })
   const store = new LibsqlSchedulerStore(raw, ids)
   await admin.setFakeNowEpochMs(1_000_000)
-  return { raw, ids, store, clock: systemClock(), close: () => raw.close() }
+  return { raw, ids, store, clock: systemClock(), close }
 }
 
 describe('inline worker composition', () => {
