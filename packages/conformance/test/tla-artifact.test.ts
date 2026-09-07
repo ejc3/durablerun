@@ -162,7 +162,6 @@ describe('TLA tool artifact', () => {
     expect(archive.status, archive.stderr).toBe(0)
     const classEntries = archive.stdout.split('\n').filter((entry) => entry.endsWith('.class'))
     const projectOwnedPrefixes = [
-      'formatter/',
       'model/',
       'org/apache/commons/math3/util/TLCFastMath.class',
       'org/eclipse/xtext/xbase/lib/Pure.class',
@@ -174,6 +173,15 @@ describe('TLA tool artifact', () => {
       'util/',
     ]
     const bundledComponents = [
+      {
+        heading: 'TLA+ Formatter import 7aa6a56',
+        prefixes: ['formatter/'],
+        record: [
+          'Apache-2.0',
+          '7aa6a566138d7b17043cadb16a9d2af62ae4944a',
+          'renamed to `formatter`',
+        ],
+      },
       {
         heading: 'Gson 2.14.0',
         prefixes: ['com/google/gson/', 'META-INF/versions/9/module-info.class'],
