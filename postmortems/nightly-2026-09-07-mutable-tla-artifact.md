@@ -10,8 +10,10 @@ that it mislabeled the fat JAR as MIT-only and that one integrity-error path
 could exit before printing its promised infrastructure diagnosis. Exact-head
 review found that the first license repair still omitted four shaded components,
 three stripped notices, and the current JLine copyright; it also found two
-factual errors in the milestone transition. The final verdict remains an
-infrastructure and release-safety failure, not a protocol counterexample.
+factual errors in the milestone transition. A final source-provenance review
+then found 98 Apache-2.0 formatter classes misclassified as project-owned. The
+final verdict remains an infrastructure and release-safety failure, not a
+protocol counterexample.
 
 ## Severity
 
@@ -24,7 +26,9 @@ false. Its first repair still did not reconcile the actual archive and omitted
 Gson, prettier4j, Activation, and LSP4J, the stripped Activation, Jakarta Mail,
 and LSP4J notices, and JLine's current copyright. The same first fix also
 promised an `unreadable` infrastructure diagnosis that `set -euo pipefail`
-could prevent from running.
+could prevent from running. Even the archive-derived repair still mislabeled
+the imported and modified TLA+ Formatter classes as project-owned, leaving its
+Apache-2.0 provenance and modification notice out of the redistribution record.
 
 Independently, seven consecutive scheduled proof runs never started TLC. That
 left the repository without its full state-space verdict and made a red nightly
@@ -44,6 +48,7 @@ of an escaped protocol defect.
 | 4 | The first license repair checked selected README strings instead of reconciling the JAR's classes; it omitted Gson, prettier4j, Activation, and LSP4J, stripped notices for Activation, Jakarta Mail, and LSP4J, and retained a JLine copyright ending in 2018 for JLine 3.25.0 | The public repository still lacked the applicable redistribution record after claiming the defect closed | Archive-derived component ownership | A handpicked string list was a proxy for the archive inventory and could remain green while undocumented classes were present | Classify every JAR class exactly once as project-owned or one of seven explicit external components, require every component to be present and documented with exact version/license/source, and restore upstream legal files beside the JAR (rung 2) |
 | 5 | `BUILD.md` made hosted alpha current while root `AGENTS.md` still directed contributors to the completed remote-dogfood slice | Work and review could follow stale repository instructions instead of the hosted-alpha exit test | Milestone source-of-truth consistency | Updating the plan did not force the always-loaded contributor instructions to move with it | Co-read BUILD and AGENTS in the focused regression and pin the hosted-alpha instruction (rung 2) |
 | 6 | The completed milestone called 12-hour checkpoints “hourly cycles”; only the scheduler tick was hourly | The durable evidence overstated the workflow cadence by 12× | Milestone evidence accuracy | Tick frequency and due-work frequency were collapsed into one label | Pin 15 12-hour cycles and distinguish their hourly launch ticks in the focused regression (rung 2) |
+| 7 | The archive-derived inventory classified all 98 `formatter/` classes as project-owned even though TLA+ imported and modified them from Apache-2.0 `tlaplus-formatter` commit `7aa6a56` | The supposedly complete redistribution record omitted the formatter's license provenance, corresponding source, and modification notice | Archive-derived component ownership plus source-provenance review | Namespace classification answered where the classes lived in the TLA+ tree, not where their source originated; a hand-maintained “project-owned” allowlist remained a proxy for provenance | Classify `formatter/` as an explicit external component and require its exact origin commit, Apache-2.0 terms, corresponding source, and TLA+ modification notice in the component record (rung 2) |
 
 ## Detection ledger
 
@@ -51,13 +56,13 @@ of an escaped protocol defect.
 |----------|----------|-------|
 | Scheduled nightly checksum failure, confirmed from all six TLA job logs | 1 | yes |
 | Adversarial review of the vendoring fix | 2 | no |
-| Exact-head closeout review | 3 | no |
+| Exact-head closeout and source-provenance review | 4 | no |
 
-Self-catch rate: **1 of 6, or 17%** (previous verification-infrastructure round:
+Self-catch rate: **1 of 7, or 14%** (previous verification-infrastructure round:
 **2 of 2, or 100%**).
 
-The rate fell from 100% to 17%. Our nightly stopped the original line, but the
-author's machinery accepted five defects introduced by its repair and closeout.
+The rate fell from 100% to 14%. Our nightly stopped the original line, but the
+author's machinery accepted six defects introduced by its repair and closeout.
 Reviewers had to inspect the embedded archive, execute the untested shell
 failure path, and cross-check repository guidance against the evidence.
 Detection worked for dependency drift; it did not work for the new
@@ -108,6 +113,14 @@ the milestone summary repeated older interpretations. The focused consistency
 case now reads those records together. It is a check, not a claim that prose has
 become a single representation.
 
+Finding 7 is a second direct recurrence of finding 2 and a failure of finding
+4's replacement mechanism. The one-owner inventory proved that every class had
+one configured namespace owner, but “project-owned” was an unchecked assertion
+about source provenance. The mechanism therefore accepted imported code merely
+because TLA+ had copied it beneath a project source directory. This is another
+proxy for the actual property: every redistributed class is attributed to its
+source and applicable terms.
+
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
@@ -117,7 +130,7 @@ become a single representation.
 | Five-case artifact behavior test | 3 | Experiment A still passed all five tests because fake Java proves routing and fail-fast behavior, while the license assertions inspect the README rather than deriving an inventory from the JAR: `Test Files 1 passed (1)` and `Tests 5 passed (5)`. |
 | Hardcoded license and source manifest | 3 | A future JAR with different bundled code still passes if the README retains the five expected strings. Experiment A replaced the entire archive with `/etc/hostname`, retained the README, and all five tests passed. The manifest is a reviewed record, not the property that documentation equals archive contents. |
 | Totalized checksum diagnostic plus digest-failure case | 3 | A failure outside the three enumerated artifact cases can still exit silently. In Experiment B, replacing `mktemp` with `/usr/bin/false` made the current script exit 1 with zero output bytes, while the focused five-test suite remained green. The fix makes the checksum error handler total; it does not classify every shell prerequisite. |
-| Exact one-owner class inventory plus per-component record | 2 | Experiment C added `com/google/gson/not-gson/Foreign.class`, updated the paired digest, and retained the Gson record; all six focused tests still passed because a foreign component can choose an already owned namespace. The check catches changed archive shape, not deceptive namespace reuse or incorrect license facts. |
+| Exact one-owner class inventory plus per-component record | 2 | Experiment C added `com/google/gson/not-gson/Foreign.class`, updated the paired digest, and retained the Gson record; all six focused tests still passed because a foreign component can choose an already owned namespace. Experiment E was the shipped false negative: `formatter/` sat in the project-owned allowlist at `d3c8a38`, so 98 imported Apache-2.0 classes passed all six tests. The check catches changed archive shape, not deceptive namespace reuse, source provenance, or incorrect license facts. |
 | Co-read milestone guidance and cadence assertions | 2 | Experiment D restored the wrong top-of-file values but repeated the required phrases in an unrelated historical paragraph; all six focused tests still passed. The check catches omission of the current phrases, not their semantic placement or truth. |
 
 Experiment A was written and run in a disposable copy of the artifact fixture:
@@ -156,15 +169,25 @@ unrelated paragraph, then ran the same test. Both reported one file and six
 tests green. These failures bound the new mechanism to namespace ownership and
 literal cross-record consistency; neither can prove legal facts or prose intent.
 
+Experiment E was the exact reviewed head, not a synthetic mutation. At
+`d3c8a38`, `projectOwnedPrefixes` included `formatter/`; the focused suite
+reported one file and six tests green. Upstream integration commit `cf62ffd`
+states that those sources came from `tlaplus-formatter` commit `7aa6a56`, were
+renamed, and had their dependencies and command-line plumbing replaced. Removing
+that prefix and requiring an explicit component record made one of six tests red.
+
 ## Fix-induced defects
 
-**Five: findings 2–6.** Findings 2 and 3 were introduced by commit `e97ae81`,
+**Six: findings 2–7.** Findings 2 and 3 were introduced by commit `e97ae81`,
 the repair for finding 1. Finding 4 survived `bdab7e7`, the first repair of
 finding 2, because its string manifest did not derive ownership from the JAR.
 Findings 5 and 6 were introduced by `77fcfae`, the milestone closeout prompted
-by the incident. Findings 2 and 3 received failing regression tests in
+by the incident. Finding 7 survived `cca4424`, the archive-derived repair of
+finding 4, because the project-owned list carried no provenance evidence.
+Findings 2 and 3 received failing regression tests in
 `3daac08` before green fix `bdab7e7`; findings 4–6 received failing regression
-tests in `09563c9` before green fix `cca4424`.
+tests in `09563c9` before green fix `cca4424`; finding 7 received failing
+regression commit `a648d72` before green fix `19c95c1`.
 
 ## Evidence
 
@@ -191,6 +214,11 @@ tests in `09563c9` before green fix `cca4424`.
   records all seven shaded components, restores the exact Activation, Jakarta
   Mail, and LSP4J notices and current JLine license, and aligns BUILD and
   AGENTS. The focused verdict is six of six green.
+- Final provenance red/fix: commit `a648d72` removes `formatter/` from the
+  project-owned allowlist and requires an explicit record; it was run and seen
+  failing one of six tests against `d3c8a38`. Commit `19c95c1` records the exact
+  imported source, Apache-2.0 terms, and TLA+'s modifications; all six focused
+  tests then passed.
 - Final gate after the follow-up fix: `pnpm verify` passed 100 test files and
   5,889 tests.
   `TLA_SCOPE=ci` passed after 1,812,645 generated and 486,377 distinct states,
@@ -223,6 +251,11 @@ tests in `09563c9` before green fix `cca4424`.
   vendored binary still lacks third-party redistribution notices despite
   claiming that the licensing defect is closed.” It also identified the stale
   current-milestone instruction and the hourly/12-hour cadence contradiction.
+- Final source-provenance review quoted finding 7 as: “`formatter/` is
+  incorrectly classified as project-owned ... Upstream TLA+ commit `cf62ffd`
+  explicitly imported and modified Apache-2.0 `tlaplus-formatter` commit
+  `7aa6a56`. ... This materially falsifies the claimed complete redistribution
+  inventory.”
 
 ## Root cause
 
@@ -237,7 +270,8 @@ The repair then scoped "vendor the checker" as an availability change, even
 though it created three additional surfaces: redistribution obligations, a new
 preflight diagnostic, and milestone-transition records. Project-level licensing
 was first substituted for the archive inventory; a selected string list was
-then substituted for class ownership. One readable-corruption example was
+then substituted for class ownership, and configured namespace ownership was
+substituted for source provenance. One readable-corruption example was
 substituted for the error handler's failure domain under `set -euo pipefail`,
 and one BUILD edit was treated as if contributor guidance and evidence language
 moved automatically. The common cause was verifying the old outcome without
@@ -245,7 +279,7 @@ enumerating the surfaces created by the fix itself.
 
 ## Mechanisms
 
-Built across commits `e97ae81`, `bdab7e7`, and `cca4424`:
+Built across commits `e97ae81`, `bdab7e7`, `cca4424`, and `19c95c1`:
 
 - The exact known-green fat JAR lives under `tools/tla/`, with provenance,
   revision, and checksum recorded. Upstream asset replacement is structurally
@@ -260,9 +294,10 @@ Built across commits `e97ae81`, `bdab7e7`, and `cca4424`:
   and digest-command-failure paths, derive exact component ownership from every
   archived class, and cross-check the current milestone records (rungs 2 and 3).
 - `tools/tla/README.md` identifies the JAR as a multi-license distribution,
-  maps all seven third-party components to their exact versions, licenses,
-  notices, and source, and restores stripped or stale legal files beside the
-  unmodified JAR (rung 2; namespace ownership is not license inference).
+  maps all eight third-party components to their exact versions or source
+  revisions, licenses, notices, and source, and restores stripped or stale legal
+  files beside the unmodified JAR (rung 2; namespace ownership is not license
+  inference).
 - BUILD and AGENTS agree that hosted alpha is current, while BUILD distinguishes
   12-hour workflow cycles from their hourly launch ticks (rung 2).
 
