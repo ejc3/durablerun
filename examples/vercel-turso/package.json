@@ -13,10 +13,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@durablerun/core": "0.1.0-alpha.0",
-    "@durablerun/driver": "0.1.0-alpha.0",
-    "@durablerun/sdk": "0.1.0-alpha.0",
-    "@durablerun/store-libsql": "0.1.0-alpha.0",
+    "@durablerun/core": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-core-0.1.0-alpha.0.tgz",
+    "@durablerun/driver": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-driver-0.1.0-alpha.0.tgz",
+    "@durablerun/sdk": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-sdk-0.1.0-alpha.0.tgz",
+    "@durablerun/store-libsql": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-store-libsql-0.1.0-alpha.0.tgz",
     "@vercel/functions": "3.9.5"
   },
   "devDependencies": {

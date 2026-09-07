@@ -21,10 +21,10 @@ migrator or receipt at another application's database.
 4. Set `DURABLERUN_BASE_URL` locally to the production URL and run
    `npm run receipt`.
 
-The four durablerun dependencies are exact `0.1.0-alpha.0` public-package
-coordinates—there are no workspace links or source imports. If the alpha is
-distributed as GitHub release assets instead of npm, replace only those four
-values with the exact `.tgz` release URLs before `npm install`.
+The four durablerun dependencies are immutable `v0.1.0-alpha.0` GitHub release
+tarballs—there are no workspace links, source imports, registry credentials, or
+mutable branch references. A later npm release can replace only those four URLs
+with package versions.
 
 The receipt has a 45-second total deadline. It proves all four operations deny
 anonymous requests, then drives enqueue → event suspension → emit → resume →
