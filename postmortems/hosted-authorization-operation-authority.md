@@ -1,14 +1,14 @@
 # Postmortem: hosted authorization operation authority review
 
-The hosted-alpha authorization slice introduced a public, exhaustive list of
-four semantic operations and rejected any operation outside it. Adversarial
-review found that the list was TypeScript-readonly but runtime-mutable: a
-consumer could append a fifth operation, after which the central validator
-accepted it and an ordinary allow plugin authorized it. The finding was made
-before the first implementation commit, but after the author's focused and
-full-driver tests had passed. The repaired history records the exact mutable
-implementation, a failing behavioral regression, the runtime freeze, and this
-machinery audit.
+The hosted-alpha authorization slice initially exported an exhaustive list of
+four semantic operations. Adversarial review found that the TypeScript-readonly
+list was runtime-mutable: a consumer could append a fifth operation, after
+which the central validator accepted it. The repaired history preserves the
+exact mutable implementation, failing regression, and intermediate runtime
+freeze. Before the public API shipped, the simplification pass removed the
+collection from the public surface entirely. The final boundary derives its
+operation union and runtime membership from one module-private tuple, so a
+plugin receives an operation value but no authority collection to mutate.
 
 **This document is adversarial toward the MACHINERY and blameless toward
 people.** The important failure is that compile-time notation was accepted as
@@ -21,17 +21,18 @@ operation fails closed with HTTP 500 while the runtime did the opposite after
 mutation. A JavaScript consumer, a cast, or another in-process integration
 could append an operation such as `task.delete` and pass it to
 `authorizeHostedRequest`; a broad plugin's explicit allow then produced an
-authorization grant. This is a release-safety SEV because the defect widened
-the authority vocabulary at runtime. It was not, by itself, a remote exploit:
-the alpha router did not yet exist and the reproducer required in-process
-mutation. Shipping the primitive would nevertheless have made later routing
-code depend on a false fail-closed guarantee.
+authorization grant. The standing review rule classified that escaped defect
+as a release-safety SEV. Its actual reach was narrower: it was not a remote
+exploit, the reproducer required trusted in-process code, and that code could
+already replace its plugin or bypass the HTTP adapter. The release-relevant
+problem was a public API making a false fail-closed promise, which the final
+private representation removes instead of defending with more public machinery.
 
 ## Findings
 
 | # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
 |---|--------|--------|----------------------------------|------------------|-------------------------|
-| 1 | `HOSTED_AUTHORIZATION_OPERATIONS` used `as const`, which is erased at runtime, while `isOperation` trusted the exported array's current contents | Mutating the export widened the supposedly closed operation set and let a normal allow plugin grant an unmodeled operation instead of returning the promised 500 | The authorization boundary's runtime representation and a mutation-focused behavioral test | Typechecking proved only a readonly tuple type; the six original tests called known operations or one unknown operation without first mutating the authority source | Freeze the exported tuple at runtime, keep validation derived from that frozen source, retain the mapped type that makes per-operation policy exhaustive, and execute an append-then-authorize regression (rung 1 for mutation of this representation; rung 3 for behavioral evidence) |
+| 1 | `HOSTED_AUTHORIZATION_OPERATIONS` used `as const`, which is erased at runtime, while `isOperation` trusted the exported array's current contents | Mutating the export widened the supposedly closed operation set and let a normal allow plugin grant an unmodeled operation instead of returning the promised 500 | The authorization boundary's runtime representation and a mutation-focused behavioral test | Typechecking proved only a readonly tuple type; the six original tests called known operations or one unknown operation without first mutating the authority source | The intermediate repair froze the export; the final simplification removes the export and derives both the type and runtime check from one module-private tuple (rung 1 for external mutation of the authority source) |
 
 ## Detection ledger
 
@@ -57,18 +58,18 @@ widen the authorization vocabulary. The proxy was that well-typed callers
 cannot call mutating array methods.
 
 The repository's standing single-representation rule pointed toward the right
-shape, but no existing mechanism required an exported authority collection to
-be frozen or attacked it through JavaScript's runtime surface. This finding
-does not prove a prior freeze mechanism failed; it proves the established
-structural lesson was not applied to the new boundary.
+shape, but the first repair interpreted that as "freeze the exported
+collection." The later simplification applied the stronger and smaller rule:
+do not export internal authority that no consumer needs. This finding does not
+prove a prior freeze mechanism failed; it shows that deleting an unnecessary
+capability is preferable to adding machinery around it.
 
 ## Mechanism audit — the false negative of each
 
 | Mechanism | Rung | Code that still has the bug and still passes |
 |-----------|------|----------------------------------------------|
-| Runtime-frozen exported tuple, with `isOperation` reading it | 1 for mutation of this object | No in-scope false negative: `push`, `splice`, index assignment, and length assignment cannot change the frozen array. The adjacent broader defect is a second acceptance source in `isOperation`; freezing the tuple cannot prevent source code from adding one. |
-| Append `task.delete`, then require `invalid-operation` | 3 | The test names one unknown value. Experiment A added `if (value === 'task.cancel') return true` to `isOperation` while leaving the exported tuple frozen; all seven focused tests still passed and a direct `task.cancel` call returned `{"principal":"admin"}`. |
-| Exhaustive `HostedAuthorizationByOperation` mapped type and snapshotted adapter | 1 for typed construction | No in-scope false negative when the operation union grows: `satisfies HostedAuthorizationByOperation` makes a missing policy a type error, and construction rejects missing runtime functions. A caller can bypass this optional adapter and supply one broad plugin directly; central operation validation, not this mapping, must reject unknown operations. Experiment A shows that boundary. |
+| Module-private operation tuple, with the public union and runtime membership derived from it | 1 for external mutation of the authority source | No in-scope external-mutation false negative: no reference to the tuple crosses the module boundary. Source code in this module can intentionally add another operation; that is a code change, not authority granted to a plugin. |
+| Require `task.delete` to produce `invalid-operation` | 3 | The test names one unknown value. Experiment A added a second acceptance arm for `task.cancel`; the focused tests still passed and a direct `task.cancel` call returned `{"principal":"admin"}`. The private single source removes accidental external widening, not deliberate source changes. |
 
 Experiment A was written and run in a disposable checkout of fix commit
 `fd28273` with this deliberate second authority:
@@ -97,18 +98,18 @@ an allow plugin; it exited zero and printed:
 {"principal":"admin"}
 ```
 
-This is the honest boundary. Runtime freezing closes mutation of the exported
-representation. The single `task.delete` regression is not a proof that future
-source changes cannot introduce a second authority.
+This remains the honest test boundary. The historical freeze closed mutation
+of one exported object; the final private tuple removes that object from the
+public capability surface. Neither shape proves that a future source edit
+cannot deliberately widen the vocabulary.
 
 ## Fix-induced defects
 
 **Zero.** This finding was present in the initial authorization implementation,
-not introduced by a repair earlier in the round. Fix commit `fd28273` changes
+not introduced by a repair earlier in the round. Fix commit `fd28273` changed
 only the array's runtime construction from a plain tuple to `Object.freeze`.
-The seven focused tests, driver TypeScript check, formatting, determinism lint,
-and user-boundary lint passed after the change, and adversarial re-review found
-no further release blocker.
+The later simplification replaced that repair with the private representation;
+it did not reveal or introduce another correctness finding.
 
 ## Evidence
 
@@ -146,6 +147,11 @@ no further release blocker.
   list. The claim that the freeze proves every future operation validator is
   closed also did **not** reproduce: Experiment A retained seven green tests
   while authorizing `task.cancel` through a second source-code arm.
+- The final simplification retains the four known-operation and unknown-operation
+  behaviors, but no longer exports an operation collection, custom header
+  facade, or framework policy combinators. The hosted router remains the sole
+  selector of operation values and passes the exact bounded body to one plugin
+  before parsing or store work.
 
 ## Root cause
 
@@ -162,31 +168,27 @@ property.
 
 Built in this branch:
 
-- `Object.freeze` creates the exported operation tuple in its immutable runtime
-  form, and `isOperation` derives membership from that same object (rung 1 for
-  mutation of this representation).
-- `HostedAuthorizationByOperation` maps over the tuple-derived union, while
-  `authorizationByOperation` snapshots and validates every required function;
-  there is no fallback policy (rung 1 for typed construction and runtime
-  configuration).
-- The focused behavioral regression attempts to append `task.delete`, invokes
-  the central boundary with that operation, and requires `invalid-operation`
-  500. It cleans up the mutation in the deliberately buggy red state so the
-  rest of the suite remains diagnostic (rung 3).
+- One module-private tuple generates the public operation union and the runtime
+  membership check. Plugins receive only a selected value, never the collection
+  that defines authority (rung 1 for external mutation of that source).
+- The focused behavior test invokes the central boundary with `task.delete` and
+  requires `invalid-operation` 500 while separately exercising every route-owned
+  operation (rung 3).
+- The router owns route-to-operation selection and invokes exactly one required
+  plugin before parsing or store work. Scheme composition and per-operation
+  policy stay in host code rather than a second framework policy layer.
 
 Deferred (recorded in BUILD.md):
 
-- None. The finding's fix and prevention ship in this branch. Experiment A is
-  an explicit mechanism boundary, not an accepted deferral or new hosted-alpha
-  work item.
+- No framework auth machinery is deferred. JWT, platform-signature verification,
+  multiple-scheme composition, and per-operation policy are intentionally owned
+  by the host-supplied plugin and are not hosted-alpha framework scope.
 
 ## What this round still would not catch
 
-A future change can add a second acceptance arm for an untested unknown value
-while leaving the tuple frozen and the `task.delete` regression green;
-Experiment A did exactly that with `task.cancel`. The mapped policy type cannot
-protect a caller that intentionally uses a single broad plugin instead of the
-per-operation adapter, so the central validator remains load-bearing. A host
-with arbitrary in-process code can also replace its own plugin policy; that is
-outside this boundary's threat model and is not presented as something the
-freeze prevents.
+A future source change can add a second acceptance arm for an untested unknown
+value while leaving the `task.delete` regression green; Experiment A did
+exactly that with `task.cancel`. A host can also intentionally authorize every
+known operation or bypass its own router and call the store directly. Host code
+is the trusted policy boundary; the private operation representation is not
+presented as a sandbox against it.

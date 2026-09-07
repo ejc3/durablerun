@@ -1223,21 +1223,18 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   deployment, keeping all heavyweight compute on Vercel; or (b) go fully
   serverless with the tick machinery below. Both use the same engine code.
 - **Hosted authorization port**: task enqueue, event emit, tick, and inspection
-  routes map exhaustively to `task.enqueue`, `event.emit`, `tick.run`, and
+  routes own the closed operations `task.enqueue`, `event.emit`, `tick.run`, and
   `task.inspect`. Before parsing or doing work, the router reads its body once,
-  enforces a 64 KiB byte ceiling, and gives a required host-supplied plugin an
-  immutable snapshot of the Web request's method, URL, read-only headers, and
-  that exact decoded body text. The same text is parsed after authorization; the
-  port never exposes a Node `IncomingMessage` or a consumable body stream. An
-  explicit allow
+  enforces a 64 KiB byte ceiling, and gives one required host-supplied function
+  the request method, URL, a detached native `Headers` clone, and that exact
+  decoded body text. The same text is parsed after authorization; the port never
+  exposes a Node `IncomingMessage` or a consumable body stream. An explicit allow
   returns an optional principal; unauthenticated/forbidden denials become 401/403,
   plugin failures become 503, and malformed decisions or unmapped operations
   become 500. All are fail-closed: there is no allow default. The driver supplies
-  a fixed-digest timing-safe Bearer adapter, logical `anyOf`, and an exhaustive
-  per-operation adapter. `anyOf` accepts any explicit allow; without one, a
-  plugin failure wins over denial and forbidden wins over unauthenticated. JWT,
-  platform-signature schemes, and worker launch signing remain host/transport
-  concerns rather than policy baked into the port.
+  only a fixed-digest timing-safe Bearer adapter. JWT, platform signatures,
+  multiple-scheme composition, per-operation policy, and worker launch signing
+  remain ordinary host/transport code rather than policy baked into this port.
   A trusted host adapter may call the router's non-HTTP `runTick()` directly.
   After a successful enqueue or emit, an optional best-effort work-available hook
   can hand that promise to host lifecycle machinery such as `waitUntil`; hook

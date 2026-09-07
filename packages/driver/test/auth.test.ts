@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  HOSTED_AUTHORIZATION_OPERATIONS,
   HostedAuthorizationError,
   type HostedAuthorizationFacts,
   type HostedAuthorizationPlugin,
   allowAuthorization,
-  anyOfAuthorization,
-  authorizationByOperation,
   authorizeHostedRequest,
   bearerAuthorization,
   denyAuthorization,
@@ -34,7 +31,7 @@ async function expectAuthorizationError(
 }
 
 describe('hosted authorization', () => {
-  it('gives plugins an immutable Web request snapshot with the exact raw body text', async () => {
+  it('passes a detached native request snapshot with the exact raw body text', async () => {
     const bodyText = '{\n  "snow": "☃", "spaces":  true\n}\n'
     const source = new Request('https://alpha.example/api/tasks?view=full', {
       method: 'POST',
@@ -42,14 +39,9 @@ describe('hosted authorization', () => {
       body: bodyText,
     })
     let facts: HostedAuthorizationFacts | undefined
-    let release: (() => void) | undefined
-    const blocked = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const pending = authorizeHostedRequest(
-      async (snapshot) => {
+    const grant = await authorizeHostedRequest(
+      (snapshot) => {
         facts = snapshot
-        await blocked
         return allowAuthorization('custom-signer')
       },
       'task.enqueue',
@@ -57,33 +49,23 @@ describe('hosted authorization', () => {
       bodyText,
     )
 
-    source.headers.set('x-test', 'after')
+    expect(grant).toEqual({ principal: 'custom-signer' })
     expect(source.bodyUsed).toBe(false)
     await expect(source.clone().text()).resolves.toBe(bodyText)
-    if (release === undefined) throw new Error('plugin did not start')
-    release()
-    await expect(pending).resolves.toEqual({ principal: 'custom-signer' })
     if (facts === undefined) throw new Error('facts were not captured')
-
-    expect(Object.isFrozen(facts)).toBe(true)
-    expect(Object.isFrozen(facts.headers)).toBe(true)
-    expect('set' in facts.headers).toBe(false)
     expect(facts).toMatchObject({
       operation: 'task.enqueue',
       method: 'POST',
       url: 'https://alpha.example/api/tasks?view=full',
       bodyText,
     })
+    expect(facts.headers).toBeInstanceOf(Headers)
     expect(facts.headers.get('x-test')).toBe('before')
-    const visits: string[] = []
-    facts.headers.forEach((value, name, parent) => {
-      expect(parent).toBe(facts?.headers)
-      visits.push(`${name}:${value}`)
-    })
-    expect(visits).toContain('x-test:before')
+    facts.headers.set('x-test', 'plugin-local')
+    expect(source.headers.get('x-test')).toBe('before')
   })
 
-  it('maps explicit denials and plugin failures to stable fail-closed router errors', async () => {
+  it('maps denials, failures, malformed decisions, and unknown operations closed', async () => {
     const unauthenticated = await expectAuthorizationError(
       authorizeHostedRequest(() => denyAuthorization(), 'event.emit', request(), '{}'),
     )
@@ -95,7 +77,7 @@ describe('hosted authorization', () => {
     expect(forbidden).toMatchObject({ code: 'forbidden', httpStatus: 403 })
 
     const pluginCause = new Error('private backend detail')
-    const failed = await expectAuthorizationError(
+    const unavailable = await expectAuthorizationError(
       authorizeHostedRequest(
         () => {
           throw pluginCause
@@ -105,12 +87,10 @@ describe('hosted authorization', () => {
         '',
       ),
     )
-    expect(failed).toMatchObject({ code: 'plugin-failure', httpStatus: 503 })
-    expect(failed.message).not.toContain(pluginCause.message)
-    expect(failed.cause).toBe(pluginCause)
-  })
+    expect(unavailable).toMatchObject({ code: 'plugin-failure', httpStatus: 503 })
+    expect(unavailable.message).not.toContain(pluginCause.message)
+    expect(unavailable.cause).toBe(pluginCause)
 
-  it('rejects malformed decisions and unknown runtime operations', async () => {
     const malformed = (() => ({
       kind: 'allow',
       principal: 42,
@@ -126,31 +106,16 @@ describe('hosted authorization', () => {
     expect(invalidOperation).toMatchObject({ code: 'invalid-operation', httpStatus: 500 })
   })
 
-  it('cannot widen the runtime operation authority through its exported list', async () => {
-    const operations = HOSTED_AUTHORIZATION_OPERATIONS as unknown as string[]
-    let widened = false
-    try {
-      try {
-        operations.push('task.delete')
-        widened = true
-      } catch {
-        // The intended frozen representation rejects the mutation here.
-      }
-
-      const error = await expectAuthorizationError(
-        authorizeHostedRequest(
-          () => allowAuthorization('admin'),
-          'task.delete' as never,
-          request(),
-          '',
-        ),
-      )
-      expect(error).toMatchObject({ code: 'invalid-operation', httpStatus: 500 })
-      expect(Object.isFrozen(HOSTED_AUTHORIZATION_OPERATIONS)).toBe(true)
-    } finally {
-      // Keep the deliberately buggy red run from contaminating later cases.
-      if (widened) operations.pop()
+  it('accepts each route-owned operation through one plugin shape', async () => {
+    const seen: string[] = []
+    const plugin: HostedAuthorizationPlugin = (facts) => {
+      seen.push(facts.operation)
+      return allowAuthorization()
     }
+    for (const operation of ['task.enqueue', 'event.emit', 'tick.run', 'task.inspect'] as const) {
+      await expect(authorizeHostedRequest(plugin, operation, request(), '')).resolves.toEqual({})
+    }
+    expect(seen).toEqual(['task.enqueue', 'event.emit', 'tick.run', 'task.inspect'])
   })
 
   it('accepts only the exact bearer token through a fixed-length timing-safe comparison', async () => {
@@ -173,90 +138,5 @@ describe('hosted authorization', () => {
       expect(error).toMatchObject({ code: 'unauthenticated', httpStatus: 401 })
     }
     expect(() => bearerAuthorization({ token: '' })).toThrow('non-empty string')
-  })
-
-  it('anyOf authorizes an explicit success but never turns errors into implicit success', async () => {
-    const backendFailure = new Error('identity service unavailable')
-    const allowed = anyOfAuthorization(
-      () => {
-        throw backendFailure
-      },
-      () => denyAuthorization('forbidden'),
-      () => allowAuthorization('fallback-identity'),
-    )
-    await expect(authorizeHostedRequest(allowed, 'event.emit', request(), '{}')).resolves.toEqual({
-      principal: 'fallback-identity',
-    })
-
-    const unavailable = await expectAuthorizationError(
-      authorizeHostedRequest(
-        anyOfAuthorization(
-          () => denyAuthorization(),
-          () => {
-            throw backendFailure
-          },
-        ),
-        'event.emit',
-        request(),
-        '{}',
-      ),
-    )
-    expect(unavailable).toMatchObject({ code: 'plugin-failure', httpStatus: 503 })
-
-    const allDenied = await expectAuthorizationError(
-      authorizeHostedRequest(
-        anyOfAuthorization(
-          () => denyAuthorization(),
-          () => denyAuthorization('forbidden'),
-        ),
-        'event.emit',
-        request(),
-        '{}',
-      ),
-    )
-    expect(allDenied).toMatchObject({ code: 'forbidden', httpStatus: 403 })
-
-    const empty = await expectAuthorizationError(
-      authorizeHostedRequest(anyOfAuthorization(), 'event.emit', request(), '{}'),
-    )
-    expect(empty).toMatchObject({ code: 'unauthenticated', httpStatus: 401 })
-  })
-
-  it('routes every semantic operation through an exhaustive snapshotted map', async () => {
-    const calls: string[] = []
-    const plugin =
-      (label: string): HostedAuthorizationPlugin =>
-      (facts) => {
-        calls.push(`${label}:${facts.operation}`)
-        return allowAuthorization(label)
-      }
-    const mapping = {
-      'task.enqueue': plugin('enqueue'),
-      'event.emit': plugin('emit'),
-      'tick.run': plugin('tick'),
-      'task.inspect': plugin('inspect'),
-    }
-    const byOperation = authorizationByOperation(mapping)
-
-    for (const operation of HOSTED_AUTHORIZATION_OPERATIONS) {
-      await authorizeHostedRequest(byOperation, operation, request(), '')
-    }
-    expect(calls).toEqual([
-      'enqueue:task.enqueue',
-      'emit:event.emit',
-      'tick:tick.run',
-      'inspect:task.inspect',
-    ])
-
-    mapping['tick.run'] = () => denyAuthorization()
-    await expect(authorizeHostedRequest(byOperation, 'tick.run', request(), '')).resolves.toEqual({
-      principal: 'tick',
-    })
-
-    expect(() =>
-      authorizationByOperation({
-        'task.enqueue': plugin('enqueue'),
-      } as never),
-    ).toThrow('authorization plugin missing for event.emit')
   })
 })
