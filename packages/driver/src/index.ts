@@ -18,6 +18,12 @@ export {
 } from './auth.js'
 export { createWakeServer, createWorkerServer, httpLauncher, signBody } from './http.js'
 export {
+  createHostedRouter,
+  HOSTED_REQUEST_BODY_MAX_BYTES,
+  type HostedRouter,
+  type HostedRouterDependencies,
+} from './hosted.js'
+export {
   inlineLauncher,
   type InlineLauncherOptions,
   inlineTick,

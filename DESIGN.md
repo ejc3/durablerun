@@ -1208,9 +1208,15 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
 
 ### 3.5 Vercel deployment shape (initial target)
 
-- **App**: Next.js App Router (or Hono — pattern per `~/ts-api`), Fluid compute on.
-  Routes: `POST /api/tasks` (spawn), `POST /api/events` (emit), `POST /api/tick`
-  (driver), `POST /api/worker` (executor), `GET /api/runs/:id` (status/result).
+- **App**: a Web `Request` adapter (Next.js App Router initially), Fluid compute
+  on. The hosted-alpha surface is exactly `POST /api/tasks`, `POST /api/events`,
+  `GET|POST /api/tick`, and `GET /api/inspect?taskId=...`; recognized paths with
+  other methods return 405 and unknown paths return 404 without authorization or
+  store work. Enqueue accepts `{taskName, params?, idempotencyKey?}` and returns
+  the spawn receipt (201 when created, 200 on an idempotent replay). Emit accepts
+  `{eventName, payload?}`. Inspection returns the state plus the canonically
+  decoded result/failure when present. Every response is stable JSON with
+  `Cache-Control: no-store`.
 - **Driver hosting**: Vercel itself cannot host the resident driver, so either
   (a) run the tiny driver elsewhere (Fly/Railway/container/VM — or later the
   target platform) with it POSTing worker launches to `/api/worker` on the Vercel
@@ -1218,10 +1224,12 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   serverless with the tick machinery below. Both use the same engine code.
 - **Hosted authorization port**: task enqueue, event emit, tick, and inspection
   routes map exhaustively to `task.enqueue`, `event.emit`, `tick.run`, and
-  `task.inspect`. Before parsing or doing work, the router reads its bounded body
-  once and gives a required host-supplied plugin an immutable snapshot of the Web
-  request's method, URL, read-only headers, and exact body text. The port never
-  exposes a Node `IncomingMessage` or a consumable body stream. An explicit allow
+  `task.inspect`. Before parsing or doing work, the router reads its body once,
+  enforces a 64 KiB byte ceiling, and gives a required host-supplied plugin an
+  immutable snapshot of the Web request's method, URL, read-only headers, and
+  that exact decoded body text. The same text is parsed after authorization; the
+  port never exposes a Node `IncomingMessage` or a consumable body stream. An
+  explicit allow
   returns an optional principal; unauthenticated/forbidden denials become 401/403,
   plugin failures become 503, and malformed decisions or unmapped operations
   become 500. All are fail-closed: there is no allow default. The driver supplies
@@ -1230,6 +1238,11 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   plugin failure wins over denial and forbidden wins over unauthenticated. JWT,
   platform-signature schemes, and worker launch signing remain host/transport
   concerns rather than policy baked into the port.
+  A trusted host adapter may call the router's non-HTTP `runTick()` directly.
+  After a successful enqueue or emit, an optional best-effort work-available hook
+  can hand that promise to host lifecycle machinery such as `waitUntil`; hook
+  throws/rejections never alter the already-durable mutation response, and cron
+  remains the recovery path for a lost hint.
   These routes execute registered code and remain admin surfaces (lesson from
   §1.1: self-hosted worlds get no auth for free).
 - **Cron sweep**: `vercel.json` (or `vercel.ts`) crons → `/api/tick` every minute
