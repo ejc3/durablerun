@@ -21,8 +21,9 @@ migrator or receipt at another application's database.
    example instead of selecting the enclosing repository's pnpm workspace. It
    also gives each invocation 60 seconds, and the midnight-UTC recovery cron
    stays within Vercel Hobby's once-daily limit.
-4. Set `DURABLERUN_BASE_URL` locally to the production URL and run
-   `npm run receipt`.
+4. Set `DURABLERUN_BASE_URL` locally to the HTTPS production URL and run
+   `npm run receipt`. The receipt rejects a non-HTTPS destination before it
+   constructs an authenticated request.
 
 The four durablerun dependencies are immutable `v0.1.0-alpha.0` GitHub release
 tarballs—there are no workspace links, source imports, registry credentials, or

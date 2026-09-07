@@ -1246,6 +1246,8 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   A trusted host adapter may call the router's non-HTTP `runTick()` directly.
   The checked-in two-token example refuses construction when its API and cron
   credentials are equal, preserving the documented operation split.
+  The checked-in hosted receipt accepts only an HTTPS base URL and validates
+  it before constructing any request carrying either Bearer credential.
   After a successful enqueue or emit, an optional best-effort work-available hook
   can hand that promise to host lifecycle machinery such as `waitUntil`; hook
   throws/rejections never alter the already-durable mutation response, and cron
