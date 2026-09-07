@@ -5,12 +5,12 @@ import { type HostedAuthorizationPlugin, bearerAuthorization } from '@durablerun
  * with any host-owned HostedAuthorizationPlugin without changing a route or
  * scheduler primitive.
  */
-export function hostedAuthorization(
-  apiToken: string,
-  cronToken: string,
-): HostedAuthorizationPlugin {
-  const api = bearerAuthorization({ token: apiToken, principal: 'hosted-api' })
-  const cron = bearerAuthorization({ token: cronToken, principal: 'vercel-cron' })
+export function hostedAuthorization(options: {
+  readonly apiToken: string
+  readonly cronToken: string
+}): HostedAuthorizationPlugin {
+  const api = bearerAuthorization({ token: options.apiToken })
+  const cron = bearerAuthorization({ token: options.cronToken })
   return (facts) => {
     switch (facts.operation) {
       case 'task.enqueue':

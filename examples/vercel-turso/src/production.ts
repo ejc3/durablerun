@@ -1,6 +1,6 @@
 import { waitUntil } from '@vercel/functions'
 import { hostedAuthorization } from './auth.js'
-import { createHostedExample, type HostedExampleRuntime } from './runtime.js'
+import { type HostedExampleRuntime, createHostedExample } from './runtime.js'
 
 function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -15,10 +15,10 @@ function getRuntime(): HostedExampleRuntime {
     databaseUrl: requiredEnv('TURSO_DATABASE_URL'),
     databaseAuthToken: requiredEnv('TURSO_AUTH_TOKEN'),
     queue: requiredEnv('DURABLERUN_QUEUE'),
-    authorization: hostedAuthorization(
-      requiredEnv('DURABLERUN_API_TOKEN'),
-      requiredEnv('CRON_SECRET'),
-    ),
+    authorization: hostedAuthorization({
+      apiToken: requiredEnv('DURABLERUN_API_TOKEN'),
+      cronToken: requiredEnv('CRON_SECRET'),
+    }),
     defer: waitUntil,
   })
   return runtime

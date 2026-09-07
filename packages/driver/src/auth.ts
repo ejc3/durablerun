@@ -23,17 +23,13 @@ export interface HostedAuthorizationFacts {
 }
 
 export type HostedAuthorizationDecision =
-  | Readonly<{ kind: 'allow'; principal?: string }>
+  | Readonly<{ kind: 'allow' }>
   | Readonly<{ kind: 'deny'; reason: 'unauthenticated' | 'forbidden' }>
 
 /** A host supplies one function and owns any scheme or policy composition. */
 export type HostedAuthorizationPlugin = (
   facts: HostedAuthorizationFacts,
 ) => HostedAuthorizationDecision | Promise<HostedAuthorizationDecision>
-
-export interface HostedAuthorizationGrant {
-  readonly principal?: string
-}
 
 export type HostedAuthorizationErrorCode =
   | 'unauthenticated'
@@ -56,8 +52,8 @@ export class HostedAuthorizationError extends Error {
   }
 }
 
-export function allowAuthorization(principal?: string): HostedAuthorizationDecision {
-  return principal === undefined ? { kind: 'allow' } : { kind: 'allow', principal }
+export function allowAuthorization(): HostedAuthorizationDecision {
+  return { kind: 'allow' }
 }
 
 export function denyAuthorization(
@@ -82,15 +78,12 @@ function invalidDecision(cause?: unknown): HostedAuthorizationError {
   )
 }
 
-function grantFrom(value: unknown): HostedAuthorizationGrant {
+function requireAllowedDecision(value: unknown): void {
   if (typeof value !== 'object' || value === null) throw invalidDecision()
   try {
     const decision = value as Record<string, unknown>
     if (decision.kind === 'allow') {
-      if (decision.principal !== undefined && typeof decision.principal !== 'string') {
-        throw invalidDecision()
-      }
-      return decision.principal === undefined ? {} : { principal: decision.principal }
+      return
     }
     if (decision.kind === 'deny') {
       if (decision.reason === 'forbidden') {
@@ -113,7 +106,7 @@ export async function authorizeHostedRequest(
   operation: HostedAuthorizationOperation,
   request: Request,
   bodyText: string,
-): Promise<HostedAuthorizationGrant> {
+): Promise<void> {
   if (!isOperation(operation)) {
     throw new HostedAuthorizationError(
       'invalid-operation',
@@ -139,7 +132,7 @@ export async function authorizeHostedRequest(
       { cause },
     )
   }
-  return grantFrom(decision)
+  requireAllowedDecision(decision)
 }
 
 function fixedDigest(value: string): Buffer {
@@ -149,18 +142,13 @@ function fixedDigest(value: string): Buffer {
 /** A strict Bearer adapter whose secret comparison always uses equal-length digests. */
 export function bearerAuthorization(options: {
   readonly token: string
-  readonly principal?: string
 }): HostedAuthorizationPlugin {
   const token: unknown = options.token
-  const principal: unknown = options.principal
   if (typeof token !== 'string' || token.length === 0) {
     throw new TypeError('bearer authorization token must be a non-empty string')
   }
-  if (principal !== undefined && typeof principal !== 'string') {
-    throw new TypeError('bearer authorization principal must be a string')
-  }
   const expected = fixedDigest(token)
-  const allowed = allowAuthorization(principal)
+  const allowed = allowAuthorization()
   return (facts) => {
     const header = facts.headers.get('authorization')
     if (header === null || header.length <= 7 || header.slice(0, 7).toLowerCase() !== 'bearer ') {

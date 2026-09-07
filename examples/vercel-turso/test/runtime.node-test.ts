@@ -13,9 +13,9 @@ const API_TOKEN = 'example-api-token'
 const CRON_TOKEN = 'example-cron-token'
 
 test('checked-in recovery cron is deployable on Vercel Hobby', () => {
-  const config = JSON.parse(
-    readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'),
-  ) as { crons?: unknown }
+  const config = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')) as {
+    crons?: unknown
+  }
   assert.deepEqual(config.crons, [{ path: '/api/tick', schedule: '0 0 * * *' }])
 })
 
@@ -44,7 +44,7 @@ test('external wiring separates API and cron authority and resumes an event task
     databaseUrl,
     databaseAuthToken: '',
     queue: 'external-example-test',
-    authorization: hostedAuthorization(API_TOKEN, CRON_TOKEN),
+    authorization: hostedAuthorization({ apiToken: API_TOKEN, cronToken: CRON_TOKEN }),
     defer(work) {
       deferred.push(work)
     },
@@ -100,7 +100,7 @@ test('a claimed-but-unlaunched task is reopened without spending its user attemp
     databaseUrl,
     databaseAuthToken: '',
     queue,
-    authorization: hostedAuthorization(API_TOKEN, CRON_TOKEN),
+    authorization: hostedAuthorization({ apiToken: API_TOKEN, cronToken: CRON_TOKEN }),
   })
   try {
     const admin = new LibsqlStoreAdmin(raw)

@@ -87,10 +87,9 @@ function expectStatus(
   }
 }
 
-async function tick(): Promise<Record<string, unknown>> {
+async function tick(): Promise<void> {
   const result = await call('/api/tick', { token: cronToken })
   expectStatus(result, 200, 'authorized tick')
-  return object(result.body, 'tick')
 }
 
 async function inspect(taskId: string): Promise<Record<string, unknown>> {
@@ -203,15 +202,7 @@ try {
   let relaunchCount = 0
   let completedAttempt: Record<string, unknown> | undefined
   for (;;) {
-    const tickResult = await tick()
-    const swept = Array.isArray(tickResult.swept) ? tickResult.swept : []
-    for (const item of swept) {
-      const entry = object(item, 'sweep entry')
-      if (entry.taskId === attemptTaskId && entry.kind === 'lost-launch') {
-        const count = entry.relaunchCount
-        if (typeof count === 'number') relaunchCount = Math.max(relaunchCount, count)
-      }
-    }
+    await tick()
     const [rows] = await raw.batch(
       'hosted-receipt:relaunch-count',
       [
@@ -223,9 +214,10 @@ try {
       'read',
     )
     const stored = rows?.rows[0]?.relaunch_count
-    if (typeof stored === 'number' || typeof stored === 'bigint') {
-      relaunchCount = Math.max(relaunchCount, Number(stored))
+    if (typeof stored !== 'number' && typeof stored !== 'bigint') {
+      throw new Error('lost-launch run has no numeric relaunch count')
     }
+    relaunchCount = Number(stored)
     const current = await inspect(attemptTaskId)
     if (current.state === 'completed') {
       completedAttempt = current

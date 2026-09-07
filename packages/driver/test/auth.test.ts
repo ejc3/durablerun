@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { HostedAuthorizationError, authorizeHostedRequest } from '../src/auth.js'
 import {
-  HostedAuthorizationError,
   type HostedAuthorizationFacts,
   type HostedAuthorizationPlugin,
   allowAuthorization,
-  authorizeHostedRequest,
   bearerAuthorization,
   denyAuthorization,
 } from '../src/index.js'
@@ -39,17 +38,16 @@ describe('hosted authorization', () => {
       body: bodyText,
     })
     let facts: HostedAuthorizationFacts | undefined
-    const grant = await authorizeHostedRequest(
+    await authorizeHostedRequest(
       (snapshot) => {
         facts = snapshot
-        return allowAuthorization('custom-signer')
+        return allowAuthorization()
       },
       'task.enqueue',
       source,
       bodyText,
     )
 
-    expect(grant).toEqual({ principal: 'custom-signer' })
     expect(source.bodyUsed).toBe(false)
     await expect(source.clone().text()).resolves.toBe(bodyText)
     if (facts === undefined) throw new Error('facts were not captured')
@@ -92,8 +90,8 @@ describe('hosted authorization', () => {
     expect(unavailable.cause).toBe(pluginCause)
 
     const malformed = (() => ({
-      kind: 'allow',
-      principal: 42,
+      kind: 'deny',
+      reason: 'indeterminate',
     })) as unknown as HostedAuthorizationPlugin
     const invalidDecision = await expectAuthorizationError(
       authorizeHostedRequest(malformed, 'task.enqueue', request(), '{}'),
@@ -113,16 +111,18 @@ describe('hosted authorization', () => {
       return allowAuthorization()
     }
     for (const operation of ['task.enqueue', 'event.emit', 'tick.run', 'task.inspect'] as const) {
-      await expect(authorizeHostedRequest(plugin, operation, request(), '')).resolves.toEqual({})
+      await expect(
+        authorizeHostedRequest(plugin, operation, request(), ''),
+      ).resolves.toBeUndefined()
     }
     expect(seen).toEqual(['task.enqueue', 'event.emit', 'tick.run', 'task.inspect'])
   })
 
   it('accepts only the exact bearer token through a fixed-length timing-safe comparison', async () => {
-    const plugin = bearerAuthorization({ token: 'short-secret', principal: 'cron' })
+    const plugin = bearerAuthorization({ token: 'short-secret' })
     await expect(
       authorizeHostedRequest(plugin, 'tick.run', request('bEaReR short-secret'), ''),
-    ).resolves.toEqual({ principal: 'cron' })
+    ).resolves.toBeUndefined()
 
     for (const authorization of [
       undefined,

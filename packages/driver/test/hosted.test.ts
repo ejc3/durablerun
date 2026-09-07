@@ -63,7 +63,7 @@ async function fixture(
     ids,
     clock: systemClock() satisfies Clock,
     registry: options.registry ?? new Map(),
-    authorization: options.authorization ?? (() => allowAuthorization('test')),
+    authorization: options.authorization ?? (() => allowAuthorization()),
     queue: Q,
     sweepLimit: 10,
     leaseSeconds: 60,
@@ -81,7 +81,7 @@ describe('hosted-alpha Web Request router', () => {
     const facts: HostedAuthorizationFacts[] = []
     const authorization: HostedAuthorizationPlugin = (snapshot) => {
       facts.push(snapshot)
-      return allowAuthorization('route-test')
+      return allowAuthorization()
     }
     const handler = vi.fn(async (_ctx, params: unknown) => params)
     const f = await fixture('hosted-routes', {
@@ -150,7 +150,10 @@ describe('hosted-alpha Web Request router', () => {
         error: 'forbidden',
       },
       {
-        plugin: (() => ({ kind: 'allow', principal: 7 })) as unknown as HostedAuthorizationPlugin,
+        plugin: (() => ({
+          kind: 'deny',
+          reason: 'indeterminate',
+        })) as unknown as HostedAuthorizationPlugin,
         status: 500,
         error: 'authorization_invalid',
       },

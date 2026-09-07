@@ -1,13 +1,9 @@
 export {
   allowAuthorization,
-  authorizeHostedRequest,
   bearerAuthorization,
   denyAuthorization,
-  HostedAuthorizationError,
   type HostedAuthorizationDecision,
-  type HostedAuthorizationErrorCode,
   type HostedAuthorizationFacts,
-  type HostedAuthorizationGrant,
   type HostedAuthorizationOperation,
   type HostedAuthorizationPlugin,
 } from './auth.js'

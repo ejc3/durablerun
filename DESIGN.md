@@ -1229,7 +1229,7 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   the request method, URL, a detached native `Headers` clone, and that exact
   decoded body text. The same text is parsed after authorization; the port never
   exposes a Node `IncomingMessage` or a consumable body stream. An explicit allow
-  returns an optional principal; unauthenticated/forbidden denials become 401/403,
+  proceeds; unauthenticated/forbidden denials become 401/403,
   plugin failures become 503, and malformed decisions or unmapped operations
   become 500. All are fail-closed: there is no allow default. The driver supplies
   only a fixed-digest timing-safe Bearer adapter. JWT, platform signatures,
