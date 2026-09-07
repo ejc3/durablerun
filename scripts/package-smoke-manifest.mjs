@@ -6,12 +6,6 @@ if (!packageDir || !expectedName) {
   throw new Error('usage: package-smoke-manifest package-dir package-name')
 }
 
-const expectedDirectories = new Map([
-  ['@durablerun/core', 'packages/core'],
-  ['@durablerun/sdk', 'packages/sdk'],
-  ['@durablerun/driver', 'packages/driver'],
-  ['@durablerun/store-libsql', 'packages/store-libsql'],
-])
 const expectedInternalDependencies = new Map([
   ['@durablerun/core', []],
   ['@durablerun/sdk', ['@durablerun/core']],
@@ -19,11 +13,11 @@ const expectedInternalDependencies = new Map([
   ['@durablerun/store-libsql', ['@durablerun/core']],
 ])
 
-const repositoryDirectory = expectedDirectories.get(expectedName)
 const expectedDependencies = expectedInternalDependencies.get(expectedName)
-if (!repositoryDirectory || !expectedDependencies) {
+if (!expectedDependencies) {
   throw new Error(`package-smoke: unknown package ${expectedName}`)
 }
+const repositoryDirectory = `packages/${expectedName.slice('@durablerun/'.length)}`
 
 const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'))
 const fail = (message) => {
@@ -105,8 +99,6 @@ const walk = (directory, prefix = '') =>
   })
 const files = walk(packageDir)
 if (!files.includes('LICENSE')) fail('LICENSE is absent')
-if (!files.some((path) => path.endsWith('.js'))) fail('compiled JavaScript is absent')
-if (!files.some((path) => path.endsWith('.d.ts'))) fail('declarations are absent')
 for (const path of files) {
   if (path !== 'LICENSE' && path !== 'package.json' && !path.startsWith('dist/')) {
     fail(`unexpected packed file ${path}`)

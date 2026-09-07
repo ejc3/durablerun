@@ -2967,8 +2967,8 @@ export class Store {
         {
             "package.json": '{"name":"package-smoke-fixture","private":true}\n',
         },
-        "package-smoke: expected one tarball for @durablerun/core, found 0",
-        "a missing public package must fail the clean-consumer packaging gate",
+        "package-smoke: found no package manifests",
+        "an empty package inventory must fail the clean-consumer packaging gate",
     ),
     (
         "gate-lint.py",

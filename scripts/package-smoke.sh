@@ -7,7 +7,28 @@ CONSUMER_DIR="$(mktemp -d /tmp/durablerun-package-consumer.XXXXXX)"
 EXAMPLE_DIR="$(mktemp -d /tmp/durablerun-hosted-example.XXXXXX)"
 trap 'rm -rf "$PACK_DIR" "$CONSUMER_DIR" "$EXAMPLE_DIR"' EXIT
 
-packages=(core sdk driver store-libsql)
+packages=()
+shopt -s nullglob
+package_manifests=("$ROOT"/packages/*/package.json)
+if [[ "${#package_manifests[@]}" -eq 0 ]]; then
+  echo "package-smoke: found no package manifests" >&2
+  exit 1
+fi
+for manifest in "${package_manifests[@]}"; do
+  visibility="$(
+    node -e "const fs=require('node:fs');const m=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(m.private===true?'private':'public')" "$manifest"
+  )"
+  if [[ "$visibility" == "public" ]]; then
+    packages+=("$(basename "$(dirname "$manifest")")")
+  elif [[ "$visibility" != "private" ]]; then
+    echo "package-smoke: invalid package visibility for $manifest" >&2
+    exit 1
+  fi
+done
+if [[ "${#packages[@]}" -eq 0 ]]; then
+  echo "package-smoke: found no public packages" >&2
+  exit 1
+fi
 
 for package in "${packages[@]}"; do
   pnpm --dir "$ROOT" --filter "@durablerun/$package" pack --pack-destination "$PACK_DIR" >/dev/null
@@ -21,6 +42,8 @@ for package in "${packages[@]}"; do
   tar -xzf "$archive" -C "$unpacked"
   node "$ROOT/scripts/package-smoke-manifest.mjs" "$unpacked/package" "@durablerun/$package"
 done
+
+node "$ROOT/scripts/package-smoke-manifest-selftest.mjs"
 
 cp "$ROOT/scripts/package-smoke-fixture/package.json" "$CONSUMER_DIR/package.json"
 cp "$ROOT/scripts/package-smoke-fixture/tsconfig.json" "$CONSUMER_DIR/tsconfig.json"
