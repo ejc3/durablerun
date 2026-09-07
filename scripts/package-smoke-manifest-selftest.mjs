@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -254,6 +254,45 @@ for (const name of Object.keys(PACKAGE_CONTRACTS)) {
     )
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+// A release bump is source data, not a checker rewrite. Run the real checker
+// from an isolated source tree to prove it follows that tree's core version.
+{
+  const source = mkdtempSync(join(tmpdir(), 'durablerun-package-release-selftest.'))
+  const sourceScripts = join(source, 'scripts')
+  const sourceCore = join(source, 'packages', 'core')
+  mkdirSync(sourceScripts)
+  mkdirSync(sourceCore, { recursive: true })
+  const sourceChecker = join(sourceScripts, 'package-smoke-manifest.mjs')
+  copyFileSync(checker, sourceChecker)
+  try {
+    for (const version of ['0.1.0-alpha.0', '0.1.0-alpha.1', '2.0.0', '2.1.0-beta.2+build.7']) {
+      writeManifest(sourceCore, { version })
+      for (const name of Object.keys(PACKAGE_CONTRACTS)) {
+        const { directory, manifest } = materialize(name)
+        try {
+          manifest.version = version
+          for (const dependency of PACKAGE_CONTRACTS[name].dependencies) {
+            manifest.dependencies[dependency] = version
+          }
+          writeManifest(directory, manifest)
+          const result = spawnSync(process.execPath, [sourceChecker, directory, name], {
+            encoding: 'utf8',
+          })
+          assert.equal(
+            result.status,
+            0,
+            `${name} release ${version} must follow source version:\n${result.stdout}${result.stderr}`,
+          )
+        } finally {
+          rmSync(directory, { recursive: true, force: true })
+        }
+      }
+    }
+  } finally {
+    rmSync(source, { recursive: true, force: true })
   }
 }
 
