@@ -11,7 +11,7 @@
  */
 
 import { INFRA_RETRY_CAP, RELAUNCH_CAP } from './contract.js'
-import { FatalTaskError } from './errors.js'
+import { FatalTaskError, InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 
 const {
@@ -735,6 +735,16 @@ const storageStringRoundTrips = freeze({
     return true
   },
 }).check
+
+/** Return a durable identity only when every supported store preserves it exactly. */
+export function requireDurableString(what: string, raw: unknown): string {
+  if (typeof raw !== 'string' || !storageStringRoundTrips(raw)) {
+    throw new InvalidDurableStringError(
+      `${what} must be a string without NUL or lone UTF-16 surrogates`,
+    )
+  }
+  return raw
+}
 
 type TaskValueDomain = 'opaque' | 'headers'
 

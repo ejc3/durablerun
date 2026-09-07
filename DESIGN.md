@@ -448,7 +448,10 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. Scheduler headers, which dialect SQL later parses as an
+  `FatalTaskError`s. Scheduler task names and idempotency keys cross one
+  durable-string validator at each store's spawn ingress: actual NUL and lone
+  UTF-16 surrogates are rejected before IDs are minted or executor I/O can
+  change or alias their identity. Scheduler headers, which dialect SQL later parses as an
   object before issuing worker authority, must enter as a plain object whose
   own enumerable string-keyed values are strings. Their keys and values also
   have a narrower portable string domain: actual NUL and lone UTF-16 surrogates
@@ -1213,7 +1216,9 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   `GET|POST /api/tick`, and `GET /api/inspect?taskId=...`; recognized paths with
   other methods return 405 and unknown paths return 404 without authorization or
   store work. Enqueue accepts `{taskName, params?, idempotencyKey?}` and returns
-  the spawn receipt (201 when created, 200 on an idempotent replay). Emit accepts
+  the spawn receipt (201 when created, 200 on an idempotent replay); task names
+  and idempotency keys outside the portable durable-string domain return 400
+  before store I/O. Emit accepts
   `{eventName, payload?}`. Inspection returns the state plus the canonically
   decoded result/failure when present. Every response is stable JSON with
   `Cache-Control: no-store`.

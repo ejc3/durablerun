@@ -156,6 +156,15 @@ export class StoreUnavailableError extends Error {
 }
 
 /**
+ * A durable identity cannot be represented unchanged by every supported
+ * store. Callers may classify this as invalid input without conflating it
+ * with infrastructure or programmer failures.
+ */
+export class InvalidDurableStringError extends TypeError {
+  override readonly name = 'InvalidDurableStringError'
+}
+
+/**
  * The database's schema is not the one this build expects — a missing table
  * or column. DELIBERATELY NOT a StoreUnavailableError: it is permanent, and
  * waiting does not repair it.

@@ -1,6 +1,7 @@
 import {
   type Clock,
   type IdSource,
+  InvalidDurableStringError,
   type SchedulerStore,
   StoreUnavailableError,
   UserName,
@@ -11,9 +12,9 @@ import {
 } from '@durablerun/core'
 import type { TaskRegistry } from '@durablerun/sdk'
 import {
+  HostedAuthorizationError,
   type HostedAuthorizationOperation,
   type HostedAuthorizationPlugin,
-  HostedAuthorizationError,
   authorizeHostedRequest,
 } from './auth.js'
 import { type InlineTickResult, inlineTick } from './inline.js'
@@ -316,6 +317,7 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
       return await route.run(request, bodyText)
     } catch (error) {
       if (error instanceof HostedRequestError) return errorResponse(error.status, error.code)
+      if (error instanceof InvalidDurableStringError) return errorResponse(400, 'invalid_request')
       if (error instanceof StoreUnavailableError) {
         return errorResponse(503, 'service_unavailable')
       }
