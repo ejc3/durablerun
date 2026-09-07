@@ -156,11 +156,141 @@ describe('TLA tool artifact', () => {
   it('records the licenses and source for bundled third-party code', async () => {
     const readme = await readFile(join(repoRoot, 'tools', 'tla', 'README.md'), 'utf8')
 
+    const archive = spawnSync('unzip', ['-Z1', join(repoRoot, 'tools', 'tla', 'tla2tools.jar')], {
+      encoding: 'utf8',
+    })
+    expect(archive.status, archive.stderr).toBe(0)
+    const classEntries = archive.stdout.split('\n').filter((entry) => entry.endsWith('.class'))
+    const projectOwnedPrefixes = [
+      'formatter/',
+      'model/',
+      'org/apache/commons/math3/util/TLCFastMath.class',
+      'org/eclipse/xtext/xbase/lib/Pure.class',
+      'org/eclipse/xtext/xbase/lib/util/ToStringBuilder.class',
+      'pcal/',
+      'tla2sany/',
+      'tla2tex/',
+      'tlc2/',
+      'util/',
+    ]
+    const bundledComponents = [
+      {
+        heading: 'Gson 2.14.0',
+        prefixes: ['com/google/gson/', 'META-INF/versions/9/module-info.class'],
+        record: ['Apache-2.0', 'gson-2.14.0-sources.jar'],
+      },
+      {
+        heading: 'prettier4j 0.3.2',
+        prefixes: ['com/opencastsoftware/prettier4j/'],
+        record: ['Apache-2.0', 'prettier4j-0.3.2-sources.jar'],
+      },
+      {
+        heading: 'Jakarta Mail 1.6.8',
+        prefixes: ['com/sun/mail/', 'javax/mail/', 'module-info.class'],
+        record: [
+          'EPL-2.0 or GPL-2.0 with the Classpath Exception',
+          'Jakarta-Mail-NOTICE.md',
+          'mailapi-1.6.8-sources.jar',
+          'smtp-1.6.8-sources.jar',
+        ],
+      },
+      {
+        heading: 'Activation 1.1',
+        prefixes: ['javax/activation/'],
+        record: [
+          'Apache-2.0',
+          'Activation-NOTICE.txt',
+          'javax.activation.source_1.1.0.v201211130549.jar',
+        ],
+      },
+      {
+        heading: 'Apache Commons Math',
+        prefixes: ['org/apache/commons/math3/'],
+        record: ['Apache-2.0', 'CommonsMath-NOTICE.txt'],
+      },
+      {
+        heading: 'Eclipse LSP4J 0.21.1',
+        prefixes: ['org/eclipse/lsp4j/'],
+        record: [
+          'EPL-2.0 OR BSD-3-Clause',
+          'LSP4J-NOTICE.md',
+          'org.eclipse.lsp4j.jsonrpc-0.21.1-sources.jar',
+        ],
+      },
+      {
+        heading: 'JLine 3.25.0',
+        prefixes: ['org/jline/'],
+        record: ['BSD-3-Clause', 'JLine-LICENSE.txt'],
+      },
+    ] as const
+
+    const coveredPrefixes = bundledComponents.flatMap(({ prefixes }) => prefixes)
+    const ambiguouslyOwnedClasses = classEntries.filter((entry) => {
+      const projectOwners = projectOwnedPrefixes.filter((prefix) => entry.startsWith(prefix))
+      const componentOwners =
+        projectOwners.length === 0
+          ? coveredPrefixes.filter((prefix) => entry.startsWith(prefix))
+          : []
+      return projectOwners.length + componentOwners.length !== 1
+    })
+    expect(ambiguouslyOwnedClasses).toEqual([])
+    for (const component of bundledComponents) {
+      for (const prefix of component.prefixes) {
+        expect(
+          classEntries.some(
+            (entry) =>
+              entry.startsWith(prefix) &&
+              !projectOwnedPrefixes.some((owned) => entry.startsWith(owned)),
+          ),
+          prefix,
+        ).toBe(true)
+      }
+      const sectionStart = readme.indexOf(`### ${component.heading}`)
+      expect(sectionStart, component.heading).toBeGreaterThanOrEqual(0)
+      const nextSection = readme.indexOf('\n### ', sectionStart + 1)
+      const section = readme.slice(sectionStart, nextSection === -1 ? undefined : nextSection)
+      const normalizedSection = section.replace(/\s+/g, ' ')
+      for (const expected of component.record) {
+        expect(normalizedSection, `${component.heading}: ${expected}`).toContain(expected)
+      }
+    }
+
+    const activationNotice = await readFile(
+      join(repoRoot, 'tools', 'tla', 'Activation-NOTICE.txt'),
+      'utf8',
+    )
+    expect(activationNotice).toContain('Activation 1.1')
+    expect(activationNotice).toContain('Copyright 2003-2007 The Apache Software Foundation')
+    const lsp4jNotice = await readFile(join(repoRoot, 'tools', 'tla', 'LSP4J-NOTICE.md'), 'utf8')
+    expect(lsp4jNotice).toContain('Notices for Eclipse LSP4J')
+    expect(lsp4jNotice).toContain('SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause')
+    const mailNotice = await readFile(
+      join(repoRoot, 'tools', 'tla', 'Jakarta-Mail-NOTICE.md'),
+      'utf8',
+    )
+    expect(mailNotice).toContain('Notices for Jakarta Mail')
+    expect(mailNotice).toContain(
+      'SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0',
+    )
+    const jlineLicense = await readFile(join(repoRoot, 'tools', 'tla', 'JLine-LICENSE.txt'), 'utf8')
+    expect(jlineLicense).toContain('Copyright (c) 2002-2023')
+
     expect(readme).not.toContain('this distribution are MIT licensed')
     expect(readme).toContain('META-INF/LICENSE.md')
     expect(readme).toContain('CommonsMath-LICENSE.txt')
     expect(readme).toContain('jline-LICENSE.txt')
     expect(readme).toContain('mailapi-1.6.8-sources.jar')
     expect(readme).toContain('smtp-1.6.8-sources.jar')
+  })
+
+  it('keeps milestone guidance aligned with the hosted alpha and actual dogfood cadence', async () => {
+    const build = await readFile(join(repoRoot, 'BUILD.md'), 'utf8')
+    const agents = await readFile(join(repoRoot, 'AGENTS.md'), 'utf8')
+
+    const normalizedBuild = build.replace(/\s+/g, ' ')
+    const normalizedAgents = agents.replace(/\s+/g, ' ')
+    expect(normalizedBuild).toContain('15** 12-hour cycles')
+    expect(normalizedBuild).toContain('Hourly ticks launched those cycles')
+    expect(normalizedAgents).toContain('The current milestone delivers one thin hosted-alpha slice')
   })
 })
