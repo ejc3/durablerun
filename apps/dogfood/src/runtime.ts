@@ -1,15 +1,13 @@
 import {
   type Clock,
-  type Ending,
   type IdSource,
-  LaunchOutcome,
   parseTaskValueJson,
   serializeTaskValue,
   systemClock,
   systemIdSource,
 } from '@durablerun/core'
-import { type TickResult, tick } from '@durablerun/driver'
-import { type WorkerOutcome, runClaimedRun } from '@durablerun/sdk'
+import { type TickResult, inlineLauncher, tick } from '@durablerun/driver'
+import type { WorkerOutcome } from '@durablerun/sdk'
 import {
   LibsqlExecutor,
   LibsqlSchedulerStore,
@@ -74,20 +72,17 @@ export type DogfoodStatus =
       checkpointSpanMs: number | null
     }
 
-type DogfoodWorkerDisposition = Readonly<{
-  endingKind: Ending['kind']
-  failureKind: 'task' | 'infrastructure' | null
-}>
+type DogfoodWorkerDisposition = 'task' | 'infrastructure' | null
 
 const DOGFOOD_WORKER_DISPOSITIONS = {
-  completed: { endingKind: 'completed', failureKind: null },
-  suspended: { endingKind: 'unknown', failureKind: null },
-  'retry-scheduled': { endingKind: 'unknown', failureKind: 'task' },
-  failed: { endingKind: 'failed', failureKind: 'task' },
-  superseded: { endingKind: 'unknown', failureKind: null },
-  'lease-lost': { endingKind: 'crashed', failureKind: 'infrastructure' },
-  aborted: { endingKind: 'crashed', failureKind: 'infrastructure' },
-  deferred: { endingKind: 'unknown', failureKind: 'task' },
+  completed: null,
+  suspended: null,
+  'retry-scheduled': 'task',
+  failed: 'task',
+  superseded: null,
+  'lease-lost': 'infrastructure',
+  aborted: 'infrastructure',
+  deferred: 'task',
 } as const satisfies Record<WorkerOutcome['kind'], DogfoodWorkerDisposition>
 
 function optionalJson(value: unknown): unknown | null {
@@ -182,6 +177,17 @@ export class DogfoodRuntime {
     const registry = refJournalRegistry(this.#observe, () => {
       if (this.#fault === 'worker-after-checkpoint') this.#hardExit(87)
     })
+    const worker = inlineLauncher(
+      { store: this.#store, clock: this.#clock, registry },
+      {
+        onOutcome(outcome) {
+          const failureKind = DOGFOOD_WORKER_DISPOSITIONS[outcome.kind]
+          if (failureKind !== null) {
+            observedFailure = { kind: 'worker', failureKind, outcome: outcome.kind }
+          }
+        },
+      },
+    )
     const result = await tick(
       {
         store: this.#store,
@@ -190,23 +196,7 @@ export class DogfoodRuntime {
           launch: async (invocation) => {
             try {
               if (this.#fault === 'driver-before-activation') this.#hardExit(86)
-              const outcome = await runClaimedRun(
-                { store: this.#store, clock: this.#clock, registry },
-                invocation,
-              )
-              const disposition = DOGFOOD_WORKER_DISPOSITIONS[outcome.kind]
-              if (disposition.failureKind !== null) {
-                observedFailure = {
-                  kind: 'worker',
-                  failureKind: disposition.failureKind,
-                  outcome: outcome.kind,
-                }
-              }
-              return LaunchOutcome.ended({
-                runId: invocation.runId,
-                claimToken: invocation.claimToken,
-                kind: disposition.endingKind,
-              })
+              return await worker.launch(invocation)
             } catch (cause) {
               observedFailure = { kind: 'launcher', cause }
               throw cause
