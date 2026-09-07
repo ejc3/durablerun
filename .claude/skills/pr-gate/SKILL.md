@@ -84,18 +84,17 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    a product survivor. Every other non-caught outcome also blocks, except for
    the narrowly evidenced deviation below.
 
-   The current classifier reports exact-owner plus collateral failures as
-   `wrong-path`, so the run remains non-clean even though the guard is not a
-   product survivor. Until the classifier distinguishes that case, its
-   transcript can support only an explicit PR-body gate deviation that proves
-   the exact owner fired; names the exact mutation target and the head diff that
-   owns it; quotes every collateral's exact file, test title, and message; and
-   provides base-versus-head evidence for each collateral, preferring
-   reproduction on the base when the mutation target exists there. If base
-   reproduction is impossible, explain why and provide an equivalent
-   controlled comparison. Absent that proof, the outcome blocks. With it,
-   record the collateral as audit/tooling debt. Do not relabel the run clean or
-   widen the outcome PR to repair that debt.
+   `caught-with-collateral` is a successful, separately counted attribution:
+   the clean baseline passed, the failed report is coherent, and the exact
+   registered owner file, full test title, and single verdict message fired
+   alongside other failed tests. The transcript retains every failed test's
+   file, full title, and complete messages. Collateral-only or wrong-owner
+   failures, suite-level errors, missing collateral messages, and ambiguous
+   multiple owner messages remain blocking. Report exact-only and
+   with-collateral counts separately; successful attribution does not mean the
+   mutant had no collateral failures. Do not
+   widen the outcome PR to repair collateral test failures caused by the
+   deliberately broken guard.
 
    Subset and full runs keep the same no-proxy and transport guarantees. The
    command self-confines once, captures the clean committed head, and uses
