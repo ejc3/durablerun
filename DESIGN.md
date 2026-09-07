@@ -1221,7 +1221,9 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   before store I/O. Emit accepts
   `{eventName, payload?}`. Inspection returns the state plus the canonically
   decoded result/failure when present. Every response is stable JSON with
-  `Cache-Control: no-store`.
+  `Cache-Control: no-store`. The checked-in external example fixes its Vercel
+  install command to npm so the enclosing repository's pnpm workspace cannot
+  suppress its release-asset dependencies.
 - **Driver hosting**: Vercel itself cannot host the resident driver, so either
   (a) run the tiny driver elsewhere (Fly/Railway/container/VM — or later the
   target platform) with it POSTing worker launches to `/api/worker` on the Vercel

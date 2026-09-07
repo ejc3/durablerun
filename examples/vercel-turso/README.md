@@ -17,8 +17,10 @@ migrator or receipt at another application's database.
 3. Create a Vercel project from this directory, add the five runtime variables
    (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DURABLERUN_QUEUE`,
    `DURABLERUN_API_TOKEN`, and `CRON_SECRET`), and deploy it. `api/*.ts` pins
-   the Node.js runtime, `vercel.json` gives each invocation 60 seconds, and the
-   midnight-UTC recovery cron stays within Vercel Hobby's once-daily limit.
+   the Node.js runtime, while `vercel.json` forces npm to install this external
+   example instead of selecting the enclosing repository's pnpm workspace. It
+   also gives each invocation 60 seconds, and the midnight-UTC recovery cron
+   stays within Vercel Hobby's once-daily limit.
 4. Set `DURABLERUN_BASE_URL` locally to the production URL and run
    `npm run receipt`.
 
