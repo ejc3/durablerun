@@ -6,98 +6,60 @@ This top-of-file block is the sole normative suite transport contract:
 structurally valid `SuiteResult` reaches verdict classification.
 <!-- mutation-suite-transport-contract:end -->
 
-## Current milestone — dogfood evidence plus PostgreSQL portability
+## Completed milestone — remote dogfood plus PostgreSQL portability
 
-The default product thesis is a Turso-first TypeScript durable-workflow engine.
-The historical phase inventory below is an options map, not permission to run
-several tracks at once.
+The product milestone passed. The remote-Turso ref-journal completed **15 of
+15** hourly cycles over **7d 7h 27m**, retaining one checkpoint per cycle with
+zero attempts, infrastructure retries, or relaunches. Its deliberate
+driver-before-activation and worker-after-checkpoint probes recovered with the
+expected counters, and idle periods consumed no resident worker. PostgreSQL 17
+also passes the identical six-surface conformance suite, including native
+claim concurrency and the emit/await event race; that work merged in PR #16.
 
-**Exit test:** from a clean checkout, a developer can start and inspect one
-useful workflow in under 30 minutes; the same workload runs against remote
-Turso for seven consecutive days, survives deliberate driver and worker
-deaths, and shows no lost work or duplicated checkpointed effects. Quiescent
-work produces no idle worker compute, and terminal failures have an inspectable
-reason. While that elapsed evidence accrues, PostgreSQL becomes the second real
-dialect: its fixture passes the identical six-surface conformance door against
-PostgreSQL 17, including native concurrent claims with disjoint receipts and
-the emit/await event-lock race. `pnpm verify` runs that matrix against a local
-or CI PostgreSQL service.
+Repository health is a separate verdict. The seven nightlies from September
+1–7 failed before TLC because the upstream `v1.8.0` prerelease artifact changed
+under its pinned checksum. `pnpm verify` and all 32 fuzz shards stayed green:
+this was verification infrastructure failure, not a protocol counterexample.
+The closeout vendors and verifies the exact known-green checker so an upstream
+asset replacement cannot silently turn the proof gate off again; see
+`postmortems/nightly-2026-09-07-mutable-tla-artifact.md`.
+Repository health returns fully green only when the six isolated full-nightly
+TLA targets run successfully on the resulting remote head.
+
+## Current milestone — hosted alpha
+
+The default product thesis remains a Turso-first TypeScript durable-workflow
+engine. The historical phase inventory below is an options map, not permission
+to run several tracks at once.
+
+**Exit test:** from a clean external application, a developer installs
+`@durablerun/core`, `@durablerun/sdk`, `@durablerun/driver`, and
+`@durablerun/store-libsql`, deploys one Vercel application backed by Turso, and
+runs a one-queue workflow through trigger, suspend, resume, and inspection.
+One bounded tick executes inline, a lost launch is recovered, and every public
+mutation or inspection is denied unless a host-supplied authorization plugin
+allows its operation. The complete path is reproducible from checked-in
+instructions and a hosted receipt, not workspace links or maintainer state.
 
 **Critical path:**
 
-1. Add the minimum README, runnable example, and status inspection needed for
-   the exit test.
-2. Close only sustained-execution gaps on the selected deployment path. The
-   bounded one-shot tick uses an inline worker, so resident HTTP launch, wake,
-   and host-shutdown hardening remain Phase 2 options rather than dogfood
-   blockers; the scheduled job itself must have a deadline and surface SQL or
-   task failures.
-3. Run the useful workload locally, then as the thin remote-Turso vertical
-   slice; retain kill/recovery and idle evidence.
-4. Use the external seven-day wait rather than implementation time: land one
-   PostgreSQL outcome PR that supplies the native executor, schema/admin
-   fixture, `SKIP LOCKED` claim, event-lock transaction prelude, and complete
-   shared-conformance enrollment. MySQL and oracle/gold-plating work remain
-   deferred.
+1. Make the four packages consumable from a clean app: built artifacts,
+   exports, dependency metadata, and an install smoke test.
+2. Add one small, fail-closed authorization port at the HTTP boundary. A host
+   may plug in its own scheme; the framework supplies request facts and asks
+   for an allow/deny decision for `task.enqueue`, `event.emit`, `tick.run`, and
+   `task.inspect` before parsing or performing work.
+3. Ship the minimum Vercel route adapter and example for one Turso database,
+   one queue, and an inline bounded tick. Reuse the scheduler and SDK rather
+   than adding a parallel hosted engine.
+4. Retain one hosted end-to-end receipt proving trigger → suspend → resume →
+   inspect and the existing lost-launch recovery path, then stop.
 
-**Implementation checkpoint (PR #14, 2026-08-29):** the clean-checkout
-commands, ref-journal workload, local/file replay, status receipt, bounded
-one-shot scheduler, remote Turso configuration, hourly opt-in workflow, and
-driver/worker deliberate-death probes are implemented. Local evidence is
-green, including exact recovery counters and checkpoint ownership. The
-workflow's retained receipt fails closed on producer errors, and the job has no
-repository-token permission; an optional `DOGFOOD_GITHUB_TOKEN` is scoped to
-worker steps. Before any remote command can migrate the database, the workflow
-requires the secret URL to equal the independently configured
-`DURABLERUN_DOGFOOD_DATABASE_URL` repository-variable pin. Normal receipt
-validation enforces the fixed seven-day floor
-and exact task type, target, count, and cadence against durable parameters, so
-reusing a wrong-target, shorter, or long-cadence idempotent task cannot qualify;
-the handler, status reader, and receipt verifier share the same workload parser.
-Live receipts also compare database-clock task/checkpoint age with the next
-configured interval and fail after two missed hourly slots, so a stalled task
-cannot supply seven days of vacuously green evidence.
-Fresh fault probes also derive isolated queues, and that probe identity remains
-set after the one-shot fault hook is cleared for recovery, so due normal work
-cannot consume the deliberate death and recovery cannot switch queues. The
-bounded host also fails its invocation after observing an inline task,
-infrastructure, registry, or launcher failure, and a completed worker cancels
-its losing finalization deadline instead of retaining idle process time.
-  The dedicated Turso database, database-scoped token, and independent URL pin
-  were provisioned on 2026-08-30. The first hosted `start` succeeded, while the
-  first hosted tick rejected the claim batch before mutation because remote
-  Turso does not parse aggregate `HAVING` without `GROUP BY`, a spelling the
-  local libSQL fixture accepts.
-
-**Live deployment checkpoint (PR #15, 2026-08-30):** red `ef6148b` captures
-the four incompatible clauses from the exact emitted claim inventory. Green
-`1814b50` routes the wait witness and task-book projection through one portable
-singleton aggregate. On that head, the normal hosted tick retained checkpoint
-one, and both driver-before-activation and worker-after-checkpoint probes
-completed with their exact relaunch/infrastructure-retry receipts. Once PR #15
-merged as `79a6d53`, the `43 * * * *` schedule was enabled. Its first
-scheduled run completed green on merged `main` with one sleeping task, one
-retained checkpoint, and zero attempts, retries, or relaunches. The hourly
-watcher owns the remaining seven-day elapsed evidence; it is not an
-implementation work queue.
-
-**PostgreSQL checkpoint (2026-08-31):** explicit owner direction activated the
-second-dialect promise while the dogfood clock runs. Red enrollment requires
-`postgres` in the central fixture registry. Shared async teardown and the
-sixth schema/admin surface are integrated; the implementation is split into
-executor, schema/fixture, closed event- and same-token-claim lock preludes, and
-scheduler SQL lanes. The checkpoint is complete: PostgreSQL 17 passes the
-identical six-surface conformance door, including schema/admin, every scheduler
-transition, native same-token and disjoint-receipt claim concurrency, and the
-emit/await event race. The clean outcome head passes `pnpm verify`; remaining
-closeout is final gate evidence and merge, not additional product scope.
-
-**Non-goals for this milestone:** PR3.8 active-wait identity absent one of its
-recorded triggers, the PR3.9 all-operation SQL rewrite, PR3.10 mutation-
-attribution expansion, child workflows, sagas, MySQL, sharding, dedicated
-placement, EndingFeed, the WDK wrapper, and PostgreSQL oracle parity
-against the upstream Absurd implementation. Those do not block the real
-PostgreSQL conformance outcome.
+**Non-goals:** QStash or another alarm service, detached HTTP workers, a
+resident driver, MySQL, child workflows, sagas, sharding, dedicated placement,
+EndingFeed, the WDK wrapper, a hosted UI, and the PR3.9/PR3.10 assurance
+expansions. These remain options until hosted-alpha use supplies a concrete
+reason to pull one forward.
 
 Companion to DESIGN.md (the spec). Rules for every PR: lands green (lint,
 format, unit + conformance) before the next branches off it; adds the
@@ -122,11 +84,11 @@ apps/
 ```
 
 **LOCAL-FIRST IMPLEMENTATION (decided 2026-07-18):** engine work remains
-reproducible on this machine — SQLite via `file:`/`:memory:` libsql, future
-Postgres/MySQL work in containers, and driver/workers as local Node processes.
-This no longer postpones outcome validation: the current milestone includes
-one thin remote-Turso dogfood deployment. Broader cloud UI and infrastructure
-remain in Phase C. `pnpm verify` is the local CI gate.
+reproducible on this machine — SQLite via `file:`/`:memory:` libsql,
+PostgreSQL 17 in a local container, and driver/workers as local Node processes.
+The hosted-alpha milestone admits exactly one Vercel + Turso vertical slice;
+fleet infrastructure, external alarms, and a hosted UI remain later options.
+`pnpm verify` is the local CI gate.
 
 ## Phase 0 — rails (local)
 
