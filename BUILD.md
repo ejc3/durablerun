@@ -42,6 +42,13 @@ release passed a clean external install and the live Vercel/Turso exit test.
 The [redacted hosted-alpha receipt](receipts/hosted-alpha-v0.1.0-alpha.0.json)
 retains the source commit, package hashes, deployment, and outcome evidence.
 
+The full pre-release mutation audit in
+[#17](https://github.com/ejc3/durablerun/issues/17) remains outstanding:
+`v0.1.0-alpha.0` was published without that sweep. The closeout in
+[PR #21](https://github.com/ejc3/durablerun/pull/21) records the explicit alpha
+exception, not a completed audit. Both that audit and the classifier follow-up
+in [#18](https://github.com/ejc3/durablerun/issues/18) remain open.
+
 The default product thesis remains a Turso-first TypeScript durable-workflow
 engine. The historical phase inventory below is an options map, not permission
 to run several tracks at once.
