@@ -9,8 +9,9 @@ structurally valid `SuiteResult` reaches verdict classification.
 ## Completed milestone — remote dogfood plus PostgreSQL portability
 
 The product milestone passed. The remote-Turso ref-journal completed **15 of
-15** hourly cycles over **7d 7h 27m**, retaining one checkpoint per cycle with
-zero attempts, infrastructure retries, or relaunches. Its deliberate
+15** 12-hour cycles over **7d 7h 27m**, retaining one checkpoint per cycle with
+zero attempts, infrastructure retries, or relaunches. Hourly ticks launched those cycles
+when they became due. Its deliberate
 driver-before-activation and worker-after-checkpoint probes recovered with the
 expected counters, and idle periods consumed no resident worker. PostgreSQL 17
 also passes the identical six-surface conformance suite, including native
