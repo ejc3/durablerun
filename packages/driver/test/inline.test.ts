@@ -3,7 +3,7 @@ import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it, vi } from 'vitest'
-import { inlineLauncher, inlineTick } from '../src/index.js'
+import { inlineLauncher, inlineTick, tick } from '../src/index.js'
 
 const Q = 'inline'
 
@@ -56,6 +56,95 @@ describe('inline worker composition', () => {
       expect(handler).toHaveBeenCalledTimes(1)
       expect(outcomes).toEqual(['completed', 'superseded'])
       await expect(LaunchOutcome.reconcile(f.store, Q, run, duplicate)).resolves.toBe('ended')
+    } finally {
+      f.close()
+    }
+  })
+
+  it('keeps observer failures from reclassifying a durable ending as a failed launch', async () => {
+    const f = await fx('inline-observer-failure')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const result = await tick(
+        {
+          store: f.store,
+          ids: f.ids,
+          launcher: inlineLauncher(
+            {
+              store: f.store,
+              clock: f.clock,
+              registry: new Map([['job', async () => 'done']]),
+            },
+            {
+              onOutcome() {
+                throw new Error('observer failed')
+              },
+            },
+          ),
+        },
+        { queue: Q, claimLimit: 1, sweepLimit: 10, leaseSeconds: 60 },
+      )
+
+      expect(result).toMatchObject({ claimed: 1, ended: 1, launchFailed: 0 })
+      await expect(f.store.getTaskResult(Q, spawned.taskId)).resolves.toMatchObject({
+        state: 'completed',
+        completedPayloadJson: '"done"',
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('does not detach an asynchronous outcome observer', async () => {
+    const f = await fx('inline-async-observer')
+    try {
+      await f.store.spawn(Q, 'job', '{}')
+      const [run] = await f.store.claim(Q, 'claim-token', { leaseSeconds: 60, limit: 1 })
+      if (run === undefined) throw new Error('test setup did not claim its run')
+      let release: (() => void) | undefined
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let observerStarted: (() => void) | undefined
+      const started = new Promise<void>((resolve) => {
+        observerStarted = resolve
+      })
+      let observerFinished = false
+      const launcher = inlineLauncher(
+        {
+          store: f.store,
+          clock: f.clock,
+          registry: new Map([['job', async () => 'done']]),
+        },
+        {
+          async onOutcome() {
+            observerStarted?.()
+            await gate
+            observerFinished = true
+          },
+        },
+      )
+      let launchSettled = false
+      const pending = launcher
+        .launch({
+          queue: Q,
+          runId: run.runId,
+          attempt: run.attempt,
+          claimToken: run.claimToken,
+          claimGen: run.claimGen,
+          deadlineHintEpochMs: run.claimExpiresAtEpochMs,
+        })
+        .finally(() => {
+          launchSettled = true
+        })
+
+      await started
+      await Promise.resolve()
+      expect(launchSettled).toBe(false)
+
+      release?.()
+      await expect(pending).resolves.toBeDefined()
+      expect(observerFinished).toBe(true)
     } finally {
       f.close()
     }
