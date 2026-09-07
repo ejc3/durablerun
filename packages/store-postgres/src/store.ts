@@ -38,6 +38,7 @@ import {
   normalizeRetryStrategy,
   parseTaskValueJson,
   requireDerivedInteger,
+  requireDurableString,
   requireEpochMs,
   requirePositiveClaimGeneration,
   requirePositiveInt,
@@ -405,6 +406,12 @@ export class PostgresSchedulerStore implements SchedulerStore {
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
+    const durableTaskName = requireDurableString('taskName', taskName)
+    const idempotencyKeyInput = opts.idempotencyKey
+    const key =
+      idempotencyKeyInput === undefined
+        ? null
+        : requireDurableString('idempotencyKey', idempotencyKeyInput)
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
     const retryInput = opts.retryStrategy
@@ -439,7 +446,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const headersInput = opts.headers
     const headersJson =
       headersInput === undefined ? null : serializeTaskHeaders('task headers', headersInput)
-    const key = opts.idempotencyKey ?? null
     const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
     // Idempotent task insert: loses silently when the key already exists.
     // enqueue/cancel deadlines are computed in SQL (rule 3); cancel_at_ms
@@ -470,7 +476,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       [
         taskId,
         queue,
-        taskName,
+        durableTaskName,
         paramsJson,
         headersJson,
         retry,

@@ -5,6 +5,11 @@ dogfood task records a durable repository-ref observation journal: each
 checkpoint reads a GitHub ref and records its commit SHA, tree SHA, and commit
 timestamp, then sleeps without keeping a worker alive.
 
+The minimal hosted-alpha deployment is in
+[`examples/vercel-turso`](examples/vercel-turso/README.md): four authenticated
+Web Request endpoints, a one-slot inline tick, Turso storage, Vercel cron
+recovery, and a bounded end-to-end receipt.
+
 ## Run locally
 
 Requires a Node version satisfying `package.json`'s `engines.node` declaration

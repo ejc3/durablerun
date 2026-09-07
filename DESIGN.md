@@ -448,7 +448,10 @@ One invocation executes one claimed run to its next suspension point:
   same `serializeTaskValue` boundary. It returns the canonical JSON wire form;
   top-level `undefined` pins to `null` on every pass, while functions, symbols,
   bigint, cycles, and hostile serialization hooks are permanent
-  `FatalTaskError`s. Scheduler headers, which dialect SQL later parses as an
+  `FatalTaskError`s. Scheduler task names and idempotency keys cross one
+  durable-string validator at each store's spawn ingress: actual NUL and lone
+  UTF-16 surrogates are rejected before IDs are minted or executor I/O can
+  change or alias their identity. Scheduler headers, which dialect SQL later parses as an
   object before issuing worker authority, must enter as a plain object whose
   own enumerable string-keyed values are strings. Their keys and values also
   have a narrower portable string domain: actual NUL and lone UTF-16 surrogates
@@ -1208,26 +1211,57 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
 
 ### 3.5 Vercel deployment shape (initial target)
 
-- **App**: Next.js App Router (or Hono — pattern per `~/ts-api`), Fluid compute on.
-  Routes: `POST /api/tasks` (spawn), `POST /api/events` (emit), `POST /api/tick`
-  (driver), `POST /api/worker` (executor), `GET /api/runs/:id` (status/result).
-- **Driver hosting**: Vercel itself cannot host the resident driver, so either
-  (a) run the tiny driver elsewhere (Fly/Railway/container/VM — or later the
-  target platform) with it POSTing worker launches to `/api/worker` on the Vercel
-  deployment, keeping all heavyweight compute on Vercel; or (b) go fully
-  serverless with the tick machinery below. Both use the same engine code.
-- **Auth**: `/api/tick` accepts Vercel cron (`Authorization: Bearer CRON_SECRET`,
-  timing-safe) and QStash signatures (`upstash-signature`, Receiver verification);
-  `/api/worker` accepts only internal HMAC-signed launches. These routes execute
-  registered code — treat as admin surfaces (lesson from §1.1: self-hosted worlds
-  get no auth for free).
-- **Cron sweep**: `vercel.json` (or `vercel.ts`) crons → `/api/tick` every minute
-  — note Vercel cron issues **GET**, so `/api/tick` accepts GET (cron,
-  `CRON_SECRET`) and POST (pings, QStash-signed) alike
-  (Pro; per-minute precision, best-effort — never retried, may double-fire; both
-  fine for an idempotent tick, but budget a few periods worst-case). Hobby's
-  daily ±59min cron is not viable for the safety net; this design assumes Pro, or
-  an external free cron for the sweep.
+- **App**: a Web `Request` adapter (Next.js App Router initially), Fluid compute
+  on. The hosted-alpha surface is exactly `POST /api/tasks`, `POST /api/events`,
+  `GET|POST /api/tick`, and `GET /api/inspect?taskId=...`; recognized paths with
+  other methods return 405 and unknown paths return 404 without authorization or
+  store work. Enqueue accepts `{taskName, params?, idempotencyKey?}` and returns
+  the spawn receipt (201 when created, 200 on an idempotent replay); task names
+  and idempotency keys outside the portable durable-string domain return 400
+  before store I/O. Emit accepts
+  `{eventName, payload?}`. Inspection returns the state plus the canonically
+  decoded result/failure when present. Every response is stable JSON with
+  `Cache-Control: no-store`. The checked-in external example fixes its Vercel
+  install command to npm so the enclosing repository's pnpm workspace cannot
+  suppress its release-asset dependencies.
+- **Driver hosting**: the hosted alpha is fully serverless. Each accepted
+  mutation gives the host a best-effort opportunity to run the same bounded
+  inline tick, and the daily cron is its coarse recovery floor. Vercel itself
+  cannot host the resident driver; a separately hosted resident driver,
+  `/api/worker`, and detached HTTP workers are future placement options and are
+  not part of the exact four-route alpha surface above.
+- **Hosted authorization port**: task enqueue, event emit, tick, and inspection
+  routes own the closed operations `task.enqueue`, `event.emit`, `tick.run`, and
+  `task.inspect`. Before parsing or doing work, the router reads its body once,
+  enforces a 64 KiB byte ceiling, and gives one required host-supplied function
+  the request method, URL, a detached native `Headers` clone, and that exact
+  decoded body text. The same text is parsed after authorization; the port never
+  exposes a Node `IncomingMessage` or a consumable body stream. An explicit allow
+  proceeds; unauthenticated/forbidden denials become 401/403,
+  plugin failures become 503, and malformed decisions or unmapped operations
+  become 500. All are fail-closed: there is no allow default. The driver supplies
+  only a fixed-digest timing-safe Bearer adapter. JWT, platform signatures,
+  multiple-scheme composition, per-operation policy, and worker launch signing
+  remain ordinary host/transport code rather than policy baked into this port.
+  A trusted host adapter may call the router's non-HTTP `runTick()` directly.
+  The checked-in two-token example refuses construction when its API and cron
+  credentials are equal, preserving the documented operation split.
+  The checked-in hosted receipt accepts only an HTTPS base URL and validates
+  it before constructing any request carrying either Bearer credential.
+  After a successful enqueue or emit, an optional best-effort work-available hook
+  can hand that promise to host lifecycle machinery such as `waitUntil`; hook
+  throws/rejections never alter the already-durable mutation response, and cron
+  remains the recovery path for a lost hint.
+  These routes execute registered code and remain admin surfaces (lesson from
+  §1.1: self-hosted worlds get no auth for free).
+- **Cron sweep**: the checked-in hosted-alpha `vercel.json` invokes `/api/tick`
+  once daily at midnight UTC so the example deploys on Vercel Hobby. Vercel cron
+  issues **GET**, so `/api/tick` accepts GET (cron, `CRON_SECRET`) and POST
+  (pings, QStash-signed) alike. The Hobby cron is a coarse, best-effort recovery
+  floor: it is never retried and may double-fire, so a lost hint can wait more
+  than one day after a missed invocation. The bounded receipt and operator path
+  drive authorized ticks explicitly. A Pro host that needs a lower autonomous
+  recovery bound can change the same idempotent cron to every minute.
 - **Alarms**: QStash `Upstash-Not-Before` for re-arms (1s granularity, retries,
   DLQ; $1/100K — a wake costs ~$0.00001). Vercel Queues delayed messages are the
   platform-native alternative (the raw primitive allows ≤7-day delays, TTL-capped;
@@ -1613,7 +1647,8 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   heartbeat) since it is the preferred mode; then the serverless tick
   (`/api/tick` GET+POST, ping-on-enqueue, QStash alarms with per-(shard,t)
   dedup, Vercel cron sweep); the fire-and-forget HTTP `Launcher` with HMAC;
-  auth throughout (CRON_SECRET + QStash signature + internal HMAC). Chaos
+  fail-closed authorization through the hosted plugin port (transport HMAC
+  remains separate). Chaos
   tests: kill-worker → sweep recovers; drop-launch → relaunch without attempt
   burn; duplicate delivery → activation CAS.
 - **Phase 3 — full Absurd semantics.** Events (emit/await, first-write-wins,

@@ -60,6 +60,19 @@ instructions and a hosted receipt, not workspace links or maintainer state.
 4. Retain one hosted end-to-end receipt proving trigger → suspend → resume →
    inspect and the existing lost-launch recovery path, then stop.
 
+**Live delivery ownership:**
+
+- **PRH.1 hosted-alpha foundation — IN REVIEW (GitHub PR #20; owner: current
+  hosted-alpha critical path):** ship the four consumable packages, fail-closed
+  authorization plugin boundary, exact four-route Vercel adapter, and Turso
+  example. It exits when PR #20's exact head is green and merged.
+- **PRH.2 immutable release, deployment, and receipt — BLOCKED ON PRH.1 MERGE
+  (owner: current hosted-alpha critical path):** bind `v0.1.0-alpha.0` and its
+  four package assets to the PRH.1 merge, prove a clean external install,
+  migrate the dedicated Turso database, deploy the Vercel example, retain the
+  redacted hosted end-to-end receipt, and mark this milestone complete. Its
+  closeout PR receives its GitHub number only after PR #20 merges.
+
 **Non-goals:** QStash or another alarm service, detached HTTP workers, a
 resident driver, MySQL, child workflows, sagas, sharding, dedicated placement,
 EndingFeed, the WDK wrapper, a hosted UI, and the PR3.9/PR3.10 assurance

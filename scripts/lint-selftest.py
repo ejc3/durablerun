@@ -2963,6 +2963,14 @@ export class Store {
         "a dangling Greptile index entry must not survive its rule file",
     ),
     (
+        "package-smoke.sh",
+        {
+            "package.json": '{"name":"package-smoke-fixture","private":true}\n',
+        },
+        "package-smoke: found no package manifests",
+        "an empty package inventory must fail the clean-consumer packaging gate",
+    ),
+    (
         "gate-lint.py",
         {
             **gate(
