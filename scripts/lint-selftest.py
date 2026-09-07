@@ -1095,6 +1095,84 @@ def base_runner_growth_fixture() -> dict[str, str]:
     return {**under("head", head), **under("base", base)}
 
 
+def base_runner_workspace_problems() -> list[str]:
+    """The staged semantic gate needs its own installed workspace graph."""
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="durablerun-base-install-fixture-") as tmp:
+        fixture_bin = Path(tmp)
+        installer = fixture_bin / "pnpm"
+        installer.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "root = Path.cwd()\n"
+            "assert sys.argv[1:] == ['install', '--frozen-lockfile', '--ignore-scripts']\n"
+            "assert root != Path(os.environ['BASE_FIXTURE_HEAD'])\n"
+            "assert (root / '.git' / 'index').is_file()\n"
+            "assert (root / 'pnpm-workspace.yaml').is_file()\n"
+            "assert (root / 'pnpm-lock.yaml').is_file()\n"
+            "if os.environ['BASE_FIXTURE_INSTALL_FAIL'] == '1':\n"
+            "    print('injected staged workspace install failure', file=sys.stderr)\n"
+            "    raise SystemExit(9)\n"
+            "compiler = root / 'node_modules' / '.bin' / 'tsc'\n"
+            "compiler.parent.mkdir(parents=True)\n"
+            "compiler.write_text('fixture compiler')\n"
+            "link = root / 'packages' / 'consumer' / 'node_modules' / '@durablerun' / 'core'\n"
+            "link.parent.mkdir(parents=True)\n"
+            "link.symlink_to(root / 'packages' / 'core', target_is_directory=True)\n"
+            "print('staged workspace install completed')\n"
+        )
+        installer.chmod(0o755)
+        for install_fails in (False, True):
+            files = base_runner_fixture(reject_from=None)
+            files.update({
+                "head/pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+                "head/pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+                "head/packages/core/package.json": '{"name":"@durablerun/core"}\n',
+            })
+            files["base/scripts/a-lint.py"] = (
+                "from pathlib import Path\n"
+                "root = Path(__file__).resolve().parent.parent\n"
+                "assert (root / 'node_modules/.bin/tsc').read_text() == 'fixture compiler'\n"
+                "assert (root / 'packages/consumer/node_modules/@durablerun/core').resolve() == root / 'packages/core'\n"
+                "print('staged workspace semantic checker ran')\n"
+                if not install_fails
+                else "print('staged workspace semantic checker ran')\n"
+            )
+            result = run(
+                "gate-lint.py",
+                files,
+                ("--run-base", "{root}/head", "{root}/base"),
+                environment={
+                    "PATH": f"{fixture_bin}{os.pathsep}{os.environ['PATH']}",
+                    "BASE_FIXTURE_HEAD": "{root}/head",
+                    "BASE_FIXTURE_INSTALL_FAIL": "1" if install_fails else "0",
+                },
+            )
+            output = result.stdout + result.stderr
+            if install_fails:
+                if (
+                    result.returncode == 0
+                    or "injected staged workspace install failure" not in output
+                    or "staged workspace semantic checker ran" in output
+                ):
+                    problems.append(
+                        "a staged dependency install failure must reject the base gate "
+                        "with its diagnostics before any semantic checker runs\n"
+                        f"    exit {result.returncode}: {output.strip()}"
+                    )
+            elif (
+                result.returncode != 0
+                or "staged workspace semantic checker ran" not in output
+            ):
+                problems.append(
+                    "the base gate must install frozen, script-free dependencies in its "
+                    "staged workspace before the semantic checker needs tools and package links\n"
+                    f"    exit {result.returncode}: {output.strip()}"
+                )
+    return problems
+
+
 ACTIVE_RULE = "Flag something decidable. Pass for the nearest legitimate shape."
 CODERABBIT_GLOBAL = (
     "Apply durablerun's custom review rules from `.github/review-bot-rules/` as they "
@@ -5084,7 +5162,18 @@ if sys.argv[1:] == ["--session-process-cases"]:
     sys.exit(0)
 
 
+if sys.argv[1:] == ["--base-runner-workspace-cases"]:
+    focused_problems = base_runner_workspace_problems()
+    for focused_problem in focused_problems:
+        print(f"lint-selftest: {focused_problem}")
+    if focused_problems:
+        sys.exit(1)
+    print("lint-selftest: 2 staged workspace dependency cases accepted")
+    sys.exit(0)
+
+
 failures = []
+failures.extend(base_runner_workspace_problems())
 failures.extend(process_fixture_isolation_problems())
 failures.extend(hidden_process_enrollment_problems(BAD_CASES))
 failures.extend(hidden_process_enrollment_surface_problems(BAD_CASES))
