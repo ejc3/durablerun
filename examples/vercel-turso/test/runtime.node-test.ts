@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import { serializeTaskValue, systemIdSource } from '@durablerun/core'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { hostedAuthorization } from '../src/auth.js'
+import { requireHostedReceiptBaseUrl } from '../src/receipt.js'
 import { createHostedExample } from '../src/runtime.js'
 import { ATTEMPT_RECEIPT_TASK, WAIT_FOR_READY_TASK } from '../src/tasks.js'
 
@@ -16,6 +17,13 @@ test('external wiring refuses one credential for API and cron authority', () => 
   assert.throws(
     () => hostedAuthorization({ apiToken: API_TOKEN, cronToken: API_TOKEN }),
     new TypeError('hosted API and cron tokens must be distinct'),
+  )
+})
+
+test('hosted receipt refuses a plaintext HTTP credential destination', () => {
+  assert.throws(
+    () => requireHostedReceiptBaseUrl('http://hosted.test'),
+    new TypeError('DURABLERUN_BASE_URL must use HTTPS'),
   )
 })
 

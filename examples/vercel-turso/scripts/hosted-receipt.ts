@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { serializeTaskValue, systemIdSource } from '@durablerun/core'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { requireHostedReceiptBaseUrl } from '../src/receipt.js'
 import { ATTEMPT_RECEIPT_TASK, WAIT_FOR_READY_TASK } from '../src/tasks.js'
 
 const RECEIPT_TIMEOUT_MS = 45_000
@@ -28,7 +29,7 @@ function stringField(value: Record<string, unknown>, key: string): string {
   return field
 }
 
-const baseUrl = new URL(requiredEnv('DURABLERUN_BASE_URL'))
+const baseUrl = requireHostedReceiptBaseUrl(requiredEnv('DURABLERUN_BASE_URL'))
 const apiToken = requiredEnv('DURABLERUN_API_TOKEN')
 const cronToken = requiredEnv('CRON_SECRET')
 const queue = requiredEnv('DURABLERUN_QUEUE')
