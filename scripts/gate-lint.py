@@ -594,6 +594,15 @@ def run_base_checkers(head: Path, base: Path) -> int:
                 )
                 return 1
 
+        # The staged checkout needs its own tools and workspace links.
+        # Install after indexing so dependencies stay out of the source inventory.
+        if (staged / "pnpm-workspace.yaml").is_file():
+            subprocess.run(
+                ("pnpm", "install", "--frozen-lockfile", "--ignore-scripts"),
+                cwd=staged,
+                check=True,
+            )
+
         ran = 0
         for invocation in semantic_invocations:
             name = str(invocation["name"])

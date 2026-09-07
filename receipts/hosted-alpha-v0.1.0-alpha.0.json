@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "milestone": "hosted-alpha",
+  "status": "passed",
+  "recordedAt": "2026-09-07T20:05:34.462Z",
+  "source": {
+    "repository": "https://github.com/ejc3/durablerun",
+    "pullRequest": "https://github.com/ejc3/durablerun/pull/20",
+    "mergeCommit": "a7b307844d80b092de5a8c2b11b5b32d2f2cacbc"
+  },
+  "release": {
+    "tag": "v0.1.0-alpha.0",
+    "url": "https://github.com/ejc3/durablerun/releases/tag/v0.1.0-alpha.0",
+    "targetCommit": "a7b307844d80b092de5a8c2b11b5b32d2f2cacbc",
+    "prerelease": true,
+    "isImmutable": true,
+    "downloadVerification": "passed",
+    "assets": [
+      {
+        "name": "durablerun-core-0.1.0-alpha.0.tgz",
+        "sha256": "314d501adb36e6158142ab422375888b276e1b21c9e2ae6740ee0128347a2061"
+      },
+      {
+        "name": "durablerun-driver-0.1.0-alpha.0.tgz",
+        "sha256": "f258887befcce10a472c5604b9fcb94dad5fd7ab1e0fbccc3f5f6fb8548502db"
+      },
+      {
+        "name": "durablerun-sdk-0.1.0-alpha.0.tgz",
+        "sha256": "b16b5cdcacfe7e9504ff75227ce625f0d34e5de228285ec80231f51e55a0074e"
+      },
+      {
+        "name": "durablerun-store-libsql-0.1.0-alpha.0.tgz",
+        "sha256": "8972d1e6e41351706e17076b4c64813054fe9319add8408f0c73ecb3941082e8"
+      }
+    ]
+  },
+  "cleanExternalApplication": {
+    "sourcePath": "examples/vercel-turso",
+    "install": "passed",
+    "typecheck": "passed",
+    "tests": {
+      "passed": 5,
+      "failed": 0
+    }
+  },
+  "database": {
+    "provider": "turso",
+    "emptySchemaPreflight": "passed",
+    "migration": "passed",
+    "schemaVersion": 5
+  },
+  "deployment": {
+    "provider": "vercel",
+    "productionUrl": "https://durablerun-alpha.vercel.app",
+    "sourceCommit": "a7b307844d80b092de5a8c2b11b5b32d2f2cacbc"
+  },
+  "liveReceipt": {
+    "script": "examples/vercel-turso/scripts/hosted-receipt.ts",
+    "ok": true,
+    "unauthenticatedOperationsDenied": ["task.enqueue", "event.emit", "tick.run", "task.inspect"],
+    "eventWorkflow": {
+      "suspensionObserved": true,
+      "inspectionState": "completed"
+    },
+    "lostLaunch": {
+      "inspectionState": "completed",
+      "relaunchCount": 1,
+      "attempt": 1
+    }
+  },
+  "redactions": [
+    "API and cron authorization credentials",
+    "Turso database URL and authentication token",
+    "queue and database names",
+    "runtime task IDs, event names, idempotency keys, and receipt nonce",
+    "internal Vercel deployment identifier"
+  ]
+}

@@ -33,6 +33,22 @@ validated by that run.
 
 ## Current milestone — hosted alpha
 
+**Status: COMPLETE (2026-09-07).** The foundation merged in
+[PR #20](https://github.com/ejc3/durablerun/pull/20) at
+[`a7b3078`](https://github.com/ejc3/durablerun/commit/a7b307844d80b092de5a8c2b11b5b32d2f2cacbc).
+The immutable
+[`v0.1.0-alpha.0`](https://github.com/ejc3/durablerun/releases/tag/v0.1.0-alpha.0)
+release passed a clean external install and the live Vercel/Turso exit test.
+The [redacted hosted-alpha receipt](receipts/hosted-alpha-v0.1.0-alpha.0.json)
+retains the source commit, package hashes, deployment, and outcome evidence.
+
+The full pre-release mutation audit in
+[#17](https://github.com/ejc3/durablerun/issues/17) remains outstanding:
+`v0.1.0-alpha.0` was published without that sweep. The closeout in
+[PR #21](https://github.com/ejc3/durablerun/pull/21) records the explicit alpha
+exception, not a completed audit. Both that audit and the classifier follow-up
+in [#18](https://github.com/ejc3/durablerun/issues/18) remain open.
+
 The default product thesis remains a Turso-first TypeScript durable-workflow
 engine. The historical phase inventory below is an options map, not permission
 to run several tracks at once.
@@ -62,16 +78,16 @@ instructions and a hosted receipt, not workspace links or maintainer state.
 
 **Live delivery ownership:**
 
-- **PRH.1 hosted-alpha foundation — IN REVIEW (GitHub PR #20; owner: current
-  hosted-alpha critical path):** ship the four consumable packages, fail-closed
-  authorization plugin boundary, exact four-route Vercel adapter, and Turso
-  example. It exits when PR #20's exact head is green and merged.
-- **PRH.2 immutable release, deployment, and receipt — BLOCKED ON PRH.1 MERGE
-  (owner: current hosted-alpha critical path):** bind `v0.1.0-alpha.0` and its
-  four package assets to the PRH.1 merge, prove a clean external install,
-  migrate the dedicated Turso database, deploy the Vercel example, retain the
-  redacted hosted end-to-end receipt, and mark this milestone complete. Its
-  closeout PR receives its GitHub number only after PR #20 merges.
+- **PRH.1 hosted-alpha foundation — DONE (GitHub PR #20, merge `a7b3078`):**
+  shipped the four consumable packages, fail-closed authorization plugin
+  boundary, exact four-route Vercel adapter, and Turso example.
+- **PRH.2 immutable release, deployment, and receipt — DONE (2026-09-07):**
+  bound `v0.1.0-alpha.0` and its four package assets to the PRH.1 merge,
+  passed a clean external install, typecheck, and all five example tests,
+  migrated the dedicated Turso database, and deployed the Vercel example.
+  The [hosted receipt](receipts/hosted-alpha-v0.1.0-alpha.0.json) proves all four
+  unauthenticated operations were denied, event suspension and completion,
+  and exactly one lost-launch reopen with the user attempt still one.
 
 **Non-goals:** QStash or another alarm service, detached HTTP workers, a
 resident driver, MySQL, child workflows, sagas, sharding, dedicated placement,

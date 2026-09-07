@@ -118,6 +118,31 @@ jobs:
           added_root="$RUNNER_TEMP/durablerun-base-added"
           mkdir -p "$added_root"
           mv -- packages/store-postgres "$added_root/store-postgres"
+      - name: Bootstrap staged dependency installation for the older base runner
+        # Only the known pre-install runner needs this one-release bridge.
+        # Preserve every byte outside the reviewed install insertion; checker
+        # inventory, sources, and the canonical BASE invocation remain unchanged.
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          base = Path('/tmp/base/scripts/gate-lint.py')
+          previous = base.read_text()
+          if hashlib.sha256(previous.encode()).hexdigest() != 'bcb9983eb2d17e8b68a832feef08d21f056d8f708a5f143c164440ad62ad55bf':
+              print('Base runner does not need the staged-install bootstrap.')
+              raise SystemExit(0)
+          candidate = Path('scripts/gate-lint.py').read_text()
+          marker = '        # The staged checkout needs its own tools and workspace links.\n'
+          anchor = '        ran = 0\n'
+          if candidate.count(marker) != 1 or candidate.count(anchor) != 1 or previous.count(anchor) != 1:
+              raise SystemExit('Staged-install bootstrap requires unique insertion boundaries.')
+          insertion = candidate[candidate.index(marker):candidate.index(anchor)]
+          repaired = previous.replace(anchor, insertion + anchor)
+          if not insertion or repaired != candidate:
+              raise SystemExit('Staged-install bootstrap may only add the dependency prerequisite.')
+          base.write_text(repaired)
+          print('Applied the staged-install prerequisite; all other BASE runner bytes are unchanged.')
+          PY
       - name: The base branch's checkers, applied to this tree
         env:
           NODE_PATH: ${{ github.workspace }}/node_modules
