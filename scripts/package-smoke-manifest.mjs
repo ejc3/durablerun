@@ -51,6 +51,7 @@ if (manifest.main !== './dist/index.js') fail('main does not address the product
 if (manifest.types !== './dist/index.d.ts') fail('types do not address the production declarations')
 if (JSON.stringify(manifest.files) !== JSON.stringify(['dist'])) fail('files allowlist drifted')
 if (manifest.publishConfig?.access !== 'public') fail('npm access is not public')
+if (manifest.publishConfig?.tag !== 'alpha') fail('npm dist-tag is not alpha')
 
 const requiredSubpaths =
   expectedName === '@durablerun/core' || expectedName === '@durablerun/store-libsql'
