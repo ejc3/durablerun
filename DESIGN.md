@@ -1216,11 +1216,22 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   target platform) with it POSTing worker launches to `/api/worker` on the Vercel
   deployment, keeping all heavyweight compute on Vercel; or (b) go fully
   serverless with the tick machinery below. Both use the same engine code.
-- **Auth**: `/api/tick` accepts Vercel cron (`Authorization: Bearer CRON_SECRET`,
-  timing-safe) and QStash signatures (`upstash-signature`, Receiver verification);
-  `/api/worker` accepts only internal HMAC-signed launches. These routes execute
-  registered code — treat as admin surfaces (lesson from §1.1: self-hosted worlds
-  get no auth for free).
+- **Hosted authorization port**: task enqueue, event emit, tick, and inspection
+  routes map exhaustively to `task.enqueue`, `event.emit`, `tick.run`, and
+  `task.inspect`. Before parsing or doing work, the router reads its bounded body
+  once and gives a required host-supplied plugin an immutable snapshot of the Web
+  request's method, URL, read-only headers, and exact body text. The port never
+  exposes a Node `IncomingMessage` or a consumable body stream. An explicit allow
+  returns an optional principal; unauthenticated/forbidden denials become 401/403,
+  plugin failures become 503, and malformed decisions or unmapped operations
+  become 500. All are fail-closed: there is no allow default. The driver supplies
+  a fixed-digest timing-safe Bearer adapter, logical `anyOf`, and an exhaustive
+  per-operation adapter. `anyOf` accepts any explicit allow; without one, a
+  plugin failure wins over denial and forbidden wins over unauthenticated. JWT,
+  platform-signature schemes, and worker launch signing remain host/transport
+  concerns rather than policy baked into the port.
+  These routes execute registered code and remain admin surfaces (lesson from
+  §1.1: self-hosted worlds get no auth for free).
 - **Cron sweep**: `vercel.json` (or `vercel.ts`) crons → `/api/tick` every minute
   — note Vercel cron issues **GET**, so `/api/tick` accepts GET (cron,
   `CRON_SECRET`) and POST (pings, QStash-signed) alike
@@ -1613,7 +1624,8 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   heartbeat) since it is the preferred mode; then the serverless tick
   (`/api/tick` GET+POST, ping-on-enqueue, QStash alarms with per-(shard,t)
   dedup, Vercel cron sweep); the fire-and-forget HTTP `Launcher` with HMAC;
-  auth throughout (CRON_SECRET + QStash signature + internal HMAC). Chaos
+  fail-closed authorization through the hosted plugin port (transport HMAC
+  remains separate). Chaos
   tests: kill-worker → sweep recovers; drop-launch → relaunch without attempt
   burn; duplicate delivery → activation CAS.
 - **Phase 3 — full Absurd semantics.** Events (emit/await, first-write-wins,
