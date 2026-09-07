@@ -1,0 +1,5 @@
+{
+  "name": "durablerun-package-smoke-consumer",
+  "private": true,
+  "type": "module"
+}
