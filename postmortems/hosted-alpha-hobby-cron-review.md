@@ -79,12 +79,12 @@ example suite was rerun after the change.
 
 ## Evidence
 
-- Red test: commit `9290f97fae1fe739ae2750c1ac5eb0e1deabe0c4` — run and
+- Red test: commit `22a320263db4b3a0c2277fe402426be2eee054d9` — run and
   seen failing against buggy base
-  `973d3c43546992118ff2d209e61976c1f6477201`. `npm test` reported **2
+  `2eb22e8412f8783fa6e20773a06a08104d644a5c`. `npm test` reported **2
   passing, 1 failing**; the regression expected `0 0 * * *` and observed
   `* * * * *`.
-- Fix: commit `507031e120e718087d85ed9ad0e9418ff4deb2c9` — changes the
+- Fix: commit `a345a1f0dde4f2be4374201a1093adcc9ff719e9` — changes the
   recovery cron to midnight UTC and aligns README and DESIGN.md. `npm test`
   reported **3 passing, 0 failing**, and `npm run typecheck` exited zero.
 - Finder, quoted verdict: "the linked alpha project is Hobby, while the

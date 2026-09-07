@@ -84,14 +84,14 @@ paths occur before ID generation or executor access.
 
 ## Evidence
 
-- Red tests: commit `12f2272` against buggy commit `9290f97`. The hosted target
+- Red tests: commit `27bc7fd` against buggy commit `22a3202`. The hosted target
   failed **1/1**: expected status 400, no claim, and zero handler calls, but
   observed status 201, one claimed/completed task, and one handler call.
 - The same red commit's libSQL conformance target failed **1/1**: both invalid
   operations resolved, the second key matched the first task, executor calls
   were 2, and task count was 2; the contract expected two rejections, no
   matched receipt, zero executor calls, and task count 1.
-- Fix: commit `8c8f36c`. At that exact commit the hosted target passed **1/1**
+- Fix: commit `6747d6c`. At that exact commit the hosted target passed **1/1**
   and the libSQL conformance target passed **1/1**. The complete hosted file
   passed **7/7**. Focused TypeScript checks for core, driver, store-libsql, and
   store-postgres all exited zero, and Biome checked the five changed TypeScript
@@ -110,7 +110,7 @@ paths occur before ID generation or executor access.
   idempotency keys can collapse to one task receipt."
 - No other auth, bounded-body, route-operation, inline-tick, or store candidate
   from that scoped review was promoted without a reachable failing outcome.
-  The known Hobby cron failure at base commit `9290f97` was intentionally
+  The known Hobby cron failure at base commit `22a3202` was intentionally
   excluded from these focused runs because it belongs to a separate red/fix
   pair.
 

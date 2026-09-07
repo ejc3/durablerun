@@ -82,7 +82,7 @@ release property, not the property itself.
 | `publishConfig.tag: alpha` in every packed manifest plus the package-smoke assertion | 3 | An authorized publisher can pass `--tag latest`, which overrides the manifest. Experiment B left the four-package smoke green, then npm's real dry-run selected `latest`. |
 
 Experiment A was written and run as a disposable direct probe against commit
-`70d7c0a`. The unchanged focused suite first reported four passing tests. The
+`59855b3`. The unchanged focused suite first reported four passing tests. The
 probe then supplied this observer to a real claimed libSQL run:
 
 ```ts
@@ -131,8 +131,8 @@ explicitly overrides it.
 
 ## Fix-induced defects
 
-**Zero.** Finding 1 was present in the initial inline-worker commit `9a0b552`;
-finding 2 was present in the initial package commit `ffe92d9`. Neither was
+**Zero.** Finding 1 was present in the initial inline-worker commit `afae4fc`;
+finding 2 was present in the initial package commit `5a13fdd`. Neither was
 introduced by a repair for an earlier finding in this review round. The second
 red/green pair followed the observer repair chronologically, but changed only
 the pre-existing package metadata and smoke assertion. Both repairs were
@@ -140,18 +140,18 @@ rerun through their focused suites as new code.
 
 ## Evidence
 
-- Inline red test: commit `f3b2544` — run and seen failing **2 of 4** focused
-  tests against hosted foundation `2022149`. The throwing case received
+- Inline red test: commit `4a98a6e` — run and seen failing **2 of 4** focused
+  tests against hosted foundation `3fd6845`. The throwing case received
   `ended: 0, launchFailed: 1` instead of `ended: 1, launchFailed: 0`; the async
   case observed that the launch had already settled before its gated observer.
-- Inline fix: commit `3dd244d` — constructs the opaque ending before
+- Inline fix: commit `3c52d6e` — constructs the opaque ending before
   observation, awaits `onOutcome`, contains its failure, and returns the
   original ending. The focused verdict became **4 of 4** tests green and the
   driver TypeScript check passed.
-- Package red test: commit `1e54c5c` — run and seen failing against `3dd244d`.
+- Package red test: commit `47e270d` — run and seen failing against `3c52d6e`.
   The first unpacked tarball stopped with `package-smoke: @durablerun/core: npm
   dist-tag is not alpha`.
-- Package fix: commit `f3f654b` — adds the `alpha` tag to core, SDK, driver, and
+- Package fix: commit `2465bf7` — adds the `alpha` tag to core, SDK, driver, and
   store-libsql. The confined package smoke packed all four, inspected their
   published manifests, installed them in a clean consumer, typechecked, and
   ran successfully.
@@ -160,7 +160,7 @@ rerun through their focused suites as new code.
   async callbacks can detach," and "the four alpha packages dry-run to npm tag
   `latest`; pin the alpha tag in published metadata and assert the packed
   manifests."
-- Current focused evidence on `70d7c0a`: the inline suite passed **4 of 4** and
+- Current focused evidence on `59855b3`: the inline suite passed **4 of 4** and
   confined `pnpm verify:packages` passed the four-tarball external-consumer
   receipt. Experiment A and Experiment B then established one distinct false
   negative for each claimed mechanism.

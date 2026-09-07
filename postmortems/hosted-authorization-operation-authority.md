@@ -73,7 +73,7 @@ capability is preferable to adding machinery around it.
 | Require `task.delete` to produce `invalid-operation` | 3 | The test names one unknown value. Experiment A added a second acceptance arm for `task.cancel`; the focused tests still passed and a direct `task.cancel` call returned `{"principal":"admin"}`. The private single source removes accidental external widening, not deliberate source changes. |
 
 Experiment A was written and run in a disposable checkout of fix commit
-`1f40c68` with this deliberate second authority:
+`be6e6c2` with this deliberate second authority:
 
 ```ts
 function isOperation(value: unknown): value is HostedAuthorizationOperation {
@@ -107,7 +107,7 @@ cannot deliberately widen the vocabulary.
 ## Fix-induced defects
 
 **Zero.** This finding was present in the initial authorization implementation,
-not introduced by a repair earlier in the round. Fix commit `fd28273` changed
+not introduced by a repair earlier in the round. Fix commit `be6e6c2` changed
 only the array's runtime construction from a plain tuple to `Object.freeze`.
 The later simplification replaced that repair with the private representation;
 it did not reveal or introduce another correctness finding.
@@ -130,18 +130,18 @@ it did not reveal or introduce another correctness finding.
   The quoted review verdict was: "A JS consumer/cast can push an unmodeled op
   and `authorizeHostedRequest` will authorize it with any ordinary plugin,
   violating unmapped operations become 500 and exhaustive per-operation."
-- Initial implementation: commit `1af1a0c`. Its focused suite passed 6 of 6;
+- Initial implementation: commit `b99d96c`. Its focused suite passed 6 of 6;
   this is the mutable implementation shape against which the red regression
   was added.
-- Red test: commit `aae134b` — run and seen failing **1 of 7** against
-  `1af1a0c`. The mutation succeeded, the authorization call resolved, and the
+- Red test: commit `42d1db9` — run and seen failing **1 of 7** against
+  `b99d96c`. The mutation succeeded, the authorization call resolved, and the
   test failed with `expected HostedAuthorizationError`.
-- Fix: commit `1f40c68`. The tuple is frozen at runtime; the same focused suite
+- Fix: commit `be6e6c2`. The tuple is frozen at runtime; the same focused suite
   passed 7 of 7. Driver TypeScript, Biome, determinism lint, user-boundary lint,
   and `git diff --check` were green.
 - The first implementation had not been committed when review found the bug;
   the original branch therefore had no buggy hash. This repaired branch
-  deliberately reconstructs the relevant mutable shape as `e0b0443` so the red
+  deliberately reconstructs the relevant mutable shape as `b99d96c` so the red
   and green evidence are reproducible rather than retroactively claimed.
 - The claim that `as const` made the exported value immutable did **not**
   reproduce: the original probe appended `task.delete` and printed the widened
