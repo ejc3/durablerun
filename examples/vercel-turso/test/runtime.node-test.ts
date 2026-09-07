@@ -12,6 +12,13 @@ import { ATTEMPT_RECEIPT_TASK, WAIT_FOR_READY_TASK } from '../src/tasks.js'
 const API_TOKEN = 'example-api-token'
 const CRON_TOKEN = 'example-cron-token'
 
+test('external wiring refuses one credential for API and cron authority', () => {
+  assert.throws(
+    () => hostedAuthorization({ apiToken: API_TOKEN, cronToken: API_TOKEN }),
+    new TypeError('hosted API and cron tokens must be distinct'),
+  )
+})
+
 test('checked-in configuration overrides monorepo install and supports Vercel Hobby', () => {
   const config = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')) as {
     installCommand?: unknown
