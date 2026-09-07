@@ -92,11 +92,11 @@ mechanism-audit mutation was restored.
 
 ## Evidence
 
-- Red test: commit `97f2a47` against buggy commit `34421ed`. The focused
+- Red test: commit `1bfaa31` against buggy commit `34421ed`. The focused
   hosted-router run failed **1 of 8** tests: expected
   `failure: {name: "$Cancelled"}` but received only `taskId` and
   `state: "cancelled"`; the other seven tests passed.
-- Fix: commit `9781afc`. The same focused file passed **8 of 8** tests through
+- Fix: commit `71bc883`. The same focused file passed **8 of 8** tests through
   the confined runner.
 - Finder: exact-head Codex adversarial review of PR #20. Its executable probe
   printed the store result
