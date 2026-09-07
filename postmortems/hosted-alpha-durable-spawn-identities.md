@@ -84,7 +84,7 @@ paths occur before ID generation or executor access.
 
 ## Evidence
 
-- Red tests: commit `27bc7fd` against buggy commit `22a3202`. The hosted target
+- Red tests: commit `27bc7fd` against its buggy PR parent `077a155`. The hosted target
   failed **1/1**: expected status 400, no claim, and zero handler calls, but
   observed status 201, one claimed/completed task, and one handler call.
 - The same red commit's libSQL conformance target failed **1/1**: both invalid

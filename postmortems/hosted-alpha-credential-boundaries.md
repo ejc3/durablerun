@@ -89,7 +89,8 @@ fixes and after restoring the mechanism-audit mutations.
 
 ## Evidence
 
-- Equal-token red test: commit `e8f009f` against reviewed commit `c49799d`.
+- Equal-token red test: commit `e8f009f` against its buggy PR parent `17192db`;
+  the defect was initially reviewed at `c49799d`.
   The focused example suite failed **1 of 4** with `Missing expected exception
   (TypeError)` while its other three tests passed.
 - Equal-token fix: commit `7b3fdb8`. At that exact commit the same suite passed
