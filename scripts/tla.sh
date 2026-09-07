@@ -18,22 +18,23 @@
 # the CI-sized scope, ~500k states) — the PR gate on small runners.
 set -euo pipefail
 
-TLA_VERSION="v1.8.0"
 TLA_SHA256="eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a"
-CACHE_DIR="${TLA_CACHE_DIR:-$HOME/.cache/tla}"
-JAR="$CACHE_DIR/tla2tools.jar"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JAR="$REPO_ROOT/tools/tla/tla2tools.jar"
 STATES="$(mktemp -d "${TMPDIR:-/tmp}/tla-states.XXXXXX")"
 trap 'rm -rf "$STATES"' EXIT
 
-if [[ ! -f "$JAR" ]] || ! echo "$TLA_SHA256  $JAR" | sha256sum -c --quiet - 2>/dev/null; then
-  mkdir -p "$CACHE_DIR"
-  echo "downloading tla2tools.jar $TLA_VERSION..."
-  curl -fsSL -o "$JAR" \
-    "https://github.com/tlaplus/tlaplus/releases/download/$TLA_VERSION/tla2tools.jar"
-  echo "$TLA_SHA256  $JAR" | sha256sum -c --quiet -
+if [[ ! -f "$JAR" ]]; then
+  echo "tla.sh: INFRA ERROR: vendored TLA checker is missing: $JAR" >&2
+  exit 1
+fi
+actual="$(sha256sum "$JAR" 2>/dev/null | awk 'NR == 1 {print $1}' || true)"
+if [[ "$actual" != "$TLA_SHA256" ]]; then
+  echo "tla.sh: INFRA ERROR: vendored TLA checker failed integrity (expected $TLA_SHA256, got ${actual:-unreadable})" >&2
+  exit 1
 fi
 
-cd "$(dirname "$0")/../specs"
+cd "$REPO_ROOT/specs"
 
 # Heap sizes to the environment instead of an artificial fixed number: a
 # tight heap makes TLC spill its fingerprint set to disk, which costs more

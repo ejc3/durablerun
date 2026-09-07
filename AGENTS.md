@@ -19,8 +19,9 @@ lightweight tick drivers that launch workers on demand.
   diff.
 - **BUILD.md is the plan.** Local reproducibility remains the baseline
   (SQLite `file:`/`:memory:`, future Postgres/MySQL work in podman, and local
-  driver/workers). The current milestone brings forward one thin remote-Turso
-  dogfood slice; broader cloud infrastructure remains in Phase C.
+  driver/workers). The current milestone delivers one thin hosted-alpha slice:
+  external packages, pluggable HTTP authorization, one Vercel adapter over
+  Turso, and its hosted receipt. Broader cloud infrastructure remains deferred.
 
 ## Standing rule: outcome before machinery
 
