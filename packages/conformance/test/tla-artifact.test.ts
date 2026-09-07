@@ -1,14 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import {
-  appendFile,
-  chmod,
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -90,7 +81,9 @@ describe('TLA tool artifact', () => {
     await copyFile(join(repoRoot, 'scripts', 'tla.sh'), join(fixture, 'scripts', 'tla.sh'))
     const jar = join(fixture, 'tools', 'tla', 'tla2tools.jar')
     await copyFile(join(repoRoot, 'tools', 'tla', 'tla2tools.jar'), jar)
-    await appendFile(jar, 'corrupt')
+    const artifact = await readFile(jar)
+    artifact[0] = (artifact[0] ?? 0) ^ 0xff
+    await writeFile(jar, artifact)
     const { bin, curlLog, java, javaLog } = await fakeCommands(root)
 
     const result = spawnSync('bash', ['scripts/tla.sh'], {
@@ -113,5 +106,89 @@ describe('TLA tool artifact', () => {
     )
     expect(await readIfPresent(curlLog)).toBe('')
     expect(await readIfPresent(javaLog)).toBe('')
+  })
+
+  it('rejects a missing repository checker without a network fallback', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-missing-'))
+    scratch.push(root)
+    const fixture = join(root, 'repo')
+    await mkdir(join(fixture, 'scripts'), { recursive: true })
+    await mkdir(join(fixture, 'specs'), { recursive: true })
+    await copyFile(join(repoRoot, 'scripts', 'tla.sh'), join(fixture, 'scripts', 'tla.sh'))
+    const { bin, curlLog, java, javaLog } = await fakeCommands(root)
+
+    const result = spawnSync('bash', ['scripts/tla.sh'], {
+      cwd: fixture,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CURL_LOG: curlLog,
+        JAVA_LOG: javaLog,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        TLA_HEAP_MB: '2048',
+        TLA_JAVA: java,
+        TLA_ONLY: 'liveness1',
+      },
+    })
+
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      'INFRA ERROR: vendored TLA checker is missing',
+    )
+    expect(await readIfPresent(curlLog)).toBe('')
+    expect(await readIfPresent(javaLog)).toBe('')
+  })
+
+  it('classifies an unreadable checker digest as infrastructure failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-unreadable-'))
+    scratch.push(root)
+    const fixture = join(root, 'repo')
+    await mkdir(join(fixture, 'scripts'), { recursive: true })
+    await mkdir(join(fixture, 'specs'), { recursive: true })
+    await mkdir(join(fixture, 'tools', 'tla'), { recursive: true })
+    await copyFile(join(repoRoot, 'scripts', 'tla.sh'), join(fixture, 'scripts', 'tla.sh'))
+    await copyFile(
+      join(repoRoot, 'tools', 'tla', 'tla2tools.jar'),
+      join(fixture, 'tools', 'tla', 'tla2tools.jar'),
+    )
+    const { bin, curlLog, java, javaLog } = await fakeCommands(root)
+    const sha256sum = join(bin, 'sha256sum')
+    await writeFile(
+      sha256sum,
+      `#!/usr/bin/env bash\nprintf '%s\\n' 'sha256sum: checker: Permission denied' >&2\nexit 1\n`,
+    )
+    await chmod(sha256sum, 0o755)
+
+    const result = spawnSync('bash', ['scripts/tla.sh'], {
+      cwd: fixture,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CURL_LOG: curlLog,
+        JAVA_LOG: javaLog,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        TLA_HEAP_MB: '2048',
+        TLA_JAVA: java,
+        TLA_ONLY: 'liveness1',
+      },
+    })
+
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      'INFRA ERROR: vendored TLA checker failed integrity',
+    )
+    expect(await readIfPresent(curlLog)).toBe('')
+    expect(await readIfPresent(javaLog)).toBe('')
+  })
+
+  it('records the licenses and source for bundled third-party code', async () => {
+    const readme = await readFile(join(repoRoot, 'tools', 'tla', 'README.md'), 'utf8')
+
+    expect(readme).not.toContain('this distribution are MIT licensed')
+    expect(readme).toContain('META-INF/LICENSE.md')
+    expect(readme).toContain('CommonsMath-LICENSE.txt')
+    expect(readme).toContain('jline-LICENSE.txt')
+    expect(readme).toContain('mailapi-1.6.8-sources.jar')
+    expect(readme).toContain('smtp-1.6.8-sources.jar')
   })
 })
