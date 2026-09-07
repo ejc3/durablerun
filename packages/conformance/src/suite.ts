@@ -87,6 +87,50 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(b.created).toBe(true)
       })
 
+      it('rejects spawn identities that can change or alias at the storage boundary', async () => {
+        const first = await f.store.spawn(Q, 'first', '{}', {
+          idempotencyKey: 'same\uFFFD',
+        })
+        let executorCalls = 0
+        const observed = f.storeOver({
+          batch: (label, statements, control) => {
+            executorCalls += 1
+            return f.raw.batch(label, statements, control)
+          },
+        })
+        const settle = async (operation: ReturnType<typeof f.store.spawn>) =>
+          operation.then(
+            (value) => ({ kind: 'resolved' as const, taskId: value.taskId }),
+            () => ({ kind: 'rejected' as const }),
+          )
+
+        const changedTaskName = await settle(observed.spawn(Q, 'admin\u0000suffix', '{}'))
+        const aliasedIdempotencyKey = await settle(
+          observed.spawn(Q, 'second', '{}', { idempotencyKey: 'same\uD800' }),
+        )
+        const [count] = await f.raw.batch(
+          'spawn-identities:probe',
+          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
+          'read',
+        )
+
+        expect({
+          changedTaskName: changedTaskName.kind,
+          aliasedIdempotencyKey: aliasedIdempotencyKey.kind,
+          aliasMatchedFirst:
+            aliasedIdempotencyKey.kind === 'resolved' &&
+            aliasedIdempotencyKey.taskId === first.taskId,
+          executorCalls,
+          taskCount: Number(count?.rows[0]?.n),
+        }).toEqual({
+          changedTaskName: 'rejected',
+          aliasedIdempotencyKey: 'rejected',
+          aliasMatchedFirst: false,
+          executorCalls: 0,
+          taskCount: 1,
+        })
+      })
+
       it('rejects non-round-tripping header keys and values before persistence', async () => {
         let executorCalls = 0
         const observed = f.storeOver({

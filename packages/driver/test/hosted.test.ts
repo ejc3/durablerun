@@ -192,6 +192,37 @@ describe('hosted-alpha Web Request router', () => {
     }
   })
 
+  it('rejects a storage-unstable task name before it selects a different registry handler', async () => {
+    const admin = vi.fn(async () => 'privileged')
+    const f = await fixture('hosted-task-name-binding', {
+      registry: new Map([['admin', admin]]),
+    })
+    try {
+      const submittedTaskName = 'admin\u0000suffix'
+      const response = await f.router.handle(
+        request('/api/tasks', 'POST', JSON.stringify({ taskName: submittedTaskName })),
+      )
+      const body = await responseBody(response)
+      const tick = await f.router.runTick()
+
+      expect({
+        status: response.status,
+        body,
+        claimed: tick.claimed,
+        workerOutcome: tick.workerOutcome,
+        adminCalls: admin.mock.calls.length,
+      }).toEqual({
+        status: 400,
+        body: { error: 'invalid_request' },
+        claimed: 0,
+        workerOutcome: null,
+        adminCalls: 0,
+      })
+    } finally {
+      f.close()
+    }
+  })
+
   it('rejects unknown paths, wrong methods, and oversized bytes before auth or store work', async () => {
     const authorization = vi.fn(() => allowAuthorization())
     const calls: string[] = []
