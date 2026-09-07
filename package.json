@@ -20,7 +20,7 @@
     "format-check": "biome format .",
     "lint:determinism": "bash scripts/determinism-lint.sh",
     "lint:user-boundary": "bash scripts/user-boundary-lint.sh",
-    "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:user-boundary && pnpm lint:ledger && pnpm lint:fragments && pnpm lint:batches && pnpm lint:clock && pnpm lint:deferrals && pnpm lint:mutation-verdicts && pnpm lint:selftest && pnpm lint:review-bots && pnpm lint:gate && pnpm format-check && pnpm typecheck && pnpm test",
+    "verify": "pnpm lint && pnpm lint:determinism && pnpm lint:user-boundary && pnpm lint:ledger && pnpm lint:fragments && pnpm lint:batches && pnpm lint:clock && pnpm lint:deferrals && pnpm lint:mutation-verdicts && pnpm lint:selftest && pnpm lint:review-bots && pnpm lint:gate && pnpm format-check && pnpm typecheck && pnpm verify:packages && pnpm test",
     "lint:ledger": "python3 scripts/spec-ledger.py",
     "lint:fragments": "python3 scripts/fragment-lint.py",
     "lint:batches": "python3 scripts/batch-lint.py",
