@@ -9,8 +9,13 @@ export function hostedAuthorization(options: {
   readonly apiToken: string
   readonly cronToken: string
 }): HostedAuthorizationPlugin {
-  const api = bearerAuthorization({ token: options.apiToken })
-  const cron = bearerAuthorization({ token: options.cronToken })
+  const apiToken = options.apiToken
+  const cronToken = options.cronToken
+  const api = bearerAuthorization({ token: apiToken })
+  const cron = bearerAuthorization({ token: cronToken })
+  if (apiToken === cronToken) {
+    throw new TypeError('hosted API and cron tokens must be distinct')
+  }
   return (facts) => {
     switch (facts.operation) {
       case 'task.enqueue':

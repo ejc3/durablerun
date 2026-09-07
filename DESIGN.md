@@ -1244,6 +1244,8 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   multiple-scheme composition, per-operation policy, and worker launch signing
   remain ordinary host/transport code rather than policy baked into this port.
   A trusted host adapter may call the router's non-HTTP `runTick()` directly.
+  The checked-in two-token example refuses construction when its API and cron
+  credentials are equal, preserving the documented operation split.
   After a successful enqueue or emit, an optional best-effort work-available hook
   can hand that promise to host lifecycle machinery such as `waitUntil`; hook
   throws/rejections never alter the already-durable mutation response, and cron
