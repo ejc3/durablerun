@@ -23,9 +23,9 @@ const INLINE_ENDING_KINDS = {
 
 export interface InlineLauncherOptions {
   /**
-   * Observe the worker's semantic outcome before the launch resolves. A
-   * bounded host can apply its own success policy without duplicating the
-   * worker-to-ending mapping.
+   * Observe the worker's semantic outcome before the launch resolves. The
+   * callback is awaited, but its failure is observational only and cannot
+   * reclassify the worker's durable ending.
    */
   onOutcome?(outcome: WorkerOutcome, invocation: LaunchInvocation): void
 }
@@ -50,7 +50,12 @@ export function inlineLauncher(
         claimToken: invocation.claimToken,
         kind: INLINE_ENDING_KINDS[outcome.kind],
       })
-      options.onOutcome?.(outcome, invocation)
+      try {
+        await options.onOutcome?.(outcome, invocation)
+      } catch {
+        // Observers must not turn a completed durable worker pass into a
+        // launch failure. Awaiting still keeps async observation in-slot.
+      }
       return launchOutcome
     },
   }
