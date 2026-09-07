@@ -1,6 +1,7 @@
 import { waitUntil } from '@vercel/functions'
 import { hostedAuthorization } from './auth.js'
 import { type HostedExampleRuntime, createHostedExample } from './runtime.js'
+import { receiveVercelWake, vercelWakeScheduler } from './wake.js'
 
 function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -20,10 +21,17 @@ function getRuntime(): HostedExampleRuntime {
       cronToken: requiredEnv('CRON_SECRET'),
     }),
     defer: waitUntil,
+    scheduleWake: vercelWakeScheduler(),
   })
   return runtime
 }
 
 export function handleHostedRequest(request: Request): Promise<Response> {
   return getRuntime().router.handle(request)
+}
+
+export function handleHostedWake(message: unknown): Promise<void> {
+  return receiveVercelWake(message, requiredEnv('DURABLERUN_QUEUE'), () =>
+    getRuntime().router.runTick(),
+  )
 }

@@ -7,6 +7,8 @@ import {
   HOSTED_REQUEST_BODY_MAX_BYTES,
   type HostedAuthorizationFacts,
   type HostedAuthorizationPlugin,
+  type WakeRequest,
+  type WakeScheduler,
   allowAuthorization,
   createHostedRouter,
   denyAuthorization,
@@ -46,6 +48,7 @@ async function fixture(
     registry?: TaskRegistry
     authorization?: HostedAuthorizationPlugin
     onWorkAvailable?: () => void | Promise<void>
+    scheduleWake?: WakeScheduler
     recordStoreCalls?: string[]
   } = {},
 ) {
@@ -66,15 +69,91 @@ async function fixture(
     sweepLimit: 10,
     leaseSeconds: 60,
   }
-  const router = createHostedRouter(
-    options.onWorkAvailable === undefined
-      ? base
-      : { ...base, onWorkAvailable: options.onWorkAvailable },
-  )
-  return { raw, store: baseStore, router, close }
+  const router = createHostedRouter({
+    ...base,
+    ...(options.onWorkAvailable === undefined ? {} : { onWorkAvailable: options.onWorkAvailable }),
+    ...(options.scheduleWake === undefined ? {} : { scheduleWake: options.scheduleWake }),
+  })
+  return { raw, admin, store: baseStore, router, close }
 }
 
 describe('hosted-alpha Web Request router', () => {
+  it('rearms both HTTP and trusted ticks through sleep, completion, and idle', async () => {
+    const wakes: WakeRequest[] = []
+    const f = await fixture('hosted-wake-sleep', {
+      scheduleWake: async (wake) => {
+        wakes.push(wake)
+      },
+      registry: new Map([
+        [
+          'sleep',
+          async (ctx) => {
+            await ctx.sleepFor(1)
+            return { done: true }
+          },
+        ],
+      ]),
+    })
+    try {
+      const spawned = await f.store.spawn(Q, 'sleep', '{}')
+      const response = await f.router.handle(request('/api/tick', 'POST'))
+      expect(response.status).toBe(200)
+      expect(await f.store.getTaskResult(Q, spawned.taskId)).toMatchObject({ state: 'sleeping' })
+      await f.router.runTick()
+      expect(wakes).toEqual([
+        { queue: Q, kind: 'immediate' },
+        { queue: Q, kind: 'scheduled', atEpochMs: 1_001_000 },
+      ])
+      await f.admin.setFakeNowEpochMs(1_001_000)
+      await f.router.runTick()
+      expect(await f.store.getTaskResult(Q, spawned.taskId)).toMatchObject({ state: 'completed' })
+      await f.router.runTick()
+      expect(wakes).toEqual([
+        { queue: Q, kind: 'immediate' },
+        { queue: Q, kind: 'scheduled', atEpochMs: 1_001_000 },
+        { queue: Q, kind: 'immediate' },
+      ])
+    } finally {
+      f.close()
+    }
+  })
+
+  it('returns 503 for a failed rearm without rolling back a completed task', async () => {
+    const f = await fixture('hosted-wake-unavailable', {
+      scheduleWake: async () => {
+        throw new Error('private provider credential failure')
+      },
+      registry: new Map([['done', async () => ({ done: true })]]),
+    })
+    try {
+      const spawned = await f.store.spawn(Q, 'done', '{}')
+      const response = await f.router.handle(request('/api/tick', 'GET'))
+      expect(response.status).toBe(503)
+      expect(await response.json()).toEqual({ error: 'service_unavailable' })
+      expect(await f.store.getTaskResult(Q, spawned.taskId)).toMatchObject({ state: 'completed' })
+      // A redelivery sees idle and succeeds without executing the task again.
+      const retried = await f.router.runTick()
+      expect(retried.claimed).toBe(0)
+      expect(retried.workerOutcome).toBeNull()
+    } finally {
+      f.close()
+    }
+  })
+
+  it('does not invoke a wake plugin for unauthorized requests', async () => {
+    const scheduleWake = vi.fn(async () => {})
+    const f = await fixture('hosted-wake-denied', {
+      scheduleWake,
+      authorization: () => denyAuthorization('unauthenticated'),
+    })
+    try {
+      expect((await f.router.handle(request('/api/tick', 'GET'))).status).toBe(401)
+      expect(scheduleWake).not.toHaveBeenCalled()
+    } finally {
+      f.close()
+    }
+  })
+
   it('maps the four public routes exactly and returns canonical no-store JSON', async () => {
     const facts: HostedAuthorizationFacts[] = []
     const authorization: HostedAuthorizationPlugin = (snapshot) => {

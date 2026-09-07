@@ -27,3 +27,4 @@ export {
   type DriverLoopStats,
 } from './loop.js'
 export { tick, type TickOptions, type TickResult } from './tick.js'
+export type { WakeRequest, WakeScheduler } from './wake.js'

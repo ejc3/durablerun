@@ -1,6 +1,6 @@
 {
   "name": "@durablerun/sdk",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Replay-safe task SDK and worker runtime for durablerun.",
   "license": "MIT",
   "type": "module",

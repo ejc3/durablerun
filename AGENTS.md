@@ -18,10 +18,11 @@ lightweight tick drivers that launch workers on demand.
   conformance test. Any PR that changes behavior updates DESIGN.md in the same
   diff.
 - **BUILD.md is the plan.** Local reproducibility remains the baseline
-  (SQLite `file:`/`:memory:`, future Postgres/MySQL work in podman, and local
-  driver/workers). The current milestone delivers one thin hosted-alpha slice:
-  external packages, pluggable HTTP authorization, one Vercel adapter over
-  Turso, and its hosted receipt. Broader cloud infrastructure remains deferred.
+  (SQLite `file:`/`:memory:`, Postgres in podman, and local driver/workers).
+  The hosted-alpha foundation is complete. The current milestone adds unattended
+  sleep/resume through a pluggable wake scheduler, one Vercel Queues adapter,
+  independent cron recovery, and a hosted receipt. Broader cloud infrastructure
+  remains deferred.
 
 ## Standing rule: outcome before machinery
 

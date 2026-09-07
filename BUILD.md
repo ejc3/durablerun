@@ -31,7 +31,37 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — hosted alpha
+## Current milestone — unattended hosted workflow
+
+**Status: IN PROGRESS.** One real hosted workflow must wake and complete without
+an operator or receipt issuing ticks. The first hosted alpha below remains
+complete; this milestone adds timely autonomous progress, not another engine.
+
+**Exit test:** deploy the one-queue Vercel/Turso example, enqueue a short sleep,
+observe its durable suspension, then observe completion no more than 60 seconds
+after it becomes due, with no manual tick calls. Repeat after deliberately
+omitting the initial enqueue hint: the independent recovery cron must start the
+workflow and its scheduled wake must finish it. Retain both measured receipts.
+The latency threshold is acceptance evidence, not an unconditional provider SLA.
+
+**Live delivery ownership:**
+
+- **PRH.3 unattended hosted progress — IN PROGRESS:** a small host-supplied wake
+  scheduling port, verified additive alarm/recovery behavior, one Vercel Queues
+  adapter, and a minutely recovery cron on the existing Pro project. Public
+  authorization remains host-owned; queue callbacks remain provider-private.
+- **PRA.1 release audit closure — IN PROGRESS:** resolve exact-owner-plus-
+  collateral classification in issue #18, then run the full mutation audit in
+  issue #17 on the release candidate/main evidence before another tagged release.
+  Preserve exact ownership and complete collateral diagnostics; do not expand
+  the audit framework beyond this observed blocker.
+
+**Non-goals:** new SQL transitions, persistent alarm ownership/deduplication,
+detached workers, a resident driver, another cloud account, a UI, multiple queues,
+MySQL, sagas, sharding, and the PR3.9/PR3.10 assurance expansions. They remain
+options until observed use requires them.
+
+## Completed milestone — hosted alpha
 
 **Status: COMPLETE (2026-09-07).** The foundation merged in
 [PR #20](https://github.com/ejc3/durablerun/pull/20) at

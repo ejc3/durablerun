@@ -3,6 +3,8 @@ import type { TaskHandler, TaskRegistry } from '@durablerun/sdk'
 
 export const WAIT_FOR_READY_TASK = 'wait-for-ready'
 export const ATTEMPT_RECEIPT_TASK = 'attempt-receipt'
+export const SLEEP_RECEIPT_TASK = 'sleep-receipt'
+export const RECEIPT_SLEEP_SECONDS = 10
 
 function eventNameFrom(params: unknown): string {
   if (typeof params !== 'object' || params === null || Array.isArray(params)) {
@@ -25,4 +27,11 @@ export const taskRegistry: TaskRegistry = new Map<string, TaskHandler>([
     },
   ],
   [ATTEMPT_RECEIPT_TASK, async (ctx) => ({ attempt: ctx.attempt })],
+  [
+    SLEEP_RECEIPT_TASK,
+    async (ctx) => {
+      await ctx.sleepFor(RECEIPT_SLEEP_SECONDS)
+      return { sleptSeconds: RECEIPT_SLEEP_SECONDS, attempt: ctx.attempt }
+    },
+  ],
 ])

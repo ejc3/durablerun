@@ -361,10 +361,10 @@ tick():
                          cancellation deadlines )
      resident mode: sleep until min(t, poll ceiling) — the loop IS the alarm
      serverless mode: arm a one-shot alarm at t (QStash Not-Before / Vercel
-     Queues delayed message ≤7d). Dedup key = shard:t, matched only against
-     alarms that have NOT yet fired (entries expire as t passes) — a sooner
-     wake is never dropped for an outstanding later one, and a duplicate
-     alarm is an idempotent no-op tick (~$0.00001).
+     Queues delayed message ≤7d). If deduplication is used, it may match only
+     alarms that have NOT yet fired; the hosted example does not deduplicate.
+     A sooner wake is never dropped for an outstanding later one, and a
+     duplicate alarm is an idempotent no-op tick.
      If sweep or claim backlog remains (> K_s / > K), fire an immediate
      successor tick — the tick chain is the drain loop; cron resurrects a
      dead chain.
@@ -392,7 +392,7 @@ Notes:
   with real at-least-once semantics: retries + DLQ.)
 - Duplicate/concurrent ticks: harmless. A fresh per-tick claim token owns the
   durable lease and retry receipt, while a fresh FencedBatch seed fences each
-  invocation's mutations; re-arms dedupe per (shard, time); sweep batches
+  invocation's mutations; duplicate re-arms remain safe; sweep batches
   re-check their fences per statement. Herds are bounded by the K/K_s batch
   caps plus poll jitter — deliberately NOT by a tick-singleton lease, which
   would break the invariant that every trigger causes a look.
@@ -1090,7 +1090,12 @@ not depend on careful reading:
   `AssertionError: <marker>`, or `AssertionError: <marker>: …`; its appearance
   later in rendered assertion source is not evidence. One mutation condition
   has one decisive assertion owner: broader controls may remain in the test,
-  but they cannot fail before or alongside the registered owner. Both
+  and that owner must emit exactly one attributable failure message. Other
+  failed tests may accompany it only in a coherent, clean-baseline-backed
+  result with complete diagnostics: this is `caught-with-collateral`, counted
+  separately from exact-only `caught`. Missing/wrong owners, suite errors,
+  missing collateral messages, and ambiguous owner messages remain blocking.
+  Both
   `FencedBatch` compiler bind exits use one
   module-captured `TypeError` factory and private brand. The three canonical
   promise helpers propagate that brand before consulting a caller matcher, so
@@ -1102,7 +1107,7 @@ not depend on careful reading:
   all question-delta reasons in one live-inventory traversal and requires an
   aggregate refusal; it proves enrollment is not a removable second call, not
   each declaration independently.
-  The verify gate runs 20 classifier cases, nineteen promise-message source
+  The verify gate runs 24 classifier cases, nineteen promise-message source
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
   three helper-marker cases, sixteen direct-marker cases, three title-owner
   cases, six verdict-inventory cases, seven question-delta cases, eleven
@@ -1226,7 +1231,7 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   suppress its release-asset dependencies.
 - **Driver hosting**: the hosted alpha is fully serverless. Each accepted
   mutation gives the host a best-effort opportunity to run the same bounded
-  inline tick, and the daily cron is its coarse recovery floor. Vercel itself
+  inline tick, and an independent cron recovers a lost hint. Vercel itself
   cannot host the resident driver; a separately hosted resident driver,
   `/api/worker`, and detached HTTP workers are future placement options and are
   not part of the exact four-route alpha surface above.
@@ -1254,21 +1259,42 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   remains the recovery path for a lost hint.
   These routes execute registered code and remain admin surfaces (lesson from
   §1.1: self-hosted worlds get no auth for free).
-- **Cron sweep**: the checked-in hosted-alpha `vercel.json` invokes `/api/tick`
-  once daily at midnight UTC so the example deploys on Vercel Hobby. Vercel cron
+- **Hosted wake scheduling port**: optional `scheduleWake` receives one immutable
+  `{queue, kind: 'immediate'}` hint when a completed tick reports backlog, or
+  `{queue, kind: 'scheduled', atEpochMs}` from the database-computed next wake
+  otherwise. An idle queue emits no hint. This is the same path for public
+  authorized ticks and host-trusted `runTick()`. A scheduling failure propagates
+  to the trusted caller (so queue delivery can retry) and returns a sanitized
+  HTTP 503; it does not undo work already committed by the tick. Enqueue/emit
+  acceleration retains its existing best-effort semantics. The host owns the
+  initial kick, process lifetime, and independent recurring recovery trigger.
+  Requests add deliveries; a delayed old request must never cancel a newer,
+  earlier one. Do not deduplicate a fresh request against an already-fired
+  message. Duplicate/reordered ticks remain safe through database fencing.
+  `specs/WakeDelivery.tla` models this delivery/recovery layer separately from
+  scheduler ownership. Its eventual-progress proof assumes fair time, delivery,
+  and recurring recovery; it does not claim a wall-clock latency guarantee.
+- **Cron sweep**: the unattended example invokes `/api/tick` every minute on
+  the existing Vercel Pro project. The first alpha used a once-daily Hobby
+  configuration; a Hobby host must keep that coarser fallback. Vercel cron
   issues **GET**, so `/api/tick` accepts GET (cron, `CRON_SECRET`) and POST
-  (pings, QStash-signed) alike. The Hobby cron is a coarse, best-effort recovery
-  floor: it is never retried and may double-fire, so a lost hint can wait more
-  than one day after a missed invocation. The bounded receipt and operator path
-  drive authorized ticks explicitly. A Pro host that needs a lower autonomous
-  recovery bound can change the same idempotent cron to every minute.
-- **Alarms**: QStash `Upstash-Not-Before` for re-arms (1s granularity, retries,
-  DLQ; $1/100K — a wake costs ~$0.00001). Vercel Queues delayed messages are the
-  platform-native alternative (the raw primitive allows ≤7-day delays, TTL-capped;
-  the managed Vercel World chains its own sleeps at 23h hops under the default
-  24h TTL — different layers, both real); still `queue/v2beta` public beta, swap
-  in when GA. Sleeps beyond the alarm max chain naturally: the tick at T re-arms
-  for the next horizon (same daisy-chain Vercel's own docs prescribe).
+  (host-authenticated pings) alike. Cron is best-effort, never retried, and may
+  double-fire; a missed invocation can exceed one period. The unattended
+  receipt measures normal scheduled completion within 60 seconds of becoming
+  due and repeats with its initial enqueue hint omitted, without issuing ticks.
+- **Alarm adapter**: the example uses Vercel Queues `queue/v2beta`, with a
+  provider-private callback that invokes trusted `runTick()`, not a fifth public
+  route. It converts database due times to nonnegative whole-second delays,
+  caps each delay at 23 hours with 24-hour message retention, and lets subsequent
+  ticks rearm long sleeps. Messages contain only the queue hint, never execution
+  authority. Receiver failure retries after five seconds with a 30-second
+  visibility timeout; acknowledged callbacks may still duplicate.
+  There is no resident timer, persistent alarm owner, or queue-wide replacement.
+  Provider identity stays in the example; another host may supply any
+  `WakeScheduler` with the same contract, independently of its auth plugin.
+  The provider promises at-least-once delivery, not a 60-second SLA; see the
+  [SDK](https://vercel.com/docs/queues/sdk) and
+  [delivery/security contract](https://vercel.com/docs/queues/concepts).
 - **Turso wiring** (per `~/remote-claw`, battle-tested): marketplace per-db creds
   (`TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`) for the single-DB start; the fleet
   model (`TURSO_API_TOKEN`/`TURSO_ORG`/`TURSO_GROUP` + **`TURSO_GROUP_AUTH_TOKEN`**

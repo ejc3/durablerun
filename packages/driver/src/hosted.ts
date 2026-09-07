@@ -18,6 +18,7 @@ import {
   authorizeHostedRequest,
 } from './auth.js'
 import { type InlineTickResult, inlineTick } from './inline.js'
+import { type WakeScheduler, WakeSchedulingError, scheduleTickWake } from './wake.js'
 
 /** The hosted-alpha API accepts at most 64 KiB before authorization runs. */
 export const HOSTED_REQUEST_BODY_MAX_BYTES = 64 * 1024
@@ -39,6 +40,8 @@ export interface HostedRouterDependencies {
    * Throws and rejected promises are deliberately ignored.
    */
   readonly onWorkAvailable?: () => void | Promise<void>
+  /** Optional host-owned continuation after each bounded tick; errors retry the tick. */
+  readonly scheduleWake?: WakeScheduler
 }
 
 export interface HostedRouter {
@@ -197,6 +200,9 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
   if (deps.onWorkAvailable !== undefined && typeof deps.onWorkAvailable !== 'function') {
     throw new TypeError('hosted router onWorkAvailable must be a function')
   }
+  if (deps.scheduleWake !== undefined && typeof deps.scheduleWake !== 'function') {
+    throw new TypeError('hosted router scheduleWake must be a function')
+  }
 
   const store = deps.store
   const ids = deps.ids
@@ -207,8 +213,15 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
   const sweepLimit = deps.sweepLimit
   const leaseSeconds = deps.leaseSeconds
   const onWorkAvailable = deps.onWorkAvailable
-  const runTick = (): Promise<InlineTickResult> =>
-    inlineTick({ store, ids, clock, registry }, { queue, sweepLimit, leaseSeconds })
+  const scheduleWake = deps.scheduleWake
+  const runTick = async (): Promise<InlineTickResult> => {
+    const result = await inlineTick(
+      { store, ids, clock, registry },
+      { queue, sweepLimit, leaseSeconds },
+    )
+    if (scheduleWake !== undefined) await scheduleTickWake(scheduleWake, queue, result)
+    return result
+  }
 
   const routes: Readonly<Record<string, Route>> = Object.freeze({
     '/api/tasks': Object.freeze({
@@ -319,7 +332,7 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
     } catch (error) {
       if (error instanceof HostedRequestError) return errorResponse(error.status, error.code)
       if (error instanceof InvalidDurableStringError) return errorResponse(400, 'invalid_request')
-      if (error instanceof StoreUnavailableError) {
+      if (error instanceof StoreUnavailableError || error instanceof WakeSchedulingError) {
         return errorResponse(503, 'service_unavailable')
       }
       return errorResponse(500, 'internal_error')
