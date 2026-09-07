@@ -98,7 +98,10 @@ mechanism-audit mutation was restored.
   `state: "cancelled"`; the other seven tests passed.
 - Fix: commit `71bc883`. The same focused file passed **8 of 8** tests through
   the confined runner.
-- Finder: exact-head Codex adversarial review of PR #20. Its executable probe
+- Finder: exact-head Codex adversarial review of PR #20. Its verdict was:
+  “The hosted contract requires inspection to return the decoded failure
+  whenever present …; include the cancellation state or key this on
+  `failureReasonJson`.” Its executable probe
   printed the store result
   `{ state: 'cancelled', failureReasonJson: '{"name":"$Cancelled"}' }` and
   the HTTP result `{"taskId":"cancelprobe-id-000001","state":"cancelled"}`.
