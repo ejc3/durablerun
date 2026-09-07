@@ -280,7 +280,8 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
         const response: Record<string, unknown> = { taskId, state: result.state }
         if (result.state === 'completed' && result.completedPayloadJson !== undefined) {
           response.result = parseTaskValueJson(result.completedPayloadJson)
-        } else if (result.state === 'failed' && result.failureReasonJson !== undefined) {
+        }
+        if (result.failureReasonJson !== undefined) {
           response.failure = parseTaskValueJson(result.failureReasonJson)
         }
         return jsonResponse(response)
