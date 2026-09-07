@@ -89,15 +89,15 @@ fixes and after restoring the mechanism-audit mutations.
 
 ## Evidence
 
-- Equal-token red test: commit `c83f279` against reviewed commit `c49799d`.
+- Equal-token red test: commit `e8f009f` against reviewed commit `c49799d`.
   The focused example suite failed **1 of 4** with `Missing expected exception
   (TypeError)` while its other three tests passed.
-- Equal-token fix: commit `2ba7995`. At that exact commit the same suite passed
+- Equal-token fix: commit `7b3fdb8`. At that exact commit the same suite passed
   **4 of 4**.
-- Plaintext-target red test: commit `b659736` against `2ba7995`. The focused
+- Plaintext-target red test: commit `86012ed` against `7b3fdb8`. The focused
   example suite failed **1 of 5** with `Missing expected exception (TypeError)`
   while its other four tests passed.
-- Plaintext-target fix: commit `de02cbd`. At that exact commit the same suite
+- Plaintext-target fix: commit `fbd400d`. At that exact commit the same suite
   passed **5 of 5**.
 - Finder, CodeRabbit security review: "When `apiToken` and `cronToken` are
   equal, the same credential authorizes API operations and `tick.run`. Reject

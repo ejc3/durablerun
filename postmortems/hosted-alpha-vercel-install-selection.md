@@ -95,11 +95,11 @@ tests were rerun after the change.
 
 ## Evidence
 
-- Red test: commit `3b30bdd3e99311c179c41100a7c7c77f22642a85`
+- Red test: commit `08c6231ae4c7458e125e96a1d52866eb9f48adad`
   against buggy commit `c49799d965d63d6f851d3f2dc66b2a748227c758`.
   Confined `pnpm verify:packages` reported **2 passing, 1 failing**; the
   configuration regression expected `npm install` and observed `undefined`.
-- Fix: commit `1dc541835f11a723106b4b54f9c0434f3cd0ba93` adds the
+- Fix: commit `3e2f87b8a58a3f8fa585f868b9f74cf81fe075c1` adds the
   installer override and aligns README and DESIGN.md. Confined
   `pnpm verify:packages` then packed and exercised all four external packages,
   typechecked the hosted example, and reported **3 passing, 0 failing**.

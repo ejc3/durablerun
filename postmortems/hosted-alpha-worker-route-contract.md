@@ -107,7 +107,7 @@ audit cleanup; they do not add a worker path or alter request dispatch.
   Vercel deployment" and concluded that this and fully serverless placement
   were alternatives that "use the same engine code." The preceding paragraph
   named exactly `/api/tasks`, `/api/events`, `/api/tick`, and `/api/inspect`.
-- Fix: commit `dbecca6` states that the hosted alpha is fully serverless and
+- Fix: commit `ae9c1bd` states that the hosted alpha is fully serverless and
   explicitly defers a resident driver, `/api/worker`, and detached HTTP
   workers. The affected hosted and inline targets passed **11 of 11** tests;
   driver TypeScript, Biome on both changed tests, `git diff --check`, and the
