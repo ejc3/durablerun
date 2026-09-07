@@ -46,7 +46,7 @@ OIDC, a signed webhook, tenant policy, or another scheme, supply your own
 `HostedAuthorizationPlugin` to `createHostedExample`. The router still binds the
 decision to the exact operation, method, URL, headers, and body it will use and
 fails closed before parsing or touching storage. The example composition also
-refuses to start when the API and cron credentials are equal.
+refuses construction when the API and cron credentials are equal.
 
 The enqueue and emit handlers ask Vercel `waitUntil` to run one inline tick as
 a lossy latency hint. Durable state is committed before that hint, and the
