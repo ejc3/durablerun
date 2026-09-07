@@ -8,6 +8,22 @@ EXAMPLE_DIR="$(mktemp -d /tmp/durablerun-hosted-example.XXXXXX)"
 trap 'rm -rf "$PACK_DIR" "$CONSUMER_DIR" "$EXAMPLE_DIR"' EXIT
 
 packages=(core sdk driver store-libsql)
+release_tag="v0.1.0-alpha.0"
+
+node --input-type=module - "$ROOT/examples/vercel-turso/package.json" "$release_tag" <<'NODE'
+import { readFileSync } from 'node:fs'
+
+const [manifestPath, releaseTag] = process.argv.slice(2)
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+for (const packageName of ['core', 'sdk', 'driver', 'store-libsql']) {
+  const version = releaseTag.slice(1)
+  const expected = `https://github.com/ejc3/durablerun/releases/download/${releaseTag}/durablerun-${packageName}-${version}.tgz`
+  const actual = manifest.dependencies?.[`@durablerun/${packageName}`]
+  if (actual !== expected) {
+    throw new Error(`package-smoke: hosted example ${packageName} URL is ${String(actual)}`)
+  }
+}
+NODE
 
 for package in "${packages[@]}"; do
   pnpm --dir "$ROOT" --filter "@durablerun/$package" pack --pack-destination "$PACK_DIR" >/dev/null
