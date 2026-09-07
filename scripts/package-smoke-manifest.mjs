@@ -24,8 +24,23 @@ const fail = (message) => {
   throw new Error(`package-smoke: ${expectedName}: ${message}`)
 }
 
+const expectedVersion = JSON.parse(
+  readFileSync(new URL('../packages/core/package.json', import.meta.url), 'utf8'),
+).version
+const number = '(?:0|[1-9][0-9]*)'
+const identifier = `(?:${number}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)`
+const releaseVersion = new RegExp(
+  `^${number}\\.${number}\\.${number}(?:-${identifier}(?:\\.${identifier})*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`,
+)
+if (
+  typeof expectedVersion !== 'string' ||
+  releaseVersion.exec(expectedVersion)?.[0] !== expectedVersion
+) {
+  fail('source core version must be an exact release version')
+}
+
 if (manifest.name !== expectedName) fail(`name is ${String(manifest.name)}`)
-if (manifest.version !== '0.1.0-alpha.0') fail(`version is ${String(manifest.version)}`)
+if (manifest.version !== expectedVersion) fail(`version is ${String(manifest.version)}`)
 if (manifest.private !== undefined) fail('packed manifest is private')
 if (manifest.license !== 'MIT') fail(`license is ${String(manifest.license)}`)
 if (manifest.type !== 'module') fail(`module type is ${String(manifest.type)}`)
@@ -69,7 +84,7 @@ if (Object.keys(manifest.exports ?? {}).length !== requiredSubpaths.length) {
 
 const dependencies = manifest.dependencies ?? {}
 for (const dependency of expectedDependencies) {
-  if (dependencies[dependency] !== '0.1.0-alpha.0') {
+  if (dependencies[dependency] !== expectedVersion) {
     fail(`${dependency} is not pinned to the matching alpha`)
   }
 }

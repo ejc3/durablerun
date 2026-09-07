@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const checker = join(scriptDirectory, 'package-smoke-manifest.mjs')
-const VERSION = '0.1.0-alpha.0'
+const VERSION = JSON.parse(
+  readFileSync(new URL('../packages/core/package.json', import.meta.url), 'utf8'),
+).version
 const PACKAGE_CONTRACTS = {
   '@durablerun/core': { dependencies: [], subpaths: ['.', './testing'] },
   '@durablerun/sdk': { dependencies: ['@durablerun/core'], subpaths: ['.'] },
@@ -91,7 +93,7 @@ const writeManifest = (directory, manifest) =>
 
 const BAD_CASES = [
   ['wrong-name', '@durablerun/core', set(['name'], '@durablerun/not-core'), 'name is'],
-  ['wrong-version', '@durablerun/core', set(['version'], '0.1.0'), 'version is'],
+  ['wrong-version', '@durablerun/core', set(['version'], `${VERSION}-mismatch`), 'version is'],
   ['private-field', '@durablerun/core', set(['private'], false), 'packed manifest is private'],
   ['wrong-license', '@durablerun/core', set(['license'], 'ISC'), 'license is'],
   ['wrong-module-type', '@durablerun/core', set(['type'], 'commonjs'), 'module type is'],
@@ -268,7 +270,13 @@ for (const name of Object.keys(PACKAGE_CONTRACTS)) {
   const sourceChecker = join(sourceScripts, 'package-smoke-manifest.mjs')
   copyFileSync(checker, sourceChecker)
   try {
-    for (const version of ['0.1.0-alpha.0', '0.1.0-alpha.1', '2.0.0', '2.1.0-beta.2+build.7']) {
+    for (const version of [
+      '0.1.0-alpha.0',
+      '0.1.0-alpha.1',
+      '0.1.0',
+      '2.0.0',
+      '2.1.0-beta.2+build.7',
+    ]) {
       writeManifest(sourceCore, { version })
       for (const name of Object.keys(PACKAGE_CONTRACTS)) {
         const { directory, manifest } = materialize(name)
@@ -289,6 +297,30 @@ for (const name of Object.keys(PACKAGE_CONTRACTS)) {
         } finally {
           rmSync(directory, { recursive: true, force: true })
         }
+      }
+    }
+    for (const version of [
+      null,
+      undefined,
+      '',
+      '^0.1.0',
+      '01.2.3',
+      '1.2.3-alpha.01',
+      '1.2.3-',
+      '1.2.3\n',
+    ]) {
+      writeManifest(sourceCore, { version })
+      const { directory, manifest } = materialize('@durablerun/core')
+      try {
+        manifest.version = version
+        writeManifest(directory, manifest)
+        const result = spawnSync(process.execPath, [sourceChecker, directory, '@durablerun/core'], {
+          encoding: 'utf8',
+        })
+        assert.notEqual(result.status, 0, `source accepted invalid release ${String(version)}`)
+        assert.match(result.stdout + result.stderr, /source core version must be an exact release/)
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
       }
     }
   } finally {
@@ -329,5 +361,5 @@ for (const [id, name, mutate, marker] of BAD_CASES) {
 }
 
 console.log(
-  `package-smoke-manifest-selftest: ${BAD_CASES.length + 2} bad inputs rejected and ${Object.keys(PACKAGE_CONTRACTS).length} good inputs accepted`,
+  `package-smoke-manifest-selftest: ${BAD_CASES.length + 2} bad inputs rejected and ${Object.keys(PACKAGE_CONTRACTS).length} good inputs accepted; source release-version matrix passed`,
 )
