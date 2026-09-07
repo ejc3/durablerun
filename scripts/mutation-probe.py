@@ -8121,6 +8121,21 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             return_transport_as_domain=True,
         )
 
+    collateral_assertions = tuple(
+        FailedAssertion(
+            f"packages/other/test/collateral-{index}.test.ts",
+            f"collateral test {index} preserves its full title",
+            (
+                f"AssertionError: collateral {index} " + "detail " * 40 + "end of message",
+                f"Error: collateral {index} second message\nwith another line",
+            ),
+        )
+        for index in range(4)
+    )
+    owner_with_collateral = SuiteResult(
+        False, False, (*failed().assertions, *collateral_assertions), (), ""
+    )
+
     matcher = assertion_matches
     options: dict[str, bool] = {}
     if fault == "ignore-file":
@@ -8255,6 +8270,30 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                         ("AssertionError: unrelated collateral failure",),
                     ),
                 ),
+                (),
+                "",
+            ),
+            expected,
+            "caught-with-collateral",
+        ),
+        (
+            "matching owner alongside every collateral message",
+            owner_with_collateral,
+            expected,
+            "caught-with-collateral",
+        ),
+        (
+            "collateral failures without the registered owner",
+            SuiteResult(False, False, collateral_assertions, (), ""),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "wrong owner alongside collateral failures",
+            SuiteResult(
+                False,
+                False,
+                (*failed(name="a different owner").assertions, *collateral_assertions),
                 (),
                 "",
             ),
@@ -9478,6 +9517,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         got = classify_verdict(result, verdict, matcher, **options)
         if got != wanted:
             failures.append(f"{label}: expected {wanted}, got {got}")
+    collateral_detail = suite_failure_detail(owner_with_collateral)
+    for assertion in owner_with_collateral.assertions:
+        for evidence in (assertion.file, assertion.full_name, *assertion.messages):
+            if evidence not in collateral_detail:
+                failures.append(f"collateral transcript dropped evidence: {evidence!r}")
     live_enrollment_faults = (
         QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
         TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
@@ -10683,6 +10727,32 @@ def orchestration_self_test(fault: str | None = None) -> int:
         )
     except ValueError as error:
         failures.append(f"valid report rejected: {error}")
+
+    for outcome, returncode in (("caught-with-collateral", 0), ("wrong-path", 1)):
+        rows = [mutation_result_row(item, outcome, "full failure evidence") for item in assigned]
+        payload = mutation_report_payload(
+            head="a" * 40,
+            nonce="fixture-nonce",
+            worker_id=2,
+            assigned=assigned,
+            results=rows,
+            complete=True,
+        )
+        try:
+            observed = validate_mutation_report(
+                payload,
+                head="a" * 40,
+                nonce="fixture-nonce",
+                worker_id=2,
+                expected=assigned,
+                process_returncode=returncode,
+            )
+            if observed != rows:
+                failures.append(f"{outcome}: report changed the recorded evidence")
+        except ValueError as error:
+            failures.append(f"{outcome}: valid report rejected: {error}")
+        if may_publish_success(returncode, rows) != (returncode == 0):
+            failures.append(f"{outcome}: incorrect final success decision")
 
     def expect_rejected(
         label: str,
