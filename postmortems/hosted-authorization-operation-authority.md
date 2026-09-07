@@ -72,7 +72,7 @@ capability is preferable to adding machinery around it.
 | Require `task.delete` to produce `invalid-operation` | 3 | The test names one unknown value. Experiment A added a second acceptance arm for `task.cancel`; the focused tests still passed and a direct `task.cancel` call returned `{"principal":"admin"}`. The private single source removes accidental external widening, not deliberate source changes. |
 
 Experiment A was written and run in a disposable checkout of fix commit
-`fd28273` with this deliberate second authority:
+`1f40c68` with this deliberate second authority:
 
 ```ts
 function isOperation(value: unknown): value is HostedAuthorizationOperation {
@@ -129,13 +129,13 @@ it did not reveal or introduce another correctness finding.
   The quoted review verdict was: "A JS consumer/cast can push an unmodeled op
   and `authorizeHostedRequest` will authorize it with any ordinary plugin,
   violating unmapped operations become 500 and exhaustive per-operation."
-- Initial implementation: commit `e0b0443`. Its focused suite passed 6 of 6;
+- Initial implementation: commit `1af1a0c`. Its focused suite passed 6 of 6;
   this is the mutable implementation shape against which the red regression
   was added.
-- Red test: commit `36ff5ab` — run and seen failing **1 of 7** against
-  `e0b0443`. The mutation succeeded, the authorization call resolved, and the
+- Red test: commit `aae134b` — run and seen failing **1 of 7** against
+  `1af1a0c`. The mutation succeeded, the authorization call resolved, and the
   test failed with `expected HostedAuthorizationError`.
-- Fix: commit `fd28273`. The tuple is frozen at runtime; the same focused suite
+- Fix: commit `1f40c68`. The tuple is frozen at runtime; the same focused suite
   passed 7 of 7. Driver TypeScript, Biome, determinism lint, user-boundary lint,
   and `git diff --check` were green.
 - The first implementation had not been committed when review found the bug;
