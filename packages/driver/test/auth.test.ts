@@ -126,6 +126,33 @@ describe('hosted authorization', () => {
     expect(invalidOperation).toMatchObject({ code: 'invalid-operation', httpStatus: 500 })
   })
 
+  it('cannot widen the runtime operation authority through its exported list', async () => {
+    const operations = HOSTED_AUTHORIZATION_OPERATIONS as unknown as string[]
+    let widened = false
+    try {
+      try {
+        operations.push('task.delete')
+        widened = true
+      } catch {
+        // The intended frozen representation rejects the mutation here.
+      }
+
+      const error = await expectAuthorizationError(
+        authorizeHostedRequest(
+          () => allowAuthorization('admin'),
+          'task.delete' as never,
+          request(),
+          '',
+        ),
+      )
+      expect(error).toMatchObject({ code: 'invalid-operation', httpStatus: 500 })
+      expect(Object.isFrozen(HOSTED_AUTHORIZATION_OPERATIONS)).toBe(true)
+    } finally {
+      // Keep the deliberately buggy red run from contaminating later cases.
+      if (widened) operations.pop()
+    }
+  })
+
   it('accepts only the exact bearer token through a fixed-length timing-safe comparison', async () => {
     const plugin = bearerAuthorization({ token: 'short-secret', principal: 'cron' })
     await expect(
