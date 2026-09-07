@@ -24,6 +24,7 @@
   "files": ["dist"],
   "publishConfig": {
     "access": "public",
+    "tag": "alpha",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
