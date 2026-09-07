@@ -10,8 +10,8 @@ structurally valid `SuiteResult` reaches verdict classification.
 
 The product milestone passed. The remote-Turso ref-journal completed **15 of
 15** 12-hour cycles over **7d 7h 27m**, retaining one checkpoint per cycle with
-zero attempts, infrastructure retries, or relaunches. Hourly ticks launched those cycles
-when they became due. Its deliberate
+zero attempts, infrastructure retries, or relaunches. Hourly ticks launched those
+cycles when they became due. Its deliberate
 driver-before-activation and worker-after-checkpoint probes recovered with the
 expected counters, and idle periods consumed no resident worker. PostgreSQL 17
 also passes the identical six-surface conformance suite, including native
@@ -24,8 +24,12 @@ this was verification infrastructure failure, not a protocol counterexample.
 The closeout vendors and verifies the exact known-green checker so an upstream
 asset replacement cannot silently turn the proof gate off again; see
 `postmortems/nightly-2026-09-07-mutable-tla-artifact.md`.
-Repository health returns fully green only when the six isolated full-nightly
-TLA targets run successfully on the resulting remote head.
+Repository health returned fully green in [recovery run
+34138471466](https://github.com/ejc3/durablerun/actions/runs/34138471466):
+`pnpm verify`, all 32 deep-fuzz shards, and all six isolated full-volume TLA
+targets passed. Later closeout commits only correct the redistribution and
+milestone records and do not change the checker, scripts, model, or configs
+validated by that run.
 
 ## Current milestone — hosted alpha
 
