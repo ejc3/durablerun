@@ -12,10 +12,12 @@ import { ATTEMPT_RECEIPT_TASK, WAIT_FOR_READY_TASK } from '../src/tasks.js'
 const API_TOKEN = 'example-api-token'
 const CRON_TOKEN = 'example-cron-token'
 
-test('checked-in recovery cron is deployable on Vercel Hobby', () => {
+test('checked-in configuration overrides monorepo install and supports Vercel Hobby', () => {
   const config = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')) as {
+    installCommand?: unknown
     crons?: unknown
   }
+  assert.equal(config.installCommand, 'npm install')
   assert.deepEqual(config.crons, [{ path: '/api/tick', schedule: '0 0 * * *' }])
 })
 
