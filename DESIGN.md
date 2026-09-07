@@ -1242,13 +1242,14 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   remains the recovery path for a lost hint.
   These routes execute registered code and remain admin surfaces (lesson from
   §1.1: self-hosted worlds get no auth for free).
-- **Cron sweep**: `vercel.json` (or `vercel.ts`) crons → `/api/tick` every minute
-  — note Vercel cron issues **GET**, so `/api/tick` accepts GET (cron,
-  `CRON_SECRET`) and POST (pings, QStash-signed) alike
-  (Pro; per-minute precision, best-effort — never retried, may double-fire; both
-  fine for an idempotent tick, but budget a few periods worst-case). Hobby's
-  daily ±59min cron is not viable for the safety net; this design assumes Pro, or
-  an external free cron for the sweep.
+- **Cron sweep**: the checked-in hosted-alpha `vercel.json` invokes `/api/tick`
+  once daily at midnight UTC so the example deploys on Vercel Hobby. Vercel cron
+  issues **GET**, so `/api/tick` accepts GET (cron, `CRON_SECRET`) and POST
+  (pings, QStash-signed) alike. The Hobby cron is a coarse, best-effort recovery
+  floor: it is never retried and may double-fire, so a lost hint can wait more
+  than one day after a missed invocation. The bounded receipt and operator path
+  drive authorized ticks explicitly. A Pro host that needs a lower autonomous
+  recovery bound can change the same idempotent cron to every minute.
 - **Alarms**: QStash `Upstash-Not-Before` for re-arms (1s granularity, retries,
   DLQ; $1/100K — a wake costs ~$0.00001). Vercel Queues delayed messages are the
   platform-native alternative (the raw primitive allows ≤7-day delays, TTL-capped;
