@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACK_DIR="$(mktemp -d /tmp/durablerun-package-tarballs.XXXXXX)"
 CONSUMER_DIR="$(mktemp -d /tmp/durablerun-package-consumer.XXXXXX)"
-trap 'rm -rf "$PACK_DIR" "$CONSUMER_DIR"' EXIT
+EXAMPLE_DIR="$(mktemp -d /tmp/durablerun-hosted-example.XXXXXX)"
+trap 'rm -rf "$PACK_DIR" "$CONSUMER_DIR" "$EXAMPLE_DIR"' EXIT
 
 packages=(core sdk driver store-libsql)
 
@@ -30,4 +31,10 @@ npm install --prefix "$CONSUMER_DIR" --ignore-scripts --no-audit --no-fund --pre
 "$ROOT/node_modules/.bin/tsc" -p "$CONSUMER_DIR/tsconfig.json"
 node "$CONSUMER_DIR/dist/smoke.js"
 
-echo "package-smoke: four tarballs install, typecheck, and run outside the workspace"
+cp -R "$ROOT/examples/vercel-turso/." "$EXAMPLE_DIR/"
+npm install --prefix "$EXAMPLE_DIR" --ignore-scripts --no-audit --no-fund --prefer-offline \
+  "$PACK_DIR"/*.tgz >/dev/null
+npm run --prefix "$EXAMPLE_DIR" typecheck
+npm test --prefix "$EXAMPLE_DIR"
+
+echo "package-smoke: four tarballs install and run in generic and hosted-alpha external consumers"

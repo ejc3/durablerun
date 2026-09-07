@@ -1,0 +1,27 @@
+{
+  "name": "durablerun-vercel-turso-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
+    "receipt": "node --env-file-if-exists=.env --import tsx scripts/hosted-receipt.ts",
+    "test": "node --import tsx --test test/*.node-test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@durablerun/core": "0.1.0-alpha.0",
+    "@durablerun/driver": "0.1.0-alpha.0",
+    "@durablerun/sdk": "0.1.0-alpha.0",
+    "@durablerun/store-libsql": "0.1.0-alpha.0",
+    "@vercel/functions": "3.9.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.8.3"
+  }
+}
