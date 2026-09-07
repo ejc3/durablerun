@@ -1,12 +1,12 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 
 /** The complete hosted route authority surface. Route adapters map onto it exactly once. */
-export const HOSTED_AUTHORIZATION_OPERATIONS = [
+export const HOSTED_AUTHORIZATION_OPERATIONS = Object.freeze([
   'task.enqueue',
   'event.emit',
   'tick.run',
   'task.inspect',
-] as const
+] as const)
 
 export type HostedAuthorizationOperation = (typeof HOSTED_AUTHORIZATION_OPERATIONS)[number]
 
