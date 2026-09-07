@@ -28,13 +28,13 @@ if [[ ! -f "$JAR" ]]; then
   echo "tla.sh: INFRA ERROR: vendored TLA checker is missing: $JAR" >&2
   exit 1
 fi
-if ! printf '%s  %s\n' "$TLA_SHA256" "$JAR" | sha256sum -c --quiet - 2>/dev/null; then
-  actual="$(sha256sum "$JAR" 2>/dev/null | awk '{print $1}')"
+actual="$(sha256sum "$JAR" 2>/dev/null | awk 'NR == 1 {print $1}' || true)"
+if [[ "$actual" != "$TLA_SHA256" ]]; then
   echo "tla.sh: INFRA ERROR: vendored TLA checker failed integrity (expected $TLA_SHA256, got ${actual:-unreadable})" >&2
   exit 1
 fi
 
-cd "$(dirname "$0")/../specs"
+cd "$REPO_ROOT/specs"
 
 # Heap sizes to the environment instead of an artificial fixed number: a
 # tight heap makes TLC spill its fingerprint set to disk, which costs more

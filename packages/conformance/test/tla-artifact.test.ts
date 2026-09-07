@@ -44,141 +44,113 @@ async function fakeCommands(root: string): Promise<{
   return { bin, curlLog, java, javaLog }
 }
 
+type FakeCommands = Awaited<ReturnType<typeof fakeCommands>>
+
+function runTla(
+  cwd: string,
+  commands: FakeCommands,
+  extraEnv: Readonly<Record<string, string>> = {},
+) {
+  return spawnSync('bash', ['scripts/tla.sh'], {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CURL_LOG: commands.curlLog,
+      JAVA_LOG: commands.javaLog,
+      PATH: `${commands.bin}:${process.env.PATH ?? ''}`,
+      TLA_HEAP_MB: '2048',
+      TLA_JAVA: commands.java,
+      TLA_ONLY: 'liveness1',
+      ...extraEnv,
+    },
+  })
+}
+
+async function copyFixtureRepository(
+  root: string,
+  includeArtifact: boolean,
+): Promise<{ readonly fixture: string; readonly jar: string }> {
+  const fixture = join(root, 'repo')
+  const jar = join(fixture, 'tools', 'tla', 'tla2tools.jar')
+  await mkdir(join(fixture, 'scripts'), { recursive: true })
+  await mkdir(join(fixture, 'specs'), { recursive: true })
+  await mkdir(join(fixture, 'tools', 'tla'), { recursive: true })
+  await copyFile(join(repoRoot, 'scripts', 'tla.sh'), join(fixture, 'scripts', 'tla.sh'))
+  if (includeArtifact) {
+    await copyFile(join(repoRoot, 'tools', 'tla', 'tla2tools.jar'), jar)
+  }
+  return { fixture, jar }
+}
+
 describe('TLA tool artifact', () => {
   it('runs from the repository without downloading a mutable release asset', async () => {
     const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-artifact-'))
     scratch.push(root)
-    const { bin, curlLog, java, javaLog } = await fakeCommands(root)
-
-    const result = spawnSync('bash', ['scripts/tla.sh'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        CURL_LOG: curlLog,
-        JAVA_LOG: javaLog,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        TLA_CACHE_DIR: join(root, 'empty-cache'),
-        TLA_HEAP_MB: '2048',
-        TLA_JAVA: java,
-        TLA_ONLY: 'liveness1',
-      },
+    const commands = await fakeCommands(root)
+    const result = runTla(repoRoot, commands, {
+      TLA_CACHE_DIR: join(root, 'empty-cache'),
     })
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0)
-    expect(await readIfPresent(curlLog)).toBe('')
-    expect(await readIfPresent(javaLog)).toContain('tools/tla/tla2tools.jar')
-    expect(await readIfPresent(javaLog)).toContain('SchedulerLiveness1.cfg')
+    expect(await readIfPresent(commands.curlLog)).toBe('')
+    expect(await readIfPresent(commands.javaLog)).toContain('tools/tla/tla2tools.jar')
+    expect(await readIfPresent(commands.javaLog)).toContain('SchedulerLiveness1.cfg')
   })
 
   it('rejects a corrupted repository checker before Java starts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-corrupt-'))
     scratch.push(root)
-    const fixture = join(root, 'repo')
-    await mkdir(join(fixture, 'scripts'), { recursive: true })
-    await mkdir(join(fixture, 'specs'), { recursive: true })
-    await mkdir(join(fixture, 'tools', 'tla'), { recursive: true })
-    await copyFile(join(repoRoot, 'scripts', 'tla.sh'), join(fixture, 'scripts', 'tla.sh'))
-    const jar = join(fixture, 'tools', 'tla', 'tla2tools.jar')
-    await copyFile(join(repoRoot, 'tools', 'tla', 'tla2tools.jar'), jar)
+    const { fixture, jar } = await copyFixtureRepository(root, true)
     const artifact = await readFile(jar)
     artifact[0] = (artifact[0] ?? 0) ^ 0xff
     await writeFile(jar, artifact)
-    const { bin, curlLog, java, javaLog } = await fakeCommands(root)
-
-    const result = spawnSync('bash', ['scripts/tla.sh'], {
-      cwd: fixture,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        CURL_LOG: curlLog,
-        JAVA_LOG: javaLog,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        TLA_HEAP_MB: '2048',
-        TLA_JAVA: java,
-        TLA_ONLY: 'liveness1',
-      },
-    })
+    const commands = await fakeCommands(root)
+    const result = runTla(fixture, commands)
 
     expect(result.status).not.toBe(0)
     expect(`${result.stdout}\n${result.stderr}`).toContain(
       'INFRA ERROR: vendored TLA checker failed integrity',
     )
-    expect(await readIfPresent(curlLog)).toBe('')
-    expect(await readIfPresent(javaLog)).toBe('')
+    expect(await readIfPresent(commands.curlLog)).toBe('')
+    expect(await readIfPresent(commands.javaLog)).toBe('')
   })
 
   it('rejects a missing repository checker without a network fallback', async () => {
     const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-missing-'))
     scratch.push(root)
-    const fixture = join(root, 'repo')
-    await mkdir(join(fixture, 'scripts'), { recursive: true })
-    await mkdir(join(fixture, 'specs'), { recursive: true })
-    await copyFile(join(repoRoot, 'scripts', 'tla.sh'), join(fixture, 'scripts', 'tla.sh'))
-    const { bin, curlLog, java, javaLog } = await fakeCommands(root)
-
-    const result = spawnSync('bash', ['scripts/tla.sh'], {
-      cwd: fixture,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        CURL_LOG: curlLog,
-        JAVA_LOG: javaLog,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        TLA_HEAP_MB: '2048',
-        TLA_JAVA: java,
-        TLA_ONLY: 'liveness1',
-      },
-    })
+    const { fixture } = await copyFixtureRepository(root, false)
+    const commands = await fakeCommands(root)
+    const result = runTla(fixture, commands)
 
     expect(result.status).not.toBe(0)
     expect(`${result.stdout}\n${result.stderr}`).toContain(
       'INFRA ERROR: vendored TLA checker is missing',
     )
-    expect(await readIfPresent(curlLog)).toBe('')
-    expect(await readIfPresent(javaLog)).toBe('')
+    expect(await readIfPresent(commands.curlLog)).toBe('')
+    expect(await readIfPresent(commands.javaLog)).toBe('')
   })
 
   it('classifies an unreadable checker digest as infrastructure failure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-unreadable-'))
     scratch.push(root)
-    const fixture = join(root, 'repo')
-    await mkdir(join(fixture, 'scripts'), { recursive: true })
-    await mkdir(join(fixture, 'specs'), { recursive: true })
-    await mkdir(join(fixture, 'tools', 'tla'), { recursive: true })
-    await copyFile(join(repoRoot, 'scripts', 'tla.sh'), join(fixture, 'scripts', 'tla.sh'))
-    await copyFile(
-      join(repoRoot, 'tools', 'tla', 'tla2tools.jar'),
-      join(fixture, 'tools', 'tla', 'tla2tools.jar'),
-    )
-    const { bin, curlLog, java, javaLog } = await fakeCommands(root)
-    const sha256sum = join(bin, 'sha256sum')
+    const { fixture } = await copyFixtureRepository(root, true)
+    const commands = await fakeCommands(root)
+    const sha256sum = join(commands.bin, 'sha256sum')
     await writeFile(
       sha256sum,
       `#!/usr/bin/env bash\nprintf '%s\\n' 'sha256sum: checker: Permission denied' >&2\nexit 1\n`,
     )
     await chmod(sha256sum, 0o755)
 
-    const result = spawnSync('bash', ['scripts/tla.sh'], {
-      cwd: fixture,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        CURL_LOG: curlLog,
-        JAVA_LOG: javaLog,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        TLA_HEAP_MB: '2048',
-        TLA_JAVA: java,
-        TLA_ONLY: 'liveness1',
-      },
-    })
+    const result = runTla(fixture, commands)
 
     expect(result.status).not.toBe(0)
     expect(`${result.stdout}\n${result.stderr}`).toContain(
       'INFRA ERROR: vendored TLA checker failed integrity',
     )
-    expect(await readIfPresent(curlLog)).toBe('')
-    expect(await readIfPresent(javaLog)).toBe('')
+    expect(await readIfPresent(commands.curlLog)).toBe('')
+    expect(await readIfPresent(commands.javaLog)).toBe('')
   })
 
   it('records the licenses and source for bundled third-party code', async () => {
