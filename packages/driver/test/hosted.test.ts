@@ -134,6 +134,26 @@ describe('hosted-alpha Web Request router', () => {
     }
   })
 
+  it('returns the stored failure reason when inspecting a cancelled task', async () => {
+    const f = await fixture('hosted-inspect-cancelled')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      await expect(f.store.cancelTask(Q, spawned.taskId)).resolves.toBe(true)
+
+      const inspected = await f.router.handle(
+        request(`/api/inspect?taskId=${encodeURIComponent(spawned.taskId)}`, 'GET'),
+      )
+      expect(inspected.status).toBe(200)
+      await expect(responseBody(inspected)).resolves.toEqual({
+        taskId: spawned.taskId,
+        state: 'cancelled',
+        failure: { name: '$Cancelled' },
+      })
+    } finally {
+      f.close()
+    }
+  })
+
   it('authorizes the exact body before parsing or touching the store and hides failures', async () => {
     const privateCause = 'private identity backend detail'
     const cases: ReadonlyArray<{
