@@ -3,7 +3,16 @@
   "framework": null,
   "installCommand": "npm install",
   "functions": {
-    "api/*.ts": {
+    "api/events.ts": {
+      "maxDuration": 60
+    },
+    "api/inspect.ts": {
+      "maxDuration": 60
+    },
+    "api/tasks.ts": {
+      "maxDuration": 60
+    },
+    "api/tick.ts": {
       "maxDuration": 60
     },
     "api/wake.ts": {
