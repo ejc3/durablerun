@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "milestone": "unattended-hosted-workflow",
+  "status": "passed",
+  "recordedAt": "2026-09-08T15:41:23.304Z",
+  "source": {
+    "repository": "https://github.com/ejc3/durablerun",
+    "pullRequest": "https://github.com/ejc3/durablerun/pull/22",
+    "mergeCommit": "a9527cf053c4aabff10b23fd066642af3e4d81d5",
+    "releaseCommit": "e8a6bb40994ff66ba2abf2e0e1d8037da97b02e7",
+    "releaseAndMergeTree": "d671e4d366353311ba9f2a1b8d2c3020bb5808d2",
+    "correctedExampleCommit": "289cd7cc7bf5607652b20531c46507c7c4a2e19b",
+    "correctedExampleUrl": "https://github.com/ejc3/durablerun/tree/289cd7cc7bf5607652b20531c46507c7c4a2e19b/examples/vercel-turso"
+  },
+  "release": {
+    "tag": "v0.1.0-alpha.1",
+    "url": "https://github.com/ejc3/durablerun/releases/tag/v0.1.0-alpha.1",
+    "targetCommit": "e8a6bb40994ff66ba2abf2e0e1d8037da97b02e7",
+    "prerelease": true,
+    "isImmutable": true,
+    "downloadVerification": "passed",
+    "exampleConfigurationNote": "The immutable tag retains the original overlapping function configuration. Use correctedExampleUrl for the deployable example; the four package assets are unchanged.",
+    "assets": [
+      {
+        "name": "durablerun-core-0.1.0-alpha.1.tgz",
+        "sha256": "a342d4f4323496b55a58cc21b872fccdea9e4b60be9222334aabbd5879b053ed"
+      },
+      {
+        "name": "durablerun-driver-0.1.0-alpha.1.tgz",
+        "sha256": "181e096a96c0b4fdf2f8cded26adc94b84c61b6391ecf542947e1892d08dbbea"
+      },
+      {
+        "name": "durablerun-sdk-0.1.0-alpha.1.tgz",
+        "sha256": "f8c8441590a33de4d2744e15143c460ba5713e4ec03a8a422c11d443af365ba7"
+      },
+      {
+        "name": "durablerun-store-libsql-0.1.0-alpha.1.tgz",
+        "sha256": "d5a53ce6d571c33b495fbcf395106af9f47d12f6b565ecb52d00233235ad821d"
+      }
+    ]
+  },
+  "cleanExternalApplication": {
+    "sourcePath": "examples/vercel-turso",
+    "sourceCommit": "289cd7cc7bf5607652b20531c46507c7c4a2e19b",
+    "trackedFilesCompared": 22,
+    "sourceComparison": "byte-identical",
+    "installFromPublicReleaseUrls": "passed",
+    "typecheck": "passed",
+    "tests": { "passed": 11, "failed": 0, "skipped": 0 }
+  },
+  "deployment": {
+    "provider": "vercel",
+    "deploymentId": "dpl_vuGnLDi8JtTiXwHuKYdwL81k1K8U",
+    "state": "READY",
+    "target": "production",
+    "productionUrl": "https://durablerun-alpha.vercel.app",
+    "sourceCommit": "289cd7cc7bf5607652b20531c46507c7c4a2e19b",
+    "functionConfigurationSha256": "1a1b37eff91f8f76b012404d12f9d0223a9d6de03325544506d4d539b8b6106b"
+  },
+  "liveReceipt": {
+    "script": "examples/vercel-turso/scripts/hosted-receipt.ts",
+    "ok": true,
+    "unauthenticatedOperationsDenied": ["task.enqueue", "event.emit", "tick.run", "task.inspect"],
+    "eventWorkflow": { "inspectionState": "completed" },
+    "lostLaunch": { "relaunchCount": 1, "attempt": 1 }
+  },
+  "unattendedReceipt": {
+    "script": "examples/vercel-turso/scripts/unattended-receipt.ts",
+    "ok": true,
+    "manualTicks": 0,
+    "privateCallbackStatus": 404,
+    "sleepDurationMs": 10000,
+    "scheduledSleep": {
+      "sleepingObserved": true,
+      "createdAtEpochMs": 1788881445924,
+      "dueAtEpochMs": 1788881456100,
+      "completedAtEpochMs": 1788881456676,
+      "resumeLatencyMs": 576,
+      "attempt": 1
+    },
+    "droppedHint": {
+      "sleepingObserved": true,
+      "createdAtEpochMs": 1788881393015,
+      "dueAtEpochMs": 1788881444341,
+      "completedAtEpochMs": 1788881444961,
+      "resumeLatencyMs": 620,
+      "attempt": 1,
+      "producerHintSent": false,
+      "recoveryLatencyMs": 51946
+    },
+    "limits": { "resumeLatencyMs": 60000, "droppedHintRecoveryMs": 120000 }
+  },
+  "providerTrace": {
+    "path": "hosted-alpha-v0.1.0-alpha.1-provider-requests.ndjson",
+    "sha256": "b49f85af7547a40a3a291727c429725fa0f51aa88a0caf3cfb7264ce2888164e",
+    "collection": {
+      "endpoint": "https://vercel.com/api/logs/request-logs",
+      "collectedAt": "2026-09-08T15:40:19.844Z",
+      "requestedStart": "2026-09-08T15:29:50.000Z",
+      "requestedEnd": "2026-09-08T15:31:15.000Z",
+      "strategy": "page-zero overlapping time windows; shared boundary included; exact duplicate IDs checked",
+      "pages": [
+        {
+          "startDate": 1788881390000,
+          "endDate": 1788881475000,
+          "rowCount": 50,
+          "hasMoreRows": true,
+          "minTimestamp": 1788881431927,
+          "maxTimestamp": 1788881456840
+        },
+        {
+          "startDate": 1788881390000,
+          "endDate": 1788881431928,
+          "rowCount": 50,
+          "hasMoreRows": true,
+          "minTimestamp": 1788881402169,
+          "maxTimestamp": 1788881431927
+        },
+        {
+          "startDate": 1788881390000,
+          "endDate": 1788881402170,
+          "rowCount": 16,
+          "hasMoreRows": false,
+          "minTimestamp": 1788881393075,
+          "maxTimestamp": 1788881402169
+        }
+      ],
+      "exhausted": true,
+      "uniqueRows": 114,
+      "fields": [
+        "id",
+        "timestamp",
+        "deploymentId",
+        "requestMethod",
+        "requestPath",
+        "responseStatusCode"
+      ]
+    },
+    "attribution": {
+      "ok": true,
+      "validatedAt": "2026-09-08T15:41:23.304Z",
+      "droppedHintStartupCronRequestId": "wzj4k-1788881434203-f50df9616a54",
+      "droppedHintStartupWakeCount": 0,
+      "droppedHint": {
+        "successfulDueWakeRequestIds": ["8nk2h-1788881444832-a470bbdbf5f5"],
+        "tickCountDuringSleepToCompletion": 0
+      },
+      "scheduledSleep": {
+        "successfulDueWakeRequestIds": ["br44g-1788881456549-211058d22217"],
+        "tickCountDuringSleepToCompletion": 0
+      }
+    }
+  },
+  "fullMutationAudit": {
+    "status": "passed",
+    "auditedCommit": "e8a6bb40994ff66ba2abf2e0e1d8037da97b02e7",
+    "completedAt": "2026-09-08T09:34:16.149Z",
+    "mutations": 423,
+    "exactOnly": 409,
+    "caughtWithCollateral": 14,
+    "blocking": 0,
+    "summaryUrl": "https://github.com/ejc3/durablerun/issues/17#issuecomment-5587332479",
+    "transcriptSha256": "cdcfe8a3590c8162c3325376391edaf705e5487b92d8ce9ca933c760637ea84e",
+    "disposableFixture": "Stopped after verification; fsync and synchronous_commit confirmed on; container and volume retained recoverably."
+  },
+  "redactions": [
+    "API and cron authorization credentials",
+    "Turso database URL and authentication token",
+    "queue and database names",
+    "runtime task IDs, event names, idempotency keys, and receipt nonce",
+    "provider raw log messages, headers, request bodies, and query strings"
+  ]
+}
