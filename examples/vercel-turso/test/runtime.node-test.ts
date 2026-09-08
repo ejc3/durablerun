@@ -4,11 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { serializeTaskValue, systemIdSource } from '@durablerun/core'
+import type { WakeRequest } from '@durablerun/driver'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { hostedAuthorization } from '../src/auth.js'
 import { requireHostedReceiptBaseUrl } from '../src/receipt.js'
 import { createHostedExample } from '../src/runtime.js'
-import { ATTEMPT_RECEIPT_TASK, WAIT_FOR_READY_TASK } from '../src/tasks.js'
+import {
+  ATTEMPT_RECEIPT_TASK,
+  RECEIPT_SLEEP_SECONDS,
+  SLEEP_RECEIPT_TASK,
+  WAIT_FOR_READY_TASK,
+} from '../src/tasks.js'
+import { WAKE_TOPIC, receiveVercelWake } from '../src/wake.js'
 
 const API_TOKEN = 'example-api-token'
 const CRON_TOKEN = 'example-cron-token'
@@ -27,13 +34,72 @@ test('hosted receipt refuses a plaintext HTTP credential destination', () => {
   )
 })
 
-test('checked-in configuration overrides monorepo install and supports Vercel Hobby', () => {
+test('configuration installs the external app and gives its private queue a cron backstop', () => {
   const config = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')) as {
     installCommand?: unknown
     crons?: unknown
+    functions: Record<string, { experimentalTriggers?: unknown }>
   }
   assert.equal(config.installCommand, 'npm install')
-  assert.deepEqual(config.crons, [{ path: '/api/tick', schedule: '0 0 * * *' }])
+  assert.deepEqual(config.crons, [{ path: '/api/tick', schedule: '* * * * *' }])
+  assert.deepEqual(config.functions['api/wake.ts']?.experimentalTriggers, [
+    { type: 'queue/v2beta', topic: WAKE_TOPIC, retryAfterSeconds: 5 },
+  ])
+})
+
+test('the external scheduler resumes a sleeping task and stops when the queue is idle', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'durablerun-hosted-example-'))
+  const databaseUrl = `file:${join(directory, 'sleep.db')}`
+  const raw = LibsqlExecutor.open(databaseUrl)
+  const admin = new LibsqlStoreAdmin(raw)
+  await admin.migrate()
+  await admin.setFakeNowEpochMs(1_000_000)
+  const queue = 'external-sleep-test'
+  const wakes: WakeRequest[] = []
+  const deferred: Promise<void>[] = []
+  const runtime = createHostedExample({
+    databaseUrl,
+    databaseAuthToken: '',
+    queue,
+    authorization: hostedAuthorization({ apiToken: API_TOKEN, cronToken: CRON_TOKEN }),
+    defer(work) {
+      deferred.push(work)
+    },
+    async scheduleWake(wake) {
+      wakes.push(wake)
+    },
+  })
+  try {
+    const response = await runtime.router.handle(
+      request('/api/tasks', API_TOKEN, { taskName: SLEEP_RECEIPT_TASK }),
+    )
+    assert.equal(response.status, 201)
+    const { taskId } = (await response.json()) as { taskId: string }
+    await Promise.all(deferred)
+    assert.deepEqual(wakes.splice(0), [{ queue, kind: 'immediate' }])
+    await receiveVercelWake({ queue }, queue, runtime.router.runTick)
+    assert.deepEqual(wakes, [
+      { queue, kind: 'scheduled', atEpochMs: 1_000_000 + RECEIPT_SLEEP_SECONDS * 1_000 },
+    ])
+    wakes.length = 0
+    await admin.setFakeNowEpochMs(1_000_000 + RECEIPT_SLEEP_SECONDS * 1_000)
+    await receiveVercelWake({ queue }, queue, runtime.router.runTick)
+    const completed = await runtime.router.handle(
+      request(`/api/inspect?taskId=${encodeURIComponent(taskId)}`, API_TOKEN),
+    )
+    assert.deepEqual(await completed.json(), {
+      taskId,
+      state: 'completed',
+      result: { sleptSeconds: RECEIPT_SLEEP_SECONDS, attempt: 1 },
+    })
+    assert.deepEqual(wakes.splice(0), [{ queue, kind: 'immediate' }])
+    await receiveVercelWake({ queue }, queue, runtime.router.runTick)
+    assert.deepEqual(wakes, [])
+  } finally {
+    raw.close()
+    runtime.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 function request(path: string, token?: string, body?: unknown): Request {

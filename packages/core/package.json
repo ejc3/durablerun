@@ -1,6 +1,6 @@
 {
   "name": "@durablerun/core",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Portable contracts and primitives for durablerun.",
   "license": "MIT",
   "type": "module",

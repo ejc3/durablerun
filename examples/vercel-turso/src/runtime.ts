@@ -2,6 +2,7 @@ import { systemClock, systemIdSource } from '@durablerun/core'
 import {
   type HostedAuthorizationPlugin,
   type HostedRouter,
+  type WakeScheduler,
   createHostedRouter,
 } from '@durablerun/driver'
 import { LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
@@ -14,6 +15,8 @@ export interface HostedExampleConfig {
   readonly authorization: HostedAuthorizationPlugin
   /** Host-owned lifetime extension. Vercel supplies waitUntil. */
   readonly defer?: (work: Promise<void>) => void
+  /** Optional host-owned delayed delivery; omitted for manually driven hosts. */
+  readonly scheduleWake?: WakeScheduler
 }
 
 export interface HostedExampleRuntime {
@@ -35,6 +38,7 @@ export function createHostedExample(config: HostedExampleConfig): HostedExampleR
       queue: config.queue,
       sweepLimit: 10,
       leaseSeconds: 30,
+      ...(config.scheduleWake === undefined ? {} : { scheduleWake: config.scheduleWake }),
     }
     const defer = config.defer
     const router: HostedRouter = createHostedRouter(

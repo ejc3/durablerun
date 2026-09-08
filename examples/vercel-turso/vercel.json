@@ -5,12 +5,22 @@
   "functions": {
     "api/*.ts": {
       "maxDuration": 60
+    },
+    "api/wake.ts": {
+      "maxDuration": 60,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "durablerun-wake",
+          "retryAfterSeconds": 5
+        }
+      ]
     }
   },
   "crons": [
     {
       "path": "/api/tick",
-      "schedule": "0 0 * * *"
+      "schedule": "* * * * *"
     }
   ]
 }

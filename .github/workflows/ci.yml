@@ -143,6 +143,37 @@ jobs:
           base.write_text(repaired)
           print('Applied the staged-install prerequisite; all other BASE runner bytes are unchanged.')
           PY
+      - name: Bridge fixed release data in the older base package checkers
+        # Only these exact alpha.0 checkers need the one-release bridge.
+        # Replace release data, never checker logic, inventory, or assertions.
+        # The next base reads source version data itself and skips this step.
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import re
+          from pathlib import Path
+          version = json.loads(Path('packages/core/package.json').read_text()).get('version')
+          number = r'(?:0|[1-9][0-9]*)'
+          identifier = rf'(?:{number}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          pattern = rf'{number}\.{number}\.{number}(?:-{identifier}(?:\.{identifier})*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?'
+          if not isinstance(version, str) or re.fullmatch(pattern, version) is None:
+              raise SystemExit('Release bridge requires an exact source core release version.')
+          for name, expected_hash, expected_count in (
+              ('package-smoke-manifest.mjs', '52c858788371b4b57f5e9cbfb8e157652a2264cb2eb6a7bb96bded767e515666', 2),
+              ('package-smoke-manifest-selftest.mjs', '0d7636485d70f18ab14df79e2ff602b7d3a298326a036ebf481c80c3a154a357', 1),
+          ):
+              base = Path('/tmp/base/scripts') / name
+              previous = base.read_bytes()
+              if hashlib.sha256(previous).hexdigest() != expected_hash:
+                  print(f'{name}: base does not need the fixed-release bridge.')
+                  continue
+              old = b"'0.1.0-alpha.0'"
+              if previous.count(old) != expected_count:
+                  raise SystemExit(f'{name}: release literal count changed.')
+              base.write_bytes(previous.replace(old, f"'{version}'".encode()))
+              print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
+          PY
       - name: The base branch's checkers, applied to this tree
         env:
           NODE_PATH: ${{ github.workspace }}/node_modules

@@ -1,14 +1,14 @@
 # Hosted alpha: Vercel + Turso
 
 This is the smallest deployable durablerun host: one Turso database, one queue,
-four Web Request endpoints, one inline worker slot, and a once-daily
-recovery tick. It intentionally has no UI, detached worker, alarm service, or
-framework.
+four public Web Request endpoints, one private delayed-queue consumer, one
+inline worker slot, and a minutely recovery tick. It intentionally has no UI,
+detached worker, resident process, or framework.
 
 ## Deploy
 
-Use Node 22.12 or newer and a dedicated empty Turso database. Do not point the
-migrator or receipt at another application's database.
+Use Node 22.12 or newer, a Vercel Pro project, and a dedicated empty Turso
+database. Do not point the migrator or receipt at another application's database.
 
 1. Copy `.env.example` to `.env` and fill every value. Keep
    `DURABLERUN_API_TOKEN` and `CRON_SECRET` distinct. The latter is the Bearer
@@ -19,13 +19,43 @@ migrator or receipt at another application's database.
    `DURABLERUN_API_TOKEN`, and `CRON_SECRET`), and deploy it. `api/*.ts` pins
    the Node.js runtime, while `vercel.json` forces npm to install this external
    example instead of selecting the enclosing repository's pnpm workspace. It
-   also gives each invocation 60 seconds, and the midnight-UTC recovery cron
-   stays within Vercel Hobby's once-daily limit.
+   gives each invocation 60 seconds and configures a minutely recovery cron.
+   The queue SDK uses Vercel's automatic OIDC credentials when deployed; there
+   is no additional service token. Queue operations and invocations use the
+   project's existing Vercel billing.
 4. Set `DURABLERUN_BASE_URL` locally to the HTTPS production URL and run
    `npm run receipt`. The receipt rejects a non-HTTPS destination before it
    constructs an authenticated request.
+5. Run `npm run receipt:unattended` against an otherwise idle dedicated queue.
+   It never sends a tick request: it commits a task without its producer hint,
+   observes cron/queue recovery, then enqueues another through the public API.
+   Both tasks must visibly sleep for ten seconds and complete within 60 seconds
+   of their database wake time, on user attempt one. Dropped-hint recovery must
+   finish within 120 seconds of enqueue. The full receipt has a 240-second
+   deadline and also checks that anonymous HTTP cannot invoke the private
+   queue consumer. These are measured receipt criteria, not provider SLAs.
 
-The four durablerun dependencies are immutable `v0.1.0-alpha.0` GitHub release
+The unattended JSON must be paired with provider request logs: a minutely cron
+could meet the 60-second threshold even if delayed queue delivery were broken.
+For the exact deployment and receipt window, collect `vercel logs --project
+durablerun-alpha --deployment <deployment-id> --since <start-ISO> --until
+<end-ISO> --limit 1000 --json`. Keep only `id`, `timestamp`, `deploymentId`,
+`requestMethod`, `requestPath`, and `responseStatusCode`; do not publish raw log
+messages or headers. Ensure the result covers the whole window without hitting
+the requested limit.
+
+For both receipt tasks, require a successful private `/api/wake` invocation
+during the durable-sleep-to-completion interval and no public `/api/tick`
+invocation in that interval. The sleep begins at `dueAtEpochMs - 10000`; its end
+is `completedAtEpochMs`, both from database state. The dropped-hint task should
+have a cron `/api/tick` before that interval to start its first pass. Run no
+other producers against the dedicated queue. If a cron overlaps either resume,
+the source is ambiguous: rerun the bounded receipt once and retain a trace that
+distinguishes queue delivery from cron. If attribution remains ambiguous, report
+that the automatic-progress check passed but queue-delivery proof is incomplete;
+do not call queue configuration or message counts a substitute for execution.
+
+The four durablerun dependencies are immutable `v0.1.0-alpha.1` GitHub release
 tarballs—there are no workspace links, source imports, registry credentials, or
 mutable branch references. A later npm release can replace only those four URLs
 with package versions.
@@ -49,7 +79,36 @@ fails closed before parsing or touching storage. The example composition also
 refuses construction when the API and cron credentials are equal.
 
 The enqueue and emit handlers ask Vercel `waitUntil` to run one inline tick as
-a lossy latency hint. Durable state is committed before that hint, and the
-once-daily cron tick remains the recovery path if the hint or an invocation is
-lost. The receipt drives authorized ticks explicitly, so it does not wait for
-the daily sweep.
+a lossy latency hint. Durable state is committed before that hint. Every tick
+then publishes an immediate follow-up when its bounded pass may have left work,
+or a delayed wake for the next database transition. An idle queue publishes
+nothing. A tick only acknowledges its queue delivery after this rearm succeeds;
+the private consumer retries failures after five seconds, with a 30-second
+visibility timeout. Duplicate wake messages are safe because database claims
+remain fenced.
+
+`HostedExampleConfig.scheduleWake` is optional and host-owned, just like auth.
+`src/wake.ts` implements it with Vercel Queues; another host can supply its own
+alarm provider without changing the driver or stores. Queue payloads identify
+the one configured queue, and the private receiver refuses other queues. The
+public tick endpoint still uses the authorization plugin. The provider callback
+uses a separate, private Vercel trigger—not a public auth bypass.
+
+Wake messages live for 24 hours. A single delay is capped at 23 hours, leaving
+an hour for retries; longer sleeps wake early and rearm from database state.
+There is no timestamp deduplication key because provider deduplication lasts
+past delivery and could suppress a later legitimate tick. Vercel delivers queue
+messages to the deployment that published them, so retain old deployments while
+their messages drain. The independent minutely cron recovers a completely lost
+producer hint or alarm publish; Vercel cron itself is best-effort and does not
+retry missed invocations. Hobby users can restore `0 0 * * *` for a daily
+backstop, but then the dropped-hint receipt's recovery bound does not apply.
+
+The original `npm run receipt` still drives authorized ticks explicitly for
+the earlier event and lost-launch checks; only `receipt:unattended` proves the
+new automatic wake path.
+
+Provider contracts: [queue setup and OIDC](https://vercel.com/docs/queues/quickstart),
+[delays and retries](https://vercel.com/docs/queues/sdk),
+[TTL and billing](https://vercel.com/docs/queues/pricing), and
+[cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing).

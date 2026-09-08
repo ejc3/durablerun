@@ -9,15 +9,17 @@
   "scripts": {
     "migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "receipt": "node --env-file-if-exists=.env --import tsx scripts/hosted-receipt.ts",
+    "receipt:unattended": "node --env-file-if-exists=.env --import tsx scripts/unattended-receipt.ts",
     "test": "node --import tsx --test test/*.node-test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@durablerun/core": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-core-0.1.0-alpha.0.tgz",
-    "@durablerun/driver": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-driver-0.1.0-alpha.0.tgz",
-    "@durablerun/sdk": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-sdk-0.1.0-alpha.0.tgz",
-    "@durablerun/store-libsql": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.0/durablerun-store-libsql-0.1.0-alpha.0.tgz",
-    "@vercel/functions": "3.9.5"
+    "@durablerun/core": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-core-0.1.0-alpha.1.tgz",
+    "@durablerun/driver": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-driver-0.1.0-alpha.1.tgz",
+    "@durablerun/sdk": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-sdk-0.1.0-alpha.1.tgz",
+    "@durablerun/store-libsql": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-store-libsql-0.1.0-alpha.1.tgz",
+    "@vercel/functions": "3.9.5",
+    "@vercel/queue": "0.5.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

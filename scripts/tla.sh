@@ -107,6 +107,14 @@ run_one() { # run_one <name> <cfg> <mem_mb> <workers> <extra...>
   report "$name" "$code" "$STATES/$name.log"
 }
 
+# The small hosted-delivery model supplies the fair tick invocations assumed
+# by Scheduler. Keep it on every existing scope without changing those scopes.
+wake_heap=$((TLA_HEAP_MB < 1024 ? TLA_HEAP_MB : 1024))
+wake_code=0
+tlc "$wake_heap" 2 -metadir "$STATES/wake-delivery" -config WakeDelivery.cfg \
+  WakeDelivery.tla >"$STATES/wake-delivery.log" 2>&1 || wake_code=$?
+report "hosted wake delivery" "$wake_code" "$STATES/wake-delivery.log" || exit 1
+
 # TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
 # FULL budget — for CI matrix jobs where each runner hosts one TLC process.
 # Concurrent groups on a 7 GB runner starve each other: the shared disk

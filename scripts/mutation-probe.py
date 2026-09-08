@@ -7863,7 +7863,11 @@ def run_typecheck(
     )
 
 
-VerdictOutcome = Literal["caught", "survived", "wrong-path"]
+VerdictOutcome = Literal["caught", "caught-with-collateral", "survived", "wrong-path"]
+
+
+def mutation_is_caught(outcome: object) -> bool:
+    return outcome in ("caught", "caught-with-collateral")
 
 
 def message_has_exact_marker(marker: str, message: str) -> bool:
@@ -7912,15 +7916,14 @@ def classify_verdict(
         if accept_suite_error and any(expected.marker in error for error in result.suite_errors):
             return "caught"
         return "wrong-path"
-    if not accept_collateral_assertion and len(result.assertions) != 1:
+    owners = [assertion for assertion in result.assertions if matcher(expected, assertion)]
+    if len(owners) != 1 or any(not assertion.messages for assertion in result.assertions):
         return "wrong-path"
-    if not accept_collateral_message and any(
-        len(assertion.messages) != 1 for assertion in result.assertions
-    ):
+    if not accept_collateral_message and len(owners[0].messages) != 1:
         return "wrong-path"
-    if any(matcher(expected, assertion) for assertion in result.assertions):
-        return "caught"
-    return "wrong-path"
+    if len(result.assertions) > 1 and not accept_collateral_assertion:
+        return "caught-with-collateral"
+    return "caught"
 
 
 QUESTION_DELTA_LIVE_ENROLLMENT_FAULT = "bypass-question-delta-live-enrollment"
@@ -8121,6 +8124,21 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             return_transport_as_domain=True,
         )
 
+    collateral_assertions = tuple(
+        FailedAssertion(
+            f"packages/other/test/collateral-{index}.test.ts",
+            f"collateral test {index} preserves its full title",
+            (
+                f"AssertionError: collateral {index} " + "detail " * 40 + "end of message",
+                f"Error: collateral {index} second message\nwith another line",
+            ),
+        )
+        for index in range(4)
+    )
+    owner_with_collateral = SuiteResult(
+        False, False, (*failed().assertions, *collateral_assertions), (), ""
+    )
+
     matcher = assertion_matches
     options: dict[str, bool] = {}
     if fault == "ignore-file":
@@ -8255,6 +8273,42 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                         ("AssertionError: unrelated collateral failure",),
                     ),
                 ),
+                (),
+                "",
+            ),
+            expected,
+            "caught-with-collateral",
+        ),
+        (
+            "matching owner alongside every collateral message",
+            owner_with_collateral,
+            expected,
+            "caught-with-collateral",
+        ),
+        (
+            "matching owner alongside a collateral with no failure messages",
+            SuiteResult(
+                False,
+                False,
+                (*failed().assertions, FailedAssertion("other.test.ts", "missing diagnostic", ())),
+                (),
+                "",
+            ),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "collateral failures without the registered owner",
+            SuiteResult(False, False, collateral_assertions, (), ""),
+            expected,
+            "wrong-path",
+        ),
+        (
+            "wrong owner alongside collateral failures",
+            SuiteResult(
+                False,
+                False,
+                (*failed(name="a different owner").assertions, *collateral_assertions),
                 (),
                 "",
             ),
@@ -9478,6 +9532,11 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
         got = classify_verdict(result, verdict, matcher, **options)
         if got != wanted:
             failures.append(f"{label}: expected {wanted}, got {got}")
+    collateral_detail = suite_failure_detail(owner_with_collateral)
+    for assertion in owner_with_collateral.assertions:
+        for evidence in (assertion.file, assertion.full_name, *assertion.messages):
+            if evidence not in collateral_detail:
+                failures.append(f"collateral transcript dropped evidence: {evidence!r}")
     live_enrollment_faults = (
         QUESTION_DELTA_LIVE_ENROLLMENT_FAULT,
         TYPESCRIPT_MUTANT_SYNTAX_LIVE_ENROLLMENT_FAULT,
@@ -9540,7 +9599,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
     return 0
 
 
-MutationRunOutcome = Literal["caught", "survived", "wrong-path", "stale"]
+MutationRunOutcome = Literal["caught", "caught-with-collateral", "survived", "wrong-path", "stale"]
 
 
 @dataclass(frozen=True)
@@ -10007,7 +10066,7 @@ def validate_mutation_report(
             or not isinstance(row["mutated_sha256"], str)
         ):
             raise ValueError(f"worker mutation result metadata has invalid types for {name}")
-        if row["outcome"] not in ("caught", "survived", "wrong-path", "stale"):
+        if row["outcome"] not in ("caught", "caught-with-collateral", "survived", "wrong-path", "stale"):
             raise ValueError(f"worker mutation result has an invalid outcome for {name}")
         if not isinstance(row["detail"], str):
             raise ValueError(f"worker mutation result has a non-string detail for {name}")
@@ -10034,7 +10093,7 @@ def validate_mutation_report(
             )
     expected_returncode = (
         0
-        if len(seen) == len(expected) and all(row["outcome"] == "caught" for row in known_rows)
+        if len(seen) == len(expected) and all(mutation_is_caught(row["outcome"]) for row in known_rows)
         else 1
     )
     if (
@@ -10683,6 +10742,32 @@ def orchestration_self_test(fault: str | None = None) -> int:
         )
     except ValueError as error:
         failures.append(f"valid report rejected: {error}")
+
+    for outcome, returncode in (("caught-with-collateral", 0), ("wrong-path", 1)):
+        rows = [mutation_result_row(item, outcome, "full failure evidence") for item in assigned]
+        payload = mutation_report_payload(
+            head="a" * 40,
+            nonce="fixture-nonce",
+            worker_id=2,
+            assigned=assigned,
+            results=rows,
+            complete=True,
+        )
+        try:
+            observed = validate_mutation_report(
+                payload,
+                head="a" * 40,
+                nonce="fixture-nonce",
+                worker_id=2,
+                expected=assigned,
+                process_returncode=returncode,
+            )
+            if observed != rows:
+                failures.append(f"{outcome}: report changed the recorded evidence")
+        except ValueError as error:
+            failures.append(f"{outcome}: valid report rejected: {error}")
+        if may_publish_success(returncode, rows) != (returncode == 0):
+            failures.append(f"{outcome}: incorrect final success decision")
 
     def expect_rejected(
         label: str,
@@ -11529,14 +11614,14 @@ def read_json(path: Path) -> object:
 
 def suite_failure_detail(result: SuiteResult) -> str:
     observed = [
-        f"{failure.file} > {failure.full_name}: "
-        f"{next(iter(failure.messages), '(no failure message)')[:180]}"
-        for failure in result.assertions[:3]
+        f"{failure.file} > {failure.full_name}:\n"
+        + "\n".join(failure.messages or ("(no failure message)",))
+        for failure in result.assertions
     ]
-    observed.extend(error[:180] for error in result.suite_errors[:3])
+    observed.extend(result.suite_errors)
     if not observed and result.diagnostic:
-        observed.append(result.diagnostic[:180])
-    return "; ".join(observed) if observed else "(no structured failure)"
+        observed.append(result.diagnostic)
+    return "\n".join(observed) if observed else "(no structured failure)"
 
 
 def execute_mutation(
@@ -11794,7 +11879,7 @@ def worker_phase(
                 complete=len(rows) == len(assigned),
             ),
         )
-    return 0 if all(row["outcome"] == "caught" for row in rows) else 1
+    return 0 if all(mutation_is_caught(row["outcome"]) for row in rows) else 1
 
 
 def routing_self_test(fault: str | None = None) -> int:
@@ -12771,7 +12856,7 @@ def may_publish_success(
     return (
         (result_code == 0 or publish_after_infrastructure)
         and bool(rows)
-        and all(row.get("outcome") == "caught" for row in rows)
+        and all(mutation_is_caught(row.get("outcome")) for row in rows)
     )
 
 
@@ -13887,7 +13972,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
                 raise RuntimeError("aggregate result ordinals do not match the selection")
             rows = [by_ordinal[item.ordinal] for item in expected]
             result_code = (
-                0 if all(row["outcome"] == "caught" for row in rows) else 1
+                0 if all(mutation_is_caught(row["outcome"]) for row in rows) else 1
             )
         except AuditSignal as error:
             interrupted = error
@@ -13949,13 +14034,18 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
         for row in rows:
             if row["outcome"] == "caught":
                 print(f"  ok {row['name']}: {row['detail']}")
+            elif row["outcome"] == "caught-with-collateral":
+                print(
+                    f"  ok {row['name']}: CAUGHT-WITH-COLLATERAL — "
+                    f"{row['expected']}\n{row['detail']}"
+                )
             else:
                 print(
                     f"  !! {row['name']}: {str(row['outcome']).upper()} — "
                     f"{row['detail']}"
                 )
         print()
-        failures = [row for row in rows if row["outcome"] != "caught"]
+        failures = [row for row in rows if not mutation_is_caught(row["outcome"])]
         if failures:
             print(
                 f"{len(failures)} mutation(s) were not caught by their attributable verdict:"
@@ -13970,8 +14060,11 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
                 file=sys.stderr,
             )
             return 2
+        collateral_count = sum(row["outcome"] == "caught-with-collateral" for row in rows)
         print(
-            f"every mutation was caught by its attributable verdict at {head}"
+            f"every mutation was caught by its attributable verdict at {head} "
+            f"({len(rows) - collateral_count} exact-only, "
+            f"{collateral_count} with collateral failures)"
         )
         return result_code
     finally:
