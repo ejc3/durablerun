@@ -33,9 +33,15 @@ validated by that run.
 
 ## Current milestone — unattended hosted workflow
 
-**Status: IN PROGRESS.** One real hosted workflow must wake and complete without
-an operator or receipt issuing ticks. The first hosted alpha below remains
-complete; this milestone adds timely autonomous progress, not another engine.
+**Status: COMPLETE (2026-09-08). Paused at this milestone.** Both hosted sleep
+workflows completed on attempt one without manual ticks: normal resume took
+576 ms after due time; the deliberately dropped enqueue hint recovered through
+cron and resumed 620 ms after due time, completing within 51,946 ms of enqueue.
+The [redacted alpha.1 receipt](receipts/hosted-alpha-v0.1.0-alpha.1.json) binds
+the immutable package hashes, corrected example, deployment, and both outcomes.
+Its [complete sanitized provider trace](receipts/hosted-alpha-v0.1.0-alpha.1-provider-requests.ndjson)
+proves private queue delivery for both resumes, with no public tick during
+either sleep-to-completion interval. No new implementation milestone is opened.
 
 **Exit test:** deploy the one-queue Vercel/Turso example, enqueue a short sleep,
 observe its durable suspension, then observe completion no more than 60 seconds
@@ -46,15 +52,23 @@ The latency threshold is acceptance evidence, not an unconditional provider SLA.
 
 **Live delivery ownership:**
 
-- **PRH.3 unattended hosted progress — IN PROGRESS:** a small host-supplied wake
-  scheduling port, verified additive alarm/recovery behavior, one Vercel Queues
-  adapter, and a minutely recovery cron on the existing Pro project. Public
-  authorization remains host-owned; queue callbacks remain provider-private.
-- **PRA.1 release audit closure — IN PROGRESS:** resolve exact-owner-plus-
-  collateral classification in issue #18, then run the full mutation audit in
-  issue #17 on the release candidate/main evidence before another tagged release.
-  Preserve exact ownership and complete collateral diagnostics; do not expand
-  the audit framework beyond this observed blocker.
+- **PRH.3 unattended hosted progress — DONE:** [PR #22](https://github.com/ejc3/durablerun/pull/22)
+  merged the pluggable wake scheduler, Vercel Queues adapter, and independent
+  minutely recovery cron. Public authorization remains host-owned and queue
+  callbacks provider-private. The subsequent provider build exposed an
+  overlapping function selector, recorded in
+  [the function-selection postmortem](postmortems/hosted-2026-09-08-function-selection.md).
+  Deploy the [corrected example at `289cd7c`](https://github.com/ejc3/durablerun/tree/289cd7cc7bf5607652b20531c46507c7c4a2e19b/examples/vercel-turso):
+  the immutable alpha.1 tag retains the old example configuration, while its
+  four package assets are unchanged. The corrected production deployment and
+  both unattended receipts passed.
+- **PRA.1 release audit closure — DONE:** [#18](https://github.com/ejc3/durablerun/issues/18)
+  preserves exact mutation ownership and complete collateral diagnostics.
+  The [full audit in #17](https://github.com/ejc3/durablerun/issues/17#issuecomment-5587332479)
+  passed all 423 entries (409 exact-only, 14 with collateral, zero blocking)
+  on clean `e8a6bb4`, whose tree equals merged `a9527cf`. The disposable
+  PostgreSQL fixture was stopped with durability settings on; both issues are
+  closed. No source-identical full audit was repeated for release packaging.
 
 **Non-goals:** new SQL transitions, persistent alarm ownership/deduplication,
 detached workers, a resident driver, another cloud account, a UI, multiple queues,
@@ -72,12 +86,13 @@ release passed a clean external install and the live Vercel/Turso exit test.
 The [redacted hosted-alpha receipt](receipts/hosted-alpha-v0.1.0-alpha.0.json)
 retains the source commit, package hashes, deployment, and outcome evidence.
 
-The full pre-release mutation audit in
-[#17](https://github.com/ejc3/durablerun/issues/17) remains outstanding:
-`v0.1.0-alpha.0` was published without that sweep. The closeout in
+`v0.1.0-alpha.0` was published without the full pre-release mutation sweep.
+The closeout in
 [PR #21](https://github.com/ejc3/durablerun/pull/21) records the explicit alpha
-exception, not a completed audit. Both that audit and the classifier follow-up
-in [#18](https://github.com/ejc3/durablerun/issues/18) remain open.
+exception, not a retroactively completed audit. The follow-up audit in
+[#17](https://github.com/ejc3/durablerun/issues/17) and classifier repair in
+[#18](https://github.com/ejc3/durablerun/issues/18) were completed before the
+alpha.1 closeout above; the historical alpha.0 exception remains disclosed.
 
 The default product thesis remains a Turso-first TypeScript durable-workflow
 engine. The historical phase inventory below is an options map, not permission
@@ -623,7 +638,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     pre-existing relative-only timestamp mutants as wrong-path because the new
     shape control also failed. Green `1d005de` rewrites their relative `CASE`
     arm without changing the compiled wake signature, and both focused audits
-    are exact. A clean final-head 423/423 audit is still the final mutation gate.
+    are exact. The subsequent [clean release-head full audit](https://github.com/ejc3/durablerun/issues/17#issuecomment-5587332479)
+    caught all 423 entries: 409 exact-only and 14 with retained collateral
+    failures, with zero blocking results.
 
     This is not a same-process JavaScript sandbox. Application handlers share
     the worker realm and are trusted not to mutate unrelated host/driver

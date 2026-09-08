@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -38,10 +38,17 @@ test('configuration installs the external app and gives its private queue a cron
   const config = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')) as {
     installCommand?: unknown
     crons?: unknown
-    functions: Record<string, { experimentalTriggers?: unknown }>
+    functions: Record<string, { maxDuration?: unknown; experimentalTriggers?: unknown }>
   }
   assert.equal(config.installCommand, 'npm install')
   assert.deepEqual(config.crons, [{ path: '/api/tick', schedule: '* * * * *' }])
+  const routes = readdirSync(new URL('../api/', import.meta.url))
+    .filter((file) => file.endsWith('.ts'))
+    .map((file) => `api/${file}`)
+    .sort()
+  // Exact entries cannot shadow a later route under Vercel's first-match rule.
+  assert.deepEqual(Object.keys(config.functions).sort(), routes)
+  for (const route of routes) assert.equal(config.functions[route]?.maxDuration, 60)
   assert.deepEqual(config.functions['api/wake.ts']?.experimentalTriggers, [
     { type: 'queue/v2beta', topic: WAKE_TOPIC, retryAfterSeconds: 5 },
   ])
