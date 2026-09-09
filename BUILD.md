@@ -31,9 +31,37 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — unattended hosted workflow
+## Current milestone — a useful hosted PR-check watcher
 
-**Status: COMPLETE (2026-09-08). Paused at this milestone.** Both hosted sleep
+**Status: IN PROGRESS (2026-09-09).** The unattended host is complete; this
+milestone makes it useful to a consumer without changing the engine. One
+implementation PR adds `watch-pr-checks` to the independently installable
+Vercel/Turso example, using the four existing alpha.1 release packages.
+
+**Exit test:** from a clean external install, watch an exact real GitHub PR
+head while selected checks are pending, checkpoint that observation, interrupt
+the invocation, and let the deployed host recover and persist an inspectable
+ready/failed result without manual ticks. Retain the exact input, deployment,
+checkpoint/recovery counters, terminal observation, and package provenance.
+The result describes selected checks at an observed commit, not mergeability.
+No multi-day soak is required.
+
+**Critical path:** implement the bounded read-only GitHub observer and durable
+polling task; validate interruption/replay and fail-closed check selection at
+the consumer layer; deploy a clean external app and run the real receipt;
+review, merge green, and pause. Work may be parallelized in isolated worktrees,
+but only one outcome-bearing PR is in flight. Fix only onboarding or operation
+friction observed on this path.
+
+**Non-goals:** automatic merges, notifications, a UI, branch-protection policy
+discovery, private-repository credential provisioning, new engine protocols or
+SQL, MySQL, sharding, sagas, and new global assurance machinery. Existing auth
+and wake-provider ports remain unchanged. Polling is bounded and configurable;
+the receipt measures recovery, not a provider latency SLA.
+
+## Completed milestone — unattended hosted workflow
+
+**Status: COMPLETE (2026-09-08).** Both hosted sleep
 workflows completed on attempt one without manual ticks: normal resume took
 576 ms after due time; the deliberately dropped enqueue hint recovered through
 cron and resumed 620 ms after due time, completing within 51,946 ms of enqueue.
@@ -41,7 +69,8 @@ The [redacted alpha.1 receipt](receipts/hosted-alpha-v0.1.0-alpha.1.json) binds
 the immutable package hashes, corrected example, deployment, and both outcomes.
 Its [complete sanitized provider trace](receipts/hosted-alpha-v0.1.0-alpha.1-provider-requests.ndjson)
 proves private queue delivery for both resumes, with no public tick during
-either sleep-to-completion interval. No new implementation milestone is opened.
+either sleep-to-completion interval. The next consumer milestone is above;
+this completed host is not being reopened.
 
 **Exit test:** deploy the one-queue Vercel/Turso example, enqueue a short sleep,
 observe its durable suspension, then observe completion no more than 60 seconds

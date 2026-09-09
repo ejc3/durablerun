@@ -291,7 +291,7 @@ describe('TLA tool artifact', () => {
     expect(readme).toContain('smtp-1.6.8-sources.jar')
   })
 
-  it('keeps milestone guidance aligned with unattended hosting and actual dogfood cadence', async () => {
+  it('keeps one milestone owner and the actual historical dogfood cadence', async () => {
     const build = await readFile(join(repoRoot, 'BUILD.md'), 'utf8')
     const agents = await readFile(join(repoRoot, 'AGENTS.md'), 'utf8')
 
@@ -299,7 +299,9 @@ describe('TLA tool artifact', () => {
     const normalizedAgents = agents.replace(/\s+/g, ' ')
     expect(normalizedBuild).toContain('15** 12-hour cycles')
     expect(normalizedBuild).toContain('Hourly ticks launched those cycles')
-    expect(normalizedBuild).toContain('Current milestone — unattended hosted workflow')
-    expect(normalizedAgents).toContain('The current milestone adds unattended sleep/resume')
+    expect(build.match(/^## Current milestone — /gm)).toHaveLength(1)
+    expect(normalizedAgents).toContain(
+      'BUILD.md alone names the current milestone and its exit test',
+    )
   })
 })
