@@ -161,8 +161,10 @@ the later completed CLI review found R3, not a fix-induced defect.
 - The probes above disconfirm that fixture IDs cover numeric width or that
   the status matrix proves every cleanup path. Unchanged native controls
   also disconfirm that detached cleanup inherently loses received headers.
-- Hosted acceptance remains the separate current exit test in BUILD.md;
-  this observer repair and its local tests do not claim the real watch passed.
+- Hosted acceptance was a separate exit test, not inferred from these tests.
+  The subsequently completed [live receipt](../receipts/hosted-pr-watcher-2026-09-09.json)
+  records the pending-to-ready watch and unattended interruption recovery;
+  BUILD.md owns that milestone verdict.
 
 ## Root cause
 
@@ -200,5 +202,5 @@ Deferred (recorded in BUILD.md):
 An ID-width truncation or status-specific return to awaited cleanup could
 still pass the checked-in matrices, as the specimens demonstrate. Unchanged
 cleanup handles rejection/stalling, and generated requests retain identity
-containment; neither proves GitHub-wide semantic completeness. Hosted recovery
-still requires the independent milestone receipt in BUILD.md.
+containment; neither proves GitHub-wide semantic completeness. The independent
+hosted receipt proves one real recovery, not exhaustive provider behavior.

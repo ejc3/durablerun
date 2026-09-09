@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/ejc3/durablerun",
+    "reviewedTree": "1f46fa196c6b44fc818a7c7ae2dbeca8be3151fb",
+    "exampleSubtree": "6fa541edfde60452828bbc14b45feac7ebc80d35",
+    "matchedTrackedFiles": 27,
+    "externalInstall": "Fresh git archive of examples/vercel-turso; npm install from immutable public release URLs; typecheck and all 59 tests passed.",
+    "packageLockSha256": "dfc75444e1673c0d5198eee1aa7143e921796e503a67624b39055bbeebb841e9",
+    "commit": "f460c2d87c93190456e399a27fdc8a29d8e6b35c"
+  },
+  "deployment": {
+    "id": "dpl_BpueTTkjygx4KJjG7V7ZgnJfKH19",
+    "project": "durablerun-alpha",
+    "url": "https://durablerun-alpha-nd82nq54m-ejc3-7031s-projects.vercel.app",
+    "stableUrl": "https://durablerun-alpha.vercel.app",
+    "readyState": "READY",
+    "target": "production",
+    "authorizationPreflight": {
+      "anonymousInspectStatus": 401,
+      "authorizedMissingTaskStatus": 404
+    },
+    "configurationChanges": "None: existing production secrets, authorization ports, private queue, five function selectors, and minutely recovery cron retained."
+  },
+  "packages": [
+    {
+      "name": "@durablerun/core",
+      "version": "0.1.0-alpha.1",
+      "url": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-core-0.1.0-alpha.1.tgz",
+      "sha256": "a342d4f4323496b55a58cc21b872fccdea9e4b60be9222334aabbd5879b053ed",
+      "integrity": "sha512-U7pJatdGdX5XP4T01eYO2NT/OCbxLNgRPQFFmBqbBylUonA8TVcTpmhn/0AnIxKgDgp/KRCJZKOyS3IQgnzAng=="
+    },
+    {
+      "name": "@durablerun/driver",
+      "version": "0.1.0-alpha.1",
+      "url": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-driver-0.1.0-alpha.1.tgz",
+      "sha256": "181e096a96c0b4fdf2f8cded26adc94b84c61b6391ecf542947e1892d08dbbea",
+      "integrity": "sha512-mcXY14uBvkxlDvRjOB9V1B24f5Y2IueUK270YEW9e81DPooSA/vKoC0bdmgfcUPd2gXkxzrJZ3y6XL/o5Oyn/Q=="
+    },
+    {
+      "name": "@durablerun/sdk",
+      "version": "0.1.0-alpha.1",
+      "url": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-sdk-0.1.0-alpha.1.tgz",
+      "sha256": "f8c8441590a33de4d2744e15143c460ba5713e4ec03a8a422c11d443af365ba7",
+      "integrity": "sha512-KlyyghqNIg6Ao5NFucFyi/XESdJ2vMNoxXl1ml/C43ELwS3NfT1o9Gla3xgWhw/QVFoG2t6Qza0kAQbMUNr7nw=="
+    },
+    {
+      "name": "@durablerun/store-libsql",
+      "version": "0.1.0-alpha.1",
+      "url": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-store-libsql-0.1.0-alpha.1.tgz",
+      "sha256": "d5a53ce6d571c33b495fbcf395106af9f47d12f6b565ecb52d00233235ad821d",
+      "integrity": "sha512-TkjWfZyF0cD22+AFq01zGm9J8BVh3yvrFQs5zPBLMvUw0b+3UvJCe2lntxegHMcmPE3wMdNG1y317ZjZk7YUnQ=="
+    }
+  ],
+  "claimLimits": [
+    "This receipt checks selected checks at an observed exact head; it does not establish mergeability or prevent later reruns.",
+    "Recovery may use the existing private wake callback or independent cron. This receipt does not claim queue-versus-cron attribution.",
+    "Package SHA-256 hashes retain the alpha.1 release evidence; fresh npm installation verified the listed integrity values. No packages were republished."
+  ],
+  "receipt": {
+    "ok": true,
+    "startedAt": "2026-09-09T02:47:14.452Z",
+    "finishedAt": "2026-09-09T02:48:56.873Z",
+    "taskId": "01a0840f-fd99-7a12-84fc-0f5a0ce58c01",
+    "input": {
+      "repository": "ejc3/durablerun",
+      "pullNumber": 24,
+      "headSha": "54bf8db5726548234dd06f0c9c87da1864d052f0",
+      "checks": [
+        {
+          "kind": "check-run",
+          "name": "tla",
+          "appId": 15368
+        }
+      ],
+      "maxPolls": 10,
+      "intervalSeconds": 60
+    },
+    "manualTicks": 0,
+    "interrupted": {
+      "exitCode": 77,
+      "runId": "01a0840f-fd99-7f2d-aeaa-d304b81e8409",
+      "activatedRunObserved": true,
+      "leaseExpiresAtEpochMs": 1788922066990,
+      "checkpoint": {
+        "kind": "observed",
+        "observedAt": "2026-09-09T02:47:16.952Z",
+        "headSha": "54bf8db5726548234dd06f0c9c87da1864d052f0",
+        "state": "open",
+        "checks": [
+          {
+            "kind": "check-run",
+            "name": "tla",
+            "appId": 15368,
+            "state": "pending"
+          }
+        ]
+      }
+    },
+    "recovered": {
+      "runId": "01a08410-7d74-7c2d-8044-da3cf637d873",
+      "runAttempt": 2,
+      "infraRetries": 1,
+      "userAttempt": 1,
+      "userFailures": 0,
+      "originalCheckpointUnchanged": true,
+      "completedAtEpochMs": 1788922135043,
+      "result": {
+        "status": "ready",
+        "repository": "ejc3/durablerun",
+        "pullNumber": 24,
+        "headSha": "54bf8db5726548234dd06f0c9c87da1864d052f0",
+        "polls": 2,
+        "latest": {
+          "kind": "observed",
+          "observedAt": "2026-09-09T02:48:55.009Z",
+          "headSha": "54bf8db5726548234dd06f0c9c87da1864d052f0",
+          "state": "open",
+          "checks": [
+            {
+              "kind": "check-run",
+              "name": "tla",
+              "appId": 15368,
+              "state": "passed"
+            }
+          ]
+        },
+        "attempt": 1
+      }
+    },
+    "limits": {
+      "receiptTimeoutMs": 900000
+    }
+  }
+}

@@ -33,10 +33,16 @@ validated by that run.
 
 ## Current milestone — a useful hosted PR-check watcher
 
-**Status: IN PROGRESS (2026-09-09).** The unattended host is complete; this
-milestone makes it useful to a consumer without changing the engine. One
-implementation PR adds `watch-pr-checks` to the independently installable
-Vercel/Turso example, using the four existing alpha.1 release packages.
+**Status: COMPLETE; pause after green merge (2026-09-09).** The clean external
+Vercel/Turso app watched PR #24's exact head while its selected `tla` check was
+pending, checkpointed the observation, and survived a deliberately killed
+invocation. The deployed host persisted `ready` after two observations in
+102,421 ms, with zero manual ticks, exactly one infrastructure retry, zero user
+failures, and user attempt one. The original checkpoint was unchanged. The
+[redacted receipt](receipts/hosted-pr-watcher-2026-09-09.json) binds the exact
+input, source, deployment, four unchanged alpha.1 packages, and recovery result.
+This proves selected-check completion and unattended recovery, not mergeability
+or which recovery provider delivered a particular wake.
 
 **Exit test:** from a clean external install, watch an exact real GitHub PR
 head while selected checks are pending, checkpoint that observation, interrupt
@@ -46,12 +52,11 @@ checkpoint/recovery counters, terminal observation, and package provenance.
 The result describes selected checks at an observed commit, not mergeability.
 No multi-day soak is required.
 
-**Critical path:** implement the bounded read-only GitHub observer and durable
-polling task; validate interruption/replay and fail-closed check selection at
-the consumer layer; deploy a clean external app and run the real receipt;
-review, merge green, and pause. Work may be parallelized in isolated worktrees,
-but only one outcome-bearing PR is in flight. Fix only onboarding or operation
-friction observed on this path.
+**Closeout:** the bounded read-only observer, durable polling task, generated
+interruption/replay and fail-closed selection tests, clean external deployment,
+and live receipt are complete in [PR #24](https://github.com/ejc3/durablerun/pull/24).
+Finish its required review and CI, merge green, then pause. Do not start another
+milestone or reopen source-identical proof work during that wait.
 
 **Non-goals:** automatic merges, notifications, a UI, branch-protection policy
 discovery, private-repository credential provisioning, new engine protocols or
