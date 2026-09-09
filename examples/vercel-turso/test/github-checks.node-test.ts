@@ -148,6 +148,25 @@ function unavailable(result: PrWatchObservation, reason: string, retryable = fal
   assert.deepEqual(result, { kind: 'unavailable', observedAt: OBSERVED_AT, reason, retryable })
 }
 
+test('a repository identity change cannot attach the old checks to a replacement repository', async () => {
+  unavailable(
+    await observe([
+      pull(),
+      page('check-runs', [run()]),
+      page('statuses', [status()]),
+      {
+        url: PULL_URL,
+        response: Response.json({
+          head: { sha: SHA },
+          state: 'open',
+          base: { repo: { id: 54321 } },
+        }),
+      },
+    ]),
+    'github-repository-changed',
+  )
+})
+
 test('exact-SHA requests keep check and status namespaces separate and exhaust both page links', async () => {
   const result = await observe([
     pull(),
@@ -667,6 +686,17 @@ test(
     assert.equal(cancellations, 1)
   },
 )
+
+test('headerless secondary-rate-limit 403 remains retryable despite remaining primary quota', async () => {
+  const response = Response.json(
+    {
+      message:
+        'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+    },
+    { status: 403, headers: { 'x-ratelimit-remaining': '42' } },
+  )
+  unavailable(await observe([{ url: PULL_URL, response }]), 'github-http-403', true)
+})
 
 test('rate-limit status and header matrix preserves provider delays and bounded retryability', async () => {
   const cases: { code: number; headers: Record<string, string>; delay?: number }[] = [

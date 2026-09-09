@@ -3,6 +3,8 @@ import type { TaskContext } from '@durablerun/sdk'
 
 export const PR_WATCHER_TASK = 'watch-pr-checks'
 export const PR_WATCHER_OBSERVATION_STEP = 'github-checks'
+export const PR_WATCHER_MIN_INTERVAL_SECONDS = 60
+export const PR_WATCHER_MAX_DELAY_SECONDS = 3_600
 
 export type PrCheckSelector =
   | { kind: 'check-run'; name: string; appId: number }
@@ -102,9 +104,9 @@ export function parsePrWatchInput(params: unknown): PrWatchInput {
     maxPolls: integer('maxPolls', value.maxPolls === undefined ? 10 : value.maxPolls, 1, 30),
     intervalSeconds: integer(
       'intervalSeconds',
-      value.intervalSeconds === undefined ? 60 : value.intervalSeconds,
-      60,
-      3_600,
+      value.intervalSeconds === undefined ? PR_WATCHER_MIN_INTERVAL_SECONDS : value.intervalSeconds,
+      PR_WATCHER_MIN_INTERVAL_SECONDS,
+      PR_WATCHER_MAX_DELAY_SECONDS,
     ),
   }
 }
@@ -164,7 +166,10 @@ export function createPrWatcher(
         latest.kind === 'unavailable'
           ? Math.max(
               latest.retryAfterSeconds ?? 0,
-              Math.min(3_600, input.intervalSeconds * 2 ** (unavailableStreak - 1)),
+              Math.min(
+                PR_WATCHER_MAX_DELAY_SECONDS,
+                input.intervalSeconds * 2 ** (unavailableStreak - 1),
+              ),
             )
           : input.intervalSeconds
       await ctx.sleepFor(delay)

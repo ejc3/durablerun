@@ -1,4 +1,6 @@
 import {
+  PR_WATCHER_MAX_DELAY_SECONDS,
+  PR_WATCHER_MIN_INTERVAL_SECONDS,
   type PrCheckObservation,
   type PrWatchObservation,
   parsePrWatchInput,
@@ -39,13 +41,18 @@ function integer(value: unknown): number {
   return value
 }
 
-function pull(value: unknown): { headSha: string; state: 'open' | 'closed' } {
+function pull(value: unknown): { headSha: string; state: 'open' | 'closed'; repositoryId: number } {
   const row = record(value)
   const headSha = text(record(row.head).sha)
-  if (!/^[a-f0-9]{40}$/.test(headSha) || (row.state !== 'open' && row.state !== 'closed')) {
+  const repositoryId = integer(record(record(row.base).repo).id)
+  if (
+    repositoryId === 0 ||
+    !/^[a-f0-9]{40}$/.test(headSha) ||
+    (row.state !== 'open' && row.state !== 'closed')
+  ) {
     throw new ObservationError('malformed-github-response')
   }
-  return { headSha, state: row.state }
+  return { headSha, state: row.state, repositoryId }
 }
 
 /** A bounded read-only snapshot, never a merge authorization or a cached-green fallback. */
@@ -73,7 +80,8 @@ export async function observeGitHubChecks(
       signal,
     })
     if (!response.ok) {
-      await response.body?.cancel()
+      // Optional body disposal cannot delay or replace the received status.
+      void response.body?.cancel().catch(() => {})
       const retryAfter = response.headers.get('retry-after')
       const exhausted = response.headers.get('x-ratelimit-remaining') === '0'
       const limited =
@@ -88,11 +96,15 @@ export async function observeGitHubChecks(
               : (retryEpoch - now()) / 1000
             : exhausted && reset > 0
               ? reset - now() / 1000
-              : 60
-        if (!Number.isFinite(delay) || delay > 3600) {
+              : PR_WATCHER_MIN_INTERVAL_SECONDS
+        if (!Number.isFinite(delay) || delay > PR_WATCHER_MAX_DELAY_SECONDS) {
           throw new ObservationError('github-rate-limit-requires-later-watch')
         }
-        throw new ObservationError('github-rate-limited', true, Math.max(60, Math.ceil(delay)))
+        throw new ObservationError(
+          'github-rate-limited',
+          true,
+          Math.max(PR_WATCHER_MIN_INTERVAL_SECONDS, Math.ceil(delay)),
+        )
       }
       throw new ObservationError(`github-http-${response.status}`, response.status >= 500)
     }
@@ -106,7 +118,11 @@ export async function observeGitHubChecks(
     return { value, links: response.headers.get('link') }
   }
 
-  async function pages(path: string, checks: boolean): Promise<Record<string, unknown>[]> {
+  async function pages(
+    path: string,
+    checks: boolean,
+    repositoryId: number,
+  ): Promise<Record<string, unknown>[]> {
     const rows: Record<string, unknown>[] = []
     const seenIds = new Set<number>()
     let expectedTotal: number | undefined
@@ -157,6 +173,11 @@ export async function observeGitHubChecks(
       // to a different origin, repository, commit, filter, or page sequence.
       const expected = new URL(url)
       expected.searchParams.set('page', String(page + 1))
+      // GitHub canonicalizes pagination to the PR's numeric base repository.
+      // Normalize that bound alias; still issue only locally generated URLs.
+      if (next.pathname === path.replace(root, `/repositories/${repositoryId}`)) {
+        next.pathname = url.pathname
+      }
       next.searchParams.sort()
       expected.searchParams.sort()
       if (next.href !== expected.href) throw new ObservationError('malformed-github-pagination')
@@ -165,15 +186,17 @@ export async function observeGitHubChecks(
   }
 
   try {
-    const initial = pull((await get(new URL(`${root}/pulls/${input.pullNumber}`, API))).value)
+    const { repositoryId, ...initial } = pull(
+      (await get(new URL(`${root}/pulls/${input.pullNumber}`, API))).value,
+    )
     if (initial.headSha !== input.headSha || initial.state === 'closed') {
       return { kind: 'observed', observedAt: observedAt(), ...initial, checks: [] }
     }
     const runs = input.checks.some((check) => check.kind === 'check-run')
-      ? await pages(`${root}/commits/${input.headSha}/check-runs`, true)
+      ? await pages(`${root}/commits/${input.headSha}/check-runs`, true, repositoryId)
       : []
     const statuses = input.checks.some((check) => check.kind === 'status')
-      ? await pages(`${root}/commits/${input.headSha}/statuses`, false)
+      ? await pages(`${root}/commits/${input.headSha}/statuses`, false, repositoryId)
       : []
     const checks: PrCheckObservation[] = input.checks.map((selector) => {
       if (selector.kind === 'status') {
@@ -224,7 +247,10 @@ export async function observeGitHubChecks(
       }
       return { ...selector, state: run.conclusion === 'success' ? 'passed' : 'failed' }
     })
-    const final = pull((await get(new URL(`${root}/pulls/${input.pullNumber}`, API))).value)
+    const { repositoryId: finalRepositoryId, ...final } = pull(
+      (await get(new URL(`${root}/pulls/${input.pullNumber}`, API))).value,
+    )
+    if (finalRepositoryId !== repositoryId) throw new ObservationError('github-repository-changed')
     return {
       kind: 'observed',
       observedAt: observedAt(),
