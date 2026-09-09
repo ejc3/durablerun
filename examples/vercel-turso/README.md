@@ -163,7 +163,11 @@ pull requests, checks, and commit statuses. Never put that token in task params
 or results. Rate-limit and service failures cannot turn an unknown check green.
 Consecutive transient errors back off to at most one hour, respecting a server
 retry delay within that bound. A longer requested delay ends this watch as
-unavailable. Public access permits only 60 requests per hour per IP; a poll
+unavailable. GitHub can return a secondary rate limit as 403 without retry
+headers, so ambiguous 403s retry within the same budget, preserving their status
+without parsing error messages. A genuine permission-related 403 therefore also
+uses the budget before returning unavailable; 401/404 stop immediately. Public
+access permits only 60 requests per hour per IP; a poll
 normally needs three or four requests. Use a scoped token for sustained use.
 The observer limits each endpoint to five pages of 100 rows and never treats
 truncated or changing pagination as success.

@@ -59,6 +59,10 @@ SQL, MySQL, sharding, sagas, and new global assurance machinery. Existing auth
 and wake-provider ports remain unchanged. Polling is bounded and configurable;
 the receipt measures recovery, not a provider latency SLA.
 
+Deferred provider-fixture residual: the adapter matrices do not exhaust
+repository-ID widths or every HTTP-status/body combination; expand them for an
+observed consumer failure, not as a new global assurance project.
+
 ## Completed milestone — unattended hosted workflow
 
 **Status: COMPLETE (2026-09-08).** Both hosted sleep

@@ -1329,6 +1329,11 @@ accepts 60–3600. These are poll/sleep bounds, not a wall-clock completion SLA.
 Consecutive retryable observer errors back off exponentially up to an hour,
 honoring a bounded server retry delay; a server delay beyond an hour ends this
 watch as unavailable instead of retrying too early.
+GitHub 403 responses without rate-limit headers are ambiguous: secondary rate
+limits use that form too. They retain the `github-http-403` reason and retry
+within the same budget without parsing error messages. Consequently a genuine
+permission-related GitHub 403 also uses that budget before returning unavailable;
+401/404 remain non-retryable. This does not change hosted endpoint authorization.
 
 Both check runs and commit statuses use the exact SHA. The observer exhausts
 pagination (100 rows/page, at most five pages per endpoint) and re-reads the PR

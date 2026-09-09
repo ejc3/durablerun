@@ -574,7 +574,7 @@ test('generated HTTP and transport faults at each endpoint retain observer-error
           { url: urls[index] as string, response: new Response(null, { status: code }) },
         ]),
         `github-http-${code}`,
-        code >= 500,
+        code === 403 || code >= 500,
       )
     }
     for (const error of [
@@ -611,7 +611,7 @@ for (const [index, label] of ['initial PR', 'check runs', 'statuses', 'final PR'
               kind: 'unavailable',
               observedAt: OBSERVED_AT,
               reason: `github-http-${code}`,
-              retryable: code >= 500,
+              retryable: code === 403 || code >= 500,
             }
       const urls = [PULL_URL, pageUrl('check-runs'), pageUrl('statuses'), PULL_URL]
       for (const cleanupRejects of [false, true]) {

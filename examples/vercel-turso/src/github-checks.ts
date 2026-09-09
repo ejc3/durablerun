@@ -106,7 +106,12 @@ export async function observeGitHubChecks(
           Math.max(PR_WATCHER_MIN_INTERVAL_SECONDS, Math.ceil(delay)),
         )
       }
-      throw new ObservationError(`github-http-${response.status}`, response.status >= 500)
+      // A secondary rate limit can be a 403 without rate-limit headers.
+      // Retry that ambiguity within the watch budget without parsing messages.
+      throw new ObservationError(
+        `github-http-${response.status}`,
+        response.status === 403 || response.status >= 500,
+      )
     }
     let value: unknown
     try {
