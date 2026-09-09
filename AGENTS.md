@@ -19,10 +19,9 @@ lightweight tick drivers that launch workers on demand.
   diff.
 - **BUILD.md is the plan.** Local reproducibility remains the baseline
   (SQLite `file:`/`:memory:`, Postgres in podman, and local driver/workers).
-  The hosted-alpha foundation is complete. The current milestone adds unattended
-  sleep/resume through a pluggable wake scheduler, one Vercel Queues adapter,
-  independent cron recovery, and a hosted receipt. Broader cloud infrastructure
-  remains deferred.
+  The hosted-alpha and unattended sleep/resume foundations are complete.
+  BUILD.md alone names the current milestone and its exit test. Broader cloud
+  infrastructure remains deferred.
 
 ## Standing rule: outcome before machinery
 

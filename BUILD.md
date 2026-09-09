@@ -31,9 +31,46 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — unattended hosted workflow
+## Current milestone — a useful hosted PR-check watcher
 
-**Status: COMPLETE (2026-09-08). Paused at this milestone.** Both hosted sleep
+**Status: COMPLETE; pause after green merge (2026-09-09).** The clean external
+Vercel/Turso app watched PR #24's exact head while its selected `tla` check was
+pending, checkpointed the observation, and survived a deliberately killed
+invocation. The deployed host persisted `ready` after two observations in
+102,421 ms, with zero manual ticks, exactly one infrastructure retry, zero user
+failures, and user attempt one. The original checkpoint was unchanged. The
+[redacted receipt](receipts/hosted-pr-watcher-2026-09-09.json) binds the exact
+input, source, deployment, four unchanged alpha.1 packages, and recovery result.
+This proves selected-check completion and unattended recovery, not mergeability
+or which recovery provider delivered a particular wake.
+
+**Exit test:** from a clean external install, watch an exact real GitHub PR
+head while selected checks are pending, checkpoint that observation, interrupt
+the invocation, and let the deployed host recover and persist an inspectable
+ready/failed result without manual ticks. Retain the exact input, deployment,
+checkpoint/recovery counters, terminal observation, and package provenance.
+The result describes selected checks at an observed commit, not mergeability.
+No multi-day soak is required.
+
+**Closeout:** the bounded read-only observer, durable polling task, generated
+interruption/replay and fail-closed selection tests, clean external deployment,
+and live receipt are complete in [PR #24](https://github.com/ejc3/durablerun/pull/24).
+Finish its required review and CI, merge green, then pause. Do not start another
+milestone or reopen source-identical proof work during that wait.
+
+**Non-goals:** automatic merges, notifications, a UI, branch-protection policy
+discovery, private-repository credential provisioning, new engine protocols or
+SQL, MySQL, sharding, sagas, and new global assurance machinery. Existing auth
+and wake-provider ports remain unchanged. Polling is bounded and configurable;
+the receipt measures recovery, not a provider latency SLA.
+
+Deferred provider-fixture residual: the adapter matrices do not exhaust
+repository-ID widths or every HTTP-status/body combination; expand them for an
+observed consumer failure, not as a new global assurance project.
+
+## Completed milestone — unattended hosted workflow
+
+**Status: COMPLETE (2026-09-08).** Both hosted sleep
 workflows completed on attempt one without manual ticks: normal resume took
 576 ms after due time; the deliberately dropped enqueue hint recovered through
 cron and resumed 620 ms after due time, completing within 51,946 ms of enqueue.
@@ -41,7 +78,8 @@ The [redacted alpha.1 receipt](receipts/hosted-alpha-v0.1.0-alpha.1.json) binds
 the immutable package hashes, corrected example, deployment, and both outcomes.
 Its [complete sanitized provider trace](receipts/hosted-alpha-v0.1.0-alpha.1-provider-requests.ndjson)
 proves private queue delivery for both resumes, with no public tick during
-either sleep-to-completion interval. No new implementation milestone is opened.
+either sleep-to-completion interval. The next consumer milestone is above;
+this completed host is not being reopened.
 
 **Exit test:** deploy the one-queue Vercel/Turso example, enqueue a short sleep,
 observe its durable suspension, then observe completion no more than 60 seconds

@@ -112,3 +112,94 @@ Provider contracts: [queue setup and OIDC](https://vercel.com/docs/queues/quicks
 [delays and retries](https://vercel.com/docs/queues/sdk),
 [TTL and billing](https://vercel.com/docs/queues/pricing), and
 [cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing).
+
+## Watch a pull request's checks
+
+The `watch-pr-checks` task is a useful consumer of the same released packages,
+authorization plugin, and automatic wake path. Enqueue it through `/api/tasks`:
+
+```json
+{
+  "taskName": "watch-pr-checks",
+  "params": {
+    "repository": "owner/repository",
+    "pullNumber": 24,
+    "headSha": "replace-with-the-exact-40-character-PR-head-SHA",
+    "checks": [
+      { "kind": "check-run", "name": "verify", "appId": 15368 },
+      { "kind": "status", "name": "adversarial-review" }
+    ],
+    "maxPolls": 10,
+    "intervalSeconds": 60
+  }
+}
+```
+
+Choose the actual check names and GitHub App IDs reported for that repository;
+the example IDs and names are not a universal CI policy. Check-run selectors
+bind both name and app, while status selectors bind their context name.
+Status contexts are case-insensitive and do not authenticate a publisher. Supply
+at least one selector. Missing or unfinished selected checks remain pending.
+Only successful selected checks produce `ready`; a selected failure produces
+`failed`. The result also distinguishes a changed head (`superseded`), a closed
+PR, an exhausted polling budget (`timed-out`), and unavailable GitHub data.
+These are successful durable task results, available as `result` from
+`GET /api/inspect?taskId=...`; inspect the result's `status`, not merely the
+task's `completed` state.
+
+This is a snapshot of the selected checks on one exact PR head, not a claim
+that GitHub permits merging. It does not infer branch protection, reviews, or
+other required checks, and it never merges, comments, or sends notifications.
+Every GitHub observation is a checkpointed step; pending observations lead
+to durable sleep, so no invocation stays resident while CI runs. Polling defaults
+to ten observations, one minute apart. Set `maxPolls` from 1 to 30 and
+`intervalSeconds` from 60 to 3600; these are explicit work bounds, not an
+unattended multi-day soak.
+
+Public repositories work without GitHub credentials, subject to GitHub's
+unauthenticated API limit. Private repositories or larger usage can supply an
+optional host-owned `GITHUB_TOKEN` with read access to the relevant repository's
+pull requests, checks, and commit statuses. Never put that token in task params
+or results. Rate-limit and service failures cannot turn an unknown check green.
+Consecutive transient errors back off to at most one hour, respecting a server
+retry delay within that bound. A longer requested delay ends this watch as
+unavailable. GitHub can return a secondary rate limit as 403 without retry
+headers, so ambiguous 403s retry within the same budget, preserving their status
+without parsing error messages. A genuine permission-related 403 therefore also
+uses the budget before returning unavailable; 401/404 stop immediately. Public
+access permits only 60 requests per hour per IP; a poll
+normally needs three or four requests. Use a scoped token for sustained use.
+The observer limits each endpoint to five pages of 100 rows and never treats
+truncated or changing pagination as success.
+
+GitHub contracts: [check runs and latest filtering](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference),
+[newest-first commit statuses](https://docs.github.com/en/rest/commits/statuses#list-commit-statuses-for-a-reference),
+and [rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
+
+### Interruption recovery receipt
+
+Run `npm run receipt:pr-watcher` from a clean external copy of this directory
+installed with `npm install`; the four package URLs remain the immutable alpha
+release tarballs. Set `PR_WATCHER_INPUT` to the JSON **params** object above,
+using a real open PR whose selected checks are still pending. Use at least two
+polls and a polling budget that fits the receipt's 15-minute deadline. The
+receipt also needs the existing local Turso credentials, dedicated queue,
+HTTPS `DURABLERUN_BASE_URL`, and API token; it does not need `CRON_SECRET`.
+Run no other producers against that queue during the receipt.
+
+The receipt creates and claims exactly one new watcher task, runs the real
+handler in a local child process, and kills that process immediately after its
+first pending GitHub observation has committed. This interruption wrapper lives
+only in the local receipt script: the deployed handler has no crash parameter
+or fault endpoint. A PR that races to terminal before the checkpoint cannot
+satisfy the receipt; use the next real CI run, not a fabricated pending value.
+
+After that interruption the parent sends only inspect requests. The deployment
+must recover the expired, activated lease through its cron/queue wake path,
+reuse the original checkpoint unchanged, and eventually expose an exact-head
+`ready` or `failed` result. The JSON requires at least two observations, exactly
+one infrastructure successor (run attempt two), zero user failures, and user
+attempt one. It records the original pending observation, both run IDs, lease
+expiry, completion time, and the final inspectable result, with zero manual
+ticks. This proves unattended recovery; unlike the separate sleep receipt, it
+does not attribute a particular resume to queue delivery versus cron.

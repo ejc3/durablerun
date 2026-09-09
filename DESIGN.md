@@ -1311,6 +1311,52 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   secret-bearing, encrypt sensitive fields app-side if needed, and retention
   (`cleanup`) covers scheduler rows and run DBs alike.
 
+#### Hosted consumer: PR-check watcher
+
+The external example registers `watch-pr-checks`, a read-only GitHub consumer
+over the unchanged SDK. Its input pins `repository` (`owner/name`), a positive
+`pullNumber`, a full 40-hex `headSha`, and a nonempty `checks` list. A check-run
+selector is `{kind: 'check-run', name, appId}`; a commit-status selector is
+`{kind: 'status', name}` (case-insensitive context, with no publisher-identity
+claim). Duplicate selectors are rejected. The host may supply a read-only
+`GITHUB_TOKEN`; credentials never enter task parameters or checkpoints.
+
+Each poll checkpoints one GitHub observation through `ctx.step('github-checks')`.
+Pending observations suspend through `ctx.sleepFor`, so no worker stays alive
+between polls. Replaying an interrupted invocation reuses committed observations.
+`maxPolls` defaults to 10 and accepts 1–30; `intervalSeconds` defaults to 60 and
+accepts 60–3600. These are poll/sleep bounds, not a wall-clock completion SLA.
+Consecutive retryable observer errors back off exponentially up to an hour,
+honoring a bounded server retry delay; a server delay beyond an hour ends this
+watch as unavailable instead of retrying too early.
+GitHub 403 responses without rate-limit headers are ambiguous: secondary rate
+limits use that form too. They retain the `github-http-403` reason and retry
+within the same budget without parsing error messages. Consequently a genuine
+permission-related GitHub 403 also uses that budget before returning unavailable;
+401/404 remain non-retryable. This does not change hosted endpoint authorization.
+
+Both check runs and commit statuses use the exact SHA. The observer exhausts
+pagination (100 rows/page, at most five pages per endpoint) and re-reads the PR
+after the checks. A changed head terminates `superseded`; a closed PR terminates
+`closed`. Every selected check must be present and successful for `ready`:
+check runs match exact name and app ID, using GitHub's `filter=latest` with no
+completed-only filter; statuses use the newest entry for their context.
+Missing or ambiguous check runs remain pending. Completed non-success
+conclusions (including neutral/skipped) and failure/error statuses produce
+`failed`. An incomplete page sequence, unknown response shape/state, transport
+failure, or HTTP error is an observer error, never evidence that CI passed or
+failed. Exhausted polling produces `timed-out`, or `unavailable` if the final
+observation could not be obtained.
+
+The terminal task result retains the pinned input identity, poll count, latest
+timestamped observation, verdict, and user attempt. A `failed` verdict is a
+successfully completed watch whose selected CI failed, distinct from task
+execution failure. `ready` means only that these selected checks were observed
+successful for this SHA. It does not assert branch protection, all checks,
+absence of a requested rerun, review approval, or mergeability. GitHub reads
+are not an atomic snapshot; a later push/rerun may invalidate an observation.
+The consumer never merges, emits notifications, or mutates GitHub.
+
 ### 3.6 Portability to a bare "launch this thing" platform
 
 (E.g. an fcvm-based one — fcvm being our Firecracker-microVM launch platform; the
