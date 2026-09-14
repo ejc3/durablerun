@@ -1,3 +1,4 @@
+import type { TaskResult } from './types.js'
 /**
  * Numeric port-boundary validation (DESIGN.md §3.4 numeric contract).
  *
@@ -1005,4 +1006,27 @@ export function userEpochMs(name: string, epochMs: number): number {
   } catch {
     throw new FatalTaskError(`${name} is not a valid task epoch`)
   }
+}
+
+/**
+ * Refuse a task row whose outcome fields contradict its state: a completed task
+ * without its payload, a failed or cancelled task without its reason, or a
+ * payload on a task that did not complete. Returning such a row would report an
+ * outcome the engine never recorded. A reason on a live task stays legal.
+ */
+export function requireTaskResultShape(taskId: string, result: TaskResult): TaskResult {
+  const hasPayload = result.completedPayloadJson !== undefined
+  if (result.state === 'completed' && !hasPayload) {
+    throw new TrustedRangeError(`task ${taskId} is completed but has no completed payload`)
+  }
+  if (result.state !== 'completed' && hasPayload) {
+    throw new TrustedRangeError(`task ${taskId} is ${result.state} but carries a completed payload`)
+  }
+  if (
+    (result.state === 'failed' || result.state === 'cancelled') &&
+    result.failureReasonJson === undefined
+  ) {
+    throw new TrustedRangeError(`task ${taskId} is ${result.state} but has no failure reason`)
+  }
+  return result
 }

@@ -162,6 +162,11 @@ export interface LeaseState {
   remainingMs: number
 }
 
+/**
+ * A task's observable outcome. A completed task always carries its payload, a
+ * failed or cancelled task always carries its reason, and no other state
+ * carries a payload. The stores refuse a row that contradicts this.
+ */
 export interface TaskResult {
   state: TaskState
   completedPayloadJson?: string

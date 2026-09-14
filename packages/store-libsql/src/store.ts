@@ -47,6 +47,7 @@ import {
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
+  requireTaskResultShape,
   serializeTaskHeaders,
   serializeTaskValue,
   storageValueKind,
@@ -1664,7 +1665,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const result: TaskResult = { state: String(row.state) as TaskResult['state'] }
     if (row.completed_payload !== null) result.completedPayloadJson = String(row.completed_payload)
     if (row.failure_reason !== null) result.failureReasonJson = String(row.failure_reason)
-    return result
+    return requireTaskResultShape(taskId, result)
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
