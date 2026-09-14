@@ -43,8 +43,11 @@ export function testIdSource(
 }
 
 /**
- * An in-memory database migrated to the current schema by default, with the
- * engine clock frozen when `nowMs` is given. Admin conformance can request the
+ * A database migrated to the current schema by default, with the engine clock
+ * frozen when `nowMs` is given. It is in memory unless `url` names another
+ * database, which the chaos tests use to share a file with real host
+ * processes. Those hosts open the file themselves, so no test-only default here
+ * can reach a real process. Admin conformance can request the
  * same fixture before migration with `migrate: false`.
  *
  * Four lines, and every test file that wanted a database wrote its own copy
@@ -64,14 +67,14 @@ export function testIdSource(
  * stays out of the package's main barrel.
  */
 export async function openTestDb(
-  opts: { nowMs?: number; idNamespace?: string; migrate?: boolean } = {},
+  opts: { url?: string; nowMs?: number; idNamespace?: string; migrate?: boolean } = {},
 ): Promise<{
   raw: LibsqlExecutor
   admin: LibsqlStoreAdmin
   ids: IdSource
   close: () => void
 }> {
-  const raw = LibsqlExecutor.open(':memory:')
+  const raw = LibsqlExecutor.open(opts.url ?? ':memory:')
   const admin = new LibsqlStoreAdmin(raw)
   const ids = testIdSource(opts.idNamespace)
   if (opts.migrate !== false) await admin.migrate()

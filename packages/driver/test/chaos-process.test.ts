@@ -3,7 +3,8 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { systemIdSource } from '@durablerun/core'
-import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { openTestDb } from '@durablerun/store-libsql/testing'
 import { afterAll, describe, expect, it } from 'vitest'
 
 const Q = 'chaos'
@@ -49,6 +50,13 @@ async function until(cond: () => Promise<boolean>, what: string, ms = 30_000): P
   throw new Error(`timed out: ${what}`)
 }
 
+/** A migrated file database this test shares with its host processes. */
+async function chaosDb(prefix: string, file: string) {
+  const db = join(mkdtempSync(join(tmpdir(), prefix)), file)
+  const { raw } = await openTestDb({ url: `file:${db}` })
+  return { db, raw, store: new LibsqlSchedulerStore(raw, systemIdSource()) }
+}
+
 /**
  * REAL processes against one SQLite file: a driver and a worker as
  * children of this test, killed with real signals. This is the phase-gate
@@ -56,12 +64,7 @@ async function until(cond: () => Promise<boolean>, what: string, ms = 30_000): P
  */
 describe('multi-process chaos (real kills, one database file)', () => {
   it('a task survives kill -9 of its worker mid-step and completes on a replacement', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'durablerun-chaos-'))
-    const db = join(dir, 'chaos.db')
-    const raw = LibsqlExecutor.open(`file:${db}`)
-    const admin = new LibsqlStoreAdmin(raw)
-    await admin.migrate()
-    const store = new LibsqlSchedulerStore(raw, systemIdSource())
+    const { db, raw, store } = await chaosDb('durablerun-chaos-', 'chaos.db')
 
     const workerPort = PORT_BASE
     const worker1 = await host('packages/driver/bin/worker-host.ts', [
@@ -117,12 +120,7 @@ describe('multi-process chaos (real kills, one database file)', () => {
   }, 120_000)
 
   it('a task survives kill -9 of its DRIVER and a sleep across the restart', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'durablerun-chaos2-'))
-    const db = join(dir, 'chaos2.db')
-    const raw = LibsqlExecutor.open(`file:${db}`)
-    const admin = new LibsqlStoreAdmin(raw)
-    await admin.migrate()
-    const store = new LibsqlSchedulerStore(raw, systemIdSource())
+    const { db, raw, store } = await chaosDb('durablerun-chaos2-', 'chaos2.db')
 
     const workerPort = PORT_BASE + 1
     await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
@@ -170,12 +168,7 @@ describe('multi-process chaos (real kills, one database file)', () => {
   }, 120_000)
 
   it('the dogfood gate: a recurring job lives on the engine across sleeps', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'durablerun-dogfood-'))
-    const db = join(dir, 'dogfood.db')
-    const raw = LibsqlExecutor.open(`file:${db}`)
-    const admin = new LibsqlStoreAdmin(raw)
-    await admin.migrate()
-    const store = new LibsqlSchedulerStore(raw, systemIdSource())
+    const { db, raw, store } = await chaosDb('durablerun-dogfood-', 'dogfood.db')
     const workerPort = PORT_BASE + 2
     await host('packages/driver/bin/worker-host.ts', [db, String(workerPort), SECRET])
     await host('packages/driver/bin/driver-host.ts', [

@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { createServer, type Server } from 'node:http'
+import { type Server, createServer } from 'node:http'
 import type { Clock, Launcher, SchedulerStore } from '@durablerun/core'
 import { LaunchOutcome } from '@durablerun/core'
-import { runClaimedRun, type RunInvocation, type TaskRegistry } from '@durablerun/sdk'
+import { type RunInvocation, type TaskRegistry, runClaimedRun } from '@durablerun/sdk'
 import type { DriverLoop } from './loop.js'
 
 /**
@@ -171,17 +171,7 @@ export function createWorkerServer(deps: {
   return {
     server,
     listen(port = 0): Promise<number> {
-      return new Promise((resolve, reject) => {
-        server.once('error', reject)
-        server.listen(port, '127.0.0.1', () => {
-          const address = server.address()
-          if (address === null || typeof address === 'string') {
-            reject(new Error('worker server: no bound port'))
-            return
-          }
-          resolve(address.port)
-        })
-      })
+      return listenLocal(server, 'worker server', port)
     },
     async close(): Promise<void> {
       const closed = new Promise<void>((resolve) => server.close(() => resolve()))
@@ -203,7 +193,7 @@ export function createWorkerServer(deps: {
  * ticking, not amplification). Acceptable bound to 127.0.0.1; add a
  * coalescing floor before this endpoint is ever exposed beyond localhost.
  */
-export function createWakeServer(loop: DriverLoop): WorkerServer {
+export function createWakeServer(loop: Pick<DriverLoop, 'wake'>): WorkerServer {
   const server = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/wake') {
       loop.wake()
@@ -215,20 +205,25 @@ export function createWakeServer(loop: DriverLoop): WorkerServer {
   return {
     server,
     listen(port = 0): Promise<number> {
-      return new Promise((resolve, reject) => {
-        server.once('error', reject)
-        server.listen(port, '127.0.0.1', () => {
-          const address = server.address()
-          if (address === null || typeof address === 'string') {
-            reject(new Error('wake server: no bound port'))
-            return
-          }
-          resolve(address.port)
-        })
-      })
+      return listenLocal(server, 'wake server', port)
     },
     close(): Promise<void> {
       return new Promise((resolve) => server.close(() => resolve()))
     },
   }
+}
+
+/** Bind to loopback only and resolve the port the kernel assigned. */
+function listenLocal(server: Server, label: string, port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(port, '127.0.0.1', () => {
+      const address = server.address()
+      if (address === null || typeof address === 'string') {
+        reject(new Error(`${label}: no bound port`))
+        return
+      }
+      resolve(address.port)
+    })
+  })
 }

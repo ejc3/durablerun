@@ -1,13 +1,13 @@
 import {
   type Clock,
-  durationToMs,
   type IdSource,
   LaunchOutcome,
   type Launcher,
-  requirePositiveInt,
   type SchedulerStore,
+  durationToMs,
+  requirePositiveInt,
 } from '@durablerun/core'
-import { tick, type TickOptions, type TickResult } from './tick.js'
+import { type TickOptions, type TickResult, tick } from './tick.js'
 
 /**
  * The resident driver (DESIGN.md §3.1, resident mode): a tiny long-lived
@@ -121,19 +121,16 @@ export class DriverLoop {
       throw new RangeError('idleCeilingMs must be >= busyCeilingMs (idle must not poll faster)')
     }
     this.idleAfterTicks = requirePositiveInt('idleAfterTicks', opts.idleAfterTicks ?? 10)
-    this.registryIntervalMs = durationToMs(
-      'registryIntervalSeconds',
-      opts.registryIntervalSeconds ?? 15,
-      { positive: true },
-    )
+    const registryIntervalSeconds = opts.registryIntervalSeconds ?? 15
+    this.registryIntervalMs = durationToMs('registryIntervalSeconds', registryIntervalSeconds, {
+      positive: true,
+    })
     // Validate the DERIVED ttl here too: a value that passes above but
     // fails at beat time would throw into the observability catch forever.
     this.registryTtlSeconds =
-      durationToMs(
-        'registryIntervalSeconds (doubled for ttl)',
-        (opts.registryIntervalSeconds ?? 15) * 2,
-        { positive: true },
-      ) / 1000
+      durationToMs('registryIntervalSeconds (doubled for ttl)', registryIntervalSeconds * 2, {
+        positive: true,
+      }) / 1000
     this.driverId = opts.driverId ?? deps.ids.token()
     if (typeof this.driverId !== 'string' || this.driverId.length === 0) {
       throw new RangeError('driverId must be a non-empty string')
