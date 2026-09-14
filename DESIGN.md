@@ -597,7 +597,7 @@ The core engine is dialect-independent TypeScript emitting per-dialect SQL throu
 a small interface — the shape River uses (per-dialect SQL files, logic client-side):
 
 The normative interface surface is §3.9's five ports (SchedulerStore, Launcher,
-EndingFeed, RunStateStore, WakeSignals) — this section defines the SQL contract
+EndingFeed, RunStateStore, WakeScheduler) — this section defines the SQL contract
 rules and the dialect mapping every SchedulerStore/RunStateStore implementation
 must obey. (An earlier draft carried a second interface listing here; it drifted
 and is deliberately deleted — one normative surface.)
@@ -1606,8 +1606,11 @@ stutters.
    therefore costs only acceleration, never correctness.
 4. **RunStateStore** (data plane, §3.8): `load`, attempt-guarded
    `saveCheckpoint`, streams; placements inline | per-run DB | local file+sync.
-5. **WakeSignals** (optional accelerators): `ping(shard)`, `alarmAt(shard,t)`,
-   external cron.
+5. **WakeScheduler** (optional accelerator, `@durablerun/driver`): a host
+   supplies `(wake: WakeRequest) => Promise<void>`, where a request is an
+   immediate or scheduled hint to tick one queue. `scheduleTickWake` publishes at
+   most one hint per pass. Delivery may duplicate or reorder, so the host also
+   runs an independent recovery trigger such as cron.
 
 Failure taxonomy → port mapping: lost fire-and-forget launch = claimed but
 never activated → sweep sees `activated_gen < claim_gen` at lease expiry → relaunch

@@ -1,6 +1,7 @@
 import type { LaunchOutcome } from './launch.js'
 import type {
   Checkpoint,
+  CheckpointWrite,
   ClaimedRun,
   LaunchIdentity,
   LeaseState,
@@ -8,6 +9,7 @@ import type {
   SpawnResult,
   SweptRun,
   TaskResult,
+  WakeSpec,
 } from './types.js'
 
 /**
@@ -56,7 +58,7 @@ export interface SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    extendSeconds: number,
+    extendLeaseSeconds: number,
   ): Promise<LeaseState>
 
   /**
@@ -74,7 +76,7 @@ export interface SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: { inSeconds: number } | { atEpochMs: number },
+    wake: WakeSpec,
     wakeDisposition?: 'consume' | 'preserve',
   ): Promise<void>
 
@@ -91,8 +93,8 @@ export interface SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: { inSeconds: number } | { atEpochMs: number },
-    checkpoint: { key: string; stateJson: string },
+    wake: WakeSpec,
+    checkpoint: CheckpointWrite,
   ): Promise<void>
 
   /** Retry policy decided in core; the store applies the fenced transition. */
@@ -189,10 +191,4 @@ export interface Launcher {
  */
 export interface Ending extends LaunchIdentity {
   kind: 'completed' | 'failed' | 'crashed' | 'timeout' | 'unknown'
-}
-
-/** Advisory accelerators (§3.9 port 5); every method is fire-and-forget. */
-export interface WakeSignals {
-  ping(queue: string): void
-  alarmAt?(queue: string, epochMs: number): void
 }

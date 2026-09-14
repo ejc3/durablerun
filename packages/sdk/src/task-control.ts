@@ -1,11 +1,17 @@
-import { LeaseLostError, StoreUnavailableError, SuspendSignal } from '@durablerun/core'
+import {
+  type CheckpointWrite,
+  LeaseLostError,
+  StoreUnavailableError,
+  SuspendSignal,
+  type WakeSpec,
+} from '@durablerun/core'
 import { taskHasOwn } from './intrinsics.js'
 
 type SuspendControlSnapshot =
   | {
       readonly kind: 'sleep'
-      readonly wake: { readonly inSeconds: number } | { readonly atEpochMs: number }
-      readonly checkpoint: { readonly key: string; readonly stateJson: string }
+      readonly wake: Readonly<WakeSpec>
+      readonly checkpoint: Readonly<CheckpointWrite>
     }
   | { readonly kind: 'await-event' }
 
@@ -21,10 +27,7 @@ export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControl
  * task code from enrolling its own public error instances.
  */
 export interface TaskControlIssuer {
-  sleep(
-    wake: { inSeconds: number } | { atEpochMs: number },
-    checkpoint: { key: string; stateJson: string },
-  ): never
+  sleep(wake: WakeSpec, checkpoint: CheckpointWrite): never
   awaitEvent(): never
   leaseLost(message: string): never
   storeCall<T>(operation: () => Promise<T>): Promise<T>
@@ -55,9 +58,7 @@ const AWAIT_EVENT = freeze({ kind: 'await-event' } as const)
 const LEASE_LOST = freeze({ kind: 'lease-lost' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
 
-function isRelativeWake(
-  wake: { inSeconds: number } | { atEpochMs: number },
-): wake is { inSeconds: number } {
+function isRelativeWake(wake: WakeSpec): wake is { inSeconds: number } {
   return taskHasOwn(wake, 'inSeconds')
 }
 
@@ -84,10 +85,7 @@ export function createTaskControlScope(): TaskControlScope {
   }
 
   const issuer: TaskControlIssuer = freeze({
-    sleep(
-      wake: { inSeconds: number } | { atEpochMs: number },
-      checkpoint: { key: string; stateJson: string },
-    ): never {
+    sleep(wake: WakeSpec, checkpoint: CheckpointWrite): never {
       const ownedWake = isRelativeWake(wake)
         ? freeze({ inSeconds: wake.inSeconds })
         : freeze({ atEpochMs: wake.atEpochMs })

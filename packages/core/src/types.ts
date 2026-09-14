@@ -132,6 +132,15 @@ export type EventWake =
   | { event: string; step: string; payloadJson: string }
   | { event: string; step: string; timedOut: true }
 
+/** Where a suspended run wakes: relative engine time, or the sanctioned user absolute. */
+export type WakeSpec = { inSeconds: number } | { atEpochMs: number }
+
+/** A durable marker written in the same transition as a suspension. */
+export interface CheckpointWrite {
+  key: string
+  stateJson: string
+}
+
 export interface Checkpoint {
   checkpointName: string
   stateJson: string
