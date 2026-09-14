@@ -34,8 +34,9 @@ validated by that run.
 ## Current milestone — lifecycle correctness and the simplification sweep
 
 **Status: IN PROGRESS (started 2026-09-14).** Two plan entries land as one
-stack. The PR3.5 simplification sweep goes first: it changes no behavior, and
-it rewrites SDK, driver, and store code that the lifecycle work then edits.
+stack. The PR3.5 simplification sweep goes first. Apart from the behavior
+changes each of its PRs names, it only reshapes code, and it rewrites SDK,
+driver, and store code that the lifecycle work then edits.
 PR3.2 lifecycle polish follows on top of it.
 
 **Exit test:**

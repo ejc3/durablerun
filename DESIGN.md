@@ -540,6 +540,10 @@ One invocation executes one claimed run to its next suspension point:
   for recursive Lambda patterns) are bounded by the task's
   `cancellation.max_duration` wall-clock policy, with the lease as the
   concurrency guard.
+- The worker server and the resident driver's `/wake` server bind to 127.0.0.1
+  only. Neither installs a server `error` handler after bind, so a server error
+  is an uncaught event that ends the host process. Every pass it was running
+  recovers through the lease, like any other worker death.
 - Rolling deploys, ported from Absurd: a worker that claims a task name its
   build doesn't know **defers** it (`scheduleRun(now + 15s + jitter)`, nothing
   consumed) — deploy workers before enabling producers, and old runs survive
