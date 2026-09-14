@@ -213,11 +213,17 @@ export function createWakeServer(loop: Pick<DriverLoop, 'wake'>): WorkerServer {
   }
 }
 
-/** Bind to loopback only and resolve the port the kernel assigned. */
+/**
+ * Bind to loopback only and resolve the port the kernel assigned. The bind-time
+ * error listener is removed once bound: left in place, it absorbed every later
+ * server error into an already-settled promise, so a server that stopped
+ * accepting kept running silently instead of failing loudly.
+ */
 function listenLocal(server: Server, label: string, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject)
       const address = server.address()
       if (address === null || typeof address === 'string') {
         reject(new Error(`${label}: no bound port`))
