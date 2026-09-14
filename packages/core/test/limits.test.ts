@@ -22,10 +22,7 @@ describe('mapLimit', () => {
       const outcome = await mapLimit([1, 2, 3], width, async (item) => {
         calls.push(item)
         return item
-      }).then(
-        (value) => value,
-        (error: unknown) => error,
-      )
+      }).catch((error: unknown) => error)
       expect(outcome, `width ${width} must be refused`).toBeInstanceOf(RangeError)
       expect(calls, `width ${width} must run nothing`).toEqual([])
     }

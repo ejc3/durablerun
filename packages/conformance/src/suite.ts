@@ -26,7 +26,10 @@ import { engineInvariantViolations } from './invariants.js'
 
 const Q = 'q'
 
-async function snapshot(f: StoreFixture, taskId: string): Promise<unknown> {
+async function snapshot(
+  f: StoreFixture,
+  taskId: string,
+): Promise<{ tasks: SqlRow[] | undefined; runs: SqlRow[] | undefined }> {
   const [tasks, runs] = await f.raw.batch(
     'snap',
     [
@@ -1712,40 +1715,46 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
         const live = await f.store.spawn(Q, 'job', '{}')
         const liveReason = await f.store.spawn(Q, 'job', '{}')
-        await f.raw.batch('corrupt-task-outcomes', [
-          {
-            sql: `UPDATE tasks SET completed_payload = NULL WHERE task_id = ?`,
-            args: [completed.taskId],
-          },
-          {
-            sql: `UPDATE tasks SET failure_reason = NULL WHERE task_id = ?`,
-            args: [failed.taskId],
-          },
-          {
-            sql: `UPDATE tasks SET failure_reason = NULL WHERE task_id = ?`,
-            args: [cancelled.taskId],
-          },
-          {
-            sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
-            args: [live.taskId],
-          },
-          {
-            sql: `UPDATE tasks SET failure_reason = '{"name":"Forged"}' WHERE task_id = ?`,
-            args: [liveReason.taskId],
-          },
-        ])
-        const rows = [
+        const shapes = [
           [
             'completed without payload',
             completed.taskId,
+            'completed_payload = NULL',
             /is completed but has no completed payload/,
           ],
-          ['failed without reason', failed.taskId, /is failed but has no failure reason/],
-          ['cancelled without reason', cancelled.taskId, /is cancelled but has no failure reason/],
-          ['live with a payload', live.taskId, /is pending but carries a completed payload/],
-          ['live with a reason', liveReason.taskId, /is pending but carries a failure reason/],
+          [
+            'failed without reason',
+            failed.taskId,
+            'failure_reason = NULL',
+            /is failed but has no failure reason/,
+          ],
+          [
+            'cancelled without reason',
+            cancelled.taskId,
+            'failure_reason = NULL',
+            /is cancelled but has no failure reason/,
+          ],
+          [
+            'live with a payload',
+            live.taskId,
+            `completed_payload = '{"forged":true}'`,
+            /is pending but carries a completed payload/,
+          ],
+          [
+            'live with a reason',
+            liveReason.taskId,
+            `failure_reason = '{"name":"Forged"}'`,
+            /is pending but carries a failure reason/,
+          ],
         ] as const
-        for (const [shape, taskId, refusal] of rows) {
+        await f.raw.batch(
+          'corrupt-task-outcomes',
+          shapes.map(([, taskId, assignment]) => ({
+            sql: `UPDATE tasks SET ${assignment} WHERE task_id = ?`,
+            args: [taskId],
+          })),
+        )
+        for (const [shape, taskId, , refusal] of shapes) {
           const outcome = await f.store.getTaskResult(Q, taskId).then(
             () => 'resolved',
             (error: unknown) =>
@@ -1830,15 +1839,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           async () => {
             const results: unknown[] = []
             for (const [shape, taskId] of expected) {
-              const result = await f.store.getTaskResult(Q, taskId).then(
-                (value) => value,
-                (error: unknown) => {
+              results.push(
+                await f.store.getTaskResult(Q, taskId).catch((error: unknown) => {
                   throw new Error(
                     `getTaskResult refused a legitimate ${shape} row: ${String(error)}`,
                   )
-                },
+                }),
               )
-              results.push(result)
             }
             return results
           },
@@ -1863,34 +1870,16 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('fail with retry inserts the successor and is the ONLY mover of attempts', async () => {
         const run = await activatedRun()
-        // A carried wake must be a LEGAL wake: the payload's source event
-        // exists in the store (wake-payload-mismatch enforces provenance —
-        // stamping the columns alone constructs an impossible world).
-        await f.raw.batch('t', [
-          {
-            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-                  VALUES (?, 'e1', '{"x":1}', 1000000)`,
-            args: [Q],
-          },
-          {
-            sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
-            args: [run.runId],
-          },
-        ])
         await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 30 })
         const [rows] = await f.raw.batch('t', [
           {
-            sql: `SELECT state, attempt, available_at_ms, wake_event FROM runs
+            sql: `SELECT state, attempt, available_at_ms FROM runs
                   WHERE task_id = ? ORDER BY attempt`,
             args: [run.taskId],
           },
         ])
         expect(rows?.rows[0]).toMatchObject({ state: 'failed', attempt: 1 })
-        expect(rows?.rows[1]).toMatchObject({
-          state: 'sleeping',
-          attempt: 2,
-          wake_event: 'e1',
-        })
+        expect(rows?.rows[1]).toMatchObject({ state: 'sleeping', attempt: 2 })
         const [task] = await f.raw.batch('t', [
           { sql: `SELECT attempts, state FROM tasks WHERE task_id = ?`, args: [run.taskId] },
         ])
@@ -1933,8 +1922,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('carry-event', [
           {
             sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-                  VALUES (?, 'e-carry', '{"x":1}', 1000000)`,
-            args: [Q],
+                  VALUES (?, ?, ?, 1000000)`,
+            args: [Q, seeded.wake_event, seeded.event_payload],
           },
         ])
         const parkWake = (runId: string) => ({
@@ -1954,31 +1943,38 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const swept = await f.store.sweep(Q, 10)
         expect(swept.map((outcome) => outcome.kind)).toContain('claim-timeout')
 
-        const families: SqlRow[][] = []
-        for (const taskId of [retried.taskId, timedOut.taskId]) {
-          const [rows] = await f.raw.batch(
-            'carry-read',
-            [{ sql: `SELECT * FROM runs WHERE task_id = ? ORDER BY attempt`, args: [taskId] }],
-            'read',
-          )
-          const family = rows?.rows ?? []
-          if (family.length !== 2) throw new Error(`task ${taskId} has no successor run`)
-          families.push(family)
+        const families: { path: string; taskId: string; parent: SqlRow; successor: SqlRow }[] = []
+        for (const [path, taskId] of [
+          ['user retry', retried.taskId],
+          ['claim-timeout sweep', timedOut.taskId],
+        ] as const) {
+          const { runs } = await snapshot(f, taskId)
+          const [parent, successor] = runs ?? []
+          if (runs?.length !== 2 || !parent || !successor) {
+            throw new Error(`task ${taskId} has no successor run`)
+          }
+          families.push({ path, taskId, parent, successor })
         }
-        for (const [, successor] of families) {
+        for (const { path, parent, successor } of families) {
           expect(
-            Object.keys(successor ?? {}).sort(),
-            'every runs column is either carried or successor-owned',
+            Object.keys(successor).sort(),
+            `every runs column of the ${path} successor is carried or successor-owned`,
           ).toEqual([...SUCCESSOR_CARRIED_RUN_COLUMNS, ...successorOwned].sort())
+          expect(
+            successor.created_at_ms,
+            `the ${path} successor is created at its parent's failure instant`,
+          ).toBe(parent.fence_at_ms)
         }
         await attributeExpectedFailure(
           { kind: 'behavior', mutation: 'successor-carries-every-column' },
           /successor dropped an inherited column/,
           async () => {
-            for (const [parent, successor] of families) {
+            for (const { path, taskId, parent, successor } of families) {
               for (const column of SUCCESSOR_CARRIED_RUN_COLUMNS) {
-                if (successor?.[column] !== parent?.[column]) {
-                  throw new Error(`successor dropped an inherited column: ${column}`)
+                if (successor[column] !== parent[column]) {
+                  throw new Error(
+                    `successor dropped an inherited column: ${column} on the ${path} successor of task ${taskId}`,
+                  )
                 }
               }
             }

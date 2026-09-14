@@ -136,34 +136,37 @@ describe('ref-journal dogfood runtime', () => {
     const directory = mkdtempSync(join(tmpdir(), 'durablerun-dogfood-outcome-shape-'))
     const databaseUrl = `file:${join(directory, 'journal.db')}`
     const raw = LibsqlExecutor.open(databaseUrl)
-    const runtimes: DogfoodRuntime[] = []
+    const runtime = await DogfoodRuntime.open({ ...config, databaseUrl })
     try {
+      const { taskId } = await runtime.start()
       const shapes = [
         [
           'completed without payload',
-          `UPDATE tasks SET state = 'completed', completed_payload = NULL WHERE task_id = ?`,
+          `state = 'completed', completed_payload = NULL, failure_reason = NULL`,
           /is completed but has no completed payload/,
         ],
         [
           'live with a payload',
-          `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
+          `state = 'pending', completed_payload = '{"forged":true}', failure_reason = NULL`,
           /is pending but carries a completed payload/,
         ],
         [
+          'live with a reason',
+          `state = 'pending', completed_payload = NULL, failure_reason = '{"name":"Forged"}'`,
+          /is pending but carries a failure reason/,
+        ],
+        [
           'cancelled without reason',
-          `UPDATE tasks SET state = 'cancelled', failure_reason = NULL WHERE task_id = ?`,
+          `state = 'cancelled', completed_payload = NULL, failure_reason = NULL`,
           /is cancelled but has no failure reason/,
         ],
       ] as const
-      for (const [index, [shape, sql, refusal]] of shapes.entries()) {
-        const runtime = await DogfoodRuntime.open({
-          ...config,
-          databaseUrl,
-          idempotencyKey: `outcome-shape-${index}`,
-        })
-        runtimes.push(runtime)
-        const { taskId } = await runtime.start()
-        await raw.batch('corrupt-dogfood-outcome', [{ sql, args: [taskId] }], 'write')
+      for (const [shape, assignment, refusal] of shapes) {
+        await raw.batch(
+          'corrupt-dogfood-outcome',
+          [{ sql: `UPDATE tasks SET ${assignment} WHERE task_id = ?`, args: [taskId] }],
+          'write',
+        )
         const outcome = await runtime.status().then(
           () => 'reported',
           (error: unknown) =>
@@ -174,7 +177,7 @@ describe('ref-journal dogfood runtime', () => {
         expect(outcome, `${shape} must be refused`).toBe('refused')
       }
     } finally {
-      for (const runtime of runtimes) runtime.close()
+      runtime.close()
       raw.close()
       rmSync(directory, { recursive: true, force: true })
     }
