@@ -1124,7 +1124,7 @@ not depend on careful reading:
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
   three helper-marker cases, sixteen direct-marker cases, three title-owner
   cases, six verdict-inventory cases, seven question-delta cases, eleven
-  mutant-syntax cases, and four live-enrollment attacks across all 423 live
+  mutant-syntax cases, and four live-enrollment attacks across all 425 live
   mutations. A separate generated coordinator surface injects 40 faults
   covering shard omission and overlap, wrong heads, missing/duplicate/extra
   results, process/report disagreement, and non-owned cleanup targets, plus

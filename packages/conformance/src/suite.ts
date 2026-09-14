@@ -5,6 +5,9 @@ import {
   MAX_COUNT,
   MAX_DURATION_MS,
   PERSISTED_INTEGER_BOUNDS,
+  REASON_CANCELLED,
+  REASON_INFRA_CAP,
+  REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
   type SqlExecutor,
 } from '@durablerun/core'
@@ -1725,19 +1728,119 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         const rows = [
-          ['completed without payload', completed.taskId],
-          ['failed without reason', failed.taskId],
-          ['cancelled without reason', cancelled.taskId],
-          ['live with a payload', live.taskId],
+          [
+            'completed without payload',
+            completed.taskId,
+            /is completed but has no completed payload/,
+          ],
+          ['failed without reason', failed.taskId, /is failed but has no failure reason/],
+          ['cancelled without reason', cancelled.taskId, /is cancelled but has no failure reason/],
+          ['live with a payload', live.taskId, /is pending but carries a completed payload/],
         ] as const
-        for (const [shape, taskId] of rows) {
+        for (const [shape, taskId, refusal] of rows) {
           const outcome = await f.store.getTaskResult(Q, taskId).then(
             () => 'resolved',
             (error: unknown) =>
-              error instanceof RangeError ? 'refused' : `threw ${String(error)}`,
+              error instanceof RangeError && refusal.test(error.message)
+                ? 'refused'
+                : `threw ${String(error)}`,
           )
           expect(outcome, `${shape} must be refused`).toBe('refused')
         }
+      })
+
+      it('getTaskResult reports every outcome the engine writes', async () => {
+        const relaunchCapped = await f.store.spawn(Q, 'job', '{}')
+        const [lostLaunch] = await f.store.claim(Q, 'w-result-relaunch-cap', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        if (!lostLaunch) throw new Error('expected claim')
+        const infraCapped = await activatedRun('w-result-infra-cap')
+        await f.raw.batch('seed-result-caps', [
+          {
+            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+            args: [RELAUNCH_CAP, lostLaunch.runId],
+          },
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP, infraCapped.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, infraCapped.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind).sort()).toEqual([
+          'infra-cap-exhausted',
+          'relaunch-cap-exhausted',
+        ])
+
+        const completed = await activatedRun('w-result-ok')
+        await f.store.complete(Q, completed.runId, completed.claimToken, '{"out":1}')
+        const exhausted = await activatedRun('w-result-exhausted')
+        await f.store.fail(Q, exhausted.runId, exhausted.claimToken, '{"name":"Final"}', null)
+        const retried = await activatedRun('w-result-retried')
+        await f.store.fail(Q, retried.runId, retried.claimToken, '{"name":"Retry"}', {
+          delaySeconds: 30,
+        })
+        const cancelled = await f.store.spawn(Q, 'job', '{}')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+
+        const expected = [
+          [
+            'completed',
+            completed.taskId,
+            { state: 'completed', completedPayloadJson: '{"out":1}' },
+          ],
+          [
+            'user-exhausted',
+            exhausted.taskId,
+            { state: 'failed', failureReasonJson: '{"name":"Final"}' },
+          ],
+          [
+            'retried live',
+            retried.taskId,
+            { state: 'sleeping' },
+          ],
+          [
+            'cancelled',
+            cancelled.taskId,
+            { state: 'cancelled', failureReasonJson: REASON_CANCELLED },
+          ],
+          [
+            'relaunch-capped',
+            relaunchCapped.taskId,
+            { state: 'failed', failureReasonJson: REASON_RELAUNCH_CAP },
+          ],
+          [
+            'infra-capped',
+            infraCapped.taskId,
+            { state: 'failed', failureReasonJson: REASON_INFRA_CAP },
+          ],
+        ] as const
+        const reported = await attributeExpectedFailure(
+          { kind: 'behavior', mutation: 'task-result-accepts-engine-outcomes' },
+          /getTaskResult refused a legitimate/,
+          async () => {
+            const results: unknown[] = []
+            for (const [shape, taskId] of expected) {
+              const result = await f.store.getTaskResult(Q, taskId).then(
+                (value) => value,
+                (error: unknown) => {
+                  throw new Error(
+                    `getTaskResult refused a legitimate ${shape} row: ${String(error)}`,
+                  )
+                },
+              )
+              results.push(result)
+            }
+            return results
+          },
+        )
+        expect(reported).toEqual(expected.map(([, , result]) => result))
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
       // fenceTwin('CompleteRun') — the swept zombie's complete is refused
