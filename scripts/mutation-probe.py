@@ -2701,7 +2701,7 @@ TIMESTAMP_ADDITION_CASES = (
         "         AND ${epochAdditionFits(NOW, '?')}\n"
         "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
         "epochAdditionFits(NOW, '?', '?')",
-        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,\n",
+        "         ${NOW} + ? + ?,\n",
         "${NOW} + ? + ?",
     ),
     (

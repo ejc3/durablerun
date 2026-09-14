@@ -464,7 +464,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // Idempotent task insert: loses silently when the key already exists.
     // enqueue/cancel deadlines are computed in SQL (rule 3); cancel_at_ms
     // materializes max_delay so sweeps and nextWakeAt are indexed reads, never
-    // JSON scans.
+    // JSON scans. A task without max_delay binds NULL, and NULL propagates
+    // through the addition, so its cancel_at_ms is NULL.
     //
     // The NOT EXISTS on the primary key is what makes this a compare-and-set
     // rather than a crash: the targeted ON CONFLICT covers the idempotency
@@ -479,7 +480,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
          cancel_at_ms, created_at_ms, ${FENCE_COLS})
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,
-         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,
+         ${NOW} + ? + ?,
          ${NOW}, ${FENCE_VALS}
        WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
          AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)
@@ -498,7 +499,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         cancellationJson,
         key,
         delayMs,
-        maxDelayMs,
         delayMs,
         maxDelayMs,
         taskId,
@@ -547,7 +547,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `SELECT winner.task_id AS task_id,
               (SELECT r.run_id FROM runs r
                  WHERE ${runOwnedByTask('r', 'winner')}
-                 ORDER BY r.attempt DESC, r.run_id DESC LIMIT 1) AS run_id
+                 ORDER BY r.attempt DESC LIMIT 1) AS run_id
        FROM (
          SELECT t.task_id, t.queue, 1 AS priority
          FROM tasks t WHERE t.task_id = ? AND t.queue = ?
