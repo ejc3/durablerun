@@ -165,7 +165,7 @@ export interface LeaseState {
 /**
  * A task's observable outcome. A completed task always carries its payload, a
  * failed or cancelled task always carries its reason, and no other state
- * carries a payload. `decodeTaskResult` refuses a row that contradicts this.
+ * carries either. `decodeTaskResult` refuses a row that contradicts this.
  */
 export interface TaskResult {
   state: TaskState

@@ -1,6 +1,7 @@
 import {
   type Clock,
   type IdSource,
+  TASK_RESULT_COLUMNS,
   decodeTaskResult,
   parseTaskValueJson,
   serializeTaskValue,
@@ -229,9 +230,8 @@ export class DogfoodRuntime {
       'dogfood:status-task',
       [
         {
-          sql: `SELECT task_id, task_name, state, attempts, infra_retries, failure_reason,
-                       completed_payload, params, created_at_ms,
-                       ${NOW_MS} AS database_now_ms
+          sql: `SELECT task_id, task_name, attempts, infra_retries, params, created_at_ms,
+                       ${TASK_RESULT_COLUMNS}, ${NOW_MS} AS database_now_ms
                 FROM tasks WHERE queue = ? AND idempotency_key = ?`,
           args: [this.#config.queue, this.#config.idempotencyKey],
         },
@@ -293,14 +293,8 @@ export class DogfoodRuntime {
       state: outcome.state,
       attempts: Number(task.attempts),
       infraRetries: Number(task.infra_retries),
-      failureReason:
-        outcome.failureReasonJson === undefined
-          ? null
-          : parseTaskValueJson(outcome.failureReasonJson),
-      completedResult:
-        outcome.completedPayloadJson === undefined
-          ? null
-          : parseTaskValueJson(outcome.completedPayloadJson),
+      failureReason: optionalJson(outcome.failureReasonJson),
+      completedResult: optionalJson(outcome.completedPayloadJson),
       durableParameters: parseDogfoodJournalParameters(optionalJson(task.params)),
       taskCreatedAtEpochMs: Number(task.created_at_ms),
       databaseNowEpochMs: Number(task.database_now_ms),

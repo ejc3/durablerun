@@ -32,6 +32,7 @@ import {
   type SqlExecutor,
   type SqlRow,
   type SweptRun,
+  TASK_RESULT_COLUMNS,
   type TaskResult,
   type WakeSpec,
   clampLimit,
@@ -1631,7 +1632,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       'task-result',
       [
         {
-          sql: `SELECT state, completed_payload, failure_reason FROM tasks
+          sql: `SELECT ${TASK_RESULT_COLUMNS} FROM tasks
                 WHERE task_id = ? AND queue = ?`,
           args: [taskId, queue],
         },
