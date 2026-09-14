@@ -1,10 +1,11 @@
+import type { Server } from 'node:http'
 import { connect } from 'node:net'
 import { systemClock } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
-import { createWorkerServer, signBody } from '../src/index.js'
+import { createWakeServer, createWorkerServer, signBody } from '../src/index.js'
 
 const Q = 'q'
 const SECRET = 'test-secret'
@@ -109,5 +110,30 @@ describe('worker server hardening', () => {
     })
     expect(outcome === 'connection-reset' || outcome.includes('413')).toBe(true)
     await f.close()
+  })
+})
+
+describe('loopback listen helper', () => {
+  function expectNoBindListener(server: Server, label: string): void {
+    expect(
+      server.listenerCount('error'),
+      `a bound ${label} must not keep the settled bind rejection as its error handler`,
+    ).toBe(0)
+  }
+
+  it('leaves no error listener behind once a server is bound', async () => {
+    const f = await workerFx('http-listen-listener')
+    try {
+      expectNoBindListener(f.worker.server, 'worker server')
+    } finally {
+      await f.close()
+    }
+    const wake = createWakeServer({ wake: () => {} })
+    await wake.listen()
+    try {
+      expectNoBindListener(wake.server, 'wake server')
+    } finally {
+      await wake.close()
+    }
   })
 })
