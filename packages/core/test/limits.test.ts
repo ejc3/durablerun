@@ -43,9 +43,21 @@ describe('mapLimit', () => {
       if (item === 1) await slow
       return item
     })
-    await expect(outcome).rejects.toThrow('boom')
-    releaseSlow()
     await new Promise((resolve) => setTimeout(resolve, 0))
+    releaseSlow()
+    await expect(outcome).rejects.toThrow('boom')
     expect(started).toEqual([0, 1])
+  })
+
+  it('settles every started call before it rejects', async () => {
+    const finished: number[] = []
+    const outcome = mapLimit([0, 1, 2, 3], 4, async (item) => {
+      await new Promise((resolve) => setTimeout(resolve, item === 0 ? 0 : 20))
+      if (item === 0) throw new Error('boom')
+      finished.push(item)
+      return item
+    })
+    await expect(outcome).rejects.toThrow('boom')
+    expect(finished).toEqual([1, 2, 3])
   })
 })
