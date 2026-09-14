@@ -96,6 +96,16 @@ const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.ha
 ) => boolean
 
 /**
+ * The columns a successor run inherits from the run it replaces, in insert order
+ * and in SELECT order over the fenced parent `f`. Both successor sites (a user
+ * retry in `fail`, an infrastructure successor in the claim-timeout sweep) splice
+ * these, so one site cannot carry a column the other drops.
+ */
+const SUCCESSOR_CARRIED_COLUMNS = 'wake_event, event_payload, wake_step, run_db, created_at_ms'
+const SUCCESSOR_CARRIED_VALUES =
+  'f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms'
+
+/**
  * Classify and read a wake once before constructing its SQL shape.
  *
  * Task code shares this realm and may add an inherited `inSeconds` property
@@ -1058,10 +1068,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
       'runs',
       `INSERT INTO runs
          (run_id, queue, task_id, attempt, state, available_at_ms,
-          wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
+          ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
        SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
               f.fence_at_ms + ${infraDelayMs},
-              f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
+              ${SUCCESSOR_CARRIED_VALUES},
               ${STAMP}, f.fence_at_ms
        FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
@@ -1466,11 +1476,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
         'runs',
         `INSERT INTO runs
            (run_id, queue, task_id, attempt, state, available_at_ms,
-            wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
+            ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
          SELECT ?, f.queue, f.task_id, f.attempt + 1,
                 CASE WHEN CAST(? AS BIGINT) <= 0 THEN 'pending' ELSE 'sleeping' END,
                 f.fence_at_ms + ?,
-                f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
+                ${SUCCESSOR_CARRIED_VALUES},
                 ${STAMP}, f.fence_at_ms
          FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
          WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}

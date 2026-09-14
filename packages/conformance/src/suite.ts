@@ -1749,6 +1749,64 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
+      it('both successor paths carry every inherited run column', async () => {
+        const carried = ['wake_event', 'event_payload', 'wake_step', 'run_db'] as const
+        // A carried wake must be legal: its payload's source event exists.
+        await f.raw.batch('carry-event', [
+          {
+            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                  VALUES (?, 'e-carry', '{"x":1}', 1000000)`,
+            args: [Q],
+          },
+        ])
+        const parkWake = (runId: string) => ({
+          sql: `UPDATE runs SET wake_event = 'e-carry', event_payload = '{"x":1}',
+                       wake_step = 'carry-step', run_db = 'carry-db'
+                WHERE run_id = ?`,
+          args: [runId],
+        })
+        const retried = await activatedRun('w-carry-retry')
+        await f.raw.batch('carry-park-retry', [parkWake(retried.runId)])
+        await f.store.fail(Q, retried.runId, retried.claimToken, '{"name":"Boom"}', {
+          delaySeconds: 30,
+        })
+        const timedOut = await activatedRun('w-carry-timeout')
+        await f.raw.batch('carry-park-timeout', [parkWake(timedOut.runId)])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        const swept = await f.store.sweep(Q, 10)
+        expect(swept.map((outcome) => outcome.kind)).toContain('claim-timeout')
+
+        await attributeExpectedFailure(
+          { kind: 'behavior', mutation: 'successor-carries-every-column' },
+          /successor dropped an inherited column/,
+          async () => {
+            for (const taskId of [retried.taskId, timedOut.taskId]) {
+              const [rows] = await f.raw.batch(
+                'carry-read',
+                [
+                  {
+                    sql: `SELECT attempt, ${carried.join(', ')} FROM runs
+                          WHERE task_id = ? ORDER BY attempt`,
+                    args: [taskId],
+                  },
+                ],
+                'read',
+              )
+              const [parent, successor] = rows?.rows ?? []
+              if (!parent || !successor) throw new Error(`task ${taskId} has no successor run`)
+              for (const column of carried) {
+                if (successor[column] !== parent[column]) {
+                  throw new Error(
+                    `successor dropped an inherited column: ${column} on task ${taskId}`,
+                  )
+                }
+              }
+            }
+          },
+        )
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
       it('leaves a claimed run unchanged when infrastructure retries exceed the protocol cap', async () => {
         const run = await activatedRun('w-over-infra-cap')
         await f.raw.batch('corrupt-infra-retry-cap', [

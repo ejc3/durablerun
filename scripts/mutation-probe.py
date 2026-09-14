@@ -637,6 +637,15 @@ MUTATION_SPECS = [
         "a replayed failure re-inserts a successor that has since been claimed",
     ),
     (
+        "successor-carries-every-column",
+        "packages/store-libsql/src/store.ts",
+        "const SUCCESSOR_CARRIED_VALUES =\n"
+        "  'f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms'",
+        "const SUCCESSOR_CARRIED_VALUES =\n"
+        "  'f.wake_event, f.event_payload, NULL, f.run_db, f.fence_at_ms' // MUTATION",
+        "successor runs stop inheriting the parked wake step",
+    ),
+    (
         "successor-attempt-identity",
         "packages/store-libsql/src/fragments.ts",
         " AND s.task_id = ${task}\n             AND s.attempt = ${attempt})`",
@@ -4732,6 +4741,13 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance retry failure replay preserves progress before and after the successor is claimed",
         "mutation-verdict:behavior:successor-ownership",
+    ),
+    "successor-carries-every-column": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule both successor paths carry every inherited run column",
+        "mutation-verdict:behavior:successor-carries-every-column",
+        "packages/conformance/src/suite.ts",
     ),
     "successor-attempt-identity": ExpectedVerdict(
         "behavior",
@@ -9368,7 +9384,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 423:
+        if len(MUTATIONS) != 424:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
