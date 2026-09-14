@@ -1356,9 +1356,9 @@ async function seedBase(f: StoreFixture): Promise<void> {
       sql(
         `INSERT INTO tasks
            (task_id, queue, task_name, params, retry_strategy, max_attempts,
-            state, attempts, infra_retries, enqueue_at_ms, created_at_ms)
+            state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms)
          VALUES (?, ?, 'canary', '{}', '{"kind":"none"}', 1,
-                 'completed', 0, 0, ?, ?)`,
+                 'completed', 0, 0, '{"canary":true}', ?, ?)`,
         [CANARY_TASK, Q, NOW, NOW],
       ),
       sql(

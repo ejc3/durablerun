@@ -9,6 +9,7 @@ import {
   type SqlResult,
   type SqlRow,
   decodeBoundedInteger,
+  decodeTaskResult,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
@@ -164,6 +165,8 @@ const SNAPSHOT_PROJECTIONS = [
       'attempts',
       'max_attempts',
       'infra_retries',
+      'completed_payload',
+      'failure_reason',
       'fence_stamp',
     ]),
   },
@@ -522,6 +525,12 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
   for (const task of rows.tasks) {
     const taskId = text(task, 'task_id')
     const state = text(task, 'state')
+    try {
+      decodeTaskResult(taskId, task)
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error
+      add('task-outcome/contradicts-state', taskId)
+    }
     const counters = taskCounters.get(taskId)
     if (!counters) throw new Error(`counter snapshot missing task '${taskId}'`)
     const ownedRuns = runsByTask.get(taskId) ?? []
