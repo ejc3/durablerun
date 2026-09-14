@@ -9,7 +9,9 @@ import {
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
+  SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SqlExecutor,
+  type SqlRow,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
@@ -1799,11 +1801,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             exhausted.taskId,
             { state: 'failed', failureReasonJson: '{"name":"Final"}' },
           ],
-          [
-            'retried live',
-            retried.taskId,
-            { state: 'sleeping' },
-          ],
+          ['retried live', retried.taskId, { state: 'sleeping' }],
           [
             'cancelled',
             cancelled.taskId,
@@ -1895,7 +1893,36 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('both successor paths carry every inherited run column', async () => {
-        const carried = ['wake_event', 'event_payload', 'wake_step', 'run_db'] as const
+        const seeded: Record<(typeof SUCCESSOR_CARRIED_RUN_COLUMNS)[number], string> = {
+          wake_event: 'e-carry',
+          event_payload: '{"x":1}',
+          wake_step: 'carry-step',
+          run_db: 'carry-db',
+        }
+        // Every other runs column: a successor sets each of these for itself.
+        const successorOwned = [
+          'run_id',
+          'queue',
+          'task_id',
+          'attempt',
+          'state',
+          'claimed_by',
+          'claim_gen',
+          'activated_gen',
+          'relaunch_count',
+          'lease_ms',
+          'claim_expires_at_ms',
+          'heartbeat_at_ms',
+          'available_at_ms',
+          'started_at_ms',
+          'completed_at_ms',
+          'failed_at_ms',
+          'result',
+          'failure_reason',
+          'created_at_ms',
+          'fence_stamp',
+          'fence_at_ms',
+        ]
         // A carried wake must be legal: its payload's source event exists.
         await f.raw.batch('carry-event', [
           {
@@ -1905,10 +1932,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         const parkWake = (runId: string) => ({
-          sql: `UPDATE runs SET wake_event = 'e-carry', event_payload = '{"x":1}',
-                       wake_step = 'carry-step', run_db = 'carry-db'
+          sql: `UPDATE runs
+                SET ${SUCCESSOR_CARRIED_RUN_COLUMNS.map((column) => `${column} = ?`).join(', ')}
                 WHERE run_id = ?`,
-          args: [runId],
+          args: [...SUCCESSOR_CARRIED_RUN_COLUMNS.map((column) => seeded[column]), runId],
         })
         const retried = await activatedRun('w-carry-retry')
         await f.raw.batch('carry-park-retry', [parkWake(retried.runId)])
@@ -1921,29 +1948,31 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const swept = await f.store.sweep(Q, 10)
         expect(swept.map((outcome) => outcome.kind)).toContain('claim-timeout')
 
+        const families: SqlRow[][] = []
+        for (const taskId of [retried.taskId, timedOut.taskId]) {
+          const [rows] = await f.raw.batch(
+            'carry-read',
+            [{ sql: `SELECT * FROM runs WHERE task_id = ? ORDER BY attempt`, args: [taskId] }],
+            'read',
+          )
+          const family = rows?.rows ?? []
+          if (family.length !== 2) throw new Error(`task ${taskId} has no successor run`)
+          families.push(family)
+        }
+        for (const [, successor] of families) {
+          expect(
+            Object.keys(successor ?? {}).sort(),
+            'every runs column is either carried or successor-owned',
+          ).toEqual([...SUCCESSOR_CARRIED_RUN_COLUMNS, ...successorOwned].sort())
+        }
         await attributeExpectedFailure(
           { kind: 'behavior', mutation: 'successor-carries-every-column' },
           /successor dropped an inherited column/,
           async () => {
-            for (const taskId of [retried.taskId, timedOut.taskId]) {
-              const [rows] = await f.raw.batch(
-                'carry-read',
-                [
-                  {
-                    sql: `SELECT attempt, ${carried.join(', ')} FROM runs
-                          WHERE task_id = ? ORDER BY attempt`,
-                    args: [taskId],
-                  },
-                ],
-                'read',
-              )
-              const [parent, successor] = rows?.rows ?? []
-              if (!parent || !successor) throw new Error(`task ${taskId} has no successor run`)
-              for (const column of carried) {
-                if (successor[column] !== parent[column]) {
-                  throw new Error(
-                    `successor dropped an inherited column: ${column} on task ${taskId}`,
-                  )
+            for (const [parent, successor] of families) {
+              for (const column of SUCCESSOR_CARRIED_RUN_COLUMNS) {
+                if (successor?.[column] !== parent?.[column]) {
+                  throw new Error(`successor dropped an inherited column: ${column}`)
                 }
               }
             }

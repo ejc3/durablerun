@@ -42,6 +42,19 @@ export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 export const REASON_CANCELLED = '{"name":"$Cancelled"}'
 
 /**
+ * The run columns a successor run copies unchanged from the run it replaces: the
+ * parked wake and the run database. Both dialects splice this list into both
+ * successor inserts (a user retry in `fail`, an infrastructure successor in the
+ * claim-timeout sweep), and the conformance suite seeds and compares every entry.
+ */
+export const SUCCESSOR_CARRIED_RUN_COLUMNS = [
+  'wake_event',
+  'event_payload',
+  'wake_step',
+  'run_db',
+] as const
+
+/**
  * The tables that carry write provenance (§3.4 rule 8): every one of them is
  * the target of some compare-and-set, and each must have `fence_stamp TEXT`
  * and `fence_at_ms INTEGER`. This list is the CONTRACT — every dialect

@@ -25,6 +25,7 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   STAMP,
+  SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
@@ -97,15 +98,9 @@ const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.ha
   key: PropertyKey,
 ) => boolean
 
-/**
- * The columns a successor run inherits from the run it replaces, in insert order
- * and in SELECT order over the fenced parent `f`. Both successor sites (a user
- * retry in `fail`, an infrastructure successor in the claim-timeout sweep) splice
- * these, so one site cannot carry a column the other drops.
- */
-const SUCCESSOR_CARRIED_COLUMNS = 'wake_event, event_payload, wake_step, run_db, created_at_ms'
-const SUCCESSOR_CARRIED_VALUES =
-  'f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms'
+/** The successor insert's carried columns, and their values over the fenced parent `f`. */
+const SUCCESSOR_CARRIED_COLUMNS = SUCCESSOR_CARRIED_RUN_COLUMNS.join(', ')
+const SUCCESSOR_CARRIED_VALUES = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `f.${c}`).join(', ')
 
 /**
  * Classify and read a wake once before constructing its SQL shape.
@@ -1079,10 +1074,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'runs',
       `INSERT INTO runs
          (run_id, queue, task_id, attempt, state, available_at_ms,
-          ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
+          created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
        SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
               f.fence_at_ms + ${infraDelayMs},
-              ${SUCCESSOR_CARRIED_VALUES},
+              f.fence_at_ms, ${SUCCESSOR_CARRIED_VALUES},
               ${STAMP}, f.fence_at_ms
        FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
@@ -1478,11 +1473,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         'runs',
         `INSERT INTO runs
            (run_id, queue, task_id, attempt, state, available_at_ms,
-            ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
+            created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
          SELECT ?, f.queue, f.task_id, f.attempt + 1,
                 CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
                 f.fence_at_ms + ?,
-                ${SUCCESSOR_CARRIED_VALUES},
+                f.fence_at_ms, ${SUCCESSOR_CARRIED_VALUES},
                 ${STAMP}, f.fence_at_ms
          FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
          WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
