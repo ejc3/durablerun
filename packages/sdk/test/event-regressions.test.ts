@@ -206,14 +206,17 @@ describe('event regressions', () => {
     const spawned = await f.store.spawn(Q, 'waiter', '{}')
     expect(await pass(f, reg, 'w1')).toEqual({ kind: 'suspended' })
     await f.store.emitEvent(Q, 'go', '{"real":true}')
-    expect(await pass(f, reg, 'w2')).toEqual({ kind: 'suspended' })
-    const outcome = await pass(f, reg, 'w3')
+    // Every observation sits under the verdict label: an unlabelled assertion
+    // that failed first would hide the attributable failure from the probe.
+    const woken = await pass(f, reg, 'w2')
+    const replayed = woken.kind === 'suspended' ? await pass(f, reg, 'w3') : undefined
     const result = await f.store.getTaskResult(Q, spawned.taskId)
     expect(
-      { outcome, result },
+      { woken, replayed, result },
       'mutation-verdict:behavior:sdk-owned-event-timeout-discriminant',
     ).toEqual({
-      outcome: { kind: 'completed' },
+      woken: { kind: 'suspended' },
+      replayed: { kind: 'completed' },
       result: { state: 'completed', completedPayloadJson: '"{\\"real\\":true}"' },
     })
     f.close()
