@@ -882,8 +882,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   stacked PRs:
   - **PR3.5a:** core, driver, and SDK shapes, plus stale spec and script
     comments, and this milestone record.
-  - **PR3.5b:** the store SQL builders in both dialects and `TaskResult` as a
-    discriminated union.
+  - **PR3.5b:** one successor carried-column definition per dialect, a single
+    cancellation-deadline bind, the spawn winner's redundant tiebreak removed,
+    `mapLimit` and `clampLimit` hoisted into core, and stores that refuse a task
+    row whose outcome contradicts its state.
   - **PR3.5c:** the conformance and fuzz helpers.
   - Rejected: deleting the `WakeSignals` port. It has no implementation, but it
     is exported from the published `@durablerun/core` barrel, so deleting it
@@ -892,6 +894,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Rejected: unifying core `WakeSignals` with the driver's `WakeRequest` and
     `WakeScheduler`. All three are published exports, so unifying them changes
     published interfaces, which belongs in a deliberate API change.
+  - Rejected: a `TaskResult` discriminated union. Every consumer that reads
+    `completedPayloadJson` without narrowing on state stops compiling, including
+    the published example, so the stores refuse impossible rows instead.
+  - Rejected: wrappers for the owner `EXISTS` guard and the terminal-or-sole-live
+    guard. Their predicates already have single definitions in `fragments.ts`,
+    enforced by the fragment lint; the SQL around them differs at every site, and a
+    wrapper would move 24 mutation-registered guard texts behind interpolation.
+  - Rejected: a stamped-fence helper. Each site is already one `b.fence(...)`
+    expression, so a helper would rename it without removing a second copy.
+  - Rejected: hoisting the persisted-row decoders into core. They are identical in
+    both stores, but `persistedRowInteger` owns a type-level mutant bound to the
+    libSQL typecheck project; moving it needs a typecheck project the mutation
+    registry does not have, a registry-wide change that requires the full audit.
   - Rejected: removing `retryDelaySeconds`. It is a working function in the
     published `@durablerun/core` barrel, so deleting it breaks consumers
     rather than simplifying the engine.
