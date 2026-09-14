@@ -46,8 +46,9 @@ export function testIdSource(
  * A database migrated to the current schema by default, with the engine clock
  * frozen when `nowMs` is given. It is in memory unless `url` names another
  * database, which the chaos tests use to share a file with real host
- * processes. Those hosts open the file themselves, so no test-only default here
- * can reach a real process. Admin conformance can request the
+ * processes. Those hosts open the file themselves, but everything written here
+ * lands in that file: `nowMs` stores a frozen clock that every process using the
+ * file then reads, so do not combine it with a shared `url`. Admin conformance can request the
  * same fixture before migration with `migrate: false`.
  *
  * Four lines, and every test file that wanted a database wrote its own copy

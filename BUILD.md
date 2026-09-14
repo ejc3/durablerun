@@ -889,6 +889,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     is exported from the published `@durablerun/core` barrel, so deleting it
     breaks consumers that import the type. Removing a published export belongs
     in a deliberate API change, not a behavior-preserving sweep.
+  - Rejected: unifying core `WakeSignals` with the driver's `WakeRequest` and
+    `WakeScheduler`. All three are published exports, so unifying them changes
+    published interfaces, which belongs in a deliberate API change.
   - Rejected: removing `retryDelaySeconds`. It is a working function in the
     published `@durablerun/core` barrel, so deleting it breaks consumers
     rather than simplifying the engine.

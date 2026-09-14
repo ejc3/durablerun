@@ -5,12 +5,13 @@
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #
 # Layout is maximum-concurrency: phase 1 runs every Probe*.cfg vacuity probe
-# at once; phase 2 runs the exhaustive-safety scope AND every liveness
-# property group (SchedulerLiveness<g>.cfg) as concurrent TLC processes with
+# at once; phase 2 runs the exhaustive-safety scope AND the five liveness
+# property groups (SchedulerLiveness1-5.cfg, listed explicitly in the loops
+# below, so a new group must be added there) as concurrent TLC processes with
 # explicit worker and heap budgets. Liveness is split into groups because the
-# temporal check's final pass is sequential per process: the cheap properties
-# share a group, and each heavy fairness property gets its own process and
-# core. Every group uses `-lncheck final` (skip the periodic mid-run passes;
+# temporal check's final pass is sequential per process: groups 1-2 carry the
+# cheap properties three at a time, and each heavy fairness property (groups
+# 3-5) gets its own process and core. Every group uses `-lncheck final` (skip the periodic mid-run passes;
 # a green gate re-checks everything at the end anyway; on a failure, rerun a
 # single group without it to localize).
 #
