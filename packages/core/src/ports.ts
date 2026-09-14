@@ -192,3 +192,9 @@ export interface Launcher {
 export interface Ending extends LaunchIdentity {
   kind: 'completed' | 'failed' | 'crashed' | 'timeout' | 'unknown'
 }
+
+/** Advisory accelerators (§3.9 port 5); every method is fire-and-forget. */
+export interface WakeSignals {
+  ping(queue: string): void
+  alarmAt?(queue: string, epochMs: number): void
+}

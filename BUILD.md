@@ -885,6 +885,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - **PR3.5b:** the store SQL builders in both dialects and `TaskResult` as a
     discriminated union.
   - **PR3.5c:** the conformance and fuzz helpers.
+  - Rejected: deleting the `WakeSignals` port. It has no implementation, but it
+    is exported from the published `@durablerun/core` barrel, so deleting it
+    breaks consumers that import the type. Removing a published export belongs
+    in a deliberate API change, not a behavior-preserving sweep.
   - Rejected: removing `retryDelaySeconds`. It is a working function in the
     published `@durablerun/core` barrel, so deleting it breaks consumers
     rather than simplifying the engine.
