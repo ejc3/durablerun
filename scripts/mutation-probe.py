@@ -4314,9 +4314,9 @@ MUTATION_SPECS.extend(
         (
             "sdk-context-captured-json-parse",
             "packages/sdk/src/context.ts",
-            "    const result = parseTaskValueJson(stateJson) as T",
-            "    const result = JSON.parse(stateJson) as T // MUTATION",
-            "the executing step path resolves mutable ambient JSON.parse after task initialization",
+            "    const value = parseTaskValueJson(stateJson)",
+            "    const value = JSON.parse(stateJson) // MUTATION",
+            "the executing checkpoint commit resolves mutable ambient JSON.parse after task initialization",
         ),
         (
             "sdk-context-captured-json-stringify",
@@ -4451,17 +4451,15 @@ MUTATION_SPECS.extend(
         (
             "sdk-owned-event-timeout-discriminant",
             "packages/sdk/src/context.ts",
-            "      await this.commitMarker(key, serializeTaskValue('event wake marker', memo))\n"
-            "      if (taskHasOwn(memo, 'timedOut') && memo.timedOut === true) {",
-            "      await this.commitMarker(key, serializeTaskValue('event wake marker', memo))\n"
-            "      if (memo.timedOut === true) { // MUTATION",
+            "  if (taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true) {",
+            "  if ((memo as { timedOut: unknown }).timedOut === true) { // MUTATION",
             "an inherited timedOut property turns an emitted event into a timeout",
         ),
         (
             "sdk-owned-event-payload-discriminant",
             "packages/sdk/src/context.ts",
-            "      const memo = taskHasOwn(wake, 'payloadJson')",
-            "      const memo = 'payloadJson' in wake // MUTATION",
+            "      const memo: EventMemo = taskHasOwn(wake, 'payloadJson')",
+            "      const memo: EventMemo = 'payloadJson' in wake // MUTATION",
             "an inherited payloadJson property turns a timeout into a forged delivery",
         ),
         (

@@ -191,7 +191,11 @@ describe('event regressions', () => {
             value: true,
           })
           try {
-            return await ctx.awaitEvent('go')
+            // Pass 2 resolves through the carried wake and then suspends; pass 3
+            // replays the committed memo. Both read the payload under pollution.
+            const payload = await ctx.awaitEvent('go')
+            await ctx.sleepFor(0)
+            return payload
           } finally {
             if (descriptor === undefined) Reflect.deleteProperty(Object.prototype, 'timedOut')
             else Object.defineProperty(Object.prototype, 'timedOut', descriptor)
@@ -202,7 +206,8 @@ describe('event regressions', () => {
     const spawned = await f.store.spawn(Q, 'waiter', '{}')
     expect(await pass(f, reg, 'w1')).toEqual({ kind: 'suspended' })
     await f.store.emitEvent(Q, 'go', '{"real":true}')
-    const outcome = await pass(f, reg, 'w2')
+    expect(await pass(f, reg, 'w2')).toEqual({ kind: 'suspended' })
+    const outcome = await pass(f, reg, 'w3')
     const result = await f.store.getTaskResult(Q, spawned.taskId)
     expect(
       { outcome, result },
