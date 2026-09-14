@@ -10,8 +10,8 @@ export function clampLimit(limit: number): number {
 /**
  * Run `fn` over `items` with at most `width` concurrent calls, preserving result
  * order. `width` must be a positive safe integer. Once one call rejects, no
- * further item starts; calls already running finish, and their results are
- * discarded.
+ * further item starts, and mapLimit rejects with that first error only after
+ * every started call has settled, so no work continues after it returns.
  */
 export async function mapLimit<T, R>(
   items: readonly T[],
@@ -23,18 +23,18 @@ export async function mapLimit<T, R>(
   }
   const results = new Array<R>(items.length)
   let next = 0
-  let failed = false
+  let failure: { error: unknown } | undefined
   const workers = Array.from({ length: Math.min(width, items.length) }, async () => {
-    while (!failed && next < items.length) {
+    while (failure === undefined && next < items.length) {
       const index = next++
       try {
         results[index] = await fn(items[index] as T)
       } catch (error) {
-        failed = true
-        throw error
+        if (failure === undefined) failure = { error }
       }
     }
   })
   await Promise.all(workers)
+  if (failure !== undefined) throw failure.error
   return results
 }
