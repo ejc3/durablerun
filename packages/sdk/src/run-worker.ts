@@ -84,11 +84,8 @@ function infrastructureOutcome(
       return { kind: 'lease-lost' }
     case 'store-unavailable':
       return { kind: 'aborted' }
-    default: {
-      const unhandled: never = control
-      void unhandled
-      return undefined
-    }
+    default:
+      return control satisfies never
   }
 }
 

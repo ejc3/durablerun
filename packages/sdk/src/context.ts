@@ -91,11 +91,26 @@ type WakeOutcome<W> = W extends unknown ? Omit<W, 'event' | 'step'> : never
  */
 type EventMemo = WakeOutcome<EventWake>
 
+/** A memo that recorded a timeout, told apart by an own property a polluted prototype cannot forge. */
+function isTimedOutMemo(memo: EventMemo): memo is Extract<EventMemo, { timedOut: true }> {
+  return taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true
+}
+
 function eventMemoPayload(name: string, memo: EventMemo): string {
-  if (taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true) {
-    throw new EventTimeoutError(name)
-  }
-  return (memo as { payloadJson: string }).payloadJson
+  if (isTimedOutMemo(memo)) throw new EventTimeoutError(name)
+  return memo.payloadJson
+}
+
+/** A wake that delivered a payload, told apart by an own property. */
+function isPayloadWake(wake: EventWake): wake is Extract<EventWake, { payloadJson: string }> {
+  return taskHasOwn(wake, 'payloadJson')
+}
+
+/** The memo a consumed wake records. A new EventWake outcome stops this compiling. */
+function memoOfWake(wake: EventWake): EventMemo {
+  if (isPayloadWake(wake)) return { payloadJson: wake.payloadJson }
+  const timedOut: Extract<EventWake, { timedOut: true }> = wake
+  return { timedOut: timedOut.timedOut }
 }
 
 /** One execution pass over a claimed run. */
@@ -269,10 +284,7 @@ export class ReplayContext implements TaskContext {
     // await from stealing this one's wake.
     const wake = this.takeWake(key)
     if (wake) {
-      const memo: EventMemo = taskHasOwn(wake, 'payloadJson')
-        ? { payloadJson: (wake as { payloadJson: string }).payloadJson }
-        : { timedOut: true }
-      return this.commitEventMemo(name, key, memo)
+      return this.commitEventMemo(name, key, memoOfWake(wake))
     }
     const outcome = await this.#controls.storeCall(() =>
       this.#store.awaitEvent(

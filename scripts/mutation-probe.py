@@ -4451,15 +4451,15 @@ MUTATION_SPECS.extend(
         (
             "sdk-owned-event-timeout-discriminant",
             "packages/sdk/src/context.ts",
-            "  if (taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true) {",
-            "  if ((memo as { timedOut: unknown }).timedOut === true) { // MUTATION",
+            "  return taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true",
+            "  return (memo as { timedOut: unknown }).timedOut === true // MUTATION",
             "an inherited timedOut property turns an emitted event into a timeout",
         ),
         (
             "sdk-owned-event-payload-discriminant",
             "packages/sdk/src/context.ts",
-            "      const memo: EventMemo = taskHasOwn(wake, 'payloadJson')",
-            "      const memo: EventMemo = 'payloadJson' in wake // MUTATION",
+            "  return taskHasOwn(wake, 'payloadJson')",
+            "  return 'payloadJson' in wake // MUTATION",
             "an inherited payloadJson property turns a timeout into a forged delivery",
         ),
         (
