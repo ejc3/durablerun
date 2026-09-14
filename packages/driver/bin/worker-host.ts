@@ -5,7 +5,7 @@
  */
 import { systemClock, systemIdSource } from '@durablerun/core'
 import { createWorkerServer } from '@durablerun/driver'
-import type { TaskRegistry } from '@durablerun/sdk'
+import type { TaskHandler, TaskRegistry } from '@durablerun/sdk'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 
 const [dbPath, portArg, secret, driverUrl] = process.argv.slice(2)
@@ -16,7 +16,7 @@ const admin = new LibsqlStoreAdmin(raw)
 await admin.migrate()
 const store = new LibsqlSchedulerStore(raw, systemIdSource())
 
-const registry: TaskRegistry = new Map([
+const registry: TaskRegistry = new Map<string, TaskHandler>([
   [
     'chaos-steps',
     async (ctx, params) => {
