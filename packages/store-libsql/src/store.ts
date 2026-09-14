@@ -33,9 +33,11 @@ import {
   type SweptRun,
   type TaskResult,
   type WakeSpec,
+  clampLimit,
   decodeBoundedInteger,
   durationToMs,
   fenceSetAt,
+  mapLimit,
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
@@ -377,24 +379,6 @@ LIMIT ?`
 /** Bounded-concurrency map preserving order (sweep pipelining — the fencing
  * discipline requires per-item atomicity, never sequential issuance). */
 const SWEEP_PIPELINE_WIDTH = 8
-async function mapLimit<T, R>(
-  items: T[],
-  width: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length)
-  let next = 0
-  const workers = Array.from({ length: Math.min(width, items.length) }, async () => {
-    for (;;) {
-      const index = next++
-      if (index >= items.length) return
-      results[index] = await fn(items[index] as T)
-    }
-  })
-  await Promise.all(workers)
-  return results
-}
-
 /**
  * SchedulerStore on SQLite/libsql (DESIGN.md §3.4). Every method is ONE
  * atomic labeled batch; single-item transitions go through FencedBatch so
@@ -2015,12 +1999,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     }
     return { emitted: false }
   }
-}
-
-/** SQLite parses LIMIT -1 as unlimited (reviewed): clamp and floor. */
-function clampLimit(limit: number): number {
-  if (!Number.isFinite(limit)) throw new RangeError(`limit ${limit}`)
-  return Math.max(0, Math.floor(limit))
 }
 
 /**
