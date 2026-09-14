@@ -4,15 +4,15 @@
 # sim harness proves the implementation refines it (labeled batch ≙ TLA
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #
-# Layout is maximum-concurrency: phase 1 runs all five vacuity probes at
-# once; phase 2 runs the exhaustive-safety scope AND the three liveness
-# property groups as four concurrent TLC processes with explicit worker and
-# heap budgets. Liveness is split into groups because the temporal check's
-# final pass is sequential per process — three smaller product graphs
-# checked on three cores beat one big graph on one core — and it uses
-# `-lncheck final` (skip the periodic mid-run passes; a green gate
-# re-checks everything at the end anyway; on a failure, rerun a single
-# group without it to localize).
+# Layout is maximum-concurrency: phase 1 runs every Probe*.cfg vacuity probe
+# at once; phase 2 runs the exhaustive-safety scope AND every liveness
+# property group (SchedulerLiveness<g>.cfg) as concurrent TLC processes with
+# explicit worker and heap budgets. Liveness is split into groups because the
+# temporal check's final pass is sequential per process: the cheap properties
+# share a group, and each heavy fairness property gets its own process and
+# core. Every group uses `-lncheck final` (skip the periodic mid-run passes;
+# a green gate re-checks everything at the end anyway; on a failure, rerun a
+# single group without it to localize).
 #
 # TLA_SCOPE=ci replaces phase 2 with SchedulerCI.cfg (safety + liveness at
 # the CI-sized scope, ~500k states) — the PR gate on small runners.
