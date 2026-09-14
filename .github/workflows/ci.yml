@@ -174,6 +174,45 @@ jobs:
               base.write_bytes(previous.replace(old, f"'{version}'".encode()))
               print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
           PY
+      - name: Bridge re-aimed mutation targets in the older base registry
+        # PR3.5a reshaped the SDK guards that three registered mutations target,
+        # so the base registry's find strings for them no longer occur in this
+        # tree. Only this exact base registry needs the one-release bridge.
+        # Replace those three spec entries with this tree's, never checker
+        # logic, inventory, or verdicts. The next base carries them and skips.
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          base = Path('/tmp/base/scripts/mutation-probe.py')
+          previous = base.read_text()
+          if hashlib.sha256(previous.encode()).hexdigest() != '0ee074470a4315d43f41d6e6947b72a43512dd0b1a423951487d28ffbf0d0dd8':
+              print('Base registry does not need the re-aim bridge.')
+              raise SystemExit(0)
+          candidate = Path('scripts/mutation-probe.py').read_text()
+          def entry(text, name):
+              key = f'            "{name}",\n'
+              if text.count(key) != 1:
+                  raise SystemExit(f'{name}: the re-aim bridge requires exactly one spec entry.')
+              start = text.rindex('        (\n', 0, text.index(key))
+              end = text.index('        ),\n', start) + len('        ),\n')
+              return start, end
+          repaired = previous
+          for name in (
+              'sdk-context-captured-json-parse',
+              'sdk-owned-event-timeout-discriminant',
+              'sdk-owned-event-payload-discriminant',
+          ):
+              start, end = entry(repaired, name)
+              new_start, new_end = entry(candidate, name)
+              old_entry = repaired[start:end]
+              new_entry = candidate[new_start:new_end]
+              if old_entry.splitlines()[:3] != new_entry.splitlines()[:3]:
+                  raise SystemExit(f'{name}: the re-aim bridge may change only find, replacement, and description.')
+              repaired = repaired[:start] + new_entry + repaired[end:]
+          base.write_text(repaired)
+          print('Re-aimed three mutation specs; all other base registry bytes are unchanged.')
+          PY
       - name: The base branch's checkers, applied to this tree
         env:
           NODE_PATH: ${{ github.workspace }}/node_modules
