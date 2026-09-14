@@ -1698,6 +1698,48 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
+      it('getTaskResult refuses a task row whose outcome contradicts its state', async () => {
+        const completed = await activatedRun('w-result-completed')
+        await f.store.complete(Q, completed.runId, completed.claimToken, '{"out":1}')
+        const failed = await activatedRun('w-result-failed')
+        await f.store.fail(Q, failed.runId, failed.claimToken, '{"name":"Boom"}', null)
+        const cancelled = await f.store.spawn(Q, 'job', '{}')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+        const live = await f.store.spawn(Q, 'job', '{}')
+        await f.raw.batch('corrupt-task-outcomes', [
+          {
+            sql: `UPDATE tasks SET completed_payload = NULL WHERE task_id = ?`,
+            args: [completed.taskId],
+          },
+          {
+            sql: `UPDATE tasks SET failure_reason = NULL WHERE task_id = ?`,
+            args: [failed.taskId],
+          },
+          {
+            sql: `UPDATE tasks SET failure_reason = NULL WHERE task_id = ?`,
+            args: [cancelled.taskId],
+          },
+          {
+            sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
+            args: [live.taskId],
+          },
+        ])
+        const rows = [
+          ['completed without payload', completed.taskId],
+          ['failed without reason', failed.taskId],
+          ['cancelled without reason', cancelled.taskId],
+          ['live with a payload', live.taskId],
+        ] as const
+        for (const [shape, taskId] of rows) {
+          const outcome = await f.store.getTaskResult(Q, taskId).then(
+            () => 'resolved',
+            (error: unknown) =>
+              error instanceof RangeError ? 'refused' : `threw ${String(error)}`,
+          )
+          expect(outcome, `${shape} must be refused`).toBe('refused')
+        }
+      })
+
       // fenceTwin('CompleteRun') — the swept zombie's complete is refused
       // with a before/after snapshot proving zero state change.
       it('a zombie complete after the sweep throws LeaseLostError and changes nothing', async () => {
