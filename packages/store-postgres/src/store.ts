@@ -25,7 +25,7 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   STAMP,
-  SUCCESSOR_CARRIED_RUN_COLUMNS,
+  SUCCESSOR_PARENT_COLUMNS,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
@@ -53,6 +53,7 @@ import {
   serializeTaskHeaders,
   serializeTaskValue,
   storageValueKind,
+  successorParentValues,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -99,10 +100,6 @@ const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.ha
   value: object,
   key: PropertyKey,
 ) => boolean
-
-/** The successor insert's carried columns, and their values over the fenced parent `f`. */
-const SUCCESSOR_CARRIED_COLUMNS = SUCCESSOR_CARRIED_RUN_COLUMNS.join(', ')
-const SUCCESSOR_CARRIED_VALUES = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `f.${c}`).join(', ')
 
 /**
  * Classify and read a wake once before constructing its SQL shape.
@@ -375,9 +372,13 @@ WHERE r.queue = ? AND r.state = 'running'
 ORDER BY r.claim_expires_at_ms, r.run_id
 LIMIT ?`
 
-/** Bounded-concurrency map preserving order (sweep pipelining — the fencing
- * discipline requires per-item atomicity, never sequential issuance). */
+/**
+ * The sweep runs its per-item batches at most this many at once through core
+ * `mapLimit`. The fencing discipline requires per-item atomicity, never
+ * sequential issuance.
+ */
 const SWEEP_PIPELINE_WIDTH = 8
+
 /**
  * SchedulerStore on PostgreSQL (DESIGN.md §3.4). Every method is ONE
  * atomic labeled batch; single-item transitions go through FencedBatch so
@@ -560,8 +561,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
-    const limit = clampLimit(requirePositiveInt('limit', opts.limit))
-    if (limit === 0) return []
+    const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
     // must drain via the successor-tick chain, never assume a full batch.
     const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
@@ -1049,10 +1049,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
       'runs',
       `INSERT INTO runs
          (run_id, queue, task_id, attempt, state, available_at_ms,
-          created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
+          ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
        SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
               f.fence_at_ms + ${infraDelayMs},
-              f.fence_at_ms, ${SUCCESSOR_CARRIED_VALUES},
+              ${successorParentValues('f')},
               ${STAMP}, f.fence_at_ms
        FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
@@ -1457,11 +1457,11 @@ export class PostgresSchedulerStore implements SchedulerStore {
         'runs',
         `INSERT INTO runs
            (run_id, queue, task_id, attempt, state, available_at_ms,
-            created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
+            ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
          SELECT ?, f.queue, f.task_id, f.attempt + 1,
                 CASE WHEN CAST(? AS BIGINT) <= 0 THEN 'pending' ELSE 'sleeping' END,
                 f.fence_at_ms + ?,
-                f.fence_at_ms, ${SUCCESSOR_CARRIED_VALUES},
+                ${successorParentValues('f')},
                 ${STAMP}, f.fence_at_ms
          FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
          WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}

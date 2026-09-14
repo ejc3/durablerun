@@ -55,6 +55,22 @@ export const SUCCESSOR_CARRIED_RUN_COLUMNS = [
 ] as const
 
 /**
+ * The runs columns a successor takes from its fenced parent, in insert order: its
+ * creation instant is the parent's fence instant, which is the failure, and the
+ * carried columns are copied unchanged. Both successor inserts splice these with
+ * `successorParentValues`, beside the identity, state, and fence columns they set.
+ */
+export const SUCCESSOR_PARENT_COLUMNS = ['created_at_ms', ...SUCCESSOR_CARRIED_RUN_COLUMNS].join(
+  ', ',
+)
+
+/** The values for `SUCCESSOR_PARENT_COLUMNS` over the fenced parent row `alias`. */
+export function successorParentValues(alias: string): string {
+  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)
+  return [`${alias}.fence_at_ms`, ...carried].join(', ')
+}
+
+/**
  * The tables that carry write provenance (§3.4 rule 8): every one of them is
  * the target of some compare-and-set, and each must have `fence_stamp TEXT`
  * and `fence_at_ms INTEGER`. This list is the CONTRACT — every dialect

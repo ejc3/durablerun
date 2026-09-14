@@ -638,9 +638,9 @@ MUTATION_SPECS = [
     ),
     (
         "successor-carries-every-column",
-        "packages/store-libsql/src/store.ts",
-        "const SUCCESSOR_CARRIED_VALUES = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `f.${c}`).join(', ')",
-        "const SUCCESSOR_CARRIED_VALUES = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `f.${c}`.replace('f.wake_step', 'NULL')).join(', ') // MUTATION",
+        "packages/core/src/contract.ts",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`.replace(`${alias}.wake_step`, 'NULL')) // MUTATION",
         "successor runs stop inheriting the parked wake step",
     ),
     (
