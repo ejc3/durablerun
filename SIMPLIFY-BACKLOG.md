@@ -8,6 +8,50 @@ the rest are pre-existing structure that belongs in a dedicated
 simplification PR, recorded here per the scope-reconciliation rule rather
 than silently dropped.
 
+## Status after the 2026-09-14 re-audit
+
+The findings below were re-audited against `main` at `06bba58` before the PR3.5
+sweep. Of the 40 deferred findings, 10 had already been fixed by later PRs, 6
+had changed shape, and 24 remained; the audit found 5 more. This section is the
+current record; the lists further down are the original 2026-07-24 findings,
+kept as written. The file is deleted when every finding has landed or been
+rejected with a reason (BUILD.md, current milestone, exit test 7).
+
+**Already fixed by later PRs (10):** the wake expression block in
+reschedule/suspendRun, the unused `MAX_EPOCH_MS`/`MAX_DURATION_MS`, the
+checkpoint LWW tail, the unpinned `NEXT_WAKE_SQL`, `notYet()`, the waits-gone
+DELETE, the reschedule/suspendRun wake decode and task mirror, the run-worker
+pump-teardown race, the LIVE-state list in the invariant checkers, and the
+CLAUDE.md confinement caps.
+
+**Landed in PR3.5a:** the wake union named once (`WakeSpec`), the suspension
+checkpoint pair named once (`CheckpointWrite`; `key` and `checkpointName` keep
+their names because `key` is a property of the public `SuspendSignal`), the
+heartbeat parameter renamed `extendLeaseSeconds`, the registry interval default
+bound once, one `listenLocal` helper, `createWakeServer` taking only `wake`, the
+chaos tests' database bootstrap through `openTestDb`, one `commitCheckpoint`
+for steps and await markers, one `EventMemo` type and resolver, one
+infrastructure-outcome mapping in `runClaimedRun`, and the stale TLC
+configuration and `tla.sh` headers.
+
+**Rejected:** five findings, each with its reason in BUILD.md under PR3.5.
+
+**Remaining:** the store items go to PR3.5b and the conformance and fuzz items
+to PR3.5c.
+
+**Found by the re-audit (5), not in the lists below:**
+
+- `runClaimedRun` repeated the lease-lost and store-outage mapping that
+  `trustedStoreOutcome` owns. Landed in PR3.5a.
+- `sweepClaimTimeout` spells the live-owner and terminal-owner split by hand
+  while `sweepLostLaunch` names it once. PR3.5b.
+- `complete` and `fail` share a hand-written terminal-or-sole-live CAS wrapper.
+  PR3.5b.
+- Two wake-accelerator vocabularies exist: core `WakeSignals` and driver
+  `WakeRequest`/`WakeScheduler`. Rejected; see BUILD.md.
+- `mapLimit`, `clampLimit`, `persistedRowInteger` and `decodeClaimedRun` are
+  byte-identical in both stores. PR3.5b.
+
 **Applied on pr3.1** (commits `572ab84`, `1d68119`, and the events
 mechanism commits):
 - runClaimedRun: one `infraOutcome` classifier for all five transition

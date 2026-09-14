@@ -876,10 +876,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   steps; rollback-failure halts the chain and surfaces in the result.
 
 - **PR3.5 simplification sweep** — IN PROGRESS. The findings recorded in
-  SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`: 10 of the
-  40 had already been fixed by later PRs (including the pump-teardown race),
-  6 had changed shape, 24 remained, and the audit found 5 more of the same
-  classes. It lands as three stacked PRs:
+  SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`; that file's
+  status section tracks each finding until it is deleted. It lands as three
+  stacked PRs:
   - **PR3.5a:** core, driver, and SDK shapes, plus stale spec and script
     comments, and this milestone record.
   - **PR3.5b:** the store SQL builders in both dialects and `TaskResult` as a
@@ -896,6 +895,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `checkpoints.status` columns. It needs a schema migration, and the poison
     matrix writes `delivered` wait rows that the status filters must keep
     excluding, so it is not a behavior-preserving simplification.
+  - Rejected: opening the host binaries' database through `openTestDb`. They
+    are real processes and must not inherit test-helper defaults.
+  - Rejected: opening `replay-equivalence.test.ts`'s database through
+    `openTestDb`. Its own `try`/`finally` closes the database even when
+    migration throws.
 
 ## Phase 4 — dialect matrix
 
