@@ -1759,6 +1759,76 @@ export class S {
         "a nested shared SQL file must be audited alongside TypeScript SQL templates",
     ),
     (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/src/status.ts": "const SQL = `SELECT completed_payload FROM tasks`\n",
+        },
+        "task outcome column completed_payload outside",
+        "an app that selects an outcome column is a second decoder",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/driver/src/inspect.ts": (
+                "export const reason = (row: Record<string, unknown>) => row.failure_reason\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "reading an outcome column from a row object is a second decoder",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/driver/src/inspect.ts": (
+                "export const reason = (row: Record<string, unknown>) => row['failure_reason']\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "an element access must not hide an outcome column inside a string",
+    ),
+    (
+        "outcome-lint.py",
+        {"packages/sdk/src/probe.ts": "const SQL = `SELECT FAILURE_REASON FROM tasks`\n"},
+        "task outcome column FAILURE_REASON outside",
+        "SQL identifiers are case-insensitive",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/nested/task-result.ts": (
+                "export const read = (row: { completed_payload: unknown }) => row.completed_payload\n"
+            ),
+        },
+        "task outcome column completed_payload outside",
+        "only core's exact top-level task-result.ts is exempt",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "packages/driver/bin/host.ts": "const SQL = `SELECT completed_payload FROM tasks`\n",
+        },
+        "task outcome column completed_payload outside",
+        "host binaries are production sources",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/contract.ts": (
+                "export const read = (row: { failure_reason: unknown }) => row.failure_reason\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "contract.ts may name the columns as data, but its code is still audited",
+    ),
+    (
+        "outcome-lint.py",
+        {"packages/README.md": "no sources\n"},
+        "refusing a vacuous audit",
+        "an empty harvest must not pass as a clean audit",
+    ),
+    (
         "fragment-lint.py",
         store(
             "const SQL = `SELECT 1 FROM runs WHERE state IN ('pending','running')`\n",
@@ -3846,6 +3916,62 @@ const pattern = /this\.db\.batch\(/
         store("const SQL = \"SELECT 'NOW()' AS label\"\n"),
         "a SQL data literal stays non-executable inside an ordinary TypeScript string",
     ),
+    (
+        "outcome-lint.py",
+        store("const SQL = `SELECT completed_payload, failure_reason FROM tasks`\n"),
+        "the stores own the outcome columns",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/task-result.ts": (
+                "export const TASK_RESULT_COLUMNS = 'state, completed_payload, failure_reason'\n"
+            ),
+        },
+        "core's decoder defines the outcome column list",
+    ),
+    (
+        "outcome-lint.py",
+        {"packages/conformance/src/invariants.ts": "const SQL = `SELECT failure_reason FROM tasks`\n"},
+        "the conformance oracle reads raw task state",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/contract.ts": (
+                "export const COLUMNS = ['failure_reason', 'completed_payload'] as const\n"
+            ),
+        },
+        "contract.ts names the columns as write-policy data",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/fenced-batch.ts": (
+                "// the engine writes JSON constants into failure_reason\nexport {}\n"
+            ),
+        },
+        "a comment naming an outcome column is not a read",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/test/status.test.ts": "const SQL = `UPDATE tasks SET completed_payload = NULL`\n",
+        },
+        "tests corrupt outcome rows on purpose and are not production sources",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/src/status.ts": (
+                "import { TASK_RESULT_COLUMNS } from '@durablerun/core'\n"
+                "export const SQL = `SELECT ${TASK_RESULT_COLUMNS} FROM tasks`\n"
+            ),
+        },
+        "a reader that selects the decoder's column list spells no outcome column",
+    ),
 ]
 
 GOOD_INVOCATIONS = [
@@ -3958,6 +4084,7 @@ def run(
             "batch-lint.py",
             "clock-lint.py",
             "fragment-lint.py",
+            "outcome-lint.py",
             "spec-ledger.py",
         }:
             (root / "scripts" / "source_lex.py").write_text(

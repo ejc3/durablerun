@@ -959,7 +959,8 @@ this, names an unknown state, or lacks an outcome column is refused with
 `RangeError`, never returned. Outside the stores, every production reader of a
 task outcome selects `TASK_RESULT_COLUMNS` and decodes the row through core's
 `decodeTaskResult`, so a second read path cannot report a row the store refuses.
-The conformance harness reads raw task state as its oracle.
+`scripts/outcome-lint.py` refuses any other production spelling of those
+columns. The conformance harness reads raw task state as its oracle.
 
 **Event-wake disposition:** a carried wake (`wake_event`/`event_payload`) is
 CONSUMED by the transition that ends the attempt that processed it
