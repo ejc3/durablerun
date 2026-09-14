@@ -34,23 +34,31 @@ for steps and await markers, one `EventMemo` type and resolver, one
 infrastructure-outcome mapping in `runClaimedRun`, and the stale TLC
 configuration and `tla.sh` headers.
 
-**Rejected:** five findings, each with its reason in BUILD.md under PR3.5.
+**Landed in PR3.5b:** the successor-insert columns built once in core
+(`SUCCESSOR_PARENT_COLUMNS`), the spawn cancellation deadline bound once, the
+spawn winner ordered by `attempt` alone, and `mapLimit` and `clampLimit`
+hoisted into core.
 
-**Remaining:** the store items go to PR3.5b and the conformance and fuzz items
-to PR3.5c.
+**Rejected:** each with its reason in BUILD.md under PR3.5. PR3.5a rejected
+five findings. PR3.5b rejected the task-liveness EXISTS guard wrapper, the
+terminal-or-sole-live CAS wrapper, the stamped-fence helper, the persisted-row
+decoder hoist, and the `sweepClaimTimeout` owner split.
+
+**Remaining:** the conformance and fuzz items, for PR3.5c.
 
 **Found by the re-audit (5), not in the lists below:**
 
 - `runClaimedRun` repeated the lease-lost and store-outage mapping that
   `trustedStoreOutcome` owns. Landed in PR3.5a.
 - `sweepClaimTimeout` spells the live-owner and terminal-owner split by hand
-  while `sweepLostLaunch` names it once. PR3.5b.
+  while `sweepLostLaunch` names it once. Rejected in PR3.5b; see BUILD.md.
 - `complete` and `fail` share a hand-written terminal-or-sole-live CAS wrapper.
-  PR3.5b.
+  Rejected in PR3.5b; see BUILD.md.
 - Two wake-accelerator vocabularies exist: core `WakeSignals` and driver
   `WakeRequest`/`WakeScheduler`. Rejected; see BUILD.md.
 - `mapLimit`, `clampLimit`, `persistedRowInteger` and `decodeClaimedRun` are
-  byte-identical in both stores. PR3.5b.
+  byte-identical in both stores. `mapLimit` and `clampLimit` landed in PR3.5b,
+  and the two decoders were rejected; see BUILD.md.
 
 **Applied on pr3.1** (commits `572ab84`, `1d68119`, and the events
 mechanism commits):

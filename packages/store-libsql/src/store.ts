@@ -1425,7 +1425,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * decideRetry over the user ordinal); the store applies the fenced
    * transition. This is the ONLY place tasks.attempts moves (the TLC-checked
    * AttemptAccounting shape). A retrying failure inserts the successor run
-   * (attempt+1, carrying wake_event/event_payload/run_db) in the same batch.
+   * (attempt+1, carrying SUCCESSOR_CARRIED_RUN_COLUMNS) in the same batch.
    */
   async fail(
     queue: string,

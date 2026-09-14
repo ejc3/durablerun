@@ -144,8 +144,9 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
   invariant in `conformance/src/invariants.ts` or a conformance case.
   `max_attempts` was modeled-but-unenforced while fuzz ran green.
 - Mirror discipline: every run transition mirrors `tasks.state`; successor-
-  creating paths (`fail`, sweep) carry `wake_event`/`event_payload`/`run_db`
-  and share guard shapes — check the two successor-insert sites for drift.
+  creating paths (`fail`, sweep) take core's `SUCCESSOR_PARENT_COLUMNS` and
+  share guard shapes. The conformance case "both successor paths carry every
+  inherited run column" checks the carried values on both paths.
 - Consumable state gets consumed: wakes clear on `reschedule`/`complete`
   ('consume'), carry on failure successors, and survive §3.8.2 deferral
   (`reschedule` 'preserve'). Timed-out waits are deleted at claim so emits

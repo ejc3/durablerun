@@ -334,8 +334,9 @@ tick():
          on the state guard now and the gen guard after the next claim.
        died mid-run (activated): $ClaimTimeout — insert the successor run
          (fresh UUIDv7, infra_retries+1 — NOT max_attempts — available_at
-         computed in SQL, carrying forward the run-DB pointer, wake_event,
-         and event_payload), fail the old run, update the task.
+         computed in SQL, carrying forward SUCCESSOR_CARRIED_RUN_COLUMNS:
+         the run-DB pointer, wake_event, event_payload, and wake_step), fail
+         the old run, update the task.
      Batch fencing (§3.4 rule 1): the FIRST statement is the guarded CAS
      transition; later statements key on the post-transition state plus the
      batch's own stamp — never on the pre-condition the CAS just consumed.
@@ -1125,8 +1126,8 @@ not depend on careful reading:
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
   three helper-marker cases, sixteen direct-marker cases, three title-owner
   cases, six verdict-inventory cases, seven question-delta cases, eleven
-  mutant-syntax cases, and four live-enrollment attacks across all 425 live
-  mutations. A separate generated coordinator surface injects 40 faults
+  mutant-syntax cases, and four live-enrollment attacks across every live
+  mutation. A separate generated coordinator surface injects 40 faults
   covering shard omission and overlap, wrong heads, missing/duplicate/extra
   results, process/report disagreement, and non-owned cleanup targets, plus
   unconfined execution, an unowned worker,
@@ -1497,9 +1498,15 @@ Costs and the consistency discipline (there are **no cross-DB transactions**):
    (`activated_gen < claim_gen`) reopen the same run — no attempt, no new row,
    their own capped relaunch counter; activated-but-dead runs cost an
    `infra_retries` increment (own generous cap), never `max_attempts` — which
-   counts only user-code failures. Successor runs carry forward the run-DB
-   pointer, `wake_event`, and `event_payload` on **every** path that creates
-   one (the sweep and the worker-side fail-with-retry alike).
+   counts only user-code failures. Successor runs carry forward core's
+   `SUCCESSOR_CARRIED_RUN_COLUMNS` (the run-DB pointer, `wake_event`,
+   `event_payload`, and `wake_step`) on **every** path that creates one (the
+   sweep and the worker-side fail-with-retry alike). Every other runs column a
+   successor sets for itself: its identity and attempt, its state and
+   availability, `created_at_ms` at the parent's failure instant, fresh claim,
+   lease, heartbeat, and relaunch fields, no outcome, and its own fence stamp.
+   The conformance case "both successor paths carry every inherited run
+   column" classifies every runs column as one or the other.
 3. **Events never fan out into other runs' DBs.** `emitEvent` is scheduler-plane
    only: first-write-wins event row + flip waiting runs to pending with the
    payload parked on the run row (`event_payload`, as in Absurd's `r_` table).

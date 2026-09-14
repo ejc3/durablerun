@@ -415,7 +415,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
     The verifier runs its classifier, source-owner, and generated-construction
-    surfaces across all **423 live mutations**. Every TypeScript replacement is
+    surfaces across every live mutation. Every TypeScript replacement is
     materialized and parsed before enrollment. Every mutant routed to Vitest
     also passes an incremental compiler value-binding comparison against its
     original source, so a newly unbound runtime identifier is rejected before
@@ -848,7 +848,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   evidence still permits repair findings to be bundled into a green commit.
 
 - **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5: retry_task revival, idempotency-key edge cases,
-  defer-unknown-task deploy rule. Carries two deferrals: cancellation
+  defer-unknown-task deploy rule. From PR3.5b: `decodeTaskResult` refuses a
+  failure reason on a live task, because no transition writes one today. If
+  `retryTask` keeps a revived task's last reason, as Absurd's `retry_task` does,
+  the same change relaxes that refusal and adds the conformance case that writes
+  such a row. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
   worker as a lost lease; the distinct AB001 signal and a 'cancelled'
   worker outcome need the store to distinguish "fence lost because task
@@ -882,10 +886,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   stacked PRs:
   - **PR3.5a:** core, driver, and SDK shapes, plus stale spec and script
     comments, and this milestone record.
-  - **PR3.5b:** one successor carried-column definition per dialect, a single
-    cancellation-deadline bind, the spawn winner's redundant tiebreak removed,
-    `mapLimit` and `clampLimit` hoisted into core, and stores that refuse a task
-    row whose outcome contradicts its state.
+  - **PR3.5b:** the successor's parent-taken columns defined once in core, a
+    single cancellation-deadline bind, the spawn winner's redundant tiebreak
+    removed, `mapLimit` and `clampLimit` hoisted into core, and one core decoder,
+    `decodeTaskResult`, that refuses a task row whose outcome contradicts its
+    state. Both stores and the dogfood status command decode through it,
+    `scripts/outcome-lint.py` refuses a second decoder, and an engine invariant
+    checks every snapshot against it.
   - **PR3.5c:** the conformance and fuzz helpers.
   - Rejected: deleting the `WakeSignals` port. It has no implementation, but it
     is exported from the published `@durablerun/core` barrel, so deleting it
@@ -907,6 +914,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     both stores, but `persistedRowInteger` owns a type-level mutant bound to the
     libSQL typecheck project; moving it needs a typecheck project the mutation
     registry does not have, a registry-wide change that requires the full audit.
+  - Rejected: naming `sweepClaimTimeout`'s live-owner and terminal-owner split the
+    way `sweepLostLaunch` does. Its live arm also carries the infra-retry headroom
+    condition, so the named fragments would need a parameter for it, and four
+    registered guard mutations match the split's current text.
+  - Rejected: a core record of the runs columns a successor sets for itself. Its
+    only consumer would be one conformance case, so DESIGN.md §3.8 states the list
+    and that case classifies every runs column.
+  - Rejected: reading the refusal case's rows concurrently. Sequential reads keep
+    the first refusal message deterministic.
   - Rejected: removing `retryDelaySeconds`. It is a working function in the
     published `@durablerun/core` barrel, so deleting it breaks consumers
     rather than simplifying the engine.
