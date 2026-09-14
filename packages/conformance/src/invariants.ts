@@ -27,6 +27,7 @@ const STATIC_ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'cardinality/multiple-live-runs': 'multiple-live-runs-per-task',
   'attempts/over-max': 'attempts-exceeds-cap',
   'attempts/at-max-with-live-run': 'attempt-budget-exhausted-with-live-run',
+  'task-outcome/contradicts-state': 'task-outcome-contradicts-state',
   'accounting/above-top': 'attempt-accounting-drift',
   'accounting/below-top-minus-one': 'attempt-accounting-drift',
   'accounting/live-run-not-next': 'attempt-accounting-drift',

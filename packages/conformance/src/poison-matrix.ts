@@ -771,6 +771,13 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     ],
   },
   {
+    id: 'task-outcome/contradicts-state',
+    covers: ['task-outcome/contradicts-state'],
+    statements: [
+      sql(`UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`, [TASK]),
+    ],
+  },
+  {
     id: 'accounting/above-top',
     covers: ['accounting/above-top'],
     statements: [sql(`UPDATE tasks SET attempts = 2 WHERE task_id = ?`, [TASK])],
