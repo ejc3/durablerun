@@ -1711,6 +1711,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const cancelled = await f.store.spawn(Q, 'job', '{}')
         expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
         const live = await f.store.spawn(Q, 'job', '{}')
+        const liveReason = await f.store.spawn(Q, 'job', '{}')
         await f.raw.batch('corrupt-task-outcomes', [
           {
             sql: `UPDATE tasks SET completed_payload = NULL WHERE task_id = ?`,
@@ -1728,6 +1729,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
             args: [live.taskId],
           },
+          {
+            sql: `UPDATE tasks SET failure_reason = '{"name":"Forged"}' WHERE task_id = ?`,
+            args: [liveReason.taskId],
+          },
         ])
         const rows = [
           [
@@ -1738,6 +1743,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ['failed without reason', failed.taskId, /is failed but has no failure reason/],
           ['cancelled without reason', cancelled.taskId, /is cancelled but has no failure reason/],
           ['live with a payload', live.taskId, /is pending but carries a completed payload/],
+          ['live with a reason', liveReason.taskId, /is pending but carries a failure reason/],
         ] as const
         for (const [shape, taskId, refusal] of rows) {
           const outcome = await f.store.getTaskResult(Q, taskId).then(
