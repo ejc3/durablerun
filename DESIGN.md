@@ -952,6 +952,15 @@ are load-bearing):
 response treats `LeaseLostError` as possible-prior-success: verify via
 `getTaskResult` and exit (verify-then-exit), never re-execute.
 
+**Task-result contract:** `getTaskResult` reports only outcomes the engine
+recorded. A completed task carries its payload, a failed or cancelled task
+carries its reason, and no other state carries a payload. A row that
+contradicts this is refused with `RangeError`, never returned. A reason on a
+live task stays legal, because reviving a failed task keeps its last reason,
+as Absurd's `retry_task` does. Every reader of a task outcome decodes it through
+core's `decodeTaskResult`, so a second read path cannot report a row the store
+refuses.
+
 **Event-wake disposition:** a carried wake (`wake_event`/`event_payload`) is
 CONSUMED by the transition that ends the attempt that processed it
 (`complete`, and `reschedule` with the default `'consume'`); it is CARRIED to

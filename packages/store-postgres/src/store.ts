@@ -35,6 +35,7 @@ import {
   type WakeSpec,
   clampLimit,
   decodeBoundedInteger,
+  decodeTaskResult,
   durationToMs,
   fenceSetAt,
   mapLimit,
@@ -47,7 +48,6 @@ import {
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
-  requireTaskResultShape,
   serializeTaskHeaders,
   serializeTaskValue,
   storageValueKind,
@@ -1644,11 +1644,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       'read',
     )
     const row = rows?.rows[0]
-    if (!row) return null
-    const result: TaskResult = { state: String(row.state) as TaskResult['state'] }
-    if (row.completed_payload !== null) result.completedPayloadJson = String(row.completed_payload)
-    if (row.failure_reason !== null) result.failureReasonJson = String(row.failure_reason)
-    return requireTaskResultShape(taskId, result)
+    return row === undefined ? null : decodeTaskResult(taskId, row)
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
