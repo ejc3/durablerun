@@ -175,11 +175,11 @@ jobs:
               print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
           PY
       - name: Bridge re-aimed mutation targets in the older base registry
-        # PR3.5a reshaped the SDK guards that three registered mutations target,
-        # so the base registry's find strings for them no longer occur in this
-        # tree. Only this exact base registry needs the one-release bridge.
-        # Replace those three spec entries with this tree's, never checker
-        # logic, inventory, or verdicts. The next base carries them and skips.
+        # Three registered mutations target SDK guards that were reshaped, so the
+        # base registry's find strings for them no longer occur in this tree. A
+        # one-release bridge pinned to that exact base registry replaces those
+        # three spec entries with this tree's, never checker logic, inventory, or
+        # verdicts. Any other base skips the step.
         run: |
           python3 - <<'PY'
           import hashlib
