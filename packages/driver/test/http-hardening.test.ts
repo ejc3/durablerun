@@ -136,4 +136,10 @@ describe('loopback listen helper', () => {
       await wake.close()
     }
   })
+
+  it('leaves no error listener behind when listen throws', async () => {
+    const wake = createWakeServer({ wake: () => {} })
+    await expect(wake.listen(-1)).rejects.toThrow()
+    expectNoBindListener(wake.server, 'wake server whose listen threw')
+  })
 })
