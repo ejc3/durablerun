@@ -2467,31 +2467,55 @@ MUTATION_SPECS = [
     (
         "retry-task-requires-failed-task",
         "packages/store-libsql/src/store.ts",
-        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n"
-        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n",
-        "       WHERE task_id = ? AND queue = ? AND state IN ('failed', 'cancelled')\n"
-        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n",
+        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n",
+        "       WHERE task_id = ? AND queue = ? AND state IN ('failed', 'cancelled')\n",
         "retryTask revives a cancelled task",
     ),
     (
         "retry-task-requires-well-formed-failure",
         "packages/store-libsql/src/store.ts",
-        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n"
-        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n"
-        "         AND ${taskOwnsEveryRun('tasks')}\n",
-        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n"
-        "         AND 1 = 1\n"
-        "         AND ${taskOwnsEveryRun('tasks')}\n",
+        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n",
+        "         AND 1 = 1\n",
         "retryTask revives a failed task whose recorded outcome is corrupt",
     ),
     (
         "retry-task-charges-unaccounted-top-run",
         "packages/store-libsql/src/store.ts",
-        "         state = 'pending',\n"
         "         attempts = ${charged},\n",
-        "         state = 'pending',\n"
         "         attempts = attempts,\n",
         "retryTask leaves a relaunch-capped run uncharged, so the revival run is not the next accounted ordinal",
+    ),
+    (
+        "retry-task-requires-counters-in-range",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')}\n"
+        "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}\n"
+        "         AND NOT EXISTS (SELECT 1 FROM runs r\n"
+        "                         WHERE ${runOwnedByTask('r', 'tasks')}\n"
+        "                           AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})\n",
+        "         AND 1 = 1\n",
+        "retryTask revives a failed task whose counters or run ordinals are out of range",
+    ),
+    (
+        "retry-task-requires-incrementable-budget",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}\n",
+        "         AND 1 = 1\n",
+        "retryTask pushes a revived task's budget past its persisted maximum",
+    ),
+    (
+        "retry-task-requires-accounting-band",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${charged} - attempts IN (0, 1)\n",
+        "         AND 1 = 1\n",
+        "retryTask revives a task whose charge is outside the accounting band and writes negative attempts",
+    ),
+    (
+        "retry-task-requires-charge-within-budget",
+        "packages/store-libsql/src/store.ts",
+        "         AND ${charged} <= max_attempts`,\n",
+        "         AND 1 = 1`,\n",
+        "retryTask revives a task whose charge exceeds its budget",
     ),
     (
         "generated-relation-queue-ownership",
@@ -5872,6 +5896,34 @@ VERDICTS = {
         "packages/conformance/test/libsql.test.ts",
         "scheduler conformance [libsql] retryTask (Absurd retry_task) charges a relaunch-capped run no counter recorded and keeps the accounting invariants",
         "mutation-verdict:behavior:retry-task-charges-unaccounted-top-run",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-requires-counters-in-range": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) refuses to revive over a counter out of range or a charge past the budget",
+        "mutation-verdict:behavior:retry-task-requires-counters-in-range",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-requires-incrementable-budget": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) refuses a revival that would push its budget past the stored maximum",
+        "mutation-verdict:behavior:retry-task-requires-incrementable-budget",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-requires-accounting-band": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) refuses to revive a failed task whose stored counters disagree with its runs",
+        "mutation-verdict:behavior:retry-task-requires-accounting-band",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-requires-charge-within-budget": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) refuses to revive over a counter out of range or a charge past the budget",
+        "mutation-verdict:behavior:retry-task-requires-charge-within-budget",
         "packages/conformance/src/suite.ts",
     ),
     "generated-relation-queue-ownership": ExpectedVerdict(
@@ -9471,7 +9523,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 429:
+        if len(MUTATIONS) != 433:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

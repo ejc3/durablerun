@@ -307,7 +307,11 @@ jobs:
                   raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
               markers = (
                   'mutation-verdict:behavior:retry-task-charges-unaccounted-top-run',
+                  'mutation-verdict:behavior:retry-task-requires-accounting-band',
+                  'mutation-verdict:behavior:retry-task-requires-charge-within-budget',
+                  'mutation-verdict:behavior:retry-task-requires-counters-in-range',
                   'mutation-verdict:behavior:retry-task-requires-failed-task',
+                  'mutation-verdict:behavior:retry-task-requires-incrementable-budget',
                   'mutation-verdict:behavior:retry-task-requires-well-formed-failure',
               )
               for marker in markers:

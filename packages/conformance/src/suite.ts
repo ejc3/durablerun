@@ -1881,10 +1881,29 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     describe('retryTask (Absurd retry_task)', () => {
+      // A task that failed terminally after `attempts` activated attempts, each
+      // but the last retried at once.
+      const failedTask = async (name: string, maxAttempts = 1, attempts = maxAttempts) => {
+        const spawned = await f.store.spawn(Q, name, '{}', { maxAttempts })
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          const run = await claimActivated(f.store, Q, `w-${name}-${attempt}`)
+          await f.store.fail(
+            Q,
+            run.runId,
+            run.claimToken,
+            '{"name":"Boom"}',
+            attempt < attempts ? { delaySeconds: 0 } : null,
+          )
+        }
+        const [firstRun] = (await snapshot(f, spawned.taskId)).runs ?? []
+        if (typeof firstRun?.run_id !== 'string' || Number(firstRun.attempt) !== 1) {
+          throw new Error(`task ${spawned.taskId} has no first run`)
+        }
+        return { taskId: spawned.taskId, firstRunId: firstRun.run_id }
+      }
+
       it('revives a task that failed on its budget with a claimable run at the next ordinal', async () => {
-        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
-        const run = await claimActivated(f.store, Q, 'w1')
-        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        const spawned = await failedTask('job')
         const revived = await f.store.retryTask(Q, spawned.taskId)
         const task = await readOne(
           f.raw,
@@ -1912,17 +1931,14 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('charges a relaunch-capped run no counter recorded and keeps the accounting invariants', async () => {
         const spawned = await f.store.spawn(Q, 'job', '{}')
-        let now = START_MS
-        for (let i = 0; i < 5; i++) {
-          await claimOne(f.store, Q, `tick-${i}`)
-          now += 200_000
-          await f.admin.setFakeNowEpochMs(now)
-          await f.store.sweep(Q, 10)
-          now += 100_000
-          await f.admin.setFakeNowEpochMs(now)
-        }
-        await claimOne(f.store, Q, 'tick-final')
-        await f.admin.setFakeNowEpochMs(now + 200_000)
+        const lostLaunch = await claimOne(f.store, Q, 'w-relaunch-cap')
+        await f.raw.batch('seed-revival-relaunch-cap', [
+          {
+            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+            args: [RELAUNCH_CAP, lostLaunch.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(START_MS + 200_000)
         expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
           'relaunch-cap-exhausted',
         ])
@@ -1951,13 +1967,11 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
-      // fenceTwin('RetryTask') — a revival is fenced on a failed task: a replay,
+      // fenceTwin('RetryTask'): a revival is fenced on a failed task: a replay,
       // a completed task, a cancelled task, and a live task all refuse and write
       // nothing.
       it('refuses a replay, a completed, a cancelled, or a live task and writes nothing', async () => {
-        const failed = await f.store.spawn(Q, 'failed', '{}', { maxAttempts: 1 })
-        const failedRun = await claimActivated(f.store, Q, 'w-failed')
-        await f.store.fail(Q, failedRun.runId, failedRun.claimToken, '{"name":"Boom"}', null)
+        const failed = await failedTask('failed')
         expect(await f.store.retryTask(Q, failed.taskId)).not.toBeNull()
         const completed = await f.store.spawn(Q, 'completed', '{}')
         const completedRun = await claimActivated(f.store, Q, 'w-completed')
@@ -1965,15 +1979,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const cancelled = await f.store.spawn(Q, 'cancelled', '{}')
         expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
         const live = await f.store.spawn(Q, 'live', '{}')
-        const before = await Promise.all(
-          [failed, completed, cancelled, live].map(({ taskId }) => snapshot(f, taskId)),
-        )
-        const refusals = await Promise.all(
-          [failed, completed, cancelled, live].map(({ taskId }) => f.store.retryTask(Q, taskId)),
-        )
-        const after = await Promise.all(
-          [failed, completed, cancelled, live].map(({ taskId }) => snapshot(f, taskId)),
-        )
+        const tasks = [failed, completed, cancelled, live]
+        const before = await Promise.all(tasks.map(({ taskId }) => snapshot(f, taskId)))
+        const refusals = await Promise.all(tasks.map(({ taskId }) => f.store.retryTask(Q, taskId)))
+        const after = await Promise.all(tasks.map(({ taskId }) => snapshot(f, taskId)))
         expect(
           { refusals, unchanged: after },
           'mutation-verdict:behavior:retry-task-requires-failed-task',
@@ -1984,9 +1993,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('refuses a failed task whose recorded outcome is corrupt and writes nothing', async () => {
-        const corrupt = await f.store.spawn(Q, 'corrupt', '{}', { maxAttempts: 1 })
-        const run = await claimActivated(f.store, Q, 'w-corrupt')
-        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        const corrupt = await failedTask('corrupt')
         await f.raw.batch('corrupt-failed-outcome', [
           {
             sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
@@ -2002,37 +2009,20 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('refuses a revival that would push its budget past the stored maximum', async () => {
-        const spawned = await f.store.spawn(Q, 'at-max-budget', '{}', { maxAttempts: MAX_COUNT })
-        const run = await claimActivated(f.store, Q, 'w-at-max-budget')
-        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        const spawned = await failedTask('at-max-budget', MAX_COUNT, 1)
         const before = await snapshot(f, spawned.taskId)
         const refused = await f.store.retryTask(Q, spawned.taskId)
-        expect({
-          refused,
-          unchanged: await snapshot(f, spawned.taskId),
-          violations: await engineInvariantViolations(f.raw),
-        }).toEqual({ refused: null, unchanged: before, violations: [] })
+        expect(
+          {
+            refused,
+            unchanged: await snapshot(f, spawned.taskId),
+            violations: await engineInvariantViolations(f.raw),
+          },
+          'mutation-verdict:behavior:retry-task-requires-incrementable-budget',
+        ).toEqual({ refused: null, unchanged: before, violations: [] })
       })
 
       it('refuses to revive over a counter out of range or a charge past the budget', async () => {
-        const failedTask = async (name: string, maxAttempts = 1) => {
-          const spawned = await f.store.spawn(Q, name, '{}', { maxAttempts })
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            const run = await claimActivated(f.store, Q, `w-${name}-${attempt}`)
-            await f.store.fail(
-              Q,
-              run.runId,
-              run.claimToken,
-              '{"name":"Boom"}',
-              attempt < maxAttempts ? { delaySeconds: 0 } : null,
-            )
-          }
-          const [firstRun] = (await snapshot(f, spawned.taskId)).runs ?? []
-          if (typeof firstRun?.run_id !== 'string' || Number(firstRun.attempt) !== 1) {
-            throw new Error(`task ${spawned.taskId} has no first run`)
-          }
-          return { taskId: spawned.taskId, firstRunId: firstRun.run_id }
-        }
         // Each corruption passes every other revival guard, so each names one.
         const negativeAttempts = await failedTask('negative-attempts')
         await f.raw.batch('corrupt-negative-attempts', [
@@ -2066,33 +2056,37 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           column: 'attempt',
           invalidRepresentation: 'fractional-real',
         })
-        const corrupted = [negativeAttempts, infraPastCap, chargePastBudget].concat(
-          disposition === 'injected' ? [invalidSibling] : [],
-        )
-        const before = await Promise.all(corrupted.map(({ taskId }) => snapshot(f, taskId)))
-        const refusals = await Promise.all(
-          corrupted.map(({ taskId }) => f.store.retryTask(Q, taskId)),
-        )
-        const after = await Promise.all(corrupted.map(({ taskId }) => snapshot(f, taskId)))
-        expect({ refusals, unchanged: after }).toEqual({
-          refusals: corrupted.map(() => null),
-          unchanged: before,
-        })
+        const inRange = 'mutation-verdict:behavior:retry-task-requires-counters-in-range'
+        const corruptions = [
+          { task: negativeAttempts, marker: inRange },
+          { task: infraPastCap, marker: inRange },
+          {
+            task: chargePastBudget,
+            marker: 'mutation-verdict:behavior:retry-task-requires-charge-within-budget',
+          },
+          ...(disposition === 'injected' ? [{ task: invalidSibling, marker: inRange }] : []),
+        ]
+        for (const { task, marker } of corruptions) {
+          const before = await snapshot(f, task.taskId)
+          const refused = await f.store.retryTask(Q, task.taskId)
+          expect({ refused, unchanged: await snapshot(f, task.taskId) }, marker).toEqual({
+            refused: null,
+            unchanged: before,
+          })
+        }
       })
 
       it('refuses to revive a failed task whose stored counters disagree with its runs', async () => {
-        const spawned = await f.store.spawn(Q, 'drifted-counters', '{}', { maxAttempts: 1 })
-        const run = await claimActivated(f.store, Q, 'w-drifted-counters')
-        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        const spawned = await failedTask('drifted-counters')
         await f.raw.batch('corrupt-failed-infra-retries', [
           { sql: `UPDATE tasks SET infra_retries = 3 WHERE task_id = ?`, args: [spawned.taskId] },
         ])
         const before = await snapshot(f, spawned.taskId)
         const refused = await f.store.retryTask(Q, spawned.taskId)
-        expect({ refused, unchanged: await snapshot(f, spawned.taskId) }).toEqual({
-          refused: null,
-          unchanged: before,
-        })
+        expect(
+          { refused, unchanged: await snapshot(f, spawned.taskId) },
+          'mutation-verdict:behavior:retry-task-requires-accounting-band',
+        ).toEqual({ refused: null, unchanged: before })
       })
     })
 

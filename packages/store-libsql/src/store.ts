@@ -1209,6 +1209,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const runId = this.ids.uuidv7()
     const top = (task: string) =>
       `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
+    const noLiveRun = (task: string) =>
+      `NOT EXISTS (SELECT 1 FROM runs r
+                   WHERE ${runOwnedByTask('r', task)} AND r.state IN ${LIVE})`
     // Absurd's retry_task, the TLA RetryTask action. One task CAS revives a
     // failed task that owns every run and has none live. Charging the top run
     // keeps attempts + infra_retries equal to the top ordinal when the task failed
@@ -1237,14 +1240,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND failure_reason IS NOT NULL AND completed_payload IS NULL
          AND ${taskOwnsEveryRun('tasks')}
          AND EXISTS (SELECT 1 FROM runs r WHERE ${runOwnedByTask('r', 'tasks')})
-         AND NOT EXISTS (SELECT 1 FROM runs r
-                         WHERE ${runOwnedByTask('r', 'tasks')} AND r.state IN ${LIVE})
+         AND ${noLiveRun('tasks')}
          AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')}
-         AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}
          AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}
          AND NOT EXISTS (SELECT 1 FROM runs r
                          WHERE ${runOwnedByTask('r', 'tasks')}
                            AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})
+         AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}
          AND ${charged} - attempts IN (0, 1)
          AND ${charged} <= max_attempts`,
       [runId, taskId, queue],
@@ -1261,8 +1263,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          ${successorCarriedValues('p')}, ${STAMP}, f.fence_at_ms
        FROM tasks f JOIN runs p ON ${runOwnedByTask('p', 'f')}
        WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('revive')} AND p.attempt = ${top('f')}
-         AND NOT EXISTS (SELECT 1 FROM runs r
-                         WHERE ${runOwnedByTask('r', 'f')} AND r.state IN ${LIVE})`,
+         AND ${noLiveRun('f')}`,
       [runId, taskId],
       'one',
     )
