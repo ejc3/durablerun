@@ -57,6 +57,7 @@ import {
 } from '@durablerun/core'
 import {
   LIVE,
+  PARKED_CLAIM,
   cancelDue,
   durableTaskHeadersAdmissible,
   durableTaskRetryAdmissible,
@@ -1324,7 +1325,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `UPDATE runs SET
          state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
          available_at_ms = ${wakePlan.expression},
-         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${PARKED_CLAIM},
          ${FENCE_SET}
        WHERE claim_gen = ? AND activated_gen < ?
          AND run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
@@ -1388,7 +1389,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
          available_at_ms = ${wakePlan.expression},
          wake_event = NULL, event_payload = NULL, wake_step = NULL,
-         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${PARKED_CLAIM},
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND ${storedInteger('runs.attempt')}
@@ -1435,7 +1436,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
          available_at_ms = ${wakePlan.expression},
          wake_event = NULL, event_payload = NULL, wake_step = NULL,
-         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${PARKED_CLAIM},
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND EXISTS (SELECT 1 FROM tasks t

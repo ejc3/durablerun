@@ -83,10 +83,9 @@ export class DriverLoop {
   private stopped: Promise<void> | null = null
   private resolveStopped: (() => void) | null = null
   private sleepInterrupt: AbortController | null = null
-  private floorInterrupt: AbortController | null = null
+  private readonly floorInterrupt = new AbortController()
   private wakeRequested = false
   private idleTicks = 0
-  private lastTickStartedAtMs = 0
   private chainedTicks = 0
   private lastBeatAtMs: number | null = null
   private beatInFlight: Promise<void> | null = null
@@ -174,10 +173,11 @@ export class DriverLoop {
     this.stopped = new Promise((resolve) => {
       this.resolveStopped = resolve
     })
+    let lastTickStartedAtMs = 0
     try {
       while (this.running) {
         let result: TickResult | null = null
-        this.lastTickStartedAtMs = this.clock.nowEpochMs()
+        lastTickStartedAtMs = this.clock.nowEpochMs()
         try {
           result = await tick(
             { store: this.store, launcher: this.launcher, ids: this.ids },
@@ -247,15 +247,13 @@ export class DriverLoop {
           // stop() interrupts this wait.
           const nowMs = this.clock.nowEpochMs()
           const remaining = Math.min(
-            this.lastTickStartedAtMs + this.wakeFloorMs - nowMs,
+            lastTickStartedAtMs + this.wakeFloorMs - nowMs,
             this.wakeFloorMs,
             plannedLookAtMs - nowMs,
           )
           if (remaining > 0) {
             this.chainedTicks = 0
-            this.floorInterrupt = new AbortController()
             await this.clock.sleep(remaining, this.floorInterrupt.signal)
-            this.floorInterrupt = null
           }
         }
         this.wakeRequested = false
@@ -276,7 +274,7 @@ export class DriverLoop {
   async stop(): Promise<void> {
     this.running = false
     this.sleepInterrupt?.abort()
-    this.floorInterrupt?.abort()
+    this.floorInterrupt.abort()
     await (this.stopped ?? Promise.resolve())
   }
 

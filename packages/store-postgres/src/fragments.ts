@@ -401,3 +401,9 @@ export const soleLiveRun = (run: string): string =>
                WHERE sibling.task_id = ${run}.task_id
                  AND sibling.state IN ${LIVE}
                  AND sibling.run_id <> ${run}.run_id)`
+
+/**
+ * The claim columns a suspension clears, so a parked run carries no live token,
+ * lease deadline, or heartbeat.
+ */
+export const PARKED_CLAIM = 'claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL'
