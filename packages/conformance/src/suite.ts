@@ -28,6 +28,7 @@ import {
   checkpointOwned,
   claimActivated,
   claimOne,
+  deferUnregistered,
   readOne,
   withFixture,
 } from './scenario.js'
@@ -1616,6 +1617,39 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
         expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(false) // already terminal
         expect(await f.store.claim(Q, 't', { leaseSeconds: 60, limit: 10 })).toHaveLength(0)
+      })
+    })
+
+    describe('rolling-deploy launch deferral', () => {
+      it('a deferred launch keeps the task start deadline armed', async () => {
+        const spawned = await f.store.spawn(Q, 'unregistered', '{}', {
+          cancellation: { maxDelaySeconds: 30 },
+        })
+        const run = await claimOne(f.store, Q, 'old-build')
+        await deferUnregistered(f.store, Q, run, 15)
+        await f.admin.setFakeNowEpochMs(START_MS + 31_000)
+        expect(await f.store.sweep(Q, 10)).toEqual([
+          { kind: 'cancelled', taskId: spawned.taskId, runId: spawned.runId },
+        ])
+      })
+
+      it('a deferred launch starts no duration clock', async () => {
+        const spawned = await f.store.spawn(Q, 'unregistered', '{}', {
+          cancellation: { maxDurationSeconds: 100 },
+        })
+        const deferred = await claimOne(f.store, Q, 'old-build')
+        await deferUnregistered(f.store, Q, deferred, 15)
+        await f.admin.setFakeNowEpochMs(START_MS + 50_000)
+        await claimActivated(f.store, Q, 'new-build')
+        const task = await readOne(
+          f.raw,
+          `SELECT first_started_at_ms, cancel_at_ms FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        expect({
+          firstStartedAtMs: Number(task?.first_started_at_ms),
+          cancelAtMs: Number(task?.cancel_at_ms),
+        }).toEqual({ firstStartedAtMs: START_MS + 50_000, cancelAtMs: START_MS + 150_000 })
       })
     })
 
