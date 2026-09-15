@@ -385,6 +385,8 @@ export async function runFaultMatrixCase(
       await go(() => store.spawn(Q, 'd', '{}'))
       const [fin] = (await go(() => store.claim(Q, 'w1b', { leaseSeconds: 60, limit: 1 }))) ?? []
       if (fin) {
+        // The worker reads the claimed task's name before it activates.
+        await go(() => store.claimedTaskName(Q, fin.runId, fin.claimToken, fin.claimGen))
         await go(() => store.activate(Q, fin.runId, fin.claimToken, fin.claimGen))
         await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
       }
@@ -401,6 +403,14 @@ export async function runFaultMatrixCase(
       const [unregistered] =
         (await go(() => store.claim(Q, 'w4', { leaseSeconds: 60, limit: 1 }))) ?? []
       if (unregistered) {
+        await go(() =>
+          store.claimedTaskName(
+            Q,
+            unregistered.runId,
+            unregistered.claimToken,
+            unregistered.claimGen,
+          ),
+        )
         await go(() =>
           store.deferLaunch(
             Q,
