@@ -18,12 +18,6 @@ function closingFixture(closeFailure?: Error): {
   return { makeFixture: async () => fixture, closes: () => closes }
 }
 
-const outcome = (promise: Promise<unknown>): Promise<{ value?: unknown; error?: unknown }> =>
-  promise.then(
-    (value) => ({ value }),
-    (error: unknown) => ({ error }),
-  )
-
 describe('conformance scenario helpers', () => {
   it('readOne runs its statement in read mode', async () => {
     const modes: string[] = []
@@ -39,21 +33,18 @@ describe('conformance scenario helpers', () => {
 
   it('withFixture returns the scenario value and closes the fixture once', async () => {
     const { makeFixture, closes } = closingFixture()
-    expect(await outcome(withFixture(makeFixture, 'ok', async () => 'done'))).toEqual({
-      value: 'done',
-    })
+    expect(await withFixture(makeFixture, 'ok', async () => 'done')).toBe('done')
     expect(closes()).toBe(1)
   })
 
   it('withFixture closes the fixture when the scenario fails', async () => {
     const scenarioFailure = new Error('scenario failed')
     const { makeFixture, closes } = closingFixture()
-    const observed = await outcome(
+    await expect(
       withFixture(makeFixture, 'failing', async () => {
         throw scenarioFailure
       }),
-    )
-    expect(observed).toEqual({ error: scenarioFailure })
+    ).rejects.toBe(scenarioFailure)
     expect(closes()).toBe(1)
   })
 
@@ -61,14 +52,12 @@ describe('conformance scenario helpers', () => {
     const scenarioFailure = new Error('scenario failed')
     const closeFailure = new Error('close failed')
     const { makeFixture, closes } = closingFixture(closeFailure)
-    const observed = await outcome(
-      withFixture(makeFixture, 'double-failure', async () => {
-        throw scenarioFailure
-      }),
-    )
-    expect(observed.error).toBeInstanceOf(Error)
-    expect((observed.error as Error).message).toContain('close failed')
-    expect((observed.error as Error).cause).toBe(scenarioFailure)
+    const error = await withFixture(makeFixture, 'double-failure', async () => {
+      throw scenarioFailure
+    }).catch((failure: unknown) => failure)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('close failed')
+    expect((error as Error).cause).toBe(scenarioFailure)
     expect(closes()).toBe(1)
   })
 })

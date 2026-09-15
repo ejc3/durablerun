@@ -72,7 +72,7 @@ export async function claimActivated(
 }
 
 /** The task, run, and claim token that every owner-bound call passes together. */
-export type OwnedRun = Pick<ClaimedRun, 'taskId' | 'runId' | 'claimToken'>
+type OwnedRun = Pick<ClaimedRun, 'taskId' | 'runId' | 'claimToken'>
 
 /** awaitEvent for a run's own task, run, and claim token. */
 export function awaitOwned(

@@ -33,6 +33,8 @@ import {
 } from './scenario.js'
 
 const Q = 'q'
+/** The fake clock every suite fixture starts at. */
+const START_MS = 1_000_000
 
 async function snapshot(
   f: StoreFixture,
@@ -61,7 +63,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
     beforeEach(async () => {
       f = await makeFixture('fixture')
-      await f.admin.setFakeNowEpochMs(1_000_000)
+      await f.admin.setFakeNowEpochMs(START_MS)
     })
 
     afterEach(async () => {
@@ -70,7 +72,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
     /**
      * Run `body` once per seed against its own fixture, named `${prefix}${seed}` and
-     * started at the default fixture's time. The fixture always closes, and the engine
+     * started at START_MS like the default fixture. The fixture always closes, and the engine
      * invariants must hold at quiescence.
      */
     async function forEachSeed(
@@ -80,7 +82,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     ): Promise<void> {
       for (let seed = 0; seed < seeds; seed++) {
         await withFixture(makeFixture, `${prefix}${seed}`, async (fx) => {
-          await fx.admin.setFakeNowEpochMs(1_000_000)
+          await fx.admin.setFakeNowEpochMs(START_MS)
           await body(fx, seed)
           expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
         })
@@ -99,7 +101,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(runs).toMatchObject({
           state: 'pending',
           attempt: 1,
-          available_at_ms: 1_000_000,
+          available_at_ms: START_MS,
         })
       })
 
@@ -263,22 +265,17 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }) as { cancellation: { maxDelaySeconds?: number; maxDurationSeconds?: number } }
 
         const spawned = await f.store.spawn(Q, 'changing-cancellation', '{}', opts)
-        const [rows] = await f.raw.batch(
-          'changing-cancellation:probe',
-          [
-            {
-              sql: `SELECT cancellation, cancel_at_ms FROM tasks WHERE task_id = ?`,
-              args: [spawned.taskId],
-            },
-          ],
-          'read',
+        const task = await readOne(
+          f.raw,
+          `SELECT cancellation, cancel_at_ms FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
         )
 
         expect(
           {
             reads,
-            cancellation: rows?.rows[0]?.cancellation,
-            cancelAtEpochMs: rows?.rows[0]?.cancel_at_ms,
+            cancellation: task?.cancellation,
+            cancelAtEpochMs: task?.cancel_at_ms,
           },
           'mutation-verdict:behavior:spawn-cancellation-single-read',
         ).toEqual({
@@ -551,7 +548,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           expect(run.maxAttempts).toBeGreaterThan(0)
         }
         expect(claimed.map((r) => r.taskName)).toEqual(['a', 'b'])
-        expect(claimed[0]?.claimExpiresAtEpochMs).toBe(1_000_000 + 60_000)
+        expect(claimed[0]?.claimExpiresAtEpochMs).toBe(START_MS + 60_000)
         expect(claimed[0]?.infraRetries).toBe(0)
         expect(await f.store.claim(Q, 'tick-2', { leaseSeconds: 60, limit: 10 })).toHaveLength(0)
       })
@@ -777,15 +774,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             () => null,
             (reason: unknown) => reason,
           )
-        const [deadline] = await f.raw.batch(
-          'invalid-activation-generation:deadline',
-          [
-            {
-              sql: `SELECT cancel_at_ms FROM tasks WHERE task_id = 'invalid-activation-task'`,
-              args: [],
-            },
-          ],
-          'read',
+        const deadline = await readOne(
+          f.raw,
+          `SELECT cancel_at_ms FROM tasks WHERE task_id = 'invalid-activation-task'`,
+          [],
         )
 
         expect(
@@ -794,7 +786,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             executorCalls,
             deadline: {
               rejectedBeforeSql: deadlineError instanceof RangeError,
-              cancelAtEpochMs: deadline?.rows[0]?.cancel_at_ms,
+              cancelAtEpochMs: deadline?.cancel_at_ms,
             },
           },
           'mutation-verdict:behavior:activate-validates-claim-generation-input',
@@ -912,7 +904,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('re-extends the lease at activation (late launch delivery)', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne(f.store, Q, 'tick-1')
-        // Lease was stamped at claim: expires at 1_000_000 + 60s.
+        // Lease was stamped at claim: expires at START_MS + 60s.
         await f.admin.setFakeNowEpochMs(1_040_000)
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
         const row = await readOne(f.raw, `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`, [
@@ -929,7 +921,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           `SELECT first_started_at_ms FROM tasks WHERE task_id = ?`,
           [run.taskId],
         )
-        expect(Number(row?.first_started_at_ms)).toBe(1_000_000)
+        expect(Number(row?.first_started_at_ms)).toBe(START_MS)
       })
 
       it('leaves a claimed run unchanged when its stored lease is zero', async () => {
@@ -1051,7 +1043,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('fails the run AND task terminally past the relaunch cap', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        let now = 1_000_000
+        let now = START_MS
         // Default cap is 5: burn exactly cap reopens, then the terminal one.
         for (let i = 0; i < 5; i++) {
           await claimOne(f.store, Q, `tick-${i}`)
@@ -3011,18 +3003,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
               awaitOwned(f.store, queue, run, 'step', 'event', null),
               f.store.emitEvent(queue, 'event', '{"race":true}'),
             ])
-            const [stored] = await f.raw.batch(
-              'native-event:stored',
-              [
-                {
-                  sql: `SELECT state, event_payload
-                          FROM runs WHERE run_id = ?`,
-                  args: [run.runId],
-                },
-              ],
-              'read',
+            const stored = await readOne(
+              f.raw,
+              `SELECT state, event_payload
+                 FROM runs WHERE run_id = ?`,
+              [run.runId],
             )
-            return { awaited, stored: stored?.rows[0] }
+            return { awaited, stored }
           }),
         )
 
@@ -3087,7 +3074,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
     describe('driver registry', () => {
       it('a heartbeat is visible, refreshes, and buries expired rows', async () => {
-        await f.admin.setFakeNowEpochMs(1_000_000)
         await f.store.driverHeartbeat(Q, 'd1', 10)
         const read = async () =>
           (
@@ -3218,7 +3204,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('accounting depth: two infra cycles then a user failure', async () => {
         const spawned = await f.store.spawn(Q, 'job', '{}')
-        let now = 1_000_000
+        let now = START_MS
         for (let cycle = 0; cycle < 2; cycle++) {
           await claimActivated(f.store, Q, `w${cycle}`)
           now += 100_000
@@ -3228,10 +3214,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           now += 10_000
           await f.admin.setFakeNowEpochMs(now)
         }
-        const run = await claimOne(f.store, Q, 'w-final')
+        const run = await claimActivated(f.store, Q, 'w-final')
         expect(run.attempt).toBe(3)
         expect(run.infraRetries).toBe(2)
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 1 })
         const task = await readOne(
           f.raw,
@@ -3254,13 +3239,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('relaunch backoff arithmetic is pinned: 5s then 10s', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+        await claimOne(f.store, Q, 'w1')
         await f.admin.setFakeNowEpochMs(1_100_000)
         expect((await f.store.sweep(Q, 10))[0]?.kind).toBe('lost-launch')
         const first = await readOne(f.raw, `SELECT available_at_ms FROM runs`, [])
         expect(Number(first?.available_at_ms)).toBe(1_100_000 + 5_000)
         await f.admin.setFakeNowEpochMs(1_200_000)
-        await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+        await claimOne(f.store, Q, 'w2')
         await f.admin.setFakeNowEpochMs(1_300_000)
         expect((await f.store.sweep(Q, 10))[0]?.kind).toBe('lost-launch')
         const second = await readOne(f.raw, `SELECT available_at_ms FROM runs`, [])
@@ -3704,18 +3689,12 @@ async function wakeWitnessWrote(
   ])
 
   const snapshot = async (): Promise<string> => {
-    const [result] = await fixture.raw.batch(
-      'probe',
-      [
-        {
-          sql: `SELECT state, available_at_ms, event_payload, wake_event, fence_stamp
-                FROM runs WHERE run_id = ?`,
-          args: [id],
-        },
-      ],
-      'read',
+    const row = await readOne(
+      fixture.raw,
+      `SELECT state, available_at_ms, event_payload, wake_event, fence_stamp
+         FROM runs WHERE run_id = ?`,
+      [id],
     )
-    const row = result?.rows[0]
     if (!row) throw new Error('wake witness run vanished')
     return JSON.stringify(row)
   }
@@ -3728,22 +3707,15 @@ async function wakeWitnessWrote(
   const after = await snapshot()
   if (priorViolations === undefined) return { wrote: after !== before }
 
-  const [run] = await fixture.raw.batch(
-    'split-row-evidence',
-    [
-      {
-        sql: `SELECT state, event_payload FROM runs WHERE run_id = ?`,
-        args: [id],
-      },
-    ],
-    'read',
-  )
+  const run = await readOne(fixture.raw, `SELECT state, event_payload FROM runs WHERE run_id = ?`, [
+    id,
+  ])
   const currentViolations = await engineInvariantViolations(fixture.raw)
   return {
     wrote: after !== before,
     splitRowEvidence: {
-      state: run?.rows[0]?.state,
-      eventPayload: run?.rows[0]?.event_payload,
+      state: run?.state,
+      eventPayload: run?.event_payload,
       priorViolationsPreserved: priorViolations.every((violation) =>
         currentViolations.includes(violation),
       ),
@@ -3758,8 +3730,7 @@ export async function wakeWitnessDisagreements(
   makeFixture: StoreFixtureFactory,
   cases: readonly WakeWitnessCase[],
 ): Promise<string[]> {
-  const fixture = await makeFixture('wake-witness')
-  try {
+  return withFixture(makeFixture, 'wake-witness', async (fixture) => {
     await fixture.admin.setFakeNowEpochMs(WAKE_NOW)
     const wrong: string[] = []
     for (const [index, testCase] of cases.entries()) {
@@ -3787,9 +3758,7 @@ export async function wakeWitnessDisagreements(
       }
     }
     return wrong
-  } finally {
-    await fixture.close()
-  }
+  })
 }
 
 export function wakeWitnessConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
