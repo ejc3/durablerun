@@ -200,10 +200,10 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       )
       expect(unknownCoveredConditionIds()).toEqual([])
       expect(duplicatePoisonWitnessIds()).toEqual([])
-      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(113)
-      expect(POISON_WITNESS_COUNT).toBe(144)
-      expect(POISON_WRITE_LABELS).toHaveLength(18)
-      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(2_592)
+      expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(114)
+      expect(POISON_WITNESS_COUNT).toBe(145)
+      expect(POISON_WRITE_LABELS).toHaveLength(19)
+      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(2_755)
       expect(POISON_TARGET_CASES).toHaveLength(50)
       expect(POISON_UNREACHABLE_TARGETS).toHaveLength(26)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
@@ -428,6 +428,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'complete',
             'fail',
             'cancel-task',
+            'retry-task',
             'expire-lease-now',
             'set-checkpoint',
             'sweep:cancel',

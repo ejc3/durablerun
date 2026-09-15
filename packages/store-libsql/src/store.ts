@@ -24,6 +24,7 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   STAMP,
+  SUCCESSOR_CARRIED_COLUMNS_SQL,
   SUCCESSOR_PARENT_COLUMNS,
   type SchedulerStore,
   type SpawnOptions,
@@ -53,6 +54,7 @@ import {
   serializeTaskHeaders,
   serializeTaskValue,
   storageValueKind,
+  successorCarriedValues,
   successorParentValues,
 } from '@durablerun/core'
 import {
@@ -1198,6 +1200,83 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         args: [queue, driverId, ttlMs, ttlMs],
       },
     ])
+  }
+
+  async retryTask(
+    queue: string,
+    taskId: string,
+  ): Promise<{ runId: string; attempt: number } | null> {
+    const runId = this.ids.uuidv7()
+    const top = (task: string) =>
+      `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
+    const noLiveRun = (task: string) =>
+      `NOT EXISTS (SELECT 1 FROM runs r
+                   WHERE ${runOwnedByTask('r', task)} AND r.state IN ${LIVE})`
+    // Absurd's retry_task, the TLA RetryTask action. One task CAS revives a
+    // failed task that owns every run and has none live. Charging the top run
+    // keeps attempts + infra_retries equal to the top ordinal when the task failed
+    // at the infrastructure or relaunch cap, where no counter recorded that run.
+    // The charge never exceeds the budget (TLA FailedChargeWithinBudget), so the
+    // budget grows by exactly one.
+    const charged = `(${top('tasks')} - infra_retries)`
+    const b = new FencedBatch('retry-task', this.ids.token(), { now: NOW_MS })
+    // Only a well-formed failure revives. A failed row with no reason, or with a
+    // completed payload, is a corrupt outcome, and clearing the reason would pass
+    // that corruption on to a pending task. The same holds for the counters: each
+    // must be an exact integer in range, every owned run's ordinal too, the budget
+    // must take one more, and the charge must be the recorded attempts or one more
+    // and within the budget.
+    b.cas(
+      'revive',
+      'tasks',
+      `UPDATE tasks SET
+         state = 'pending',
+         attempts = ${charged},
+         max_attempts = max_attempts + 1,
+         failure_reason = NULL,
+         last_attempt_run = ?,
+         ${FENCE_SET}
+       WHERE task_id = ? AND queue = ? AND state = 'failed'
+         AND failure_reason IS NOT NULL AND completed_payload IS NULL
+         AND ${taskOwnsEveryRun('tasks')}
+         AND EXISTS (SELECT 1 FROM runs r WHERE ${runOwnedByTask('r', 'tasks')})
+         AND ${noLiveRun('tasks')}
+         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')}
+         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}
+         AND NOT EXISTS (SELECT 1 FROM runs r
+                         WHERE ${runOwnedByTask('r', 'tasks')}
+                           AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})
+         AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}
+         AND ${charged} - attempts IN (0, 1)
+         AND ${charged} <= max_attempts`,
+      [runId, taskId, queue],
+    )
+    // The revival run, keyed on the revive stamp, carries the top run's parked
+    // wake as every successor does. The live-run check is ownership, so an exact
+    // replay that still sees the first pass's stamp inserts nothing.
+    b.followOn(
+      'run',
+      'runs',
+      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
+         available_at_ms, created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS_SQL}, ${FENCE_COLS})
+       SELECT ?, f.queue, f.task_id, p.attempt + 1, 'pending', f.fence_at_ms, f.fence_at_ms,
+         ${successorCarriedValues('p')}, ${STAMP}, f.fence_at_ms
+       FROM tasks f JOIN runs p ON ${runOwnedByTask('p', 'f')}
+       WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('revive')} AND p.attempt = ${top('f')}
+         AND ${noLiveRun('f')}`,
+      [runId, taskId],
+      'one',
+    )
+    b.tail(
+      'revived',
+      `SELECT attempt FROM runs WHERE run_id = ? AND fence_stamp = ${b.fence('run')}`,
+      [runId],
+    )
+    const { won, results } = await b.run(this.db)
+    if (won !== 'revive') return null
+    const row = results.revived?.rows[0]
+    if (!row) throw new Error(`retryTask ${taskId}: the revival won but inserted no run`)
+    return { runId, attempt: Number(row.attempt) }
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {

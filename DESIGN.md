@@ -844,6 +844,26 @@ are load-bearing):
    sole live run. An already-terminal owner may still let a matching live run
    quiesce, because that cannot amplify task state. A refused suspension
    surfaces as AB002.
+
+   **One exception: `retryTask` revives a failed task in place** (Absurd's
+   `retry_task`, TLA action `RetryTask`). It is an operator action on a task
+   whose state is `failed`, and nothing else may leave a terminal state. It
+   inserts a new pending run due now, with the next ordinal after every run the
+   task has, and returns the task to `pending`. A task that failed at the
+   infrastructure-retry or relaunch cap has a top run no counter recorded, so
+   the revival charges that run as a user attempt, keeping attempts plus
+   infrastructure retries equal to the top ordinal (TLA `AccountingBand`).
+   That charge never exceeds the budget (TLA `FailedChargeWithinBudget`), so
+   the budget grows by one, which for a task that failed on its budget is
+   Absurd's default of budget plus one. The revival run carries the top run's
+   parked wake like every successor. The revival clears the task's failure
+   reason. Every failed run stays failed, and infrastructure retries, the
+   first-start latch, and the cancellation deadline are untouched, so a revived
+   task past its duration limit is cancelled by the next sweep. A completed or
+   cancelled task is never revived, and neither is a failed task whose outcome
+   or counters are corrupt: a missing reason, a completed payload, a counter or
+   run ordinal that is not an exact integer in range, a budget that cannot take
+   one more, or a charge outside the accounting band or past the budget.
 7. **Client numbers are validated at the port; SQL never multiplies them.**
    Every relative duration crosses the boundary through `durationToMs`
    (finite, ≥ 0, rounded to integer milliseconds, ≤ 100 years; leases and
@@ -1076,9 +1096,9 @@ not depend on careful reading:
   Snapshot results are assembled by each projection's declared table key,
   never by a second hard-coded positional table list.
   Generated just-over-bound witnesses, along with the ownership witnesses,
-  keep the poison matrix complete. The poison surface crosses the 18 classified
-  write labels with 144 corrupt-state witnesses covering that exact
-  condition inventory: 2,592 generated cells,
+  keep the poison matrix complete. The poison surface crosses the 19 classified
+  write labels with 145 corrupt-state witnesses covering that exact
+  condition inventory: 2,755 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state
@@ -1527,9 +1547,10 @@ Costs and the consistency discipline (there are **no cross-DB transactions**):
    counts only user-code failures. Successor runs carry forward core's
    `SUCCESSOR_CARRIED_RUN_COLUMNS` (the run-DB pointer, `wake_event`,
    `event_payload`, and `wake_step`) on **every** path that creates one (the
-   sweep and the worker-side fail-with-retry alike). Every other runs column a
-   successor sets for itself: its identity and attempt, its state and
-   availability, `created_at_ms` at the parent's failure instant, fresh claim,
+   sweep, the worker-side fail-with-retry, and `retryTask`'s revival from the
+   task's top run). Every other runs column a successor sets for itself: its
+   identity and attempt, its state and availability, `created_at_ms` at the
+   parent's failure instant (a revival's own instant), fresh claim,
    lease, heartbeat, and relaunch fields, no outcome, and its own fence stamp.
    The conformance case "both successor paths carry every inherited run
    column" classifies every runs column as one or the other.

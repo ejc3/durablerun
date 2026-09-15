@@ -35,6 +35,7 @@ const STATIC_ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'accounting/above-top': 'attempt-accounting-drift',
   'accounting/below-top-minus-one': 'attempt-accounting-drift',
   'accounting/live-run-not-next': 'attempt-accounting-drift',
+  'accounting/failed-charge-past-budget': 'attempt-accounting-drift',
   'checkpoint/task-mismatch': 'checkpoint-cross-task',
   'checkpoint/queue-mismatch': 'checkpoint-cross-task',
   'checkpoint/owner-attempt-mismatch': 'checkpoint-owner-attempt-mismatch',
@@ -593,6 +594,16 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
             add('accounting/live-run-not-next', taskId)
           }
         }
+      }
+      // TLA FailedChargeWithinBudget: a revival charges the top run net of
+      // infrastructure retries, and that charge never exceeds the budget.
+      if (
+        state === 'failed' &&
+        counters.infraRetries !== undefined &&
+        counters.maxAttempts !== undefined &&
+        top - counters.infraRetries > counters.maxAttempts
+      ) {
+        add('accounting/failed-charge-past-budget', taskId)
       }
     }
   }

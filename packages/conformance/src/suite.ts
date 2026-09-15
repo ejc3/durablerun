@@ -52,6 +52,14 @@ async function snapshot(
   return { tasks: tasks?.rows, runs: runs?.rows }
 }
 
+/** Puts a task at `retries` infrastructure retries and its run at the matching ordinal. */
+function infraRetrySeed(taskId: string, runId: string, retries: number) {
+  return [
+    { sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`, args: [retries, taskId] },
+    { sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`, args: [retries + 1, runId] },
+  ]
+}
+
 /**
  * The dialect-agnostic scheduler conformance suite. Every store dialect —
  * and eventually every language port — must pass this battery unchanged;
@@ -1588,16 +1596,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('fails the task terminally at the infra-retry cap, no successor', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimActivated(f.store, Q, 'tick-1')
-        await f.raw.batch('t', [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP, run.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, run.runId],
-          },
-        ])
+        await f.raw.batch('t', infraRetrySeed(run.taskId, run.runId, INFRA_RETRY_CAP))
         await f.admin.setFakeNowEpochMs(1_100_000)
         const swept = await f.store.sweep(Q, 10)
         expect(swept).toEqual([
@@ -1880,6 +1879,258 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('retryTask (Absurd retry_task)', () => {
+      // A task that failed terminally after `attempts` activated attempts, each
+      // but the last retried at once.
+      const failedTask = async (name: string, maxAttempts = 1, attempts = maxAttempts) => {
+        const spawned = await f.store.spawn(Q, name, '{}', { maxAttempts })
+        let firstRunId: string | undefined
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          const run = await claimActivated(f.store, Q, `w-${name}-${attempt}`)
+          firstRunId ??= run.runId
+          await f.store.fail(
+            Q,
+            run.runId,
+            run.claimToken,
+            '{"name":"Boom"}',
+            attempt < attempts ? { delaySeconds: 0 } : null,
+          )
+        }
+        if (firstRunId === undefined) throw new Error(`task ${spawned.taskId} was never claimed`)
+        return { taskId: spawned.taskId, firstRunId }
+      }
+      // retryTask refuses the task and writes nothing, under the named verdict marker.
+      const expectRefused = async (taskId: string, marker: string) => {
+        const before = await snapshot(f, taskId)
+        const refused = await f.store.retryTask(Q, taskId)
+        expect({ refused, unchanged: await snapshot(f, taskId) }, marker).toEqual({
+          refused: null,
+          unchanged: before,
+        })
+      }
+      // A task swept to a cap, then revived: what retryTask returned, the task's
+      // counters, and the engine invariants.
+      const reviveAfterCap = async (
+        name: string,
+        activate: boolean,
+        seed: (taskId: string, runId: string) => { sql: string; args: (string | number)[] }[],
+        sweepKind: string,
+      ) => {
+        const spawned = await f.store.spawn(Q, name, '{}')
+        const run = activate
+          ? await claimActivated(f.store, Q, `w-${name}`)
+          : await claimOne(f.store, Q, `w-${name}`)
+        await f.raw.batch(`seed-${name}`, seed(spawned.taskId, run.runId))
+        await f.admin.setFakeNowEpochMs(START_MS + 200_000)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([sweepKind])
+        const revived = await f.store.retryTask(Q, spawned.taskId)
+        const task = await readOne(
+          f.raw,
+          `SELECT state, attempts, infra_retries, max_attempts FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        return {
+          revived,
+          task: {
+            state: task?.state,
+            attempts: Number(task?.attempts),
+            infraRetries: Number(task?.infra_retries),
+            maxAttempts: Number(task?.max_attempts),
+          },
+          violations: await engineInvariantViolations(f.raw),
+        }
+      }
+
+      it('revives a task that failed on its budget with a claimable run at the next ordinal', async () => {
+        const spawned = await failedTask('job')
+        const revived = await f.store.retryTask(Q, spawned.taskId)
+        const task = await readOne(
+          f.raw,
+          `SELECT state, attempts, max_attempts, failure_reason, last_attempt_run
+           FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        const claimed = await claimOne(f.store, Q, 'w2')
+        expect({
+          revived,
+          task: {
+            state: task?.state,
+            attempts: Number(task?.attempts),
+            maxAttempts: Number(task?.max_attempts),
+            failureReason: task?.failure_reason,
+            lastAttemptRun: task?.last_attempt_run,
+          },
+          claimed: { runId: claimed.runId, attempt: claimed.attempt },
+          violations: await engineInvariantViolations(f.raw),
+        }).toEqual({
+          revived: { runId: claimed.runId, attempt: 2 },
+          task: {
+            state: 'pending',
+            attempts: 1,
+            maxAttempts: 2,
+            failureReason: null,
+            lastAttemptRun: claimed.runId,
+          },
+          claimed: { runId: claimed.runId, attempt: 2 },
+          violations: [],
+        })
+      })
+
+      it('charges a relaunch-capped run no counter recorded and keeps the accounting invariants', async () => {
+        expect(
+          await reviveAfterCap(
+            'relaunch-capped',
+            false,
+            (_taskId, runId) => [
+              {
+                sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+                args: [RELAUNCH_CAP, runId],
+              },
+            ],
+            'relaunch-cap-exhausted',
+          ),
+          'mutation-verdict:behavior:retry-task-charges-unaccounted-top-run',
+        ).toEqual({
+          revived: { runId: expect.any(String), attempt: 2 },
+          task: { state: 'pending', attempts: 1, infraRetries: 0, maxAttempts: 6 },
+          violations: [],
+        })
+      })
+
+      it('charges net of infrastructure retries when a task failed at the infrastructure cap', async () => {
+        expect(
+          await reviveAfterCap(
+            'infra-capped',
+            true,
+            (taskId, runId) => infraRetrySeed(taskId, runId, INFRA_RETRY_CAP),
+            'infra-cap-exhausted',
+          ),
+          'mutation-verdict:behavior:retry-task-charges-net-of-infra-retries',
+        ).toEqual({
+          revived: { runId: expect.any(String), attempt: INFRA_RETRY_CAP + 2 },
+          task: { state: 'pending', attempts: 1, infraRetries: INFRA_RETRY_CAP, maxAttempts: 6 },
+          violations: [],
+        })
+      })
+
+      // fenceTwin('RetryTask'): a revival is fenced on a failed task: a replay,
+      // a completed task, a cancelled task, and a live task all refuse and write
+      // nothing.
+      it('refuses a replay, a completed, a cancelled, or a live task and writes nothing', async () => {
+        const failed = await failedTask('failed')
+        const completed = await f.store.spawn(Q, 'completed', '{}')
+        const completedRun = await claimActivated(f.store, Q, 'w-completed')
+        // The completed task's own run, not the revival run due at the same instant.
+        expect(completedRun.taskId, 'the completed task finishes its own run').toBe(
+          completed.taskId,
+        )
+        await f.store.complete(Q, completedRun.runId, completedRun.claimToken, '{}')
+        // Revive only now, so the replay below meets a task holding its live revival run.
+        expect(await f.store.retryTask(Q, failed.taskId)).not.toBeNull()
+        expect(
+          (await snapshot(f, failed.taskId)).runs?.filter((run) => run.state === 'pending'),
+          'the revived task holds its live revival run',
+        ).toHaveLength(1)
+        const cancelled = await f.store.spawn(Q, 'cancelled', '{}')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+        const live = await f.store.spawn(Q, 'live', '{}')
+        const tasks = [failed, completed, cancelled, live]
+        const before = await Promise.all(tasks.map(({ taskId }) => snapshot(f, taskId)))
+        const refusals = await Promise.all(tasks.map(({ taskId }) => f.store.retryTask(Q, taskId)))
+        const after = await Promise.all(tasks.map(({ taskId }) => snapshot(f, taskId)))
+        expect(
+          { refusals, unchanged: after },
+          'mutation-verdict:behavior:retry-task-requires-failed-task',
+        ).toEqual({
+          refusals: [null, null, null, null],
+          unchanged: before,
+        })
+      })
+
+      it('refuses a failed task whose recorded outcome is corrupt and writes nothing', async () => {
+        const corrupt = await failedTask('corrupt')
+        await f.raw.batch('corrupt-failed-outcome', [
+          {
+            sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
+            args: [corrupt.taskId],
+          },
+        ])
+        await expectRefused(
+          corrupt.taskId,
+          'mutation-verdict:behavior:retry-task-requires-well-formed-failure',
+        )
+      })
+
+      it('refuses a revival that would push its budget past the stored maximum', async () => {
+        const spawned = await failedTask('at-max-budget', MAX_COUNT, 1)
+        await expectRefused(
+          spawned.taskId,
+          'mutation-verdict:behavior:retry-task-requires-incrementable-budget',
+        )
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('refuses to revive over a counter out of range or a charge past the budget', async () => {
+        // Each corruption passes every other revival guard, so each names one.
+        const negativeAttempts = await failedTask('negative-attempts')
+        await f.raw.batch('corrupt-negative-attempts', [
+          {
+            sql: `UPDATE tasks SET attempts = -1, infra_retries = 2 WHERE task_id = ?`,
+            args: [negativeAttempts.taskId],
+          },
+        ])
+        const infraPastCap = await failedTask('infra-past-cap')
+        await f.raw.batch(
+          'corrupt-infra-past-cap',
+          infraRetrySeed(infraPastCap.taskId, infraPastCap.firstRunId, INFRA_RETRY_CAP + 1),
+        )
+        const chargePastBudget = await failedTask('charge-past-budget')
+        await f.raw.batch('corrupt-charge-past-budget', [
+          {
+            sql: `UPDATE runs SET attempt = 2 WHERE run_id = ?`,
+            args: [chargePastBudget.firstRunId],
+          },
+        ])
+        // A lower run at ordinal 0 is storable on every backend, out of range, and
+        // below the top ordinal, so only the run-ordinal guard refuses it.
+        const zeroSibling = await failedTask('zero-sibling', 2)
+        await f.raw.batch('corrupt-zero-sibling', [
+          { sql: `UPDATE runs SET attempt = 0 WHERE run_id = ?`, args: [zeroSibling.firstRunId] },
+        ])
+        const invalidSibling = await failedTask('invalid-sibling', 2)
+        const disposition = await executeStorageCorruption(f, {
+          table: 'runs',
+          runId: invalidSibling.firstRunId,
+          column: 'attempt',
+          invalidRepresentation: 'fractional-real',
+        })
+        expect(['injected', 'structurally-rejected']).toContain(disposition)
+        const inRange = 'mutation-verdict:behavior:retry-task-requires-counters-in-range'
+        const corruptions = [
+          { task: negativeAttempts, marker: inRange },
+          { task: infraPastCap, marker: inRange },
+          { task: zeroSibling, marker: inRange },
+          {
+            task: chargePastBudget,
+            marker: 'mutation-verdict:behavior:retry-task-requires-charge-within-budget',
+          },
+          ...(disposition === 'injected' ? [{ task: invalidSibling, marker: inRange }] : []),
+        ]
+        for (const { task, marker } of corruptions) await expectRefused(task.taskId, marker)
+      })
+
+      it('refuses to revive a failed task whose stored counters disagree with its runs', async () => {
+        const spawned = await failedTask('drifted-counters')
+        await f.raw.batch('corrupt-failed-infra-retries', [
+          { sql: `UPDATE tasks SET infra_retries = 3 WHERE task_id = ?`, args: [spawned.taskId] },
+        ])
+        await expectRefused(
+          spawned.taskId,
+          'mutation-verdict:behavior:retry-task-requires-accounting-band',
+        )
+      })
+    })
+
     describe('expireLeaseNow (the advisory write)', () => {
       it('accelerates sweep pickup with a valid token; stale tokens no-op', async () => {
         await f.store.spawn(Q, 'job', '{}')
@@ -1975,14 +2226,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
             args: [RELAUNCH_CAP, lostLaunch.runId],
           },
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP, infraCapped.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, infraCapped.runId],
-          },
+          ...infraRetrySeed(infraCapped.taskId, infraCapped.runId, INFRA_RETRY_CAP),
         ])
         await f.admin.setFakeNowEpochMs(1_100_000)
         expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind).sort()).toEqual([
@@ -2134,33 +2378,60 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.fail(Q, retried.runId, retried.claimToken, '{"name":"Boom"}', {
           delaySeconds: 30,
         })
+        const revivalQueue = 'carry-revival'
+        await f.raw.batch('carry-revival-event', [
+          {
+            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                  VALUES (?, ?, ?, 1000000)`,
+            args: [revivalQueue, seeded.wake_event, seeded.event_payload],
+          },
+        ])
+        const revivalTask = await f.store.spawn(revivalQueue, 'job', '{}')
+        const revival = await claimActivated(f.store, revivalQueue, 'w-carry-revival')
+        await f.raw.batch('carry-park-revival', [parkWake(revival.runId)])
+        await f.store.fail(revivalQueue, revival.runId, revival.claimToken, '{"name":"Boom"}', null)
+        expect(await f.store.retryTask(revivalQueue, revivalTask.taskId)).not.toBeNull()
         const timedOut = await activatedRun('w-carry-timeout')
         await f.raw.batch('carry-park-timeout', [parkWake(timedOut.runId)])
         await f.admin.setFakeNowEpochMs(1_100_000)
         const swept = await f.store.sweep(Q, 10)
         expect(swept.map((outcome) => outcome.kind)).toContain('claim-timeout')
 
-        const families: { path: string; taskId: string; parent: SqlRow; successor: SqlRow }[] = []
-        for (const [path, taskId] of [
-          ['user retry', retried.taskId],
-          ['claim-timeout sweep', timedOut.taskId],
+        const families: {
+          path: string
+          taskId: string
+          parent: SqlRow
+          successor: SqlRow
+          createdAt: unknown
+        }[] = []
+        // A failure successor is created at its parent's failure instant, and a
+        // revival at the instant of the task CAS that revived it.
+        for (const [path, taskId, createdAt] of [
+          ['user retry', retried.taskId, 'parent failure'],
+          ['claim-timeout sweep', timedOut.taskId, 'parent failure'],
+          ['revival', revivalTask.taskId, 'revival'],
         ] as const) {
           const { runs } = await snapshot(f, taskId)
           const [parent, successor] = runs ?? []
           if (runs?.length !== 2 || !parent || !successor) {
             throw new Error(`task ${taskId} has no successor run`)
           }
-          families.push({ path, taskId, parent, successor })
+          const revivedAt =
+            createdAt === 'revival'
+              ? (await readOne(f.raw, `SELECT fence_at_ms FROM tasks WHERE task_id = ?`, [taskId]))
+                  ?.fence_at_ms
+              : parent.fence_at_ms
+          families.push({ path, taskId, parent, successor, createdAt: revivedAt })
         }
-        for (const { path, parent, successor } of families) {
+        for (const { path, successor, createdAt } of families) {
           expect(
             Object.keys(successor).sort(),
             `every runs column of the ${path} successor is carried or successor-owned`,
           ).toEqual([...SUCCESSOR_CARRIED_RUN_COLUMNS, ...successorOwned].sort())
           expect(
             successor.created_at_ms,
-            `the ${path} successor is created at its parent's failure instant`,
-          ).toBe(parent.fence_at_ms)
+            `the ${path} successor is created at its expected instant`,
+          ).toBe(createdAt)
         }
         await attributeExpectedFailure(
           { kind: 'behavior', mutation: 'successor-carries-every-column' },
@@ -2185,16 +2456,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('leaves a claimed run unchanged when infrastructure retries exceed the protocol cap', async () => {
         const run = await activatedRun('w-over-infra-cap')
-        await f.raw.batch('corrupt-infra-retry-cap', [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, run.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 2, run.runId],
-          },
-        ])
+        await f.raw.batch(
+          'corrupt-infra-retry-cap',
+          infraRetrySeed(run.taskId, run.runId, INFRA_RETRY_CAP + 1),
+        )
         const before = await snapshot(f, run.taskId)
 
         const observed = await f.store

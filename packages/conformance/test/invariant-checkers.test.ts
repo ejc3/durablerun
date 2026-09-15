@@ -249,6 +249,22 @@ describe('invariant checkers fire on constructed corruption', () => {
     await f.close()
   })
 
+  it('flags a failed task whose charge exceeds its budget', async () => {
+    const f = await seeded('failed-charge-past-budget')
+    // Accounting sits in its band (3 attempts, top run 4), but the uncharged top run
+    // would charge 4 attempts against a budget of 3: TLA FailedChargeWithinBudget.
+    await f.raw.batch('corrupt', [
+      {
+        sql: `UPDATE tasks SET state = 'failed', failure_reason = '{"name":"Boom"}',
+                attempts = max_attempts WHERE task_id = 't1'`,
+        args: [],
+      },
+      { sql: `UPDATE runs SET state = 'failed', attempt = 4 WHERE run_id = 'r1'`, args: [] },
+    ])
+    expect(await engineInvariantViolations(f.raw)).toContain('attempt-accounting-drift: t1')
+    await f.close()
+  })
+
   it('flags a live run after the user-attempt budget is exhausted', async () => {
     const f = await seeded('live-run-at-attempt-cap')
     await f.raw.batch('corrupt', [
