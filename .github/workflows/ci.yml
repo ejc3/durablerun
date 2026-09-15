@@ -175,10 +175,11 @@ jobs:
               print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
           PY
       - name: Bridge re-aimed mutation targets in the older base registry
-        # A base registry's find strings must occur in this tree, and some were
-        # legitimately re-aimed. Each arm is pinned to one base registry hash and
-        # replaces only that re-aimed data, never checker logic, inventory, or
-        # verdicts. Any other base skips the step.
+        # A base registry's find strings must occur in this tree, and every verdict
+        # marker in this tree's tests must be registered or exempted by it. Some
+        # find strings were legitimately re-aimed, and some markers are newer than
+        # a base. Each arm is pinned to one base registry hash and replaces or adds
+        # only that data, never checker logic or verdicts. Any other base skips.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -222,6 +223,22 @@ jobs:
                   if case not in text[text.rindex('    (\n', 0, at):at]:
                       raise SystemExit('spawn-cancellation: the re-aimed addition text must belong to its case.')
               repaired = previous.replace(old, new)
+              # Two verdict markers this tree registers are unknown to this registry.
+              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(exemptions) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              markers = (
+                  'mutation-verdict:behavior:successor-carries-every-column',
+                  'mutation-verdict:behavior:task-result-accepts-engine-outcomes',
+              )
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              repaired = repaired.replace(exemptions, exemptions + entries)
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
