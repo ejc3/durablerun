@@ -116,6 +116,27 @@ describe('DriverLoop', () => {
     f.close()
   })
 
+  it('a flood of wake() calls ticks at most once per wake floor interval', async () => {
+    const f = await fx('loop-wake-floor')
+    const launcher = new FakeLauncher()
+    const opts = { ...OPTS, wakeFloorMs: 1_000 }
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, opts)
+    const done = loop.run()
+    await until(() => f.clock.sleeps.length === 1, 'idle park')
+    const ticksBefore = loop.stats.ticks
+    // Fifty pings with the clock frozen inside one floor interval: at most one
+    // more look, never fifty.
+    for (let i = 0; i < 50; i++) {
+      loop.wake()
+      await new Promise((r) => setImmediate(r))
+    }
+    await until(() => f.clock.sleeps.length === 1, 'parked again')
+    expect(loop.stats.ticks - ticksBefore).toBeLessThanOrEqual(1)
+    await loop.stop()
+    await done
+    f.close()
+  })
+
   it('a backlog chains ticks without sleeping', async () => {
     const f = await fx('loop-backlog')
     for (let i = 0; i < 7; i++) await f.store.spawn(Q, `job${i}`, '{}')
