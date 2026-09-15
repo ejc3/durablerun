@@ -34,4 +34,8 @@ ProbeNoDeferredStartDeadline ==
   \A t \in Tasks :
     ~(lastAction = "Defer" /\ policy[t] = "delay" /\ cancelAt[t] # Inf
       /\ firstStarted[t] = Inf)
+\* Witness: a live worker whose task's cancellation deadline is due, so every
+\* suspension it attempts is refused.
+ProbeNoRefusedSuspension ==
+  \A c \in contexts : ~(Fenced(c) /\ cancelAt[runTask[c.run]] <= now)
 =========================================================================

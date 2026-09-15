@@ -760,22 +760,18 @@ FailRunTerminal(c) ==
 \* run row re-scheduled, no accounting consumed; context exits.  Parked
 \* wake fields are deliberately NOT cleared (header note).
 \*
-\* MODEL/IMPL GAP, deliberate and recorded in BUILD.md: Fenced(c) constrains
-\* only the RUN.  Both implementations additionally require the owning TASK to
-\* be eligible -- live, and not past a due cancellation deadline -- so a run
-\* whose task is about to be cancelled cannot re-park itself into the queue
-\* the claim path is already refusing to launch from.  That is STRICTLY
-\* NARROWER than this action, so every safety property proved here still
-\* holds of the implementation.  It is not free, though: the refusal reaches
-\* the worker as a lost lease, and whether that path preserves the liveness
-\* properties is NOT settled by this model, because the guard is not in it.
-\* Modelling it belongs with the cancellation-discovery work (PR3.2), which
-\* is where the "task terminal" and "fence lost" signals stop being the same
-\* thing.
+\* Like every suspension, it requires the owning TASK to be eligible: its
+\* cancellation deadline not yet due.  Fenced(c) already implies the task is
+\* live, because cancellation also cancels the task's running runs.  A task
+\* about to be cancelled cannot re-park itself into the queue the claim path
+\* is already refusing to launch from; the refused worker keeps its context
+\* until the deadline sweep cancels the task or its lease expires, and the
+\* liveness properties are checked with that refusal in place.
 SleepSuspend(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ LET t == runTask[c.run] IN
+       /\ cancelAt[t] > now
        /\ hops[t] < MaxHops
        /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
        /\ availableAt' = [availableAt EXCEPT ![c.run] = Clip(now + SleepDur)]
@@ -797,6 +793,7 @@ VoluntaryChain(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ LET t == runTask[c.run] IN
+       /\ cancelAt[t] > now
        /\ hops[t] < MaxHops
        /\ runState'    = [runState EXCEPT ![c.run] = "pending"]
        /\ availableAt' = [availableAt EXCEPT ![c.run] = now]
@@ -863,6 +860,7 @@ AwaitRegister(c, e, tAt) ==
 AwaitEventMiss(c, e) ==
   /\ c \in contexts
   /\ Fenced(c)
+  /\ cancelAt[runTask[c.run]] > now   \* eligible task, as every suspension
   /\ \/ AwaitRegister(c, e, Clip(now + SleepDur))    \* with timeout
      \/ /\ cancelAt[runTask[c.run]] # Inf  \* MODEL RESTRICTION: untimed
                                            \* waits only under an armed
