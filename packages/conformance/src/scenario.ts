@@ -11,16 +11,31 @@ export async function readOne(
   return result?.rows[0]
 }
 
-/** Run `body` against its own fixture, and close the fixture even when the body throws. */
+/**
+ * Run `body` against its own fixture and close the fixture afterwards, including
+ * when the body throws. If closing fails after the body threw, the thrown error
+ * names the close failure and carries the body's error as its cause, which the
+ * test report prints with its assertion diff.
+ */
 export async function withFixture<T>(
   makeFixture: StoreFixtureFactory,
   name: number | string,
   body: (fixture: StoreFixture) => Promise<T>,
 ): Promise<T> {
   const fixture = await makeFixture(name)
+  let result: T
   try {
-    return await body(fixture)
-  } finally {
-    await fixture.close()
+    result = await body(fixture)
+  } catch (scenarioFailure) {
+    try {
+      await fixture.close()
+    } catch (closeFailure) {
+      throw new Error(`closing the fixture failed after the scenario failed: ${closeFailure}`, {
+        cause: scenarioFailure,
+      })
+    }
+    throw scenarioFailure
   }
+  await fixture.close()
+  return result
 }
