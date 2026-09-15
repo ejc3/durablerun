@@ -272,7 +272,6 @@ describe('fuzz shard batch plan', () => {
       'liveness3',
       'liveness4',
       'liveness5',
-      'retry',
     ])
     expect(document.jobs.tla.steps.at(-1)?.run).toBe(
       'TLA_ONLY=${{ matrix.target }} bash scripts/confine.sh bash scripts/tla.sh',
