@@ -1932,16 +1932,19 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           `SELECT state, attempts, infra_retries, max_attempts FROM tasks WHERE task_id = ?`,
           [spawned.taskId],
         )
-        expect({
-          revived,
-          task: {
-            state: task?.state,
-            attempts: Number(task?.attempts),
-            infraRetries: Number(task?.infra_retries),
-            maxAttempts: Number(task?.max_attempts),
+        expect(
+          {
+            revived,
+            task: {
+              state: task?.state,
+              attempts: Number(task?.attempts),
+              infraRetries: Number(task?.infra_retries),
+              maxAttempts: Number(task?.max_attempts),
+            },
+            violations: await engineInvariantViolations(f.raw),
           },
-          violations: await engineInvariantViolations(f.raw),
-        }).toEqual({
+          'mutation-verdict:behavior:retry-task-charges-unaccounted-top-run',
+        ).toEqual({
           revived: { runId: expect.any(String), attempt: 2 },
           task: { state: 'pending', attempts: 1, infraRetries: 0, maxAttempts: 6 },
           violations: [],
@@ -1971,10 +1974,31 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const after = await Promise.all(
           [failed, completed, cancelled, live].map(({ taskId }) => snapshot(f, taskId)),
         )
-        expect({ refusals, unchanged: after }).toEqual({
+        expect(
+          { refusals, unchanged: after },
+          'mutation-verdict:behavior:retry-task-requires-failed-task',
+        ).toEqual({
           refusals: [null, null, null, null],
           unchanged: before,
         })
+      })
+
+      it('refuses a failed task whose recorded outcome is corrupt and writes nothing', async () => {
+        const corrupt = await f.store.spawn(Q, 'corrupt', '{}', { maxAttempts: 1 })
+        const run = await claimActivated(f.store, Q, 'w-corrupt')
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        await f.raw.batch('corrupt-failed-outcome', [
+          {
+            sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
+            args: [corrupt.taskId],
+          },
+        ])
+        const before = await snapshot(f, corrupt.taskId)
+        const refused = await f.store.retryTask(Q, corrupt.taskId)
+        expect(
+          { refused, unchanged: await snapshot(f, corrupt.taskId) },
+          'mutation-verdict:behavior:retry-task-requires-well-formed-failure',
+        ).toEqual({ refused: null, unchanged: before })
       })
     })
 

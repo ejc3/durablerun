@@ -2465,6 +2465,35 @@ MUTATION_SPECS = [
         "a worker learns the task name of a claim in another queue",
     ),
     (
+        "retry-task-requires-failed-task",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n"
+        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n",
+        "       WHERE task_id = ? AND queue = ? AND state IN ('failed', 'cancelled')\n"
+        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n",
+        "retryTask revives a cancelled task",
+    ),
+    (
+        "retry-task-requires-well-formed-failure",
+        "packages/store-libsql/src/store.ts",
+        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n"
+        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n"
+        "         AND ${taskOwnsEveryRun('tasks')}\n",
+        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n"
+        "         AND 1 = 1\n"
+        "         AND ${taskOwnsEveryRun('tasks')}\n",
+        "retryTask revives a failed task whose recorded outcome is corrupt",
+    ),
+    (
+        "retry-task-charges-unaccounted-top-run",
+        "packages/store-libsql/src/store.ts",
+        "         state = 'pending',\n"
+        "         attempts = ${charged},\n",
+        "         state = 'pending',\n"
+        "         attempts = attempts,\n",
+        "retryTask leaves a relaunch-capped run uncharged, so the revival run is not the next accounted ordinal",
+    ),
+    (
         "generated-relation-queue-ownership",
         "packages/core/src/fenced-batch.ts",
         "    const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''\n"
@@ -5822,6 +5851,27 @@ VERDICTS = {
         "packages/conformance/test/libsql.test.ts",
         "scheduler conformance [libsql] claimedTaskName (the pre-activation name read) answers the claimed task name only for this unactivated claim",
         "mutation-verdict:behavior:claimed-task-name-requires-queue",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-requires-failed-task": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) refuses a replay, a completed, a cancelled, or a live task and writes nothing",
+        "mutation-verdict:behavior:retry-task-requires-failed-task",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-requires-well-formed-failure": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) refuses a failed task whose recorded outcome is corrupt and writes nothing",
+        "mutation-verdict:behavior:retry-task-requires-well-formed-failure",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-charges-unaccounted-top-run": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) charges a relaunch-capped run no counter recorded and keeps the accounting invariants",
+        "mutation-verdict:behavior:retry-task-charges-unaccounted-top-run",
         "packages/conformance/src/suite.ts",
     ),
     "generated-relation-queue-ownership": ExpectedVerdict(
@@ -9421,7 +9471,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 426:
+        if len(MUTATIONS) != 429:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
