@@ -1,13 +1,13 @@
 import type { SqlExecutor, SqlRow, SqlStatement } from '@durablerun/core'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 
-/** Run one raw statement and return its first row. */
+/** Run one raw statement in read mode and return its first row. */
 export async function readOne(
   raw: SqlExecutor,
   sql: string,
   args: SqlStatement['args'],
 ): Promise<SqlRow | undefined> {
-  const [result] = await raw.batch('t', [{ sql, args }])
+  const [result] = await raw.batch('t', [{ sql, args }], 'read')
   return result?.rows[0]
 }
 
