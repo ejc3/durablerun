@@ -92,6 +92,11 @@ async function runWalk(
     }
   }
 
+  /** Run a transition that may lose its lease, and count it only when it held. */
+  const countIfHeld = async (stat: keyof FuzzStats, op: () => Promise<unknown>): Promise<void> => {
+    if (await expectLeaseLoss(op)) stats[stat]++
+  }
+
   for (let step = 0; step < steps; step++) {
     const roll = rng.next()
     if (roll < 0.03) {
@@ -150,33 +155,25 @@ async function runWalk(
       if (!run) continue
       const kind = rng.next()
       if (kind < 0.35) {
-        if (await expectLeaseLoss(() => f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}')))
-          stats.completes++
+        await countIfHeld('completes', () =>
+          f.store.complete(Q, run.runId, run.claimToken, '{"ok":1}'),
+        )
       } else if (kind < 0.55) {
-        if (
-          await expectLeaseLoss(() =>
-            f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFail"}', {
-              delaySeconds: rng.int(30) + frac(),
-            }),
-          )
+        await countIfHeld('fails', () =>
+          f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFail"}', {
+            delaySeconds: rng.int(30) + frac(),
+          }),
         )
-          stats.fails++
       } else if (kind < 0.65) {
-        if (
-          await expectLeaseLoss(() =>
-            f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFatal"}', null),
-          )
+        await countIfHeld('fails', () =>
+          f.store.fail(Q, run.runId, run.claimToken, '{"name":"FuzzFatal"}', null),
         )
-          stats.fails++
       } else if (kind < 0.85) {
-        if (
-          await expectLeaseLoss(() =>
-            f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: rng.int(60) + frac() }),
-          )
+        await countIfHeld('reschedules', () =>
+          f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: rng.int(60) + frac() }),
         )
-          stats.reschedules++
       } else if (kind < 0.9) {
-        const out = await expectLeaseLoss(() =>
+        await countIfHeld('awaits', () =>
           f.store.awaitEvent(
             Q,
             run.taskId,
@@ -187,23 +184,19 @@ async function runWalk(
             rng.next() < 0.5 ? 30 + rng.int(60) : null,
           ),
         )
-        if (out) stats.awaits++
         // Parked or answered inline — either way this hold is finished.
       } else if (kind < 0.95) {
-        if (
-          await expectLeaseLoss(() =>
-            f.store.setCheckpoint(
-              Q,
-              run.taskId,
-              run.runId,
-              run.claimToken,
-              `cp-${rng.int(3)}`,
-              '{"v":1}',
-              30 + rng.int(60) + frac(),
-            ),
-          )
+        await countIfHeld('checkpoints', () =>
+          f.store.setCheckpoint(
+            Q,
+            run.taskId,
+            run.runId,
+            run.claimToken,
+            `cp-${rng.int(3)}`,
+            '{"v":1}',
+            30 + rng.int(60) + frac(),
+          ),
         )
-          stats.checkpoints++
         held.push(run) // checkpointing does not release the run
       }
       // else: abandon silently — the sweep must recover it.
@@ -221,14 +214,11 @@ async function runWalk(
     } else if (roll < 0.84 && held.length > 0) {
       const run = held.splice(rng.int(held.length), 1)[0]
       if (run) {
-        if (
-          await expectLeaseLoss(() =>
-            f.store.reschedule(Q, run.runId, run.claimToken, {
-              atEpochMs: now + rng.int(90) * 1000,
-            }),
-          )
+        await countIfHeld('reschedules', () =>
+          f.store.reschedule(Q, run.runId, run.claimToken, {
+            atEpochMs: now + rng.int(90) * 1000,
+          }),
         )
-          stats.reschedules++
       }
     } else if (roll < 0.86) {
       await f.store.emitEvent(Q, `ev${rng.int(3)}`, `{"n":${rng.int(9)}}`)
