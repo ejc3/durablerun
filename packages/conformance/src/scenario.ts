@@ -17,11 +17,24 @@ export async function readOne(
   return result?.rows[0]
 }
 
+/** A scenario failure whose fixture then also failed to close. */
+export class FixtureCloseFailure extends Error {
+  constructor(
+    readonly closeFailure: unknown,
+    scenarioFailure: unknown,
+  ) {
+    super(`closing the fixture failed after the scenario failed: ${closeFailure}`, {
+      cause: scenarioFailure,
+    })
+    this.name = 'FixtureCloseFailure'
+  }
+}
+
 /**
  * Run `body` against its own fixture and close the fixture afterwards, including
- * when the body throws. If closing fails after the body threw, the thrown error
- * names the close failure and carries the body's error as its cause, which the
- * test report prints with its assertion diff.
+ * when the body throws. If closing fails after the body threw, it throws a
+ * FixtureCloseFailure that keeps the close error and carries the body's error as
+ * its cause, which the test report prints with its assertion diff.
  */
 export async function withFixture<T>(
   makeFixture: StoreFixtureFactory,
@@ -36,9 +49,7 @@ export async function withFixture<T>(
     try {
       await fixture.close()
     } catch (closeFailure) {
-      throw new Error(`closing the fixture failed after the scenario failed: ${closeFailure}`, {
-        cause: scenarioFailure,
-      })
+      throw new FixtureCloseFailure(closeFailure, scenarioFailure)
     }
     throw scenarioFailure
   }
@@ -112,4 +123,15 @@ export function checkpointOwned(
     stateJson,
     extendLeaseSeconds,
   )
+}
+
+/** Render a failure and every cause beneath it, one per line. */
+export function describeFailure(error: unknown): string {
+  const lines: string[] = []
+  let current: unknown = error
+  for (let depth = 0; current !== undefined && depth < 8; depth++) {
+    lines.push(`${depth === 0 ? '' : 'caused by: '}${String(current)}`)
+    current = current instanceof Error ? current.cause : undefined
+  }
+  return lines.join('\n')
 }

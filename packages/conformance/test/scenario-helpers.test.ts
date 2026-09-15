@@ -1,7 +1,7 @@
 import { type SqlBatchControl, type SqlExecutor, sqlBatchMode } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixture, StoreFixtureFactory } from '../src/index.js'
-import { readOne, withFixture } from '../src/scenario.js'
+import { FixtureCloseFailure, describeFailure, readOne, withFixture } from '../src/scenario.js'
 
 /** A fixture whose only live member is close, which counts calls and may fail. */
 function closingFixture(closeFailure?: Error): {
@@ -55,9 +55,22 @@ describe('conformance scenario helpers', () => {
     const error = await withFixture(makeFixture, 'double-failure', async () => {
       throw scenarioFailure
     }).catch((failure: unknown) => failure)
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toContain('close failed')
-    expect((error as Error).cause).toBe(scenarioFailure)
+    expect(error).toBeInstanceOf(FixtureCloseFailure)
+    expect((error as FixtureCloseFailure).message).toContain('close failed')
+    expect((error as FixtureCloseFailure).cause).toBe(scenarioFailure)
+    expect((error as FixtureCloseFailure).closeFailure).toBe(closeFailure)
     expect(closes()).toBe(1)
+  })
+
+  it('describeFailure renders every cause beneath a failure', () => {
+    const invariant = new Error('invariant violated at seed 7')
+    const close = new Error('close failed')
+    expect(describeFailure(new FixtureCloseFailure(close, invariant))).toBe(
+      [
+        'FixtureCloseFailure: closing the fixture failed after the scenario failed: Error: close failed',
+        'caused by: Error: invariant violated at seed 7',
+      ].join('\n'),
+    )
+    expect(describeFailure('plain text')).toBe('plain text')
   })
 })
