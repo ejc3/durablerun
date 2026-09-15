@@ -451,6 +451,7 @@ NoCtx == [run |-> NoRun, gen |-> 0]
 OwnedRuns(t) == {r \in RunIds : runTask[r] = t /\ runState[r] # "unused"}
 TopOrdinal(t) == CHOOSE o \in {runAttempt[r] : r \in OwnedRuns(t)} :
                    \A r \in OwnedRuns(t) : runAttempt[r] <= o
+TopRun(t) == CHOOSE r \in OwnedRuns(t) : runAttempt[r] = TopOrdinal(t)
 
 \* All future timestamps are clipped to the horizon (see header note).
 Clip(x) == IF x > MaxTime THEN MaxTime ELSE x
@@ -1008,7 +1009,7 @@ RetryTask(t) ==
   /\ taskState[t] = "failed"
   /\ retries[t] < MaxRetries
   /\ nextRun <= MaxRuns
-  /\ LET top == CHOOSE r \in OwnedRuns(t) : runAttempt[r] = TopOrdinal(t)
+  /\ LET top == TopRun(t)
          r2  == nextRun IN
        /\ runState'    = [runState EXCEPT ![r2] = "pending"]
        /\ runTask'     = [runTask EXCEPT ![r2] = t]
@@ -1436,8 +1437,7 @@ SuccessorCarriesWake ==
   [][ \A r \in RunIds :
         (runState[r] = "unused" /\ runState'[r] # "unused"
            /\ OwnedRuns(runTask'[r]) # {}) =>
-          LET top == CHOOSE p \in OwnedRuns(runTask'[r]) :
-                       runAttempt[p] = TopOrdinal(runTask'[r]) IN
+          LET top == TopRun(runTask'[r]) IN
             /\ wakeEvent'[r] = wakeEvent[top]
             /\ runPayload'[r] = runPayload[top]
     ]_vars

@@ -52,6 +52,14 @@ async function snapshot(
   return { tasks: tasks?.rows, runs: runs?.rows }
 }
 
+/** Puts a task at `retries` infrastructure retries and its run at the matching ordinal. */
+function infraRetrySeed(taskId: string, runId: string, retries: number) {
+  return [
+    { sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`, args: [retries, taskId] },
+    { sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`, args: [retries + 1, runId] },
+  ]
+}
+
 /**
  * The dialect-agnostic scheduler conformance suite. Every store dialect —
  * and eventually every language port — must pass this battery unchanged;
@@ -1588,16 +1596,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('fails the task terminally at the infra-retry cap, no successor', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimActivated(f.store, Q, 'tick-1')
-        await f.raw.batch('t', [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP, run.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, run.runId],
-          },
-        ])
+        await f.raw.batch('t', infraRetrySeed(run.taskId, run.runId, INFRA_RETRY_CAP))
         await f.admin.setFakeNowEpochMs(1_100_000)
         const swept = await f.store.sweep(Q, 10)
         expect(swept).toEqual([
@@ -1885,8 +1884,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // but the last retried at once.
       const failedTask = async (name: string, maxAttempts = 1, attempts = maxAttempts) => {
         const spawned = await f.store.spawn(Q, name, '{}', { maxAttempts })
+        let firstRunId: string | undefined
         for (let attempt = 1; attempt <= attempts; attempt++) {
           const run = await claimActivated(f.store, Q, `w-${name}-${attempt}`)
+          firstRunId ??= run.runId
           await f.store.fail(
             Q,
             run.runId,
@@ -1895,11 +1896,49 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             attempt < attempts ? { delaySeconds: 0 } : null,
           )
         }
-        const [firstRun] = (await snapshot(f, spawned.taskId)).runs ?? []
-        if (typeof firstRun?.run_id !== 'string' || Number(firstRun.attempt) !== 1) {
-          throw new Error(`task ${spawned.taskId} has no first run`)
+        if (firstRunId === undefined) throw new Error(`task ${spawned.taskId} was never claimed`)
+        return { taskId: spawned.taskId, firstRunId }
+      }
+      // retryTask refuses the task and writes nothing, under the named verdict marker.
+      const expectRefused = async (taskId: string, marker: string) => {
+        const before = await snapshot(f, taskId)
+        const refused = await f.store.retryTask(Q, taskId)
+        expect({ refused, unchanged: await snapshot(f, taskId) }, marker).toEqual({
+          refused: null,
+          unchanged: before,
+        })
+      }
+      // A task swept to a cap, then revived: what retryTask returned, the task's
+      // counters, and the engine invariants.
+      const reviveAfterCap = async (
+        name: string,
+        activate: boolean,
+        seed: (taskId: string, runId: string) => { sql: string; args: (string | number)[] }[],
+        sweepKind: string,
+      ) => {
+        const spawned = await f.store.spawn(Q, name, '{}')
+        const run = activate
+          ? await claimActivated(f.store, Q, `w-${name}`)
+          : await claimOne(f.store, Q, `w-${name}`)
+        await f.raw.batch(`seed-${name}`, seed(spawned.taskId, run.runId))
+        await f.admin.setFakeNowEpochMs(START_MS + 200_000)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([sweepKind])
+        const revived = await f.store.retryTask(Q, spawned.taskId)
+        const task = await readOne(
+          f.raw,
+          `SELECT state, attempts, infra_retries, max_attempts FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        return {
+          revived,
+          task: {
+            state: task?.state,
+            attempts: Number(task?.attempts),
+            infraRetries: Number(task?.infra_retries),
+            maxAttempts: Number(task?.max_attempts),
+          },
+          violations: await engineInvariantViolations(f.raw),
         }
-        return { taskId: spawned.taskId, firstRunId: firstRun.run_id }
       }
 
       it('revives a task that failed on its budget with a claimable run at the next ordinal', async () => {
@@ -1938,35 +1977,18 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('charges a relaunch-capped run no counter recorded and keeps the accounting invariants', async () => {
-        const spawned = await f.store.spawn(Q, 'job', '{}')
-        const lostLaunch = await claimOne(f.store, Q, 'w-relaunch-cap')
-        await f.raw.batch('seed-revival-relaunch-cap', [
-          {
-            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
-            args: [RELAUNCH_CAP, lostLaunch.runId],
-          },
-        ])
-        await f.admin.setFakeNowEpochMs(START_MS + 200_000)
-        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
-          'relaunch-cap-exhausted',
-        ])
-        const revived = await f.store.retryTask(Q, spawned.taskId)
-        const task = await readOne(
-          f.raw,
-          `SELECT state, attempts, infra_retries, max_attempts FROM tasks WHERE task_id = ?`,
-          [spawned.taskId],
-        )
         expect(
-          {
-            revived,
-            task: {
-              state: task?.state,
-              attempts: Number(task?.attempts),
-              infraRetries: Number(task?.infra_retries),
-              maxAttempts: Number(task?.max_attempts),
-            },
-            violations: await engineInvariantViolations(f.raw),
-          },
+          await reviveAfterCap(
+            'relaunch-capped',
+            false,
+            (_taskId, runId) => [
+              {
+                sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+                args: [RELAUNCH_CAP, runId],
+              },
+            ],
+            'relaunch-cap-exhausted',
+          ),
           'mutation-verdict:behavior:retry-task-charges-unaccounted-top-run',
         ).toEqual({
           revived: { runId: expect.any(String), attempt: 2 },
@@ -1976,39 +1998,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('charges net of infrastructure retries when a task failed at the infrastructure cap', async () => {
-        const spawned = await f.store.spawn(Q, 'job', '{}')
-        const run = await claimActivated(f.store, Q, 'w-infra-cap')
-        await f.raw.batch('seed-revival-infra-cap', [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP, spawned.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, run.runId],
-          },
-        ])
-        await f.admin.setFakeNowEpochMs(START_MS + 200_000)
-        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
-          'infra-cap-exhausted',
-        ])
-        const revived = await f.store.retryTask(Q, spawned.taskId)
-        const task = await readOne(
-          f.raw,
-          `SELECT state, attempts, infra_retries, max_attempts FROM tasks WHERE task_id = ?`,
-          [spawned.taskId],
-        )
         expect(
-          {
-            revived,
-            task: {
-              state: task?.state,
-              attempts: Number(task?.attempts),
-              infraRetries: Number(task?.infra_retries),
-              maxAttempts: Number(task?.max_attempts),
-            },
-            violations: await engineInvariantViolations(f.raw),
-          },
+          await reviveAfterCap(
+            'infra-capped',
+            true,
+            (taskId, runId) => infraRetrySeed(taskId, runId, INFRA_RETRY_CAP),
+            'infra-cap-exhausted',
+          ),
           'mutation-verdict:behavior:retry-task-charges-net-of-infra-retries',
         ).toEqual({
           revived: { runId: expect.any(String), attempt: INFRA_RETRY_CAP + 2 },
@@ -2050,26 +2046,19 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             args: [corrupt.taskId],
           },
         ])
-        const before = await snapshot(f, corrupt.taskId)
-        const refused = await f.store.retryTask(Q, corrupt.taskId)
-        expect(
-          { refused, unchanged: await snapshot(f, corrupt.taskId) },
+        await expectRefused(
+          corrupt.taskId,
           'mutation-verdict:behavior:retry-task-requires-well-formed-failure',
-        ).toEqual({ refused: null, unchanged: before })
+        )
       })
 
       it('refuses a revival that would push its budget past the stored maximum', async () => {
         const spawned = await failedTask('at-max-budget', MAX_COUNT, 1)
-        const before = await snapshot(f, spawned.taskId)
-        const refused = await f.store.retryTask(Q, spawned.taskId)
-        expect(
-          {
-            refused,
-            unchanged: await snapshot(f, spawned.taskId),
-            violations: await engineInvariantViolations(f.raw),
-          },
+        await expectRefused(
+          spawned.taskId,
           'mutation-verdict:behavior:retry-task-requires-incrementable-budget',
-        ).toEqual({ refused: null, unchanged: before, violations: [] })
+        )
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
       it('refuses to revive over a counter out of range or a charge past the budget', async () => {
@@ -2082,16 +2071,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         const infraPastCap = await failedTask('infra-past-cap')
-        await f.raw.batch('corrupt-infra-past-cap', [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, infraPastCap.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 2, infraPastCap.firstRunId],
-          },
-        ])
+        await f.raw.batch(
+          'corrupt-infra-past-cap',
+          infraRetrySeed(infraPastCap.taskId, infraPastCap.firstRunId, INFRA_RETRY_CAP + 1),
+        )
         const chargePastBudget = await failedTask('charge-past-budget')
         await f.raw.batch('corrupt-charge-past-budget', [
           {
@@ -2116,14 +2099,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
           ...(disposition === 'injected' ? [{ task: invalidSibling, marker: inRange }] : []),
         ]
-        for (const { task, marker } of corruptions) {
-          const before = await snapshot(f, task.taskId)
-          const refused = await f.store.retryTask(Q, task.taskId)
-          expect({ refused, unchanged: await snapshot(f, task.taskId) }, marker).toEqual({
-            refused: null,
-            unchanged: before,
-          })
-        }
+        for (const { task, marker } of corruptions) await expectRefused(task.taskId, marker)
       })
 
       it('refuses to revive a failed task whose stored counters disagree with its runs', async () => {
@@ -2131,12 +2107,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('corrupt-failed-infra-retries', [
           { sql: `UPDATE tasks SET infra_retries = 3 WHERE task_id = ?`, args: [spawned.taskId] },
         ])
-        const before = await snapshot(f, spawned.taskId)
-        const refused = await f.store.retryTask(Q, spawned.taskId)
-        expect(
-          { refused, unchanged: await snapshot(f, spawned.taskId) },
+        await expectRefused(
+          spawned.taskId,
           'mutation-verdict:behavior:retry-task-requires-accounting-band',
-        ).toEqual({ refused: null, unchanged: before })
+        )
       })
     })
 
@@ -2235,14 +2209,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
             args: [RELAUNCH_CAP, lostLaunch.runId],
           },
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP, infraCapped.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, infraCapped.runId],
-          },
+          ...infraRetrySeed(infraCapped.taskId, infraCapped.runId, INFRA_RETRY_CAP),
         ])
         await f.admin.setFakeNowEpochMs(1_100_000)
         expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind).sort()).toEqual([
@@ -2413,30 +2380,41 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const swept = await f.store.sweep(Q, 10)
         expect(swept.map((outcome) => outcome.kind)).toContain('claim-timeout')
 
-        const families: { path: string; taskId: string; parent: SqlRow; successor: SqlRow }[] = []
-        for (const [path, taskId] of [
-          ['user retry', retried.taskId],
-          ['claim-timeout sweep', timedOut.taskId],
-          ['revival', revivalTask.taskId],
+        const families: {
+          path: string
+          taskId: string
+          parent: SqlRow
+          successor: SqlRow
+          createdAt: unknown
+        }[] = []
+        // A failure successor is created at its parent's failure instant, and a
+        // revival at the instant of the task CAS that revived it.
+        for (const [path, taskId, createdAt] of [
+          ['user retry', retried.taskId, 'parent failure'],
+          ['claim-timeout sweep', timedOut.taskId, 'parent failure'],
+          ['revival', revivalTask.taskId, 'revival'],
         ] as const) {
           const { runs } = await snapshot(f, taskId)
           const [parent, successor] = runs ?? []
           if (runs?.length !== 2 || !parent || !successor) {
             throw new Error(`task ${taskId} has no successor run`)
           }
-          families.push({ path, taskId, parent, successor })
+          const revivedAt =
+            createdAt === 'revival'
+              ? (await readOne(f.raw, `SELECT fence_at_ms FROM tasks WHERE task_id = ?`, [taskId]))
+                  ?.fence_at_ms
+              : parent.fence_at_ms
+          families.push({ path, taskId, parent, successor, createdAt: revivedAt })
         }
-        for (const { path, parent, successor } of families) {
+        for (const { path, successor, createdAt } of families) {
           expect(
             Object.keys(successor).sort(),
             `every runs column of the ${path} successor is carried or successor-owned`,
           ).toEqual([...SUCCESSOR_CARRIED_RUN_COLUMNS, ...successorOwned].sort())
-          if (path !== 'revival') {
-            expect(
-              successor.created_at_ms,
-              `the ${path} successor is created at its parent's failure instant`,
-            ).toBe(parent.fence_at_ms)
-          }
+          expect(
+            successor.created_at_ms,
+            `the ${path} successor is created at its expected instant`,
+          ).toBe(createdAt)
         }
         await attributeExpectedFailure(
           { kind: 'behavior', mutation: 'successor-carries-every-column' },
@@ -2461,16 +2439,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('leaves a claimed run unchanged when infrastructure retries exceed the protocol cap', async () => {
         const run = await activatedRun('w-over-infra-cap')
-        await f.raw.batch('corrupt-infra-retry-cap', [
-          {
-            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
-            args: [INFRA_RETRY_CAP + 1, run.taskId],
-          },
-          {
-            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
-            args: [INFRA_RETRY_CAP + 2, run.runId],
-          },
-        ])
+        await f.raw.batch(
+          'corrupt-infra-retry-cap',
+          infraRetrySeed(run.taskId, run.runId, INFRA_RETRY_CAP + 1),
+        )
         const before = await snapshot(f, run.taskId)
 
         const observed = await f.store

@@ -24,7 +24,7 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   STAMP,
-  SUCCESSOR_CARRIED_COLUMNS,
+  SUCCESSOR_CARRIED_COLUMNS_SQL,
   SUCCESSOR_PARENT_COLUMNS,
   type SchedulerStore,
   type SpawnOptions,
@@ -1258,7 +1258,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'run',
       'runs',
       `INSERT INTO runs (run_id, queue, task_id, attempt, state,
-         available_at_ms, created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS}, ${FENCE_COLS})
+         available_at_ms, created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS_SQL}, ${FENCE_COLS})
        SELECT ?, f.queue, f.task_id, p.attempt + 1, 'pending', f.fence_at_ms, f.fence_at_ms,
          ${successorCarriedValues('p')}, ${STAMP}, f.fence_at_ms
        FROM tasks f JOIN runs p ON ${runOwnedByTask('p', 'f')}

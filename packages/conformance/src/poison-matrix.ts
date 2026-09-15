@@ -2730,12 +2730,8 @@ function healthyWinErrors(
       break
     }
     case 'spawn': {
-      const result = outcomes
-        .flatMap((outcome) =>
-          outcome.target === 'healthy' && outcome.status === 'fulfilled'
-            ? [object(outcome.result)]
-            : [],
-        )
+      const result = healthy
+        .flatMap((outcome) => (outcome.status === 'fulfilled' ? [object(outcome.result)] : []))
         .find((value) => value?.created === true)
       const spawnedTask =
         typeof result?.taskId === 'string' ? rowById(after, 'tasks', result.taskId) : undefined

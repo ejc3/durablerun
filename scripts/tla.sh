@@ -15,12 +15,12 @@
 # a green gate re-checks everything at the end anyway; on a failure, rerun a
 # single group without it to localize).
 #
-# Phase 3 then runs the retryTask revival scope (SchedulerRetry.cfg) alone with
-# the whole budget.
+# Once safety finishes, the retryTask revival scope (SchedulerRetry.cfg) runs on
+# safety's share while the liveness groups continue.
 #
-# TLA_SCOPE=ci replaces phases 2 and 3 with SchedulerCI.cfg (safety + liveness
-# at the CI-sized scope, ~570k states) followed by SchedulerRetry.cfg — the PR
-# gate on small runners.
+# TLA_SCOPE=ci replaces phase 2 with SchedulerCI.cfg (safety + liveness at the
+# CI-sized scope, ~570k states) followed by SchedulerRetry.cfg — the PR gate on
+# small runners.
 set -euo pipefail
 
 TLA_SHA256="eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a"
@@ -120,7 +120,7 @@ tlc "$wake_heap" 2 -metadir "$STATES/wake-delivery" -config WakeDelivery.cfg \
   WakeDelivery.tla >"$STATES/wake-delivery.log" 2>&1 || wake_code=$?
 report "hosted wake delivery" "$wake_code" "$STATES/wake-delivery.log" || exit 1
 
-# TLA_ONLY=<safety|liveness1..liveness5|retry> runs exactly one target with the
+# TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
 # FULL budget — for CI matrix jobs where each runner hosts one TLC process.
 # Concurrent groups on a 7 GB runner starve each other: the shared disk
 # filling under three liveness graphs once failed all three heavy groups
@@ -129,11 +129,7 @@ report "hosted wake delivery" "$wake_code" "$STATES/wake-delivery.log" || exit 1
 if [[ -n "${TLA_ONLY:-}" && "${TLA_ONLY}" != "safety" ]]; then
   case "$TLA_ONLY" in
     liveness[1-5]) ;;
-    retry)
-      run_one retry SchedulerRetry.cfg "$TLA_HEAP_MB" "$CORES"
-      exit $?
-      ;;
-    *) echo "TLA_ONLY must be safety, liveness1..liveness5, or retry, got: $TLA_ONLY" >&2; exit 2 ;;
+    *) echo "TLA_ONLY must be safety or liveness1..liveness5, got: $TLA_ONLY" >&2; exit 2 ;;
   esac
   g="${TLA_ONLY#liveness}"
   run_one "$TLA_ONLY" "SchedulerLiveness$g.cfg" "$TLA_HEAP_MB" "$CORES" -lncheck final
@@ -209,11 +205,6 @@ else
   done
 
   fail=0
-  for g in 1 2 3 4 5; do
-    code=0
-    wait "${group_pids[$((g - 1))]}" || code=$?
-    report "liveness group $g" "$code" "$STATES/liveness$g.log" || fail=1
-  done
   code=0
   wait "$safety_pid" || code=$?
   if report safety "$code" "$STATES/safety.log"; then
@@ -221,10 +212,19 @@ else
   else
     fail=1
   fi
-  # retryTask revival runs at its own small constants (SchedulerRetry.cfg) once
-  # the concurrent group has finished, with the whole budget, so the measured
-  # shares above still add up to it and the other scopes keep MaxRetries 0.
-  echo "== phase 3: retryTask revival, full budget"
-  run_one retry SchedulerRetry.cfg "$TLA_HEAP_MB" "$CORES" || fail=1
+  # retryTask revival runs at its own small constants (SchedulerRetry.cfg) on
+  # safety's freed share, so the shares still add up to the budget and the
+  # other scopes keep MaxRetries 0.
+  tlc "$safety_heap" "$safety_workers" -metadir "$STATES/retry" \
+    -config SchedulerRetry.cfg Scheduler.tla >"$STATES/retry.log" 2>&1 &
+  retry_pid=$!
+  for g in 1 2 3 4 5; do
+    code=0
+    wait "${group_pids[$((g - 1))]}" || code=$?
+    report "liveness group $g" "$code" "$STATES/liveness$g.log" || fail=1
+  done
+  code=0
+  wait "$retry_pid" || code=$?
+  report "retryTask revival" "$code" "$STATES/retry.log" || fail=1
   exit "$fail"
 fi

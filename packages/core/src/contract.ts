@@ -57,9 +57,9 @@ export const SUCCESSOR_CARRIED_RUN_COLUMNS = [
 ] as const
 
 /** The carried runs columns, in insert order. */
-export const SUCCESSOR_CARRIED_COLUMNS = SUCCESSOR_CARRIED_RUN_COLUMNS.join(', ')
+export const SUCCESSOR_CARRIED_COLUMNS_SQL = SUCCESSOR_CARRIED_RUN_COLUMNS.join(', ')
 
-/** The values for `SUCCESSOR_CARRIED_COLUMNS`, copied unchanged from the parent row `alias`. */
+/** The values for `SUCCESSOR_CARRIED_COLUMNS_SQL`, copied unchanged from the parent row `alias`. */
 export function successorCarriedValues(alias: string): string {
   const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)
   return carried.join(', ')
@@ -73,7 +73,7 @@ export function successorCarriedValues(alias: string): string {
  * the task's top run through `successorCarriedValues`, and is created at its own
  * instant.
  */
-export const SUCCESSOR_PARENT_COLUMNS = `created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS}`
+export const SUCCESSOR_PARENT_COLUMNS = `created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS_SQL}`
 
 /** The values for `SUCCESSOR_PARENT_COLUMNS` over the fenced parent row `alias`. */
 export function successorParentValues(alias: string): string {

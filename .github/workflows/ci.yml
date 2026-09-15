@@ -299,7 +299,7 @@ jobs:
                   exemptions + f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n',
               )
           elif digest == '205e8666661bfefeaf65c5ce620314f0542cce95f4dce867c34318268e6a0845':
-              # Three verdict markers this tree registers for retryTask are unknown to
+              # Eight verdict markers this tree registers for retryTask are unknown to
               # this registry. Nothing it quotes was re-aimed.
               repaired = previous
               exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
