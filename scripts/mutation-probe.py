@@ -646,8 +646,8 @@ MUTATION_SPECS = [
     (
         "task-result-refuses-engine-reasons",
         "packages/core/src/task-result.ts",
-        "    result.failureReasonJson === undefined\n  ) {",
-        "    (result.failureReasonJson === undefined || result.failureReasonJson.startsWith('{\"name\":\"$')) // MUTATION\n  ) {",
+        "  if (failed && result.failureReasonJson === undefined) return 'failure-without-reason'",
+        "  if (failed && (result.failureReasonJson === undefined || result.failureReasonJson.startsWith('{\"name\":\"$'))) return 'failure-without-reason' // MUTATION",
         "getTaskResult refuses cancelled and capped tasks, whose reasons the engine writes",
     ),
     (

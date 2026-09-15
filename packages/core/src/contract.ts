@@ -1,3 +1,5 @@
+import { TASK_OUTCOME_COLUMNS } from './task-result.js'
+
 /**
  * Contract constants: values every dialect must agree on.
  *
@@ -198,9 +200,8 @@ export const DERIVED_WRITABLE_COLUMNS = Object.freeze({
     'last_attempt_run',
     'first_started_at_ms',
     'cancel_at_ms',
-    'failure_reason',
     'infra_retries',
-    'completed_payload',
+    ...TASK_OUTCOME_COLUMNS,
     'attempts',
   ] as const),
   runs: Object.freeze([

@@ -327,6 +327,10 @@ const sql = (
 const taskState = (state: string): SqlStatement =>
   sql(`UPDATE tasks SET state = ? WHERE task_id = ?`, [state, TASK])
 
+/** The completed payload a completed poison task needs, so only its covered conditions fire. */
+const completedPayload = (): SqlStatement =>
+  sql(`UPDATE tasks SET completed_payload = '{"poison":true}' WHERE task_id = ?`, [TASK])
+
 const runState = (state: string): SqlStatement =>
   sql(
     `UPDATE runs SET state = ?, claimed_by = ?, claim_expires_at_ms = ?
@@ -695,7 +699,7 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
   {
     id: 'terminal-task/live-running-run',
     covers: ['terminal-task/live-run', 'mirror/running-run-task-not-running'],
-    statements: [taskState('completed')],
+    statements: [taskState('completed'), completedPayload()],
   },
   {
     id: 'lease/running-owner-null',
@@ -841,6 +845,7 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     covers: ['wait/dead-run'],
     statements: [
       taskState('completed'),
+      completedPayload(),
       runState('completed'),
       sql(
         `INSERT INTO waits
