@@ -1759,12 +1759,22 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.raw.batch('defer-launch-accounting-drift', [
           { sql: `UPDATE tasks SET attempts = 3 WHERE task_id = ?`, args: [driftedTask.taskId] },
         ])
-        const before = [
-          await snapshot(f, siblingTask.taskId),
-          await snapshot(f, driftedTask.taskId),
-        ]
+        const relaunchTask = await f.store.spawn(Q, 'relaunch-out-of-range', '{}')
+        const relaunch = await claimOne(f.store, Q, 'build-relaunch')
+        const leaseTask = await f.store.spawn(Q, 'lease-out-of-range', '{}')
+        const lease = await claimOne(f.store, Q, 'build-lease')
+        const headersTask = await f.store.spawn(Q, 'headers-inadmissible', '{}')
+        const headers = await claimOne(f.store, Q, 'build-headers')
+        await f.raw.batch('defer-launch-counter-corruption', [
+          { sql: `UPDATE runs SET relaunch_count = -1 WHERE run_id = ?`, args: [relaunch.runId] },
+          { sql: `UPDATE runs SET lease_ms = 0 WHERE run_id = ?`, args: [lease.runId] },
+          { sql: `UPDATE tasks SET headers = '[]' WHERE task_id = ?`, args: [headersTask.taskId] },
+        ])
+        const corruptTasks = [siblingTask, driftedTask, relaunchTask, leaseTask, headersTask]
+        const before = []
+        for (const task of corruptTasks) before.push(await snapshot(f, task.taskId))
         const refusals = []
-        for (const run of [sibling, drifted]) {
+        for (const run of [sibling, drifted, relaunch, lease, headers]) {
           refusals.push(
             await f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15).then(
               () => 'parked',
@@ -1772,10 +1782,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             ),
           )
         }
-        expect({
-          refusals,
-          unchanged: [await snapshot(f, siblingTask.taskId), await snapshot(f, driftedTask.taskId)],
-        }).toEqual({ refusals: ['LeaseLostError', 'LeaseLostError'], unchanged: before })
+        const after = []
+        for (const task of corruptTasks) after.push(await snapshot(f, task.taskId))
+        expect({ refusals, unchanged: after }).toEqual({
+          refusals: Array(5).fill('LeaseLostError'),
+          unchanged: before,
+        })
       })
 
       it('a deferred launch starts no duration clock', async () => {
