@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { decodeTaskResult } from '../src/task-result.js'
+import * as core from '../src/index.js'
+import { decodeTaskResult, taskResultContradictions } from '../src/task-result.js'
 
 describe('decodeTaskResult', () => {
   it('decodes each legitimate outcome shape', () => {
@@ -44,5 +45,26 @@ describe('decodeTaskResult', () => {
     for (const [shape, row, refusal] of rows) {
       expect(() => decodeTaskResult('t', row), `${shape} must be refused`).toThrow(refusal)
     }
+  })
+
+  it('reports every rule a task row breaks', () => {
+    expect(
+      taskResultContradictions('t', {
+        state: 'failed',
+        completed_payload: '{"x":1}',
+        failure_reason: null,
+      }),
+    ).toEqual(['payload-on-other-state', 'failure-without-reason'])
+    expect(
+      taskResultContradictions('t', {
+        state: 'completed',
+        completed_payload: '{"x":1}',
+        failure_reason: null,
+      }),
+    ).toEqual([])
+  })
+
+  it('publishes no outcome decoder that skips the contradiction check', () => {
+    expect(Object.keys(core)).not.toContain('readTaskResult')
   })
 })
