@@ -2000,6 +2000,34 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           'mutation-verdict:behavior:retry-task-requires-well-formed-failure',
         ).toEqual({ refused: null, unchanged: before })
       })
+
+      it('refuses a revival that would push its budget past the stored maximum', async () => {
+        const spawned = await f.store.spawn(Q, 'at-max-budget', '{}', { maxAttempts: MAX_COUNT })
+        const run = await claimActivated(f.store, Q, 'w-at-max-budget')
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        const before = await snapshot(f, spawned.taskId)
+        const refused = await f.store.retryTask(Q, spawned.taskId)
+        expect({
+          refused,
+          unchanged: await snapshot(f, spawned.taskId),
+          violations: await engineInvariantViolations(f.raw),
+        }).toEqual({ refused: null, unchanged: before, violations: [] })
+      })
+
+      it('refuses to revive a failed task whose stored counters disagree with its runs', async () => {
+        const spawned = await f.store.spawn(Q, 'drifted-counters', '{}', { maxAttempts: 1 })
+        const run = await claimActivated(f.store, Q, 'w-drifted-counters')
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        await f.raw.batch('corrupt-failed-infra-retries', [
+          { sql: `UPDATE tasks SET infra_retries = 3 WHERE task_id = ?`, args: [spawned.taskId] },
+        ])
+        const before = await snapshot(f, spawned.taskId)
+        const refused = await f.store.retryTask(Q, spawned.taskId)
+        expect({ refused, unchanged: await snapshot(f, spawned.taskId) }).toEqual({
+          refused: null,
+          unchanged: before,
+        })
+      })
     })
 
     describe('expireLeaseNow (the advisory write)', () => {
