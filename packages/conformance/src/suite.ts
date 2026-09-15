@@ -2021,6 +2021,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.retryTask(Q, failed.taskId)).not.toBeNull()
         const completed = await f.store.spawn(Q, 'completed', '{}')
         const completedRun = await claimActivated(f.store, Q, 'w-completed')
+        // The completed task's own run, not the revival run due at the same instant.
+        expect(completedRun.taskId, 'the completed task finishes its own run').toBe(
+          completed.taskId,
+        )
         await f.store.complete(Q, completedRun.runId, completedRun.claimToken, '{}')
         const cancelled = await f.store.spawn(Q, 'cancelled', '{}')
         expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
