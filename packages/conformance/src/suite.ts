@@ -2091,6 +2091,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             args: [chargePastBudget.firstRunId],
           },
         ])
+        // A lower run at ordinal 0 is storable on every backend, out of range, and
+        // below the top ordinal, so only the run-ordinal guard refuses it.
+        const zeroSibling = await failedTask('zero-sibling', 2)
+        await f.raw.batch('corrupt-zero-sibling', [
+          { sql: `UPDATE runs SET attempt = 0 WHERE run_id = ?`, args: [zeroSibling.firstRunId] },
+        ])
         const invalidSibling = await failedTask('invalid-sibling', 2)
         const disposition = await executeStorageCorruption(f, {
           table: 'runs',
@@ -2098,10 +2104,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           column: 'attempt',
           invalidRepresentation: 'fractional-real',
         })
+        expect(['injected', 'structurally-rejected']).toContain(disposition)
         const inRange = 'mutation-verdict:behavior:retry-task-requires-counters-in-range'
         const corruptions = [
           { task: negativeAttempts, marker: inRange },
           { task: infraPastCap, marker: inRange },
+          { task: zeroSibling, marker: inRange },
           {
             task: chargePastBudget,
             marker: 'mutation-verdict:behavior:retry-task-requires-charge-within-budget',
