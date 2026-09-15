@@ -951,10 +951,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Rejected: moving the time-boundary suite's claim and activation helpers, and
     the make-then-close fixture sites in the time-boundary, schema-admin, poison
     matrix, fault matrix, and store conformance suites, onto the scenario module.
-    Those sites already close their fixture in `finally`, so the change would
-    alter only which error a double failure reports, and 59 registered mutations
-    own verdict markers in `time-boundaries.ts` alone, all of which would join
-    this PR's mutation closure.
+    The schema-admin, fault matrix, and store conformance sites close their
+    fixture in `finally`, so there the change would alter only which error a
+    double failure reports. The time-boundary `fixtureAt` sets the fake clock
+    before its caller's `try`, so a failing clock write leaks that fixture, and
+    the poison matrix closes a prepared fixture in `catch` and hands it to
+    callers that close it in `finally`, a shape `withFixture` does not fit. 59
+    registered mutations own verdict markers in `time-boundaries.ts` alone, and
+    every one would join this PR's mutation closure.
   - Rejected: passing a claimed run to the port's `awaitEvent` and
     `setCheckpoint` in place of three identifiers. That changes published port
     signatures, which belongs in a deliberate API change, and the owner-bound
