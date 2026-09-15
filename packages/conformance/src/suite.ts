@@ -115,6 +115,77 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(Number(count?.n)).toBe(1)
       })
 
+      it('a reused idempotency key keeps the first spawn and ignores the new params and options', async () => {
+        const first = await f.store.spawn(Q, 'once', '{"v":1}', {
+          idempotencyKey: 'first-wins',
+          maxAttempts: 3,
+        })
+        const reused = await f.store.spawn(Q, 'renamed', '{"v":2}', {
+          idempotencyKey: 'first-wins',
+          maxAttempts: 9,
+          cancellation: { maxDelaySeconds: 5 },
+        })
+        const task = await readOne(
+          f.raw,
+          `SELECT task_name, params, max_attempts, cancel_at_ms FROM tasks WHERE task_id = ?`,
+          [first.taskId],
+        )
+        expect({
+          reused,
+          task: {
+            taskName: task?.task_name,
+            params: task?.params,
+            maxAttempts: Number(task?.max_attempts),
+            cancelAtMs: task?.cancel_at_ms,
+          },
+        }).toEqual({
+          reused: { taskId: first.taskId, runId: first.runId, created: false },
+          task: { taskName: 'once', params: '{"v":1}', maxAttempts: 3, cancelAtMs: null },
+        })
+      })
+
+      it('a reused idempotency key returns the newest run after a retry successor', async () => {
+        const first = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'newest-run' })
+        const run = await claimActivated(f.store, Q, 'w1')
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 1 })
+        const successor = await readOne(
+          f.raw,
+          `SELECT run_id FROM runs WHERE task_id = ? AND attempt = 2`,
+          [first.taskId],
+        )
+        const reused = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'newest-run' })
+        expect(reused).toEqual({ taskId: first.taskId, runId: successor?.run_id, created: false })
+      })
+
+      it('a reused idempotency key never respawns a completed, failed, or cancelled task', async () => {
+        const completed = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'done' })
+        const completedRun = await claimActivated(f.store, Q, 'w-done')
+        await f.store.complete(Q, completedRun.runId, completedRun.claimToken, '{}')
+        const failed = await f.store.spawn(Q, 'job', '{}', {
+          idempotencyKey: 'failed',
+          maxAttempts: 1,
+        })
+        const failedRun = await claimActivated(f.store, Q, 'w-failed')
+        await f.store.fail(Q, failedRun.runId, failedRun.claimToken, '{"name":"Boom"}', null)
+        const cancelled = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'cancelled' })
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+
+        const reused = await Promise.all(
+          ['done', 'failed', 'cancelled'].map((idempotencyKey) =>
+            f.store.spawn(Q, 'job', '{}', { idempotencyKey }),
+          ),
+        )
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect({ reused, tasks: Number(count?.n) }).toEqual({
+          reused: [
+            { taskId: completed.taskId, runId: completed.runId, created: false },
+            { taskId: failed.taskId, runId: failed.runId, created: false },
+            { taskId: cancelled.taskId, runId: cancelled.runId, created: false },
+          ],
+          tasks: 3,
+        })
+      })
+
       it('same key on different queues creates distinct tasks', async () => {
         const a = await f.store.spawn('qa', 'x', '{}', { idempotencyKey: 'k' })
         const b = await f.store.spawn('qb', 'x', '{}', { idempotencyKey: 'k' })
