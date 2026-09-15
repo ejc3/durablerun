@@ -11,6 +11,7 @@ import {
   INFRA_BACKOFF_SECONDS,
   type IdSource,
   LeaseLostError,
+  RunCancelledError,
   type LeaseState,
   MAX_DURATION_MS,
   NOW,
@@ -281,6 +282,32 @@ function waitsGone(b: FencedBatch, runId: string, after: string): void {
  * mirror and wait reaping inseparable prevents a timer/deferral path from
  * clearing the run's wake fields while leaving an older registration alive.
  */
+/**
+ * A refused worker write explains itself from the run it was fenced on. Absurd
+ * raises AB001 for a cancelled task and AB002 for a lost lease; here a run the
+ * task's cancellation ended raises RunCancelledError, and every other lost fence
+ * raises LeaseLostError. The tail reads a row this batch did not write, so it is
+ * an open tail.
+ */
+function refusalTail(b: FencedBatch, runId: string): void {
+  b.openTail(
+    'refusal',
+    'a refused write names why from the run state some other actor produced',
+    'SELECT state FROM runs WHERE run_id = ?',
+    [runId],
+  )
+}
+
+function refusedWrite(
+  results: Awaited<ReturnType<FencedBatch['run']>>['results'],
+  operation: string,
+  runId: string,
+): Error {
+  return results.refusal?.rows[0]?.state === 'cancelled'
+    ? new RunCancelledError(`${operation} ${runId}`)
+    : new LeaseLostError(`${operation} ${runId}`)
+}
+
 function finishSuspension(b: FencedBatch, runId: string): void {
   taskMirrorsRun(b, runId, 'suspend')
   waitsGone(b, runId, 'suspend')
@@ -1288,8 +1315,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
       ],
     )
     finishSuspension(b, runId)
-    const { won } = await b.run(this.db)
-    if (won !== 'suspend') throw new LeaseLostError(`deferLaunch ${runId}`)
+    refusalTail(b, runId)
+    const { won, results } = await b.run(this.db)
+    if (won !== 'suspend') throw refusedWrite(results, 'deferLaunch', runId)
   }
 
   async reschedule(
@@ -1346,8 +1374,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // mirror and cleanup from the run this CAS actually suspended: a corrupt
     // pre-existing wait must not survive with the wake fields just cleared.
     finishSuspension(b, runId)
-    const { won } = await b.run(this.db)
-    if (won !== 'suspend') throw new LeaseLostError(`reschedule ${runId}`)
+    refusalTail(b, runId)
+    const { won, results } = await b.run(this.db)
+    if (won !== 'suspend') throw refusedWrite(results, 'reschedule', runId)
   }
 
   /**
@@ -1409,8 +1438,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
       'one',
     )
     finishSuspension(b, runId)
-    const { won } = await b.run(this.db)
-    if (won !== 'suspend') throw new LeaseLostError(`suspendRun ${runId}`)
+    refusalTail(b, runId)
+    const { won, results } = await b.run(this.db)
+    if (won !== 'suspend') throw refusedWrite(results, 'suspendRun', runId)
   }
 
   async complete(
@@ -1447,8 +1477,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, runId, 'complete')
-    const { won } = await b.run(this.db)
-    if (won !== 'complete') throw new LeaseLostError(`complete ${runId}`)
+    refusalTail(b, runId)
+    const { won, results } = await b.run(this.db)
+    if (won !== 'complete') throw refusedWrite(results, 'complete', runId)
   }
 
   /**
@@ -1576,8 +1607,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
       })
     }
     waitsGone(b, runId, 'fail')
-    const { won } = await b.run(this.db)
-    if (won !== 'fail') throw new LeaseLostError(`fail ${runId}`)
+    refusalTail(b, runId)
+    const { won, results } = await b.run(this.db)
+    if (won !== 'fail') throw refusedWrite(results, 'fail', runId)
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
@@ -1671,8 +1703,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
       [checkpointName, stateJson, runId],
       'one',
     )
-    const { won } = await b.run(this.db)
-    if (won !== 'lease') throw new LeaseLostError(`setCheckpoint ${runId}`)
+    refusalTail(b, runId)
+    const { won, results } = await b.run(this.db)
+    if (won !== 'lease') throw refusedWrite(results, 'setCheckpoint', runId)
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
@@ -2012,6 +2045,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
                        AND t.state IN ${LIVE})`,
       [queue, eventName, runId, queue, taskId, claimToken],
     )
+    refusalTail(b, runId)
     const { won, results } = await b.run(this.db)
     const row = results.hit?.rows[0]
     if (row !== undefined) {
@@ -2021,7 +2055,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       return { emitted: true, payloadJson: String(row.payload) }
     }
     if (won !== 'register') {
-      throw new LeaseLostError(`awaitEvent ${runId}`)
+      throw refusedWrite(results, 'awaitEvent', runId)
     }
     return { emitted: false }
   }

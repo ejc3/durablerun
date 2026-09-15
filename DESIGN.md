@@ -562,8 +562,13 @@ One invocation executes one claimed run to its next suspension point:
   `awaitEvent` suspends like any other wait (no polling worker slot). Absurd's
   deadlock rule is kept: awaiting a same-queue child from inside a worker is
   refused.
-- Cancellation discovery: state transitions raise the ported `AB001/AB002`
-  equivalents (SELECT state guard inside each engine call), aborting quietly.
+- Cancellation discovery: every refused worker write (complete, fail,
+  reschedule, suspendRun, setCheckpoint, awaitEvent, deferLaunch) reads its run's
+  state in the same batch and names why. A run the task's cancellation ended
+  raises `RunCancelledError` (Absurd AB001), and any other lost fence raises
+  `LeaseLostError` (AB002). The worker ends that pass with a `cancelled` outcome,
+  consuming nothing. A heartbeat still reports only that the lease is gone, so a
+  handler learns of cancellation at its next engine write, not mid-step.
 
 Sizing: claim batch K per tick and per-worker concurrency are tunables; Vercel
 Fluid compute multiplexes concurrent invocations in one instance and bills Active

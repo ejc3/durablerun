@@ -1,6 +1,7 @@
 import {
   type CheckpointWrite,
   LeaseLostError,
+  RunCancelledError,
   StoreUnavailableError,
   SuspendSignal,
   type WakeSpec,
@@ -17,6 +18,7 @@ type SuspendControlSnapshot =
 
 export type InfrastructureControlSnapshot =
   | { readonly kind: 'lease-lost' }
+  | { readonly kind: 'run-cancelled' }
   | { readonly kind: 'store-unavailable' }
 
 export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControlSnapshot
@@ -56,6 +58,7 @@ const hasInstance = ordinaryHasInstance.call.bind(ordinaryHasInstance) as (
 ) => boolean
 const AWAIT_EVENT = freeze({ kind: 'await-event' } as const)
 const LEASE_LOST = freeze({ kind: 'lease-lost' } as const)
+const RUN_CANCELLED = freeze({ kind: 'run-cancelled' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
 
 function isRelativeWake(wake: WakeSpec): wake is { inSeconds: number } {
@@ -64,6 +67,7 @@ function isRelativeWake(wake: WakeSpec): wake is { inSeconds: number } {
 
 export function trustedStoreControl(error: unknown): InfrastructureControlSnapshot | undefined {
   try {
+    if (hasInstance(RunCancelledError, error)) return RUN_CANCELLED
     if (hasInstance(LeaseLostError, error)) return LEASE_LOST
     if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE
   } catch {

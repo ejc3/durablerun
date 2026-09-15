@@ -39,6 +39,7 @@ export type WorkerOutcome =
   | { kind: 'failed' } // user failure, terminal
   | { kind: 'superseded' } // duplicate delivery / stale claim: did nothing
   | { kind: 'lease-lost' } // lost the lease mid-run: aborted quietly
+  | { kind: 'cancelled' } // the task was cancelled mid-run (AB001): aborted quietly
   | { kind: 'aborted' } // store unreachable mid-pass: user budget untouched
   //   and the lease story recovers. NOTE: 'unreachable' includes a lost
   //   RESPONSE — the write may or may not have committed; recovery is
@@ -84,6 +85,8 @@ function infrastructureOutcome(
   switch (control.kind) {
     case 'lease-lost':
       return { kind: 'lease-lost' }
+    case 'run-cancelled':
+      return { kind: 'cancelled' }
     case 'store-unavailable':
       return { kind: 'aborted' }
     default:

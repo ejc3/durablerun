@@ -83,6 +83,7 @@ const DOGFOOD_WORKER_DISPOSITIONS = {
   failed: 'task',
   superseded: null,
   'lease-lost': 'infrastructure',
+  cancelled: 'task',
   aborted: 'infrastructure',
   deferred: 'task',
 } as const satisfies Record<WorkerOutcome['kind'], DogfoodWorkerDisposition>
