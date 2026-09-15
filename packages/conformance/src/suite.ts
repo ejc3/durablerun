@@ -2018,7 +2018,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // nothing.
       it('refuses a replay, a completed, a cancelled, or a live task and writes nothing', async () => {
         const failed = await failedTask('failed')
-        expect(await f.store.retryTask(Q, failed.taskId)).not.toBeNull()
         const completed = await f.store.spawn(Q, 'completed', '{}')
         const completedRun = await claimActivated(f.store, Q, 'w-completed')
         // The completed task's own run, not the revival run due at the same instant.
@@ -2026,6 +2025,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           completed.taskId,
         )
         await f.store.complete(Q, completedRun.runId, completedRun.claimToken, '{}')
+        // Revive only now, so the replay below meets a task holding its live revival run.
+        expect(await f.store.retryTask(Q, failed.taskId)).not.toBeNull()
+        expect(
+          (await snapshot(f, failed.taskId)).runs?.filter((run) => run.state === 'pending'),
+          'the revived task holds its live revival run',
+        ).toHaveLength(1)
         const cancelled = await f.store.spawn(Q, 'cancelled', '{}')
         expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
         const live = await f.store.spawn(Q, 'live', '{}')
