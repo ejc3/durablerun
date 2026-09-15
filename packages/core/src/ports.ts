@@ -99,19 +99,11 @@ export interface SchedulerStore {
    * user-supplied absolute; the store writes it verbatim, never converting
    * via an instance clock.
    *
-   * `wakeDisposition` (default 'consume'): a worker that PROCESSED a carried
-   * event wake sleeps with 'consume' — later timer wakes must not replay the
-   * event. 'preserve' parks the run while keeping a wake nothing processed, so
-   * it survives for the next claimer. An undispatchable launch defers through
-   * `deferLaunch` instead, before activation.
+   * A carried event wake is consumed: the worker processed it, so later timer
+   * wakes must not replay the event. A launch no handler can run defers through
+   * `deferLaunch` instead, before activation, and keeps its wake.
    */
-  reschedule(
-    queue: string,
-    runId: string,
-    claimToken: string,
-    wake: WakeSpec,
-    wakeDisposition?: 'consume' | 'preserve',
-  ): Promise<void>
+  reschedule(queue: string, runId: string, claimToken: string, wake: WakeSpec): Promise<void>
 
   complete(queue: string, runId: string, claimToken: string, resultJson: string): Promise<void>
 

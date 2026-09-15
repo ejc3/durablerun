@@ -363,8 +363,8 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     //
     //   1. the timed wait expires; claim selects the timeout wake (event set,
     //      payload NULL) and deletes the wait row in the same batch
-    //   2. a worker that cannot dispatch the task defers with 'preserve',
-    //      which consumes nothing -- so the run goes back to sleeping still
+    //   2. a worker that cannot dispatch the task defers the launch, which
+    //      consumes nothing -- so the run goes back to sleeping still
     //      carrying wake_event and wake_step
     //   3. a leftover row for that same await survives or is recreated
     //   4. the emit arrives
@@ -396,8 +396,8 @@ describe('emitEvent only wakes runs that are parked on that event', () => {
     expect(timedOut.wake).toEqual({ event: 'go', step: '$await:go', timedOut: true })
     expect(await query(f.raw, `SELECT 1 FROM waits WHERE run_id = ?`, [run.runId])).toEqual([])
 
-    // A driver that cannot dispatch defers it, preserving the carried wake.
-    await f.store.reschedule(Q, run.runId, timedOut.claimToken, { inSeconds: 1000 }, 'preserve')
+    // A worker that cannot dispatch defers the launch, keeping the carried wake.
+    await f.store.deferLaunch(Q, run.runId, timedOut.claimToken, timedOut.claimGen, 1000)
     // The row comes back -- a replayed registration, a restored backup, a
     // straggling older process -- carrying the deadline it was written with.
     await f.raw.batch('t', [

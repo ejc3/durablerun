@@ -1375,14 +1375,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     runId: string,
     claimToken: string,
     wake: WakeSpec,
-    wakeDisposition: 'consume' | 'preserve' = 'consume',
   ): Promise<void> {
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
-    // ONE SQL shape for both dispositions (a label is a crash-injection
-    // address; the CASE keeps 'reschedule' one shape). 'preserve' keeps a wake
-    // nothing processed, so it survives for the next claimer.
-    //
     // The task must be ELIGIBLE, not merely live — the same predicate
     // suspendRun uses, which is what its comment always claimed ("reschedule's
     // exact transition plus the marker") while the two guards had quietly
@@ -1398,9 +1393,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `UPDATE runs SET
          state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
          available_at_ms = ${wakePlan.expression},
-         wake_event = CASE WHEN ? = 'preserve' THEN wake_event ELSE NULL END,
-         event_payload = CASE WHEN ? = 'preserve' THEN event_payload ELSE NULL END,
-         wake_step = CASE WHEN ? = 'preserve' THEN wake_step ELSE NULL END,
+         wake_event = NULL, event_payload = NULL, wake_step = NULL,
          claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
@@ -1411,9 +1404,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [
         ...wakePlan.expressionArgs,
         ...wakePlan.expressionArgs,
-        wakeDisposition,
-        wakeDisposition,
-        wakeDisposition,
         runId,
         queue,
         claimToken,

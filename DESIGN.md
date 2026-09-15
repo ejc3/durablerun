@@ -994,11 +994,10 @@ own condition.
 
 **Event-wake disposition:** a carried wake (`wake_event`/`event_payload`) is
 CONSUMED by the transition that ends the attempt that processed it
-(`complete`, and `reschedule` with the default `'consume'`); it is CARRIED to
+(`complete` and `reschedule`); it is CARRIED to
 failure successors (`fail` retry, sweep claim-timeout — §3.8.2, the attempt
 never processed it); it is PRESERVED by the rolling-deploy deferral (`deferLaunch`, §3.2: a worker
-that cannot dispatch the task consumes nothing) and by `reschedule` with
-`'preserve'`.
+that cannot dispatch the task consumes nothing).
 
 **Structural enforcement (the mechanisms behind the rules).** The contract
 rules above started as review checklist items; each now has a mechanism

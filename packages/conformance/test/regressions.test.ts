@@ -327,13 +327,12 @@ describe('transition-layer review regressions (second round)', () => {
     await f.close()
   })
 
-  it("reschedule with 'preserve' keeps a carried event wake for the next claimer", async () => {
+  it('a launch deferral keeps a carried event wake for the next claimer', async () => {
     const f = await makeLibsqlFixture('wake-preserve')
     await f.admin.setFakeNowEpochMs(1_000_000)
     await f.store.spawn(Q, 'job', '{}')
     const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
     // A carried wake arrives with the claim (as the event emit will park it).
     await f.raw.batch('t', [
       {
@@ -341,9 +340,10 @@ describe('transition-layer review regressions (second round)', () => {
         args: [run.runId],
       },
     ])
-    // §3.8.2 deferral: a driver that cannot dispatch this task defers WITHOUT
-    // consuming anything — the wake must survive for a capable claimer.
-    await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 0 }, 'preserve')
+    // §3.2 deferral: a worker that cannot dispatch this task defers before
+    // activation WITHOUT consuming anything; the wake survives for a capable claimer.
+    await f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 1)
+    await f.admin.setFakeNowEpochMs(1_001_000)
     const [again] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
     expect(again?.runId).toBe(run.runId)
     expect(again?.wake).toMatchObject({ payloadJson: '{"x":1}' })

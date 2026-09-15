@@ -998,10 +998,10 @@ MUTATION_SPECS = [
         "packages/store-libsql/src/store.ts",
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
         "    const wakePlan = prepareWake(wake, relativeWake)\n"
-        "    // ONE SQL shape for both dispositions",
+        "    // The task must be ELIGIBLE",
         "    const relativeWake = 'inSeconds' in wake // MUTATION\n"
         "    const wakePlan = prepareWake(wake, relativeWake)\n"
-        "    // ONE SQL shape for both dispositions",
+        "    // The task must be ELIGIBLE",
         "reschedule mistakes an inherited relative-wake property for its durable discriminant",
     ),
     (
@@ -2792,20 +2792,22 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "reschedule-wake",
         "reschedule wake deadline",
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})\n"
         "         ${wakePlan.fits}`,\n"
         "      [\n"
         "        ...wakePlan.expressionArgs,\n"
         "        ...wakePlan.expressionArgs,\n"
-        "        wakeDisposition,",
+        "        runId,",
         "wakePlan.fits",
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
         "    const wakePlan = prepareWake(wake, relativeWake)\n"
-        "    // ONE SQL shape for both dispositions",
+        "    // The task must be ELIGIBLE",
         RELATIVE_WAKE_EXPRESSION,
     ),
     (
         "suspend-wake",
         "suspend wake deadline",
+        "         AND ${validCheckpointConflict('runs', '?')}\n"
         "         ${wakePlan.fits}`,\n"
         "      [\n"
         "        ...wakePlan.expressionArgs,\n"
