@@ -595,7 +595,10 @@ Every code path that makes work runnable **commits first, then pings**:
   scheduled retry, remaining backlog) → ping, unconditionally (§3.2).
 
 A ping is a fire-and-forget POST — to the resident driver's `/wake` endpoint
-(which just cuts its current sleep short), or to `/api/tick` in serverless mode.
+(which cuts its current sleep short, at most once per wake floor: a wake sooner
+than `wakeFloorMs` after the last tick started waits out the rest of that
+interval, so a flood of pings looks once; the floor defaults to the busy
+ceiling), or to `/api/tick` in serverless mode.
 Its loss is tolerable because the poll ceiling / cron sweep exists; with a
 resident driver at a sub-second poll ceiling, pings are optional entirely. Writers
 outside our code (arbitrary clients inserting rows directly into Turso) are
