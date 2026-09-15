@@ -51,8 +51,6 @@ export type WorkerOutcome =
 export interface RunInvocation {
   queue: string
   runId: string
-  /** The claimed task's name, from the claim the launch was built from. */
-  taskName: string
   claimToken: string
   claimGen: number
 }
@@ -118,9 +116,21 @@ export async function runClaimedRun(
   invocation: RunInvocation,
 ): Promise<WorkerOutcome> {
   const { store, clock, registry } = deps
-  const { queue, runId, taskName, claimToken, claimGen } = invocation
+  const { queue, runId, claimToken, claimGen } = invocation
 
-  if (taskRegistryGet(registry, taskName) === undefined) {
+  // The launch carries only ids; the claimed task's name comes from the store,
+  // so no payload can name a task the claim does not hold. A null answer means
+  // the claim was superseded or already activated by another delivery.
+  let taskName: string | null
+  try {
+    taskName = await store.claimedTaskName(queue, runId, claimToken, claimGen)
+  } catch (error) {
+    return trustedStoreOutcome(error)
+  }
+  if (taskName === null) return { kind: 'superseded' }
+  // One lookup: the handler resolved here is the handler dispatched below.
+  const handler = taskRegistryGet(registry, taskName)
+  if (handler === undefined) {
     // Rolling-deploy rule: defer from the launch, BEFORE activation, so a build
     // without this task's handler consumes nothing and never latches the first
     // start, which would disarm the start deadline and start the duration
@@ -143,17 +153,6 @@ export async function runClaimedRun(
   if (run === null) return { kind: 'superseded' }
   const claimedRun = run
   const userAttempt = claimedRun.attempt - claimedRun.infraRetries
-
-  const handler = run.taskName === taskName ? taskRegistryGet(registry, run.taskName) : undefined
-  if (handler === undefined) {
-    // The launch named a task this build can run, but the activated claim is
-    // another task, or the registry stopped resolving it. Dispatching either
-    // would run the wrong code, so the pass ends here and the lease story
-    // recovers the run.
-    throw new Error(
-      `launch named task ${taskName}, but claim ${runId} activated task ${run.taskName} and no handler resolves it`,
-    )
-  }
 
   // Heartbeat pump FIRST (before any further unfenced reads): extend at
   // half-lease cadence until the pass ends. A zero-row heartbeat is the

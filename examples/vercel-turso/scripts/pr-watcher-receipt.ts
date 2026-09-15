@@ -81,7 +81,6 @@ async function interruptedWorker(): Promise<void> {
   const invocation: RunInvocation = {
     queue: stringField(message, 'queue'),
     runId: stringField(message, 'runId'),
-    taskName: stringField(message, 'taskName'),
     claimToken: stringField(message, 'claimToken'),
     claimGen: integer(message.claimGen),
   }
@@ -234,7 +233,6 @@ async function receipt(): Promise<void> {
       {
         queue,
         runId: run.runId,
-        taskName: run.taskName,
         claimToken: run.claimToken,
         claimGen: run.claimGen,
       },

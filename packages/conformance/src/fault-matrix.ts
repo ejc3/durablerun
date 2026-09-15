@@ -48,6 +48,7 @@ export const MATRIX_WRITE_LABELS = [
 ] as const
 
 export const MATRIX_READ_LABELS = [
+  'claimed-task-name',
   'sweep:scan',
   'get-checkpoints',
   'task-result',

@@ -1281,6 +1281,32 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     return won === 'cancel'
   }
 
+  async claimedTaskName(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+  ): Promise<string | null> {
+    const validClaimGen = requirePositiveClaimGeneration('claimedTaskName.claimGen', claimGen)
+    // The launch carries only ids, so the worker learns the claimed task's name
+    // here. The name is immutable, so an unfenced read is safe; the claim
+    // conditions only make a stale or already-activated launch read nothing.
+    const [rows] = await this.db.batch(
+      'claimed-task-name',
+      [
+        {
+          sql: `SELECT t.task_name FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
+                WHERE r.run_id = ? AND r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
+                  AND r.claim_gen = ? AND r.activated_gen < ?`,
+          args: [runId, queue, claimToken, validClaimGen, validClaimGen],
+        },
+      ],
+      'read',
+    )
+    const name = rows?.rows[0]?.task_name
+    return typeof name === 'string' ? name : null
+  }
+
   /**
    * Sleep, defer, or attempt-neutral chain (§3.2). The worker's own claim
    * token is the ownership proof; the transition mints a fresh stamp into

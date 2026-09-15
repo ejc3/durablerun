@@ -29,7 +29,6 @@ describe('inline worker composition', () => {
       const invocation = {
         queue: Q,
         runId: run.runId,
-        taskName: run.taskName,
         attempt: run.attempt,
         claimToken: run.claimToken,
         claimGen: run.claimGen,
@@ -128,7 +127,6 @@ describe('inline worker composition', () => {
         .launch({
           queue: Q,
           runId: run.runId,
-          taskName: run.taskName,
           attempt: run.attempt,
           claimToken: run.claimToken,
           claimGen: run.claimGen,

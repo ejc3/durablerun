@@ -98,7 +98,6 @@ export async function tick(
         raw = await launcher.launch({
           queue: opts.queue,
           runId: run.runId,
-          taskName: run.taskName,
           attempt: run.attempt,
           claimToken: run.claimToken,
           claimGen: run.claimGen,

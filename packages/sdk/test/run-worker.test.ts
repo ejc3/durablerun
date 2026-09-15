@@ -274,7 +274,6 @@ async function claimAndRun(
     {
       queue: Q,
       runId: run.runId,
-      taskName: run.taskName,
       claimToken: run.claimToken,
       claimGen: run.claimGen,
     },
@@ -287,7 +286,6 @@ async function claimInvocation(f: Awaited<ReturnType<typeof fx>>, token: string)
   return {
     queue: Q,
     runId: run.runId,
-    taskName: run.taskName,
     claimToken: run.claimToken,
     claimGen: run.claimGen,
   }
@@ -536,7 +534,6 @@ describe('runClaimedRun', () => {
             {
               queue: Q,
               runId: run.runId,
-              taskName: run.taskName,
               claimToken: run.claimToken,
               claimGen: run.claimGen,
             },
@@ -1557,7 +1554,6 @@ describe('runClaimedRun', () => {
     const invocation = {
       queue: Q,
       runId: run.runId,
-      taskName: run.taskName,
       claimToken: run.claimToken,
       claimGen: run.claimGen,
     }
@@ -1588,7 +1584,6 @@ describe('runClaimedRun', () => {
       {
         queue: Q,
         runId: run.runId,
-        taskName: run.taskName,
         claimToken: run.claimToken,
         claimGen: run.claimGen,
       },
@@ -1633,7 +1628,6 @@ describe('runClaimedRun', () => {
       {
         queue: Q,
         runId: run.runId,
-        taskName: run.taskName,
         claimToken: run.claimToken,
         claimGen: run.claimGen,
       },
@@ -1670,7 +1664,6 @@ describe('runClaimedRun', () => {
       {
         queue: Q,
         runId: run.runId,
-        taskName: run.taskName,
         claimToken: run.claimToken,
         claimGen: run.claimGen,
       },
@@ -1736,7 +1729,6 @@ describe('runClaimedRun', () => {
           {
             queue: Q,
             runId: run.runId,
-            taskName: run.taskName,
             claimToken: run.claimToken,
             claimGen: run.claimGen,
           },
@@ -1778,7 +1770,6 @@ describe('runClaimedRun', () => {
         {
           queue: Q,
           runId: run.runId,
-          taskName: run.taskName,
           claimToken: run.claimToken,
           claimGen: run.claimGen,
         },

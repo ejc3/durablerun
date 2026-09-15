@@ -54,6 +54,20 @@ export interface SchedulerStore {
   ): Promise<ClaimedRun | null>
 
   /**
+   * The claimed run's task name, read before activation so a worker can decide to
+   * defer a task it has no handler for without latching the first start. An
+   * unfenced read of an immutable value, answered only while the run is still
+   * running under this claim token and generation and not yet activated; null
+   * otherwise, which the worker treats as superseded.
+   */
+  claimedTaskName(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+  ): Promise<string | null>
+
+  /**
    * §3.2 rolling-deploy deferral, decided from the launch before activation: a
    * worker build with no handler for the launched task parks the claimed run
    * `inSeconds` from database time. Fenced on the claim receipt (running under
@@ -188,8 +202,6 @@ export interface StoreAdmin {
 export interface LaunchInvocation extends LaunchIdentity {
   /** Stands in for the shard id until multi-shard lands (§3.7). */
   queue: string
-  /** The claimed task's name, so a worker can defer a task it cannot run before activating it. */
-  taskName: string
   attempt: number
   claimGen: number
   /**

@@ -41,7 +41,6 @@ async function pass(f: Awaited<ReturnType<typeof fx>>, reg: TaskRegistry, token:
     {
       queue: Q,
       runId: run.runId,
-      taskName: run.taskName,
       claimToken: run.claimToken,
       claimGen: run.claimGen,
     },

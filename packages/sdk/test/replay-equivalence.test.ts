@@ -288,7 +288,6 @@ async function runProgram(
           {
             queue: Q,
             runId: run.runId,
-            taskName: run.taskName,
             claimToken: run.claimToken,
             claimGen: run.claimGen,
           },

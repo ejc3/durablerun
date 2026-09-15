@@ -259,7 +259,6 @@ async function replay(fault?: { boundary: number; timing: 'before' | 'after' }) 
           {
             queue: 'watch-test',
             runId: run.runId,
-            taskName: run.taskName,
             claimToken: run.claimToken,
             claimGen: run.claimGen,
           },

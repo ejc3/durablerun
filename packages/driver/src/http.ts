@@ -133,7 +133,6 @@ export function createWorkerServer(deps: {
         if (
           typeof parsed.queue !== 'string' ||
           typeof parsed.runId !== 'string' ||
-          typeof parsed.taskName !== 'string' ||
           typeof parsed.claimToken !== 'string' ||
           typeof parsed.claimGen !== 'number'
         ) {
@@ -143,7 +142,6 @@ export function createWorkerServer(deps: {
         invocation = {
           queue: parsed.queue,
           runId: parsed.runId,
-          taskName: parsed.taskName,
           claimToken: parsed.claimToken,
           claimGen: parsed.claimGen,
         }

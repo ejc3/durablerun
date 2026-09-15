@@ -411,10 +411,11 @@ One invocation executes one claimed run to its next suspension point:
   is legitimately re-claimed many times (every sleep wake, every lost-launch
   relaunch, every chain hop), so a one-shot flag can never work. Each claim
   increments the run row's `claim_gen` (§3.1 step 2) and the launch payload
-  carries it with the claimed task's name. A worker whose build has no handler
-  for that name defers the claim before this CAS (`deferLaunch`, fenced on the
-  same claim receipt with `activated_gen < :claim_gen`), so an undispatchable
-  launch never latches the first start. Otherwise activation is
+  carries it. The worker first reads the claimed task's name for this unactivated
+  claim (`claimedTaskName`); a build with no handler for that name defers the
+  claim before this CAS (`deferLaunch`, fenced on the same claim receipt with
+  `activated_gen < :claim_gen`), so an undispatchable launch never latches the
+  first start. Otherwise activation is
   `UPDATE runs SET activated_gen = :claim_gen, claim_expires_at = <re-extended>
   WHERE run_id=:r AND claimed_by=:token AND claim_gen=:claim_gen AND
   activated_gen < :claim_gen AND <soleLiveRun(runs)>`. The final fragment
@@ -549,11 +550,13 @@ One invocation executes one claimed run to its next suspension point:
   is an uncaught event that ends the host process. Every pass it was running
   recovers through the lease, like any other worker death.
 - Rolling deploys, ported from Absurd: a worker whose build has no handler for
-  the launched task name **defers** the claim from the launch, before activation
-  (`deferLaunch`, 15s + jitter, nothing consumed). The launch carries the task
-  name so the decision needs no activation: an activation would latch the first
-  start, disarming the start deadline and starting the duration clock for a task
-  no handler ran. Deploy workers before enabling producers, and old runs survive
+  the claimed task name **defers** the claim before activation (`deferLaunch`,
+  15s + jitter, nothing consumed). The worker reads the claimed task's name from
+  the store (`claimedTaskName`, keyed on its unactivated claim), so the launch
+  still carries only ids, older drivers keep working, and no payload can name a
+  task the claim does not hold. An activation would latch the first start,
+  disarming the start deadline and starting the duration clock for a task no
+  handler ran. Deploy workers before enabling producers, and old runs survive
   new code. In-flight runs resuming under changed code rely on checkpoint
   stability: step names/order must stay compatible, or the task name is
   versioned (`report@v2`) so old runs finish on old handlers.
@@ -1621,7 +1624,7 @@ stutters.
    is self-cleaning). Nothing in the protocol reads it; a failed beat costs
    nothing but visibility.
 2. **Launcher** (execution transport, agnostic on "how"):
-   `launch({runId, taskName, attempt, claimToken, claimGen, shard, deadlineHint}) →`
+   `launch({runId, attempt, claimToken, claimGen, shard, deadlineHint}) →`
    `accepted` (fire-and-forget ack — may still be lost) |
    `ended({runId, claimToken, kind})` (sync HTTP: outcome observed inline — a
    reliable Ending carrying the exact launch identity; reconcile makes no
