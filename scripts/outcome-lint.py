@@ -11,7 +11,8 @@ the stores, core's `task-result.ts`, and the conformance harness may spell
 through `getTaskResult`, or select `TASK_RESULT_COLUMNS` and decode the row
 with `decodeTaskResult`. The stores own the columns, `task-result.ts` defines
 the decoder, and the conformance harness reads raw state as its oracle. Every
-TypeScript extension is read, in both its code and its SQL.
+TypeScript extension is read, in both its code and its SQL. A .tsx source the
+lexer cannot parse, because of JSX text, is read as raw text.
 
 Usage: outcome-lint.py [root]   (root defaults to the repo; the self-test
 passes a fixture tree, which is how this checker gets checked.)
@@ -67,9 +68,13 @@ for path in source_paths:
     try:
         views = [typescript_structure(source), sql_template_view(source)]
     except ValueError as error:
-        print(f"{relative}: cannot lex TypeScript source: {error}")
-        violations += 1
-        continue
+        if path.suffix != ".tsx":
+            print(f"{relative}: cannot lex TypeScript source: {error}")
+            violations += 1
+            continue
+        # The lexer does not parse JSX text. Read the raw source instead, which
+        # can only report more: a comment naming a column counts too.
+        views = [source]
     seen: set[int] = set()
     for visible in views:
         for match in COLUMNS.finditer(visible):
