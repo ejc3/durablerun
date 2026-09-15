@@ -15,11 +15,11 @@
 # a green gate re-checks everything at the end anyway; on a failure, rerun a
 # single group without it to localize).
 #
-# Once safety finishes, the retryTask revival scope (SchedulerRetry.cfg) runs on
-# safety's share while the liveness groups continue.
+# Once safety finishes, the two retryTask revival scopes (SchedulerRetry.cfg and
+# SchedulerRetryInfra.cfg) split safety's share while the liveness groups continue.
 #
 # TLA_SCOPE=ci replaces phase 2 with SchedulerCI.cfg (safety + liveness at the
-# CI-sized scope, ~570k states) followed by SchedulerRetry.cfg — the PR gate on
+# CI-sized scope, ~570k states) followed by both revival scopes — the PR gate on
 # small runners.
 set -euo pipefail
 
@@ -176,6 +176,8 @@ elif [[ "${TLA_SCOPE:-full}" == "ci" ]]; then
   tlc "$TLA_HEAP_MB" "$CORES" -metadir "$STATES/ci" -config SchedulerCI.cfg Scheduler.tla
   echo "== phase 2 (ci scope): retryTask revival at its own small constants"
   tlc "$TLA_HEAP_MB" "$CORES" -metadir "$STATES/retry" -config SchedulerRetry.cfg Scheduler.tla
+  echo "== phase 2 (ci scope): retryTask revival after infrastructure retries, safety only"
+  tlc "$TLA_HEAP_MB" "$CORES" -metadir "$STATES/retry-infra" -config SchedulerRetryInfra.cfg Scheduler.tla
 else
   echo "== phase 2: exhaustive safety + 5 liveness groups, all concurrent"
   # Budget shares are shaped by measurement, not symmetry. The temporal
@@ -212,12 +214,17 @@ else
   else
     fail=1
   fi
-  # retryTask revival runs at its own small constants (SchedulerRetry.cfg) on
+  # The retryTask revival scopes run at their own small constants on halves of
   # safety's freed share, so the shares still add up to the budget and the
   # other scopes keep MaxRetries 0.
-  tlc "$safety_heap" "$safety_workers" -metadir "$STATES/retry" \
+  retry_heap=$((safety_heap / 2))
+  retry_workers=$((safety_workers / 2)); [[ "$retry_workers" -lt 2 ]] && retry_workers=2
+  tlc "$retry_heap" "$retry_workers" -metadir "$STATES/retry" \
     -config SchedulerRetry.cfg Scheduler.tla >"$STATES/retry.log" 2>&1 &
   retry_pid=$!
+  tlc "$retry_heap" "$retry_workers" -metadir "$STATES/retry-infra" \
+    -config SchedulerRetryInfra.cfg Scheduler.tla >"$STATES/retry-infra.log" 2>&1 &
+  retry_infra_pid=$!
   for g in 1 2 3 4 5; do
     code=0
     wait "${group_pids[$((g - 1))]}" || code=$?
@@ -226,5 +233,8 @@ else
   code=0
   wait "$retry_pid" || code=$?
   report "retryTask revival" "$code" "$STATES/retry.log" || fail=1
+  code=0
+  wait "$retry_infra_pid" || code=$?
+  report "retryTask revival after infrastructure retries" "$code" "$STATES/retry-infra.log" || fail=1
   exit "$fail"
 fi

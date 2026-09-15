@@ -868,12 +868,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     an infrastructure-cap or relaunch-cap failure, grows the budget by one,
     clears the failure reason, carries the top run's parked wake, and refuses a
     failed task whose outcome or counters are corrupt.
-    Deferred from its review round (`postmortems/pr3.2b-retry-task-review.md`):
+    Deferred from its review rounds (`postmortems/pr3.2b-retry-task-review.md`):
     a poison target profile for a failed task, so the `retry-task` cells reach
-    the counter guards behind its state condition; a successor-carry case
+    the counter guards behind its state condition; and a successor-carry case
     generated from every batch that inserts a run, in place of one hand-listed
-    family per path; and a revival scope at a nonzero infrastructure-retry cap,
-    so TLC exercises the charge's infrastructure term.
+    family per path.
   - A heartbeat on a cancelled task still reports only a lost lease, so a
     handler that makes a context call after the next beat ends as lease-lost.
     Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the

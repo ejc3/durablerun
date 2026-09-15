@@ -37,7 +37,7 @@ Self-catch rate: 0% (previous round: 0%, `pr3.2a-lifecycle-review.md`). Our mach
 | Carry conformance case with a revival family | 3 | A fourth successor insert that spells its columns without `successorCarriedValues` passes, because the case lists families. At `a254259` the case passed on both dialects with the non-carrying revival in the tree (full verify, 6,744 tests). |
 | Revival counter guards, corruption cases, and mutations | 3 | A revive CAS without the owned-run ordinal guard fails the corruption case on libSQL and passes it on PostgreSQL, because PostgreSQL's INTEGER column rejects the fractional witness at storage, so that dialect has no witness for the guard. Measured: 1 failed (libSQL), 15 passed. |
 | Invariant-library twin `accounting/failed-charge-past-budget` | 3 | The checker reads stored counters only. A revival that charges within the budget but writes the wrong ordinal onto the revival run passes it; `accounting/live-run-not-next` is what reports that shape. |
-| Accounting invariants in `Scheduler.cfg` | 2 | `RetryTask` is enabled only in `SchedulerRetry.cfg`, where `InfraRetryCap = 0`. A model whose `RetryTask` charges `TopOrdinal(t)` without subtracting `infraRetries[t]` completes TLC on that scope with no error over 1,579,633 distinct states. The store side is covered by the infrastructure-cap revival case. |
+| Accounting invariants in `Scheduler.cfg`, and `SchedulerRetryInfra.cfg` | 2 | `RetryTask` first ran only in `SchedulerRetry.cfg`, where `InfraRetryCap = 0`, so a model charging `TopOrdinal(t)` without subtracting `infraRetries[t]` completed with no error over 1,579,633 distinct states. Round 2 of `/code-review` found the same gap. `SchedulerRetryInfra.cfg` now revives at `InfraRetryCap = 1`, where that model fails `LiveRunIsNextAccounted` at `RetryTask(t1)` after 24,189 distinct states. That scope has no hops and no relaunches, so a charge mistake that needs a relaunch-capped run and an infrastructure retry in the same task still passes. |
 | Poison barrier column allowlist | 3 | A revival that sets `last_attempt_run = NULL`, an allowlisted column, passed all 16 retryTask cases and all 288 retry-task poison cells on both dialects. The revival case now pins `last_attempt_run`, but the barrier still allows any value in the columns a revival writes. |
 
 ## Fix-induced defects
@@ -78,6 +78,7 @@ Built in this PR:
 
 - `SuccessorCarriesWake`, a TLA action property over every action that brings a run into use (rung 2, `specs/Scheduler.tla`, checked by the CI and retry scopes).
 - `FailedChargeWithinBudget`, plus the accounting invariants in the safety scope at `InfraRetryCap = 1` (rung 2, `specs/Scheduler.cfg`), and `SuccessorCarriesWake` in `SchedulerLiveness2.cfg`, where the claim-timeout sweep creates successors (rung 2).
+- `SchedulerRetryInfra.cfg`, a safety-only revival scope at `InfraRetryCap = 1`, run by the PR gate and the full scope (rung 2). It completes with no error over 253,717 distinct states.
 - `accounting/failed-charge-past-budget`, the executable twin of `FailedChargeWithinBudget` in the invariant library, checked by every simulation, scenario, fuzz walk, and poison cell, with a poison witness that reaches the revive CAS's charge-within-budget guard (rung 3, `packages/conformance/src/invariants.ts`, `packages/conformance/src/poison-matrix.ts`).
 - `successorCarriedValues`, one definition of the carried values spliced by all three successor inserts (rung 1 within the stores, `packages/core/src/contract.ts`).
 - Revival guards on counters, run ordinals, the budget, and the accounting band, each with a conformance case and a registered mutation (rung 3, the stores, `packages/conformance/src/suite.ts`, `scripts/mutation-probe.py`).
@@ -88,12 +89,11 @@ Deferred (recorded in BUILD.md):
 
 - **A poison target profile for a failed task.** It would let `retry-task` cells reach the counter guards behind its state condition. The conformance cases pin each guard today, and the profile is poison-matrix machinery beyond this milestone's exit test.
 - **A successor-carry case generated from every batch that inserts a run.** It would replace the hand-listed families. The model property covers the protocol today, and generating the SQL-side enumeration belongs with PR3.9's SQL-tree work.
-- **A revival scope at a nonzero infrastructure-retry cap.** It would let TLC exercise the charge's infra term. The conformance case and its mutation pin the store today, and the scope's cost would need measuring before it joins the PR gate.
 
 ## What this round still would not catch
 
 - A fourth successor insert that spells its carried columns by hand and is not listed in the carry case would ship. The model property does not read SQL.
 - A revival that stops checking run ordinals' representation would ship if it were exercised only on PostgreSQL, where the storage type rejects the witness.
-- A model `RetryTask` that mishandles infrastructure retries would ship past TLC, because the only scope that enables revival has no infrastructure retries.
+- A model `RetryTask` whose mistake needs a relaunch-capped run and an infrastructure retry in the same task would ship past TLC. The retry scope has no infrastructure retries, and the infrastructure revival scope has no relaunches.
 - A revival that writes a wrong value into a column it owns and no case reads back would pass the poison matrix. The barrier checks which columns change, not their values.
 - A label whose precondition is terminal, other than `retry-task`, still meets poison witnesses only through live targets, so its counter guards are unexercised by the matrix.
