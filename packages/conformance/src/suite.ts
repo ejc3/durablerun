@@ -1821,6 +1821,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             ),
           () => checkpointOwned(f.store, Q, run, 'late', '{}', 60),
           () => awaitOwned(f.store, Q, run, 'late', 'never', 30),
+          () => f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15),
         ]
         const refusals = async (run: ClaimedRun) => {
           const names: string[] = []
@@ -1838,8 +1839,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           cancelled: await refusals(cancelledRun),
           swept: await refusals(sweptRun),
         }).toEqual({
-          cancelled: Array(6).fill('RunCancelledError'),
-          swept: Array(6).fill('LeaseLostError'),
+          cancelled: Array(7).fill('RunCancelledError'),
+          swept: Array(7).fill('LeaseLostError'),
         })
       })
     })
