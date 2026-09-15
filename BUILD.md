@@ -893,11 +893,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     state. Both stores and the dogfood status command decode through it,
     `scripts/outcome-lint.py` refuses a second decoder, and an engine invariant
     checks every snapshot against it.
-  - **PR3.5c:** the conformance and fuzz helpers. Seeded worlds run through one
-    helper that always closes its fixture, the suite shares one claim helper and
-    single-row read and owner-bound transition helpers, single-run tests use the
-    default fixture, the fuzz walk counts lease-holding transitions through one
-    helper, and SIMPLIFY-BACKLOG.md is deleted.
+  - **PR3.5c:** the conformance and fuzz helpers. One scenario module holds a
+    single-row read that runs in read mode, a fixture opener that always closes
+    its fixture and keeps the scenario's failure when closing also fails, and
+    claim, claim-and-activate, and owner-bound transition helpers that take the
+    store and queue they act on. The suite and the fuzz walk use them, seeded
+    worlds start inside one helper, single-run tests use the default fixture, the
+    fuzz walk counts lease-holding transitions through one helper, and
+    SIMPLIFY-BACKLOG.md is deleted.
   - Rejected: deleting the `WakeSignals` port. It has no implementation, but it
     is exported from the published `@durablerun/core` barrel, so deleting it
     breaks consumers that import the type. Removing a published export belongs
@@ -945,6 +948,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Rejected: opening `replay-equivalence.test.ts`'s database through
     `openTestDb`. Its own `try`/`finally` closes the database even when
     migration throws.
+  - Rejected: moving the time-boundary suite's claim and activation helpers, and
+    the make-then-close fixture sites in the time-boundary, schema-admin, poison
+    matrix, fault matrix, and store conformance suites, onto the scenario module.
+    Those sites already close their fixture in `finally`, so the change would
+    alter only which error a double failure reports, and 59 registered mutations
+    own verdict markers in `time-boundaries.ts` alone, all of which would join
+    this PR's mutation closure.
+  - Rejected: passing a claimed run to the port's `awaitEvent` and
+    `setCheckpoint` in place of three identifiers. That changes published port
+    signatures, which belongs in a deliberate API change, and the owner-bound
+    helpers already remove the repeated arguments from the tests.
 
 ## Phase 4 — dialect matrix
 
