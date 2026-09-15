@@ -42,6 +42,27 @@ async function snapshot(
 }
 
 /**
+ * Run `body` once per seed against its own fixture. The fixture is closed even when
+ * the body throws, and the engine invariants must hold at quiescence.
+ */
+async function forEachSeed(
+  makeFixture: StoreFixtureFactory,
+  seeds: number,
+  name: (seed: number) => number | string,
+  body: (fx: StoreFixture, seed: number) => Promise<void>,
+): Promise<void> {
+  for (let seed = 0; seed < seeds; seed++) {
+    const fx = await makeFixture(name(seed))
+    try {
+      await body(fx, seed)
+      expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+    } finally {
+      await fx.close()
+    }
+  }
+}
+
+/**
  * The dialect-agnostic scheduler conformance suite. Every store dialect —
  * and eventually every language port — must pass this battery unchanged;
  * raw-SQL assertions rely only on the shared schema (DESIGN.md §3.4), which
@@ -3122,42 +3143,44 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('no lost wakeup: emit racing await, every interleaving, ends delivered', async () => {
-        for (let seed = 0; seed < 10; seed++) {
-          const fx = await makeFixture(`ev-race-${seed}`)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          await fx.store.spawn(Q, 'racer', '{}')
-          const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-          if (!run) throw new Error('claim')
-          await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-          const world = new SimWorld(fx.raw, seed)
-          let inline: string | null = null
-          world.actor('awaiter', async (simDb) => {
-            const out = await fx
-              .storeOver(simDb)
-              .awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'race', null)
-              .catch(() => null)
-            if (out?.emitted) inline = out.payloadJson
-          })
-          world.actor('emitter', async (simDb) => {
-            await fx.storeOver(simDb).emitEvent(Q, 'race', '{"r":1}')
-          })
-          await world.run()
-          // EITHER the await saw the event inline OR the emit woke the
-          // parked run — never neither (the model's no-lost-wakeup).
-          if (inline === null) {
-            const [woken] = await fx.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
-            expect(woken?.runId, `seed ${seed}`).toBe(run.runId)
-            expect(woken?.wake, `seed ${seed}`).toEqual({
-              event: 'race',
-              step: 's',
-              payloadJson: '{"r":1}',
+        await forEachSeed(
+          makeFixture,
+          10,
+          (seed) => `ev-race-${seed}`,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            await fx.store.spawn(Q, 'racer', '{}')
+            const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+            if (!run) throw new Error('claim')
+            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            const world = new SimWorld(fx.raw, seed)
+            let inline: string | null = null
+            world.actor('awaiter', async (simDb) => {
+              const out = await fx
+                .storeOver(simDb)
+                .awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'race', null)
+                .catch(() => null)
+              if (out?.emitted) inline = out.payloadJson
             })
-          } else {
-            expect(inline, `seed ${seed}`).toBe('{"r":1}')
-          }
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          await fx.close()
-        }
+            world.actor('emitter', async (simDb) => {
+              await fx.storeOver(simDb).emitEvent(Q, 'race', '{"r":1}')
+            })
+            await world.run()
+            // EITHER the await saw the event inline OR the emit woke the
+            // parked run — never neither (the model's no-lost-wakeup).
+            if (inline === null) {
+              const [woken] = await fx.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+              expect(woken?.runId, `seed ${seed}`).toBe(run.runId)
+              expect(woken?.wake, `seed ${seed}`).toEqual({
+                event: 'race',
+                step: 's',
+                payloadJson: '{"r":1}',
+              })
+            } else {
+              expect(inline, `seed ${seed}`).toBe('{"r":1}')
+            }
+          },
+        )
       })
 
       it('serializes real concurrent await and emit batches without losing a wakeup', async () => {
@@ -3243,40 +3266,42 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('timeout-vs-emit race: the wake is exactly one of payload or timeout, never both', async () => {
-        for (let seed = 0; seed < 10; seed++) {
-          const fx = await makeFixture(`ev-timeout-race-${seed}`)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          await fx.store.spawn(Q, 'timed', '{}')
-          const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-          if (!run) throw new Error('claim')
-          await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-          await fx.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'late', 30)
-          await fx.admin.setFakeNowEpochMs(1_030_000) // exactly at the deadline
-          const world = new SimWorld(fx.raw, seed)
-          world.actor('emitter', async (simDb) => {
-            await fx.storeOver(simDb).emitEvent(Q, 'late', '{"won":"emit"}')
-          })
-          world.actor('claimer', async (simDb) => {
-            await fx
-              .storeOver(simDb)
-              .claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
-              .catch(() => {})
-          })
-          await world.run()
-          // Whoever won, the run woke EXACTLY ONCE with a consistent wake:
-          // payload delivery or timeout — and the wait row is settled.
-          const [rows, waits] = await fx.raw.batch('t', [
-            {
-              sql: `SELECT wake_event, event_payload, state FROM runs WHERE run_id = ?`,
-              args: [run.runId],
-            },
-            { sql: `SELECT COUNT(*) AS n FROM waits WHERE status = 'waiting'`, args: [] },
-          ])
-          expect(rows?.rows[0]?.wake_event, `seed ${seed}`).toBe('late')
-          expect(Number(waits?.rows[0]?.n), `seed ${seed}: wait settled exactly once`).toBe(0)
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          await fx.close()
-        }
+        await forEachSeed(
+          makeFixture,
+          10,
+          (seed) => `ev-timeout-race-${seed}`,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            await fx.store.spawn(Q, 'timed', '{}')
+            const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+            if (!run) throw new Error('claim')
+            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            await fx.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'late', 30)
+            await fx.admin.setFakeNowEpochMs(1_030_000) // exactly at the deadline
+            const world = new SimWorld(fx.raw, seed)
+            world.actor('emitter', async (simDb) => {
+              await fx.storeOver(simDb).emitEvent(Q, 'late', '{"won":"emit"}')
+            })
+            world.actor('claimer', async (simDb) => {
+              await fx
+                .storeOver(simDb)
+                .claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
+                .catch(() => {})
+            })
+            await world.run()
+            // Whoever won, the run woke EXACTLY ONCE with a consistent wake:
+            // payload delivery or timeout — and the wait row is settled.
+            const [rows, waits] = await fx.raw.batch('t', [
+              {
+                sql: `SELECT wake_event, event_payload, state FROM runs WHERE run_id = ?`,
+                args: [run.runId],
+              },
+              { sql: `SELECT COUNT(*) AS n FROM waits WHERE status = 'waiting'`, args: [] },
+            ])
+            expect(rows?.rows[0]?.wake_event, `seed ${seed}`).toBe('late')
+            expect(Number(waits?.rows[0]?.n), `seed ${seed}: wait settled exactly once`).toBe(0)
+          },
+        )
       })
 
       // fenceTwin('AwaitEventMiss') — the un-emitted path: a swept zombie's
@@ -3345,32 +3370,34 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
     describe('deferred coverage: races and accounting depth', () => {
       it('sweep vs live heartbeat: exactly one of them wins, never both', async () => {
-        for (let seed = 0; seed < 10; seed++) {
-          const fx = await makeFixture(`hb-race-${seed}`)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          await fx.store.spawn(Q, 'job', '{}')
-          const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-          if (!run) throw new Error('expected claim')
-          await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-          await fx.admin.setFakeNowEpochMs(1_060_000) // exactly at expiry
-          const world = new SimWorld(fx.raw, seed)
-          let held: boolean | null = null
-          world.actor('worker', async (simDb) => {
-            const lease = await fx.storeOver(simDb).heartbeat(Q, run.runId, run.claimToken, 60)
-            held = lease.held
-          })
-          let swept: number | null = null
-          world.actor('sweeper', async (simDb) => {
-            swept = (await fx.storeOver(simDb).sweep(Q, 10)).length
-          })
-          await world.run()
-          // XOR: a revived lease means nothing was swept; a swept run means
-          // the zombie heartbeat reported lease-lost.
-          expect([held, swept], `seed ${seed}`).not.toEqual([true, 1])
-          expect([held, swept], `seed ${seed}`).not.toEqual([false, 0])
-          expect(await engineInvariantViolations(fx.raw)).toEqual([])
-          await fx.close()
-        }
+        await forEachSeed(
+          makeFixture,
+          10,
+          (seed) => `hb-race-${seed}`,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            await fx.store.spawn(Q, 'job', '{}')
+            const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+            if (!run) throw new Error('expected claim')
+            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            await fx.admin.setFakeNowEpochMs(1_060_000) // exactly at expiry
+            const world = new SimWorld(fx.raw, seed)
+            let held: boolean | null = null
+            world.actor('worker', async (simDb) => {
+              const lease = await fx.storeOver(simDb).heartbeat(Q, run.runId, run.claimToken, 60)
+              held = lease.held
+            })
+            let swept: number | null = null
+            world.actor('sweeper', async (simDb) => {
+              swept = (await fx.storeOver(simDb).sweep(Q, 10)).length
+            })
+            await world.run()
+            // XOR: a revived lease means nothing was swept; a swept run means
+            // the zombie heartbeat reported lease-lost.
+            expect([held, swept], `seed ${seed}`).not.toEqual([true, 1])
+            expect([held, swept], `seed ${seed}`).not.toEqual([false, 0])
+          },
+        )
       })
 
       it('a duplicated activation delivery leaves an ownerless activated run that the sweep reclaims', async () => {
@@ -3403,41 +3430,43 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('a sweeper crashing mid-sweep leaves a resweepable, invariant-clean state', async () => {
-        for (let seed = 0; seed < 10; seed++) {
-          const fx = await makeFixture(`crash-sweep-${seed}`)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          for (let i = 0; i < 2; i++) {
-            await fx.store.spawn(Q, `job-${i}`, '{}')
-          }
-          const claimed = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 2 })
-          for (const run of claimed) {
-            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-          }
-          await fx.admin.setFakeNowEpochMs(1_100_000)
-          const world = new SimWorld(fx.raw, seed, { strictSpecs: false })
-          world.injectCrash({ actor: 'sweeper-a', label: 'sweep:claim-timeout', when: 'after' })
-          for (const name of ['sweeper-a', 'sweeper-b']) {
-            world.actor(name, async (simDb) => {
-              await fx
-                .storeOver(simDb)
-                .sweep(Q, 10)
-                .catch(() => {})
-            })
-          }
-          await world.run()
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          // A fresh sweep finishes whatever the crash stranded.
-          await fx.store.sweep(Q, 10)
-          const [successors] = await fx.raw.batch('t', [
-            {
-              sql: `SELECT COUNT(*) AS n FROM runs WHERE attempt = 2 AND state = 'pending'`,
-              args: [],
-            },
-          ])
-          expect(Number(successors?.rows[0]?.n), `seed ${seed}`).toBe(2)
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          await fx.close()
-        }
+        await forEachSeed(
+          makeFixture,
+          10,
+          (seed) => `crash-sweep-${seed}`,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            for (let i = 0; i < 2; i++) {
+              await fx.store.spawn(Q, `job-${i}`, '{}')
+            }
+            const claimed = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 2 })
+            for (const run of claimed) {
+              await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            }
+            await fx.admin.setFakeNowEpochMs(1_100_000)
+            const world = new SimWorld(fx.raw, seed, { strictSpecs: false })
+            world.injectCrash({ actor: 'sweeper-a', label: 'sweep:claim-timeout', when: 'after' })
+            for (const name of ['sweeper-a', 'sweeper-b']) {
+              world.actor(name, async (simDb) => {
+                await fx
+                  .storeOver(simDb)
+                  .sweep(Q, 10)
+                  .catch(() => {})
+              })
+            }
+            await world.run()
+            expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+            // A fresh sweep finishes whatever the crash stranded.
+            await fx.store.sweep(Q, 10)
+            const [successors] = await fx.raw.batch('t', [
+              {
+                sql: `SELECT COUNT(*) AS n FROM runs WHERE attempt = 2 AND state = 'pending'`,
+                args: [],
+              },
+            ])
+            expect(Number(successors?.rows[0]?.n), `seed ${seed}`).toBe(2)
+          },
+        )
       })
 
       it('accounting depth: two infra cycles then a user failure', async () => {
@@ -3539,91 +3568,95 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // sweepers reopen or succeed a timed-out run EXACTLY once each; the
       // loser's CAS matches zero rows on every seed.
       it('exactly one successor per timed-out run under racing sweepers, any seed', async () => {
-        for (let seed = 0; seed < 10; seed++) {
-          const fx = await makeFixture(`sweep-${seed}`)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          // Two activated runs (→ claim-timeout) and one never-activated
-          // (→ lost-launch reopen), all with expired leases.
-          for (let i = 0; i < 3; i++) await fx.store.spawn(Q, `job-${i}`, '{}')
-          const claimed = await fx.store.claim(Q, 'tick-0', { leaseSeconds: 60, limit: 3 })
-          expect(claimed).toHaveLength(3)
-          for (const run of claimed.slice(0, 2)) {
-            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-          }
-          await fx.admin.setFakeNowEpochMs(1_100_000)
+        await forEachSeed(
+          makeFixture,
+          10,
+          (seed) => `sweep-${seed}`,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            // Two activated runs (→ claim-timeout) and one never-activated
+            // (→ lost-launch reopen), all with expired leases.
+            for (let i = 0; i < 3; i++) await fx.store.spawn(Q, `job-${i}`, '{}')
+            const claimed = await fx.store.claim(Q, 'tick-0', { leaseSeconds: 60, limit: 3 })
+            expect(claimed).toHaveLength(3)
+            for (const run of claimed.slice(0, 2)) {
+              await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            }
+            await fx.admin.setFakeNowEpochMs(1_100_000)
 
-          const world = new SimWorld(fx.raw, seed)
-          for (const sweeper of ['sweeper-a', 'sweeper-b']) {
-            world.actor(sweeper, async (simDb) => {
-              await fx.storeOver(simDb).sweep(Q, 10)
-            })
-          }
-          await world.run()
+            const world = new SimWorld(fx.raw, seed)
+            for (const sweeper of ['sweeper-a', 'sweeper-b']) {
+              world.actor(sweeper, async (simDb) => {
+                await fx.storeOver(simDb).sweep(Q, 10)
+              })
+            }
+            await world.run()
 
-          // Invariants regardless of schedule: each activated run failed with
-          // EXACTLY one successor (unique (task_id, attempt) is the backstop);
-          // the never-activated run reopened exactly once (relaunch_count 1).
-          const [counts] = await fx.raw.batch('t', [
-            {
-              sql: `SELECT t.task_id,
+            // Invariants regardless of schedule: each activated run failed with
+            // EXACTLY one successor (unique (task_id, attempt) is the backstop);
+            // the never-activated run reopened exactly once (relaunch_count 1).
+            const [counts] = await fx.raw.batch('t', [
+              {
+                sql: `SELECT t.task_id,
                            SUM(CASE WHEN r.attempt = 2 THEN 1 ELSE 0 END) AS successors,
                            MAX(r.relaunch_count) AS relaunches,
                            MAX(t.infra_retries) AS infra
                     FROM tasks t JOIN runs r ON r.task_id = t.task_id
                     GROUP BY t.task_id ORDER BY t.task_id`,
-              args: [],
-            },
-          ])
-          const rows = counts?.rows ?? []
-          expect(rows, `seed ${seed}`).toHaveLength(3)
-          let successorTasks = 0
-          let reopenedTasks = 0
-          for (const row of rows) {
-            const successors = Number(row.successors)
-            const relaunches = Number(row.relaunches)
-            if (successors > 0) {
-              successorTasks++
-              expect(successors, `seed ${seed}: one successor`).toBe(1)
-              expect(Number(row.infra), `seed ${seed}: one infra retry`).toBe(1)
-            } else {
-              reopenedTasks++
-              expect(relaunches, `seed ${seed}: reopened exactly once`).toBe(1)
+                args: [],
+              },
+            ])
+            const rows = counts?.rows ?? []
+            expect(rows, `seed ${seed}`).toHaveLength(3)
+            let successorTasks = 0
+            let reopenedTasks = 0
+            for (const row of rows) {
+              const successors = Number(row.successors)
+              const relaunches = Number(row.relaunches)
+              if (successors > 0) {
+                successorTasks++
+                expect(successors, `seed ${seed}: one successor`).toBe(1)
+                expect(Number(row.infra), `seed ${seed}: one infra retry`).toBe(1)
+              } else {
+                reopenedTasks++
+                expect(relaunches, `seed ${seed}: reopened exactly once`).toBe(1)
+              }
             }
-          }
-          expect(successorTasks, `seed ${seed}`).toBe(2)
-          expect(reopenedTasks, `seed ${seed}`).toBe(1)
-          // Invariants at quiescence, not only the scenario's own counts.
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          await fx.close()
-        }
+            expect(successorTasks, `seed ${seed}`).toBe(2)
+            expect(reopenedTasks, `seed ${seed}`).toBe(1)
+            // Invariants at quiescence, not only the scenario's own counts.
+          },
+        )
       })
     })
 
     describe('concurrent claim exclusivity (simulated)', () => {
       it('uses the backend native concurrency primitive without overlapping receipts', async () => {
-        for (let seed = 0; seed < 5; seed++) {
-          const fx = await makeFixture(`native-claim-${seed}`)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          for (let i = 0; i < 8; i++) await fx.store.spawn(Q, `native-job-${i}`, '{}')
+        await forEachSeed(
+          makeFixture,
+          5,
+          (seed) => `native-claim-${seed}`,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            for (let i = 0; i < 8; i++) await fx.store.spawn(Q, `native-job-${i}`, '{}')
 
-          // Do not route this through SimWorld: this case exists specifically
-          // to exercise the backend's real transaction and row-lock behavior.
-          const receipts = await Promise.all(
-            Array.from({ length: 4 }, (_, index) =>
-              fx.store.claim(Q, `native-tick-${index}`, { leaseSeconds: 60, limit: 2 }),
-            ),
-          )
-          const runIds = receipts.flatMap((receipt) => receipt.map(({ runId }) => runId))
+            // Do not route this through SimWorld: this case exists specifically
+            // to exercise the backend's real transaction and row-lock behavior.
+            const receipts = await Promise.all(
+              Array.from({ length: 4 }, (_, index) =>
+                fx.store.claim(Q, `native-tick-${index}`, { leaseSeconds: 60, limit: 2 }),
+              ),
+            )
+            const runIds = receipts.flatMap((receipt) => receipt.map(({ runId }) => runId))
 
-          expect(
-            receipts.every((receipt) => receipt.length <= 2),
-            `seed ${seed}: claim bound`,
-          ).toBe(true)
-          expect(runIds, `seed ${seed}: every due run claimed`).toHaveLength(8)
-          expect(new Set(runIds).size, `seed ${seed}: no overlapping receipts`).toBe(8)
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          await fx.close()
-        }
+            expect(
+              receipts.every((receipt) => receipt.length <= 2),
+              `seed ${seed}: claim bound`,
+            ).toBe(true)
+            expect(runIds, `seed ${seed}: every due run claimed`).toHaveLength(8)
+            expect(new Set(runIds).size, `seed ${seed}: no overlapping receipts`).toBe(8)
+          },
+        )
       })
 
       it('serializes concurrent same-token retries before candidate selection', async () => {
@@ -3674,68 +3707,72 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('never double-claims a run across concurrent ticks, any seed', async () => {
-        for (let seed = 0; seed < 10; seed++) {
-          const fx = await makeFixture(seed)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          for (let i = 0; i < 4; i++) await fx.store.spawn(Q, `job-${i}`, '{}')
+        await forEachSeed(
+          makeFixture,
+          10,
+          (seed) => seed,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            for (let i = 0; i < 4; i++) await fx.store.spawn(Q, `job-${i}`, '{}')
 
-          const world = new SimWorld(fx.raw, seed)
-          const claimedBy = new Map<string, string[]>()
-          for (const tick of ['tick-a', 'tick-b', 'tick-c']) {
-            world.actor(tick, async (simDb) => {
-              const actorStore = fx.storeOver(simDb)
-              const claimed = await actorStore.claim(Q, tick, { leaseSeconds: 60, limit: 2 })
-              claimedBy.set(
-                tick,
-                claimed.map((r) => r.runId),
-              )
-            })
-          }
-          await world.run()
+            const world = new SimWorld(fx.raw, seed)
+            const claimedBy = new Map<string, string[]>()
+            for (const tick of ['tick-a', 'tick-b', 'tick-c']) {
+              world.actor(tick, async (simDb) => {
+                const actorStore = fx.storeOver(simDb)
+                const claimed = await actorStore.claim(Q, tick, { leaseSeconds: 60, limit: 2 })
+                claimedBy.set(
+                  tick,
+                  claimed.map((r) => r.runId),
+                )
+              })
+            }
+            await world.run()
 
-          const all = [...claimedBy.values()].flat()
-          expect(all.length, `seed ${seed}: total claims`).toBe(4)
-          expect(new Set(all).size, `seed ${seed}: distinct runs`).toBe(4)
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          await fx.close()
-        }
+            const all = [...claimedBy.values()].flat()
+            expect(all.length, `seed ${seed}: total claims`).toBe(4)
+            expect(new Set(all).size, `seed ${seed}: distinct runs`).toBe(4)
+          },
+        )
       })
 
       it('upholds exclusivity under buggification (legal-rare paths forced)', async () => {
-        for (let seed = 0; seed < 10; seed++) {
-          const fx = await makeFixture(`buggy-${seed}`)
-          await fx.admin.setFakeNowEpochMs(1_000_000)
-          for (let i = 0; i < 4; i++) await fx.store.spawn(Q, `job-${i}`, '{}')
+        await forEachSeed(
+          makeFixture,
+          10,
+          (seed) => `buggy-${seed}`,
+          async (fx, seed) => {
+            await fx.admin.setFakeNowEpochMs(1_000_000)
+            for (let i = 0; i < 4; i++) await fx.store.spawn(Q, `job-${i}`, '{}')
 
-          const world = new SimWorld(fx.raw, seed)
-          const buggify = seededBuggify(new Rng(`buggy-${seed}`), 0.3)
-          const claimedBy = new Map<string, string[]>()
-          for (const tick of ['tick-a', 'tick-b', 'tick-c']) {
-            world.actor(tick, async (simDb) => {
-              const actorStore = fx.storeOver(simDb, buggify)
-              const claimed = await actorStore.claim(Q, tick, { leaseSeconds: 60, limit: 2 })
-              claimedBy.set(
-                tick,
-                claimed.map((r) => r.runId),
-              )
-            })
-          }
-          await world.run()
+            const world = new SimWorld(fx.raw, seed)
+            const buggify = seededBuggify(new Rng(`buggy-${seed}`), 0.3)
+            const claimedBy = new Map<string, string[]>()
+            for (const tick of ['tick-a', 'tick-b', 'tick-c']) {
+              world.actor(tick, async (simDb) => {
+                const actorStore = fx.storeOver(simDb, buggify)
+                const claimed = await actorStore.claim(Q, tick, { leaseSeconds: 60, limit: 2 })
+                claimedBy.set(
+                  tick,
+                  claimed.map((r) => r.runId),
+                )
+              })
+            }
+            await world.run()
 
-          // Short claims mean coverage may be partial — the INVARIANT is
-          // exclusivity: no run ever claimed by two ticks.
-          const all = [...claimedBy.values()].flat()
-          expect(new Set(all).size, `seed ${seed}: no double-claims`).toBe(all.length)
-          const [running] = await fx.raw.batch('t', [
-            {
-              sql: `SELECT COUNT(*) AS n FROM runs WHERE state = 'running' AND claimed_by IS NULL`,
-              args: [],
-            },
-          ])
-          expect(Number(running?.rows[0]?.n), `seed ${seed}: no ownerless running run`).toBe(0)
-          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-          await fx.close()
-        }
+            // Short claims mean coverage may be partial — the INVARIANT is
+            // exclusivity: no run ever claimed by two ticks.
+            const all = [...claimedBy.values()].flat()
+            expect(new Set(all).size, `seed ${seed}: no double-claims`).toBe(all.length)
+            const [running] = await fx.raw.batch('t', [
+              {
+                sql: `SELECT COUNT(*) AS n FROM runs WHERE state = 'running' AND claimed_by IS NULL`,
+                args: [],
+              },
+            ])
+            expect(Number(running?.rows[0]?.n), `seed ${seed}: no ownerless running run`).toBe(0)
+          },
+        )
       })
     })
   })
