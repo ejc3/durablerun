@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { type FuzzStats, runFuzzScenario } from '../src/fuzz.js'
+import { describeFailure } from '../src/scenario.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 function knob(name: string, fallback: number): number {
@@ -119,7 +120,7 @@ export function runFuzzShard(shard: number, of: number): void {
             totals[key] += stats[key]
           }
         } catch (error) {
-          failures.push(`seed ${seed}: ${String(error)}`)
+          failures.push(`seed ${seed}: ${describeFailure(error)}`)
         }
       }
       expect(failures).toEqual([])

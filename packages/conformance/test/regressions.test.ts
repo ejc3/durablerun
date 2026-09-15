@@ -4,6 +4,7 @@ import { SimWorld } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
+import { claimActivated, claimOne } from '../src/scenario.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 const Q = 'q'
@@ -632,9 +633,7 @@ describe('sweep and cancellation review regressions', () => {
         { sql: `UPDATE tasks SET infra_retries = 19 WHERE task_id = ?`, args: [spawned.taskId] },
         { sql: `UPDATE runs SET attempt = 20 WHERE task_id = ?`, args: [spawned.taskId] },
       ])
-      const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
-      if (!run) throw new Error('expected claim')
-      await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await claimActivated(f.store, Q, 'w0')
       await f.admin.setFakeNowEpochMs(1_100_000) // lease long expired
 
       const world = new SimWorld(f.raw, seed)
@@ -671,8 +670,7 @@ describe('sweep and cancellation review regressions', () => {
     const f = await makeLibsqlFixture('max-delay')
     await f.admin.setFakeNowEpochMs(1_000_000)
     await f.store.spawn(Q, 'job', '{}', { cancellation: { maxDelaySeconds: 30 } })
-    const [run] = await f.store.claim(Q, 't1', { leaseSeconds: 600, limit: 1 })
-    if (!run) throw new Error('expected claim')
+    const run = await claimOne(f.store, Q, 't1', 600)
     // Started at t+10s — comfortably inside the 30s window.
     await f.admin.setFakeNowEpochMs(1_010_000)
     expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
@@ -707,9 +705,7 @@ describe('sweep and cancellation review regressions', () => {
     const f = await makeLibsqlFixture('waits')
     await f.admin.setFakeNowEpochMs(1_000_000)
     const spawned = await f.store.spawn(Q, 'job', '{}')
-    const [run] = await f.store.claim(Q, 't1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    const run = await claimActivated(f.store, Q, 't1')
     await f.raw.batch('t', [
       {
         sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, created_at_ms)
@@ -773,9 +769,7 @@ describe('sweep and cancellation review regressions', () => {
     const f = await makeLibsqlFixture('expire')
     await f.admin.setFakeNowEpochMs(1_000_000)
     await f.store.spawn(Q, 'job', '{}')
-    const [run] = await f.store.claim(Q, 't1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    const run = await claimActivated(f.store, Q, 't1')
     await f.admin.setFakeNowEpochMs(1_100_000) // lease already past
     expect(
       await f.store.expireLeaseNow(Q, run.runId, run.claimToken),
@@ -788,9 +782,7 @@ describe('sweep and cancellation review regressions', () => {
     const f = await makeLibsqlFixture('expire-fractional')
     await f.admin.setFakeNowEpochMs(1_000_000)
     await f.store.spawn(Q, 'job', '{}')
-    const [run] = await f.store.claim(Q, 't1', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    const run = await claimActivated(f.store, Q, 't1')
     await f.raw.batch('fractional-expiry', [
       {
         sql: `UPDATE runs SET claim_expires_at_ms = 1000000.5 WHERE run_id = ?`,
@@ -820,9 +812,7 @@ describe('sweep and cancellation review regressions', () => {
     const f = await makeLibsqlFixture('collide')
     await f.admin.setFakeNowEpochMs(1_000_000)
     const spawned = await f.store.spawn(Q, 'job', '{}')
-    const [run] = await f.store.claim(Q, 'w0', { leaseSeconds: 60, limit: 1 })
-    if (!run) throw new Error('expected claim')
-    await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+    await claimActivated(f.store, Q, 'w0')
 
     const predictedSuccessor = 'foreign-sweep-successor'
     // Park a FOREIGN run under a different task at exactly that id.
