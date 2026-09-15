@@ -2682,6 +2682,7 @@ function healthyWinErrors(
   const errors: string[] = []
   const task = rowById(after, 'tasks', TRIGGER_TASK)
   const run = rowById(after, 'runs', TRIGGER_RUN)
+  const healthy = outcomes.filter((outcome) => outcome.target === 'healthy')
   const expect = (condition: boolean, message: string): void => {
     if (!condition) errors.push(`healthy trigger did not win: ${message}`)
   }
@@ -2743,10 +2744,7 @@ function healthyWinErrors(
     }
     case 'activate':
       expect(
-        hasOutcome(
-          outcomes.filter((outcome) => outcome.target === 'healthy'),
-          (result) => object(result)?.runId === TRIGGER_RUN,
-        ) &&
+        hasOutcome(healthy, (result) => object(result)?.runId === TRIGGER_RUN) &&
           same(run?.activated_gen, 1) &&
           same(run?.started_at_ms, NOW),
         'trigger claim was not activated',
@@ -2764,10 +2762,7 @@ function healthyWinErrors(
       break
     case 'heartbeat':
       expect(
-        hasOutcome(
-          outcomes.filter((outcome) => outcome.target === 'healthy'),
-          (result) => object(result)?.held === true,
-        ) &&
+        hasOutcome(healthy, (result) => object(result)?.held === true) &&
           same(run?.heartbeat_at_ms, NOW) &&
           same(run?.claim_expires_at_ms, NOW + 60_000),
         'trigger lease was not extended',
@@ -2815,10 +2810,7 @@ function healthyWinErrors(
         (row) => row.run_id === TRIGGER_RUN && row.step_name === TRIGGER_STEP,
       )
       expect(
-        hasOutcome(
-          outcomes.filter((outcome) => outcome.target === 'healthy'),
-          (result) => object(result)?.emitted === false,
-        ) &&
+        hasOutcome(healthy, (result) => object(result)?.emitted === false) &&
           task?.state === 'sleeping' &&
           run?.state === 'sleeping' &&
           same(run.available_at_ms, NOW + 30_000) &&
@@ -2844,10 +2836,7 @@ function healthyWinErrors(
       break
     case 'retry-task':
       expect(
-        hasOutcome(
-          outcomes.filter((outcome) => outcome.target === 'healthy'),
-          (result) => same(object(result)?.attempt, 2),
-        ) &&
+        hasOutcome(healthy, (result) => same(object(result)?.attempt, 2)) &&
           task?.state === 'pending' &&
           same(task.max_attempts, 2) &&
           run?.state === 'failed',
@@ -2856,10 +2845,7 @@ function healthyWinErrors(
       break
     case 'cancel-task':
       expect(
-        hasOutcome(
-          outcomes.filter((outcome) => outcome.target === 'healthy'),
-          (result) => result === true,
-        ) &&
+        hasOutcome(healthy, (result) => result === true) &&
           task?.state === 'cancelled' &&
           run?.state === 'cancelled',
         'trigger task was not cancelled',
@@ -2867,10 +2853,7 @@ function healthyWinErrors(
       break
     case 'expire-lease-now':
       expect(
-        hasOutcome(
-          outcomes.filter((outcome) => outcome.target === 'healthy'),
-          (result) => result === true,
-        ) && same(run?.claim_expires_at_ms, NOW),
+        hasOutcome(healthy, (result) => result === true) && same(run?.claim_expires_at_ms, NOW),
         'trigger lease was not expired to database now',
       )
       break
