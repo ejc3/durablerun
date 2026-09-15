@@ -1,4 +1,10 @@
-import type { SqlExecutor, SqlRow, SqlStatement } from '@durablerun/core'
+import type {
+  ClaimedRun,
+  SchedulerStore,
+  SqlExecutor,
+  SqlRow,
+  SqlStatement,
+} from '@durablerun/core'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 
 /** Run one raw statement in read mode and return its first row. */
@@ -38,4 +44,72 @@ export async function withFixture<T>(
   }
   await fixture.close()
   return result
+}
+
+/** Claim exactly one run from `queue`, failing the scenario when nothing is claimable. */
+export async function claimOne(
+  store: SchedulerStore,
+  queue: string,
+  token: string,
+  leaseSeconds = 60,
+): Promise<ClaimedRun> {
+  const [run] = await store.claim(queue, token, { leaseSeconds, limit: 1 })
+  if (!run) throw new Error(`expected a claimable run for ${token}`)
+  return run
+}
+
+/** Claim exactly one run and activate it, failing the scenario when either step does nothing. */
+export async function claimActivated(
+  store: SchedulerStore,
+  queue: string,
+  token: string,
+  leaseSeconds = 60,
+): Promise<ClaimedRun> {
+  const run = await claimOne(store, queue, token, leaseSeconds)
+  const activated = await store.activate(queue, run.runId, run.claimToken, run.claimGen)
+  if (!activated) throw new Error(`expected to activate the run claimed by ${token}`)
+  return activated
+}
+
+/** The task, run, and claim token that every owner-bound call passes together. */
+export type OwnedRun = Pick<ClaimedRun, 'taskId' | 'runId' | 'claimToken'>
+
+/** awaitEvent for a run's own task, run, and claim token. */
+export function awaitOwned(
+  store: SchedulerStore,
+  queue: string,
+  run: OwnedRun,
+  stepName: string,
+  eventName: string,
+  timeoutSeconds: number | null,
+) {
+  return store.awaitEvent(
+    queue,
+    run.taskId,
+    run.runId,
+    run.claimToken,
+    stepName,
+    eventName,
+    timeoutSeconds,
+  )
+}
+
+/** setCheckpoint for a run's own task, run, and claim token. */
+export function checkpointOwned(
+  store: SchedulerStore,
+  queue: string,
+  run: OwnedRun,
+  checkpointName: string,
+  stateJson: string,
+  extendLeaseSeconds: number,
+) {
+  return store.setCheckpoint(
+    queue,
+    run.taskId,
+    run.runId,
+    run.claimToken,
+    checkpointName,
+    stateJson,
+    extendLeaseSeconds,
+  )
 }

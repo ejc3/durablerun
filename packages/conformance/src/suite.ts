@@ -23,7 +23,14 @@ import {
   interposeAfterBatch,
 } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
-import { readOne, withFixture } from './scenario.js'
+import {
+  awaitOwned,
+  checkpointOwned,
+  claimActivated,
+  claimOne,
+  readOne,
+  withFixture,
+} from './scenario.js'
 
 const Q = 'q'
 
@@ -78,52 +85,6 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     afterEach(async () => {
       await f.close()
     })
-
-    type OwnedRun = Pick<ClaimedRun, 'taskId' | 'runId' | 'claimToken'>
-
-    /** awaitEvent on the default fixture for a run's own task, run, and claim token. */
-    function awaitOwned(
-      run: OwnedRun,
-      stepName: string,
-      eventName: string,
-      timeoutSeconds: number | null,
-    ) {
-      return f.store.awaitEvent(
-        Q,
-        run.taskId,
-        run.runId,
-        run.claimToken,
-        stepName,
-        eventName,
-        timeoutSeconds,
-      )
-    }
-
-    /** setCheckpoint on the default fixture for a run's own task, run, and claim token. */
-    function checkpointOwned(
-      run: OwnedRun,
-      checkpointName: string,
-      stateJson: string,
-      extendLeaseSeconds: number,
-    ) {
-      return f.store.setCheckpoint(
-        Q,
-        run.taskId,
-        run.runId,
-        run.claimToken,
-        checkpointName,
-        stateJson,
-        extendLeaseSeconds,
-      )
-    }
-
-    /** Claim exactly one run from the default fixture's queue. */
-    async function claimOne(token: string): Promise<ClaimedRun> {
-      const claimed = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
-      const run = claimed[0]
-      if (!run) throw new Error('expected a claimable run')
-      return run
-    }
 
     describe('spawn', () => {
       it('creates a task with an initial pending run', async () => {
@@ -494,11 +455,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const spawned = await f.store.spawn(Q, 'corrupt-receipt-retry', '{}', {
           retryStrategy: { kind: 'fixed', baseSeconds: 1 },
         })
-        const [run] = await f.store.claim(Q, 'corrupt-receipt-retry-token', {
-          leaseSeconds: 60,
-          limit: 1,
-        })
-        if (!run) throw new Error('expected a claimable run')
+        const run = await claimOne(f.store, Q, 'corrupt-receipt-retry-token')
         await f.raw.batch('corrupt-receipt-retry', [
           {
             sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
@@ -533,11 +490,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const spawned = await f.store.spawn(Q, 'corrupt-receipt-headers', '{}', {
           headers: { trace: 'valid' },
         })
-        const [run] = await f.store.claim(Q, 'corrupt-receipt-headers-token', {
-          leaseSeconds: 60,
-          limit: 1,
-        })
-        if (!run) throw new Error('expected a claimable run')
+        const run = await claimOne(f.store, Q, 'corrupt-receipt-headers-token')
         await f.raw.batch('corrupt-receipt-headers', [
           {
             sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
@@ -859,7 +812,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('passes exactly once per claim generation and returns the worker payload', async () => {
         await f.store.spawn(Q, 'job', '{"k":1}')
-        const run = await claimOne('tick-1')
+        const run = await claimOne(f.store, Q, 'tick-1')
         const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         expect(activated).not.toBeNull()
         // The worker learns its run from activation — launches carry only ids.
@@ -873,7 +826,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const spawned = await f.store.spawn(Q, 'corrupt-before-activate', '{}', {
           retryStrategy: { kind: 'fixed', baseSeconds: 1 },
         })
-        const run = await claimOne('tick-corrupt-before-activate')
+        const run = await claimOne(f.store, Q, 'tick-corrupt-before-activate')
         await f.raw.batch('corrupt-before-activate', [
           {
             sql: `UPDATE tasks SET retry_strategy = ? WHERE task_id = ?`,
@@ -906,7 +859,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const spawned = await f.store.spawn(Q, 'corrupt-headers-before-activate', '{}', {
           headers: { trace: 'valid' },
         })
-        const run = await claimOne('tick-corrupt-headers-before-activate')
+        const run = await claimOne(f.store, Q, 'tick-corrupt-headers-before-activate')
         await f.raw.batch('corrupt-headers-before-activate', [
           {
             sql: `UPDATE tasks SET headers = ? WHERE task_id = ?`,
@@ -933,10 +886,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // old claim's token and generation once a re-claim has minted a new one.
       it('rejects stale tokens and stale generations after a re-claim', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const first = await claimOne('tick-1')
-        expect(
-          await f.store.activate(Q, first.runId, first.claimToken, first.claimGen),
-        ).not.toBeNull()
+        const first = await claimActivated(f.store, Q, 'tick-1')
 
         // Emulate a sleep wake by hand: back to claimable.
         await f.raw.batch('t', [
@@ -947,7 +897,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
 
-        const second = await claimOne('tick-2')
+        const second = await claimOne(f.store, Q, 'tick-2')
         expect(second.runId).toBe(first.runId)
         expect(second.claimGen).toBe(2)
         // The one-shot-latch regression: the OLD generation must fail, the
@@ -960,7 +910,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('re-extends the lease at activation (late launch delivery)', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1')
+        const run = await claimOne(f.store, Q, 'tick-1')
         // Lease was stamped at claim: expires at 1_000_000 + 60s.
         await f.admin.setFakeNowEpochMs(1_040_000)
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
@@ -972,8 +922,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('stamps first_started_at_ms on the task exactly once', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'tick-1')
         const row = await readOne(
           f.raw,
           `SELECT first_started_at_ms FROM tasks WHERE task_id = ?`,
@@ -984,7 +933,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('leaves a claimed run unchanged when its stored lease is zero', async () => {
         const spawned = await f.store.spawn(Q, 'zero-lease', '{}')
-        const run = await claimOne('tick-zero-lease')
+        const run = await claimOne(f.store, Q, 'tick-zero-lease')
         await f.raw.batch('corrupt-zero-lease', [
           {
             sql: `UPDATE runs SET lease_ms = 0 WHERE run_id = ?`,
@@ -1007,7 +956,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('does not activate a claim whose relaunch counter became invalid', async () => {
         const spawned = await f.store.spawn(Q, 'invalid-relaunch-at-activation', '{}')
-        const run = await claimOne('tick-invalid-relaunch')
+        const run = await claimOne(f.store, Q, 'tick-invalid-relaunch')
         await f.raw.batch('corrupt-relaunch-before-activation', [
           {
             sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
@@ -1025,7 +974,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('does not activate a claim whose live run is not the next accounted ordinal', async () => {
         const spawned = await f.store.spawn(Q, 'invalid-accounting-at-activation', '{}')
-        const run = await claimOne('tick-invalid-accounting')
+        const run = await claimOne(f.store, Q, 'tick-invalid-accounting')
         await f.raw.batch('corrupt-accounting-before-activation', [
           {
             sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
@@ -1045,9 +994,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     describe('heartbeat', () => {
       it('extends a held lease and reports remaining time', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const [run] = await f.store.claim(Q, 'tick-1', { leaseSeconds: 60, limit: 1 })
-        expect(run).toBeDefined()
-        if (!run) return
+        const run = await claimOne(f.store, Q, 'tick-1')
         const lease = await f.store.heartbeat(Q, run.runId, run.claimToken, 120)
         expect(lease.held).toBe(true)
         expect(lease.remainingMs).toBe(120_000)
@@ -1056,11 +1003,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // fenceTwin('Heartbeat') — a stale token never extends a lease.
       it('reports lease lost for a stale token — the AB002 signal', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const [run] = await f.store.claim(Q, 'tick-1', { leaseSeconds: 60, limit: 1 })
-        // A bare `if (!run) return` would make this test pass VACUOUSLY if
-        // claim ever stopped returning the run — assert the precondition.
-        expect(run).toBeDefined()
-        if (!run) return
+        const run = await claimOne(f.store, Q, 'tick-1')
         expect(await f.store.heartbeat(Q, run.runId, 'stale-token', 60)).toEqual({
           held: false,
           remainingMs: 0,
@@ -1071,7 +1014,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     describe('sweep classification', () => {
       it('reopens a lost launch without consuming an attempt', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1') // claimed, never activated
+        const run = await claimOne(f.store, Q, 'tick-1') // claimed, never activated
         await f.admin.setFakeNowEpochMs(1_100_000) // lease (60s) long expired
         const swept = await f.store.sweep(Q, 10)
         expect(swept).toEqual([
@@ -1101,7 +1044,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(task).toMatchObject({ attempts: 0, infra_retries: 0 })
         // The stale generation is dead: re-claim gets gen 2, old gen fails.
         await f.admin.setFakeNowEpochMs(1_200_000)
-        const again = await claimOne('tick-2')
+        const again = await claimOne(f.store, Q, 'tick-2')
         expect(again.claimGen).toBe(2)
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).toBeNull()
       })
@@ -1111,7 +1054,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         let now = 1_000_000
         // Default cap is 5: burn exactly cap reopens, then the terminal one.
         for (let i = 0; i < 5; i++) {
-          await claimOne(`tick-${i}`)
+          await claimOne(f.store, Q, `tick-${i}`)
           now += 200_000
           await f.admin.setFakeNowEpochMs(now)
           const swept = await f.store.sweep(Q, 10)
@@ -1119,7 +1062,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           now += 400_000 // past the relaunch backoff
           await f.admin.setFakeNowEpochMs(now)
         }
-        const last = await claimOne('tick-final')
+        const last = await claimOne(f.store, Q, 'tick-final')
         await f.admin.setFakeNowEpochMs(now + 200_000)
         const swept = await f.store.sweep(Q, 10)
         expect(swept).toEqual([
@@ -1133,8 +1076,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('classifies a died-mid-run as claim-timeout: successor on infra budget', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1')
-        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        const run = await claimActivated(f.store, Q, 'tick-1')
         // Park an event wake to prove successors carry it (§3.8.2).
         await f.raw.batch('t', [
           {
@@ -1175,7 +1117,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(task).toMatchObject({ attempts: 0, infra_retries: 1 })
         // Claiming the successor never touches attempts (user failures only).
         await f.admin.setFakeNowEpochMs(1_200_000)
-        const successor = await claimOne('tick-2')
+        const successor = await claimOne(f.store, Q, 'tick-2')
         expect(successor.attempt).toBe(2)
         expect(successor.infraRetries).toBe(1)
         const after = await readOne(f.raw, `SELECT attempts FROM tasks WHERE task_id = ?`, [
@@ -1188,7 +1130,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         async function observeTerminalTimeout(corruptRelaunch: boolean, nowEpochMs: number) {
           const label = corruptRelaunch ? 'corrupt-relaunch' : 'normal'
           const spawned = await f.store.spawn(Q, `terminal-timeout-${label}-aggregate`, '{}')
-          const run = await claimOne(`tick-terminal-timeout-${label}-aggregate`)
+          const run = await claimOne(f.store, Q, `tick-terminal-timeout-${label}-aggregate`)
           const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
           await f.raw.batch(`terminalize-timeout-${label}-aggregate`, [
             {
@@ -1303,7 +1245,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('quiesces a relaunch-cap run under a terminal owner without reviving its task', async () => {
         const spawned = await f.store.spawn(Q, 'terminal-relaunch-cap-owner', '{}')
-        const run = await claimOne('tick-terminal-relaunch-cap-owner')
+        const run = await claimOne(f.store, Q, 'tick-terminal-relaunch-cap-owner')
         await f.raw.batch('terminalize-relaunch-cap-owner', [
           {
             sql: `UPDATE tasks
@@ -1348,7 +1290,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('rechecks a terminal relaunch-cap generation after the advisory scan', async () => {
         const spawned = await f.store.spawn(Q, 'terminal-relaunch-cap-generation-race', '{}')
-        const run = await claimOne('tick-terminal-relaunch-cap-generation-race')
+        const run = await claimOne(f.store, Q, 'tick-terminal-relaunch-cap-generation-race')
         await f.raw.batch('terminalize-relaunch-cap-generation-race', [
           {
             sql: `UPDATE tasks
@@ -1387,8 +1329,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('derives the timeout successor attempt from the fenced run, not the advisory scan', async () => {
         const spawned = await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1')
-        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        const run = await claimActivated(f.store, Q, 'tick-1')
         await f.admin.setFakeNowEpochMs(1_100_000)
 
         const staleScan: SqlExecutor = {
@@ -1454,7 +1395,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       async function sweepAfterAccountingCorruption(activated: boolean) {
         const classification = activated ? 'claim-timeout' : 'lost-launch'
         const spawned = await f.store.spawn(Q, `${classification}-cas-recheck`, '{}')
-        const run = await claimOne(`tick-${classification}-cas-recheck`)
+        const run = await claimOne(f.store, Q, `tick-${classification}-cas-recheck`)
         if (activated) {
           expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
         }
@@ -1505,8 +1446,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('rechecks a corrupt stored attempt after discovery without partially sweeping the expired claim', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1')
-        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        const run = await claimActivated(f.store, Q, 'tick-1')
         await f.admin.setFakeNowEpochMs(1_100_000)
         let injected = false
         let afterCorruption: unknown
@@ -1534,8 +1474,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('leaves an expired claim unchanged when its ordinal exceeds the protocol bound', async () => {
         const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         const spawned = await f.store.spawn(Q, 'overflowed-run-ordinal', '{}')
-        const run = await claimOne('tick-overflowed-run-ordinal')
-        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        const run = await claimActivated(f.store, Q, 'tick-overflowed-run-ordinal')
         await f.raw.batch('corrupt-run-ordinal', [
           {
             sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
@@ -1561,8 +1500,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         const maxUserAttempts = runOrdinalMaximum - INFRA_RETRY_CAP
         await f.store.spawn(Q, 'max-run-ordinal', '{}', { maxAttempts: maxUserAttempts })
-        const run = await claimOne('tick-max-run-ordinal')
-        expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
+        const run = await claimActivated(f.store, Q, 'tick-max-run-ordinal')
         await f.raw.batch('seed-max-run-ordinal', [
           {
             sql: `UPDATE tasks
@@ -1585,8 +1523,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('fails the task terminally at the infra-retry cap, no successor', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'tick-1')
         await f.raw.batch('t', [
           {
             sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
@@ -1615,8 +1552,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('a swept zombie learns lease-lost on its next heartbeat', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('tick-1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'tick-1')
         await f.admin.setFakeNowEpochMs(1_100_000)
         await f.store.sweep(Q, 10)
         expect(await f.store.heartbeat(Q, run.runId, run.claimToken, 60)).toEqual({
@@ -1646,9 +1582,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.spawn(Q, 'runaway', '{}', {
           cancellation: { maxDurationSeconds: 100 },
         })
-        const [run] = await f.store.claim(Q, 'tick-1', { leaseSeconds: 600, limit: 1 })
-        if (!run) throw new Error('expected run')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'tick-1', 600)
         await f.admin.setFakeNowEpochMs(1_101_000) // 101s after first start
         const swept = await f.store.sweep(Q, 10)
         expect(swept.map((s) => s.kind)).toEqual(['cancelled'])
@@ -1660,9 +1594,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const spawned = await f.store.spawn(Q, 'deadline', '{}', {
           cancellation: { maxDelaySeconds: 10 },
         })
-        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 600, limit: 1 })
-        if (!run) throw new Error('expected a claim')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'w1', 600)
         await f.raw.batch('t', [
           {
             sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
@@ -1699,9 +1631,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     describe('expireLeaseNow (the advisory write)', () => {
       it('accelerates sweep pickup with a valid token; stale tokens no-op', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const [run] = await f.store.claim(Q, 'tick-1', { leaseSeconds: 600, limit: 1 })
-        if (!run) throw new Error('expected run')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'tick-1', 600)
         expect(await f.store.expireLeaseNow(Q, run.runId, 'wrong-token')).toBe(false)
         expect(await f.store.sweep(Q, 10)).toEqual([]) // lease still healthy
         expect(await f.store.expireLeaseNow(Q, run.runId, run.claimToken)).toBe(true)
@@ -1713,10 +1643,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     describe('transitions: complete / fail / reschedule', () => {
       async function activatedRun(token = 'w1') {
         await f.store.spawn(Q, 'job', '{"p":1}')
-        const run = await claimOne(token)
-        const activated = await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        if (!activated) throw new Error('expected activation')
-        return activated
+        return claimActivated(f.store, Q, token)
       }
 
       it('complete finishes run and task and exposes the result', async () => {
@@ -1789,11 +1716,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('getTaskResult reports every outcome the engine writes', async () => {
         const relaunchCapped = await f.store.spawn(Q, 'job', '{}')
-        const [lostLaunch] = await f.store.claim(Q, 'w-result-relaunch-cap', {
-          leaseSeconds: 60,
-          limit: 1,
-        })
-        if (!lostLaunch) throw new Error('expected claim')
+        const lostLaunch = await claimOne(f.store, Q, 'w-result-relaunch-cap')
         const infraCapped = await activatedRun('w-result-infra-cap')
         await f.raw.batch('seed-result-caps', [
           {
@@ -2217,12 +2140,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     describe('checkpoints', () => {
       async function checkpointWithNewerOwner(checkpointName: string, corruptOwner: boolean) {
         await f.store.spawn(Q, `corrupt-${checkpointName}`, '{}')
-        const [run] = await f.store.claim(Q, `worker-${checkpointName}`, {
-          leaseSeconds: 60,
-          limit: 1,
-        })
-        if (!run) throw new Error('expected claim')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, `worker-${checkpointName}`)
         await f.raw.batch('checkpoint-corrupt-owner:seed', [
           {
             sql: `UPDATE tasks SET attempts = 1 WHERE task_id = ?`,
@@ -2542,7 +2460,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         {
           id: 'checkpoint-write',
           execute: (run: ClaimedRun, checkpointName: string) =>
-            checkpointOwned(run, checkpointName, '{"incoming":true}', 90),
+            checkpointOwned(f.store, Q, run, checkpointName, '{"incoming":true}', 90),
         },
         {
           id: 'suspend',
@@ -2559,11 +2477,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('roundtrips, extends the lease, and sorts by name', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'w1')
         await f.admin.setFakeNowEpochMs(1_010_000)
-        await checkpointOwned(run, 'b-step', '{"b":1}', 90)
-        await checkpointOwned(run, 'a-step', '{"a":1}', 90)
+        await checkpointOwned(f.store, Q, run, 'b-step', '{"b":1}', 90)
+        await checkpointOwned(f.store, Q, run, 'a-step', '{"a":1}', 90)
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, run.attempt)
         expect(checkpoints.map((c) => c.checkpointName)).toEqual(['a-step', 'b-step'])
         expect(checkpoints[0]).toMatchObject({ ownerRunId: run.runId, ownerAttempt: 1 })
@@ -2577,9 +2494,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('an older attempt never overwrites a newer attempt (LWW tiebreak)', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await checkpointOwned(run, 's', '{"v":1}', 60)
+        const run = await claimActivated(f.store, Q, 'w1')
+        await checkpointOwned(f.store, Q, run, 's', '{"v":1}', 60)
         // Simulate a newer attempt having already committed this name.
         await f.raw.batch('t', [
           {
@@ -2598,7 +2514,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         await f.admin.setFakeNowEpochMs(1_010_000)
-        await checkpointOwned(run, 's', '{"v":1}', 60)
+        await checkpointOwned(f.store, Q, run, 's', '{"v":1}', 60)
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, 5)
         expect(checkpoints[0]?.stateJson).toBe('{"v":5}')
         const lease = await readOne(
@@ -2614,8 +2530,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('a stale token writes nothing and throws LeaseLostError', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'w1')
         await expect(
           f.store.setCheckpoint(Q, run.taskId, run.runId, 'stale', 's', '{}', 60),
         ).rejects.toThrow(LeaseLostError)
@@ -2624,8 +2539,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('rejects a fractional stored owner attempt before extending the lease', async () => {
         await f.store.spawn(Q, 'fractional-checkpoint-owner', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'w1')
         const disposition = await executeStorageCorruption(f, {
           table: 'runs',
           runId: run.runId,
@@ -2638,7 +2552,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await requireExpectedFailure(
           { kind: 'behavior', mutation: 'checkpoint-write-rejects-fractional-owner-attempt' },
           /setCheckpoint/,
-          () => checkpointOwned(run, 'fractional-owner', '{}', 60),
+          () => checkpointOwned(f.store, Q, run, 'fractional-owner', '{}', 60),
         )
 
         expect(await snapshot(f, run.taskId)).toEqual(before)
@@ -2648,8 +2562,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('rejects an out-of-range stored owner attempt before extending the lease', async () => {
         const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         await f.store.spawn(Q, 'overflowed-checkpoint-owner', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'w1')
         await f.raw.batch('corrupt-checkpoint-owner-bound', [
           {
             sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
@@ -2661,7 +2574,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await requireExpectedFailure(
           { kind: 'behavior', mutation: 'checkpoint-write-rejects-owner-attempt-overflow' },
           /setCheckpoint/,
-          () => checkpointOwned(run, 'overflowed-owner', '{}', 60),
+          () => checkpointOwned(f.store, Q, run, 'overflowed-owner', '{}', 60),
         )
 
         expect(await snapshot(f, run.taskId)).toEqual(before)
@@ -2679,15 +2592,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         if (!seeded) return
 
         await expect(
-          f.store.setCheckpoint(
-            Q,
-            seeded.run.taskId,
-            seeded.run.runId,
-            seeded.run.claimToken,
-            'corrupt-lww-set',
-            '{"stale":true}',
-            90,
-          ),
+          checkpointOwned(f.store, Q, seeded.run, 'corrupt-lww-set', '{"stale":true}', 90),
         ).rejects.toThrow(/setCheckpoint/)
 
         expect(await snapshot(f, seeded.run.taskId)).toEqual(seeded.before)
@@ -2742,12 +2647,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         for (const operation of checkpointConflictOperations) {
           it(`atomically refuses ${operation.id}/${relation.id} checkpoint ownership`, async () => {
             await f.store.spawn(Q, `invalid-${relation.id}`, '{}')
-            const [run] = await f.store.claim(Q, `worker-${relation.id}`, {
-              leaseSeconds: 60,
-              limit: 1,
-            })
-            if (!run) throw new Error('expected claim')
-            await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            const run = await claimActivated(f.store, Q, `worker-${relation.id}`)
 
             const checkpointName = `invalid-${relation.id}`
             const ownerRunId = `owner-${relation.id}`
@@ -2919,9 +2819,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('visibility filters by owner attempt', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await checkpointOwned(run, 's', '{}', 60)
+        const run = await claimActivated(f.store, Q, 'w1')
+        await checkpointOwned(f.store, Q, run, 's', '{}', 60)
         await f.raw.batch('t', [
           {
             sql: `INSERT INTO runs
@@ -2942,9 +2841,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('does not surface a checkpoint whose owner ordinal is forged', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await checkpointOwned(run, 's', '{}', 60)
+        const run = await claimActivated(f.store, Q, 'w1')
+        await checkpointOwned(f.store, Q, run, 's', '{}', 60)
         await f.raw.batch('forge-checkpoint-owner-attempt', [
           {
             sql: `UPDATE checkpoints SET owner_attempt = owner_attempt + 1
@@ -2962,9 +2860,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('accepts the maximum legal run ordinal in checkpoint ownership', async () => {
         const runOrdinalMaximum = PERSISTED_INTEGER_BOUNDS.runs.attempt.max
         await f.store.spawn(Q, 'job', '{}')
-        const run = await claimOne('w1')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await checkpointOwned(run, 's', '{}', 60)
+        const run = await claimActivated(f.store, Q, 'w1')
+        await checkpointOwned(f.store, Q, run, 's', '{}', 60)
         await f.raw.batch('t', [
           {
             sql: `INSERT INTO runs
@@ -2987,16 +2884,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     describe('events (the TLC-verified emit/await protocol)', () => {
-      async function claimActivate(token: string) {
-        const run = await claimOne(token)
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        return run
-      }
-
       it('await-before-emit parks; the emit wakes it with the stored payload', async () => {
         await f.store.spawn(Q, 'waiter', '{}')
-        const run = await claimActivate('w1')
-        const first = await awaitOwned(run, 's', 'go', null)
+        const run = await claimActivated(f.store, Q, 'w1')
+        const first = await awaitOwned(f.store, Q, run, 's', 'go', null)
         expect(first).toEqual({ emitted: false })
         // Parked, unclaimed, untimed: no wake source.
         expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toHaveLength(0)
@@ -3010,8 +2901,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('emit-before-await returns the payload inline with nothing suspended', async () => {
         await f.store.emitEvent(Q, 'ready', '{"x":2}')
         await f.store.spawn(Q, 'late', '{}')
-        const run = await claimActivate('w1')
-        const outcome = await awaitOwned(run, 's', 'ready', null)
+        const run = await claimActivated(f.store, Q, 'w1')
+        const outcome = await awaitOwned(f.store, Q, run, 's', 'ready', null)
         expect(outcome).toEqual({ emitted: true, payloadJson: '{"x":2}' })
         const row = await readOne(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [run.runId])
         expect(row?.state).toBe('running') // still ours, not parked
@@ -3023,15 +2914,15 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.emitEvent(Q, 'once', '{"v":"first"}')
         await f.store.emitEvent(Q, 'once', '{"v":"second"}')
         await f.store.spawn(Q, 'late', '{}')
-        const run = await claimActivate('w1')
-        const outcome = await awaitOwned(run, 's', 'once', null)
+        const run = await claimActivated(f.store, Q, 'w1')
+        const outcome = await awaitOwned(f.store, Q, run, 's', 'once', null)
         expect(outcome).toEqual({ emitted: true, payloadJson: '{"v":"first"}' })
       })
 
       it('a timed wait that expires claims as the timeout wake and cannot be resurrected', async () => {
         await f.store.spawn(Q, 'timed', '{}')
-        const run = await claimActivate('w1')
-        expect(await awaitOwned(run, 's', 'never', 30)).toEqual({ emitted: false })
+        const run = await claimActivated(f.store, Q, 'w1')
+        expect(await awaitOwned(f.store, Q, run, 's', 'never', 30)).toEqual({ emitted: false })
         await f.admin.setFakeNowEpochMs(1_031_000)
         const [woken] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
         expect(woken?.wake).toEqual({ event: 'never', step: 's', timedOut: true })
@@ -3046,8 +2937,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('no resurrection: cancelling a waiting task removes its wait; emit wakes nothing', async () => {
         const spawned = await f.store.spawn(Q, 'doomed', '{}')
-        const run = await claimActivate('w1')
-        await awaitOwned(run, 's', 'later', null)
+        const run = await claimActivated(f.store, Q, 'w1')
+        await awaitOwned(f.store, Q, run, 's', 'later', null)
         expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
         await f.store.emitEvent(Q, 'later', '{}')
         expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toHaveLength(0)
@@ -3066,16 +2957,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           async (fx, seed) => {
             await fx.admin.setFakeNowEpochMs(1_000_000)
             await fx.store.spawn(Q, 'racer', '{}')
-            const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-            if (!run) throw new Error('claim')
-            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            const run = await claimActivated(fx.store, Q, 'w1')
             const world = new SimWorld(fx.raw, seed)
             let inline: string | null = null
             world.actor('awaiter', async (simDb) => {
-              const out = await fx
-                .storeOver(simDb)
-                .awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'race', null)
-                .catch(() => null)
+              const out = await awaitOwned(fx.storeOver(simDb), Q, run, 's', 'race', null).catch(
+                () => null,
+              )
               if (out?.emitted) inline = out.payloadJson
             })
             world.actor('emitter', async (simDb) => {
@@ -3104,12 +2992,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         for (let index = 0; index < 12; index++) {
           const queue = `native-event-${index}`
           const spawned = await f.store.spawn(queue, 'racer', '{}')
-          const [run] = await f.store.claim(queue, `native-event-claim-${index}`, {
-            leaseSeconds: 60,
-            limit: 1,
-          })
-          if (!run || run.taskId !== spawned.taskId) throw new Error('expected native race claim')
-          await f.store.activate(queue, run.runId, run.claimToken, run.claimGen)
+          const run = await claimActivated(f.store, queue, `native-event-claim-${index}`)
+          if (run.taskId !== spawned.taskId) throw new Error('expected native race claim')
           races.push({ queue, run })
         }
 
@@ -3129,15 +3013,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const observations = await Promise.all(
           races.map(async ({ queue, run }) => {
             const [awaited] = await Promise.all([
-              f.store.awaitEvent(
-                queue,
-                run.taskId,
-                run.runId,
-                run.claimToken,
-                'step',
-                'event',
-                null,
-              ),
+              awaitOwned(f.store, queue, run, 'step', 'event', null),
               f.store.emitEvent(queue, 'event', '{"race":true}'),
             ])
             const [stored] = await f.raw.batch(
@@ -3179,10 +3055,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           async (fx, seed) => {
             await fx.admin.setFakeNowEpochMs(1_000_000)
             await fx.store.spawn(Q, 'timed', '{}')
-            const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-            if (!run) throw new Error('claim')
-            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-            await fx.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'late', 30)
+            const run = await claimActivated(fx.store, Q, 'w1')
+            await awaitOwned(fx.store, Q, run, 's', 'late', 30)
             await fx.admin.setFakeNowEpochMs(1_030_000) // exactly at the deadline
             const world = new SimWorld(fx.raw, seed)
             world.actor('emitter', async (simDb) => {
@@ -3214,10 +3088,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       // awaitEvent registers no wait and parks nothing.
       it('a zombie awaitEvent is fence-refused (lease authority)', async () => {
         await f.store.spawn(Q, 'z', '{}')
-        const run = await claimActivate('w1')
+        const run = await claimActivated(f.store, Q, 'w1')
         await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
         await f.store.sweep(Q, 10) // claim-timeout successor takes over
-        await expect(awaitOwned(run, 's', 'e', null)).rejects.toThrow()
+        await expect(awaitOwned(f.store, Q, run, 's', 'e', null)).rejects.toThrow()
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
     })
@@ -3256,12 +3130,11 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_500_000)
         // ...a running lease expiring at 1_060_000 beats it...
         await f.store.spawn(Q, 'c', '{}', { cancellation: { maxDurationSeconds: 20 } })
-        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-        expect(run?.taskName).toBe('c')
+        const run = await claimOne(f.store, Q, 'w1')
+        expect(run.taskName).toBe('c')
         expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_060_000)
         // ...and activation arms c's max_duration deadline at 1_020_000,
         // which beats them all (the cancel-deadline wake source).
-        if (!run) throw new Error('expected claim')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         expect(await f.store.nextWakeAtEpochMs(Q)).toBe(1_020_000)
         // ...and a SLEEPING run is a wake source too (codex: this leg of the
@@ -3281,9 +3154,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           async (fx, seed) => {
             await fx.admin.setFakeNowEpochMs(1_000_000)
             await fx.store.spawn(Q, 'job', '{}')
-            const [run] = await fx.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-            if (!run) throw new Error('expected claim')
-            await fx.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+            const run = await claimActivated(fx.store, Q, 'w1')
             await fx.admin.setFakeNowEpochMs(1_060_000) // exactly at expiry
             const world = new SimWorld(fx.raw, seed)
             let held: boolean | null = null
@@ -3306,8 +3177,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('a duplicated activation delivery leaves an ownerless activated run that the sweep reclaims', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-        if (!run) throw new Error('expected claim')
+        const run = await claimOne(f.store, Q, 'w1')
         const world = new SimWorld(f.raw, 1)
         world.injectDuplicate({ label: 'activate' })
         let outcome: unknown = 'unset'
@@ -3374,9 +3244,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const spawned = await f.store.spawn(Q, 'job', '{}')
         let now = 1_000_000
         for (let cycle = 0; cycle < 2; cycle++) {
-          const [run] = await f.store.claim(Q, `w${cycle}`, { leaseSeconds: 60, limit: 1 })
-          if (!run) throw new Error('expected claim')
-          await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+          await claimActivated(f.store, Q, `w${cycle}`)
           now += 100_000
           await f.admin.setFakeNowEpochMs(now)
           const swept = await f.store.sweep(Q, 10)
@@ -3384,8 +3252,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           now += 10_000
           await f.admin.setFakeNowEpochMs(now)
         }
-        const [run] = await f.store.claim(Q, 'w-final', { leaseSeconds: 60, limit: 1 })
-        if (!run) throw new Error('expected claim')
+        const run = await claimOne(f.store, Q, 'w-final')
         expect(run.attempt).toBe(3)
         expect(run.infraRetries).toBe(2)
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
@@ -3401,9 +3268,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('expireLeaseNow is advisory: a live heartbeat revives the lease', async () => {
         await f.store.spawn(Q, 'job', '{}')
-        const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 600, limit: 1 })
-        if (!run) throw new Error('expected claim')
-        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const run = await claimActivated(f.store, Q, 'w1', 600)
         expect(await f.store.expireLeaseNow(Q, run.runId, run.claimToken)).toBe(true)
         // The still-alive worker heartbeats before any sweep: revival is the
         // intended §3.9 semantics (the lease is the sole authority).
@@ -3428,9 +3293,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('a stale nonzero activated_gen still classifies a lost launch correctly', async () => {
         const spawned = await f.store.spawn(Q, 'job', '{}')
-        const [gen1] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
-        if (!gen1) throw new Error('expected claim')
-        await f.store.activate(Q, gen1.runId, gen1.claimToken, gen1.claimGen)
+        const gen1 = await claimActivated(f.store, Q, 'w1')
         await f.store.reschedule(Q, gen1.runId, gen1.claimToken, { inSeconds: 0 })
         // Second generation claimed but its launch is lost.
         const [gen2] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
