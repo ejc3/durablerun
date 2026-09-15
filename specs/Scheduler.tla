@@ -1419,6 +1419,19 @@ PayloadAuthority ==
              /\ runState[r] = "unused"
     ]_vars
 
+\* PROPERTY (S3.8.2): every path that creates a successor carries the parked
+\* wake.  A run row that comes into use for a task that already owns runs
+\* copies wake_event and event_payload from the task's top run.
+SuccessorCarriesWake ==
+  [][ \A r \in RunIds :
+        (runState[r] = "unused" /\ runState'[r] # "unused"
+           /\ OwnedRuns(runTask'[r]) # {}) =>
+          LET top == CHOOSE p \in OwnedRuns(runTask'[r]) :
+                       runAttempt[p] = TopOrdinal(runTask'[r]) IN
+            /\ wakeEvent'[r] = wakeEvent[top]
+            /\ runPayload'[r] = runPayload[top]
+    ]_vars
+
 \* PROPERTY (invariant 6, liveness; check with SPECIFICATION SpecFair):
 \* every spawned task eventually reaches a terminal state.  Cap exhaustion
 \* (relaunch or infra) IS terminal failure in this model, and cancellation
