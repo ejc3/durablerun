@@ -1741,6 +1741,40 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(runs[0]?.rows.map((row) => row.state)).toEqual(['running', 'running', 'running'])
       })
 
+      it('a launch deferral refuses a corrupt claim and writes nothing', async () => {
+        const siblingTask = await f.store.spawn(Q, 'sibling', '{}')
+        const sibling = await claimOne(f.store, Q, 'build-sibling')
+        await f.raw.batch('defer-launch-second-live-run', [
+          {
+            sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+                  VALUES ('second-live-run', ?, ?, 2, 'pending', ?, ?)`,
+            args: [Q, siblingTask.taskId, START_MS, START_MS],
+          },
+        ])
+        const driftedTask = await f.store.spawn(Q, 'drifted', '{}')
+        const drifted = await claimOne(f.store, Q, 'build-drifted')
+        await f.raw.batch('defer-launch-accounting-drift', [
+          { sql: `UPDATE tasks SET attempts = 3 WHERE task_id = ?`, args: [driftedTask.taskId] },
+        ])
+        const before = [
+          await snapshot(f, siblingTask.taskId),
+          await snapshot(f, driftedTask.taskId),
+        ]
+        const refusals = []
+        for (const run of [sibling, drifted]) {
+          refusals.push(
+            await deferUnregistered(f.store, Q, run, 15).then(
+              () => 'parked',
+              (error: unknown) => (error instanceof Error ? error.name : String(error)),
+            ),
+          )
+        }
+        expect({
+          refusals,
+          unchanged: [await snapshot(f, siblingTask.taskId), await snapshot(f, driftedTask.taskId)],
+        }).toEqual({ refusals: ['LeaseLostError', 'LeaseLostError'], unchanged: before })
+      })
+
       it('a deferred launch starts no duration clock', async () => {
         const spawned = await f.store.spawn(Q, 'unregistered', '{}', {
           cancellation: { maxDurationSeconds: 100 },
