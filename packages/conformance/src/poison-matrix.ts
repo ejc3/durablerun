@@ -792,6 +792,11 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     statements: [taskState('cancelled'), runState('cancelled')],
   },
   {
+    id: 'task-outcome/failed-with-payload-without-reason',
+    covers: ['task-outcome/payload-on-other-state', 'task-outcome/failure-without-reason'],
+    statements: [taskState('failed'), runState('failed'), completedPayload()],
+  },
+  {
     id: 'task-outcome/reason-on-other-state',
     covers: ['task-outcome/reason-on-other-state'],
     statements: [
