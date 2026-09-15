@@ -54,6 +54,8 @@
 \*                            wake_event/event_payload forward (S3.8.2)
 \*   CancelSweep          <-> cancelTransition('sweep:cancel'): deadline-due
 \*                            task + its live runs -> cancelled, waits gone
+\*   RetryTask            <-> 'retry-task' (SPEC-FIRST): revive a failed task
+\*                            in place with a new run (Absurd retry_task)
 \*   CancelExplicit       <-> cancelTransition('cancel-task'): same shape,
 \*                            NO deadline guard (the explicit API)
 \*   EmitEvent            <-> 'emit-event' (SPEC-FIRST, modeled ahead
@@ -314,7 +316,9 @@ CONSTANTS
   Tasks,          \* task ids (model values)
   MaxRuns,        \* run-row pool; successors allocate from it
   MaxTime,        \* time horizon (bounded nat clock)
-  MaxAttempts,    \* user-failure budget per task (task.max_attempts)
+  MaxAttempts,    \* initial user-failure budget per task (task.max_attempts)
+  MaxRetries,     \* retryTask revivals per task.  ARTIFICIAL, like MaxHops:
+                  \* an operator may revive a task any number of times.
   InfraRetryCap,  \* cap on claim-timeout successors per task ("own generous
                   \* cap" in DESIGN S3.8.2 -- size unspecified there)
   RelaunchCap,    \* cap on lost-launch reopens per run row (S3.1 step 1)
@@ -331,6 +335,7 @@ CONSTANTS
 
 ASSUME
   /\ MaxAttempts \in Nat \ {0}
+  /\ MaxRetries \in Nat
   /\ InfraRetryCap \in Nat
   /\ RelaunchCap \in Nat
   /\ MaxHops \in Nat
@@ -344,7 +349,7 @@ ASSUME
   \* Pool sizing so successor creation is never blocked (else liveness would
   \* fail on an artifact): per task, rows = 1 initial + at most
   \* (MaxAttempts-1) user-retry successors + InfraRetryCap infra successors.
-  /\ MaxRuns >= Cardinality(Tasks) * (MaxAttempts + InfraRetryCap)
+  /\ MaxRuns >= Cardinality(Tasks) * (MaxAttempts + 2 * MaxRetries + InfraRetryCap)
 
 RunIds        == 1..MaxRuns
 NoRun         == 0
@@ -352,7 +357,7 @@ NoRun         == 0
 \* re-claims + at most RelaunchCap lost-launch re-claims.  TypeOK verifies.
 GenBound      == 1 + MaxHops + RelaunchCap
 \* run.attempt ordinal: starts at 1, +1 per successor (user or infra).
-OrdinalBound  == MaxAttempts + InfraRetryCap
+OrdinalBound  == MaxAttempts + 2 * MaxRetries + InfraRetryCap
 CtxIdBound    == MaxRuns * GenBound
 
 \* One value past the horizon: "never" (no deadline / wait forever).  now
@@ -379,7 +384,7 @@ ActionNames ==
    "FailRunWithRetry", "FailRunTerminal", "Sleep", "Chain",
    "SweepLostLaunch", "SweepRelaunchExhausted", "SweepClaimTimeout",
    "SweepInfraExhausted", "CancelSweep", "CancelExplicit",
-   "Emit", "AwaitHit", "AwaitMiss", "Crash", "TimeAdvance", "Defer"}
+   "Emit", "AwaitHit", "AwaitMiss", "Crash", "TimeAdvance", "Defer", "RetryTask"}
 
 WorkerWrites == {"Heartbeat", "Complete", "FailRunWithRetry",
                  "FailRunTerminal", "Sleep", "Chain",
@@ -399,6 +404,8 @@ VARIABLES
   cancelAt,       \* tasks.cancel_at_ms: armed deadline, or Inf (SQL NULL)
   firstStarted,   \* tasks.first_started_at_ms: one-shot latch, Inf = NULL
   dispatched,     \* ghost: a worker ran this task's code, or may have (a crash)
+  maxAttempts,    \* tasks.max_attempts: the user-failure budget; retryTask raises it
+  retries,        \* ghost: retryTask revivals consumed (MaxRetries)
   \* -- per run row (runs table); pool-allocated by nextRun ---------------
   runState,
   runTask,
@@ -431,7 +438,7 @@ VARIABLES
   lastCtx         \* [run, gen] of the acting context, for LeaseAuthority
 
 vars == <<now, taskState, attempts, infraRetries, hops, policy, cancelAt,
-          firstStarted, dispatched, runState, runTask, runAttempt, claimGen,
+          firstStarted, dispatched, maxAttempts, retries, runState, runTask, runAttempt, claimGen,
           activatedGen, relaunchCount, leaseDeadline, availableAt,
           wakeEvent, runPayload, nextRun, waitEv, waitAt, eventState,
           tokRuns, channel, contexts, nextCtx, lastAction, lastCtx>>
@@ -484,6 +491,8 @@ Init ==
   /\ cancelAt      = [t \in Tasks |-> Inf]
   /\ firstStarted  = [t \in Tasks |-> Inf]
   /\ dispatched    = [t \in Tasks |-> FALSE]
+  /\ maxAttempts   = [t \in Tasks |-> MaxAttempts]
+  /\ retries       = [t \in Tasks |-> 0]
   /\ runState      = [r \in RunIds |-> "unused"]
   /\ runTask       = [r \in RunIds |-> CHOOSE t \in Tasks : TRUE]
   /\ runAttempt    = [r \in RunIds |-> 0]
@@ -525,7 +534,7 @@ Spawn(t, pol) ==
   /\ cancelAt' = [cancelAt EXCEPT ![t] =
                     IF pol \in {"delay", "both"} THEN Clip(now + CancelLen)
                     ELSE Inf]
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, firstStarted, claimGen,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, hops, firstStarted, claimGen,
                  activatedGen, relaunchCount, leaseDeadline, wakeEvent,
                  runPayload, waitEv, waitAt, eventState, tokRuns, channel,
                  contexts, nextCtx>>
@@ -563,7 +572,7 @@ ClaimCore(r) ==
   /\ LET timedOut == waitEv[r] # NoEvent /\ waitAt[r] <= now IN
        /\ waitEv' = [waitEv EXCEPT ![r] = IF timedOut THEN NoEvent ELSE @]
        /\ waitAt' = [waitAt EXCEPT ![r] = IF timedOut THEN 0 ELSE @]
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, activatedGen,
                  relaunchCount, availableAt, wakeEvent, runPayload,
                  eventState, nextRun, contexts, nextCtx>>
@@ -616,7 +625,7 @@ DuplicateClaim(r) ==
 Drop(m) ==
   /\ m \in channel
   /\ channel' = channel \ {m}
-  /\ UNCHANGED <<dispatched, now, taskState, attempts, infraRetries, hops, policy,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
@@ -654,7 +663,7 @@ Activate(m) ==
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![m.run] = Clip(now + LeaseLen)]
   /\ contexts' = contexts \cup {[id |-> nextCtx, run |-> m.run, gen |-> m.gen]}
   /\ nextCtx' = nextCtx + 1
-  /\ UNCHANGED <<dispatched, now, taskState, attempts, infraRetries, hops, policy,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, taskState, attempts, infraRetries, hops, policy,
                  runState, runTask, runAttempt, claimGen, relaunchCount,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
                  eventState, tokRuns, nextRun, channel>>
@@ -682,7 +691,7 @@ DeferLaunch(m) ==
        /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ tokRuns' = tokRuns \ {m.run}   \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
                  waitEv, waitAt, eventState, nextRun, channel, contexts,
@@ -698,7 +707,7 @@ Heartbeat(c) ==
   /\ Fenced(c)
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![c.run] = Clip(now + LeaseLen)]
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+  /\ UNCHANGED <<maxAttempts, retries, now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, availableAt,
                  wakeEvent, runPayload, waitEv, waitAt, eventState, tokRuns,
@@ -718,7 +727,7 @@ CompleteRun(c) ==
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
+  /\ UNCHANGED <<maxAttempts, retries, now, attempts, infraRetries, hops, policy, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
                  waitAt, eventState, nextRun, channel, nextCtx>>
@@ -735,7 +744,7 @@ FailRunWithRetry(c) ==
   /\ Fenced(c)
   /\ LET t  == runTask[c.run]
          r2 == nextRun IN
-       /\ attempts[t] + 1 < MaxAttempts   \* budget remains after this failure
+       /\ attempts[t] + 1 < maxAttempts[t]   \* budget remains after this failure
        /\ nextRun <= MaxRuns
        /\ runState'    = [runState EXCEPT ![c.run] = "failed", ![r2] = "pending"]
        /\ runTask'     = [runTask EXCEPT ![r2] = t]
@@ -749,7 +758,7 @@ FailRunWithRetry(c) ==
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
+  /\ UNCHANGED <<maxAttempts, retries, now, infraRetries, hops, policy, cancelAt, firstStarted,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  waitEv, waitAt, eventState, channel, nextCtx>>
   /\ lastAction' = "FailRunWithRetry" /\ lastCtx' = CtxKey(c)
@@ -760,14 +769,14 @@ FailRunTerminal(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ LET t == runTask[c.run] IN
-       /\ attempts[t] + 1 >= MaxAttempts
+       /\ attempts[t] + 1 >= maxAttempts[t]
        /\ runState'  = [runState EXCEPT ![c.run] = "failed"]
        /\ taskState' = [taskState EXCEPT ![t] = "failed"]
        /\ attempts'  = [attempts EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
+  /\ UNCHANGED <<maxAttempts, retries, now, infraRetries, hops, policy, cancelAt, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
                  waitAt, eventState, nextRun, channel, nextCtx>>
@@ -797,7 +806,7 @@ SleepSuspend(c) ==
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
                  waitEv, waitAt, eventState, nextRun, channel, nextCtx>>
@@ -819,7 +828,7 @@ VoluntaryChain(c) ==
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
                  waitEv, waitAt, eventState, nextRun, channel, nextCtx>>
@@ -836,7 +845,7 @@ AwaitEventHit(c, e) ==
   /\ Fenced(c)
   /\ eventState[e] # NoPayload
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+  /\ UNCHANGED <<maxAttempts, retries, now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
@@ -869,7 +878,7 @@ AwaitRegister(c, e, tAt) ==
     /\ contexts' = contexts \ {c}
     /\ tokRuns' = tokRuns \ {c.run}   \* suspension carries no live token
     /\ MarkDispatched(c)
-    /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
+    /\ UNCHANGED <<maxAttempts, retries, now, attempts, infraRetries, policy, cancelAt,
                    firstStarted, runTask, runAttempt, claimGen,
                    activatedGen, relaunchCount, leaseDeadline, eventState,
                    nextRun, channel, nextCtx>>
@@ -922,7 +931,7 @@ EmitEvent(e, p) ==
        /\ taskState'   = [t \in Tasks |->
                             IF \E r \in W : runTask[r] = t THEN "pending"
                             ELSE taskState[t]]
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, tokRuns, nextRun,
                  channel, contexts, nextCtx>>
@@ -951,7 +960,7 @@ CancelCore(t) ==
     /\ waitEv' = [r \in RunIds |-> IF r \in dead THEN NoEvent ELSE waitEv[r]]
     /\ waitAt' = [r \in RunIds |-> IF r \in dead THEN 0 ELSE waitAt[r]]
     /\ tokRuns' = tokRuns \ dead      \* impl nulls claimed_by on cancel
-    /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, firstStarted,
+    /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, hops, policy, firstStarted,
                    runTask, runAttempt, claimGen, activatedGen,
                    relaunchCount, wakeEvent, runPayload, eventState,
                    nextRun, channel, contexts, nextCtx>>
@@ -974,6 +983,36 @@ CancelExplicit(t) ==
   /\ lastAction' = "CancelExplicit" /\ lastCtx' = NoCtx
 
 -----------------------------------------------------------------------------
+\* RetryTask <-> 'retry-task' (SPEC-FIRST, Absurd's retry_task): an operator
+\* revives a FAILED task in place.  A new run row with the next ordinal after
+\* every run the task has becomes due now, the task returns to pending, and its
+\* user-failure budget grows by one, as Absurd's default does.  Attempts, infra
+\* retries, hops, the first-start latch, and the cancellation deadline are
+\* untouched, and every failed run stays failed.  This is the one exception to
+\* terminal stability: a failed TASK may leave "failed" here and nowhere else.
+\* An operator action, so unfair.  Bounded by MaxRetries (header).
+RetryTask(t) ==
+  /\ taskState[t] = "failed"
+  /\ retries[t] < MaxRetries
+  /\ nextRun <= MaxRuns
+  /\ LET owned == {r \in RunIds : runTask[r] = t /\ runState[r] # "unused"}
+         top   == CHOOSE o \in {runAttempt[r] : r \in owned} :
+                    \A r \in owned : runAttempt[r] <= o
+         r2    == nextRun IN
+       /\ runState'    = [runState EXCEPT ![r2] = "pending"]
+       /\ runTask'     = [runTask EXCEPT ![r2] = t]
+       /\ runAttempt'  = [runAttempt EXCEPT ![r2] = top + 1]
+       /\ availableAt' = [availableAt EXCEPT ![r2] = now]
+       /\ nextRun' = nextRun + 1
+  /\ taskState'   = [taskState EXCEPT ![t] = "pending"]
+  /\ maxAttempts' = [maxAttempts EXCEPT ![t] = @ + 1]
+  /\ retries'     = [retries EXCEPT ![t] = @ + 1]
+  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+                 firstStarted, dispatched, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, wakeEvent, runPayload, waitEv,
+                 waitAt, eventState, tokRuns, channel, contexts, nextCtx>>
+  /\ lastAction' = "RetryTask" /\ lastCtx' = NoCtx
+
 LeaseExpired(r) == runState[r] = "running" /\ leaseDeadline[r] <= now
 
 \* SweepLostLaunch <-> sweep(), lost-launch branch (S3.1 step 1): lease
@@ -990,7 +1029,7 @@ SweepLostLaunch(r) ==
   /\ relaunchCount' = [relaunchCount EXCEPT ![r] = @ + 1]
   /\ taskState'     = [taskState EXCEPT ![runTask[r]] = "pending"]
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on reopen
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  leaseDeadline, wakeEvent, runPayload, waitEv, waitAt,
                  eventState, nextRun, channel, contexts, nextCtx>>
@@ -1007,7 +1046,7 @@ SweepRelaunchExhausted(r) ==
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, availableAt, wakeEvent,
                  runPayload, waitEv, waitAt, eventState, nextRun, channel,
@@ -1039,7 +1078,7 @@ SweepClaimTimeout(r) ==
        /\ taskState'    = [taskState EXCEPT ![t] = "pending"]
        /\ nextRun' = nextRun + 1
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<dispatched, now, attempts, hops, policy, cancelAt, firstStarted,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, hops, policy, cancelAt, firstStarted,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  waitEv, waitAt, eventState, channel, contexts, nextCtx>>
   /\ lastAction' = "SweepClaimTimeout" /\ lastCtx' = NoCtx
@@ -1053,7 +1092,7 @@ SweepInfraExhausted(r) ==
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, availableAt, wakeEvent,
                  runPayload, waitEv, waitAt, eventState, nextRun, channel,
@@ -1066,7 +1105,7 @@ WorkerCrash(c) ==
   /\ c \in contexts
   /\ contexts' = contexts \ {c}
   /\ MarkDispatched(c)
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+  /\ UNCHANGED <<maxAttempts, retries, now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
@@ -1076,7 +1115,7 @@ WorkerCrash(c) ==
 TimeAdvance ==
   /\ now < MaxTime
   /\ now' = now + 1
-  /\ UNCHANGED <<dispatched, taskState, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<maxAttempts, retries, dispatched, taskState, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runState, runTask, runAttempt, claimGen,
                  activatedGen, relaunchCount, leaseDeadline, availableAt,
                  wakeEvent, runPayload, waitEv, waitAt, eventState, tokRuns,
@@ -1086,7 +1125,7 @@ TimeAdvance ==
 -----------------------------------------------------------------------------
 Next ==
   \/ \E t \in Tasks, pol \in Policies : Spawn(t, pol)
-  \/ \E t \in Tasks : CancelSweep(t) \/ CancelExplicit(t)
+  \/ \E t \in Tasks : CancelSweep(t) \/ CancelExplicit(t) \/ RetryTask(t)
   \/ \E r \in RunIds : Claim(r) \/ DuplicateClaim(r) \/ SweepLostLaunch(r)
                        \/ SweepRelaunchExhausted(r) \/ SweepClaimTimeout(r)
                        \/ SweepInfraExhausted(r)
@@ -1132,13 +1171,15 @@ SpecFair == Spec /\ Fairness
 TypeOK ==
   /\ now \in 0..MaxTime
   /\ taskState \in [Tasks -> RunStates]
-  /\ attempts \in [Tasks -> 0..MaxAttempts]
+  /\ attempts \in [Tasks -> 0..(MaxAttempts + MaxRetries)]
   /\ infraRetries \in [Tasks -> 0..InfraRetryCap]
   /\ hops \in [Tasks -> 0..MaxHops]
   /\ policy \in [Tasks -> Policies]
   /\ cancelAt \in [Tasks -> 0..Inf]
   /\ firstStarted \in [Tasks -> 0..Inf]
   /\ dispatched \in [Tasks -> BOOLEAN]
+  /\ maxAttempts \in [Tasks -> MaxAttempts..(MaxAttempts + MaxRetries)]
+  /\ retries \in [Tasks -> 0..MaxRetries]
   /\ runState \in [RunIds -> RunStates]
   /\ runTask \in [RunIds -> Tasks]
   /\ runAttempt \in [RunIds -> 0..OrdinalBound]
@@ -1176,6 +1217,27 @@ StartLatchMeansDispatched ==
     firstStarted[t] # Inf =>
       \/ dispatched[t]
       \/ \E c \in contexts : runTask[c.run] = t
+
+\* INVARIANT (attempt accounting band), the executable twin of the engine
+\* invariants accounting/above-top, accounting/below-top-minus-one, and
+\* accounting/live-run-not-next: a spawned task's accounted ordinal (user
+\* attempts plus infrastructure retries) is its highest owned run ordinal or
+\* one below it, and a live task whose single live run exists runs exactly the
+\* next accounted ordinal.
+OwnedRuns(t) == {r \in RunIds : runTask[r] = t /\ runState[r] # "unused"}
+TopOrdinal(t) == CHOOSE o \in {runAttempt[r] : r \in OwnedRuns(t)} :
+                   \A r \in OwnedRuns(t) : runAttempt[r] <= o
+
+AccountingBand ==
+  \A t \in Tasks :
+    OwnedRuns(t) # {} =>
+      attempts[t] + infraRetries[t] \in {TopOrdinal(t) - 1, TopOrdinal(t)}
+
+LiveRunIsNextAccounted ==
+  \A t \in Tasks :
+    LET live == {r \in OwnedRuns(t) : runState[r] \in LiveStates} IN
+      (taskState[t] \in LiveStates /\ Cardinality(live) = 1) =>
+        \A r \in live : runAttempt[r] = attempts[t] + infraRetries[t] + 1
 
 \* INVARIANT 2 -- the OBSERVABLE for "at most one activation per (run,
 \* gen)".  The CAS makes activation a one-way state change activatedGen:
@@ -1265,7 +1327,9 @@ TerminalStability ==
   [][ /\ \A r \in RunIds :
            runState[r] \in TerminalStates => runState'[r] = runState[r]
       /\ \A t \in Tasks :
-           taskState[t] \in TerminalStates => taskState'[t] = taskState[t]
+           taskState[t] \in TerminalStates =>
+             \/ taskState'[t] = taskState[t]
+             \/ lastAction' = "RetryTask" /\ taskState[t] = "failed"
     ]_vars
 
 \* PROPERTY (invariant 4): task.attempts moves only on user failures

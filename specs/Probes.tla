@@ -38,4 +38,7 @@ ProbeNoDeferredStartDeadline ==
 \* suspension it attempts is refused.
 ProbeNoRefusedSuspension ==
   \A c \in contexts : ~(Fenced(c) /\ ~EligibleTask(runTask[c.run]))
+\* Witness: a failed task revived by retryTask whose revival run completed.
+ProbeNoRetriedTask ==
+  \A t \in Tasks : ~(retries[t] > 0 /\ taskState[t] = "completed")
 =========================================================================

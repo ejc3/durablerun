@@ -75,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [safety, liveness1, liveness2, liveness3, liveness4, liveness5]
+        target: [safety, liveness1, liveness2, liveness3, liveness4, liveness5, retry]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
