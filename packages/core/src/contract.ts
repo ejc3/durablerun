@@ -57,10 +57,11 @@ export const SUCCESSOR_CARRIED_RUN_COLUMNS = [
 ] as const
 
 /**
- * The runs columns a successor takes from its fenced parent, in insert order: its
- * creation instant is the parent's fence instant, which is the failure, and the
- * carried columns are copied unchanged. Both successor inserts splice these with
- * `successorParentValues`, beside the identity, state, and fence columns they set.
+ * The runs columns a successor's insert reads from its fenced parent row, in insert
+ * order. The carried columns are copied unchanged. `created_at_ms` is not carried:
+ * the successor sets it to the parent's fence instant, which is the failure. Both
+ * successor inserts splice these with `successorParentValues`, beside the identity,
+ * state, and fence columns they set.
  */
 export const SUCCESSOR_PARENT_COLUMNS = ['created_at_ms', ...SUCCESSOR_CARRIED_RUN_COLUMNS].join(
   ', ',

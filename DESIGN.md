@@ -960,8 +960,10 @@ this, names an unknown state, or lacks an outcome column is refused with
 `RangeError`, never returned. Outside the stores, every production reader of a
 task outcome selects `TASK_RESULT_COLUMNS` and decodes the row through core's
 `decodeTaskResult`, so a second read path cannot report a row the store refuses.
-`scripts/outcome-lint.py` refuses any other production spelling of those
-columns. The conformance harness reads raw task state as its oracle.
+`scripts/outcome-lint.py` refuses any other spelling of those columns in a
+production TypeScript source. The conformance harness reads raw task state as
+its oracle, and the engine invariants report each rule a task row breaks as its
+own condition.
 
 **Event-wake disposition:** a carried wake (`wake_event`/`event_payload`) is
 CONSUMED by the transition that ends the attempt that processed it
@@ -1028,7 +1030,7 @@ not depend on careful reading:
   `structurally-rejected` credit only after an observed attempted write raises
   the classified error. A fixture cannot return evidence by assertion.
   TypeScript evaluates
-  one of 109 typed condition IDs for every semantic arm. The eight durable
+  one of 113 typed condition IDs for every semantic arm. The eight durable
   counters and 23 temporal fields are decoded totally through core's
   bounded decoder: a non-integer storage representation and an exact-but-
   out-of-range value emit distinct typed findings and suppress dependent
@@ -1051,8 +1053,8 @@ not depend on careful reading:
   never by a second hard-coded positional table list.
   Generated just-over-bound witnesses, along with the ownership witnesses,
   keep the poison matrix complete. The poison surface crosses the 17 classified
-  write labels with 139 atomic corrupt-state witnesses covering that exact
-  condition inventory: 2,363 generated cells,
+  write labels with 143 corrupt-state witnesses covering that exact
+  condition inventory: 2,431 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state

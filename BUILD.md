@@ -531,7 +531,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     CAS had cancelled. The fixes share one suspension cleanup chokepoint and
     make cancelled run IDs the authority.
   - **Portable, atomic invariant evidence.** The invariant library has one
-    typed inventory of 109 semantic conditions, evaluates
+    typed inventory of semantic conditions, 109 at this PR's closeout, evaluates
     explicit dialect-neutral table projections in TypeScript, and rejects a
     short, long, or malformed executor result vector instead of treating a
     missing table as empty. Row and finding identity are structured tuples,
@@ -555,8 +555,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     independently swappable label. The inventory generates 46 storage/bound
     conditions, the portable snapshot columns, and 69 storage/lower/upper
     poison witnesses.
-    The complete matrix is 109 conditions, 139 witnesses, and 2,363 ambient
-    cells. The central schema/admin conformance surface discovers every native
+    At this PR's closeout the matrix was 109 conditions, 139 witnesses, and
+    2,363 ambient cells. The central schema/admin conformance surface discovers every native
     integer column and compares the exact field/64-bit-width/nullability vector
     to the union of all eight counter plus 23 temporal descriptors—31 durable
     integer fields, without a naming proxy. LibSQL supplies real
@@ -821,14 +821,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
 
-- **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory, now 109
+- **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory
   IDs, makes every currently declared boolean/null/type arm witnessable; it
   does not prove the declaration itself complete. The closeout already removes
   the assertion-side proxy for checkpoint conflicts: all nine relations crossed
   with two operations carry literal executable helper closures, and a
   compiler-resolved mutation-specific helper descriptor must own its exact
   marker. PR3.10 owns the remaining source-side property: generate one red
-  mutation per claimed semantic branch and enum literal across all 109 IDs, and
+  mutation per claimed semantic branch and enum literal across every condition ID, and
   require each mutation to resolve to that condition's attributable verdict. A
   condition ID, detached marker inventory, or one mutation per mechanism is
   still a proxy. The subsequent durable-boundary ownership tranche raised the
@@ -923,6 +923,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and that case classifies every runs column.
   - Rejected: reading the refusal case's rows concurrently. Sequential reads keep
     the first refusal message deterministic.
+  - Rejected: requiring each poison-matrix case to fire exactly the conditions it
+    covers. Measured on this branch, 13 cases also fire closely related
+    conditions, such as a counter bound beside a negative generation, so the
+    check needs a reclassification of the poison inventory, which is not a store
+    simplification. The two cases that fired an outcome condition now carry a
+    consistent outcome instead.
   - Rejected: removing `retryDelaySeconds`. It is a working function in the
     published `@durablerun/core` barrel, so deleting it breaks consumers
     rather than simplifying the engine.
