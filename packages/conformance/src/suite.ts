@@ -1690,6 +1690,55 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('cancellation discovery', () => {
+      it('a write on a run cancelled mid-pass raises RunCancelledError, while a swept lease raises LeaseLostError', async () => {
+        const cancelled = await f.store.spawn(Q, 'cancel-me', '{}')
+        const cancelledRun = await claimActivated(f.store, Q, 'w-cancel')
+        await f.store.spawn(Q, 'sweep-me', '{}')
+        const sweptRun = await claimActivated(f.store, Q, 'w-sweep')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+        expect(await f.store.expireLeaseNow(Q, sweptRun.runId, sweptRun.claimToken)).toBe(true)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
+          'claim-timeout',
+        ])
+
+        const writes = (run: ClaimedRun) => [
+          () => f.store.complete(Q, run.runId, run.claimToken, '{}'),
+          () => f.store.fail(Q, run.runId, run.claimToken, '{"name":"Late"}', null),
+          () => f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1 }),
+          () =>
+            f.store.suspendRun(
+              Q,
+              run.runId,
+              run.claimToken,
+              { inSeconds: 1 },
+              { key: '$sleep', stateJson: '{}' },
+            ),
+          () => checkpointOwned(f.store, Q, run, 'late', '{}', 60),
+          () => awaitOwned(f.store, Q, run, 'late', 'never', 30),
+        ]
+        const refusals = async (run: ClaimedRun) => {
+          const names: string[] = []
+          for (const write of writes(run)) {
+            names.push(
+              await write().then(
+                () => 'accepted',
+                (error: unknown) => (error instanceof Error ? error.name : String(error)),
+              ),
+            )
+          }
+          return names
+        }
+        expect({
+          cancelled: await refusals(cancelledRun),
+          swept: await refusals(sweptRun),
+        }).toEqual({
+          cancelled: Array(6).fill('RunCancelledError'),
+          swept: Array(6).fill('LeaseLostError'),
+        })
+      })
+    })
+
     describe('expireLeaseNow (the advisory write)', () => {
       it('accelerates sweep pickup with a valid token; stale tokens no-op', async () => {
         await f.store.spawn(Q, 'job', '{}')

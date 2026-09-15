@@ -1478,6 +1478,23 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a task cancelled mid-pass ends the pass with a cancelled outcome, not a lost lease', async () => {
+    const f = await fx('sdk-cancelled-mid-pass')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const reg = registry({
+      job: async () => {
+        expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
+        return 'done'
+      },
+    })
+    expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'cancelled' })
+    const [task] = await f.raw.batch('t', [
+      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+    ])
+    expect(task?.rows[0]?.state).toBe('cancelled')
+    f.close()
+  })
+
   it('a duplicate delivery of the same claim does nothing', async () => {
     const f = await fx('sdk-dup')
     const reg = registry({ job: async () => 'once' })
