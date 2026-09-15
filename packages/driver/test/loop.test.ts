@@ -132,7 +132,7 @@ describe('DriverLoop', () => {
     // more look, never fifty.
     for (let i = 0; i < 50; i++) {
       loop.wake()
-      await new Promise((r) => setImmediate(r))
+      await f.clock.yieldTurn()
     }
     await until(() => f.clock.sleeps.length === 1, 'parked again')
     expect(loop.stats.ticks - ticksBefore).toBeLessThanOrEqual(1)

@@ -267,28 +267,21 @@ async function claimAndRun(
   reg: TaskRegistry,
   token: string,
 ): Promise<ReturnType<typeof runClaimedRun>> {
-  const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
-  if (!run) throw new Error('expected a claimable run')
   return runClaimedRun(
     { store: f.store, clock: f.clock, registry: reg },
-    {
-      queue: Q,
-      runId: run.runId,
-      claimToken: run.claimToken,
-      claimGen: run.claimGen,
-    },
+    await claimInvocation(f, token),
   )
 }
 
 async function claimInvocation(f: Awaited<ReturnType<typeof fx>>, token: string) {
   const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
   if (!run) throw new Error('expected a claimable run')
-  return {
-    queue: Q,
-    runId: run.runId,
-    claimToken: run.claimToken,
-    claimGen: run.claimGen,
-  }
+  return invocationOf(run)
+}
+
+/** The launch a driver builds from a claimed run. */
+function invocationOf(run: { runId: string; claimToken: string; claimGen: number }) {
+  return { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen }
 }
 
 async function replacePropertyAsync<T>(
@@ -531,12 +524,7 @@ describe('runClaimedRun', () => {
                 }),
               }),
             },
-            {
-              queue: Q,
-              runId: run.runId,
-              claimToken: run.claimToken,
-              claimGen: run.claimGen,
-            },
+            invocationOf(run),
           )
           const result = await f.store.getTaskResult(Q, spawned.taskId)
           return {
@@ -1485,10 +1473,7 @@ describe('runClaimedRun', () => {
       },
     })
     expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'cancelled' })
-    const [task] = await f.raw.batch('t', [
-      { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
-    ])
-    expect(task?.rows[0]?.state).toBe('cancelled')
+    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('cancelled')
     f.close()
   })
 
@@ -1551,12 +1536,7 @@ describe('runClaimedRun', () => {
     await f.store.spawn(Q, 'job', '{}')
     const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('claim')
-    const invocation = {
-      queue: Q,
-      runId: run.runId,
-      claimToken: run.claimToken,
-      claimGen: run.claimGen,
-    }
+    const invocation = invocationOf(run)
     const deps = { store: f.store, clock: f.clock, registry: reg }
     expect(await runClaimedRun(deps, invocation)).toEqual({ kind: 'completed' })
     expect(await runClaimedRun(deps, invocation)).toEqual({ kind: 'superseded' })
@@ -1581,12 +1561,7 @@ describe('runClaimedRun', () => {
     const currentRun = run
     const outcome = await runClaimedRun(
       { store: f.store, clock: f.clock, registry: reg },
-      {
-        queue: Q,
-        runId: run.runId,
-        claimToken: run.claimToken,
-        claimGen: run.claimGen,
-      },
+      invocationOf(run),
     )
     expect(outcome).toEqual({ kind: 'lease-lost' })
     // The sweep owns recovery; the zombie committed nothing after the loss.
@@ -1625,12 +1600,7 @@ describe('runClaimedRun', () => {
     if (!run) throw new Error('claim')
     const outcome = await runClaimedRun(
       { store: failing as SchedulerStore, clock: f.clock, registry: reg },
-      {
-        queue: Q,
-        runId: run.runId,
-        claimToken: run.claimToken,
-        claimGen: run.claimGen,
-      },
+      invocationOf(run),
     )
     expect(outcome).toEqual({ kind: 'aborted' })
     f.close()
@@ -1661,12 +1631,7 @@ describe('runClaimedRun', () => {
     if (!run) throw new Error('claim')
     const pass = runClaimedRun(
       { store: counting as SchedulerStore, clock: f.clock, registry: reg },
-      {
-        queue: Q,
-        runId: run.runId,
-        claimToken: run.claimToken,
-        claimGen: run.claimGen,
-      },
+      invocationOf(run),
     )
     // Let the pass reach its awaits (pump sleep + the job's long call)
     // before moving time — advancing earlier would shift the deadlines.
@@ -1726,12 +1691,7 @@ describe('runClaimedRun', () => {
             clock: f.clock,
             registry: registry({ job: async () => null }),
           },
-          {
-            queue: Q,
-            runId: run.runId,
-            claimToken: run.claimToken,
-            claimGen: run.claimGen,
-          },
+          invocationOf(run),
         )
       } catch (error) {
         rejected = error
@@ -1767,12 +1727,7 @@ describe('runClaimedRun', () => {
             },
           }),
         },
-        {
-          queue: Q,
-          runId: run.runId,
-          claimToken: run.claimToken,
-          claimGen: run.claimGen,
-        },
+        invocationOf(run),
       )
 
       while (f.clock.fired.length < 1) {

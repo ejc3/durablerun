@@ -135,16 +135,3 @@ export function describeFailure(error: unknown): string {
   }
   return lines.join('\n')
 }
-
-/**
- * The rolling-deploy deferral as the worker performs it: a build with no handler
- * for the claimed task parks the claimed run for `inSeconds` and consumes nothing.
- */
-export function deferUnregistered(
-  store: SchedulerStore,
-  queue: string,
-  run: ClaimedRun,
-  inSeconds: number,
-): Promise<void> {
-  return store.deferLaunch(queue, run.runId, run.claimToken, run.claimGen, inSeconds)
-}

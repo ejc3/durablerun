@@ -28,7 +28,6 @@ import {
   checkpointOwned,
   claimActivated,
   claimOne,
-  deferUnregistered,
   readOne,
   withFixture,
 } from './scenario.js'
@@ -1697,7 +1696,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           cancellation: { maxDelaySeconds: 30 },
         })
         const run = await claimOne(f.store, Q, 'old-build')
-        await deferUnregistered(f.store, Q, run, 15)
+        await f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15)
         await f.admin.setFakeNowEpochMs(START_MS + 31_000)
         expect(await f.store.sweep(Q, 10)).toEqual([
           { kind: 'cancelled', taskId: spawned.taskId, runId: spawned.runId },
@@ -1710,7 +1709,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('a launch deferral refuses an activated claim, a stale generation, and a due deadline', async () => {
         await f.store.spawn(Q, 'activated', '{}')
         const activated = await claimActivated(f.store, Q, 'build-a')
-        await expect(deferUnregistered(f.store, Q, activated, 15)).rejects.toThrow(LeaseLostError)
+        await expect(
+          f.store.deferLaunch(Q, activated.runId, activated.claimToken, activated.claimGen, 15),
+        ).rejects.toThrow(LeaseLostError)
 
         await f.store.spawn(Q, 'stale', '{}')
         const stale = await claimOne(f.store, Q, 'build-b')
@@ -1726,7 +1727,9 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             args: [START_MS, due.taskId],
           },
         ])
-        await expect(deferUnregistered(f.store, Q, dueRun, 15)).rejects.toThrow(LeaseLostError)
+        await expect(
+          f.store.deferLaunch(Q, dueRun.runId, dueRun.claimToken, dueRun.claimGen, 15),
+        ).rejects.toThrow(LeaseLostError)
 
         const runs = await f.raw.batch(
           'defer-launch-refusals',
@@ -1763,7 +1766,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const refusals = []
         for (const run of [sibling, drifted]) {
           refusals.push(
-            await deferUnregistered(f.store, Q, run, 15).then(
+            await f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15).then(
               () => 'parked',
               (error: unknown) => (error instanceof Error ? error.name : String(error)),
             ),
@@ -1780,7 +1783,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           cancellation: { maxDurationSeconds: 100 },
         })
         const deferred = await claimOne(f.store, Q, 'old-build')
-        await deferUnregistered(f.store, Q, deferred, 15)
+        await f.store.deferLaunch(Q, deferred.runId, deferred.claimToken, deferred.claimGen, 15)
         await f.admin.setFakeNowEpochMs(START_MS + 50_000)
         await claimActivated(f.store, Q, 'new-build')
         const task = await readOne(

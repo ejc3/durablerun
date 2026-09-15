@@ -1,5 +1,6 @@
 import {
   type Clock,
+  type LaunchInvocation,
   type SchedulerStore,
   decideRetry,
   parseTaskValueJson,
@@ -48,12 +49,8 @@ export type WorkerOutcome =
   | { kind: 'deferred' } // unknown task name: parked untouched for a
 //                        worker build that knows it (rolling deploys)
 
-export interface RunInvocation {
-  queue: string
-  runId: string
-  claimToken: string
-  claimGen: number
-}
+/** The launch fields a worker needs: the ids of one claim. */
+export type RunInvocation = Pick<LaunchInvocation, 'queue' | 'runId' | 'claimToken' | 'claimGen'>
 
 /**
  * Classify a store-call rejection. Used only immediately around a store call,

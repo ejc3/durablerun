@@ -123,17 +123,16 @@ export class DriverLoop {
     const MAX_TIMER_MS = 2_147_483_647
     this.busyCeilingMs = requirePositiveInt('busyCeilingMs', opts.busyCeilingMs ?? 250)
     this.idleCeilingMs = requirePositiveInt('idleCeilingMs', opts.idleCeilingMs ?? 5000)
-    if (this.busyCeilingMs > MAX_TIMER_MS || this.idleCeilingMs > MAX_TIMER_MS) {
-      throw new RangeError(`poll ceilings must be <= ${MAX_TIMER_MS}ms (timer API limit)`)
+    this.wakeFloorMs = requirePositiveInt('wakeFloorMs', opts.wakeFloorMs ?? this.busyCeilingMs)
+    if (Math.max(this.busyCeilingMs, this.idleCeilingMs, this.wakeFloorMs) > MAX_TIMER_MS) {
+      throw new RangeError(
+        `poll ceilings and wakeFloorMs must be <= ${MAX_TIMER_MS}ms (timer API limit)`,
+      )
     }
     if (this.idleCeilingMs < this.busyCeilingMs) {
       throw new RangeError('idleCeilingMs must be >= busyCeilingMs (idle must not poll faster)')
     }
     this.idleAfterTicks = requirePositiveInt('idleAfterTicks', opts.idleAfterTicks ?? 10)
-    this.wakeFloorMs = requirePositiveInt('wakeFloorMs', opts.wakeFloorMs ?? this.busyCeilingMs)
-    if (this.wakeFloorMs > MAX_TIMER_MS) {
-      throw new RangeError(`wakeFloorMs must be <= ${MAX_TIMER_MS}ms (timer API limit)`)
-    }
     const registryIntervalSeconds = opts.registryIntervalSeconds ?? 15
     this.registryIntervalMs = durationToMs('registryIntervalSeconds', registryIntervalSeconds, {
       positive: true,
