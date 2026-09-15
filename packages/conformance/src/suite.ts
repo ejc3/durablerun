@@ -29,6 +29,7 @@ import {
   claimActivated,
   claimOne,
   readOne,
+  refusalName,
   withFixture,
 } from './scenario.js'
 
@@ -1776,10 +1777,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const refusals = []
         for (const run of [sibling, drifted, relaunch, lease, headers]) {
           refusals.push(
-            await f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15).then(
-              () => 'parked',
-              (error: unknown) => (error instanceof Error ? error.name : String(error)),
-            ),
+            await refusalName(f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15)),
           )
         }
         const after = []
@@ -1868,12 +1866,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const refusals = async (run: ClaimedRun) => {
           const names: string[] = []
           for (const write of writes(run)) {
-            names.push(
-              await write().then(
-                () => 'accepted',
-                (error: unknown) => (error instanceof Error ? error.name : String(error)),
-              ),
-            )
+            names.push(await refusalName(write()))
           }
           return names
         }

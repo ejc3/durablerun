@@ -125,6 +125,14 @@ export function checkpointOwned(
   )
 }
 
+/** The name of the error a store write refused with, or 'accepted' when it went through. */
+export function refusalName(write: Promise<unknown>): Promise<string> {
+  return write.then(
+    () => 'accepted',
+    (error: unknown) => (error instanceof Error ? error.name : String(error)),
+  )
+}
+
 /** Render a failure and every cause beneath it, one per line. */
 export function describeFailure(error: unknown): string {
   const lines: string[] = []
