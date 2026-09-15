@@ -230,12 +230,7 @@ async function receipt(): Promise<void> {
       )
     }
     await interruptInvocation(
-      {
-        queue,
-        runId: run.runId,
-        claimToken: run.claimToken,
-        claimGen: run.claimGen,
-      },
+      { queue, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
       Math.min(CHILD_TIMEOUT_MS, remainingMs()),
     )
 

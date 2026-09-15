@@ -875,7 +875,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A heartbeat on a cancelled task still reports only a lost lease, so a
     handler that runs past half a lease after cancellation ends as lease-lost.
     Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the
-    heartbeat batch on `FencedBatch` with a refusal tail and a cancelled
+    heartbeat batch on `FencedBatch` with a refusal read and a cancelled
     variant of `LeaseState`.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
