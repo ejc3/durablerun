@@ -574,7 +574,10 @@ One invocation executes one claimed run to its next suspension point:
   consuming nothing. A heartbeat still reports only that the lease is gone, and
   once the heartbeat pump sees that, the handler's next engine write is refused
   as lease-lost before it reaches the store. A handler that runs past half a
-  lease after cancellation therefore ends as lease-lost, not cancelled.
+  lease after cancellation therefore ends as lease-lost, not cancelled. A
+  suspension refused because the task's cancellation deadline is due, before
+  the sweep has cancelled the task, raises `LeaseLostError` too, because the run
+  is not cancelled yet.
 
 Sizing: claim batch K per tick and per-worker concurrency are tunables; Vercel
 Fluid compute multiplexes concurrent invocations in one instance and bills Active

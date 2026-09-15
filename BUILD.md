@@ -848,8 +848,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   evidence still permits repair findings to be bundled into a green commit.
 
 - **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5, as two stacked PRs:
-  - **PR3.2a:** the rolling-deploy deferral, decided from the launch before
-    activation through a new `defer-launch` batch fenced on the claim receipt.
+  - **PR3.2a:** the rolling-deploy deferral, decided before activation from the
+    claimed task's name the worker reads from the store, through a new
+    `defer-launch` batch fenced on the claim receipt.
     TLC produced a counterexample against the old post-activation deferral
     first, and conformance cases on libSQL and PostgreSQL were committed red.
     The same PR models the suspension paths' task-eligibility guard in
@@ -857,6 +858,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     raises `RunCancelledError` from a refused worker write on a cancelled run
     so the worker ends with a cancelled outcome, pins idempotency-key reuse to
     Absurd's `spawn_task`, and floors `/wake` at one look per interval.
+    Deferred from its review round (`postmortems/pr3.2a-lifecycle-review.md`):
+    one admission fragment shared by activation and the deferral; a poison
+    target profile for a running, unactivated claim, so the `activate` and
+    `defer-launch` cells reach their corruption guards; a launch payload case
+    generated from `LaunchInvocation`'s fields that crosses older and newer
+    drivers and workers; and a generated clock-shape surface for the driver
+    loop.
   - **PR3.2b:** `retryTask`, following Absurd's `retry_task`, modeled in TLA
     before its SQL exists, with DESIGN.md stating its exception to terminal
     inertness. A revival must re-account a failed run that no counter
