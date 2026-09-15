@@ -1286,7 +1286,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // yet, so the first-start latch, the start deadline, and the duration clock
     // stay untouched, and a replay after the park or after an activation
     // matches nothing. Nothing is consumed and the wake fields are kept. Like
-    // every suspension it requires an eligible task.
+    // every suspension it requires an eligible task, and it refuses the corrupt
+    // shapes activation refuses: another live run, drifted accounting, an
+    // obsolete ordinal, or an inadmissible stored retry strategy or header set.
     const b = new FencedBatch('defer-launch', this.ids.token(), { now: NOW_MS })
     b.cas(
       'suspend',
@@ -1300,8 +1302,16 @@ export class PostgresSchedulerStore implements SchedulerStore {
          AND run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND ${storedPositiveClaimGeneration('runs')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
-         AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
+         AND ${soleLiveRun('runs')}
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}
+             AND ${storedCurrentRunAccounting('runs', 't')}
+             AND ${storedHighestOwnedOrdinal('runs')}
+             AND ${durableTaskRetryAdmissible('t')}
+             AND ${durableTaskHeadersAdmissible('t')}
+         )
          ${wakePlan.fits}`,
       [
         ...wakePlan.expressionArgs,
