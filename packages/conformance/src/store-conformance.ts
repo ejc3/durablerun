@@ -421,6 +421,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'activate',
             'heartbeat',
             'reschedule',
+            'defer-launch',
             'suspend',
             'emit-event',
             'await-event',
