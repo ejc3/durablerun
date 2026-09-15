@@ -86,8 +86,9 @@ export interface SchedulerStore {
    *
    * `wakeDisposition` (default 'consume'): a worker that PROCESSED a carried
    * event wake sleeps with 'consume' — later timer wakes must not replay the
-   * event. A driver that could NOT dispatch (unknown task, §3.8.2 deferral)
-   * defers with 'preserve' so the wake survives for a capable claimer.
+   * event. 'preserve' parks the run while keeping a wake nothing processed, so
+   * it survives for the next claimer. An undispatchable launch defers through
+   * `deferLaunch` instead, before activation.
    */
   reschedule(
     queue: string,
