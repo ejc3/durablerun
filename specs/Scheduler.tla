@@ -458,6 +458,18 @@ Fenced(c) ==
 \* suspension require it.
 EligibleTask(t) == cancelAt[t] > now
 
+\* A launch whose claim receipt still holds: the run is running under the
+\* message's claim generation and not yet activated.  Activation and the launch
+\* deferral both fence on it.
+ReceiptFenced(m) ==
+  /\ m \in channel
+  /\ runState[m.run] = "running"
+  /\ claimGen[m.run] = m.gen
+  /\ activatedGen[m.run] < m.gen
+
+\* The context's task has run a handler; the start latch requires it.
+MarkDispatched(c) == dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+
 CtxKey(c) == [run |-> c.run, gen |-> c.gen]
 
 -----------------------------------------------------------------------------
@@ -630,10 +642,7 @@ Drop(m) ==
 \*     reviewed inverse bug kept the stale spawn deadline via MIN and
 \*     cancelled healthy running tasks).
 Activate(m) ==
-  /\ m \in channel
-  /\ runState[m.run] = "running"
-  /\ claimGen[m.run] = m.gen
-  /\ activatedGen[m.run] < m.gen
+  /\ ReceiptFenced(m)
   /\ EligibleTask(runTask[m.run])
   /\ LET t  == runTask[m.run]
          fs == IF firstStarted[t] = Inf THEN now ELSE firstStarted[t] IN
@@ -664,10 +673,7 @@ Activate(m) ==
 \* production deferral ends when a worker build that knows the task arrives,
 \* or at the start deadline.
 DeferLaunch(m) ==
-  /\ m \in channel
-  /\ runState[m.run] = "running"
-  /\ claimGen[m.run] = m.gen
-  /\ activatedGen[m.run] < m.gen
+  /\ ReceiptFenced(m)
   /\ LET t == runTask[m.run] IN
        /\ EligibleTask(t)
        /\ hops[t] < MaxHops
@@ -691,7 +697,7 @@ Heartbeat(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![c.run] = Clip(now + LeaseLen)]
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, availableAt,
@@ -711,7 +717,7 @@ CompleteRun(c) ==
   /\ cancelAt'  = [cancelAt EXCEPT ![runTask[c.run]] = Inf]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
@@ -742,7 +748,7 @@ FailRunWithRetry(c) ==
        /\ nextRun' = nextRun + 1
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  waitEv, waitAt, eventState, channel, nextCtx>>
@@ -760,7 +766,7 @@ FailRunTerminal(c) ==
        /\ attempts'  = [attempts EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
@@ -790,7 +796,7 @@ SleepSuspend(c) ==
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
@@ -812,7 +818,7 @@ VoluntaryChain(c) ==
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
@@ -829,7 +835,7 @@ AwaitEventHit(c, e) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ eventState[e] # NoPayload
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
@@ -849,7 +855,7 @@ AwaitEventHit(c, e) ==
 \* has no wait (WaitIntegrity), so registration never finds one to violate.
 AwaitRegister(c, e, tAt) ==
   LET t == runTask[c.run] IN
-    /\ EligibleTask(t)   \* eligible task, as every suspension
+    /\ EligibleTask(t)
     /\ hops[t] < MaxHops
     /\ eventState[e] = NoPayload
     /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
@@ -862,7 +868,7 @@ AwaitRegister(c, e, tAt) ==
     /\ hops'        = [hops EXCEPT ![t] = @ + 1]
     /\ contexts' = contexts \ {c}
     /\ tokRuns' = tokRuns \ {c.run}   \* suspension carries no live token
-    /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+    /\ MarkDispatched(c)
     /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                    firstStarted, runTask, runAttempt, claimGen,
                    activatedGen, relaunchCount, leaseDeadline, eventState,
@@ -1059,7 +1065,7 @@ SweepInfraExhausted(r) ==
 WorkerCrash(c) ==
   /\ c \in contexts
   /\ contexts' = contexts \ {c}
-  /\ dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
