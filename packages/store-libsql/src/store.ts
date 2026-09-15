@@ -10,8 +10,6 @@ import {
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
-  LeaseLostError,
-  RunCancelledError,
   type LeaseState,
   MAX_DURATION_MS,
   NOW,
@@ -45,6 +43,7 @@ import {
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
+  refusedWriteError,
   requireDerivedInteger,
   requireDurableString,
   requireEpochMs,
@@ -1256,23 +1255,20 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   /**
-   * A refused worker write explains itself from the run it was fenced on. Absurd
-   * raises AB001 for a cancelled task and AB002 for a lost lease; here a run the
-   * task's cancellation ended raises RunCancelledError, and every other lost
-   * fence raises LeaseLostError. The read runs only after a refusal, so a write
-   * that wins pays nothing for it. A cancelled run is terminal, so the read never
-   * misses a cancellation that refused the write; a cancellation that lands after
-   * the refusal is named too, since it has ended the run by the time we report.
+   * Why a refused worker write lost (`refusedWriteError`). The run's state is read
+   * only after a refusal, so a write that wins pays nothing for it. A cancelled
+   * run is terminal, so the read never misses a cancellation that refused the
+   * write.
    */
-  private async refusal(operation: string, runId: string): Promise<Error> {
-    const [rows] = await this.db.batch(
-      'refusal-state',
-      [{ sql: 'SELECT state FROM runs WHERE run_id = ?', args: [runId] }],
-      'read',
-    )
-    return rows?.rows[0]?.state === 'cancelled'
-      ? new RunCancelledError(`${operation} ${runId}`)
-      : new LeaseLostError(`${operation} ${runId}`)
+  private refusal(operation: string, runId: string): Promise<Error> {
+    return refusedWriteError(operation, runId, async () => {
+      const [rows] = await this.db.batch(
+        'refusal-state',
+        [{ sql: 'SELECT state FROM runs WHERE run_id = ?', args: [runId] }],
+        'read',
+      )
+      return rows?.rows[0]?.state
+    })
   }
 
   async claimedTaskName(

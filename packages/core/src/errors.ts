@@ -144,6 +144,34 @@ export class LeaseLostError extends Error {
   override readonly name = 'LeaseLostError'
 }
 
+/** A worker write refused on its fence: the task's cancellation ended the run, or the lease is gone. */
+export function isRefusedWrite(error: unknown): error is LeaseLostError | RunCancelledError {
+  return error instanceof LeaseLostError || error instanceof RunCancelledError
+}
+
+/**
+ * Names why a worker write was refused, from its run's state read after the
+ * refusal. Absurd raises AB001 for a cancelled task and AB002 for a lost lease;
+ * here a run the task's cancellation ended raises RunCancelledError, and every
+ * other lost fence raises LeaseLostError. The refused compare-and-set already
+ * proved the fence lost, so a read that fails still yields LeaseLostError, with
+ * the read's failure as its cause.
+ */
+export async function refusedWriteError(
+  operation: string,
+  runId: string,
+  readRunState: () => Promise<unknown>,
+): Promise<LeaseLostError | RunCancelledError> {
+  const message = `${operation} ${runId}`
+  let state: unknown
+  try {
+    state = await readRunState()
+  } catch (cause) {
+    return new LeaseLostError(message, { cause })
+  }
+  return state === 'cancelled' ? new RunCancelledError(message) : new LeaseLostError(message)
+}
+
 /**
  * The store could not be reached or the write did not go through — a
  * TRANSIENT infrastructure failure (network, busy database). Consumers
