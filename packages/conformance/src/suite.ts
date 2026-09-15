@@ -2284,6 +2284,19 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.fail(Q, retried.runId, retried.claimToken, '{"name":"Boom"}', {
           delaySeconds: 30,
         })
+        const revivalQueue = 'carry-revival'
+        await f.raw.batch('carry-revival-event', [
+          {
+            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                  VALUES (?, ?, ?, 1000000)`,
+            args: [revivalQueue, seeded.wake_event, seeded.event_payload],
+          },
+        ])
+        const revivalTask = await f.store.spawn(revivalQueue, 'job', '{}')
+        const revival = await claimActivated(f.store, revivalQueue, 'w-carry-revival')
+        await f.raw.batch('carry-park-revival', [parkWake(revival.runId)])
+        await f.store.fail(revivalQueue, revival.runId, revival.claimToken, '{"name":"Boom"}', null)
+        expect(await f.store.retryTask(revivalQueue, revivalTask.taskId)).not.toBeNull()
         const timedOut = await activatedRun('w-carry-timeout')
         await f.raw.batch('carry-park-timeout', [parkWake(timedOut.runId)])
         await f.admin.setFakeNowEpochMs(1_100_000)
@@ -2294,6 +2307,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         for (const [path, taskId] of [
           ['user retry', retried.taskId],
           ['claim-timeout sweep', timedOut.taskId],
+          ['revival', revivalTask.taskId],
         ] as const) {
           const { runs } = await snapshot(f, taskId)
           const [parent, successor] = runs ?? []
@@ -2307,10 +2321,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             Object.keys(successor).sort(),
             `every runs column of the ${path} successor is carried or successor-owned`,
           ).toEqual([...SUCCESSOR_CARRIED_RUN_COLUMNS, ...successorOwned].sort())
-          expect(
-            successor.created_at_ms,
-            `the ${path} successor is created at its parent's failure instant`,
-          ).toBe(parent.fence_at_ms)
+          if (path !== 'revival') {
+            expect(
+              successor.created_at_ms,
+              `the ${path} successor is created at its parent's failure instant`,
+            ).toBe(parent.fence_at_ms)
+          }
         }
         await attributeExpectedFailure(
           { kind: 'behavior', mutation: 'successor-carries-every-column' },
