@@ -298,6 +298,26 @@ jobs:
                   exemptions,
                   exemptions + f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n',
               )
+          elif digest == '205e8666661bfefeaf65c5ce620314f0542cce95f4dce867c34318268e6a0845':
+              # Three verdict markers this tree registers for retryTask are unknown to
+              # this registry. Nothing it quotes was re-aimed.
+              repaired = previous
+              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(exemptions) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              markers = (
+                  'mutation-verdict:behavior:retry-task-charges-unaccounted-top-run',
+                  'mutation-verdict:behavior:retry-task-requires-failed-task',
+                  'mutation-verdict:behavior:retry-task-requires-well-formed-failure',
+              )
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              repaired = repaired.replace(exemptions, exemptions + entries)
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
