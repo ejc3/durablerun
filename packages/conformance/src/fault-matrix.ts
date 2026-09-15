@@ -395,15 +395,6 @@ export async function runFaultMatrixCase(
         await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
       }
 
-      // A revival: a one-attempt task fails for good, then retryTask revives it.
-      const doomed = await go(() => store.spawn(Q, 'j', '{}', { maxAttempts: 1 }))
-      const [dead] = (await go(() => store.claim(Q, 'w5', { leaseSeconds: 60, limit: 1 }))) ?? []
-      if (dead) {
-        await go(() => store.activate(Q, dead.runId, dead.claimToken, dead.claimGen))
-        await go(() => store.fail(Q, dead.runId, dead.claimToken, '{"name":"Doomed"}', null))
-      }
-      if (doomed) await go(() => store.retryTask(Q, doomed.taskId))
-
       // A deferral-style park (reschedule keeps its own matrix cell).
       await go(() => store.spawn(Q, 'h', '{}'))
       const [parked] = (await go(() => store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 }))) ?? []
@@ -449,6 +440,17 @@ export async function runFaultMatrixCase(
         await go(() => store.expireLeaseNow(Q, dies.runId, dies.claimToken))
       }
       // (the second of the pair is abandoned unactivated)
+
+      // A revival: a one-attempt task fails for good, then retryTask revives it. It
+      // runs after the workload's other claims, because its revival run is due now
+      // with an early id and would otherwise be what those claims take.
+      const doomed = await go(() => store.spawn(Q, 'j', '{}', { maxAttempts: 1 }))
+      const [dead] = (await go(() => store.claim(Q, 'w5', { leaseSeconds: 60, limit: 1 }))) ?? []
+      if (doomed && dead?.taskId === doomed.taskId) {
+        await go(() => store.activate(Q, dead.runId, dead.claimToken, dead.claimGen))
+        await go(() => store.fail(Q, dead.runId, dead.claimToken, '{"name":"Doomed"}', null))
+        await go(() => store.retryTask(Q, doomed.taskId))
+      }
 
       // A task with a start deadline, spawned AFTER the claims so nothing
       // activates it (activation would disarm the never-started deadline).
