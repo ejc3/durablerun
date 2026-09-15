@@ -37,6 +37,12 @@ export interface DriverLoopOptions extends TickOptions {
   /** Consecutive empty ticks before the idle ceiling applies (default 10). */
   idleAfterTicks?: number
   /**
+   * Minimum time between the starts of two ticks that a wake() may cause
+   * (default: the busy ceiling). A flood of /wake pings looks at most once per
+   * floor interval; stop() still interrupts the wait.
+   */
+  wakeFloorMs?: number
+  /**
    * Abandon a hanging launcher call after this long (default 10s). Pass
    * null for bounded-slot SYNC launchers that legitimately run the worker
    * inline (§3.9) — their calls are supposed to take as long as the run.
@@ -67,6 +73,7 @@ export class DriverLoop {
   private readonly busyCeilingMs: number
   private readonly idleCeilingMs: number
   private readonly idleAfterTicks: number
+  private readonly wakeFloorMs: number
   private readonly registryIntervalMs: number
   private readonly registryTtlSeconds: number
   private readonly driverId: string
@@ -76,6 +83,7 @@ export class DriverLoop {
   private stopped: Promise<void> | null = null
   private resolveStopped: (() => void) | null = null
   private sleepInterrupt: AbortController | null = null
+  private readonly floorInterrupt = new AbortController()
   private wakeRequested = false
   private idleTicks = 0
   private chainedTicks = 0
@@ -114,8 +122,11 @@ export class DriverLoop {
     const MAX_TIMER_MS = 2_147_483_647
     this.busyCeilingMs = requirePositiveInt('busyCeilingMs', opts.busyCeilingMs ?? 250)
     this.idleCeilingMs = requirePositiveInt('idleCeilingMs', opts.idleCeilingMs ?? 5000)
-    if (this.busyCeilingMs > MAX_TIMER_MS || this.idleCeilingMs > MAX_TIMER_MS) {
-      throw new RangeError(`poll ceilings must be <= ${MAX_TIMER_MS}ms (timer API limit)`)
+    this.wakeFloorMs = requirePositiveInt('wakeFloorMs', opts.wakeFloorMs ?? this.busyCeilingMs)
+    if (Math.max(this.busyCeilingMs, this.idleCeilingMs, this.wakeFloorMs) > MAX_TIMER_MS) {
+      throw new RangeError(
+        `poll ceilings and wakeFloorMs must be <= ${MAX_TIMER_MS}ms (timer API limit)`,
+      )
     }
     if (this.idleCeilingMs < this.busyCeilingMs) {
       throw new RangeError('idleCeilingMs must be >= busyCeilingMs (idle must not poll faster)')
@@ -162,9 +173,11 @@ export class DriverLoop {
     this.stopped = new Promise((resolve) => {
       this.resolveStopped = resolve
     })
+    let lastTickStartedAtMs = 0
     try {
       while (this.running) {
         let result: TickResult | null = null
+        lastTickStartedAtMs = this.clock.nowEpochMs()
         try {
           result = await tick(
             { store: this.store, launcher: this.launcher, ids: this.ids },
@@ -217,14 +230,32 @@ export class DriverLoop {
           }
         }
         sleepMs = Math.min(sleepMs, this.msUntilBeatDue())
-        if (this.wakeRequested) {
-          this.wakeRequested = false
-          continue
+        // The look this park plans. A wake may coalesce pings, but never delays it.
+        const plannedLookAtMs = this.clock.nowEpochMs() + sleepMs
+        if (!this.wakeRequested) {
+          this.chainedTicks = 0
+          this.sleepInterrupt = new AbortController()
+          await this.clock.sleep(sleepMs, this.sleepInterrupt.signal)
+          this.sleepInterrupt = null
         }
-        this.chainedTicks = 0
-        this.sleepInterrupt = new AbortController()
-        await this.clock.sleep(sleepMs, this.sleepInterrupt.signal)
-        this.sleepInterrupt = null
+        if (this.wakeRequested && this.running) {
+          // A wake looks again, but never sooner than the floor after the last
+          // tick started, so every ping inside the interval coalesces into one
+          // look. The wait never exceeds the floor, so a backwards clock step
+          // cannot stretch it, and never passes the look this park planned, so
+          // coalescing delays neither a due wake nor the registry beat. Only
+          // stop() interrupts this wait.
+          const nowMs = this.clock.nowEpochMs()
+          const remaining = Math.min(
+            lastTickStartedAtMs + this.wakeFloorMs - nowMs,
+            this.wakeFloorMs,
+            plannedLookAtMs - nowMs,
+          )
+          if (remaining > 0) {
+            this.chainedTicks = 0
+            await this.clock.sleep(remaining, this.floorInterrupt.signal)
+          }
+        }
         this.wakeRequested = false
       }
     } finally {
@@ -233,7 +264,7 @@ export class DriverLoop {
     }
   }
 
-  /** Interrupt the current sleep (enqueue ping): tick again NOW. */
+  /** Interrupt the current sleep (enqueue ping): look again, at most once per wake floor. */
   wake(): void {
     this.wakeRequested = true
     this.sleepInterrupt?.abort()
@@ -243,6 +274,7 @@ export class DriverLoop {
   async stop(): Promise<void> {
     this.running = false
     this.sleepInterrupt?.abort()
+    this.floorInterrupt.abort()
     await (this.stopped ?? Promise.resolve())
   }
 

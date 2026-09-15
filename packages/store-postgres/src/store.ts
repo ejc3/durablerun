@@ -10,7 +10,6 @@ import {
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
-  LeaseLostError,
   type LeaseState,
   MAX_DURATION_MS,
   NOW,
@@ -44,6 +43,7 @@ import {
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
+  refusedWriteError,
   requireDerivedInteger,
   requireDurableString,
   requireEpochMs,
@@ -57,6 +57,7 @@ import {
 } from '@durablerun/core'
 import {
   LIVE,
+  PARKED_CLAIM,
   QUEUED,
   cancelDue,
   durableTaskHeadersAdmissible,
@@ -1238,25 +1239,123 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   /**
+   * Why a refused worker write lost (`refusedWriteError`). The run's state is read
+   * only after a refusal, so a write that wins pays nothing for it. A cancelled
+   * run is terminal, so the read never misses a cancellation that refused the
+   * write.
+   */
+  private refusal(operation: string, runId: string): Promise<Error> {
+    return refusedWriteError(operation, runId, async () => {
+      const [rows] = await this.db.batch(
+        'refusal-state',
+        [{ sql: 'SELECT state FROM runs WHERE run_id = ?', args: [runId] }],
+        'read',
+      )
+      return rows?.rows[0]?.state
+    })
+  }
+
+  async claimedTaskName(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+  ): Promise<string | null> {
+    const validClaimGen = requirePositiveClaimGeneration('claimedTaskName.claimGen', claimGen)
+    // The launch carries only ids, so the worker learns the claimed task's name
+    // here. The name is immutable, so an unfenced read is safe; the claim
+    // conditions only make a stale or already-activated launch read nothing.
+    const [rows] = await this.db.batch(
+      'claimed-task-name',
+      [
+        {
+          sql: `SELECT t.task_name FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
+                WHERE r.run_id = ? AND r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
+                  AND r.claim_gen = ? AND r.activated_gen < ?`,
+          args: [runId, queue, claimToken, validClaimGen, validClaimGen],
+        },
+      ],
+      'read',
+    )
+    const name = rows?.rows[0]?.task_name
+    return typeof name === 'string' ? name : null
+  }
+
+  /** §3.2 rolling-deploy deferral; the port documents its contract. */
+  async deferLaunch(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+    inSeconds: number,
+  ): Promise<void> {
+    const validClaimGen = requirePositiveClaimGeneration('deferLaunch.claimGen', claimGen)
+    const wakePlan = prepareWake({ inSeconds }, true)
+    // The rolling-deploy deferral, decided before activation.
+    // Fencing on the claim RECEIPT, not an activation, is the point: the run
+    // must still be running under this token and generation with no activation
+    // yet, so the first-start latch, the start deadline, and the duration clock
+    // stay untouched, and a replay after the park or after an activation
+    // matches nothing. Nothing is consumed and the wake fields are kept. Like
+    // every suspension it requires an eligible task, and it refuses the corrupt
+    // shapes activation refuses: another live run, drifted accounting, an
+    // obsolete ordinal, an out-of-range lease or relaunch counter, or an
+    // inadmissible stored retry strategy or header set.
+    const b = new FencedBatch('defer-launch', this.ids.token(), { now: NOW_MS })
+    b.cas(
+      'suspend',
+      'runs',
+      `UPDATE runs SET
+         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
+         available_at_ms = ${wakePlan.expression},
+         ${PARKED_CLAIM},
+         ${FENCE_SET}
+       WHERE claim_gen = ? AND activated_gen < ?
+         AND run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND ${storedPositiveClaimGeneration('runs')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')} AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}
+         AND ${soleLiveRun('runs')}
+         AND EXISTS (
+           SELECT 1 FROM tasks t
+           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}
+             AND ${storedCurrentRunAccounting('runs', 't')}
+             AND ${storedHighestOwnedOrdinal('runs')}
+             AND ${durableTaskRetryAdmissible('t')}
+             AND ${durableTaskHeadersAdmissible('t')}
+         )
+         ${wakePlan.fits}`,
+      [
+        ...wakePlan.expressionArgs,
+        ...wakePlan.expressionArgs,
+        validClaimGen,
+        validClaimGen,
+        runId,
+        queue,
+        claimToken,
+        ...wakePlan.fitArgs,
+      ],
+    )
+    finishSuspension(b, runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'suspend') throw await this.refusal('deferLaunch', runId)
+  }
+
+  /**
    * Sleep, defer, or attempt-neutral chain (§3.2). The worker's own claim
    * token is the ownership proof; the transition mints a fresh stamp into
    * claimed_by so the suspended run carries no live token (a zombie's later
-   * writes die on claimed_by). Throws LeaseLostError when the fence lost —
-   * the AB002 signal.
+   * writes die on claimed_by). Refusals follow the port's refused-write contract.
    */
   async reschedule(
     queue: string,
     runId: string,
     claimToken: string,
     wake: WakeSpec,
-    wakeDisposition: 'consume' | 'preserve' = 'consume',
   ): Promise<void> {
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
-    // ONE SQL shape for both dispositions (a label is a crash-injection
-    // address; the CASE keeps 'reschedule' one shape). 'preserve' is the
-    // §3.8.2 deferral path: an undispatchable claim consumes nothing.
-    //
     // The task must be ELIGIBLE, not merely live — the same predicate
     // suspendRun uses, which is what its comment always claimed ("reschedule's
     // exact transition plus the marker") while the two guards had quietly
@@ -1272,10 +1371,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
       `UPDATE runs SET
          state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
          available_at_ms = ${wakePlan.expression},
-         wake_event = CASE WHEN ? = 'preserve' THEN wake_event ELSE NULL END,
-         event_payload = CASE WHEN ? = 'preserve' THEN event_payload ELSE NULL END,
-         wake_step = CASE WHEN ? = 'preserve' THEN wake_step ELSE NULL END,
-         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         wake_event = NULL, event_payload = NULL, wake_step = NULL,
+         ${PARKED_CLAIM},
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND ${storedInteger('runs.attempt')}
@@ -1285,9 +1382,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       [
         ...wakePlan.expressionArgs,
         ...wakePlan.expressionArgs,
-        wakeDisposition,
-        wakeDisposition,
-        wakeDisposition,
         runId,
         queue,
         claimToken,
@@ -1299,7 +1393,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // pre-existing wait must not survive with the wake fields just cleared.
     finishSuspension(b, runId)
     const { won } = await b.run(this.db)
-    if (won !== 'suspend') throw new LeaseLostError(`reschedule ${runId}`)
+    if (won !== 'suspend') throw await this.refusal('reschedule', runId)
   }
 
   /**
@@ -1325,7 +1419,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
          state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
          available_at_ms = ${wakePlan.expression},
          wake_event = NULL, event_payload = NULL, wake_step = NULL,
-         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${PARKED_CLAIM},
          ${FENCE_SET}
        WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND EXISTS (SELECT 1 FROM tasks t
@@ -1362,7 +1456,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     )
     finishSuspension(b, runId)
     const { won } = await b.run(this.db)
-    if (won !== 'suspend') throw new LeaseLostError(`suspendRun ${runId}`)
+    if (won !== 'suspend') throw await this.refusal('suspendRun', runId)
   }
 
   async complete(
@@ -1400,7 +1494,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     })
     waitsGone(b, runId, 'complete')
     const { won } = await b.run(this.db)
-    if (won !== 'complete') throw new LeaseLostError(`complete ${runId}`)
+    if (won !== 'complete') throw await this.refusal('complete', runId)
   }
 
   /**
@@ -1529,7 +1623,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     }
     waitsGone(b, runId, 'fail')
     const { won } = await b.run(this.db)
-    if (won !== 'fail') throw new LeaseLostError(`fail ${runId}`)
+    if (won !== 'fail') throw await this.refusal('fail', runId)
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
@@ -1624,7 +1718,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       'one',
     )
     const { won } = await b.run(this.db)
-    if (won !== 'lease') throw new LeaseLostError(`setCheckpoint ${runId}`)
+    if (won !== 'lease') throw await this.refusal('setCheckpoint', runId)
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
@@ -1973,7 +2067,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       return { emitted: true, payloadJson: String(row.payload) }
     }
     if (won !== 'register') {
-      throw new LeaseLostError(`awaitEvent ${runId}`)
+      throw await this.refusal('awaitEvent', runId)
     }
     return { emitted: false }
   }

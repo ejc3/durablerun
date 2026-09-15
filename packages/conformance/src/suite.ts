@@ -29,6 +29,7 @@ import {
   claimActivated,
   claimOne,
   readOne,
+  refusalName,
   withFixture,
 } from './scenario.js'
 
@@ -112,6 +113,77 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(second.taskId).toBe(first.taskId)
         const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
         expect(Number(count?.n)).toBe(1)
+      })
+
+      it('a reused idempotency key keeps the first spawn and ignores the new params and options', async () => {
+        const first = await f.store.spawn(Q, 'once', '{"v":1}', {
+          idempotencyKey: 'first-wins',
+          maxAttempts: 3,
+        })
+        const reused = await f.store.spawn(Q, 'renamed', '{"v":2}', {
+          idempotencyKey: 'first-wins',
+          maxAttempts: 9,
+          cancellation: { maxDelaySeconds: 5 },
+        })
+        const task = await readOne(
+          f.raw,
+          `SELECT task_name, params, max_attempts, cancel_at_ms FROM tasks WHERE task_id = ?`,
+          [first.taskId],
+        )
+        expect({
+          reused,
+          task: {
+            taskName: task?.task_name,
+            params: task?.params,
+            maxAttempts: Number(task?.max_attempts),
+            cancelAtMs: task?.cancel_at_ms,
+          },
+        }).toEqual({
+          reused: { taskId: first.taskId, runId: first.runId, created: false },
+          task: { taskName: 'once', params: '{"v":1}', maxAttempts: 3, cancelAtMs: null },
+        })
+      })
+
+      it('a reused idempotency key returns the newest run after a retry successor', async () => {
+        const first = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'newest-run' })
+        const run = await claimActivated(f.store, Q, 'w1')
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 1 })
+        const successor = await readOne(
+          f.raw,
+          `SELECT run_id FROM runs WHERE task_id = ? AND attempt = 2`,
+          [first.taskId],
+        )
+        const reused = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'newest-run' })
+        expect(reused).toEqual({ taskId: first.taskId, runId: successor?.run_id, created: false })
+      })
+
+      it('a reused idempotency key never respawns a completed, failed, or cancelled task', async () => {
+        const completed = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'done' })
+        const completedRun = await claimActivated(f.store, Q, 'w-done')
+        await f.store.complete(Q, completedRun.runId, completedRun.claimToken, '{}')
+        const failed = await f.store.spawn(Q, 'job', '{}', {
+          idempotencyKey: 'failed',
+          maxAttempts: 1,
+        })
+        const failedRun = await claimActivated(f.store, Q, 'w-failed')
+        await f.store.fail(Q, failedRun.runId, failedRun.claimToken, '{"name":"Boom"}', null)
+        const cancelled = await f.store.spawn(Q, 'job', '{}', { idempotencyKey: 'cancelled' })
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+
+        const reused = await Promise.all(
+          ['done', 'failed', 'cancelled'].map((idempotencyKey) =>
+            f.store.spawn(Q, 'job', '{}', { idempotencyKey }),
+          ),
+        )
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect({ reused, tasks: Number(count?.n) }).toEqual({
+          reused: [
+            { taskId: completed.taskId, runId: completed.runId, created: false },
+            { taskId: failed.taskId, runId: failed.runId, created: false },
+            { taskId: cancelled.taskId, runId: cancelled.runId, created: false },
+          ],
+          tasks: 3,
+        })
       })
 
       it('same key on different queues creates distinct tasks', async () => {
@@ -1616,6 +1688,195 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
         expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(false) // already terminal
         expect(await f.store.claim(Q, 't', { leaseSeconds: 60, limit: 10 })).toHaveLength(0)
+      })
+    })
+
+    describe('rolling-deploy launch deferral', () => {
+      it('a deferred launch keeps the task start deadline armed', async () => {
+        const spawned = await f.store.spawn(Q, 'unregistered', '{}', {
+          cancellation: { maxDelaySeconds: 30 },
+        })
+        const run = await claimOne(f.store, Q, 'old-build')
+        await f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15)
+        await f.admin.setFakeNowEpochMs(START_MS + 31_000)
+        expect(await f.store.sweep(Q, 10)).toEqual([
+          { kind: 'cancelled', taskId: spawned.taskId, runId: spawned.runId },
+        ])
+      })
+
+      // fenceTwin('DeferLaunch') — a deferral is fenced on the claim receipt and
+      // an eligible task: after an activation, under a stale generation, or past
+      // a due deadline it parks nothing.
+      it('a launch deferral refuses an activated claim, a stale generation, and a due deadline', async () => {
+        await f.store.spawn(Q, 'activated', '{}')
+        const activated = await claimActivated(f.store, Q, 'build-a')
+        await expect(
+          f.store.deferLaunch(Q, activated.runId, activated.claimToken, activated.claimGen, 15),
+        ).rejects.toThrow(LeaseLostError)
+
+        await f.store.spawn(Q, 'stale', '{}')
+        const stale = await claimOne(f.store, Q, 'build-b')
+        await expect(
+          f.store.deferLaunch(Q, stale.runId, stale.claimToken, stale.claimGen + 1, 15),
+        ).rejects.toThrow(LeaseLostError)
+
+        const due = await f.store.spawn(Q, 'due', '{}', { cancellation: { maxDelaySeconds: 10 } })
+        const dueRun = await claimOne(f.store, Q, 'build-c')
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+            args: [START_MS, due.taskId],
+          },
+        ])
+        await expect(
+          f.store.deferLaunch(Q, dueRun.runId, dueRun.claimToken, dueRun.claimGen, 15),
+        ).rejects.toThrow(LeaseLostError)
+
+        const runs = await f.raw.batch(
+          'defer-launch-refusals',
+          [
+            {
+              sql: `SELECT run_id, state, activated_gen FROM runs WHERE run_id IN (?, ?, ?) ORDER BY run_id`,
+              args: [activated.runId, stale.runId, dueRun.runId],
+            },
+          ],
+          'read',
+        )
+        expect(runs[0]?.rows.map((row) => row.state)).toEqual(['running', 'running', 'running'])
+      })
+
+      it('a launch deferral refuses a corrupt claim and writes nothing', async () => {
+        const siblingTask = await f.store.spawn(Q, 'sibling', '{}')
+        const sibling = await claimOne(f.store, Q, 'build-sibling')
+        await f.raw.batch('defer-launch-second-live-run', [
+          {
+            sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, available_at_ms, created_at_ms)
+                  VALUES ('second-live-run', ?, ?, 2, 'pending', ?, ?)`,
+            args: [Q, siblingTask.taskId, START_MS, START_MS],
+          },
+        ])
+        const driftedTask = await f.store.spawn(Q, 'drifted', '{}')
+        const drifted = await claimOne(f.store, Q, 'build-drifted')
+        await f.raw.batch('defer-launch-accounting-drift', [
+          { sql: `UPDATE tasks SET attempts = 3 WHERE task_id = ?`, args: [driftedTask.taskId] },
+        ])
+        const relaunchTask = await f.store.spawn(Q, 'relaunch-out-of-range', '{}')
+        const relaunch = await claimOne(f.store, Q, 'build-relaunch')
+        const leaseTask = await f.store.spawn(Q, 'lease-out-of-range', '{}')
+        const lease = await claimOne(f.store, Q, 'build-lease')
+        const headersTask = await f.store.spawn(Q, 'headers-inadmissible', '{}')
+        const headers = await claimOne(f.store, Q, 'build-headers')
+        await f.raw.batch('defer-launch-counter-corruption', [
+          { sql: `UPDATE runs SET relaunch_count = -1 WHERE run_id = ?`, args: [relaunch.runId] },
+          { sql: `UPDATE runs SET lease_ms = 0 WHERE run_id = ?`, args: [lease.runId] },
+          { sql: `UPDATE tasks SET headers = '[]' WHERE task_id = ?`, args: [headersTask.taskId] },
+        ])
+        const corruptTasks = [siblingTask, driftedTask, relaunchTask, leaseTask, headersTask]
+        const before = []
+        for (const task of corruptTasks) before.push(await snapshot(f, task.taskId))
+        const refusals = []
+        for (const run of [sibling, drifted, relaunch, lease, headers]) {
+          refusals.push(
+            await refusalName(f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15)),
+          )
+        }
+        const after = []
+        for (const task of corruptTasks) after.push(await snapshot(f, task.taskId))
+        expect({ refusals, unchanged: after }).toEqual({
+          refusals: Array(5).fill('LeaseLostError'),
+          unchanged: before,
+        })
+      })
+
+      it('a deferred launch starts no duration clock', async () => {
+        const spawned = await f.store.spawn(Q, 'unregistered', '{}', {
+          cancellation: { maxDurationSeconds: 100 },
+        })
+        const deferred = await claimOne(f.store, Q, 'old-build')
+        await f.store.deferLaunch(Q, deferred.runId, deferred.claimToken, deferred.claimGen, 15)
+        await f.admin.setFakeNowEpochMs(START_MS + 50_000)
+        await claimActivated(f.store, Q, 'new-build')
+        const task = await readOne(
+          f.raw,
+          `SELECT first_started_at_ms, cancel_at_ms FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        expect({
+          firstStartedAtMs: Number(task?.first_started_at_ms),
+          cancelAtMs: Number(task?.cancel_at_ms),
+        }).toEqual({ firstStartedAtMs: START_MS + 50_000, cancelAtMs: START_MS + 150_000 })
+      })
+    })
+
+    describe('claimedTaskName (the pre-activation name read)', () => {
+      it('answers the claimed task name only for this unactivated claim', async () => {
+        await f.store.spawn(Q, 'named-job', '{}')
+        const run = await claimOne(f.store, Q, 'w-name')
+        const read = (queue: string, token: string, generation: number) =>
+          f.store.claimedTaskName(queue, run.runId, token, generation)
+        const unactivated = {
+          claim: await read(Q, run.claimToken, run.claimGen),
+          otherQueue: await read('other-queue', run.claimToken, run.claimGen),
+          otherToken: await read(Q, 'not-this-token', run.claimGen),
+          otherGeneration: await read(Q, run.claimToken, run.claimGen + 1),
+        }
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const activated = await read(Q, run.claimToken, run.claimGen)
+        expect(
+          { ...unactivated, activated },
+          'mutation-verdict:behavior:claimed-task-name-requires-queue',
+        ).toEqual({
+          claim: 'named-job',
+          otherQueue: null,
+          otherToken: null,
+          otherGeneration: null,
+          activated: null,
+        })
+      })
+    })
+
+    describe('cancellation discovery', () => {
+      it('a write on a run cancelled mid-pass raises RunCancelledError, while a swept lease raises LeaseLostError', async () => {
+        const cancelled = await f.store.spawn(Q, 'cancel-me', '{}')
+        const cancelledRun = await claimActivated(f.store, Q, 'w-cancel')
+        await f.store.spawn(Q, 'sweep-me', '{}')
+        const sweptRun = await claimActivated(f.store, Q, 'w-sweep')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+        expect(await f.store.expireLeaseNow(Q, sweptRun.runId, sweptRun.claimToken)).toBe(true)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
+          'claim-timeout',
+        ])
+
+        const writes = (run: ClaimedRun) => [
+          () => f.store.complete(Q, run.runId, run.claimToken, '{}'),
+          () => f.store.fail(Q, run.runId, run.claimToken, '{"name":"Late"}', null),
+          () => f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 1 }),
+          () =>
+            f.store.suspendRun(
+              Q,
+              run.runId,
+              run.claimToken,
+              { inSeconds: 1 },
+              { key: '$sleep', stateJson: '{}' },
+            ),
+          () => checkpointOwned(f.store, Q, run, 'late', '{}', 60),
+          () => awaitOwned(f.store, Q, run, 'late', 'never', 30),
+          () => f.store.deferLaunch(Q, run.runId, run.claimToken, run.claimGen, 15),
+        ]
+        const refusals = async (run: ClaimedRun) => {
+          const names: string[] = []
+          for (const write of writes(run)) {
+            names.push(await refusalName(write()))
+          }
+          return names
+        }
+        expect({
+          cancelled: await refusals(cancelledRun),
+          swept: await refusals(sweptRun),
+        }).toEqual({
+          cancelled: Array(7).fill('RunCancelledError'),
+          swept: Array(7).fill('LeaseLostError'),
+        })
       })
     })
 

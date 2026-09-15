@@ -33,6 +33,7 @@ export const MATRIX_WRITE_LABELS = [
   'activate',
   'heartbeat',
   'reschedule',
+  'defer-launch',
   'suspend',
   'emit-event',
   'await-event',
@@ -47,6 +48,8 @@ export const MATRIX_WRITE_LABELS = [
 ] as const
 
 export const MATRIX_READ_LABELS = [
+  'claimed-task-name',
+  'refusal-state',
   'sweep:scan',
   'get-checkpoints',
   'task-result',
@@ -383,7 +386,11 @@ export async function runFaultMatrixCase(
       await go(() => store.spawn(Q, 'd', '{}'))
       const [fin] = (await go(() => store.claim(Q, 'w1b', { leaseSeconds: 60, limit: 1 }))) ?? []
       if (fin) {
+        // The worker reads the claimed task's name before it activates.
+        await go(() => store.claimedTaskName(Q, fin.runId, fin.claimToken, fin.claimGen))
         await go(() => store.activate(Q, fin.runId, fin.claimToken, fin.claimGen))
+        await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
+        // A stale replay of that complete is refused and reads why.
         await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
       }
 
@@ -392,6 +399,30 @@ export async function runFaultMatrixCase(
       const [parked] = (await go(() => store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 }))) ?? []
       if (parked) {
         await go(() => store.reschedule(Q, parked.runId, parked.claimToken, { inSeconds: 2 }))
+      }
+
+      // A launch deferral: a build without the task's handler parks its claim.
+      await go(() => store.spawn(Q, 'i', '{}'))
+      const [unregistered] =
+        (await go(() => store.claim(Q, 'w4', { leaseSeconds: 60, limit: 1 }))) ?? []
+      if (unregistered) {
+        await go(() =>
+          store.claimedTaskName(
+            Q,
+            unregistered.runId,
+            unregistered.claimToken,
+            unregistered.claimGen,
+          ),
+        )
+        await go(() =>
+          store.deferLaunch(
+            Q,
+            unregistered.runId,
+            unregistered.claimToken,
+            unregistered.claimGen,
+            2,
+          ),
+        )
       }
 
       // A task to cancel, a claimed-and-activated run to expire (died

@@ -187,11 +187,11 @@ export function createWorkerServer(deps: {
 
 /**
  * The driver process's HTTP face: POST /wake interrupts the loop's park.
- * Unauthenticated by design — a wake is advisory and idempotent. The real
- * bound on a flood: wake requests COALESCE into one flag, so the tick rate
- * is bounded by tick latency (a sustained flood degrades to continuous
- * ticking, not amplification). Acceptable bound to 127.0.0.1; add a
- * coalescing floor before this endpoint is ever exposed beyond localhost.
+ * Unauthenticated by design, because a wake is advisory and idempotent. Wake
+ * requests coalesce into one flag, and the loop looks at most once per
+ * `wakeFloorMs` after its last tick, so a sustained flood costs at most one
+ * tick per floor interval. Bind it to 127.0.0.1 all the same: anyone who can
+ * reach it can keep the loop at its floor rate.
  */
 export function createWakeServer(loop: Pick<DriverLoop, 'wake'>): WorkerServer {
   const server = createServer((req, res) => {

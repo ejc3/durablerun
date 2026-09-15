@@ -1,5 +1,6 @@
 import {
   type Clock,
+  type LaunchInvocation,
   type SchedulerStore,
   decideRetry,
   parseTaskValueJson,
@@ -39,6 +40,7 @@ export type WorkerOutcome =
   | { kind: 'failed' } // user failure, terminal
   | { kind: 'superseded' } // duplicate delivery / stale claim: did nothing
   | { kind: 'lease-lost' } // lost the lease mid-run: aborted quietly
+  | { kind: 'cancelled' } // the task was cancelled mid-run (AB001): aborted quietly
   | { kind: 'aborted' } // store unreachable mid-pass: user budget untouched
   //   and the lease story recovers. NOTE: 'unreachable' includes a lost
   //   RESPONSE — the write may or may not have committed; recovery is
@@ -47,12 +49,8 @@ export type WorkerOutcome =
   | { kind: 'deferred' } // unknown task name: parked untouched for a
 //                        worker build that knows it (rolling deploys)
 
-export interface RunInvocation {
-  queue: string
-  runId: string
-  claimToken: string
-  claimGen: number
-}
+/** The launch fields a worker needs: the ids of one claim. */
+export type RunInvocation = Pick<LaunchInvocation, 'queue' | 'runId' | 'claimToken' | 'claimGen'>
 
 /**
  * Classify a store-call rejection. Used only immediately around a store call,
@@ -82,6 +80,8 @@ function infrastructureOutcome(
   switch (control.kind) {
     case 'lease-lost':
       return { kind: 'lease-lost' }
+    case 'run-cancelled':
+      return { kind: 'cancelled' }
     case 'store-unavailable':
       return { kind: 'aborted' }
     default:
@@ -94,12 +94,13 @@ function infrastructureOutcome(
  * Transport-free: the HTTP worker server (driver package) wraps this; tests
  * call it directly. The contract, in order:
  *
- * 1. Activation is the gate: the per-claim compare-and-swap admits exactly
+ * 1. A claimed task name this build does not know, read from the store, is
+ *    DEFERRED before activation (parked ~15s with its carried wake preserved,
+ *    nothing consumed, the first start never latched), so deploy workers before
+ *    producers and old runs survive new code.
+ * 2. Activation is the gate: the per-claim compare-and-swap admits exactly
  *    one invocation per claim — a duplicate delivery, a superseded claim,
  *    or a swept lease all exit here having touched nothing.
- * 2. A task name this build does not know is DEFERRED (parked ~15s with
- *    its carried wake preserved, nothing consumed) — deploy workers before
- *    producers and old runs survive new code.
  * 3. User code runs under a heartbeat pump that re-extends the lease at
  *    half-lease cadence; a lost lease aborts the pass quietly (the store
  *    fences every write, so a zombie cannot commit anything anyway).
@@ -114,34 +115,41 @@ export async function runClaimedRun(
   const { store, clock, registry } = deps
   const { queue, runId, claimToken, claimGen } = invocation
 
-  const run = await store.activate(queue, runId, claimToken, claimGen)
-  if (run === null) return { kind: 'superseded' }
-  const claimedRun = run
-  const userAttempt = claimedRun.attempt - claimedRun.infraRetries
-
-  const handler = taskRegistryGet(registry, run.taskName)
+  // The launch carries only ids; the claimed task's name comes from the store,
+  // so no payload can name a task the claim does not hold. A null answer means
+  // the claim was superseded or already activated by another delivery.
+  let taskName: string | null
+  try {
+    taskName = await store.claimedTaskName(queue, runId, claimToken, claimGen)
+  } catch (error) {
+    return trustedStoreOutcome(error)
+  }
+  if (taskName === null) return { kind: 'superseded' }
+  // One lookup: the handler resolved here is the handler dispatched below.
+  const handler = taskRegistryGet(registry, taskName)
   if (handler === undefined) {
-    // Rolling-deploy rule: defer, consume nothing. The jitter is derived
-    // from the run id (no ambient randomness in engine code) so a fleet of
-    // stale workers spreads its retries instead of thundering.
+    // Rolling-deploy rule: defer BEFORE activation, so a build
+    // without this task's handler consumes nothing and never latches the first
+    // start, which would disarm the start deadline and start the duration
+    // clock. The jitter is derived from the run id (no ambient randomness in
+    // engine code) so a fleet of stale workers spreads its retries instead of
+    // thundering.
     let jitterTotal = 0
-    for (let index = 0; index < run.runId.length; index++) {
-      jitterTotal += trustedCharCodeAt(run.runId, index)
+    for (let index = 0; index < runId.length; index++) {
+      jitterTotal += trustedCharCodeAt(runId, index)
     }
-    const jitterSeconds = jitterTotal % 10
     try {
-      await store.reschedule(
-        queue,
-        runId,
-        claimToken,
-        { inSeconds: 15 + jitterSeconds },
-        'preserve',
-      )
+      await store.deferLaunch(queue, runId, claimToken, claimGen, 15 + (jitterTotal % 10))
     } catch (error) {
       return trustedStoreOutcome(error)
     }
     return { kind: 'deferred' }
   }
+
+  const run = await store.activate(queue, runId, claimToken, claimGen)
+  if (run === null) return { kind: 'superseded' }
+  const claimedRun = run
+  const userAttempt = claimedRun.attempt - claimedRun.infraRetries
 
   // Heartbeat pump FIRST (before any further unfenced reads): extend at
   // half-lease cadence until the pass ends. A zero-row heartbeat is the

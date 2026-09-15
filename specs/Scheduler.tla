@@ -43,6 +43,9 @@
 \*                            carries wake_event/event_payload forward)
 \*   SleepSuspend /
 \*     VoluntaryChain     <-> reschedule()
+\*   DeferLaunch          <-> 'defer-launch' (SPEC-FIRST): the rolling-deploy
+\*                            deferral, decided before activation from the
+\*                            claimed task's name, fenced on the claim receipt
 \*   SweepLostLaunch / SweepRelaunchExhausted /
 \*     SweepClaimTimeout / SweepInfraExhausted
 \*                        <-> sweep()'s per-run fenced batches;
@@ -116,7 +119,7 @@
 \*    schema.  Until then the executable twin is a generated fault surface
 \*    over corrupt wait rows, not this spec.
 \*  - Checkpoint content, the data plane (RunStateStore), child tasks,
-\*    defer-unknown-task, multi-queue, multi-shard, sagas.
+\*    multi-queue, multi-shard, sagas.
 \*  - SQL atomicity: assumed as action atomicity (see mapping above).
 \*  - Token randomness: a claim of run r is uniquely named by (r, claim_gen),
 \*    so claim_token is modeled AS the pair -- "claimed_by = :token" becomes
@@ -256,6 +259,8 @@
 \*   'fail' -> FailRun  [cas-fenced]  (replay zero-row; the successor
 \*     insert keys on the CAS stamp, so no double successor)
 \*   'reschedule' -> SleepSuspend / VoluntaryChain  [cas-fenced]
+\*   'defer-launch' -> DeferLaunch  [cas-fenced]  (fenced on the claim receipt:
+\*     a replay finds the run parked, or activated, and matches nothing)
 \*   'suspend' -> SleepSuspend  [cas-fenced]  (reschedule's transition plus
 \*     the suspension MARKER in the same batch — the marker's meaning, "the
 \*     wake already happened", is only sound if it commits with the park;
@@ -281,6 +286,10 @@
 \* Excluded (reason  [dup-class]):
 \*   'driver-heartbeat' [receipt] -- observability liveness upsert; nothing
 \*     in the protocol reads it, and a replay re-applies the same row
+\*   'claimed-task-name' [read] -- the worker's pre-activation read of a claimed
+\*     run's immutable task name; part of DeferLaunch's decision, no transition
+\*   'refusal-state' [read] -- after a refused worker write, the run's state names
+\*     why (cancelled or lost fence); no transition
 \*   'sweep:scan' [read] -- read-only discovery, no state transition
 \*   'expire-lease-now' [cas-fenced] -- advisory-only token-fenced write
 \*     for the exact signal claim identity (replay re-applies the same
@@ -370,7 +379,7 @@ ActionNames ==
    "FailRunWithRetry", "FailRunTerminal", "Sleep", "Chain",
    "SweepLostLaunch", "SweepRelaunchExhausted", "SweepClaimTimeout",
    "SweepInfraExhausted", "CancelSweep", "CancelExplicit",
-   "Emit", "AwaitHit", "AwaitMiss", "Crash", "TimeAdvance"}
+   "Emit", "AwaitHit", "AwaitMiss", "Crash", "TimeAdvance", "Defer"}
 
 WorkerWrites == {"Heartbeat", "Complete", "FailRunWithRetry",
                  "FailRunTerminal", "Sleep", "Chain",
@@ -389,6 +398,7 @@ VARIABLES
   policy,         \* ghost: the cancellation policy chosen at spawn
   cancelAt,       \* tasks.cancel_at_ms: armed deadline, or Inf (SQL NULL)
   firstStarted,   \* tasks.first_started_at_ms: one-shot latch, Inf = NULL
+  dispatched,     \* ghost: a worker ran this task's code, or may have (a crash)
   \* -- per run row (runs table); pool-allocated by nextRun ---------------
   runState,
   runTask,
@@ -421,7 +431,7 @@ VARIABLES
   lastCtx         \* [run, gen] of the acting context, for LeaseAuthority
 
 vars == <<now, taskState, attempts, infraRetries, hops, policy, cancelAt,
-          firstStarted, runState, runTask, runAttempt, claimGen,
+          firstStarted, dispatched, runState, runTask, runAttempt, claimGen,
           activatedGen, relaunchCount, leaseDeadline, availableAt,
           wakeEvent, runPayload, nextRun, waitEv, waitAt, eventState,
           tokRuns, channel, contexts, nextCtx, lastAction, lastCtx>>
@@ -443,6 +453,23 @@ Fenced(c) ==
   /\ claimGen[c.run] = c.gen
   /\ activatedGen[c.run] = c.gen
 
+\* An eligible task: its cancellation deadline is not yet due.  The twin of the
+\* stores' eligibleTask fragment; activation, the launch deferral, and every
+\* suspension require it.
+EligibleTask(t) == cancelAt[t] > now
+
+\* A launch whose claim receipt still holds: the run is running under the
+\* message's claim generation and not yet activated.  Activation and the launch
+\* deferral both fence on it.
+ReceiptFenced(m) ==
+  /\ m \in channel
+  /\ runState[m.run] = "running"
+  /\ claimGen[m.run] = m.gen
+  /\ activatedGen[m.run] < m.gen
+
+\* The context's task has run a handler; the start latch requires it.
+MarkDispatched(c) == dispatched' = [dispatched EXCEPT ![runTask[c.run]] = TRUE]
+
 CtxKey(c) == [run |-> c.run, gen |-> c.gen]
 
 -----------------------------------------------------------------------------
@@ -456,6 +483,7 @@ Init ==
   /\ policy        = [t \in Tasks |-> "none"]
   /\ cancelAt      = [t \in Tasks |-> Inf]
   /\ firstStarted  = [t \in Tasks |-> Inf]
+  /\ dispatched    = [t \in Tasks |-> FALSE]
   /\ runState      = [r \in RunIds |-> "unused"]
   /\ runTask       = [r \in RunIds |-> CHOOSE t \in Tasks : TRUE]
   /\ runAttempt    = [r \in RunIds |-> 0]
@@ -497,7 +525,7 @@ Spawn(t, pol) ==
   /\ cancelAt' = [cancelAt EXCEPT ![t] =
                     IF pol \in {"delay", "both"} THEN Clip(now + CancelLen)
                     ELSE Inf]
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, firstStarted, claimGen,
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, firstStarted, claimGen,
                  activatedGen, relaunchCount, leaseDeadline, wakeEvent,
                  runPayload, waitEv, waitAt, eventState, tokRuns, channel,
                  contexts, nextCtx>>
@@ -535,7 +563,7 @@ ClaimCore(r) ==
   /\ LET timedOut == waitEv[r] # NoEvent /\ waitAt[r] <= now IN
        /\ waitEv' = [waitEv EXCEPT ![r] = IF timedOut THEN NoEvent ELSE @]
        /\ waitAt' = [waitAt EXCEPT ![r] = IF timedOut THEN 0 ELSE @]
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, activatedGen,
                  relaunchCount, availableAt, wakeEvent, runPayload,
                  eventState, nextRun, contexts, nextCtx>>
@@ -588,7 +616,7 @@ DuplicateClaim(r) ==
 Drop(m) ==
   /\ m \in channel
   /\ channel' = channel \ {m}
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+  /\ UNCHANGED <<dispatched, now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
@@ -614,11 +642,8 @@ Drop(m) ==
 \*     reviewed inverse bug kept the stale spawn deadline via MIN and
 \*     cancelled healthy running tasks).
 Activate(m) ==
-  /\ m \in channel
-  /\ runState[m.run] = "running"
-  /\ claimGen[m.run] = m.gen
-  /\ activatedGen[m.run] < m.gen
-  /\ cancelAt[runTask[m.run]] > now
+  /\ ReceiptFenced(m)
+  /\ EligibleTask(runTask[m.run])
   /\ LET t  == runTask[m.run]
          fs == IF firstStarted[t] = Inf THEN now ELSE firstStarted[t] IN
        /\ firstStarted' = [firstStarted EXCEPT ![t] = fs]
@@ -629,11 +654,40 @@ Activate(m) ==
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![m.run] = Clip(now + LeaseLen)]
   /\ contexts' = contexts \cup {[id |-> nextCtx, run |-> m.run, gen |-> m.gen]}
   /\ nextCtx' = nextCtx + 1
-  /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
+  /\ UNCHANGED <<dispatched, now, taskState, attempts, infraRetries, hops, policy,
                  runState, runTask, runAttempt, claimGen, relaunchCount,
                  availableAt, wakeEvent, runPayload, waitEv, waitAt,
                  eventState, tokRuns, nextRun, channel>>
   /\ lastAction' = "Activate" /\ lastCtx' = CtxKey(m)
+
+\* DeferLaunch <-> 'defer-launch' (SPEC-FIRST): the rolling-deploy deferral,
+\* decided before activation.  A worker whose build has no handler for the
+\* claimed task parks the claimed run: same row, no attempt,
+\* no relaunch, wake fields kept.  It is fenced on the claim receipt -- the run
+\* still running under this claim generation and not yet activated -- so a
+\* replay after the park, or after an activation, matches nothing.  It never
+\* activates, so the first-start latch, the start deadline, and the duration
+\* clock are untouched: a task no handler ever ran still carries its start
+\* deadline.  Its guard also requires an eligible task, as every suspension
+\* does.  Consumes a hop, the artificial suspension budget (header note);
+\* production deferral ends when a worker build that knows the task arrives,
+\* or at the start deadline.
+DeferLaunch(m) ==
+  /\ ReceiptFenced(m)
+  /\ LET t == runTask[m.run] IN
+       /\ EligibleTask(t)
+       /\ hops[t] < MaxHops
+       /\ runState'    = [runState EXCEPT ![m.run] = "sleeping"]
+       /\ availableAt' = [availableAt EXCEPT ![m.run] = Clip(now + Backoff)]
+       /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
+       /\ hops'        = [hops EXCEPT ![t] = @ + 1]
+  /\ tokRuns' = tokRuns \ {m.run}   \* impl stamps claimed_by on exit
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, wakeEvent, runPayload,
+                 waitEv, waitAt, eventState, nextRun, channel, contexts,
+                 nextCtx>>
+  /\ lastAction' = "Defer" /\ lastCtx' = CtxKey(m)
 
 \* Heartbeat <-> batch('heartbeat'): extend the lease while claimed_by
 \* matches and state = running.  (Impl checks claimed_by+state only; the
@@ -643,6 +697,7 @@ Heartbeat(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ leaseDeadline' = [leaseDeadline EXCEPT ![c.run] = Clip(now + LeaseLen)]
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, availableAt,
@@ -662,6 +717,7 @@ CompleteRun(c) ==
   /\ cancelAt'  = [cancelAt EXCEPT ![runTask[c.run]] = Inf]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
@@ -692,6 +748,7 @@ FailRunWithRetry(c) ==
        /\ nextRun' = nextRun + 1
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  waitEv, waitAt, eventState, channel, nextCtx>>
@@ -709,6 +766,7 @@ FailRunTerminal(c) ==
        /\ attempts'  = [attempts EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt, firstStarted,
                  runTask, runAttempt, claimGen, activatedGen, relaunchCount,
                  leaseDeadline, availableAt, wakeEvent, runPayload, waitEv,
@@ -719,22 +777,18 @@ FailRunTerminal(c) ==
 \* run row re-scheduled, no accounting consumed; context exits.  Parked
 \* wake fields are deliberately NOT cleared (header note).
 \*
-\* MODEL/IMPL GAP, deliberate and recorded in BUILD.md: Fenced(c) constrains
-\* only the RUN.  Both implementations additionally require the owning TASK to
-\* be eligible -- live, and not past a due cancellation deadline -- so a run
-\* whose task is about to be cancelled cannot re-park itself into the queue
-\* the claim path is already refusing to launch from.  That is STRICTLY
-\* NARROWER than this action, so every safety property proved here still
-\* holds of the implementation.  It is not free, though: the refusal reaches
-\* the worker as a lost lease, and whether that path preserves the liveness
-\* properties is NOT settled by this model, because the guard is not in it.
-\* Modelling it belongs with the cancellation-discovery work (PR3.2), which
-\* is where the "task terminal" and "fence lost" signals stop being the same
-\* thing.
+\* Like every suspension, it requires the owning TASK to be eligible: its
+\* cancellation deadline not yet due.  Fenced(c) already implies the task is
+\* live, because cancellation also cancels the task's running runs.  A task
+\* about to be cancelled cannot re-park itself into the queue the claim path
+\* is already refusing to launch from; the refused worker keeps its context
+\* until the deadline sweep cancels the task or its lease expires, and the
+\* liveness properties are checked with that refusal in place.
 SleepSuspend(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ LET t == runTask[c.run] IN
+       /\ EligibleTask(t)
        /\ hops[t] < MaxHops
        /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
        /\ availableAt' = [availableAt EXCEPT ![c.run] = Clip(now + SleepDur)]
@@ -742,6 +796,7 @@ SleepSuspend(c) ==
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
@@ -755,6 +810,7 @@ VoluntaryChain(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ LET t == runTask[c.run] IN
+       /\ EligibleTask(t)
        /\ hops[t] < MaxHops
        /\ runState'    = [runState EXCEPT ![c.run] = "pending"]
        /\ availableAt' = [availableAt EXCEPT ![c.run] = now]
@@ -762,6 +818,7 @@ VoluntaryChain(c) ==
        /\ hops'        = [hops EXCEPT ![t] = @ + 1]
   /\ contexts' = contexts \ {c}
   /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
@@ -778,6 +835,7 @@ AwaitEventHit(c, e) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ eventState[e] # NoPayload
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
@@ -797,6 +855,7 @@ AwaitEventHit(c, e) ==
 \* has no wait (WaitIntegrity), so registration never finds one to violate.
 AwaitRegister(c, e, tAt) ==
   LET t == runTask[c.run] IN
+    /\ EligibleTask(t)
     /\ hops[t] < MaxHops
     /\ eventState[e] = NoPayload
     /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
@@ -809,6 +868,7 @@ AwaitRegister(c, e, tAt) ==
     /\ hops'        = [hops EXCEPT ![t] = @ + 1]
     /\ contexts' = contexts \ {c}
     /\ tokRuns' = tokRuns \ {c.run}   \* suspension carries no live token
+    /\ MarkDispatched(c)
     /\ UNCHANGED <<now, attempts, infraRetries, policy, cancelAt,
                    firstStarted, runTask, runAttempt, claimGen,
                    activatedGen, relaunchCount, leaseDeadline, eventState,
@@ -862,7 +922,7 @@ EmitEvent(e, p) ==
        /\ taskState'   = [t \in Tasks |->
                             IF \E r \in W : runTask[r] = t THEN "pending"
                             ELSE taskState[t]]
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, tokRuns, nextRun,
                  channel, contexts, nextCtx>>
@@ -891,7 +951,7 @@ CancelCore(t) ==
     /\ waitEv' = [r \in RunIds |-> IF r \in dead THEN NoEvent ELSE waitEv[r]]
     /\ waitAt' = [r \in RunIds |-> IF r \in dead THEN 0 ELSE waitAt[r]]
     /\ tokRuns' = tokRuns \ dead      \* impl nulls claimed_by on cancel
-    /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, firstStarted,
+    /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, firstStarted,
                    runTask, runAttempt, claimGen, activatedGen,
                    relaunchCount, wakeEvent, runPayload, eventState,
                    nextRun, channel, contexts, nextCtx>>
@@ -901,7 +961,7 @@ CancelCore(t) ==
 \* exceeded since first start).
 CancelSweep(t) ==
   /\ taskState[t] \in LiveStates
-  /\ cancelAt[t] <= now
+  /\ ~EligibleTask(t)
   /\ CancelCore(t)
   /\ lastAction' = "CancelSweep" /\ lastCtx' = NoCtx
 
@@ -930,7 +990,7 @@ SweepLostLaunch(r) ==
   /\ relaunchCount' = [relaunchCount EXCEPT ![r] = @ + 1]
   /\ taskState'     = [taskState EXCEPT ![runTask[r]] = "pending"]
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on reopen
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  leaseDeadline, wakeEvent, runPayload, waitEv, waitAt,
                  eventState, nextRun, channel, contexts, nextCtx>>
@@ -947,7 +1007,7 @@ SweepRelaunchExhausted(r) ==
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, availableAt, wakeEvent,
                  runPayload, waitEv, waitAt, eventState, nextRun, channel,
@@ -979,7 +1039,7 @@ SweepClaimTimeout(r) ==
        /\ taskState'    = [taskState EXCEPT ![t] = "pending"]
        /\ nextRun' = nextRun + 1
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<now, attempts, hops, policy, cancelAt, firstStarted,
+  /\ UNCHANGED <<dispatched, now, attempts, hops, policy, cancelAt, firstStarted,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
                  waitEv, waitAt, eventState, channel, contexts, nextCtx>>
   /\ lastAction' = "SweepClaimTimeout" /\ lastCtx' = NoCtx
@@ -993,7 +1053,7 @@ SweepInfraExhausted(r) ==
   /\ runState'  = [runState EXCEPT ![r] = "failed"]
   /\ taskState' = [taskState EXCEPT ![runTask[r]] = "failed"]
   /\ tokRuns' = tokRuns \ {r}       \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runTask, runAttempt, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, availableAt, wakeEvent,
                  runPayload, waitEv, waitAt, eventState, nextRun, channel,
@@ -1005,6 +1065,7 @@ SweepInfraExhausted(r) ==
 WorkerCrash(c) ==
   /\ c \in contexts
   /\ contexts' = contexts \ {c}
+  /\ MarkDispatched(c)
   /\ UNCHANGED <<now, taskState, attempts, infraRetries, hops, policy,
                  cancelAt, firstStarted, runState, runTask, runAttempt,
                  claimGen, activatedGen, relaunchCount, leaseDeadline,
@@ -1015,7 +1076,7 @@ WorkerCrash(c) ==
 TimeAdvance ==
   /\ now < MaxTime
   /\ now' = now + 1
-  /\ UNCHANGED <<taskState, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<dispatched, taskState, attempts, infraRetries, hops, policy, cancelAt,
                  firstStarted, runState, runTask, runAttempt, claimGen,
                  activatedGen, relaunchCount, leaseDeadline, availableAt,
                  wakeEvent, runPayload, waitEv, waitAt, eventState, tokRuns,
@@ -1029,7 +1090,7 @@ Next ==
   \/ \E r \in RunIds : Claim(r) \/ DuplicateClaim(r) \/ SweepLostLaunch(r)
                        \/ SweepRelaunchExhausted(r) \/ SweepClaimTimeout(r)
                        \/ SweepInfraExhausted(r)
-  \/ \E m \in LaunchMsgs : Drop(m) \/ Activate(m)
+  \/ \E m \in LaunchMsgs : Drop(m) \/ Activate(m) \/ DeferLaunch(m)
   \/ \E e \in Events, p \in Payloads : EmitEvent(e, p)
   \/ \E c \in contexts : Heartbeat(c) \/ CompleteRun(c)
                          \/ FailRunWithRetry(c) \/ FailRunTerminal(c)
@@ -1077,6 +1138,7 @@ TypeOK ==
   /\ policy \in [Tasks -> Policies]
   /\ cancelAt \in [Tasks -> 0..Inf]
   /\ firstStarted \in [Tasks -> 0..Inf]
+  /\ dispatched \in [Tasks -> BOOLEAN]
   /\ runState \in [RunIds -> RunStates]
   /\ runTask \in [RunIds -> Tasks]
   /\ runAttempt \in [RunIds -> 0..OrdinalBound]
@@ -1102,6 +1164,18 @@ TypeOK ==
   /\ nextCtx \in 1..(CtxIdBound + 1)
   /\ lastAction \in ActionNames
   /\ lastCtx \in [run : RunIds \cup {NoRun}, gen : 0..GenBound]
+
+\* INVARIANT (start latch): first_started_at_ms disarms max_delay and anchors
+\* max_duration (Activate), so it may be set only for a task some worker has
+\* dispatched -- ran, or may have run before crashing -- or while an activated
+\* context of the task is still live and may yet dispatch.  A deferral that
+\* latches the start and exits without dispatching leaves a never-started task
+\* with its start deadline disarmed and its duration clock running.
+StartLatchMeansDispatched ==
+  \A t \in Tasks :
+    firstStarted[t] # Inf =>
+      \/ dispatched[t]
+      \/ \E c \in contexts : runTask[c.run] = t
 
 \* INVARIANT 2 -- the OBSERVABLE for "at most one activation per (run,
 \* gen)".  The CAS makes activation a one-way state change activatedGen:

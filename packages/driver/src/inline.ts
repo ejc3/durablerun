@@ -17,6 +17,7 @@ const INLINE_ENDING_KINDS = {
   failed: 'failed',
   superseded: 'unknown',
   'lease-lost': 'crashed',
+  cancelled: 'unknown',
   aborted: 'crashed',
   deferred: 'unknown',
 } as const satisfies Record<WorkerOutcome['kind'], Ending['kind']>

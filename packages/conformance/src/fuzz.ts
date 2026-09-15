@@ -1,4 +1,4 @@
-import { type ClaimedRun, LeaseLostError } from '@durablerun/core'
+import { type ClaimedRun, isRefusedWrite } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
@@ -83,8 +83,8 @@ async function runWalk(
       await op()
       stats[stat]++
     } catch (error) {
-      // Abandoned/swept runs legitimately lose their lease mid-walk.
-      if (!(error instanceof LeaseLostError)) throw error
+      // Abandoned, swept, or cancelled runs legitimately refuse writes mid-walk.
+      if (!isRefusedWrite(error)) throw error
     }
   }
 

@@ -1580,6 +1580,7 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
       statements = [triggerTask('pending'), triggerRun({ state: 'pending', availableAt: NOW })]
       break
     case 'activate':
+    case 'defer-launch':
       statements = [triggerTask('running'), triggerRun({ state: 'running', activatedGen: 0 })]
       break
     case 'emit-event':
@@ -1695,6 +1696,8 @@ async function invoke(
       return store.claim(Q, target.claimWorker, { leaseSeconds: 60, limit: selectionLimit })
     case 'activate':
       return store.activate(Q, target.runId, target.token, 1)
+    case 'defer-launch':
+      return store.deferLaunch(Q, target.runId, target.token, 1, 1)
     case 'heartbeat':
       return store.heartbeat(Q, target.runId, target.token, 60)
     case 'reschedule':
@@ -2678,6 +2681,16 @@ function healthyWinErrors(
           same(run?.activated_gen, 1) &&
           same(run?.started_at_ms, NOW),
         'trigger claim was not activated',
+      )
+      break
+    case 'defer-launch':
+      expect(
+        task?.state === 'sleeping' &&
+          run?.state === 'sleeping' &&
+          same(run.available_at_ms, NOW + 1_000) &&
+          same(run.activated_gen, 0) &&
+          run.claimed_by === null,
+        'trigger launch was not deferred',
       )
       break
     case 'heartbeat':

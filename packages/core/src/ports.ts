@@ -53,6 +53,38 @@ export interface SchedulerStore {
     claimGen: number,
   ): Promise<ClaimedRun | null>
 
+  /**
+   * The claimed run's task name, read before activation so a worker can decide to
+   * defer a task it has no handler for without latching the first start. An
+   * unfenced read of an immutable value, answered only while the run is still
+   * running under this claim token and generation and not yet activated; null
+   * otherwise, which the worker treats as superseded.
+   */
+  claimedTaskName(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+  ): Promise<string | null>
+
+  /**
+   * §3.2 rolling-deploy deferral, decided before activation: a worker build with
+   * no handler for the claimed task parks the claimed run `inSeconds` from
+   * database time. Fenced on the claim receipt (running under this token and
+   * generation, not yet activated), it refuses the corrupt or inadmissible claims
+   * activation refuses and, like every suspension, requires an eligible task. It
+   * consumes no attempt or relaunch, keeps the run's wake fields, and never
+   * latches the first start. A refusal throws RunCancelledError when the task's
+   * cancellation ended the run, and LeaseLostError otherwise.
+   */
+  deferLaunch(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+    inSeconds: number,
+  ): Promise<void>
+
   /** Zero-rows result surfaces as `held: false` — the AB002 signal. */
   heartbeat(
     queue: string,
@@ -67,18 +99,11 @@ export interface SchedulerStore {
    * user-supplied absolute; the store writes it verbatim, never converting
    * via an instance clock.
    *
-   * `wakeDisposition` (default 'consume'): a worker that PROCESSED a carried
-   * event wake sleeps with 'consume' — later timer wakes must not replay the
-   * event. A driver that could NOT dispatch (unknown task, §3.8.2 deferral)
-   * defers with 'preserve' so the wake survives for a capable claimer.
+   * A carried event wake is consumed: the worker processed it, so later timer
+   * wakes must not replay the event. A launch no handler can run defers through
+   * `deferLaunch` instead, before activation, and keeps its wake.
    */
-  reschedule(
-    queue: string,
-    runId: string,
-    claimToken: string,
-    wake: WakeSpec,
-    wakeDisposition?: 'consume' | 'preserve',
-  ): Promise<void>
+  reschedule(queue: string, runId: string, claimToken: string, wake: WakeSpec): Promise<void>
 
   complete(queue: string, runId: string, claimToken: string, resultJson: string): Promise<void>
 

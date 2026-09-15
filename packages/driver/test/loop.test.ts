@@ -110,7 +110,72 @@ describe('DriverLoop', () => {
     await until(() => f.clock.sleeps.length === 1, 'idle park')
     await f.store.spawn(Q, 'job', '{}')
     loop.wake()
+    // The wake arrives inside the floor after the last tick started, so the
+    // loop waits out the rest of that interval before it looks again.
+    await until(() => f.clock.sleeps.length === 1, 'floor wait after wake')
+    await f.advance(250)
     await until(() => launcher.invocations.length === 1, 'launch after wake')
+    await loop.stop()
+    await done
+    f.close()
+  })
+
+  it('a flood of wake() calls ticks at most once per wake floor interval', async () => {
+    const f = await fx('loop-wake-floor')
+    const launcher = new FakeLauncher()
+    const opts = { ...OPTS, wakeFloorMs: 1_000 }
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, opts)
+    const done = loop.run()
+    await until(() => f.clock.sleeps.length === 1, 'idle park')
+    const ticksBefore = loop.stats.ticks
+    // Fifty pings with the clock frozen inside one floor interval: at most one
+    // more look, never fifty.
+    for (let i = 0; i < 50; i++) {
+      loop.wake()
+      await f.clock.yieldTurn()
+    }
+    await until(() => f.clock.sleeps.length === 1, 'parked again')
+    expect(loop.stats.ticks - ticksBefore).toBeLessThanOrEqual(1)
+    await loop.stop()
+    await done
+    f.close()
+  })
+
+  it('a wake after the clock steps backwards waits no longer than the wake floor', async () => {
+    const f = await fx('loop-wake-clock-step')
+    const launcher = new FakeLauncher()
+    const opts = { ...OPTS, wakeFloorMs: 1_000 }
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, opts)
+    const done = loop.run()
+    await until(() => f.clock.sleeps.length === 1, 'idle park')
+    const parked = f.clock.sleeps[0]?.ms
+    // A backwards clock step of an hour: the last tick now seems to start in the future.
+    f.clock.now -= 3_600_000
+    loop.wake()
+    await until(() => f.clock.sleeps.length === 1 && f.clock.sleeps[0]?.ms !== parked, 'floor wait')
+    expect(f.clock.sleeps[0]?.ms).toBeLessThanOrEqual(1_000)
+    await loop.stop()
+    await done
+    f.close()
+  })
+
+  it('a wake during a park never pushes the planned look later', async () => {
+    const f = await fx('loop-wake-planned')
+    const launcher = new FakeLauncher()
+    const opts = { ...OPTS, wakeFloorMs: 1_000 }
+    const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, opts)
+    const done = loop.run()
+    await until(() => f.clock.sleeps.length === 1, 'park')
+    const planned = f.clock.sleeps[0]?.ms ?? 0
+    await f.advance(5)
+    loop.wake()
+    await until(
+      () => f.clock.sleeps.length === 1 && f.clock.sleeps[0]?.ms !== planned,
+      'floor wait',
+    )
+    // The planned look was due `planned - 5` ms from now. The floor may coalesce
+    // pings, but it must not delay that look.
+    expect(f.clock.sleeps[0]?.ms).toBeLessThanOrEqual(planned - 5)
     await loop.stop()
     await done
     f.close()

@@ -267,23 +267,21 @@ async function claimAndRun(
   reg: TaskRegistry,
   token: string,
 ): Promise<ReturnType<typeof runClaimedRun>> {
-  const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
-  if (!run) throw new Error('expected a claimable run')
   return runClaimedRun(
     { store: f.store, clock: f.clock, registry: reg },
-    { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+    await claimInvocation(f, token),
   )
 }
 
 async function claimInvocation(f: Awaited<ReturnType<typeof fx>>, token: string) {
   const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
   if (!run) throw new Error('expected a claimable run')
-  return {
-    queue: Q,
-    runId: run.runId,
-    claimToken: run.claimToken,
-    claimGen: run.claimGen,
-  }
+  return invocationOf(run)
+}
+
+/** The launch a driver builds from a claimed run. */
+function invocationOf(run: { runId: string; claimToken: string; claimGen: number }) {
+  return { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen }
 }
 
 async function replacePropertyAsync<T>(
@@ -526,7 +524,7 @@ describe('runClaimedRun', () => {
                 }),
               }),
             },
-            { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+            invocationOf(run),
           )
           const result = await f.store.getTaskResult(Q, spawned.taskId)
           return {
@@ -1465,18 +1463,80 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a task cancelled mid-pass ends the pass with a cancelled outcome, not a lost lease', async () => {
+    const f = await fx('sdk-cancelled-mid-pass')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const reg = registry({
+      job: async () => {
+        expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
+        return 'done'
+      },
+    })
+    expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'cancelled' })
+    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('cancelled')
+    f.close()
+  })
+
+  it('a resolver that stops resolving after the first lookup still runs the handler it resolved', async () => {
+    const f = await fx('sdk-flapping-registry')
+    await f.store.spawn(Q, 'job', '{}')
+    const handler: TaskHandler = async () => 'done'
+    let lookups = 0
+    // A structural resolver is trusted host code, so the worker calls its own get.
+    const reg = {
+      get(name: string): TaskHandler | undefined {
+        lookups++
+        return lookups === 1 && name === 'job' ? handler : undefined
+      },
+    } as unknown as TaskRegistry
+    const outcome = await claimAndRun(f, reg, 'w1').then(
+      (value) => value,
+      (error: unknown) => String(error),
+    )
+    expect(outcome).toEqual({ kind: 'completed' })
+    f.close()
+  })
+
+  it('a launch that names another task still runs the task its claim holds', async () => {
+    const f = await fx('sdk-mismatched-launch')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const reg = registry({ job: async () => 'done', other: async () => 'wrong' })
+    const invocation = { ...(await claimInvocation(f, 'w1')), taskName: 'other' }
+    const outcome = await runClaimedRun(
+      { store: f.store, clock: f.clock, registry: reg },
+      invocation,
+    ).then(
+      (value) => value,
+      (error: unknown) => String(error),
+    )
+    expect({ outcome, result: await f.store.getTaskResult(Q, spawned.taskId) }).toEqual({
+      outcome: { kind: 'completed' },
+      result: { state: 'completed', completedPayloadJson: '"done"' },
+    })
+    f.close()
+  })
+
+  it('a duplicate delivery of an unregistered task is superseded after the first parks it', async () => {
+    const f = await fx('sdk-dup-deferred')
+    await f.store.spawn(Q, 'new-task', '{}')
+    const invocation = await claimInvocation(f, 'w1')
+    const deps = { store: f.store, clock: f.clock, registry: registry({}) }
+    const first = await runClaimedRun(deps, invocation)
+    const second = await runClaimedRun(deps, invocation)
+    expect({ first, second }).toEqual({
+      first: { kind: 'deferred' },
+      second: { kind: 'superseded' },
+    })
+    f.close()
+  })
+
   it('a duplicate delivery of the same claim does nothing', async () => {
     const f = await fx('sdk-dup')
     const reg = registry({ job: async () => 'once' })
     await f.store.spawn(Q, 'job', '{}')
     const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
     if (!run) throw new Error('claim')
-    const invocation = {
-      queue: Q,
-      runId: run.runId,
-      claimToken: run.claimToken,
-      claimGen: run.claimGen,
-    }
+    const invocation = invocationOf(run)
     const deps = { store: f.store, clock: f.clock, registry: reg }
     expect(await runClaimedRun(deps, invocation)).toEqual({ kind: 'completed' })
     expect(await runClaimedRun(deps, invocation)).toEqual({ kind: 'superseded' })
@@ -1501,7 +1561,7 @@ describe('runClaimedRun', () => {
     const currentRun = run
     const outcome = await runClaimedRun(
       { store: f.store, clock: f.clock, registry: reg },
-      { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      invocationOf(run),
     )
     expect(outcome).toEqual({ kind: 'lease-lost' })
     // The sweep owns recovery; the zombie committed nothing after the loss.
@@ -1540,7 +1600,7 @@ describe('runClaimedRun', () => {
     if (!run) throw new Error('claim')
     const outcome = await runClaimedRun(
       { store: failing as SchedulerStore, clock: f.clock, registry: reg },
-      { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      invocationOf(run),
     )
     expect(outcome).toEqual({ kind: 'aborted' })
     f.close()
@@ -1571,7 +1631,7 @@ describe('runClaimedRun', () => {
     if (!run) throw new Error('claim')
     const pass = runClaimedRun(
       { store: counting as SchedulerStore, clock: f.clock, registry: reg },
-      { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      invocationOf(run),
     )
     // Let the pass reach its awaits (pump sleep + the job's long call)
     // before moving time — advancing earlier would shift the deadlines.
@@ -1631,7 +1691,7 @@ describe('runClaimedRun', () => {
             clock: f.clock,
             registry: registry({ job: async () => null }),
           },
-          { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+          invocationOf(run),
         )
       } catch (error) {
         rejected = error
@@ -1667,7 +1727,7 @@ describe('runClaimedRun', () => {
             },
           }),
         },
-        { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+        invocationOf(run),
       )
 
       while (f.clock.fired.length < 1) {

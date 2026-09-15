@@ -75,8 +75,13 @@ describe('worker server hardening', () => {
       body,
     })
     expect(res.status).toBe(202)
-    await new Promise((r) => setTimeout(r, 100))
-    expect((await f.store.getTaskResult(Q, spawned.taskId))?.state).toBe('completed')
+    // The launch runs after the 202; poll for its completion instead of sleeping.
+    let state: string | undefined
+    for (let i = 0; i < 200 && state !== 'completed'; i++) {
+      state = (await f.store.getTaskResult(Q, spawned.taskId))?.state
+      if (state !== 'completed') await new Promise((r) => setTimeout(r, 10))
+    }
+    expect(state).toBe('completed')
     await f.close()
   })
 

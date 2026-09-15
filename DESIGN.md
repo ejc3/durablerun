@@ -411,7 +411,12 @@ One invocation executes one claimed run to its next suspension point:
   is legitimately re-claimed many times (every sleep wake, every lost-launch
   relaunch, every chain hop), so a one-shot flag can never work. Each claim
   increments the run row's `claim_gen` (§3.1 step 2) and the launch payload
-  carries it; activation is
+  carries it. The worker first reads the claimed task's name for this unactivated
+  claim (`claimedTaskName`); a build with no handler for that name defers the
+  claim before this CAS (`deferLaunch`, fenced on the same claim receipt with
+  `activated_gen < :claim_gen`), so an undispatchable launch never latches the
+  first start, which would disarm the start deadline and start the duration
+  clock for a task no handler ran. Otherwise activation is
   `UPDATE runs SET activated_gen = :claim_gen, claim_expires_at = <re-extended>
   WHERE run_id=:r AND claimed_by=:token AND claim_gen=:claim_gen AND
   activated_gen < :claim_gen AND <soleLiveRun(runs)>`. The final fragment
@@ -545,9 +550,11 @@ One invocation executes one claimed run to its next suspension point:
   only. Neither installs a server `error` handler after bind, so a server error
   is an uncaught event that ends the host process. Every pass it was running
   recovers through the lease, like any other worker death.
-- Rolling deploys, ported from Absurd: a worker that claims a task name its
-  build doesn't know **defers** it (`scheduleRun(now + 15s + jitter)`, nothing
-  consumed) — deploy workers before enabling producers, and old runs survive
+- Rolling deploys, ported from Absurd: a worker whose build has no handler for
+  the claimed task name **defers** the claim before activation (`deferLaunch`,
+  15s + jitter, nothing consumed; the activation bullet above says how the name
+  is read). The launch still carries only ids, so older drivers keep working and
+  no payload can name a task the claim does not hold. Deploy workers before enabling producers, and old runs survive
   new code. In-flight runs resuming under changed code rely on checkpoint
   stability: step names/order must stay compatible, or the task name is
   versioned (`report@v2`) so old runs finish on old handlers.
@@ -556,8 +563,16 @@ One invocation executes one claimed run to its next suspension point:
   `awaitEvent` suspends like any other wait (no polling worker slot). Absurd's
   deadlock rule is kept: awaiting a same-queue child from inside a worker is
   refused.
-- Cancellation discovery: state transitions raise the ported `AB001/AB002`
-  equivalents (SELECT state guard inside each engine call), aborting quietly.
+- Cancellation discovery: a refused worker write names why (the refused-write
+  contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
+  outcome, consuming nothing. A heartbeat still reports only that the lease is
+  gone. The pump beats every half lease, and once it sees the lease gone the
+  handler's next context call throws lease-lost, even a replayed step that
+  writes nothing. So a cancelled handler that makes a context call after that
+  beat ends as lease-lost, while one that returns or throws first ends as
+  cancelled when its complete or fail is refused. A suspension refused because
+  the task's cancellation deadline is due, before the sweep has cancelled the
+  task, raises `LeaseLostError`, because the run is not cancelled yet.
 
 Sizing: claim batch K per tick and per-worker concurrency are tunables; Vercel
 Fluid compute multiplexes concurrent invocations in one instance and bills Active
@@ -589,7 +604,13 @@ Every code path that makes work runnable **commits first, then pings**:
   scheduled retry, remaining backlog) → ping, unconditionally (§3.2).
 
 A ping is a fire-and-forget POST — to the resident driver's `/wake` endpoint
-(which just cuts its current sleep short), or to `/api/tick` in serverless mode.
+(which cuts its current sleep short, at most once per wake floor: a wake sooner
+than `wakeFloorMs` after the last tick started waits out the rest of that
+interval, so a flood of pings looks once; the floor defaults to the busy
+ceiling). That wait never exceeds the floor, so a backwards clock step cannot
+stretch it, and never passes the look the interrupted park planned, so
+coalescing delays neither a due wake nor the registry beat. In serverless mode
+the ping goes to `/api/tick` instead.
 Its loss is tolerable because the poll ceiling / cron sweep exists; with a
 resident driver at a sub-second poll ceiling, pings are optional entirely. Writers
 outside our code (arbitrary clients inserting rows directly into Turso) are
@@ -947,9 +968,12 @@ are load-bearing):
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
 
-**Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
-`setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
-`heartbeat` reports `held: false`. A worker retrying `complete` after a lost
+**Refused-write contract (AB001 and AB002):** a refused worker write
+(`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
+`deferLaunch`) reads its run's state only after the refusal (`refusal-state`),
+so a write that wins pays for no read. It throws `RunCancelledError` (AB001)
+when the task's cancellation ended the run and `LeaseLostError` (AB002)
+otherwise, including when that read fails; `heartbeat` reports `held: false`. A worker retrying `complete` after a lost
 response treats `LeaseLostError` as possible-prior-success: verify via
 `getTaskResult` and exit (verify-then-exit), never re-execute.
 
@@ -967,10 +991,10 @@ own condition.
 
 **Event-wake disposition:** a carried wake (`wake_event`/`event_payload`) is
 CONSUMED by the transition that ends the attempt that processed it
-(`complete`, and `reschedule` with the default `'consume'`); it is CARRIED to
+(`complete` and `reschedule`); it is CARRIED to
 failure successors (`fail` retry, sweep claim-timeout — §3.8.2, the attempt
-never processed it); it is PRESERVED by §3.8.2 deferral (`reschedule` with
-`'preserve'` — a driver that cannot dispatch the task consumes nothing).
+never processed it); it is PRESERVED by the rolling-deploy deferral (`deferLaunch`, §3.2: a worker
+that cannot dispatch the task consumes nothing).
 
 **Structural enforcement (the mechanisms behind the rules).** The contract
 rules above started as review checklist items; each now has a mechanism
@@ -1052,9 +1076,9 @@ not depend on careful reading:
   Snapshot results are assembled by each projection's declared table key,
   never by a second hard-coded positional table list.
   Generated just-over-bound witnesses, along with the ownership witnesses,
-  keep the poison matrix complete. The poison surface crosses the 17 classified
+  keep the poison matrix complete. The poison surface crosses the 18 classified
   write labels with 144 corrupt-state witnesses covering that exact
-  condition inventory: 2,448 generated cells,
+  condition inventory: 2,592 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state

@@ -847,26 +847,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
   named probe failing; the final attribution closeout showed that prose-only
   evidence still permits repair findings to be bundled into a green commit.
 
-- **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5: retry_task revival, idempotency-key edge cases,
-  defer-unknown-task deploy rule. From PR3.5b: `decodeTaskResult` refuses a
-  failure reason on a live task, because no transition writes one today. If
-  `retryTask` keeps a revived task's last reason, as Absurd's `retry_task` does,
-  the same change relaxes that refusal and adds the conformance case that writes
-  such a row. Carries two deferrals: cancellation
-  DISCOVERY inside a running pass (today a cancelled task surfaces to its
-  worker as a lost lease; the distinct AB001 signal and a 'cancelled'
-  worker outcome need the store to distinguish "fence lost because task
-  terminal"), and a wake-coalescing floor on the driver's /wake before it
-  is exposed beyond localhost.
-  From PR3.6, because both turn on cancellation discovery:
-  - **The rolling-deploy deferral disarms the start deadline** — pre-existing,
-    identical on main, and modelled nowhere in `specs/Scheduler.tla`.
-    Spec-first: model it, TLC it, then fix it.
-  - **`SleepSuspend`'s task-eligibility guard is not in the model.** Both
-    suspension paths require the task live and not past a due cancellation
-    deadline; `Fenced(c)` constrains only the run. Strictly narrower, so safety
-    is unaffected, but the refusal reaches the worker as a lost lease and no
-    model lacking the guard can settle whether that path keeps liveness.
+- **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5, as two stacked PRs:
+  - **PR3.2a:** the rolling-deploy deferral, decided before activation from the
+    claimed task's name the worker reads from the store, through a new
+    `defer-launch` batch fenced on the claim receipt. The same PR models the suspension paths' task-eligibility guard in
+    `specs/Scheduler.tla` with a probe that witnesses a refused suspension,
+    raises `RunCancelledError` from a refused worker write on a cancelled run
+    so the worker ends with a cancelled outcome, pins idempotency-key reuse to
+    Absurd's `spawn_task`, and floors `/wake` at one look per interval.
+    Deferred from its review round (`postmortems/pr3.2a-lifecycle-review.md`):
+    one admission fragment shared by activation and the deferral; a poison
+    target profile for a running, unactivated claim, so the `activate` and
+    `defer-launch` cells reach their corruption guards; a launch payload case
+    generated from `LaunchInvocation`'s fields that crosses older and newer
+    drivers and workers; and a generated clock-shape surface for the driver
+    loop.
+  - **PR3.2b:** `retryTask`, following Absurd's `retry_task`, modeled in TLA
+    before its SQL exists, with DESIGN.md stating its exception to terminal
+    inertness. A revival must re-account a failed run that no counter
+    recorded, such as an infrastructure-cap or relaunch-cap failure, or the
+    engine invariant that a live run is the next accounted ordinal breaks. The
+    revival either clears the task's failure reason or relaxes
+    `decodeTaskResult`'s refusal together with a case that writes such a row.
+  - A heartbeat on a cancelled task still reports only a lost lease, so a
+    handler that makes a context call after the next beat ends as lease-lost.
+    Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the
+    heartbeat batch on `FencedBatch` with a refusal read and a cancelled
+    variant of `LeaseState`.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, same-queue refusal; `/api/runs/:id` result route.
