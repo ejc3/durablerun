@@ -445,6 +445,10 @@ vars == <<now, taskState, attempts, infraRetries, hops, policy, cancelAt,
 
 NoCtx == [run |-> NoRun, gen |-> 0]
 
+OwnedRuns(t) == {r \in RunIds : runTask[r] = t /\ runState[r] # "unused"}
+TopOrdinal(t) == CHOOSE o \in {runAttempt[r] : r \in OwnedRuns(t)} :
+                   \A r \in OwnedRuns(t) : runAttempt[r] <= o
+
 \* All future timestamps are clipped to the horizon (see header note).
 Clip(x) == IF x > MaxTime THEN MaxTime ELSE x
 
@@ -985,10 +989,14 @@ CancelExplicit(t) ==
 -----------------------------------------------------------------------------
 \* RetryTask <-> 'retry-task' (SPEC-FIRST, Absurd's retry_task): an operator
 \* revives a FAILED task in place.  A new run row with the next ordinal after
-\* every run the task has becomes due now, the task returns to pending, and its
-\* user-failure budget grows by one, as Absurd's default does.  Attempts, infra
-\* retries, hops, the first-start latch, and the cancellation deadline are
-\* untouched, and every failed run stays failed.  This is the one exception to
+\* every run the task has becomes due now, and the task returns to pending.  A
+\* task can fail with its top run charged to no counter (the infrastructure or
+\* relaunch cap), so the revival first charges that run as a user attempt,
+\* keeping the accounted ordinal equal to the top ordinal, then raises the
+\* budget to one more than the larger of the old budget and the attempts; for a
+\* task that failed on its budget that is Absurd's default of budget plus one.
+\* Infra retries, hops, the first-start latch, and the cancellation deadline
+\* are untouched, and every failed run stays failed.  This is the one exception to
 \* terminal stability: a failed TASK may leave "failed" here and nowhere else.
 \* An operator action, so unfair.  Bounded by MaxRetries (header).
 RetryTask(t) ==
@@ -1004,10 +1012,13 @@ RetryTask(t) ==
        /\ runAttempt'  = [runAttempt EXCEPT ![r2] = top + 1]
        /\ availableAt' = [availableAt EXCEPT ![r2] = now]
        /\ nextRun' = nextRun + 1
+  /\ LET charged == TopOrdinal(t) - infraRetries[t] IN
+       /\ attempts'    = [attempts EXCEPT ![t] = charged]
+       /\ maxAttempts' = [maxAttempts EXCEPT ![t] =
+                            IF charged > @ THEN charged + 1 ELSE @ + 1]
   /\ taskState'   = [taskState EXCEPT ![t] = "pending"]
-  /\ maxAttempts' = [maxAttempts EXCEPT ![t] = @ + 1]
   /\ retries'     = [retries EXCEPT ![t] = @ + 1]
-  /\ UNCHANGED <<now, attempts, infraRetries, hops, policy, cancelAt,
+  /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt,
                  firstStarted, dispatched, claimGen, activatedGen,
                  relaunchCount, leaseDeadline, wakeEvent, runPayload, waitEv,
                  waitAt, eventState, tokRuns, channel, contexts, nextCtx>>
@@ -1224,10 +1235,6 @@ StartLatchMeansDispatched ==
 \* attempts plus infrastructure retries) is its highest owned run ordinal or
 \* one below it, and a live task whose single live run exists runs exactly the
 \* next accounted ordinal.
-OwnedRuns(t) == {r \in RunIds : runTask[r] = t /\ runState[r] # "unused"}
-TopOrdinal(t) == CHOOSE o \in {runAttempt[r] : r \in OwnedRuns(t)} :
-                   \A r \in OwnedRuns(t) : runAttempt[r] <= o
-
 AccountingBand ==
   \A t \in Tasks :
     OwnedRuns(t) # {} =>
@@ -1340,7 +1347,7 @@ AttemptAccounting ==
   [][ /\ \A t \in Tasks : attempts'[t] >= attempts[t]
       /\ \A t \in Tasks : infraRetries'[t] >= infraRetries[t]
       /\ (attempts' # attempts)
-           => lastAction' \in {"FailRunWithRetry", "FailRunTerminal"}
+           => lastAction' \in {"FailRunWithRetry", "FailRunTerminal", "RetryTask"}
       /\ (infraRetries' # infraRetries) => lastAction' = "SweepClaimTimeout"
       /\ lastAction' \in SweepActions \cup CancelActions
            => attempts' = attempts /\ hops' = hops
