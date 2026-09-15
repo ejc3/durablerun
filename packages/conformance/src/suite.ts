@@ -1894,7 +1894,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           wake_step: 'carry-step',
           run_db: 'carry-db',
         }
-        // Every other runs column: a successor sets each of these for itself.
+        // Every other runs column: a successor sets each of these for itself, including
+        // created_at_ms, which it sets to its parent's failure instant.
         const successorOwned = [
           'run_id',
           'queue',
@@ -1971,7 +1972,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           async () => {
             for (const { path, taskId, parent, successor } of families) {
               for (const column of SUCCESSOR_CARRIED_RUN_COLUMNS) {
-                if (successor[column] !== parent[column]) {
+                if (parent[column] !== seeded[column] || successor[column] !== seeded[column]) {
                   throw new Error(
                     `successor dropped an inherited column: ${column} on the ${path} successor of task ${taskId}`,
                   )
