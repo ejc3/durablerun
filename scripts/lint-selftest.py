@@ -1877,6 +1877,31 @@ export class S {
         "JSX text must not hide an outcome column in a .tsx source",
     ),
     (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/src/url.tsx": (
+                "export const View = (row: Record<string, unknown>) => (\n"
+                "  <p>see https://example.com {String(row.completed_payload)}</p>\n"
+                ")\n"
+            ),
+        },
+        "task outcome column completed_payload outside",
+        "a URL in JSX text must not comment out an outcome column in a .tsx source",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/src/comment.tsx": (
+                "// the engine writes JSON constants into failure_reason\n"
+                "export const View = () => <p>done</p>\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a .tsx source is read as raw text, so a comment naming a column counts",
+    ),
+    (
         "fragment-lint.py",
         store(
             "const SQL = `SELECT 1 FROM runs WHERE state IN ('pending','running')`\n",
