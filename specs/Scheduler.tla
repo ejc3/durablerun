@@ -955,7 +955,7 @@ CancelCore(t) ==
 \* exceeded since first start).
 CancelSweep(t) ==
   /\ taskState[t] \in LiveStates
-  /\ cancelAt[t] <= now
+  /\ ~EligibleTask(t)
   /\ CancelCore(t)
   /\ lastAction' = "CancelSweep" /\ lastCtx' = NoCtx
 
