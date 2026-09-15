@@ -3974,10 +3974,11 @@ const pattern = /this\.db\.batch\(/
         "outcome-lint.py",
         {
             "packages/core/src/contract.ts": (
-                "export const COLUMNS = ['failure_reason', 'completed_payload'] as const\n"
+                "import { TASK_OUTCOME_COLUMNS } from './task-result.js'\n"
+                "export const COLUMNS = ['state', ...TASK_OUTCOME_COLUMNS] as const\n"
             ),
         },
-        "contract.ts names the columns as write-policy data",
+        "contract.ts takes the outcome column names from the decoder",
     ),
     (
         "outcome-lint.py",

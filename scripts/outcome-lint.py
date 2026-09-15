@@ -10,8 +10,8 @@ the stores, core's `task-result.ts`, and the conformance harness may spell
 `completed_payload` or `failure_reason`, in SQL or in code. Read an outcome
 through `getTaskResult`, or select `TASK_RESULT_COLUMNS` and decode the row
 with `decodeTaskResult`. The stores own the columns, `task-result.ts` defines
-the decoder, and the conformance harness reads raw state as its oracle. Core's
-`contract.ts` names the columns as write-policy data, so only its code is read.
+the decoder, and the conformance harness reads raw state as its oracle. Every
+TypeScript extension is read, in both its code and its SQL.
 
 Usage: outcome-lint.py [root]   (root defaults to the repo; the self-test
 passes a fixture tree, which is how this checker gets checked.)
@@ -37,15 +37,15 @@ except ValueError as error:
     sys.exit(str(error))
 
 DECODER = Path("packages/core/src/task-result.ts")
-COLUMN_DATA = Path("packages/core/src/contract.ts")
+SOURCE_SUFFIXES = frozenset({".ts", ".tsx", ".mts", ".cts"})
 COLUMNS = re.compile(r"\b(?:completed_payload|failure_reason)\b", re.IGNORECASE)
 
 source_paths = tuple(
     path
     for pattern in ("packages/*/src", "packages/*/bin", "apps/*/src", "apps/*/bin")
     for directory in sorted(root.glob(pattern))
-    for path in sorted(directory.rglob("*.ts"))
-    if path.is_file()
+    for path in sorted(directory.rglob("*"))
+    if path.is_file() and path.suffix in SOURCE_SUFFIXES
 )
 if not source_paths:
     sys.exit(
@@ -65,9 +65,7 @@ for path in source_paths:
         continue
     source = path.read_text()
     try:
-        views = [typescript_structure(source)]
-        if relative != COLUMN_DATA:
-            views.append(sql_template_view(source))
+        views = [typescript_structure(source), sql_template_view(source)]
     except ValueError as error:
         print(f"{relative}: cannot lex TypeScript source: {error}")
         violations += 1
