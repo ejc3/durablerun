@@ -1286,8 +1286,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          available_at_ms = ${wakePlan.expression},
          claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
          ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND claim_gen = ? AND activated_gen < ?
+       WHERE claim_gen = ? AND activated_gen < ?
+         AND run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
          AND ${storedPositiveClaimGeneration('runs')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
          AND EXISTS (SELECT 1 FROM tasks t
@@ -1296,11 +1296,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [
         ...wakePlan.expressionArgs,
         ...wakePlan.expressionArgs,
+        validClaimGen,
+        validClaimGen,
         runId,
         queue,
         claimToken,
-        validClaimGen,
-        validClaimGen,
         ...wakePlan.fitArgs,
       ],
     )

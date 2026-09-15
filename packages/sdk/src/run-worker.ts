@@ -96,12 +96,13 @@ function infrastructureOutcome(
  * Transport-free: the HTTP worker server (driver package) wraps this; tests
  * call it directly. The contract, in order:
  *
- * 1. Activation is the gate: the per-claim compare-and-swap admits exactly
+ * 1. A launched task name this build does not know is DEFERRED from the
+ *    launch, before activation (parked ~15s with its carried wake preserved,
+ *    nothing consumed, the first start never latched) — deploy workers before
+ *    producers and old runs survive new code.
+ * 2. Activation is the gate: the per-claim compare-and-swap admits exactly
  *    one invocation per claim — a duplicate delivery, a superseded claim,
  *    or a swept lease all exit here having touched nothing.
- * 2. A task name this build does not know is DEFERRED (parked ~15s with
- *    its carried wake preserved, nothing consumed) — deploy workers before
- *    producers and old runs survive new code.
  * 3. User code runs under a heartbeat pump that re-extends the lease at
  *    half-lease cadence; a lost lease aborts the pass quietly (the store
  *    fences every write, so a zombie cannot commit anything anyway).
