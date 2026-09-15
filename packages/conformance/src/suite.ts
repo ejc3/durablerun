@@ -12,6 +12,7 @@ import {
   SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SqlExecutor,
   type SqlRow,
+  type SqlStatement,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
@@ -39,6 +40,16 @@ async function snapshot(
     'read',
   )
   return { tasks: tasks?.rows, runs: runs?.rows }
+}
+
+/** Run one raw statement and return its first row. */
+async function readOne(
+  raw: SqlExecutor,
+  sql: string,
+  args: SqlStatement['args'],
+): Promise<SqlRow | undefined> {
+  const [result] = await raw.batch('t', [{ sql, args }])
+  return result?.rows[0]
 }
 
 /**
@@ -81,6 +92,44 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       await f.close()
     })
 
+    type OwnedRun = Pick<ClaimedRun, 'taskId' | 'runId' | 'claimToken'>
+
+    /** awaitEvent on the default fixture for a run's own task, run, and claim token. */
+    function awaitOwned(
+      run: OwnedRun,
+      stepName: string,
+      eventName: string,
+      timeoutSeconds: number | null,
+    ) {
+      return f.store.awaitEvent(
+        Q,
+        run.taskId,
+        run.runId,
+        run.claimToken,
+        stepName,
+        eventName,
+        timeoutSeconds,
+      )
+    }
+
+    /** setCheckpoint on the default fixture for a run's own task, run, and claim token. */
+    function checkpointOwned(
+      run: OwnedRun,
+      checkpointName: string,
+      stateJson: string,
+      extendLeaseSeconds: number,
+    ) {
+      return f.store.setCheckpoint(
+        Q,
+        run.taskId,
+        run.runId,
+        run.claimToken,
+        checkpointName,
+        stateJson,
+        extendLeaseSeconds,
+      )
+    }
+
     /** Claim exactly one run from the default fixture's queue. */
     async function claimOne(token: string): Promise<ClaimedRun> {
       const claimed = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
@@ -93,13 +142,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('creates a task with an initial pending run', async () => {
         const result = await f.store.spawn(Q, 'send-email', '{"to":"x"}')
         expect(result.created).toBe(true)
-        const [runs] = await f.raw.batch('t', [
-          {
-            sql: `SELECT state, attempt, available_at_ms FROM runs WHERE task_id = ?`,
-            args: [result.taskId],
-          },
-        ])
-        expect(runs?.rows[0]).toMatchObject({
+        const runs = await readOne(
+          f.raw,
+          `SELECT state, attempt, available_at_ms FROM runs WHERE task_id = ?`,
+          [result.taskId],
+        )
+        expect(runs).toMatchObject({
           state: 'pending',
           attempt: 1,
           available_at_ms: 1_000_000,
@@ -111,10 +159,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const second = await f.store.spawn(Q, 'once', '{}', { idempotencyKey: 'k1' })
         expect(second.created).toBe(false)
         expect(second.taskId).toBe(first.taskId)
-        const [count] = await f.raw.batch('t', [
-          { sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] },
-        ])
-        expect(Number(count?.rows[0]?.n)).toBe(1)
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(Number(count?.n)).toBe(1)
       })
 
       it('same key on different queues creates distinct tasks', async () => {
@@ -145,11 +191,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const aliasedIdempotencyKey = await settle(
           observed.spawn(Q, 'second', '{}', { idempotencyKey: 'same\uD800' }),
         )
-        const [count] = await f.raw.batch(
-          'spawn-identities:probe',
-          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
-          'read',
-        )
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
 
         expect({
           changedTaskName: changedTaskName.kind,
@@ -158,7 +200,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             aliasedIdempotencyKey.kind === 'resolved' &&
             aliasedIdempotencyKey.taskId === first.taskId,
           executorCalls,
-          taskCount: Number(count?.rows[0]?.n),
+          taskCount: Number(count?.n),
         }).toEqual({
           changedTaskName: 'rejected',
           aliasedIdempotencyKey: 'rejected',
@@ -191,12 +233,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ).rejects.toThrow(/task headers is not a JSON value/)
         }
         expect(executorCalls).toBe(0)
-        const [count] = await f.raw.batch(
-          'invalid-headers:probe',
-          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
-          'read',
-        )
-        expect(Number(count?.rows[0]?.n)).toBe(0)
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(Number(count?.n)).toBe(0)
       })
 
       it('rejects runtime header shapes outside an object of strings before persistence', async () => {
@@ -226,12 +264,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ).rejects.toThrow(/task headers is not a JSON value/)
         }
         expect(executorCalls).toBe(0)
-        const [count] = await f.raw.batch(
-          'invalid-header-shapes:probe',
-          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
-          'read',
-        )
-        expect(Number(count?.rows[0]?.n)).toBe(0)
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(Number(count?.n)).toBe(0)
       })
 
       it('rejects retry durations above the durable bound without writing', async () => {
@@ -249,12 +283,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             }),
         )
 
-        const [count] = await f.raw.batch(
-          'retry-bound-probe',
-          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
-          'read',
-        )
-        expect(Number(count?.rows[0]?.n)).toBe(0)
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(Number(count?.n)).toBe(0)
       })
 
       it('rejects an explicit null retry strategy without writing', async () => {
@@ -267,12 +297,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             }),
         )
 
-        const [count] = await f.raw.batch(
-          'retry-null-probe',
-          [{ sql: `SELECT COUNT(*) AS n FROM tasks`, args: [] }],
-          'read',
-        )
-        expect(Number(count?.rows[0]?.n)).toBe(0)
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(Number(count?.n)).toBe(0)
       })
 
       it('reads cancellation once and persists the value it validated', async () => {
@@ -443,10 +469,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           limit: 1,
         })
         expect(claimed.map((run) => run.taskId)).toEqual([healthy.taskId])
-        const [poisonRun] = await f.raw.batch('overflowing-retry:probe', [
-          { sql: `SELECT state FROM runs WHERE task_id = ?`, args: [poison.taskId] },
+        const poisonRun = await readOne(f.raw, `SELECT state FROM runs WHERE task_id = ?`, [
+          poison.taskId,
         ])
-        expect(poisonRun?.rows[0]?.state).toBe('pending')
+        expect(poisonRun?.state).toBe('pending')
       })
 
       it('leaves a candidate with corrupt persisted headers unclaimed', async () => {
@@ -951,20 +977,22 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // Lease was stamped at claim: expires at 1_000_000 + 60s.
         await f.admin.setFakeNowEpochMs(1_040_000)
         expect(await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)).not.toBeNull()
-        const [row] = await f.raw.batch('t', [
-          { sql: `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`, args: [run.runId] },
+        const row = await readOne(f.raw, `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`, [
+          run.runId,
         ])
-        expect(Number(row?.rows[0]?.claim_expires_at_ms)).toBe(1_040_000 + 60_000)
+        expect(Number(row?.claim_expires_at_ms)).toBe(1_040_000 + 60_000)
       })
 
       it('stamps first_started_at_ms on the task exactly once', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('tick-1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        const [row] = await f.raw.batch('t', [
-          { sql: `SELECT first_started_at_ms FROM tasks WHERE task_id = ?`, args: [run.taskId] },
-        ])
-        expect(Number(row?.rows[0]?.first_started_at_ms)).toBe(1_000_000)
+        const row = await readOne(
+          f.raw,
+          `SELECT first_started_at_ms FROM tasks WHERE task_id = ?`,
+          [run.taskId],
+        )
+        expect(Number(row?.first_started_at_ms)).toBe(1_000_000)
       })
 
       it('leaves a claimed run unchanged when its stored lease is zero', async () => {
@@ -1078,13 +1106,12 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           relaunch_count: 1,
         })
         expect(row?.rows[0]?.claimed_by).not.toBe('tick-1')
-        const [task] = await f.raw.batch('t', [
-          {
-            sql: `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
-            args: [run.taskId],
-          },
-        ])
-        expect(task?.rows[0]).toMatchObject({ attempts: 0, infra_retries: 0 })
+        const task = await readOne(
+          f.raw,
+          `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
+          [run.taskId],
+        )
+        expect(task).toMatchObject({ attempts: 0, infra_retries: 0 })
         // The stale generation is dead: re-claim gets gen 2, old gen fails.
         await f.admin.setFakeNowEpochMs(1_200_000)
         const again = await claimOne('tick-2')
@@ -1111,10 +1138,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(swept).toEqual([
           { kind: 'relaunch-cap-exhausted', runId: last.runId, taskId: last.taskId },
         ])
-        const [task] = await f.raw.batch('t', [
-          { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [last.taskId] },
+        const task = await readOne(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [
+          last.taskId,
         ])
-        expect(task?.rows[0]?.state).toBe('failed')
+        expect(task?.state).toBe('failed')
       })
 
       it('classifies a died-mid-run as claim-timeout: successor on infra budget', async () => {
@@ -1152,23 +1179,22 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           wake_event: 'e1',
           event_payload: '{"x":1}',
         })
-        const [task] = await f.raw.batch('t', [
-          {
-            sql: `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
-            args: [run.taskId],
-          },
-        ])
+        const task = await readOne(
+          f.raw,
+          `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
+          [run.taskId],
+        )
         // Infra accounting: the successor never touches the user budget.
-        expect(task?.rows[0]).toMatchObject({ attempts: 0, infra_retries: 1 })
+        expect(task).toMatchObject({ attempts: 0, infra_retries: 1 })
         // Claiming the successor never touches attempts (user failures only).
         await f.admin.setFakeNowEpochMs(1_200_000)
         const successor = await claimOne('tick-2')
         expect(successor.attempt).toBe(2)
         expect(successor.infraRetries).toBe(1)
-        const [after] = await f.raw.batch('t', [
-          { sql: `SELECT attempts FROM tasks WHERE task_id = ?`, args: [run.taskId] },
+        const after = await readOne(f.raw, `SELECT attempts FROM tasks WHERE task_id = ?`, [
+          run.taskId,
         ])
-        expect(after?.rows[0]?.attempts).toBe(0)
+        expect(after?.attempts).toBe(0)
       })
 
       it('quiesces terminal activated timeouts across normal and corrupt-relaunch discovery paths', async () => {
@@ -1596,10 +1622,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         expect(Number(rows?.rows[0]?.n)).toBe(0)
-        const [task] = await f.raw.batch('t', [
-          { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [run.taskId] },
-        ])
-        expect(task?.rows[0]?.state).toBe('failed')
+        const task = await readOne(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [run.taskId])
+        expect(task?.state).toBe('failed')
       })
 
       it('a swept zombie learns lease-lost on its next heartbeat', async () => {
@@ -1624,10 +1648,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.admin.setFakeNowEpochMs(1_031_000)
         const swept = await f.store.sweep(Q, 10)
         expect(swept).toEqual([{ kind: 'cancelled', taskId: spawned.taskId, runId: spawned.runId }])
-        const [task] = await f.raw.batch('t', [
-          { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+        const task = await readOne(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [
+          spawned.taskId,
         ])
-        expect(task?.rows[0]?.state).toBe('cancelled')
+        expect(task?.state).toBe('cancelled')
         expect(await f.store.claim(Q, 't', { leaseSeconds: 60, limit: 10 })).toHaveLength(0)
       })
 
@@ -1673,12 +1697,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           ),
         ).rejects.toThrow(LeaseLostError)
 
-        const [after] = await f.raw.batch(
-          't',
-          [{ sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] }],
-          'read',
-        )
-        expect(after?.rows[0]?.state).toBe('running')
+        const after = await readOne(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [run.runId])
+        expect(after?.state).toBe('running')
       })
 
       it('cancelTask cancels explicitly regardless of deadlines', async () => {
@@ -1894,10 +1914,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
         expect(rows?.rows[0]).toMatchObject({ state: 'failed', attempt: 1 })
         expect(rows?.rows[1]).toMatchObject({ state: 'sleeping', attempt: 2 })
-        const [task] = await f.raw.batch('t', [
-          { sql: `SELECT attempts, state FROM tasks WHERE task_id = ?`, args: [run.taskId] },
+        const task = await readOne(f.raw, `SELECT attempts, state FROM tasks WHERE task_id = ?`, [
+          run.taskId,
         ])
-        expect(task?.rows[0]).toMatchObject({ attempts: 1, state: 'sleeping' })
+        expect(task).toMatchObject({ attempts: 1, state: 'sleeping' })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
@@ -2097,14 +2117,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('reschedule sleeps attempt-neutral, mirrors the task, and re-claims on a fresh gen', async () => {
         const run = await activatedRun()
         await f.store.reschedule(Q, run.runId, run.claimToken, { inSeconds: 50 })
-        const [row] = await f.raw.batch('t', [
-          {
-            sql: `SELECT r.state AS run_state, r.attempt, r.available_at_ms, t.state AS task_state
+        const row = await readOne(
+          f.raw,
+          `SELECT r.state AS run_state, r.attempt, r.available_at_ms, t.state AS task_state
                   FROM runs r JOIN tasks t ON t.task_id = r.task_id WHERE r.run_id = ?`,
-            args: [run.runId],
-          },
-        ])
-        expect(row?.rows[0]).toMatchObject({
+          [run.runId],
+        )
+        expect(row).toMatchObject({
           run_state: 'sleeping',
           attempt: 1,
           available_at_ms: 1_050_000,
@@ -2121,10 +2140,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('reschedule with atEpochMs writes the user absolute verbatim (sleepUntil)', async () => {
         const run = await activatedRun()
         await f.store.reschedule(Q, run.runId, run.claimToken, { atEpochMs: 1_777_000 })
-        const [row] = await f.raw.batch('t', [
-          { sql: `SELECT available_at_ms FROM runs WHERE run_id = ?`, args: [run.runId] },
+        const row = await readOne(f.raw, `SELECT available_at_ms FROM runs WHERE run_id = ?`, [
+          run.runId,
         ])
-        expect(Number(row?.rows[0]?.available_at_ms)).toBe(1_777_000)
+        expect(Number(row?.available_at_ms)).toBe(1_777_000)
       })
 
       it('a chain ({inSeconds: 0}) is immediately claimable as pending', async () => {
@@ -2536,15 +2555,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         {
           id: 'checkpoint-write',
           execute: (run: ClaimedRun, checkpointName: string) =>
-            f.store.setCheckpoint(
-              Q,
-              run.taskId,
-              run.runId,
-              run.claimToken,
-              checkpointName,
-              '{"incoming":true}',
-              90,
-            ),
+            checkpointOwned(run, checkpointName, '{"incoming":true}', 90),
         },
         {
           id: 'suspend',
@@ -2564,38 +2575,24 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const run = await claimOne('w1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         await f.admin.setFakeNowEpochMs(1_010_000)
-        await f.store.setCheckpoint(
-          Q,
-          run.taskId,
-          run.runId,
-          run.claimToken,
-          'b-step',
-          '{"b":1}',
-          90,
-        )
-        await f.store.setCheckpoint(
-          Q,
-          run.taskId,
-          run.runId,
-          run.claimToken,
-          'a-step',
-          '{"a":1}',
-          90,
-        )
+        await checkpointOwned(run, 'b-step', '{"b":1}', 90)
+        await checkpointOwned(run, 'a-step', '{"a":1}', 90)
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, run.attempt)
         expect(checkpoints.map((c) => c.checkpointName)).toEqual(['a-step', 'b-step'])
         expect(checkpoints[0]).toMatchObject({ ownerRunId: run.runId, ownerAttempt: 1 })
-        const [lease] = await f.raw.batch('t', [
-          { sql: `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`, args: [run.runId] },
-        ])
-        expect(Number(lease?.rows[0]?.claim_expires_at_ms)).toBe(1_010_000 + 90_000)
+        const lease = await readOne(
+          f.raw,
+          `SELECT claim_expires_at_ms FROM runs WHERE run_id = ?`,
+          [run.runId],
+        )
+        expect(Number(lease?.claim_expires_at_ms)).toBe(1_010_000 + 90_000)
       })
 
       it('an older attempt never overwrites a newer attempt (LWW tiebreak)', async () => {
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('w1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{"v":1}', 60)
+        await checkpointOwned(run, 's', '{"v":1}', 60)
         // Simulate a newer attempt having already committed this name.
         await f.raw.batch('t', [
           {
@@ -2614,16 +2611,15 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           },
         ])
         await f.admin.setFakeNowEpochMs(1_010_000)
-        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{"v":1}', 60)
+        await checkpointOwned(run, 's', '{"v":1}', 60)
         const checkpoints = await f.store.getCheckpoints(Q, run.taskId, 5)
         expect(checkpoints[0]?.stateJson).toBe('{"v":5}')
-        const [lease] = await f.raw.batch('t', [
-          {
-            sql: `SELECT heartbeat_at_ms, claim_expires_at_ms FROM runs WHERE run_id = ?`,
-            args: [run.runId],
-          },
-        ])
-        expect(lease?.rows[0]).toMatchObject({
+        const lease = await readOne(
+          f.raw,
+          `SELECT heartbeat_at_ms, claim_expires_at_ms FROM runs WHERE run_id = ?`,
+          [run.runId],
+        )
+        expect(lease).toMatchObject({
           heartbeat_at_ms: 1_010_000,
           claim_expires_at_ms: 1_070_000,
         })
@@ -2655,16 +2651,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await requireExpectedFailure(
           { kind: 'behavior', mutation: 'checkpoint-write-rejects-fractional-owner-attempt' },
           /setCheckpoint/,
-          () =>
-            f.store.setCheckpoint(
-              Q,
-              run.taskId,
-              run.runId,
-              run.claimToken,
-              'fractional-owner',
-              '{}',
-              60,
-            ),
+          () => checkpointOwned(run, 'fractional-owner', '{}', 60),
         )
 
         expect(await snapshot(f, run.taskId)).toEqual(before)
@@ -2687,31 +2674,17 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await requireExpectedFailure(
           { kind: 'behavior', mutation: 'checkpoint-write-rejects-owner-attempt-overflow' },
           /setCheckpoint/,
-          () =>
-            f.store.setCheckpoint(
-              Q,
-              run.taskId,
-              run.runId,
-              run.claimToken,
-              'overflowed-owner',
-              '{}',
-              60,
-            ),
+          () => checkpointOwned(run, 'overflowed-owner', '{}', 60),
         )
 
         expect(await snapshot(f, run.taskId)).toEqual(before)
-        const [checkpoints] = await f.raw.batch(
-          'checkpoint-owner-bound:assert',
-          [
-            {
-              sql: `SELECT COUNT(*) AS n FROM checkpoints
+        const checkpoints = await readOne(
+          f.raw,
+          `SELECT COUNT(*) AS n FROM checkpoints
                     WHERE task_id = ? AND checkpoint_name = 'overflowed-owner'`,
-              args: [run.taskId],
-            },
-          ],
-          'read',
+          [run.taskId],
         )
-        expect(Number(checkpoints?.rows[0]?.n)).toBe(0)
+        expect(Number(checkpoints?.n)).toBe(0)
       })
 
       it('refuses a corrupt existing LWW owner before extending the lease', async () => {
@@ -2961,7 +2934,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('w1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await checkpointOwned(run, 's', '{}', 60)
         await f.raw.batch('t', [
           {
             sql: `INSERT INTO runs
@@ -2984,7 +2957,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('w1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await checkpointOwned(run, 's', '{}', 60)
         await f.raw.batch('forge-checkpoint-owner-attempt', [
           {
             sql: `UPDATE checkpoints SET owner_attempt = owner_attempt + 1
@@ -3004,7 +2977,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.spawn(Q, 'job', '{}')
         const run = await claimOne('w1')
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
-        await f.store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 's', '{}', 60)
+        await checkpointOwned(run, 's', '{}', 60)
         await f.raw.batch('t', [
           {
             sql: `INSERT INTO runs
@@ -3036,15 +3009,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('await-before-emit parks; the emit wakes it with the stored payload', async () => {
         await f.store.spawn(Q, 'waiter', '{}')
         const run = await claimActivate('w1')
-        const first = await f.store.awaitEvent(
-          Q,
-          run.taskId,
-          run.runId,
-          run.claimToken,
-          's',
-          'go',
-          null,
-        )
+        const first = await awaitOwned(run, 's', 'go', null)
         expect(first).toEqual({ emitted: false })
         // Parked, unclaimed, untimed: no wake source.
         expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toHaveLength(0)
@@ -3059,20 +3024,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.emitEvent(Q, 'ready', '{"x":2}')
         await f.store.spawn(Q, 'late', '{}')
         const run = await claimActivate('w1')
-        const outcome = await f.store.awaitEvent(
-          Q,
-          run.taskId,
-          run.runId,
-          run.claimToken,
-          's',
-          'ready',
-          null,
-        )
+        const outcome = await awaitOwned(run, 's', 'ready', null)
         expect(outcome).toEqual({ emitted: true, payloadJson: '{"x":2}' })
-        const [row] = await f.raw.batch('t', [
-          { sql: `SELECT state FROM runs WHERE run_id = ?`, args: [run.runId] },
-        ])
-        expect(row?.rows[0]?.state).toBe('running') // still ours, not parked
+        const row = await readOne(f.raw, `SELECT state FROM runs WHERE run_id = ?`, [run.runId])
+        expect(row?.state).toBe('running') // still ours, not parked
       })
 
       // fenceTwin('EmitEvent') — the later emit may establish a delivery
@@ -3082,24 +3037,14 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.emitEvent(Q, 'once', '{"v":"second"}')
         await f.store.spawn(Q, 'late', '{}')
         const run = await claimActivate('w1')
-        const outcome = await f.store.awaitEvent(
-          Q,
-          run.taskId,
-          run.runId,
-          run.claimToken,
-          's',
-          'once',
-          null,
-        )
+        const outcome = await awaitOwned(run, 's', 'once', null)
         expect(outcome).toEqual({ emitted: true, payloadJson: '{"v":"first"}' })
       })
 
       it('a timed wait that expires claims as the timeout wake and cannot be resurrected', async () => {
         await f.store.spawn(Q, 'timed', '{}')
         const run = await claimActivate('w1')
-        expect(
-          await f.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'never', 30),
-        ).toEqual({ emitted: false })
+        expect(await awaitOwned(run, 's', 'never', 30)).toEqual({ emitted: false })
         await f.admin.setFakeNowEpochMs(1_031_000)
         const [woken] = await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
         expect(woken?.wake).toEqual({ event: 'never', step: 's', timedOut: true })
@@ -3115,14 +3060,14 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       it('no resurrection: cancelling a waiting task removes its wait; emit wakes nothing', async () => {
         const spawned = await f.store.spawn(Q, 'doomed', '{}')
         const run = await claimActivate('w1')
-        await f.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'later', null)
+        await awaitOwned(run, 's', 'later', null)
         expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
         await f.store.emitEvent(Q, 'later', '{}')
         expect(await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })).toHaveLength(0)
-        const [task] = await f.raw.batch('t', [
-          { sql: `SELECT state FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+        const task = await readOne(f.raw, `SELECT state FROM tasks WHERE task_id = ?`, [
+          spawned.taskId,
         ])
-        expect(task?.rows[0]?.state).toBe('cancelled')
+        expect(task?.state).toBe('cancelled')
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
@@ -3234,12 +3179,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
               : { outcome: 'woken', state: 'pending', payload: '{"race":true}' },
           )
         }
-        const [waits] = await f.raw.batch(
-          'native-event:waits',
-          [{ sql: `SELECT COUNT(*) AS count FROM waits`, args: [] }],
-          'read',
-        )
-        expect(Number(waits?.rows[0]?.count), 'no registration is stranded').toBe(0)
+        const waits = await readOne(f.raw, `SELECT COUNT(*) AS count FROM waits`, [])
+        expect(Number(waits?.count), 'no registration is stranded').toBe(0)
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
@@ -3289,9 +3230,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const run = await claimActivate('w1')
         await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
         await f.store.sweep(Q, 10) // claim-timeout successor takes over
-        await expect(
-          f.store.awaitEvent(Q, run.taskId, run.runId, run.claimToken, 's', 'e', null),
-        ).rejects.toThrow()
+        await expect(awaitOwned(run, 's', 'e', null)).rejects.toThrow()
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
     })
@@ -3392,10 +3331,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // The retry-after-lost-response duplicate consumed the CAS: the
         // caller sees null and must exit — yet the run IS activated.
         expect(outcome).toBeNull()
-        const [row] = await f.raw.batch('t', [
-          { sql: `SELECT activated_gen FROM runs WHERE run_id = ?`, args: [run.runId] },
+        const row = await readOne(f.raw, `SELECT activated_gen FROM runs WHERE run_id = ?`, [
+          run.runId,
         ])
-        expect(Number(row?.rows[0]?.activated_gen)).toBe(run.claimGen)
+        expect(Number(row?.activated_gen)).toBe(run.claimGen)
         // Recovery is the sweep's claim-timeout path — an infra retry, never
         // a lost-launch reopen and never a user attempt.
         await f.admin.setFakeNowEpochMs(1_100_000)
@@ -3464,14 +3403,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(run.infraRetries).toBe(2)
         await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
         await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 1 })
-        const [task] = await f.raw.batch('t', [
-          {
-            sql: `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
-            args: [spawned.taskId],
-          },
-        ])
+        const task = await readOne(
+          f.raw,
+          `SELECT attempts, infra_retries FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
         // attempts counts USER failures only; infra successors never touched it.
-        expect(task?.rows[0]).toMatchObject({ attempts: 1, infra_retries: 2 })
+        expect(task).toMatchObject({ attempts: 1, infra_retries: 2 })
       })
 
       it('expireLeaseNow is advisory: a live heartbeat revives the lease', async () => {
@@ -3491,18 +3429,14 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
         await f.admin.setFakeNowEpochMs(1_100_000)
         expect((await f.store.sweep(Q, 10))[0]?.kind).toBe('lost-launch')
-        const [first] = await f.raw.batch('t', [
-          { sql: `SELECT available_at_ms FROM runs`, args: [] },
-        ])
-        expect(Number(first?.rows[0]?.available_at_ms)).toBe(1_100_000 + 5_000)
+        const first = await readOne(f.raw, `SELECT available_at_ms FROM runs`, [])
+        expect(Number(first?.available_at_ms)).toBe(1_100_000 + 5_000)
         await f.admin.setFakeNowEpochMs(1_200_000)
         await f.store.claim(Q, 'w2', { leaseSeconds: 60, limit: 1 })
         await f.admin.setFakeNowEpochMs(1_300_000)
         expect((await f.store.sweep(Q, 10))[0]?.kind).toBe('lost-launch')
-        const [second] = await f.raw.batch('t', [
-          { sql: `SELECT available_at_ms FROM runs`, args: [] },
-        ])
-        expect(Number(second?.rows[0]?.available_at_ms)).toBe(1_300_000 + 10_000)
+        const second = await readOne(f.raw, `SELECT available_at_ms FROM runs`, [])
+        expect(Number(second?.available_at_ms)).toBe(1_300_000 + 10_000)
       })
 
       it('a stale nonzero activated_gen still classifies a lost launch correctly', async () => {
@@ -3519,10 +3453,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         // activated_gen = 1 < claim_gen = 2: a LOST LAUNCH — reopen, no
         // successor, no infra retry (an '= 0' classifier would misfire here).
         expect(swept[0]?.kind).toBe('lost-launch')
-        const [task] = await f.raw.batch('t', [
-          { sql: `SELECT infra_retries FROM tasks WHERE task_id = ?`, args: [spawned.taskId] },
+        const task = await readOne(f.raw, `SELECT infra_retries FROM tasks WHERE task_id = ?`, [
+          spawned.taskId,
         ])
-        expect(Number(task?.rows[0]?.infra_retries)).toBe(0)
+        expect(Number(task?.infra_retries)).toBe(0)
       })
     })
 
