@@ -1829,6 +1829,41 @@ export class S {
         "an empty harvest must not pass as a clean audit",
     ),
     (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/src/status.tsx": "export const SQL = `SELECT completed_payload FROM tasks`\n",
+        },
+        "task outcome column completed_payload outside",
+        "a .tsx source is a production source",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/driver/src/probe.mts": (
+                "export const reason = (row: Record<string, unknown>) => row.failure_reason\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a .mts source is a production source",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/driver/src/probe.cts": (
+                "export const reason = (row: Record<string, unknown>) => row.failure_reason\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a .cts source is a production source",
+    ),
+    (
+        "outcome-lint.py",
+        {"packages/core/src/contract.ts": "export const SQL = `SELECT failure_reason FROM tasks`\n"},
+        "task outcome column failure_reason outside",
+        "SQL in contract.ts is audited like any production source",
+    ),
+    (
         "fragment-lint.py",
         store(
             "const SQL = `SELECT 1 FROM runs WHERE state IN ('pending','running')`\n",
