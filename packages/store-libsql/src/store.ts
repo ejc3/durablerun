@@ -1261,6 +1261,54 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * writes die on claimed_by). Throws LeaseLostError when the fence lost —
    * the AB002 signal.
    */
+  async deferLaunch(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+    inSeconds: number,
+  ): Promise<void> {
+    const validClaimGen = requirePositiveClaimGeneration('deferLaunch.claimGen', claimGen)
+    const wakePlan = prepareWake({ inSeconds }, true)
+    // The rolling-deploy deferral, decided from the launch before activation.
+    // Fencing on the claim RECEIPT, not an activation, is the point: the run
+    // must still be running under this token and generation with no activation
+    // yet, so the first-start latch, the start deadline, and the duration clock
+    // stay untouched, and a replay after the park or after an activation
+    // matches nothing. Nothing is consumed and the wake fields are kept. Like
+    // every suspension it requires an eligible task.
+    const b = new FencedBatch('defer-launch', this.ids.token(), { now: NOW_MS })
+    b.cas(
+      'suspend',
+      'runs',
+      `UPDATE runs SET
+         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
+         available_at_ms = ${wakePlan.expression},
+         claimed_by = NULL, claim_expires_at_ms = NULL, heartbeat_at_ms = NULL,
+         ${FENCE_SET}
+       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
+         AND claim_gen = ? AND activated_gen < ?
+         AND ${storedPositiveClaimGeneration('runs')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
+         ${wakePlan.fits}`,
+      [
+        ...wakePlan.expressionArgs,
+        ...wakePlan.expressionArgs,
+        runId,
+        queue,
+        claimToken,
+        validClaimGen,
+        validClaimGen,
+        ...wakePlan.fitArgs,
+      ],
+    )
+    finishSuspension(b, runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'suspend') throw new LeaseLostError(`deferLaunch ${runId}`)
+  }
+
   async reschedule(
     queue: string,
     runId: string,

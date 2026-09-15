@@ -33,6 +33,7 @@ export const MATRIX_WRITE_LABELS = [
   'activate',
   'heartbeat',
   'reschedule',
+  'defer-launch',
   'suspend',
   'emit-event',
   'await-event',
@@ -392,6 +393,22 @@ export async function runFaultMatrixCase(
       const [parked] = (await go(() => store.claim(Q, 'w3', { leaseSeconds: 60, limit: 1 }))) ?? []
       if (parked) {
         await go(() => store.reschedule(Q, parked.runId, parked.claimToken, { inSeconds: 2 }))
+      }
+
+      // A launch deferral: a build without the task's handler parks its claim.
+      await go(() => store.spawn(Q, 'i', '{}'))
+      const [unregistered] =
+        (await go(() => store.claim(Q, 'w4', { leaseSeconds: 60, limit: 1 }))) ?? []
+      if (unregistered) {
+        await go(() =>
+          store.deferLaunch(
+            Q,
+            unregistered.runId,
+            unregistered.claimToken,
+            unregistered.claimGen,
+            2,
+          ),
+        )
       }
 
       // A task to cancel, a claimed-and-activated run to expire (died

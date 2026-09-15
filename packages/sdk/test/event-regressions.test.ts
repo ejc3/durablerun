@@ -38,7 +38,13 @@ async function pass(f: Awaited<ReturnType<typeof fx>>, reg: TaskRegistry, token:
   if (!run) throw new Error('claim')
   return runClaimedRun(
     { store: f.store, clock: f.clock, registry: reg },
-    { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+    {
+      queue: Q,
+      runId: run.runId,
+      taskName: run.taskName,
+      claimToken: run.claimToken,
+      claimGen: run.claimGen,
+    },
   )
 }
 

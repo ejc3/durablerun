@@ -285,7 +285,13 @@ async function runProgram(
       if (run) {
         await runClaimedRun(
           { store, clock, registry },
-          { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+          {
+            queue: Q,
+            runId: run.runId,
+            taskName: run.taskName,
+            claimToken: run.claimToken,
+            claimGen: run.claimGen,
+          },
         ).catch(() => {})
       }
       clock.now += 70_000

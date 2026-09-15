@@ -50,6 +50,8 @@ export type WorkerOutcome =
 export interface RunInvocation {
   queue: string
   runId: string
+  /** The claimed task's name, from the claim the launch was built from. */
+  taskName: string
   claimToken: string
   claimGen: number
 }
@@ -112,35 +114,41 @@ export async function runClaimedRun(
   invocation: RunInvocation,
 ): Promise<WorkerOutcome> {
   const { store, clock, registry } = deps
-  const { queue, runId, claimToken, claimGen } = invocation
+  const { queue, runId, taskName, claimToken, claimGen } = invocation
+
+  if (taskRegistryGet(registry, taskName) === undefined) {
+    // Rolling-deploy rule: defer from the launch, BEFORE activation, so a build
+    // without this task's handler consumes nothing and never latches the first
+    // start, which would disarm the start deadline and start the duration
+    // clock. The jitter is derived from the run id (no ambient randomness in
+    // engine code) so a fleet of stale workers spreads its retries instead of
+    // thundering.
+    let jitterTotal = 0
+    for (let index = 0; index < runId.length; index++) {
+      jitterTotal += trustedCharCodeAt(runId, index)
+    }
+    try {
+      await store.deferLaunch(queue, runId, claimToken, claimGen, 15 + (jitterTotal % 10))
+    } catch (error) {
+      return trustedStoreOutcome(error)
+    }
+    return { kind: 'deferred' }
+  }
 
   const run = await store.activate(queue, runId, claimToken, claimGen)
   if (run === null) return { kind: 'superseded' }
   const claimedRun = run
   const userAttempt = claimedRun.attempt - claimedRun.infraRetries
 
-  const handler = taskRegistryGet(registry, run.taskName)
+  const handler = run.taskName === taskName ? taskRegistryGet(registry, run.taskName) : undefined
   if (handler === undefined) {
-    // Rolling-deploy rule: defer, consume nothing. The jitter is derived
-    // from the run id (no ambient randomness in engine code) so a fleet of
-    // stale workers spreads its retries instead of thundering.
-    let jitterTotal = 0
-    for (let index = 0; index < run.runId.length; index++) {
-      jitterTotal += trustedCharCodeAt(run.runId, index)
-    }
-    const jitterSeconds = jitterTotal % 10
-    try {
-      await store.reschedule(
-        queue,
-        runId,
-        claimToken,
-        { inSeconds: 15 + jitterSeconds },
-        'preserve',
-      )
-    } catch (error) {
-      return trustedStoreOutcome(error)
-    }
-    return { kind: 'deferred' }
+    // The launch named a task this build can run, but the activated claim is
+    // another task, or the registry stopped resolving it. Dispatching either
+    // would run the wrong code, so the pass ends here and the lease story
+    // recovers the run.
+    throw new Error(
+      `launch named task ${taskName}, but claim ${runId} activated task ${run.taskName} and no handler resolves it`,
+    )
   }
 
   // Heartbeat pump FIRST (before any further unfenced reads): extend at

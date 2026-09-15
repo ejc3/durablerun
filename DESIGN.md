@@ -1054,7 +1054,7 @@ not depend on careful reading:
   Generated just-over-bound witnesses, along with the ownership witnesses,
   keep the poison matrix complete. The poison surface crosses the 17 classified
   write labels with 144 corrupt-state witnesses covering that exact
-  condition inventory: 2,448 generated cells,
+  condition inventory: 2,592 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state

@@ -140,13 +140,11 @@ export function describeFailure(error: unknown): string {
  * The rolling-deploy deferral as the worker performs it: a build with no handler
  * for the claimed task parks the claimed run for `inSeconds` and consumes nothing.
  */
-export async function deferUnregistered(
+export function deferUnregistered(
   store: SchedulerStore,
   queue: string,
   run: ClaimedRun,
   inSeconds: number,
 ): Promise<void> {
-  const activated = await store.activate(queue, run.runId, run.claimToken, run.claimGen)
-  if (!activated) throw new Error(`expected to activate the run claimed by ${run.claimToken}`)
-  await store.reschedule(queue, run.runId, run.claimToken, { inSeconds }, 'preserve')
+  return store.deferLaunch(queue, run.runId, run.claimToken, run.claimGen, inSeconds)
 }

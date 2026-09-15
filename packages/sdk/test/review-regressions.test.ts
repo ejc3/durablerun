@@ -52,7 +52,13 @@ async function claimAndRun(
   if (!run) throw new Error('expected a claimable run')
   return runClaimedRun(
     { store, clock: f.clock, registry: reg },
-    { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+    {
+      queue: Q,
+      runId: run.runId,
+      taskName: run.taskName,
+      claimToken: run.claimToken,
+      claimGen: run.claimGen,
+    },
   )
 }
 

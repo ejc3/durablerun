@@ -53,6 +53,23 @@ export interface SchedulerStore {
     claimGen: number,
   ): Promise<ClaimedRun | null>
 
+  /**
+   * §3.2 rolling-deploy deferral, decided from the launch before activation: a
+   * worker build with no handler for the launched task parks the claimed run
+   * `inSeconds` from database time. Fenced on the claim receipt (running under
+   * this token and generation, not yet activated), and like every suspension it
+   * requires an eligible task. It consumes no attempt or relaunch, keeps the
+   * run's wake fields, and never latches the first start. A refusal throws
+   * LeaseLostError.
+   */
+  deferLaunch(
+    queue: string,
+    runId: string,
+    claimToken: string,
+    claimGen: number,
+    inSeconds: number,
+  ): Promise<void>
+
   /** Zero-rows result surfaces as `held: false` — the AB002 signal. */
   heartbeat(
     queue: string,
@@ -170,6 +187,8 @@ export interface StoreAdmin {
 export interface LaunchInvocation extends LaunchIdentity {
   /** Stands in for the shard id until multi-shard lands (§3.7). */
   queue: string
+  /** The claimed task's name, so a worker can defer a task it cannot run before activating it. */
+  taskName: string
   attempt: number
   claimGen: number
   /**

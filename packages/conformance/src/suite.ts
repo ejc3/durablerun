@@ -1633,6 +1633,43 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ])
       })
 
+      // fenceTwin('DeferLaunch') — a deferral is fenced on the claim receipt and
+      // an eligible task: after an activation, under a stale generation, or past
+      // a due deadline it parks nothing.
+      it('a launch deferral refuses an activated claim, a stale generation, and a due deadline', async () => {
+        await f.store.spawn(Q, 'activated', '{}')
+        const activated = await claimActivated(f.store, Q, 'build-a')
+        await expect(deferUnregistered(f.store, Q, activated, 15)).rejects.toThrow(LeaseLostError)
+
+        await f.store.spawn(Q, 'stale', '{}')
+        const stale = await claimOne(f.store, Q, 'build-b')
+        await expect(
+          f.store.deferLaunch(Q, stale.runId, stale.claimToken, stale.claimGen + 1, 15),
+        ).rejects.toThrow(LeaseLostError)
+
+        const due = await f.store.spawn(Q, 'due', '{}', { cancellation: { maxDelaySeconds: 10 } })
+        const dueRun = await claimOne(f.store, Q, 'build-c')
+        await f.raw.batch('t', [
+          {
+            sql: `UPDATE tasks SET cancel_at_ms = ? WHERE task_id = ?`,
+            args: [START_MS, due.taskId],
+          },
+        ])
+        await expect(deferUnregistered(f.store, Q, dueRun, 15)).rejects.toThrow(LeaseLostError)
+
+        const runs = await f.raw.batch(
+          'defer-launch-refusals',
+          [
+            {
+              sql: `SELECT run_id, state, activated_gen FROM runs WHERE run_id IN (?, ?, ?) ORDER BY run_id`,
+              args: [activated.runId, stale.runId, dueRun.runId],
+            },
+          ],
+          'read',
+        )
+        expect(runs[0]?.rows.map((row) => row.state)).toEqual(['running', 'running', 'running'])
+      })
+
       it('a deferred launch starts no duration clock', async () => {
         const spawned = await f.store.spawn(Q, 'unregistered', '{}', {
           cancellation: { maxDurationSeconds: 100 },

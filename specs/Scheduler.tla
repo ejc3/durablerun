@@ -259,6 +259,8 @@
 \*   'fail' -> FailRun  [cas-fenced]  (replay zero-row; the successor
 \*     insert keys on the CAS stamp, so no double successor)
 \*   'reschedule' -> SleepSuspend / VoluntaryChain  [cas-fenced]
+\*   'defer-launch' -> DeferLaunch  [cas-fenced]  (fenced on the claim receipt:
+\*     a replay finds the run parked, or activated, and matches nothing)
 \*   'suspend' -> SleepSuspend  [cas-fenced]  (reschedule's transition plus
 \*     the suspension MARKER in the same batch — the marker's meaning, "the
 \*     wake already happened", is only sound if it commits with the park;

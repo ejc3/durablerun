@@ -271,7 +271,13 @@ async function claimAndRun(
   if (!run) throw new Error('expected a claimable run')
   return runClaimedRun(
     { store: f.store, clock: f.clock, registry: reg },
-    { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+    {
+      queue: Q,
+      runId: run.runId,
+      taskName: run.taskName,
+      claimToken: run.claimToken,
+      claimGen: run.claimGen,
+    },
   )
 }
 
@@ -281,6 +287,7 @@ async function claimInvocation(f: Awaited<ReturnType<typeof fx>>, token: string)
   return {
     queue: Q,
     runId: run.runId,
+    taskName: run.taskName,
     claimToken: run.claimToken,
     claimGen: run.claimGen,
   }
@@ -526,7 +533,13 @@ describe('runClaimedRun', () => {
                 }),
               }),
             },
-            { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+            {
+              queue: Q,
+              runId: run.runId,
+              taskName: run.taskName,
+              claimToken: run.claimToken,
+              claimGen: run.claimGen,
+            },
           )
           const result = await f.store.getTaskResult(Q, spawned.taskId)
           return {
@@ -1474,6 +1487,7 @@ describe('runClaimedRun', () => {
     const invocation = {
       queue: Q,
       runId: run.runId,
+      taskName: run.taskName,
       claimToken: run.claimToken,
       claimGen: run.claimGen,
     }
@@ -1501,7 +1515,13 @@ describe('runClaimedRun', () => {
     const currentRun = run
     const outcome = await runClaimedRun(
       { store: f.store, clock: f.clock, registry: reg },
-      { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      {
+        queue: Q,
+        runId: run.runId,
+        taskName: run.taskName,
+        claimToken: run.claimToken,
+        claimGen: run.claimGen,
+      },
     )
     expect(outcome).toEqual({ kind: 'lease-lost' })
     // The sweep owns recovery; the zombie committed nothing after the loss.
@@ -1540,7 +1560,13 @@ describe('runClaimedRun', () => {
     if (!run) throw new Error('claim')
     const outcome = await runClaimedRun(
       { store: failing as SchedulerStore, clock: f.clock, registry: reg },
-      { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      {
+        queue: Q,
+        runId: run.runId,
+        taskName: run.taskName,
+        claimToken: run.claimToken,
+        claimGen: run.claimGen,
+      },
     )
     expect(outcome).toEqual({ kind: 'aborted' })
     f.close()
@@ -1571,7 +1597,13 @@ describe('runClaimedRun', () => {
     if (!run) throw new Error('claim')
     const pass = runClaimedRun(
       { store: counting as SchedulerStore, clock: f.clock, registry: reg },
-      { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      {
+        queue: Q,
+        runId: run.runId,
+        taskName: run.taskName,
+        claimToken: run.claimToken,
+        claimGen: run.claimGen,
+      },
     )
     // Let the pass reach its awaits (pump sleep + the job's long call)
     // before moving time — advancing earlier would shift the deadlines.
@@ -1631,7 +1663,13 @@ describe('runClaimedRun', () => {
             clock: f.clock,
             registry: registry({ job: async () => null }),
           },
-          { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+          {
+            queue: Q,
+            runId: run.runId,
+            taskName: run.taskName,
+            claimToken: run.claimToken,
+            claimGen: run.claimGen,
+          },
         )
       } catch (error) {
         rejected = error
@@ -1667,7 +1705,13 @@ describe('runClaimedRun', () => {
             },
           }),
         },
-        { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+        {
+          queue: Q,
+          runId: run.runId,
+          taskName: run.taskName,
+          claimToken: run.claimToken,
+          claimGen: run.claimGen,
+        },
       )
 
       while (f.clock.fired.length < 1) {
