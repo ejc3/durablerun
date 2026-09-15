@@ -327,6 +327,10 @@ const sql = (
 const taskState = (state: string): SqlStatement =>
   sql(`UPDATE tasks SET state = ? WHERE task_id = ?`, [state, TASK])
 
+/** The completed payload a completed poison task needs, so only its covered conditions fire. */
+const completedPayload = (): SqlStatement =>
+  sql(`UPDATE tasks SET completed_payload = '{"poison":true}' WHERE task_id = ?`, [TASK])
+
 const runState = (state: string): SqlStatement =>
   sql(
     `UPDATE runs SET state = ?, claimed_by = ?, claim_expires_at_ms = ?
@@ -695,7 +699,7 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
   {
     id: 'terminal-task/live-running-run',
     covers: ['terminal-task/live-run', 'mirror/running-run-task-not-running'],
-    statements: [taskState('completed')],
+    statements: [taskState('completed'), completedPayload()],
   },
   {
     id: 'lease/running-owner-null',
@@ -771,6 +775,35 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     ],
   },
   {
+    id: 'task-outcome/completed-without-payload',
+    covers: ['task-outcome/completed-without-payload'],
+    statements: [taskState('completed'), runState('completed')],
+  },
+  {
+    id: 'task-outcome/payload-on-other-state',
+    covers: ['task-outcome/payload-on-other-state'],
+    statements: [
+      sql(`UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`, [TASK]),
+    ],
+  },
+  {
+    id: 'task-outcome/failure-without-reason',
+    covers: ['task-outcome/failure-without-reason'],
+    statements: [taskState('cancelled'), runState('cancelled')],
+  },
+  {
+    id: 'task-outcome/failed-with-payload-without-reason',
+    covers: ['task-outcome/payload-on-other-state', 'task-outcome/failure-without-reason'],
+    statements: [taskState('failed'), runState('failed'), completedPayload()],
+  },
+  {
+    id: 'task-outcome/reason-on-other-state',
+    covers: ['task-outcome/reason-on-other-state'],
+    statements: [
+      sql(`UPDATE tasks SET failure_reason = '{"name":"Forged"}' WHERE task_id = ?`, [TASK]),
+    ],
+  },
+  {
     id: 'accounting/above-top',
     covers: ['accounting/above-top'],
     statements: [sql(`UPDATE tasks SET attempts = 2 WHERE task_id = ?`, [TASK])],
@@ -817,6 +850,7 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     covers: ['wait/dead-run'],
     statements: [
       taskState('completed'),
+      completedPayload(),
       runState('completed'),
       sql(
         `INSERT INTO waits
@@ -1349,9 +1383,9 @@ async function seedBase(f: StoreFixture): Promise<void> {
       sql(
         `INSERT INTO tasks
            (task_id, queue, task_name, params, retry_strategy, max_attempts,
-            state, attempts, infra_retries, enqueue_at_ms, created_at_ms)
+            state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms)
          VALUES (?, ?, 'canary', '{}', '{"kind":"none"}', 1,
-                 'completed', 0, 0, ?, ?)`,
+                 'completed', 0, 0, '{"canary":true}', ?, ?)`,
         [CANARY_TASK, Q, NOW, NOW],
       ),
       sql(

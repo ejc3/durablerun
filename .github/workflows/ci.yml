@@ -175,21 +175,19 @@ jobs:
               print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
           PY
       - name: Bridge re-aimed mutation targets in the older base registry
-        # Three registered mutations target SDK guards that were reshaped, so the
-        # base registry's find strings for them no longer occur in this tree. A
-        # one-release bridge pinned to that exact base registry replaces those
-        # three spec entries with this tree's, never checker logic, inventory, or
-        # verdicts. Any other base skips the step.
+        # A base registry's find strings must occur in this tree, and every verdict
+        # marker in this tree's tests must be registered or exempted by it. Some
+        # find strings were legitimately re-aimed, and some markers are newer than
+        # a base. Each arm is pinned to one base registry hash and replaces or adds
+        # only that data, never checker logic or verdicts. Any other base skips.
         run: |
           python3 - <<'PY'
           import hashlib
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
-          if hashlib.sha256(previous.encode()).hexdigest() != '0ee074470a4315d43f41d6e6947b72a43512dd0b1a423951487d28ffbf0d0dd8':
-              print('Base registry does not need the re-aim bridge.')
-              raise SystemExit(0)
           candidate = Path('scripts/mutation-probe.py').read_text()
+          digest = hashlib.sha256(previous.encode()).hexdigest()
           def entry(text, name):
               key = f'            "{name}",\n'
               if text.count(key) != 1:
@@ -197,21 +195,55 @@ jobs:
               start = text.rindex('        (\n', 0, text.index(key))
               end = text.index('        ),\n', start) + len('        ),\n')
               return start, end
-          repaired = previous
-          for name in (
-              'sdk-context-captured-json-parse',
-              'sdk-owned-event-timeout-discriminant',
-              'sdk-owned-event-payload-discriminant',
-          ):
-              start, end = entry(repaired, name)
-              new_start, new_end = entry(candidate, name)
-              old_entry = repaired[start:end]
-              new_entry = candidate[new_start:new_end]
-              if old_entry.splitlines()[:3] != new_entry.splitlines()[:3]:
-                  raise SystemExit(f'{name}: the re-aim bridge may change only find, replacement, and description.')
-              repaired = repaired[:start] + new_entry + repaired[end:]
+          if digest == '0ee074470a4315d43f41d6e6947b72a43512dd0b1a423951487d28ffbf0d0dd8':
+              # Three SDK guard specs were re-aimed against this registry.
+              repaired = previous
+              for name in (
+                  'sdk-context-captured-json-parse',
+                  'sdk-owned-event-timeout-discriminant',
+                  'sdk-owned-event-payload-discriminant',
+              ):
+                  start, end = entry(repaired, name)
+                  new_start, new_end = entry(candidate, name)
+                  old_entry = repaired[start:end]
+                  new_entry = candidate[new_start:new_end]
+                  if old_entry.splitlines()[:3] != new_entry.splitlines()[:3]:
+                      raise SystemExit(f'{name}: the re-aim bridge may change only find, replacement, and description.')
+                  repaired = repaired[:start] + new_entry + repaired[end:]
+          elif digest == '0bb4f12a043a7642f096799306d9a526ee0f9dd3baddf9b243e911d4327d4a73':
+              # The spawn cancellation deadline addition was re-aimed against this registry.
+              case = '        "spawn-cancellation",\n'
+              old = '        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,\\n",\n'
+              new = '        "         ${NOW} + ? + ?,\\n",\n'
+              for text, line, count in ((previous, old, 1), (candidate, new, 1), (candidate, old, 0)):
+                  if text.count(line) != count:
+                      raise SystemExit('spawn-cancellation: the re-aim bridge requires one old and one new addition text.')
+              for text, line in ((previous, old), (candidate, new)):
+                  at = text.index(line)
+                  if case not in text[text.rindex('    (\n', 0, at):at]:
+                      raise SystemExit('spawn-cancellation: the re-aimed addition text must belong to its case.')
+              repaired = previous.replace(old, new)
+              # Two verdict markers this tree registers are unknown to this registry.
+              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(exemptions) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              markers = (
+                  'mutation-verdict:behavior:successor-carries-every-column',
+                  'mutation-verdict:behavior:task-result-accepts-engine-outcomes',
+              )
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              repaired = repaired.replace(exemptions, exemptions + entries)
+          else:
+              print('Base registry does not need the re-aim bridge.')
+              raise SystemExit(0)
           base.write_text(repaired)
-          print('Re-aimed three mutation specs; all other base registry bytes are unchanged.')
+          print('Re-aimed registered mutation text; all other base registry bytes are unchanged.')
           PY
       - name: The base branch's checkers, applied to this tree
         env:

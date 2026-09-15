@@ -5,8 +5,13 @@ import {
   MAX_COUNT,
   MAX_DURATION_MS,
   PERSISTED_INTEGER_BOUNDS,
+  REASON_CANCELLED,
+  REASON_INFRA_CAP,
+  REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
+  SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SqlExecutor,
+  type SqlRow,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
@@ -21,7 +26,10 @@ import { engineInvariantViolations } from './invariants.js'
 
 const Q = 'q'
 
-async function snapshot(f: StoreFixture, taskId: string): Promise<unknown> {
+async function snapshot(
+  f: StoreFixture,
+  taskId: string,
+): Promise<{ tasks: SqlRow[] | undefined; runs: SqlRow[] | undefined }> {
   const [tasks, runs] = await f.raw.batch(
     'snap',
     [
@@ -1698,6 +1706,154 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 
+      it('getTaskResult refuses a task row whose outcome contradicts its state', async () => {
+        const completed = await activatedRun('w-result-completed')
+        await f.store.complete(Q, completed.runId, completed.claimToken, '{"out":1}')
+        const failed = await activatedRun('w-result-failed')
+        await f.store.fail(Q, failed.runId, failed.claimToken, '{"name":"Boom"}', null)
+        const cancelled = await f.store.spawn(Q, 'job', '{}')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+        const live = await f.store.spawn(Q, 'job', '{}')
+        const liveReason = await f.store.spawn(Q, 'job', '{}')
+        const shapes = [
+          [
+            'completed without payload',
+            completed.taskId,
+            'completed_payload = NULL',
+            /is completed but has no completed payload/,
+          ],
+          [
+            'failed without reason',
+            failed.taskId,
+            'failure_reason = NULL',
+            /is failed but has no failure reason/,
+          ],
+          [
+            'cancelled without reason',
+            cancelled.taskId,
+            'failure_reason = NULL',
+            /is cancelled but has no failure reason/,
+          ],
+          [
+            'live with a payload',
+            live.taskId,
+            `completed_payload = '{"forged":true}'`,
+            /is pending but carries a completed payload/,
+          ],
+          [
+            'live with a reason',
+            liveReason.taskId,
+            `failure_reason = '{"name":"Forged"}'`,
+            /is pending but carries a failure reason/,
+          ],
+        ] as const
+        await f.raw.batch(
+          'corrupt-task-outcomes',
+          shapes.map(([, taskId, assignment]) => ({
+            sql: `UPDATE tasks SET ${assignment} WHERE task_id = ?`,
+            args: [taskId],
+          })),
+        )
+        for (const [shape, taskId, , refusal] of shapes) {
+          const outcome = await f.store.getTaskResult(Q, taskId).then(
+            () => 'resolved',
+            (error: unknown) =>
+              error instanceof RangeError && refusal.test(error.message)
+                ? 'refused'
+                : `threw ${String(error)}`,
+          )
+          expect(outcome, `${shape} must be refused`).toBe('refused')
+        }
+      })
+
+      it('getTaskResult reports every outcome the engine writes', async () => {
+        const relaunchCapped = await f.store.spawn(Q, 'job', '{}')
+        const [lostLaunch] = await f.store.claim(Q, 'w-result-relaunch-cap', {
+          leaseSeconds: 60,
+          limit: 1,
+        })
+        if (!lostLaunch) throw new Error('expected claim')
+        const infraCapped = await activatedRun('w-result-infra-cap')
+        await f.raw.batch('seed-result-caps', [
+          {
+            sql: `UPDATE runs SET relaunch_count = ? WHERE run_id = ?`,
+            args: [RELAUNCH_CAP, lostLaunch.runId],
+          },
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP, infraCapped.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, infraCapped.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind).sort()).toEqual([
+          'infra-cap-exhausted',
+          'relaunch-cap-exhausted',
+        ])
+
+        const completed = await activatedRun('w-result-ok')
+        await f.store.complete(Q, completed.runId, completed.claimToken, '{"out":1}')
+        const exhausted = await activatedRun('w-result-exhausted')
+        await f.store.fail(Q, exhausted.runId, exhausted.claimToken, '{"name":"Final"}', null)
+        const retried = await activatedRun('w-result-retried')
+        await f.store.fail(Q, retried.runId, retried.claimToken, '{"name":"Retry"}', {
+          delaySeconds: 30,
+        })
+        const cancelled = await f.store.spawn(Q, 'job', '{}')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+
+        const expected = [
+          [
+            'completed',
+            completed.taskId,
+            { state: 'completed', completedPayloadJson: '{"out":1}' },
+          ],
+          [
+            'user-exhausted',
+            exhausted.taskId,
+            { state: 'failed', failureReasonJson: '{"name":"Final"}' },
+          ],
+          ['retried live', retried.taskId, { state: 'sleeping' }],
+          [
+            'cancelled',
+            cancelled.taskId,
+            { state: 'cancelled', failureReasonJson: REASON_CANCELLED },
+          ],
+          [
+            'relaunch-capped',
+            relaunchCapped.taskId,
+            { state: 'failed', failureReasonJson: REASON_RELAUNCH_CAP },
+          ],
+          [
+            'infra-capped',
+            infraCapped.taskId,
+            { state: 'failed', failureReasonJson: REASON_INFRA_CAP },
+          ],
+        ] as const
+        const reported = await attributeExpectedFailure(
+          { kind: 'behavior', mutation: 'task-result-accepts-engine-outcomes' },
+          /getTaskResult refused a legitimate/,
+          async () => {
+            const results: unknown[] = []
+            for (const [shape, taskId] of expected) {
+              results.push(
+                await f.store.getTaskResult(Q, taskId).catch((error: unknown) => {
+                  throw new Error(
+                    `getTaskResult refused a legitimate ${shape} row: ${String(error)}`,
+                  )
+                }),
+              )
+            }
+            return results
+          },
+        )
+        expect(reported).toEqual(expected.map(([, , result]) => result))
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
       // fenceTwin('CompleteRun') — the swept zombie's complete is refused
       // with a before/after snapshot proving zero state change.
       it('a zombie complete after the sweep throws LeaseLostError and changes nothing', async () => {
@@ -1714,38 +1870,120 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
 
       it('fail with retry inserts the successor and is the ONLY mover of attempts', async () => {
         const run = await activatedRun()
-        // A carried wake must be a LEGAL wake: the payload's source event
-        // exists in the store (wake-payload-mismatch enforces provenance —
-        // stamping the columns alone constructs an impossible world).
-        await f.raw.batch('t', [
-          {
-            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
-                  VALUES (?, 'e1', '{"x":1}', 1000000)`,
-            args: [Q],
-          },
-          {
-            sql: `UPDATE runs SET wake_event = 'e1', event_payload = '{"x":1}' WHERE run_id = ?`,
-            args: [run.runId],
-          },
-        ])
         await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', { delaySeconds: 30 })
         const [rows] = await f.raw.batch('t', [
           {
-            sql: `SELECT state, attempt, available_at_ms, wake_event FROM runs
+            sql: `SELECT state, attempt, available_at_ms FROM runs
                   WHERE task_id = ? ORDER BY attempt`,
             args: [run.taskId],
           },
         ])
         expect(rows?.rows[0]).toMatchObject({ state: 'failed', attempt: 1 })
-        expect(rows?.rows[1]).toMatchObject({
-          state: 'sleeping',
-          attempt: 2,
-          wake_event: 'e1',
-        })
+        expect(rows?.rows[1]).toMatchObject({ state: 'sleeping', attempt: 2 })
         const [task] = await f.raw.batch('t', [
           { sql: `SELECT attempts, state FROM tasks WHERE task_id = ?`, args: [run.taskId] },
         ])
         expect(task?.rows[0]).toMatchObject({ attempts: 1, state: 'sleeping' })
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      it('both successor paths carry every inherited run column', async () => {
+        const seeded: Record<(typeof SUCCESSOR_CARRIED_RUN_COLUMNS)[number], string> = {
+          wake_event: 'e-carry',
+          event_payload: '{"x":1}',
+          wake_step: 'carry-step',
+          run_db: 'carry-db',
+        }
+        // Every other runs column: a successor sets each of these for itself, including
+        // created_at_ms, which it sets to its parent's failure instant.
+        const successorOwned = [
+          'run_id',
+          'queue',
+          'task_id',
+          'attempt',
+          'state',
+          'claimed_by',
+          'claim_gen',
+          'activated_gen',
+          'relaunch_count',
+          'lease_ms',
+          'claim_expires_at_ms',
+          'heartbeat_at_ms',
+          'available_at_ms',
+          'started_at_ms',
+          'completed_at_ms',
+          'failed_at_ms',
+          'result',
+          'failure_reason',
+          'created_at_ms',
+          'fence_stamp',
+          'fence_at_ms',
+        ]
+        // A carried wake must be legal: its payload's source event exists.
+        await f.raw.batch('carry-event', [
+          {
+            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                  VALUES (?, ?, ?, 1000000)`,
+            args: [Q, seeded.wake_event, seeded.event_payload],
+          },
+        ])
+        const parkWake = (runId: string) => ({
+          sql: `UPDATE runs
+                SET ${SUCCESSOR_CARRIED_RUN_COLUMNS.map((column) => `${column} = ?`).join(', ')}
+                WHERE run_id = ?`,
+          args: [...SUCCESSOR_CARRIED_RUN_COLUMNS.map((column) => seeded[column]), runId],
+        })
+        const retried = await activatedRun('w-carry-retry')
+        await f.raw.batch('carry-park-retry', [parkWake(retried.runId)])
+        await f.store.fail(Q, retried.runId, retried.claimToken, '{"name":"Boom"}', {
+          delaySeconds: 30,
+        })
+        const timedOut = await activatedRun('w-carry-timeout')
+        await f.raw.batch('carry-park-timeout', [parkWake(timedOut.runId)])
+        await f.admin.setFakeNowEpochMs(1_100_000)
+        const swept = await f.store.sweep(Q, 10)
+        expect(swept.map((outcome) => outcome.kind)).toContain('claim-timeout')
+
+        const families: { path: string; taskId: string; parent: SqlRow; successor: SqlRow }[] = []
+        for (const [path, taskId] of [
+          ['user retry', retried.taskId],
+          ['claim-timeout sweep', timedOut.taskId],
+        ] as const) {
+          const { runs } = await snapshot(f, taskId)
+          const [parent, successor] = runs ?? []
+          if (runs?.length !== 2 || !parent || !successor) {
+            throw new Error(`task ${taskId} has no successor run`)
+          }
+          families.push({ path, taskId, parent, successor })
+        }
+        for (const { path, parent, successor } of families) {
+          expect(
+            Object.keys(successor).sort(),
+            `every runs column of the ${path} successor is carried or successor-owned`,
+          ).toEqual([...SUCCESSOR_CARRIED_RUN_COLUMNS, ...successorOwned].sort())
+          expect(
+            successor.created_at_ms,
+            `the ${path} successor is created at its parent's failure instant`,
+          ).toBe(parent.fence_at_ms)
+        }
+        await attributeExpectedFailure(
+          { kind: 'behavior', mutation: 'successor-carries-every-column' },
+          /successor dropped an inherited column/,
+          async () => {
+            for (const { path, taskId, parent, successor } of families) {
+              for (const column of SUCCESSOR_CARRIED_RUN_COLUMNS) {
+                if (parent[column] !== seeded[column]) {
+                  throw new Error(`the ${path} parent of task ${taskId} lost its seeded ${column}`)
+                }
+                if (successor[column] !== seeded[column]) {
+                  throw new Error(
+                    `successor dropped an inherited column: ${column} on the ${path} successor of task ${taskId}`,
+                  )
+                }
+              }
+            }
+          },
+        )
         expect(await engineInvariantViolations(f.raw)).toEqual([])
       })
 

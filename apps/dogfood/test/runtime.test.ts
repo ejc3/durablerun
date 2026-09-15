@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { StoreUnavailableError } from '@durablerun/core'
-import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
+import { LibsqlExecutor, LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type DogfoodConfig, dogfoodWorkloadIntent } from '../src/config.js'
 import { dogfoodReceiptErrors } from '../src/receipt.js'
@@ -128,5 +131,55 @@ describe('ref-journal dogfood runtime', () => {
     ).toEqual([])
     expect(error).toBeInstanceOf(Error)
     expect(String(error)).toContain('dogfood tick observed infrastructure failure')
+  })
+  it('refuses a task row whose outcome contradicts its state, as getTaskResult does', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'durablerun-dogfood-outcome-shape-'))
+    const databaseUrl = `file:${join(directory, 'journal.db')}`
+    const raw = LibsqlExecutor.open(databaseUrl)
+    const runtime = await DogfoodRuntime.open({ ...config, databaseUrl })
+    try {
+      const { taskId } = await runtime.start()
+      const shapes = [
+        [
+          'completed without payload',
+          `state = 'completed', completed_payload = NULL, failure_reason = NULL`,
+          /is completed but has no completed payload/,
+        ],
+        [
+          'live with a payload',
+          `state = 'pending', completed_payload = '{"forged":true}', failure_reason = NULL`,
+          /is pending but carries a completed payload/,
+        ],
+        [
+          'live with a reason',
+          `state = 'pending', completed_payload = NULL, failure_reason = '{"name":"Forged"}'`,
+          /is pending but carries a failure reason/,
+        ],
+        [
+          'cancelled without reason',
+          `state = 'cancelled', completed_payload = NULL, failure_reason = NULL`,
+          /is cancelled but has no failure reason/,
+        ],
+      ] as const
+      for (const [shape, assignment, refusal] of shapes) {
+        await raw.batch(
+          'corrupt-dogfood-outcome',
+          [{ sql: `UPDATE tasks SET ${assignment} WHERE task_id = ?`, args: [taskId] }],
+          'write',
+        )
+        const outcome = await runtime.status().then(
+          () => 'reported',
+          (error: unknown) =>
+            error instanceof RangeError && refusal.test(error.message)
+              ? 'refused'
+              : `threw ${String(error)}`,
+        )
+        expect(outcome, `${shape} must be refused`).toBe('refused')
+      }
+    } finally {
+      runtime.close()
+      raw.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

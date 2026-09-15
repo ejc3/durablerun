@@ -334,8 +334,9 @@ tick():
          on the state guard now and the gen guard after the next claim.
        died mid-run (activated): $ClaimTimeout — insert the successor run
          (fresh UUIDv7, infra_retries+1 — NOT max_attempts — available_at
-         computed in SQL, carrying forward the run-DB pointer, wake_event,
-         and event_payload), fail the old run, update the task.
+         computed in SQL, carrying forward SUCCESSOR_CARRIED_RUN_COLUMNS:
+         the run-DB pointer, wake_event, event_payload, and wake_step), fail
+         the old run, update the task.
      Batch fencing (§3.4 rule 1): the FIRST statement is the guarded CAS
      transition; later statements key on the post-transition state plus the
      batch's own stamp — never on the pre-condition the CAS just consumed.
@@ -952,6 +953,18 @@ are load-bearing):
 response treats `LeaseLostError` as possible-prior-success: verify via
 `getTaskResult` and exit (verify-then-exit), never re-execute.
 
+**Task-result contract:** `getTaskResult` reports only outcomes the engine
+recorded. A completed task carries its payload, a failed or cancelled task
+carries its reason, and no other state carries either. A row that contradicts
+this, names an unknown state, or lacks an outcome column is refused with
+`RangeError`, never returned. Outside the stores, every production reader of a
+task outcome selects `TASK_RESULT_COLUMNS` and decodes the row through core's
+`decodeTaskResult`, so a second read path cannot report a row the store refuses.
+`scripts/outcome-lint.py` refuses any other spelling of those columns in a
+production TypeScript source. The conformance harness reads raw task state as
+its oracle, and the engine invariants report each rule a task row breaks as its
+own condition.
+
 **Event-wake disposition:** a carried wake (`wake_event`/`event_payload`) is
 CONSUMED by the transition that ends the attempt that processed it
 (`complete`, and `reschedule` with the default `'consume'`); it is CARRIED to
@@ -1017,7 +1030,7 @@ not depend on careful reading:
   `structurally-rejected` credit only after an observed attempted write raises
   the classified error. A fixture cannot return evidence by assertion.
   TypeScript evaluates
-  one of 109 typed condition IDs for every semantic arm. The eight durable
+  one of 113 typed condition IDs for every semantic arm. The eight durable
   counters and 23 temporal fields are decoded totally through core's
   bounded decoder: a non-integer storage representation and an exact-but-
   out-of-range value emit distinct typed findings and suppress dependent
@@ -1040,8 +1053,8 @@ not depend on careful reading:
   never by a second hard-coded positional table list.
   Generated just-over-bound witnesses, along with the ownership witnesses,
   keep the poison matrix complete. The poison surface crosses the 17 classified
-  write labels with 139 atomic corrupt-state witnesses covering that exact
-  condition inventory: 2,363 generated cells,
+  write labels with 144 corrupt-state witnesses covering that exact
+  condition inventory: 2,448 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state
@@ -1115,8 +1128,8 @@ not depend on careful reading:
   cases, ten canonical helper-descriptor cases, two helper-binding cases,
   three helper-marker cases, sixteen direct-marker cases, three title-owner
   cases, six verdict-inventory cases, seven question-delta cases, eleven
-  mutant-syntax cases, and four live-enrollment attacks across all 423 live
-  mutations. A separate generated coordinator surface injects 40 faults
+  mutant-syntax cases, and four live-enrollment attacks across every live
+  mutation. A separate generated coordinator surface injects 40 faults
   covering shard omission and overlap, wrong heads, missing/duplicate/extra
   results, process/report disagreement, and non-owned cleanup targets, plus
   unconfined execution, an unowned worker,
@@ -1487,9 +1500,15 @@ Costs and the consistency discipline (there are **no cross-DB transactions**):
    (`activated_gen < claim_gen`) reopen the same run — no attempt, no new row,
    their own capped relaunch counter; activated-but-dead runs cost an
    `infra_retries` increment (own generous cap), never `max_attempts` — which
-   counts only user-code failures. Successor runs carry forward the run-DB
-   pointer, `wake_event`, and `event_payload` on **every** path that creates
-   one (the sweep and the worker-side fail-with-retry alike).
+   counts only user-code failures. Successor runs carry forward core's
+   `SUCCESSOR_CARRIED_RUN_COLUMNS` (the run-DB pointer, `wake_event`,
+   `event_payload`, and `wake_step`) on **every** path that creates one (the
+   sweep and the worker-side fail-with-retry alike). Every other runs column a
+   successor sets for itself: its identity and attempt, its state and
+   availability, `created_at_ms` at the parent's failure instant, fresh claim,
+   lease, heartbeat, and relaunch fields, no outcome, and its own fence stamp.
+   The conformance case "both successor paths carry every inherited run
+   column" classifies every runs column as one or the other.
 3. **Events never fan out into other runs' DBs.** `emitEvent` is scheduler-plane
    only: first-write-wins event row + flip waiting runs to pending with the
    payload parked on the run row (`event_payload`, as in Absurd's `r_` table).

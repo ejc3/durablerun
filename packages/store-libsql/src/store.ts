@@ -25,17 +25,22 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   STAMP,
+  SUCCESSOR_PARENT_COLUMNS,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
   type SqlExecutor,
   type SqlRow,
   type SweptRun,
+  TASK_RESULT_COLUMNS,
   type TaskResult,
   type WakeSpec,
+  clampLimit,
   decodeBoundedInteger,
+  decodeTaskResult,
   durationToMs,
   fenceSetAt,
+  mapLimit,
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
@@ -48,6 +53,7 @@ import {
   serializeTaskHeaders,
   serializeTaskValue,
   storageValueKind,
+  successorParentValues,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -364,26 +370,12 @@ WHERE r.queue = ? AND r.state = 'running'
 ORDER BY r.claim_expires_at_ms, r.run_id
 LIMIT ?`
 
-/** Bounded-concurrency map preserving order (sweep pipelining — the fencing
- * discipline requires per-item atomicity, never sequential issuance). */
+/**
+ * The sweep runs its per-item batches at most this many at once through core
+ * `mapLimit`. The fencing discipline requires per-item atomicity, never
+ * sequential issuance.
+ */
 const SWEEP_PIPELINE_WIDTH = 8
-async function mapLimit<T, R>(
-  items: T[],
-  width: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length)
-  let next = 0
-  const workers = Array.from({ length: Math.min(width, items.length) }, async () => {
-    for (;;) {
-      const index = next++
-      if (index >= items.length) return
-      results[index] = await fn(items[index] as T)
-    }
-  })
-  await Promise.all(workers)
-  return results
-}
 
 /**
  * SchedulerStore on SQLite/libsql (DESIGN.md §3.4). Every method is ONE
@@ -454,7 +446,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // Idempotent task insert: loses silently when the key already exists.
     // enqueue/cancel deadlines are computed in SQL (rule 3); cancel_at_ms
     // materializes max_delay so sweeps and nextWakeAt are indexed reads, never
-    // JSON scans.
+    // JSON scans. A task without max_delay binds NULL, and NULL propagates
+    // through the addition, so its cancel_at_ms is NULL.
     //
     // The NOT EXISTS on the primary key is what makes this a compare-and-set
     // rather than a crash: the targeted ON CONFLICT covers the idempotency
@@ -469,7 +462,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
          cancel_at_ms, created_at_ms, ${FENCE_COLS})
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,
-         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,
+         ${NOW} + ? + ?,
          ${NOW}, ${FENCE_VALS}
        WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
          AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)
@@ -488,7 +481,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         cancellationJson,
         key,
         delayMs,
-        maxDelayMs,
         delayMs,
         maxDelayMs,
         taskId,
@@ -537,7 +529,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       `SELECT winner.task_id AS task_id,
               (SELECT r.run_id FROM runs r
                  WHERE ${runOwnedByTask('r', 'winner')}
-                 ORDER BY r.attempt DESC, r.run_id DESC LIMIT 1) AS run_id
+                 ORDER BY r.attempt DESC LIMIT 1) AS run_id
        FROM (
          SELECT t.task_id, t.queue, 1 AS priority
          FROM tasks t WHERE t.task_id = ? AND t.queue = ?
@@ -573,8 +565,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     opts: { leaseSeconds: number; limit: number },
   ): Promise<ClaimedRun[]> {
     const leaseMs = durationToMs('leaseSeconds', opts.leaseSeconds, { positive: true })
-    const limit = clampLimit(requirePositiveInt('limit', opts.limit))
-    if (limit === 0) return []
+    const limit = requirePositiveInt('limit', opts.limit)
     // Buggify: a short claim is always legal (limit is a maximum) — ticks
     // must drain via the successor-tick chain, never assume a full batch.
     const effectiveLimit = limit > 1 && this.buggify('claim:short-batch') ? 1 : limit
@@ -1084,10 +1075,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'runs',
       `INSERT INTO runs
          (run_id, queue, task_id, attempt, state, available_at_ms,
-          wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
+          ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
        SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
               f.fence_at_ms + ${infraDelayMs},
-              f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
+              ${successorParentValues('f')},
               ${STAMP}, f.fence_at_ms
        FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
        WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
@@ -1434,7 +1425,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * decideRetry over the user ordinal); the store applies the fenced
    * transition. This is the ONLY place tasks.attempts moves (the TLC-checked
    * AttemptAccounting shape). A retrying failure inserts the successor run
-   * (attempt+1, carrying wake_event/event_payload/run_db) in the same batch.
+   * (attempt+1, carrying SUCCESSOR_CARRIED_RUN_COLUMNS) in the same batch.
    */
   async fail(
     queue: string,
@@ -1483,11 +1474,11 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         'runs',
         `INSERT INTO runs
            (run_id, queue, task_id, attempt, state, available_at_ms,
-            wake_event, event_payload, wake_step, run_db, created_at_ms, ${FENCE_COLS})
+            ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
          SELECT ?, f.queue, f.task_id, f.attempt + 1,
                 CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
                 f.fence_at_ms + ?,
-                f.wake_event, f.event_payload, f.wake_step, f.run_db, f.fence_at_ms,
+                ${successorParentValues('f')},
                 ${STAMP}, f.fence_at_ms
          FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
          WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
@@ -1658,7 +1649,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'task-result',
       [
         {
-          sql: `SELECT state, completed_payload, failure_reason FROM tasks
+          sql: `SELECT ${TASK_RESULT_COLUMNS} FROM tasks
                 WHERE task_id = ? AND queue = ?`,
           args: [taskId, queue],
         },
@@ -1666,11 +1657,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'read',
     )
     const row = rows?.rows[0]
-    if (!row) return null
-    const result: TaskResult = { state: String(row.state) as TaskResult['state'] }
-    if (row.completed_payload !== null) result.completedPayloadJson = String(row.completed_payload)
-    if (row.failure_reason !== null) result.failureReasonJson = String(row.failure_reason)
-    return result
+    return row === undefined ? null : decodeTaskResult(taskId, row)
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
@@ -2005,12 +1992,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     }
     return { emitted: false }
   }
-}
-
-/** SQLite parses LIMIT -1 as unlimited (reviewed): clamp and floor. */
-function clampLimit(limit: number): number {
-  if (!Number.isFinite(limit)) throw new RangeError(`limit ${limit}`)
-  return Math.max(0, Math.floor(limit))
 }
 
 /**

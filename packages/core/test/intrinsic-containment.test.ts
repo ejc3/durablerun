@@ -3,6 +3,7 @@ import {
   FatalTaskError,
   UserName,
   decideRetry,
+  decodeTaskResult,
   normalizeRetryStrategy,
   retryDelaySeconds,
   serializeTaskValue,
@@ -366,5 +367,32 @@ describe('trusted task-boundary intrinsics', () => {
       observed.error,
       'mutation-verdict:behavior:user-name-captured-regexp-exec',
     ).toBeInstanceOf(FatalTaskError)
+  })
+
+  it('checks a decoded task state with module-captured capabilities', () => {
+    const observed = replaceProperty(
+      Set.prototype,
+      'has',
+      () => true,
+      () =>
+        decodeTaskResult('t', { state: 'paused', completed_payload: null, failure_reason: null }),
+    )
+    expect(observed.error, 'patched Set.prototype.has admits an unknown state').toBeInstanceOf(
+      RangeError,
+    )
+  })
+
+  it('checks decoded task columns without the patchable array iterator', () => {
+    const observed = replaceProperty(
+      Array.prototype,
+      Symbol.iterator,
+      function* () {},
+      () => decodeTaskResult('t', { state: 'pending', failure_reason: null }),
+    )
+    expect(
+      observed.error,
+      'a patched array iterator skips the missing-column check',
+    ).toBeInstanceOf(RangeError)
+    expect(String(observed.error)).toContain('has no completed_payload column')
   })
 })

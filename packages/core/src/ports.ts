@@ -138,6 +138,11 @@ export interface SchedulerStore {
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }>
 
+  /**
+   * The task's observable outcome, or null when no such task exists. Refuses a
+   * row whose outcome contradicts its state with RangeError (DESIGN.md §3.4
+   * task-result contract).
+   */
   getTaskResult(queue: string, taskId: string): Promise<TaskResult | null>
 
   /** min(available_at, claim_expires_at, cancellation deadlines) — for re-arm. */

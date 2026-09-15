@@ -637,6 +637,22 @@ MUTATION_SPECS = [
         "a replayed failure re-inserts a successor that has since been claimed",
     ),
     (
+        "successor-carries-every-column",
+        "packages/core/src/contract.ts",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`.replace(`${alias}.wake_step`, 'NULL')) // MUTATION",
+        "successor runs stop inheriting the parked wake step",
+    ),
+    (
+        "task-result-refuses-engine-reasons",
+        "packages/core/src/task-result.ts",
+        "  if (failed && result.failureReasonJson === undefined)\n"
+        "    found[found.length] = 'failure-without-reason'",
+        "  if (failed && (result.failureReasonJson === undefined || result.failureReasonJson.startsWith('{\"name\":\"$'))) // MUTATION\n"
+        "    found[found.length] = 'failure-without-reason'",
+        "getTaskResult refuses cancelled and capped tasks, whose reasons the engine writes",
+    ),
+    (
         "successor-attempt-identity",
         "packages/store-libsql/src/fragments.ts",
         " AND s.task_id = ${task}\n             AND s.attempt = ${attempt})`",
@@ -2692,7 +2708,7 @@ TIMESTAMP_ADDITION_CASES = (
         "         AND ${epochAdditionFits(NOW, '?')}\n"
         "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
         "epochAdditionFits(NOW, '?', '?')",
-        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,\n",
+        "         ${NOW} + ? + ?,\n",
         "${NOW} + ? + ?",
     ),
     (
@@ -4732,6 +4748,20 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance retry failure replay preserves progress before and after the successor is claimed",
         "mutation-verdict:behavior:successor-ownership",
+    ),
+    "successor-carries-every-column": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule both successor paths carry every inherited run column",
+        "mutation-verdict:behavior:successor-carries-every-column",
+        "packages/conformance/src/suite.ts",
+    ),
+    "task-result-refuses-engine-reasons": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] transitions: complete / fail / reschedule getTaskResult reports every outcome the engine writes",
+        "mutation-verdict:behavior:task-result-accepts-engine-outcomes",
+        "packages/conformance/src/suite.ts",
     ),
     "successor-attempt-identity": ExpectedVerdict(
         "behavior",
@@ -9368,7 +9398,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 423:
+        if len(MUTATIONS) != 425:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

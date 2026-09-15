@@ -1,3 +1,5 @@
+import { TASK_OUTCOME_COLUMNS } from './task-result.js'
+
 /**
  * Contract constants: values every dialect must agree on.
  *
@@ -40,6 +42,36 @@ export const REASON_CLAIM_TIMEOUT = '{"name":"$ClaimTimeout"}'
 export const REASON_RELAUNCH_CAP = '{"name":"$RelaunchCapExhausted"}'
 export const REASON_INFRA_CAP = '{"name":"$InfraRetriesExhausted"}'
 export const REASON_CANCELLED = '{"name":"$Cancelled"}'
+
+/**
+ * The run columns a successor run copies unchanged from the run it replaces: the
+ * parked wake and the run database. Both dialects splice this list into both
+ * successor inserts (a user retry in `fail`, an infrastructure successor in the
+ * claim-timeout sweep), and the conformance suite seeds and compares every entry.
+ */
+export const SUCCESSOR_CARRIED_RUN_COLUMNS = [
+  'wake_event',
+  'event_payload',
+  'wake_step',
+  'run_db',
+] as const
+
+/**
+ * The runs columns a successor's insert reads from its fenced parent row, in insert
+ * order. The carried columns are copied unchanged. `created_at_ms` is not carried:
+ * the successor sets it to the parent's fence instant, which is the failure. Both
+ * successor inserts splice these with `successorParentValues`, beside the identity,
+ * state, and fence columns they set.
+ */
+export const SUCCESSOR_PARENT_COLUMNS = ['created_at_ms', ...SUCCESSOR_CARRIED_RUN_COLUMNS].join(
+  ', ',
+)
+
+/** The values for `SUCCESSOR_PARENT_COLUMNS` over the fenced parent row `alias`. */
+export function successorParentValues(alias: string): string {
+  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)
+  return [`${alias}.fence_at_ms`, ...carried].join(', ')
+}
 
 /**
  * The tables that carry write provenance (§3.4 rule 8): every one of them is
@@ -169,9 +201,8 @@ export const DERIVED_WRITABLE_COLUMNS = Object.freeze({
     'last_attempt_run',
     'first_started_at_ms',
     'cancel_at_ms',
-    'failure_reason',
     'infra_retries',
-    'completed_payload',
+    ...TASK_OUTCOME_COLUMNS,
     'attempts',
   ] as const),
   runs: Object.freeze([

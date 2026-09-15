@@ -415,7 +415,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The sole normative suite-transport classification is the top-of-file
     contract; this item records attribution behavior without redefining it.
     The verifier runs its classifier, source-owner, and generated-construction
-    surfaces across all **423 live mutations**. Every TypeScript replacement is
+    surfaces across every live mutation. Every TypeScript replacement is
     materialized and parsed before enrollment. Every mutant routed to Vitest
     also passes an incremental compiler value-binding comparison against its
     original source, so a newly unbound runtime identifier is rejected before
@@ -531,7 +531,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     CAS had cancelled. The fixes share one suspension cleanup chokepoint and
     make cancelled run IDs the authority.
   - **Portable, atomic invariant evidence.** The invariant library has one
-    typed inventory of 109 semantic conditions, evaluates
+    typed inventory of semantic conditions, 109 at this PR's closeout, evaluates
     explicit dialect-neutral table projections in TypeScript, and rejects a
     short, long, or malformed executor result vector instead of treating a
     missing table as empty. Row and finding identity are structured tuples,
@@ -555,8 +555,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     independently swappable label. The inventory generates 46 storage/bound
     conditions, the portable snapshot columns, and 69 storage/lower/upper
     poison witnesses.
-    The complete matrix is 109 conditions, 139 witnesses, and 2,363 ambient
-    cells. The central schema/admin conformance surface discovers every native
+    At this PR's closeout the matrix was 109 conditions, 139 witnesses, and
+    2,363 ambient cells. The central schema/admin conformance surface discovers every native
     integer column and compares the exact field/64-bit-width/nullability vector
     to the union of all eight counter plus 23 temporal descriptors—31 durable
     integer fields, without a naming proxy. LibSQL supplies real
@@ -821,14 +821,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
 
-- **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory, now 109
+- **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory
   IDs, makes every currently declared boolean/null/type arm witnessable; it
   does not prove the declaration itself complete. The closeout already removes
   the assertion-side proxy for checkpoint conflicts: all nine relations crossed
   with two operations carry literal executable helper closures, and a
   compiler-resolved mutation-specific helper descriptor must own its exact
   marker. PR3.10 owns the remaining source-side property: generate one red
-  mutation per claimed semantic branch and enum literal across all 109 IDs, and
+  mutation per claimed semantic branch and enum literal across every condition ID, and
   require each mutation to resolve to that condition's attributable verdict. A
   condition ID, detached marker inventory, or one mutation per mechanism is
   still a proxy. The subsequent durable-boundary ownership tranche raised the
@@ -848,7 +848,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   evidence still permits repair findings to be bundled into a green commit.
 
 - **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5: retry_task revival, idempotency-key edge cases,
-  defer-unknown-task deploy rule. Carries two deferrals: cancellation
+  defer-unknown-task deploy rule. From PR3.5b: `decodeTaskResult` refuses a
+  failure reason on a live task, because no transition writes one today. If
+  `retryTask` keeps a revived task's last reason, as Absurd's `retry_task` does,
+  the same change relaxes that refusal and adds the conformance case that writes
+  such a row. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
   worker as a lost lease; the distinct AB001 signal and a 'cancelled'
   worker outcome need the store to distinguish "fence lost because task
@@ -882,8 +886,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   stacked PRs:
   - **PR3.5a:** core, driver, and SDK shapes, plus stale spec and script
     comments, and this milestone record.
-  - **PR3.5b:** the store SQL builders in both dialects and `TaskResult` as a
-    discriminated union.
+  - **PR3.5b:** the successor's parent-taken columns defined once in core, a
+    single cancellation-deadline bind, the spawn winner's redundant tiebreak
+    removed, `mapLimit` and `clampLimit` hoisted into core, and one core decoder,
+    `decodeTaskResult`, that refuses a task row whose outcome contradicts its
+    state. Both stores and the dogfood status command decode through it,
+    `scripts/outcome-lint.py` refuses a second decoder, and an engine invariant
+    checks every snapshot against it.
   - **PR3.5c:** the conformance and fuzz helpers.
   - Rejected: deleting the `WakeSignals` port. It has no implementation, but it
     is exported from the published `@durablerun/core` barrel, so deleting it
@@ -892,6 +901,34 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Rejected: unifying core `WakeSignals` with the driver's `WakeRequest` and
     `WakeScheduler`. All three are published exports, so unifying them changes
     published interfaces, which belongs in a deliberate API change.
+  - Rejected: a `TaskResult` discriminated union. Every consumer that reads
+    `completedPayloadJson` without narrowing on state stops compiling, including
+    the published example, so the stores refuse impossible rows instead.
+  - Rejected: wrappers for the owner `EXISTS` guard and the terminal-or-sole-live
+    guard. Their predicates already have single definitions in `fragments.ts`,
+    enforced by the fragment lint; the SQL around them differs at every site, and a
+    wrapper would move 24 mutation-registered guard texts behind interpolation.
+  - Rejected: a stamped-fence helper. Each site is already one `b.fence(...)`
+    expression, so a helper would rename it without removing a second copy.
+  - Rejected: hoisting the persisted-row decoders into core. They are identical in
+    both stores, but `persistedRowInteger` owns a type-level mutant bound to the
+    libSQL typecheck project; moving it needs a typecheck project the mutation
+    registry does not have, a registry-wide change that requires the full audit.
+  - Rejected: naming `sweepClaimTimeout`'s live-owner and terminal-owner split the
+    way `sweepLostLaunch` does. Its live arm also carries the infra-retry headroom
+    condition, so the named fragments would need a parameter for it, and four
+    registered guard mutations match the split's current text.
+  - Rejected: a core record of the runs columns a successor sets for itself. Its
+    only consumer would be one conformance case, so DESIGN.md §3.8 states the list
+    and that case classifies every runs column.
+  - Rejected: reading the refusal case's rows concurrently. Sequential reads keep
+    the first refusal message deterministic.
+  - Rejected: requiring each poison-matrix case to fire exactly the conditions it
+    covers. Measured on this branch, 13 cases also fire closely related
+    conditions, such as a counter bound beside a negative generation, so the
+    check needs a reclassification of the poison inventory, which is not a store
+    simplification. The two cases that fired an outcome condition now carry a
+    consistent outcome instead.
   - Rejected: removing `retryDelaySeconds`. It is a working function in the
     published `@durablerun/core` barrel, so deleting it breaks consumers
     rather than simplifying the engine.

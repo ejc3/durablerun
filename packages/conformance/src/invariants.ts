@@ -12,6 +12,7 @@ import {
   isLiveState,
   isTerminalState,
   parseFenceStamp,
+  taskResultContradictions,
 } from '@durablerun/core'
 
 /**
@@ -27,6 +28,10 @@ const STATIC_ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
   'cardinality/multiple-live-runs': 'multiple-live-runs-per-task',
   'attempts/over-max': 'attempts-exceeds-cap',
   'attempts/at-max-with-live-run': 'attempt-budget-exhausted-with-live-run',
+  'task-outcome/completed-without-payload': 'task-outcome-completed-without-payload',
+  'task-outcome/payload-on-other-state': 'task-outcome-payload-on-other-state',
+  'task-outcome/failure-without-reason': 'task-outcome-failure-without-reason',
+  'task-outcome/reason-on-other-state': 'task-outcome-reason-on-other-state',
   'accounting/above-top': 'attempt-accounting-drift',
   'accounting/below-top-minus-one': 'attempt-accounting-drift',
   'accounting/live-run-not-next': 'attempt-accounting-drift',
@@ -163,6 +168,8 @@ const SNAPSHOT_PROJECTIONS = [
       'attempts',
       'max_attempts',
       'infra_retries',
+      'completed_payload',
+      'failure_reason',
       'fence_stamp',
     ]),
   },
@@ -521,6 +528,13 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
   for (const task of rows.tasks) {
     const taskId = text(task, 'task_id')
     const state = text(task, 'state')
+    // taskResultContradictions throws for a missing column or an unknown state. The
+    // projection selects every outcome column, and both schemas refuse an unknown
+    // state with a CHECK constraint, so a throw here is a harness or dialect defect
+    // that fails the evaluation loudly instead of hiding as a finding.
+    for (const contradiction of taskResultContradictions(taskId, task)) {
+      add(`task-outcome/${contradiction}`, taskId)
+    }
     const counters = taskCounters.get(taskId)
     if (!counters) throw new Error(`counter snapshot missing task '${taskId}'`)
     const ownedRuns = runsByTask.get(taskId) ?? []
