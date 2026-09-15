@@ -826,6 +826,20 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     statements: [sql(`UPDATE tasks SET attempts = 1 WHERE task_id = ?`, [TASK])],
   },
   {
+    // A failed task at its full budget whose top run no counter recorded: the
+    // accounting band holds, but a revival would charge one past the budget.
+    id: 'accounting/failed-charge-past-budget',
+    covers: ['accounting/failed-charge-past-budget'],
+    statements: [
+      sql(
+        `UPDATE tasks SET state = 'failed', failure_reason = '{"name":"Forged"}',
+           attempts = max_attempts WHERE task_id = ?`,
+        [TASK],
+      ),
+      sql(`UPDATE runs SET state = 'failed', attempt = 6 WHERE run_id = ?`, [RUN]),
+    ],
+  },
+  {
     id: 'checkpoint/task-mismatch',
     covers: ['checkpoint/task-mismatch'],
     statements: [checkpoint(CANARY_TASK, Q, RUN)],
@@ -2322,6 +2336,17 @@ export function findingSeverity(
         : accounted < top - 1n
           ? top - 1n - accounted
           : 0n
+    }
+    case 'accounting/failed-charge-past-budget': {
+      const maximum = exactInteger(task?.max_attempts)
+      const infra = exactInteger(task?.infra_retries)
+      const ordinals = snapshot.runs
+        .filter((candidate) => candidate.task_id === primarySubject)
+        .map((candidate) => exactInteger(candidate.attempt))
+        .filter((value): value is bigint => value !== undefined)
+      if (maximum === undefined || infra === undefined || ordinals.length === 0) return 0n
+      const top = ordinals.reduce((highest, value) => (value > highest ? value : highest))
+      return top - infra > maximum ? top - infra - maximum : 0n
     }
     case 'accounting/live-run-not-next': {
       const attempts = exactInteger(task?.attempts)
