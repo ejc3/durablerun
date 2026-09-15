@@ -1967,6 +1967,48 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      it('charges net of infrastructure retries when a task failed at the infrastructure cap', async () => {
+        const spawned = await f.store.spawn(Q, 'job', '{}')
+        const run = await claimActivated(f.store, Q, 'w-infra-cap')
+        await f.raw.batch('seed-revival-infra-cap', [
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP, spawned.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, run.runId],
+          },
+        ])
+        await f.admin.setFakeNowEpochMs(START_MS + 200_000)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
+          'infra-cap-exhausted',
+        ])
+        const revived = await f.store.retryTask(Q, spawned.taskId)
+        const task = await readOne(
+          f.raw,
+          `SELECT state, attempts, infra_retries, max_attempts FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        expect(
+          {
+            revived,
+            task: {
+              state: task?.state,
+              attempts: Number(task?.attempts),
+              infraRetries: Number(task?.infra_retries),
+              maxAttempts: Number(task?.max_attempts),
+            },
+            violations: await engineInvariantViolations(f.raw),
+          },
+          'mutation-verdict:behavior:retry-task-charges-net-of-infra-retries',
+        ).toEqual({
+          revived: { runId: expect.any(String), attempt: INFRA_RETRY_CAP + 2 },
+          task: { state: 'pending', attempts: 1, infraRetries: INFRA_RETRY_CAP, maxAttempts: 6 },
+          violations: [],
+        })
+      })
+
       // fenceTwin('RetryTask'): a revival is fenced on a failed task: a replay,
       // a completed task, a cancelled task, and a live task all refuse and write
       // nothing.

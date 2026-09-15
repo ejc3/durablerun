@@ -2518,6 +2518,13 @@ MUTATION_SPECS = [
         "retryTask revives a task whose charge exceeds its budget",
     ),
     (
+        "retry-task-charges-net-of-infra-retries",
+        "packages/store-libsql/src/store.ts",
+        "    const charged = `(${top('tasks')} - infra_retries)`\n",
+        "    const charged = `(${top('tasks')})`\n",
+        "retryTask charges infrastructure successors as user attempts, so a task revived at the infrastructure cap is refused",
+    ),
+    (
         "generated-relation-queue-ownership",
         "packages/core/src/fenced-batch.ts",
         "    const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''\n"
@@ -5924,6 +5931,13 @@ VERDICTS = {
         "packages/conformance/test/libsql.test.ts",
         "scheduler conformance [libsql] retryTask (Absurd retry_task) refuses to revive over a counter out of range or a charge past the budget",
         "mutation-verdict:behavior:retry-task-requires-charge-within-budget",
+        "packages/conformance/src/suite.ts",
+    ),
+    "retry-task-charges-net-of-infra-retries": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] retryTask (Absurd retry_task) charges net of infrastructure retries when a task failed at the infrastructure cap",
+        "mutation-verdict:behavior:retry-task-charges-net-of-infra-retries",
         "packages/conformance/src/suite.ts",
     ),
     "generated-relation-queue-ownership": ExpectedVerdict(
@@ -9523,7 +9537,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 433:
+        if len(MUTATIONS) != 434:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

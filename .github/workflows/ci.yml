@@ -306,6 +306,7 @@ jobs:
               if repaired.count(exemptions) != 1:
                   raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
               markers = (
+                  'mutation-verdict:behavior:retry-task-charges-net-of-infra-retries',
                   'mutation-verdict:behavior:retry-task-charges-unaccounted-top-run',
                   'mutation-verdict:behavior:retry-task-requires-accounting-band',
                   'mutation-verdict:behavior:retry-task-requires-charge-within-budget',
