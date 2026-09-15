@@ -40,6 +40,7 @@ export const MATRIX_WRITE_LABELS = [
   'complete',
   'fail',
   'cancel-task',
+  'retry-task',
   'expire-lease-now',
   'set-checkpoint',
   'sweep:cancel',

@@ -1880,6 +1880,104 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('retryTask (Absurd retry_task)', () => {
+      it('revives a task that failed on its budget with a claimable run at the next ordinal', async () => {
+        const spawned = await f.store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+        const run = await claimActivated(f.store, Q, 'w1')
+        await f.store.fail(Q, run.runId, run.claimToken, '{"name":"Boom"}', null)
+        const revived = await f.store.retryTask(Q, spawned.taskId)
+        const task = await readOne(
+          f.raw,
+          `SELECT state, attempts, max_attempts, failure_reason FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        const claimed = await claimOne(f.store, Q, 'w2')
+        expect({
+          revived,
+          task: {
+            state: task?.state,
+            attempts: Number(task?.attempts),
+            maxAttempts: Number(task?.max_attempts),
+            failureReason: task?.failure_reason,
+          },
+          claimed: { runId: claimed.runId, attempt: claimed.attempt },
+          violations: await engineInvariantViolations(f.raw),
+        }).toEqual({
+          revived: { runId: claimed.runId, attempt: 2 },
+          task: { state: 'pending', attempts: 1, maxAttempts: 2, failureReason: null },
+          claimed: { runId: claimed.runId, attempt: 2 },
+          violations: [],
+        })
+      })
+
+      it('charges a relaunch-capped run no counter recorded and keeps the accounting invariants', async () => {
+        const spawned = await f.store.spawn(Q, 'job', '{}')
+        let now = START_MS
+        for (let i = 0; i < 5; i++) {
+          await claimOne(f.store, Q, `tick-${i}`)
+          now += 200_000
+          await f.admin.setFakeNowEpochMs(now)
+          await f.store.sweep(Q, 10)
+          now += 100_000
+          await f.admin.setFakeNowEpochMs(now)
+        }
+        await claimOne(f.store, Q, 'tick-final')
+        await f.admin.setFakeNowEpochMs(now + 200_000)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
+          'relaunch-cap-exhausted',
+        ])
+        const revived = await f.store.retryTask(Q, spawned.taskId)
+        const task = await readOne(
+          f.raw,
+          `SELECT state, attempts, infra_retries, max_attempts FROM tasks WHERE task_id = ?`,
+          [spawned.taskId],
+        )
+        expect({
+          revived,
+          task: {
+            state: task?.state,
+            attempts: Number(task?.attempts),
+            infraRetries: Number(task?.infra_retries),
+            maxAttempts: Number(task?.max_attempts),
+          },
+          violations: await engineInvariantViolations(f.raw),
+        }).toEqual({
+          revived: { runId: expect.any(String), attempt: 2 },
+          task: { state: 'pending', attempts: 1, infraRetries: 0, maxAttempts: 6 },
+          violations: [],
+        })
+      })
+
+      // fenceTwin('RetryTask') — a revival is fenced on a failed task: a replay,
+      // a completed task, a cancelled task, and a live task all refuse and write
+      // nothing.
+      it('refuses a replay, a completed, a cancelled, or a live task and writes nothing', async () => {
+        const failed = await f.store.spawn(Q, 'failed', '{}', { maxAttempts: 1 })
+        const failedRun = await claimActivated(f.store, Q, 'w-failed')
+        await f.store.fail(Q, failedRun.runId, failedRun.claimToken, '{"name":"Boom"}', null)
+        expect(await f.store.retryTask(Q, failed.taskId)).not.toBeNull()
+        const completed = await f.store.spawn(Q, 'completed', '{}')
+        const completedRun = await claimActivated(f.store, Q, 'w-completed')
+        await f.store.complete(Q, completedRun.runId, completedRun.claimToken, '{}')
+        const cancelled = await f.store.spawn(Q, 'cancelled', '{}')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+        const live = await f.store.spawn(Q, 'live', '{}')
+        const before = await Promise.all(
+          [failed, completed, cancelled, live].map(({ taskId }) => snapshot(f, taskId)),
+        )
+        const refusals = await Promise.all(
+          [failed, completed, cancelled, live].map(({ taskId }) => f.store.retryTask(Q, taskId)),
+        )
+        const after = await Promise.all(
+          [failed, completed, cancelled, live].map(({ taskId }) => snapshot(f, taskId)),
+        )
+        expect({ refusals, unchanged: after }).toEqual({
+          refusals: [null, null, null, null],
+          unchanged: before,
+        })
+      })
+    })
+
     describe('expireLeaseNow (the advisory write)', () => {
       it('accelerates sweep pickup with a valid token; stale tokens no-op', async () => {
         await f.store.spawn(Q, 'job', '{}')

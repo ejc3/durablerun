@@ -1183,6 +1183,68 @@ export class PostgresSchedulerStore implements SchedulerStore {
     ])
   }
 
+  async retryTask(
+    queue: string,
+    taskId: string,
+  ): Promise<{ runId: string; attempt: number } | null> {
+    const runId = this.ids.uuidv7()
+    const top = (task: string) =>
+      `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
+    // Absurd's retry_task, the TLA RetryTask action. One task CAS revives a
+    // failed task that owns every run and has none live. Charging the top run
+    // keeps attempts + infra_retries equal to the top ordinal when the task failed
+    // at the infrastructure or relaunch cap, where no counter recorded that run.
+    const charged = `(${top('tasks')} - infra_retries)`
+    const b = new FencedBatch('retry-task', this.ids.token(), { now: NOW_MS })
+    // Only a well-formed failure revives. A failed row with no reason, or with a
+    // completed payload, is a corrupt outcome, and clearing the reason would pass
+    // that corruption on to a pending task.
+    b.cas(
+      'revive',
+      'tasks',
+      `UPDATE tasks SET
+         state = 'pending',
+         attempts = ${charged},
+         max_attempts = CASE WHEN ${charged} > max_attempts
+                          THEN ${charged} + 1 ELSE max_attempts + 1 END,
+         failure_reason = NULL,
+         last_attempt_run = ?,
+         ${FENCE_SET}
+       WHERE task_id = ? AND queue = ? AND state = 'failed'
+         AND failure_reason IS NOT NULL AND completed_payload IS NULL
+         AND ${taskOwnsEveryRun('tasks')}
+         AND EXISTS (SELECT 1 FROM runs r WHERE ${runOwnedByTask('r', 'tasks')})
+         AND NOT EXISTS (SELECT 1 FROM runs r
+                         WHERE ${runOwnedByTask('r', 'tasks')} AND r.state IN ${LIVE})`,
+      [runId, taskId, queue],
+    )
+    // The revival run, keyed on the revive stamp. The live-run check is ownership,
+    // so an exact replay that still sees the first pass's stamp inserts nothing.
+    b.followOn(
+      'run',
+      'runs',
+      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
+         available_at_ms, created_at_ms, ${FENCE_COLS})
+       SELECT ?, f.queue, f.task_id, ${top('f')} + 1, 'pending', f.fence_at_ms, f.fence_at_ms,
+         ${STAMP}, f.fence_at_ms
+       FROM tasks f WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('revive')}
+         AND NOT EXISTS (SELECT 1 FROM runs r
+                         WHERE ${runOwnedByTask('r', 'f')} AND r.state IN ${LIVE})`,
+      [runId, taskId],
+      'one',
+    )
+    b.tail(
+      'revived',
+      `SELECT attempt FROM runs WHERE run_id = ? AND fence_stamp = ${b.fence('run')}`,
+      [runId],
+    )
+    const { won, results } = await b.run(this.db)
+    if (won !== 'revive') return null
+    const row = results.revived?.rows[0]
+    if (!row) throw new Error(`retryTask ${taskId}: the revival won but inserted no run`)
+    return { runId, attempt: Number(row.attempt) }
+  }
+
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
     const batch = new FencedBatch('cancel-task', this.ids.token(), { now: NOW_MS })
     return this.cancelTransition(batch, queue, taskId, false)

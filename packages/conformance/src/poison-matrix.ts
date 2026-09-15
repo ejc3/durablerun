@@ -1600,6 +1600,24 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
         ),
       ]
       break
+    case 'retry-task':
+      statements = [
+        sql(
+          `INSERT INTO tasks
+             (task_id, queue, task_name, params, retry_strategy, max_attempts, state,
+              attempts, infra_retries, failure_reason, enqueue_at_ms, created_at_ms)
+           VALUES (?, ?, 'trigger', '{}', '{"kind":"none"}', 1, 'failed', 1, 0,
+                   '{"name":"TriggerFailed"}', ?, ?)`,
+          [TRIGGER_TASK, Q, NOW, NOW],
+        ),
+        sql(
+          `INSERT INTO runs
+             (run_id, queue, task_id, attempt, state, failure_reason, created_at_ms)
+           VALUES (?, ?, ?, 1, 'failed', '{"name":"TriggerFailed"}', ?)`,
+          [TRIGGER_RUN, Q, TRIGGER_TASK, NOW],
+        ),
+      ]
+      break
     case 'cancel-task':
       statements = [
         triggerTask('pending'),
@@ -1740,6 +1758,8 @@ async function invoke(
         '{}',
         60,
       )
+    case 'retry-task':
+      return store.retryTask(Q, target.taskId)
     case 'sweep:cancel':
     case 'sweep:lost-launch':
     case 'sweep:claim-timeout':
@@ -1961,6 +1981,17 @@ function explicitInsertAuthority(
         })
       }
     }
+    if (label === 'retry-task') {
+      // A revival inserts exactly one run: the id and ordinal it returned, under
+      // the task the invocation named.
+      const result = object(outcome.result)
+      const taskId =
+        outcome.target === 'poison' ? POISON_INVOCATION.taskId : HEALTHY_INVOCATION.taskId
+      const attempt = exactInteger(result?.attempt)
+      if (typeof result?.runId === 'string' && attempt !== undefined) {
+        allowInsert(authority, 'runs', { run_id: result.runId, queue: Q, task_id: taskId, attempt })
+      }
+    }
     if (label === 'sweep:claim-timeout' && Array.isArray(outcome.result)) {
       for (const itemValue of outcome.result) {
         const item = object(itemValue)
@@ -2073,6 +2104,16 @@ function terminalBarrier(
     if (!isTerminalState(task.state)) continue
     const taskId = String(task.task_id)
     const afterTask = afterTasks.get(taskId)
+    // retryTask is the one sanctioned exit from a terminal state: a FAILED task
+    // may return to pending and acquire the single revival run the insert
+    // authority allowed. Completed and cancelled tasks stay barred.
+    const revived =
+      label === 'retry-task' &&
+      task.state === 'failed' &&
+      afterTask?.state === 'pending' &&
+      liveRuns(after, taskId).length === 1 &&
+      liveRuns(before, taskId).length === 0
+    if (revived) continue
     if (!same(task, afterTask)) errors.push(`terminal task ${taskId} changed`)
     const oldLiveRuns = liveRuns(before, taskId)
     const oldLiveIds = new Set(oldLiveRuns.map((run) => String(run.run_id)))
@@ -2771,6 +2812,18 @@ function healthyWinErrors(
       expect(
         task?.state === 'failed' && same(task.attempts, 1) && run?.state === 'failed',
         'trigger run was not failed terminally',
+      )
+      break
+    case 'retry-task':
+      expect(
+        hasOutcome(
+          outcomes.filter((outcome) => outcome.target === 'healthy'),
+          (result) => same(object(result)?.attempt, 2),
+        ) &&
+          task?.state === 'pending' &&
+          same(task.max_attempts, 2) &&
+          run?.state === 'failed',
+        'trigger task was not revived',
       )
       break
     case 'cancel-task':

@@ -844,6 +844,22 @@ are load-bearing):
    sole live run. An already-terminal owner may still let a matching live run
    quiesce, because that cannot amplify task state. A refused suspension
    surfaces as AB002.
+
+   **One exception: `retryTask` revives a failed task in place** (Absurd's
+   `retry_task`, TLA action `RetryTask`). It is an operator action on a task
+   whose state is `failed`, and nothing else may leave a terminal state. It
+   inserts a new pending run due now, with the next ordinal after every run the
+   task has, and returns the task to `pending`. A task that failed at the
+   infrastructure-retry or relaunch cap has a top run no counter recorded, so
+   the revival charges that run as a user attempt, keeping attempts plus
+   infrastructure retries equal to the top ordinal (TLA `AccountingBand`).
+   The budget becomes one more than the larger of the old budget and those
+   attempts, which for a task that failed on its budget is Absurd's default of
+   budget plus one. The revival clears the task's failure reason. Every failed
+   run stays failed, and infrastructure retries, the first-start latch, and the
+   cancellation deadline are untouched, so a revived task past its duration
+   limit is cancelled by the next sweep. A completed or cancelled task is never
+   revived.
 7. **Client numbers are validated at the port; SQL never multiplies them.**
    Every relative duration crosses the boundary through `durationToMs`
    (finite, ≥ 0, rounded to integer milliseconds, ≤ 100 years; leases and
@@ -1078,7 +1094,7 @@ not depend on careful reading:
   Generated just-over-bound witnesses, along with the ownership witnesses,
   keep the poison matrix complete. The poison surface crosses the 18 classified
   write labels with 144 corrupt-state witnesses covering that exact
-  condition inventory: 2,592 generated cells,
+  condition inventory: 2,736 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state

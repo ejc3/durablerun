@@ -180,6 +180,15 @@ export interface SchedulerStore {
   driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void>
 
   cancelTask(queue: string, taskId: string): Promise<boolean>
+
+  /**
+   * Absurd's retry_task: revive a FAILED task in place with a new pending run at
+   * the next ordinal, due now. A top run no counter recorded (an infrastructure or
+   * relaunch cap) is charged as a user attempt, the budget becomes one more than
+   * the larger of the old budget and the attempts, and the task's failure reason
+   * is cleared. Null when the task is not failed or already has a live run.
+   */
+  retryTask(queue: string, taskId: string): Promise<{ runId: string; attempt: number } | null>
 }
 
 /** Test/simulation-only surface; never used by engine actors. */
