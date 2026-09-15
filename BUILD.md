@@ -881,9 +881,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   steps; rollback-failure halts the chain and surfaces in the result.
 
 - **PR3.5 simplification sweep** — IN PROGRESS. The findings recorded in
-  SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`; that file's
-  status section tracks each finding until it is deleted. It lands as three
-  stacked PRs:
+  SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
+  landed or was rejected with a reason below, and PR3.5c deletes that file. It
+  lands as three stacked PRs:
   - **PR3.5a:** core, driver, and SDK shapes, plus stale spec and script
     comments, and this milestone record.
   - **PR3.5b:** the successor's parent-taken columns defined once in core, a
@@ -893,7 +893,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     state. Both stores and the dogfood status command decode through it,
     `scripts/outcome-lint.py` refuses a second decoder, and an engine invariant
     checks every snapshot against it.
-  - **PR3.5c:** the conformance and fuzz helpers.
+  - **PR3.5c:** the conformance and fuzz helpers. Seeded worlds run through one
+    helper that always closes its fixture, the suite shares one claim helper and
+    single-row read and owner-bound transition helpers, single-run tests use the
+    default fixture, the fuzz walk counts lease-holding transitions through one
+    helper, and SIMPLIFY-BACKLOG.md is deleted.
   - Rejected: deleting the `WakeSignals` port. It has no implementation, but it
     is exported from the published `@durablerun/core` barrel, so deleting it
     breaks consumers that import the type. Removing a published export belongs
