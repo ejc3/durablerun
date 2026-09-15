@@ -15,8 +15,12 @@
 # a green gate re-checks everything at the end anyway; on a failure, rerun a
 # single group without it to localize).
 #
-# TLA_SCOPE=ci replaces phase 2 with SchedulerCI.cfg (safety + liveness at
-# the CI-sized scope, ~500k states) — the PR gate on small runners.
+# Phase 3 then runs the retryTask revival scope (SchedulerRetry.cfg) alone with
+# the whole budget.
+#
+# TLA_SCOPE=ci replaces phases 2 and 3 with SchedulerCI.cfg (safety + liveness
+# at the CI-sized scope, ~570k states) followed by SchedulerRetry.cfg — the PR
+# gate on small runners.
 set -euo pipefail
 
 TLA_SHA256="eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a"
@@ -195,11 +199,6 @@ else
   tlc "$safety_heap" "$safety_workers" -metadir "$STATES/full" \
     -config Scheduler.cfg Scheduler.tla >"$STATES/safety.log" 2>&1 &
   safety_pid=$!
-  # retryTask revival runs at its own small constants (SchedulerRetry.cfg), so
-  # the full and liveness scopes keep MaxRetries 0 and their measured budgets.
-  tlc "$small_heap" "$small_workers" -metadir "$STATES/retry" \
-    -config SchedulerRetry.cfg Scheduler.tla >"$STATES/retry.log" 2>&1 &
-  retry_pid=$!
   group_pids=()
   for g in 1 2 3 4 5; do
     if [[ "$g" -ge 3 ]]; then heap="$heavy_heap"; workers="$heavy_workers"
@@ -216,14 +215,16 @@ else
     report "liveness group $g" "$code" "$STATES/liveness$g.log" || fail=1
   done
   code=0
-  wait "$retry_pid" || code=$?
-  report "retryTask revival" "$code" "$STATES/retry.log" || fail=1
-  code=0
   wait "$safety_pid" || code=$?
   if report safety "$code" "$STATES/safety.log"; then
     grep -E "states generated|distinct states" "$STATES/safety.log" | tail -1
   else
     fail=1
   fi
+  # retryTask revival runs at its own small constants (SchedulerRetry.cfg) once
+  # the concurrent group has finished, with the whole budget, so the measured
+  # shares above still add up to it and the other scopes keep MaxRetries 0.
+  echo "== phase 3: retryTask revival, full budget"
+  run_one retry SchedulerRetry.cfg "$TLA_HEAP_MB" "$CORES" || fail=1
   exit "$fail"
 fi
