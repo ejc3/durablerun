@@ -174,6 +174,37 @@ jobs:
               base.write_bytes(previous.replace(old, f"'{version}'".encode()))
               print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
           PY
+      - name: Bridge the new read labels past the older base batch lint
+        # This tree adds two read batches, claimed-task-name and refusal-state.
+        # The base batch lint predates them and cannot classify them. The arm is
+        # pinned to one base lint hash and adds only those READS entries, and only
+        # when this tree's own batch lint declares exactly them as new reads. Any
+        # other base skips.
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import re
+          from pathlib import Path
+          base = Path('/tmp/base/scripts/batch-lint.py')
+          previous = base.read_text()
+          if hashlib.sha256(previous.encode()).hexdigest() != 'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2':
+              print('Base batch lint does not need the read-label bridge.')
+              raise SystemExit(0)
+          def reads(text):
+              match = re.search(r'^READS = \{\n(.*?)^\}', text, re.M | re.S)
+              if match is None:
+                  raise SystemExit('read-label bridge requires one READS table.')
+              return set(re.findall(r'"([^"]+)"', match.group(1)))
+          labels = ('claimed-task-name', 'refusal-state')
+          added = reads(Path('scripts/batch-lint.py').read_text()) - reads(previous)
+          if added != set(labels):
+              raise SystemExit(f'read-label bridge covers exactly {labels}; this tree adds {sorted(added)}.')
+          anchor = 'READS = {\n'
+          if previous.count(anchor) != 1:
+              raise SystemExit('read-label bridge requires one READS anchor.')
+          base.write_text(previous.replace(anchor, anchor + ''.join(f'    "{label}",\n' for label in labels)))
+          print('Added two read labels to the base batch lint; all other base bytes are unchanged.')
+          PY
       - name: Bridge re-aimed mutation targets in the older base registry
         # A base registry's find strings must occur in this tree, and every verdict
         # marker in this tree's tests must be registered or exempted by it. Some
@@ -239,6 +270,34 @@ jobs:
                   for marker in markers
               )
               repaired = repaired.replace(exemptions, exemptions + entries)
+          elif digest == '21afc73785b502980482196a44fb618b732911058784e30ab4c035e70269fe2d':
+              # Removing reschedule's 'preserve' disposition re-aimed three finds, and
+              # one verdict marker this tree registers is unknown to this registry.
+              def block(text, key):
+                  if text.count(key) != 1:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
+                  start = text.rindex('    (\n', 0, text.index(key))
+                  end = text.index('    ),\n', start) + len('    ),\n')
+                  return start, end
+              repaired = previous
+              for key in (
+                  '        "reschedule-wake-own-discriminant",\n        "packages/store-libsql/src/store.ts",\n',
+                  '        "reschedule-wake",\n        "reschedule wake deadline",\n',
+                  '        "suspend-wake",\n        "suspend wake deadline",\n',
+              ):
+                  start, end = block(repaired, key)
+                  new_start, new_end = block(candidate, key)
+                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(exemptions) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              marker = 'mutation-verdict:behavior:claimed-task-name-requires-queue'
+              if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                  raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              repaired = repaired.replace(
+                  exemptions,
+                  exemptions + f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n',
+              )
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
