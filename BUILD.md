@@ -850,10 +850,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5, as two stacked PRs:
   - **PR3.2a:** the rolling-deploy deferral, decided before activation from the
     claimed task's name the worker reads from the store, through a new
-    `defer-launch` batch fenced on the claim receipt.
-    TLC produced a counterexample against the old post-activation deferral
-    first, and conformance cases on libSQL and PostgreSQL were committed red.
-    The same PR models the suspension paths' task-eligibility guard in
+    `defer-launch` batch fenced on the claim receipt. The same PR models the suspension paths' task-eligibility guard in
     `specs/Scheduler.tla` with a probe that witnesses a refused suspension,
     raises `RunCancelledError` from a refused worker write on a cancelled run
     so the worker ends with a cancelled outcome, pins idempotency-key reuse to
@@ -873,7 +870,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     revival either clears the task's failure reason or relaxes
     `decodeTaskResult`'s refusal together with a case that writes such a row.
   - A heartbeat on a cancelled task still reports only a lost lease, so a
-    handler that runs past half a lease after cancellation ends as lease-lost.
+    handler that makes a context call after the next beat ends as lease-lost.
     Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the
     heartbeat batch on `FencedBatch` with a refusal read and a cancelled
     variant of `LeaseState`.

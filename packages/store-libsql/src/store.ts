@@ -1297,12 +1297,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     return typeof name === 'string' ? name : null
   }
 
-  /**
-   * §3.2 rolling-deploy deferral, before activation: parks an unactivated claim
-   * whose task this build has no handler for, consuming nothing. A refusal
-   * throws RunCancelledError when the task's cancellation ended the run and
-   * LeaseLostError otherwise.
-   */
+  /** §3.2 rolling-deploy deferral; the port documents its contract. */
   async deferLaunch(
     queue: string,
     runId: string,
@@ -1312,7 +1307,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   ): Promise<void> {
     const validClaimGen = requirePositiveClaimGeneration('deferLaunch.claimGen', claimGen)
     const wakePlan = prepareWake({ inSeconds }, true)
-    // The rolling-deploy deferral, decided from the launch before activation.
+    // The rolling-deploy deferral, decided before activation.
     // Fencing on the claim RECEIPT, not an activation, is the point: the run
     // must still be running under this token and generation with no activation
     // yet, so the first-start latch, the start deadline, and the duration clock
@@ -1367,8 +1362,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * Sleep, defer, or attempt-neutral chain (§3.2). The worker's own claim
    * token is the ownership proof; the transition mints a fresh stamp into
    * claimed_by so the suspended run carries no live token (a zombie's later
-   * writes die on claimed_by). A refusal throws RunCancelledError when the
-   * task's cancellation ended the run and LeaseLostError otherwise.
+   * writes die on claimed_by). Refusals follow the port's refused-write contract.
    */
   async reschedule(
     queue: string,

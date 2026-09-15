@@ -94,9 +94,9 @@ function infrastructureOutcome(
  * Transport-free: the HTTP worker server (driver package) wraps this; tests
  * call it directly. The contract, in order:
  *
- * 1. A launched task name this build does not know is DEFERRED from the
- *    launch, before activation (parked ~15s with its carried wake preserved,
- *    nothing consumed, the first start never latched) — deploy workers before
+ * 1. A claimed task name this build does not know, read from the store, is
+ *    DEFERRED before activation (parked ~15s with its carried wake preserved,
+ *    nothing consumed, the first start never latched), so deploy workers before
  *    producers and old runs survive new code.
  * 2. Activation is the gate: the per-claim compare-and-swap admits exactly
  *    one invocation per claim — a duplicate delivery, a superseded claim,
@@ -128,7 +128,7 @@ export async function runClaimedRun(
   // One lookup: the handler resolved here is the handler dispatched below.
   const handler = taskRegistryGet(registry, taskName)
   if (handler === undefined) {
-    // Rolling-deploy rule: defer from the launch, BEFORE activation, so a build
+    // Rolling-deploy rule: defer BEFORE activation, so a build
     // without this task's handler consumes nothing and never latches the first
     // start, which would disarm the start deadline and start the duration
     // clock. The jitter is derived from the run id (no ambient randomness in

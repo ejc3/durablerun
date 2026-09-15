@@ -44,8 +44,8 @@
 \*   SleepSuspend /
 \*     VoluntaryChain     <-> reschedule()
 \*   DeferLaunch          <-> 'defer-launch' (SPEC-FIRST): the rolling-deploy
-\*                            deferral, decided from the launch before
-\*                            activation, fenced on the claim receipt
+\*                            deferral, decided before activation from the
+\*                            claimed task's name, fenced on the claim receipt
 \*   SweepLostLaunch / SweepRelaunchExhausted /
 \*     SweepClaimTimeout / SweepInfraExhausted
 \*                        <-> sweep()'s per-run fenced batches;
@@ -652,8 +652,8 @@ Activate(m) ==
   /\ lastAction' = "Activate" /\ lastCtx' = CtxKey(m)
 
 \* DeferLaunch <-> 'defer-launch' (SPEC-FIRST): the rolling-deploy deferral,
-\* decided from the launch before activation.  A worker whose build has no
-\* handler for the launched task parks the claimed run: same row, no attempt,
+\* decided before activation.  A worker whose build has no handler for the
+\* claimed task parks the claimed run: same row, no attempt,
 \* no relaunch, wake fields kept.  It is fenced on the claim receipt -- the run
 \* still running under this claim generation and not yet activated -- so a
 \* replay after the park, or after an activation, matches nothing.  It never

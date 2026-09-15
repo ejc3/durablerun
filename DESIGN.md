@@ -415,7 +415,8 @@ One invocation executes one claimed run to its next suspension point:
   claim (`claimedTaskName`); a build with no handler for that name defers the
   claim before this CAS (`deferLaunch`, fenced on the same claim receipt with
   `activated_gen < :claim_gen`), so an undispatchable launch never latches the
-  first start. Otherwise activation is
+  first start, which would disarm the start deadline and start the duration
+  clock for a task no handler ran. Otherwise activation is
   `UPDATE runs SET activated_gen = :claim_gen, claim_expires_at = <re-extended>
   WHERE run_id=:r AND claimed_by=:token AND claim_gen=:claim_gen AND
   activated_gen < :claim_gen AND <soleLiveRun(runs)>`. The final fragment
@@ -551,12 +552,9 @@ One invocation executes one claimed run to its next suspension point:
   recovers through the lease, like any other worker death.
 - Rolling deploys, ported from Absurd: a worker whose build has no handler for
   the claimed task name **defers** the claim before activation (`deferLaunch`,
-  15s + jitter, nothing consumed). The worker reads the claimed task's name from
-  the store (`claimedTaskName`, keyed on its unactivated claim), so the launch
-  still carries only ids, older drivers keep working, and no payload can name a
-  task the claim does not hold. An activation would latch the first start,
-  disarming the start deadline and starting the duration clock for a task no
-  handler ran. Deploy workers before enabling producers, and old runs survive
+  15s + jitter, nothing consumed; the activation bullet above says how the name
+  is read). The launch still carries only ids, so older drivers keep working and
+  no payload can name a task the claim does not hold. Deploy workers before enabling producers, and old runs survive
   new code. In-flight runs resuming under changed code rely on checkpoint
   stability: step names/order must stay compatible, or the task name is
   versioned (`report@v2`) so old runs finish on old handlers.
@@ -565,19 +563,16 @@ One invocation executes one claimed run to its next suspension point:
   `awaitEvent` suspends like any other wait (no polling worker slot). Absurd's
   deadlock rule is kept: awaiting a same-queue child from inside a worker is
   refused.
-- Cancellation discovery: every refused worker write (complete, fail,
-  reschedule, suspendRun, setCheckpoint, awaitEvent, deferLaunch) reads its run's
-  state after the refusal (`refusal-state`) and names why, so a write that wins
-  pays for no read. A run the task's cancellation ended raises
-  `RunCancelledError` (Absurd AB001), and any other lost fence raises
-  `LeaseLostError` (AB002). The worker ends that pass with a `cancelled` outcome,
-  consuming nothing. A heartbeat still reports only that the lease is gone, and
-  once the heartbeat pump sees that, the handler's next context call throws
-  lease-lost, even a replayed step that writes nothing. A handler that runs past
-  half a lease after cancellation therefore ends as lease-lost, not cancelled. A
-  suspension refused because the task's cancellation deadline is due, before
-  the sweep has cancelled the task, raises `LeaseLostError` too, because the run
-  is not cancelled yet.
+- Cancellation discovery: a refused worker write names why (the refused-write
+  contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
+  outcome, consuming nothing. A heartbeat still reports only that the lease is
+  gone. The pump beats every half lease, and once it sees the lease gone the
+  handler's next context call throws lease-lost, even a replayed step that
+  writes nothing. So a cancelled handler that makes a context call after that
+  beat ends as lease-lost, while one that returns or throws first ends as
+  cancelled when its complete or fail is refused. A suspension refused because
+  the task's cancellation deadline is due, before the sweep has cancelled the
+  task, raises `LeaseLostError`, because the run is not cancelled yet.
 
 Sizing: claim batch K per tick and per-worker concurrency are tunables; Vercel
 Fluid compute multiplexes concurrent invocations in one instance and bills Active
@@ -973,10 +968,12 @@ are load-bearing):
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
 
-**Fence-loss (AB002) contract:** a refused worker write (`complete`, `fail`,
-`reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`, `deferLaunch`) throws
-`RunCancelledError` (AB001) when the task's cancellation ended the run and
-`LeaseLostError` otherwise; `heartbeat` reports `held: false`. A worker retrying `complete` after a lost
+**Refused-write contract (AB001 and AB002):** a refused worker write
+(`complete`, `fail`, `reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`,
+`deferLaunch`) reads its run's state only after the refusal (`refusal-state`),
+so a write that wins pays for no read. It throws `RunCancelledError` (AB001)
+when the task's cancellation ended the run and `LeaseLostError` (AB002)
+otherwise, including when that read fails; `heartbeat` reports `held: false`. A worker retrying `complete` after a lost
 response treats `LeaseLostError` as possible-prior-success: verify via
 `getTaskResult` and exit (verify-then-exit), never re-execute.
 
