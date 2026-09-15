@@ -2071,6 +2071,24 @@ function changedOutsideAuthority(
   return changed
 }
 
+/** `row` without the named columns, for a barrier that lets exactly those change. */
+function withoutColumns(row: SqlRow, columns: ReadonlySet<string>): SqlRow {
+  return Object.fromEntries(Object.entries(row).filter(([name]) => !columns.has(name))) as SqlRow
+}
+
+const LEASE_DEADLINE_COLUMNS: ReadonlySet<string> = new Set(['claim_expires_at_ms'])
+
+/** The task columns a revival writes; every other column of a revived task stays put. */
+const REVIVAL_TASK_COLUMNS: ReadonlySet<string> = new Set([
+  'state',
+  'attempts',
+  'max_attempts',
+  'failure_reason',
+  'last_attempt_run',
+  'fence_stamp',
+  'fence_at_ms',
+])
+
 function liveRuns(snapshot: ProtocolSnapshot, taskId: string): SqlRow[] {
   return snapshot.runs.filter((row) => row.task_id === taskId && isLiveState(row.state)) as SqlRow[]
 }
@@ -2085,11 +2103,10 @@ function leaseOnlyShortened(before: SqlRow, after: SqlRow): boolean {
   ) {
     return false
   }
-  const withoutDeadline = (row: SqlRow): SqlRow =>
-    Object.fromEntries(
-      Object.entries(row).filter(([name]) => name !== 'claim_expires_at_ms'),
-    ) as SqlRow
-  return same(withoutDeadline(before), withoutDeadline(after))
+  return same(
+    withoutColumns(before, LEASE_DEADLINE_COLUMNS),
+    withoutColumns(after, LEASE_DEADLINE_COLUMNS),
+  )
 }
 
 function terminalBarrier(
@@ -2105,15 +2122,26 @@ function terminalBarrier(
     const taskId = String(task.task_id)
     const afterTask = afterTasks.get(taskId)
     // retryTask is the one sanctioned exit from a terminal state: a FAILED task
-    // may return to pending and acquire the single revival run the insert
-    // authority allowed. Completed and cancelled tasks stay barred.
+    // may return to pending, change only the columns a revival writes, and acquire
+    // the single revival run the insert authority allowed. Completed and cancelled
+    // tasks stay barred.
     const revived =
       label === 'retry-task' &&
       task.state === 'failed' &&
       afterTask?.state === 'pending' &&
       liveRuns(after, taskId).length === 1 &&
       liveRuns(before, taskId).length === 0
-    if (revived) continue
+    if (revived) {
+      if (
+        !same(
+          withoutColumns(task, REVIVAL_TASK_COLUMNS),
+          withoutColumns(afterTask, REVIVAL_TASK_COLUMNS),
+        )
+      ) {
+        errors.push(`revived task ${taskId} changed a column a revival does not write`)
+      }
+      continue
+    }
     if (!same(task, afterTask)) errors.push(`terminal task ${taskId} changed`)
     const oldLiveRuns = liveRuns(before, taskId)
     const oldLiveIds = new Set(oldLiveRuns.map((run) => String(run.run_id)))
