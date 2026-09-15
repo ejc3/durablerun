@@ -991,38 +991,38 @@ CancelExplicit(t) ==
 -----------------------------------------------------------------------------
 \* RetryTask <-> 'retry-task' (SPEC-FIRST, Absurd's retry_task): an operator
 \* revives a FAILED task in place.  A new run row with the next ordinal after
-\* every run the task has becomes due now, and the task returns to pending.  A
-\* task can fail with its top run charged to no counter (the infrastructure or
-\* relaunch cap), so the revival first charges that run as a user attempt,
-\* keeping the accounted ordinal equal to the top ordinal, then raises the
-\* budget to one more than the larger of the old budget and the attempts; for a
-\* task that failed on its budget that is Absurd's default of budget plus one.
-\* Infra retries, hops, the first-start latch, and the cancellation deadline
-\* are untouched, and every failed run stays failed.  This is the one exception to
-\* terminal stability: a failed TASK may leave "failed" here and nowhere else.
-\* An operator action, so unfair.  Bounded by MaxRetries (header).
+\* every run the task has becomes due now, carrying the top run's parked wake
+\* as every successor does (SuccessorCarriesWake), and the task returns to
+\* pending.  A task can fail with its top run charged to no counter (the
+\* infrastructure or relaunch cap), so the revival first charges that run as a
+\* user attempt, keeping the accounted ordinal equal to the top ordinal, then
+\* raises the budget by one.  The charge never exceeds the budget
+\* (FailedChargeWithinBudget), so for a task that failed on its budget this is
+\* Absurd's default of budget plus one.  Infra retries, hops, the first-start
+\* latch, and the cancellation deadline are untouched, and every failed run
+\* stays failed.  This is the one exception to terminal stability: a failed
+\* TASK may leave "failed" here and nowhere else.  An operator action, so
+\* unfair.  Bounded by MaxRetries (header).
 RetryTask(t) ==
   /\ taskState[t] = "failed"
   /\ retries[t] < MaxRetries
   /\ nextRun <= MaxRuns
-  /\ LET owned == {r \in RunIds : runTask[r] = t /\ runState[r] # "unused"}
-         top   == CHOOSE o \in {runAttempt[r] : r \in owned} :
-                    \A r \in owned : runAttempt[r] <= o
-         r2    == nextRun IN
+  /\ LET top == CHOOSE r \in OwnedRuns(t) : runAttempt[r] = TopOrdinal(t)
+         r2  == nextRun IN
        /\ runState'    = [runState EXCEPT ![r2] = "pending"]
        /\ runTask'     = [runTask EXCEPT ![r2] = t]
-       /\ runAttempt'  = [runAttempt EXCEPT ![r2] = top + 1]
+       /\ runAttempt'  = [runAttempt EXCEPT ![r2] = TopOrdinal(t) + 1]
        /\ availableAt' = [availableAt EXCEPT ![r2] = now]
+       /\ wakeEvent'   = [wakeEvent EXCEPT ![r2] = wakeEvent[top]]
+       /\ runPayload'  = [runPayload EXCEPT ![r2] = runPayload[top]]
        /\ nextRun' = nextRun + 1
-  /\ LET charged == TopOrdinal(t) - infraRetries[t] IN
-       /\ attempts'    = [attempts EXCEPT ![t] = charged]
-       /\ maxAttempts' = [maxAttempts EXCEPT ![t] =
-                            IF charged > @ THEN charged + 1 ELSE @ + 1]
+  /\ attempts'    = [attempts EXCEPT ![t] = TopOrdinal(t) - infraRetries[t]]
+  /\ maxAttempts' = [maxAttempts EXCEPT ![t] = @ + 1]
   /\ taskState'   = [taskState EXCEPT ![t] = "pending"]
   /\ retries'     = [retries EXCEPT ![t] = @ + 1]
   /\ UNCHANGED <<now, infraRetries, hops, policy, cancelAt,
                  firstStarted, dispatched, claimGen, activatedGen,
-                 relaunchCount, leaseDeadline, wakeEvent, runPayload, waitEv,
+                 relaunchCount, leaseDeadline, waitEv,
                  waitAt, eventState, tokRuns, channel, contexts, nextCtx>>
   /\ lastAction' = "RetryTask" /\ lastCtx' = NoCtx
 
@@ -1242,6 +1242,15 @@ AccountingBand ==
     OwnedRuns(t) # {} =>
       attempts[t] + infraRetries[t] \in {TopOrdinal(t) - 1, TopOrdinal(t)}
 
+\* INVARIANT (retryTask's budget): a failed task's charge, its top ordinal less
+\* its infrastructure retries, never exceeds its budget, so a revival raises
+\* the budget by exactly one.  The store's revive CAS refuses a charge past
+\* the budget as corruption.
+FailedChargeWithinBudget ==
+  \A t \in Tasks :
+    (taskState[t] = "failed" /\ OwnedRuns(t) # {}) =>
+      TopOrdinal(t) - infraRetries[t] <= maxAttempts[t]
+
 LiveRunIsNextAccounted ==
   \A t \in Tasks :
     LET live == {r \in OwnedRuns(t) : runState[r] \in LiveStates} IN
@@ -1415,7 +1424,7 @@ PayloadAuthority ==
           \/ /\ lastAction' = "AwaitMiss"
              /\ lastCtx'.run = r
              /\ runPayload'[r] = NoPayload
-          \/ /\ lastAction' \in {"SweepClaimTimeout", "FailRunWithRetry"}
+          \/ /\ lastAction' \in {"SweepClaimTimeout", "FailRunWithRetry", "RetryTask"}
              /\ runState[r] = "unused"
     ]_vars
 
