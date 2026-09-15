@@ -771,10 +771,27 @@ export const POISON_WITNESSES: readonly PoisonWitness[] = [
     ],
   },
   {
-    id: 'task-outcome/contradicts-state',
-    covers: ['task-outcome/contradicts-state'],
+    id: 'task-outcome/completed-without-payload',
+    covers: ['task-outcome/completed-without-payload'],
+    statements: [taskState('completed'), runState('completed')],
+  },
+  {
+    id: 'task-outcome/payload-on-other-state',
+    covers: ['task-outcome/payload-on-other-state'],
     statements: [
       sql(`UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`, [TASK]),
+    ],
+  },
+  {
+    id: 'task-outcome/failure-without-reason',
+    covers: ['task-outcome/failure-without-reason'],
+    statements: [taskState('cancelled'), runState('cancelled')],
+  },
+  {
+    id: 'task-outcome/reason-on-other-state',
+    covers: ['task-outcome/reason-on-other-state'],
+    statements: [
+      sql(`UPDATE tasks SET failure_reason = '{"name":"Forged"}' WHERE task_id = ?`, [TASK]),
     ],
   },
   {
