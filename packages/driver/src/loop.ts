@@ -37,6 +37,12 @@ export interface DriverLoopOptions extends TickOptions {
   /** Consecutive empty ticks before the idle ceiling applies (default 10). */
   idleAfterTicks?: number
   /**
+   * Minimum time between the starts of two ticks that a wake() may cause
+   * (default: the busy ceiling). A flood of /wake pings looks at most once per
+   * floor interval; stop() still interrupts the wait.
+   */
+  wakeFloorMs?: number
+  /**
    * Abandon a hanging launcher call after this long (default 10s). Pass
    * null for bounded-slot SYNC launchers that legitimately run the worker
    * inline (§3.9) — their calls are supposed to take as long as the run.
@@ -67,6 +73,7 @@ export class DriverLoop {
   private readonly busyCeilingMs: number
   private readonly idleCeilingMs: number
   private readonly idleAfterTicks: number
+  private readonly wakeFloorMs: number
   private readonly registryIntervalMs: number
   private readonly registryTtlSeconds: number
   private readonly driverId: string
@@ -76,8 +83,10 @@ export class DriverLoop {
   private stopped: Promise<void> | null = null
   private resolveStopped: (() => void) | null = null
   private sleepInterrupt: AbortController | null = null
+  private floorInterrupt: AbortController | null = null
   private wakeRequested = false
   private idleTicks = 0
+  private lastTickStartedAtMs: number | null = null
   private chainedTicks = 0
   private lastBeatAtMs: number | null = null
   private beatInFlight: Promise<void> | null = null
@@ -121,6 +130,10 @@ export class DriverLoop {
       throw new RangeError('idleCeilingMs must be >= busyCeilingMs (idle must not poll faster)')
     }
     this.idleAfterTicks = requirePositiveInt('idleAfterTicks', opts.idleAfterTicks ?? 10)
+    this.wakeFloorMs = requirePositiveInt('wakeFloorMs', opts.wakeFloorMs ?? this.busyCeilingMs)
+    if (this.wakeFloorMs > MAX_TIMER_MS) {
+      throw new RangeError(`wakeFloorMs must be <= ${MAX_TIMER_MS}ms (timer API limit)`)
+    }
     const registryIntervalSeconds = opts.registryIntervalSeconds ?? 15
     this.registryIntervalMs = durationToMs('registryIntervalSeconds', registryIntervalSeconds, {
       positive: true,
@@ -165,6 +178,7 @@ export class DriverLoop {
     try {
       while (this.running) {
         let result: TickResult | null = null
+        this.lastTickStartedAtMs = this.clock.nowEpochMs()
         try {
           result = await tick(
             { store: this.store, launcher: this.launcher, ids: this.ids },
@@ -217,14 +231,25 @@ export class DriverLoop {
           }
         }
         sleepMs = Math.min(sleepMs, this.msUntilBeatDue())
-        if (this.wakeRequested) {
-          this.wakeRequested = false
-          continue
+        if (!this.wakeRequested) {
+          this.chainedTicks = 0
+          this.sleepInterrupt = new AbortController()
+          await this.clock.sleep(sleepMs, this.sleepInterrupt.signal)
+          this.sleepInterrupt = null
         }
-        this.chainedTicks = 0
-        this.sleepInterrupt = new AbortController()
-        await this.clock.sleep(sleepMs, this.sleepInterrupt.signal)
-        this.sleepInterrupt = null
+        if (this.wakeRequested && this.running) {
+          // A wake looks again, but never sooner than the floor after the last
+          // tick started, so every ping inside the interval coalesces into one
+          // look. Only stop() interrupts this wait.
+          const remaining =
+            (this.lastTickStartedAtMs ?? 0) + this.wakeFloorMs - this.clock.nowEpochMs()
+          if (remaining > 0) {
+            this.chainedTicks = 0
+            this.floorInterrupt = new AbortController()
+            await this.clock.sleep(remaining, this.floorInterrupt.signal)
+            this.floorInterrupt = null
+          }
+        }
         this.wakeRequested = false
       }
     } finally {
@@ -233,7 +258,7 @@ export class DriverLoop {
     }
   }
 
-  /** Interrupt the current sleep (enqueue ping): tick again NOW. */
+  /** Interrupt the current sleep (enqueue ping): look again, at most once per wake floor. */
   wake(): void {
     this.wakeRequested = true
     this.sleepInterrupt?.abort()
@@ -243,6 +268,7 @@ export class DriverLoop {
   async stop(): Promise<void> {
     this.running = false
     this.sleepInterrupt?.abort()
+    this.floorInterrupt?.abort()
     await (this.stopped ?? Promise.resolve())
   }
 

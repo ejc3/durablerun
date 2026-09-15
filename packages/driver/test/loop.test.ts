@@ -110,6 +110,10 @@ describe('DriverLoop', () => {
     await until(() => f.clock.sleeps.length === 1, 'idle park')
     await f.store.spawn(Q, 'job', '{}')
     loop.wake()
+    // The wake arrives inside the floor after the last tick started, so the
+    // loop waits out the rest of that interval before it looks again.
+    await until(() => f.clock.sleeps.length === 1, 'floor wait after wake')
+    await f.advance(250)
     await until(() => launcher.invocations.length === 1, 'launch after wake')
     await loop.stop()
     await done
