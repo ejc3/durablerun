@@ -86,7 +86,7 @@ export class DriverLoop {
   private floorInterrupt: AbortController | null = null
   private wakeRequested = false
   private idleTicks = 0
-  private lastTickStartedAtMs: number | null = null
+  private lastTickStartedAtMs = 0
   private chainedTicks = 0
   private lastBeatAtMs: number | null = null
   private beatInFlight: Promise<void> | null = null
@@ -231,6 +231,8 @@ export class DriverLoop {
           }
         }
         sleepMs = Math.min(sleepMs, this.msUntilBeatDue())
+        // The look this park plans. A wake may coalesce pings, but never delays it.
+        const plannedLookAtMs = this.clock.nowEpochMs() + sleepMs
         if (!this.wakeRequested) {
           this.chainedTicks = 0
           this.sleepInterrupt = new AbortController()
@@ -240,9 +242,16 @@ export class DriverLoop {
         if (this.wakeRequested && this.running) {
           // A wake looks again, but never sooner than the floor after the last
           // tick started, so every ping inside the interval coalesces into one
-          // look. Only stop() interrupts this wait.
-          const remaining =
-            (this.lastTickStartedAtMs ?? 0) + this.wakeFloorMs - this.clock.nowEpochMs()
+          // look. The wait never exceeds the floor, so a backwards clock step
+          // cannot stretch it, and never passes the look this park planned, so
+          // coalescing delays neither a due wake nor the registry beat. Only
+          // stop() interrupts this wait.
+          const nowMs = this.clock.nowEpochMs()
+          const remaining = Math.min(
+            this.lastTickStartedAtMs + this.wakeFloorMs - nowMs,
+            this.wakeFloorMs,
+            plannedLookAtMs - nowMs,
+          )
           if (remaining > 0) {
             this.chainedTicks = 0
             this.floorInterrupt = new AbortController()
