@@ -1972,7 +1972,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           async () => {
             for (const { path, taskId, parent, successor } of families) {
               for (const column of SUCCESSOR_CARRIED_RUN_COLUMNS) {
-                if (parent[column] !== seeded[column] || successor[column] !== seeded[column]) {
+                if (parent[column] !== seeded[column]) {
+                  throw new Error(`the ${path} parent of task ${taskId} lost its seeded ${column}`)
+                }
+                if (successor[column] !== seeded[column]) {
                   throw new Error(
                     `successor dropped an inherited column: ${column} on the ${path} successor of task ${taskId}`,
                   )

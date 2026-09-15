@@ -8,13 +8,11 @@ import {
   type SqlExecutor,
   type SqlResult,
   type SqlRow,
-  type TaskResultContradiction,
   decodeBoundedInteger,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
-  readTaskResult,
-  taskResultContradiction,
+  taskResultContradictions,
 } from '@durablerun/core'
 
 /**
@@ -118,14 +116,6 @@ export const ENGINE_INVARIANT_CONDITION_NAMES = Object.freeze({
 })
 
 export type EngineInvariantConditionId = keyof typeof ENGINE_INVARIANT_CONDITION_NAMES
-
-/** Each way a task row's outcome can contradict its state, as its own condition. */
-const TASK_OUTCOME_CONDITIONS = Object.freeze({
-  'completed-without-payload': 'task-outcome/completed-without-payload',
-  'payload-on-other-state': 'task-outcome/payload-on-other-state',
-  'failure-without-reason': 'task-outcome/failure-without-reason',
-  'reason-on-other-state': 'task-outcome/reason-on-other-state',
-} as const satisfies Record<TaskResultContradiction, EngineInvariantConditionId>)
 
 export const ENGINE_INVARIANT_CONDITIONS = Object.freeze(
   Object.entries(ENGINE_INVARIANT_CONDITION_NAMES).map(([id, name]) =>
@@ -538,8 +528,13 @@ function evaluate(rows: ProtocolRows): EngineInvariantFinding[] {
   for (const task of rows.tasks) {
     const taskId = text(task, 'task_id')
     const state = text(task, 'state')
-    const contradiction = taskResultContradiction(readTaskResult(taskId, task))
-    if (contradiction !== null) add(TASK_OUTCOME_CONDITIONS[contradiction], taskId)
+    // taskResultContradictions throws for a missing column or an unknown state. The
+    // projection selects every outcome column, and both schemas refuse an unknown
+    // state with a CHECK constraint, so a throw here is a harness or dialect defect
+    // that fails the evaluation loudly instead of hiding as a finding.
+    for (const contradiction of taskResultContradictions(taskId, task)) {
+      add(`task-outcome/${contradiction}`, taskId)
+    }
     const counters = taskCounters.get(taskId)
     if (!counters) throw new Error(`counter snapshot missing task '${taskId}'`)
     const ownedRuns = runsByTask.get(taskId) ?? []

@@ -38,12 +38,8 @@ const CONTRADICTION_DETAIL = Object.freeze({
   'reason-on-other-state': 'carries a failure reason',
 } as const satisfies Record<TaskResultContradiction, string>)
 
-/**
- * Read a task's outcome from a row that selected `TASK_RESULT_COLUMNS`, without
- * checking it against the state. A row that lacks one of the columns or names an
- * unknown state is refused with RangeError.
- */
-export function readTaskResult(taskId: string, row: SqlRow): TaskResult {
+/** Read a task's outcome columns, refusing a missing column or an unknown state. */
+function readTaskResult(taskId: string, row: SqlRow): TaskResult {
   for (let index = 0; index < TASK_RESULT_COLUMN_LIST.length; index++) {
     const column = TASK_RESULT_COLUMN_LIST[index] as string
     if (!hasOwn(row, column) || row[column] === undefined) {
@@ -61,19 +57,30 @@ export function readTaskResult(taskId: string, row: SqlRow): TaskResult {
   return result
 }
 
-/**
- * The first rule `result` breaks, or null. A completed task must carry its payload,
- * a failed or cancelled task must carry its reason, and no other state may carry
- * either.
- */
-export function taskResultContradiction(result: TaskResult): TaskResultContradiction | null {
+function contradictionsOf(result: TaskResult): TaskResultContradiction[] {
+  const found: TaskResultContradiction[] = []
   const hasPayload = result.completedPayloadJson !== undefined
-  if (result.state === 'completed' && !hasPayload) return 'completed-without-payload'
-  if (result.state !== 'completed' && hasPayload) return 'payload-on-other-state'
+  if (result.state === 'completed' && !hasPayload) found[found.length] = 'completed-without-payload'
+  if (result.state !== 'completed' && hasPayload) found[found.length] = 'payload-on-other-state'
   const failed = result.state === 'failed' || result.state === 'cancelled'
-  if (failed && result.failureReasonJson === undefined) return 'failure-without-reason'
-  if (!failed && result.failureReasonJson !== undefined) return 'reason-on-other-state'
-  return null
+  if (failed && result.failureReasonJson === undefined)
+    found[found.length] = 'failure-without-reason'
+  if (!failed && result.failureReasonJson !== undefined)
+    found[found.length] = 'reason-on-other-state'
+  return found
+}
+
+/**
+ * Every rule a task row that selected `TASK_RESULT_COLUMNS` breaks, in a fixed order.
+ * A completed task must carry its payload, a failed or cancelled task must carry its
+ * reason, and no other state may carry either. A row that lacks a column or names an
+ * unknown state is refused with RangeError.
+ */
+export function taskResultContradictions(
+  taskId: string,
+  row: SqlRow,
+): readonly TaskResultContradiction[] {
+  return contradictionsOf(readTaskResult(taskId, row))
 }
 
 /**
@@ -83,10 +90,10 @@ export function taskResultContradiction(result: TaskResult): TaskResultContradic
  */
 export function decodeTaskResult(taskId: string, row: SqlRow): TaskResult {
   const result = readTaskResult(taskId, row)
-  const contradiction = taskResultContradiction(result)
-  if (contradiction !== null) {
+  const found = contradictionsOf(result)
+  if (found.length > 0) {
     throw new TrustedRangeError(
-      `task ${taskId} is ${result.state} but ${CONTRADICTION_DETAIL[contradiction]}`,
+      `task ${taskId} is ${result.state} but ${CONTRADICTION_DETAIL[found[0] as TaskResultContradiction]}`,
     )
   }
   return result
