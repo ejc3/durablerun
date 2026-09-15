@@ -81,6 +81,7 @@ async function interruptedWorker(): Promise<void> {
   const invocation: RunInvocation = {
     queue: stringField(message, 'queue'),
     runId: stringField(message, 'runId'),
+    taskName: stringField(message, 'taskName'),
     claimToken: stringField(message, 'claimToken'),
     claimGen: integer(message.claimGen),
   }
@@ -230,7 +231,13 @@ async function receipt(): Promise<void> {
       )
     }
     await interruptInvocation(
-      { queue, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
+      {
+        queue,
+        runId: run.runId,
+        taskName: run.taskName,
+        claimToken: run.claimToken,
+        claimGen: run.claimGen,
+      },
       Math.min(CHILD_TIMEOUT_MS, remainingMs()),
     )
 
