@@ -41,7 +41,21 @@ for package in "${packages[@]}"; do
   unpacked="$(mktemp -d "$PACK_DIR/$package.XXXXXX")"
   tar -xzf "$archive" -C "$unpacked"
   node "$ROOT/scripts/package-smoke-manifest.mjs" "$unpacked/package" "@durablerun/$package"
+  mkdir -p "$PACK_DIR/surface/$package"
+  tar -xzf "$archive" -C "$PACK_DIR/surface/$package"
 done
+
+surface_snapshot="$ROOT/scripts/published-surface-v0.1.0-alpha.1.json"
+node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_snapshot"
+# The check must be able to fail: a snapshot that names one export the packages
+# never had has to be refused, or a broken reader would pass every tree.
+surface_control="$PACK_DIR/surface-control.json"
+node -e "const fs=require('node:fs');const s=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));s.surface['@durablerun/core']['.'].push('PackageSurfaceControlNeverExported');fs.writeFileSync(process.argv[2],JSON.stringify(s))" \
+  "$surface_snapshot" "$surface_control"
+if node "$ROOT/scripts/package-surface.mjs" "$PACK_DIR/surface" "$surface_control" >/dev/null 2>&1; then
+  echo "package-smoke: package-surface accepted a snapshot naming a never-exported name" >&2
+  exit 1
+fi
 
 node "$ROOT/scripts/package-smoke-manifest-selftest.mjs"
 

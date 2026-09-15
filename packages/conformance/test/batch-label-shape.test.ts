@@ -1,14 +1,13 @@
-import type { SqlExecutor } from '@durablerun/core'
+import type { SqlExecutor, WakeSpec } from '@durablerun/core'
 import { expect, it } from 'vitest'
 import type { StoreFixtureFactory } from '../src/index.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
-type Wake = { inSeconds: number } | { atEpochMs: number }
 type CapturedBatch = { sql: string; bindArity: number }[]
 
 async function captureWakeBatch(
   operation: 'reschedule' | 'suspend',
-  wake: Wake,
+  wake: WakeSpec,
   makeFixture: StoreFixtureFactory = makeLibsqlFixture,
 ): Promise<CapturedBatch> {
   const wakeKind = Object.hasOwn(wake, 'inSeconds') ? 'relative' : 'absolute'

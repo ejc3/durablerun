@@ -1,6 +1,7 @@
 import {
   type Buggify,
   type Checkpoint,
+  type CheckpointWrite,
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
   FENCE_COLS,
@@ -31,6 +32,7 @@ import {
   type SqlRow,
   type SweptRun,
   type TaskResult,
+  type WakeSpec,
   decodeBoundedInteger,
   durationToMs,
   fenceSetAt,
@@ -93,8 +95,6 @@ const wakeHasOwn = Object.prototype.hasOwnProperty.call.bind(Object.prototype.ha
   key: PropertyKey,
 ) => boolean
 
-type Wake = { inSeconds: number } | { atEpochMs: number }
-
 /**
  * Classify and read a wake once before constructing its SQL shape.
  *
@@ -104,7 +104,7 @@ type Wake = { inSeconds: number } | { atEpochMs: number }
  * suspension paths on the same snapshot.
  */
 function prepareWake(
-  wake: Wake,
+  wake: WakeSpec,
   relative: boolean,
 ): {
   expression: string
@@ -807,12 +807,12 @@ export class PostgresSchedulerStore implements SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    extendSeconds: number,
+    extendLeaseSeconds: number,
   ): Promise<LeaseState> {
     // Buggify: lease-lost can arrive at ANY heartbeat — workers must abort
     // cleanly on the AB002 signal no matter when it fires.
     if (this.buggify('heartbeat:lease-lost')) return { held: false, remainingMs: 0 }
-    const extendMs = durationToMs('extendSeconds', extendSeconds, { positive: true })
+    const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     // ONE statement. It was two — the extend, then a SELECT computing
     // `claim_expires_at_ms - <clock>` — which read the clock twice in one
     // batch, so the answer was off by however far the two reads drifted.
@@ -1257,7 +1257,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: Wake,
+    wake: WakeSpec,
     wakeDisposition: 'consume' | 'preserve' = 'consume',
   ): Promise<void> {
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
@@ -1321,8 +1321,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
     queue: string,
     runId: string,
     claimToken: string,
-    wake: Wake,
-    checkpoint: { key: string; stateJson: string },
+    wake: WakeSpec,
+    checkpoint: CheckpointWrite,
   ): Promise<void> {
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)

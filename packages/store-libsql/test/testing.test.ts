@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { CURRENT_SCHEMA_VERSION } from '../src/index.js'
 import { openTestDb, testIdSource } from '../src/testing.js'
 
 describe('the routine test id source', () => {
@@ -89,5 +93,24 @@ describe('the routine test id source', () => {
       'database-token-000002',
     ])
     f.close()
+  })
+})
+
+describe('openTestDb', () => {
+  it('opens the database a url names instead of a private in-memory one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-testdb-'))
+    const url = `file:${join(dir, 'test.db')}`
+    const first = await openTestDb({ url })
+    first.close()
+    const second = await openTestDb({ url, migrate: false })
+    try {
+      expect(
+        await second.admin.schemaVersion(),
+        'the second open sees the first one migrated',
+      ).toBe(CURRENT_SCHEMA_VERSION)
+    } finally {
+      second.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

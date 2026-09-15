@@ -16,7 +16,11 @@ import {
   trustedCharCodeAt,
   trustedPromiseRace,
 } from './intrinsics.js'
-import { createTaskControlScope, trustedStoreControl } from './task-control.js'
+import {
+  type InfrastructureControlSnapshot,
+  createTaskControlScope,
+  trustedStoreControl,
+} from './task-control.js'
 
 /** A registered durable task function. Params arrive parsed from JSON. */
 export type TaskHandler = (ctx: TaskContext, params: unknown) => Promise<unknown>
@@ -51,21 +55,38 @@ export interface RunInvocation {
 }
 
 /**
+ * Classify a store-call rejection. Used only immediately around a store call,
+ * where origin rather than a user-constructible public class grants
+ * infrastructure authority. Anything that is not infrastructure is rethrown.
+ */
+function trustedStoreOutcome(error: unknown): WorkerOutcome {
+  const outcome = infrastructureOutcome(trustedStoreControl(error))
+  if (outcome !== undefined) return outcome
+  throw error
+}
+
+/**
  * The infrastructure-failure classification, in ONE place: a lost lease and
  * a store outage each abort the pass without spending the user's budget,
  * and every transition write (complete, suspend, fail, the rolling-deploy
- * defer) must treat them identically. Anything else is rethrown. This
- * function is used only immediately around a store call, where origin rather
- * than a
- * user-constructible public class grants infrastructure authority. Two of the
+ * defer) and the handler boundary must treat them identically. Two of the
  * five call sites once open-coded this and silently dropped the outage arm; a
- * single definition makes that divergence unwritable.
+ * single definition makes that divergence unwritable, and the exhaustive
+ * switch makes a new control kind fail typecheck here instead of falling
+ * through to a user failure.
  */
-function trustedStoreOutcome(error: unknown): WorkerOutcome {
-  const control = trustedStoreControl(error)
-  if (control?.kind === 'lease-lost') return { kind: 'lease-lost' }
-  if (control?.kind === 'store-unavailable') return { kind: 'aborted' }
-  throw error
+function infrastructureOutcome(
+  control: InfrastructureControlSnapshot | undefined,
+): WorkerOutcome | undefined {
+  if (control === undefined) return undefined
+  switch (control.kind) {
+    case 'lease-lost':
+      return { kind: 'lease-lost' }
+    case 'store-unavailable':
+      return { kind: 'aborted' }
+    default:
+      return control satisfies never
+  }
 }
 
 /**
@@ -214,8 +235,8 @@ export async function runClaimedRun(
       // store outage crossing the context boundary): abort with no additional
       // transition — the lease story recovers and the user's retry budget is
       // untouched.
-      if (control?.kind === 'lease-lost') return { kind: 'lease-lost' }
-      if (control?.kind === 'store-unavailable') return { kind: 'aborted' }
+      const infrastructure = infrastructureOutcome(control)
+      if (infrastructure !== undefined) return infrastructure
 
       // A user failure: core decides retry over the USER ordinal.
       return await recordUserFailure(error)

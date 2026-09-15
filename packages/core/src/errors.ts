@@ -6,6 +6,7 @@
  */
 
 import { TASK_INTRINSICS } from './intrinsics.js'
+import type { CheckpointWrite, WakeSpec } from './types.js'
 
 export type TaskThrowableSnapshot = Readonly<{
   kind: 'failure'
@@ -116,13 +117,13 @@ export class SuspendSignal extends Error {
     readonly reason: 'sleep' | 'await-event' | 'chain',
     /** Where the runtime should park the run (relative, or the sanctioned
      * user absolute). Omitted for 'chain' (wake immediately). */
-    readonly wake?: { inSeconds: number } | { atEpochMs: number },
+    readonly wake?: WakeSpec,
     /**
      * The suspension marker, written IN THE SAME transition as the park —
      * a marker without a park lies ("the wake already happened"), so the
      * two must be one atomic batch (store.suspendRun).
      */
-    readonly checkpoint?: { key: string; stateJson: string },
+    readonly checkpoint?: CheckpointWrite,
   ) {
     super(`run suspended: ${reason}`)
   }

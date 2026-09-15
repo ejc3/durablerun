@@ -2,9 +2,11 @@ import {
   type Checkpoint,
   type ClaimedRun,
   EventTimeoutError,
+  type EventWake,
   FatalTaskError,
   type SchedulerStore,
   UserName,
+  type WakeSpec,
   parseTaskValueJson,
   serializeTaskValue,
   userDurationToMs,
@@ -78,6 +80,37 @@ export interface TaskContext {
   /** This attempt's user-visible ordinal (infrastructure retries excluded). */
   readonly attempt: number
   readonly taskName: string
+}
+
+/** A wake's outcome arm, without the event and step that located it. */
+type WakeOutcome<W> = W extends unknown ? Omit<W, 'event' | 'step'> : never
+
+/**
+ * What an await memoizes: the outcome of the wake it consumed. Derived from
+ * core's EventWake, so a new wake outcome cannot be missing here.
+ */
+type EventMemo = WakeOutcome<EventWake>
+
+/** A memo that recorded a timeout, told apart by an own property a polluted prototype cannot forge. */
+function isTimedOutMemo(memo: EventMemo): memo is Extract<EventMemo, { timedOut: true }> {
+  return taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true
+}
+
+function eventMemoPayload(name: string, memo: EventMemo): string {
+  if (isTimedOutMemo(memo)) throw new EventTimeoutError(name)
+  return memo.payloadJson
+}
+
+/** A wake that delivered a payload, told apart by an own property. */
+function isPayloadWake(wake: EventWake): wake is Extract<EventWake, { payloadJson: string }> {
+  return taskHasOwn(wake, 'payloadJson')
+}
+
+/** The memo a consumed wake records. A new EventWake outcome stops this compiling. */
+function memoOfWake(wake: EventWake): EventMemo {
+  if (isPayloadWake(wake)) return { payloadJson: wake.payloadJson }
+  const timedOut: Extract<EventWake, { timedOut: true }> = wake
+  return { timedOut: timedOut.timedOut }
 }
 
 /** One execution pass over a claimed run. */
@@ -196,25 +229,7 @@ export class ReplayContext implements TaskContext {
     } finally {
       this.inStep = false
     }
-    const stateJson = serializeTaskValue(`step '${name}' result`, raw)
-    // ONE representation: the caller gets the serialize-then-parse
-    // CANONICAL value on the executing pass too, so NaN, Dates, dropped
-    // undefined fields, and -0 read identically on every pass of every
-    // schedule (there is no second path for divergence to live in).
-    const result = parseTaskValueJson(stateJson) as T
-    await this.#controls.storeCall(() =>
-      this.#store.setCheckpoint(
-        this.#queue,
-        this.#run.taskId,
-        this.#run.runId,
-        this.#run.claimToken,
-        key,
-        stateJson,
-        this.#run.leaseSeconds,
-      ),
-    )
-    taskMapSet(this.seen, key, result)
-    return result
+    return (await this.commitCheckpoint(key, `step '${name}' result`, raw)) as T
   }
 
   async sleepFor(seconds: number): Promise<void> {
@@ -261,11 +276,7 @@ export class ReplayContext implements TaskContext {
       // its carried wake so it cannot be re-read; a wake for a different
       // await (same event name, different step) is left untouched.
       this.takeWake(key)
-      const memo = taskMapGet(this.seen, key) as { timedOut?: boolean; payloadJson?: string }
-      if (taskHasOwn(memo, 'timedOut') && memo.timedOut === true) {
-        throw new EventTimeoutError(name)
-      }
-      return memo.payloadJson as string
+      return eventMemoPayload(name, taskMapGet(this.seen, key) as EventMemo)
     }
     // A wake delivered with this claim resolves the await, consumed once:
     // the run row's wake fields persist after delivery, so matching by the
@@ -273,14 +284,7 @@ export class ReplayContext implements TaskContext {
     // await from stealing this one's wake.
     const wake = this.takeWake(key)
     if (wake) {
-      const memo = taskHasOwn(wake, 'payloadJson')
-        ? { payloadJson: (wake as { payloadJson: string }).payloadJson }
-        : { timedOut: true }
-      await this.commitMarker(key, serializeTaskValue('event wake marker', memo))
-      if (taskHasOwn(memo, 'timedOut') && memo.timedOut === true) {
-        throw new EventTimeoutError(name)
-      }
-      return memo.payloadJson as string
+      return this.commitEventMemo(name, key, memoOfWake(wake))
     }
     const outcome = await this.#controls.storeCall(() =>
       this.#store.awaitEvent(
@@ -301,19 +305,23 @@ export class ReplayContext implements TaskContext {
       ),
     )
     if (outcome.emitted) {
-      await this.commitMarker(
-        key,
-        serializeTaskValue('event wake marker', { payloadJson: outcome.payloadJson }),
-      )
-      return outcome.payloadJson
+      return this.commitEventMemo(name, key, { payloadJson: outcome.payloadJson })
     }
     // The store batch ALREADY parked the run: signal without a wake so the
     // runtime performs no second suspension.
     this.#controls.awaitEvent()
   }
 
-  /** Lease-fenced marker write shared by the await memoization. */
-  private async commitMarker(key: string, stateJson: string): Promise<void> {
+  /**
+   * The one lease-fenced checkpoint commit, shared by steps and await markers.
+   * ONE representation: the memo, and a step's return value on the executing
+   * pass, are the serialize-then-parse CANONICAL value, so NaN, Dates, dropped
+   * undefined fields, and -0 read identically on every pass of every schedule.
+   * Serializing here keeps every stored value on that one path.
+   */
+  private async commitCheckpoint(key: string, label: string, raw: unknown): Promise<unknown> {
+    const stateJson = serializeTaskValue(label, raw)
+    const value = parseTaskValueJson(stateJson)
     await this.#controls.storeCall(() =>
       this.#store.setCheckpoint(
         this.#queue,
@@ -325,7 +333,14 @@ export class ReplayContext implements TaskContext {
         this.#run.leaseSeconds,
       ),
     )
-    taskMapSet(this.seen, key, parseTaskValueJson(stateJson))
+    taskMapSet(this.seen, key, value)
+    return value
+  }
+
+  /** Commit an await's memo, then resolve it exactly as a replay of that memo would. */
+  private async commitEventMemo(name: string, key: string, memo: EventMemo): Promise<string> {
+    await this.commitCheckpoint(key, 'event wake marker', memo)
+    return eventMemoPayload(name, memo)
   }
 
   /**
@@ -337,10 +352,7 @@ export class ReplayContext implements TaskContext {
    * once the run is due again, so on replay, existence alone proves the
    * sleep is over. No clock is consulted anywhere.
    */
-  private async suspendPoint(
-    kind: EngineKey,
-    wake: { inSeconds: number } | { atEpochMs: number },
-  ): Promise<void> {
+  private async suspendPoint(kind: EngineKey, wake: WakeSpec): Promise<void> {
     const key = this.storageName(kind)
     if (taskMapHas(this.seen, key)) return // the wake already happened: continue
     this.#controls.sleep(wake, {

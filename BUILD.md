@@ -31,9 +31,47 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — a useful hosted PR-check watcher
+## Current milestone — lifecycle correctness and the simplification sweep
 
-**Status: COMPLETE; pause after green merge (2026-09-09).** The clean external
+**Status: IN PROGRESS (started 2026-09-14).** Two plan entries land as one
+stack. The PR3.5 simplification sweep goes first. Apart from the behavior
+changes each of its PRs names, it only reshapes code, and it rewrites SDK,
+driver, and store code that the lifecycle work then edits.
+PR3.2 lifecycle polish follows on top of it.
+
+**Exit test:**
+
+1. A task with a start deadline (`maxDelaySeconds`) that a worker build
+   without its registration defers is cancelled by the sweep once the deadline
+   passes, and a `maxDurationSeconds` clock starts when a registered handler
+   first runs, not at a deferral. Conformance cases on libSQL and PostgreSQL
+   show both and were committed red before the fix; TLC produces a
+   counterexample against the unfixed model first.
+2. A worker whose task was cancelled mid-pass receives a distinct cancelled
+   outcome (the store raises `RunCancelledError`), while a swept lease still
+   surfaces as a lost lease.
+3. `specs/Scheduler.tla` carries the suspension paths' task-eligibility guard,
+   TLC passes the CI and full scopes, and a probe witnesses a refused
+   suspension.
+4. A failed task can be retried in place through `retryTask`, following
+   Absurd's `retry_task`. It is modeled in TLA before its SQL exists, and
+   DESIGN.md states its exception to the terminal-inertness rule.
+5. Idempotency-key reuse follows Absurd's `spawn_task` behavior and is pinned
+   by conformance cases.
+6. A flood of `/wake` requests ticks the driver at most once per floor
+   interval.
+7. Every finding in SIMPLIFY-BACKLOG.md is landed or rejected with a written
+   reason under PR3.5, and the file is deleted.
+
+**Non-goals:** exposing `/wake` beyond loopback or authenticating it, a hosted
+cancel route, stopping a handler mid-step when its task is cancelled (discovery
+stays at the next engine call, DESIGN.md §3.2), child tasks (PR3.3), sagas
+(PR3.4), active-wait identity (PR3.8), the PR3.9/PR3.10 assurance expansions,
+and new dialects.
+
+## Completed milestone — a useful hosted PR-check watcher
+
+**Status: COMPLETE (2026-09-09).** The clean external
 Vercel/Turso app watched PR #24's exact head while its selected `tla` check was
 pending, checkpointed the observation, and survived a deliberately killed
 invocation. The deployed host persisted `ready` after two observations in
@@ -54,9 +92,7 @@ No multi-day soak is required.
 
 **Closeout:** the bounded read-only observer, durable polling task, generated
 interruption/replay and fail-closed selection tests, clean external deployment,
-and live receipt are complete in [PR #24](https://github.com/ejc3/durablerun/pull/24).
-Finish its required review and CI, merge green, then pause. Do not start another
-milestone or reopen source-identical proof work during that wait.
+and live receipt merged green in [PR #24](https://github.com/ejc3/durablerun/pull/24).
 
 **Non-goals:** automatic merges, notifications, a UI, branch-protection policy
 discovery, private-repository credential provisioning, new engine protocols or
@@ -811,7 +847,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   named probe failing; the final attribution closeout showed that prose-only
   evidence still permits repair findings to be bundled into a green commit.
 
-- **PR3.2 lifecycle polish**: retry_task revival, idempotency-key edge cases,
+- **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5: retry_task revival, idempotency-key edge cases,
   defer-unknown-task deploy rule. Carries two deferrals: cancellation
   DISCOVERY inside a running pass (today a cancelled task surfaces to its
   worker as a lost lease; the distinct AB001 signal and a 'cancelled'
@@ -840,17 +876,34 @@ these three things; nothing else in the system does I/O, time, or randomness.
   never trigger rollback; `output === undefined` for started-not-persisted
   steps; rollback-failure halts the chain and surfaces in the result.
 
-- **PR3.5 simplification sweep**: the deferred findings from the
-  full-codebase simplify/elegance review (SIMPLIFY-BACKLOG.md) — chiefly
-  the store SQL builders (successor-insert, checkpoint LWW tail, the
-  eligibility/stamped-fence fragments repeated 9–11 times), the
-  bounded-pump-teardown helper, TaskResult as a discriminated union, the
-  `forEachSeed` conformance helper, and a batch of stale spec/script
-  comments. Correctness-flavoured items (the successor-insert drift
-  surface, the pump-teardown race) sequence first. The events PR applied
-  the review's correctness-critical findings and the ones in its own new
-  code; this sweep is the pre-existing remainder, kept explicit rather than
-  dropped.
+- **PR3.5 simplification sweep** — IN PROGRESS. The findings recorded in
+  SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`; that file's
+  status section tracks each finding until it is deleted. It lands as three
+  stacked PRs:
+  - **PR3.5a:** core, driver, and SDK shapes, plus stale spec and script
+    comments, and this milestone record.
+  - **PR3.5b:** the store SQL builders in both dialects and `TaskResult` as a
+    discriminated union.
+  - **PR3.5c:** the conformance and fuzz helpers.
+  - Rejected: deleting the `WakeSignals` port. It has no implementation, but it
+    is exported from the published `@durablerun/core` barrel, so deleting it
+    breaks consumers that import the type. Removing a published export belongs
+    in a deliberate API change, not a behavior-preserving sweep.
+  - Rejected: unifying core `WakeSignals` with the driver's `WakeRequest` and
+    `WakeScheduler`. All three are published exports, so unifying them changes
+    published interfaces, which belongs in a deliberate API change.
+  - Rejected: removing `retryDelaySeconds`. It is a working function in the
+    published `@durablerun/core` barrel, so deleting it breaks consumers
+    rather than simplifying the engine.
+  - Rejected: removing the single-valued `waits.status` and
+    `checkpoints.status` columns. It needs a schema migration, and the poison
+    matrix writes `delivered` wait rows that the status filters must keep
+    excluding, so it is not a behavior-preserving simplification.
+  - Rejected: opening the host binaries' database through `openTestDb`. They
+    are real processes and must not inherit test-helper defaults.
+  - Rejected: opening `replay-equivalence.test.ts`'s database through
+    `openTestDb`. Its own `try`/`finally` closes the database even when
+    migration throws.
 
 ## Phase 4 — dialect matrix
 
