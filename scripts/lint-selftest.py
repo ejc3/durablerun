@@ -1864,6 +1864,19 @@ export class S {
         "SQL in contract.ts is audited like any production source",
     ),
     (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/src/view.tsx": (
+                "export const View = (row: Record<string, unknown>) => (\n"
+                "  <p>it's done: {String(row.completed_payload)}</p>\n"
+                ")\n"
+            ),
+        },
+        "task outcome column completed_payload outside",
+        "JSX text must not hide an outcome column in a .tsx source",
+    ),
+    (
         "fragment-lint.py",
         store(
             "const SQL = `SELECT 1 FROM runs WHERE state IN ('pending','running')`\n",
@@ -4007,6 +4020,14 @@ const pattern = /this\.db\.batch\(/
             ),
         },
         "a reader that selects the decoder's column list spells no outcome column",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/index.ts": "export {}\n",
+            "apps/fixture/src/view.tsx": "export const View = () => <p>it's done</p>\n",
+        },
+        "JSX text in a .tsx source that names no outcome column is not a violation",
     ),
 ]
 
