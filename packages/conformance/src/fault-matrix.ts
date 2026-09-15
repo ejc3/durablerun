@@ -49,6 +49,7 @@ export const MATRIX_WRITE_LABELS = [
 
 export const MATRIX_READ_LABELS = [
   'claimed-task-name',
+  'refusal-state',
   'sweep:scan',
   'get-checkpoints',
   'task-result',
@@ -388,6 +389,8 @@ export async function runFaultMatrixCase(
         // The worker reads the claimed task's name before it activates.
         await go(() => store.claimedTaskName(Q, fin.runId, fin.claimToken, fin.claimGen))
         await go(() => store.activate(Q, fin.runId, fin.claimToken, fin.claimGen))
+        await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
+        // A stale replay of that complete is refused and reads why.
         await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
       }
 

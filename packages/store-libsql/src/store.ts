@@ -280,32 +280,6 @@ function waitsGone(b: FencedBatch, runId: string, after: string): void {
  * mirror and wait reaping inseparable prevents a timer/deferral path from
  * clearing the run's wake fields while leaving an older registration alive.
  */
-/**
- * A refused worker write explains itself from the run it was fenced on. Absurd
- * raises AB001 for a cancelled task and AB002 for a lost lease; here a run the
- * task's cancellation ended raises RunCancelledError, and every other lost fence
- * raises LeaseLostError. The tail reads a row this batch did not write, so it is
- * an open tail.
- */
-function refusalTail(b: FencedBatch, runId: string): void {
-  b.openTail(
-    'refusal',
-    'a refused write names why from the run state some other actor produced',
-    'SELECT state FROM runs WHERE run_id = ?',
-    [runId],
-  )
-}
-
-function refusedWrite(
-  results: Awaited<ReturnType<FencedBatch['run']>>['results'],
-  operation: string,
-  runId: string,
-): Error {
-  return results.refusal?.rows[0]?.state === 'cancelled'
-    ? new RunCancelledError(`${operation} ${runId}`)
-    : new LeaseLostError(`${operation} ${runId}`)
-}
-
 function finishSuspension(b: FencedBatch, runId: string): void {
   taskMirrorsRun(b, runId, 'suspend')
   waitsGone(b, runId, 'suspend')
@@ -1281,6 +1255,26 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     return won === 'cancel'
   }
 
+  /**
+   * A refused worker write explains itself from the run it was fenced on. Absurd
+   * raises AB001 for a cancelled task and AB002 for a lost lease; here a run the
+   * task's cancellation ended raises RunCancelledError, and every other lost
+   * fence raises LeaseLostError. The read runs only after a refusal, so a write
+   * that wins pays nothing for it. A cancelled run is terminal, so the read never
+   * misses a cancellation that refused the write; a cancellation that lands after
+   * the refusal is named too, since it has ended the run by the time we report.
+   */
+  private async refusal(operation: string, runId: string): Promise<Error> {
+    const [rows] = await this.db.batch(
+      'refusal-state',
+      [{ sql: 'SELECT state FROM runs WHERE run_id = ?', args: [runId] }],
+      'read',
+    )
+    return rows?.rows[0]?.state === 'cancelled'
+      ? new RunCancelledError(`${operation} ${runId}`)
+      : new LeaseLostError(`${operation} ${runId}`)
+  }
+
   async claimedTaskName(
     queue: string,
     runId: string,
@@ -1308,11 +1302,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   }
 
   /**
-   * Sleep, defer, or attempt-neutral chain (§3.2). The worker's own claim
-   * token is the ownership proof; the transition mints a fresh stamp into
-   * claimed_by so the suspended run carries no live token (a zombie's later
-   * writes die on claimed_by). Throws LeaseLostError when the fence lost —
-   * the AB002 signal.
+   * §3.2 rolling-deploy deferral, before activation: parks an unactivated claim
+   * whose task this build has no handler for, consuming nothing. A refusal
+   * throws RunCancelledError when the task's cancellation ended the run and
+   * LeaseLostError otherwise.
    */
   async deferLaunch(
     queue: string,
@@ -1368,11 +1361,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       ],
     )
     finishSuspension(b, runId)
-    refusalTail(b, runId)
-    const { won, results } = await b.run(this.db)
-    if (won !== 'suspend') throw refusedWrite(results, 'deferLaunch', runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'suspend') throw await this.refusal('deferLaunch', runId)
   }
 
+  /**
+   * Sleep, defer, or attempt-neutral chain (§3.2). The worker's own claim
+   * token is the ownership proof; the transition mints a fresh stamp into
+   * claimed_by so the suspended run carries no live token (a zombie's later
+   * writes die on claimed_by). A refusal throws RunCancelledError when the
+   * task's cancellation ended the run and LeaseLostError otherwise.
+   */
   async reschedule(
     queue: string,
     runId: string,
@@ -1383,8 +1382,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
     // ONE SQL shape for both dispositions (a label is a crash-injection
-    // address; the CASE keeps 'reschedule' one shape). 'preserve' is the
-    // §3.8.2 deferral path: an undispatchable claim consumes nothing.
+    // address; the CASE keeps 'reschedule' one shape). 'preserve' keeps a wake
+    // nothing processed, so it survives for the next claimer.
     //
     // The task must be ELIGIBLE, not merely live — the same predicate
     // suspendRun uses, which is what its comment always claimed ("reschedule's
@@ -1427,9 +1426,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // mirror and cleanup from the run this CAS actually suspended: a corrupt
     // pre-existing wait must not survive with the wake fields just cleared.
     finishSuspension(b, runId)
-    refusalTail(b, runId)
-    const { won, results } = await b.run(this.db)
-    if (won !== 'suspend') throw refusedWrite(results, 'reschedule', runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'suspend') throw await this.refusal('reschedule', runId)
   }
 
   /**
@@ -1491,9 +1489,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'one',
     )
     finishSuspension(b, runId)
-    refusalTail(b, runId)
-    const { won, results } = await b.run(this.db)
-    if (won !== 'suspend') throw refusedWrite(results, 'suspendRun', runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'suspend') throw await this.refusal('suspendRun', runId)
   }
 
   async complete(
@@ -1530,9 +1527,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, runId, 'complete')
-    refusalTail(b, runId)
-    const { won, results } = await b.run(this.db)
-    if (won !== 'complete') throw refusedWrite(results, 'complete', runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'complete') throw await this.refusal('complete', runId)
   }
 
   /**
@@ -1660,9 +1656,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       })
     }
     waitsGone(b, runId, 'fail')
-    refusalTail(b, runId)
-    const { won, results } = await b.run(this.db)
-    if (won !== 'fail') throw refusedWrite(results, 'fail', runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'fail') throw await this.refusal('fail', runId)
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
@@ -1756,9 +1751,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       [checkpointName, stateJson, runId],
       'one',
     )
-    refusalTail(b, runId)
-    const { won, results } = await b.run(this.db)
-    if (won !== 'lease') throw refusedWrite(results, 'setCheckpoint', runId)
+    const { won } = await b.run(this.db)
+    if (won !== 'lease') throw await this.refusal('setCheckpoint', runId)
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
@@ -2096,7 +2090,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
                        AND t.state IN ${LIVE})`,
       [queue, eventName, runId, queue, taskId, claimToken],
     )
-    refusalTail(b, runId)
     const { won, results } = await b.run(this.db)
     const row = results.hit?.rows[0]
     if (row !== undefined) {
@@ -2106,7 +2099,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       return { emitted: true, payloadJson: String(row.payload) }
     }
     if (won !== 'register') {
-      throw refusedWrite(results, 'awaitEvent', runId)
+      throw await this.refusal('awaitEvent', runId)
     }
     return { emitted: false }
   }

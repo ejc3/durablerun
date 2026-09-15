@@ -57,6 +57,7 @@ except ValueError as error:
 # Read-only batches — no write to fence.
 READS = {
     "claimed-task-name",
+    "refusal-state",
     "get-checkpoints",
     "next-wake",
     "task-result",

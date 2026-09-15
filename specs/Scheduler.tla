@@ -288,6 +288,8 @@
 \*     in the protocol reads it, and a replay re-applies the same row
 \*   'claimed-task-name' [read] -- the worker's pre-activation read of a claimed
 \*     run's immutable task name; part of DeferLaunch's decision, no transition
+\*   'refusal-state' [read] -- after a refused worker write, the run's state names
+\*     why (cancelled or lost fence); no transition
 \*   'sweep:scan' [read] -- read-only discovery, no state transition
 \*   'expire-lease-now' [cas-fenced] -- advisory-only token-fenced write
 \*     for the exact signal claim identity (replay re-applies the same
