@@ -350,16 +350,17 @@ ASSUME
   /\ IsFiniteSet(Events) /\ Events # {}
   \* Pool sizing so successor creation is never blocked (else liveness would
   \* fail on an artifact): per task, rows = 1 initial + at most
-  \* (MaxAttempts-1) user-retry successors + InfraRetryCap infra successors.
-  /\ MaxRuns >= Cardinality(Tasks) * (MaxAttempts + 2 * MaxRetries + InfraRetryCap)
+  \* (MaxAttempts-1) user-retry successors + InfraRetryCap infra successors +
+  \* MaxRetries revivals, each of which also adds exactly one attempt.
+  /\ MaxRuns >= Cardinality(Tasks) * (MaxAttempts + MaxRetries + InfraRetryCap)
 
 RunIds        == 1..MaxRuns
 NoRun         == 0
 \* Claims of one run row: 1 initial + at most MaxHops sleep/chain/await
 \* re-claims + at most RelaunchCap lost-launch re-claims.  TypeOK verifies.
 GenBound      == 1 + MaxHops + RelaunchCap
-\* run.attempt ordinal: starts at 1, +1 per successor (user or infra).
-OrdinalBound  == MaxAttempts + 2 * MaxRetries + InfraRetryCap
+\* run.attempt ordinal: starts at 1, +1 per successor (user, infra, or revival).
+OrdinalBound  == MaxAttempts + MaxRetries + InfraRetryCap
 CtxIdBound    == MaxRuns * GenBound
 
 \* One value past the horizon: "never" (no deadline / wait forever).  now

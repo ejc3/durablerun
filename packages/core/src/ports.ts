@@ -183,10 +183,12 @@ export interface SchedulerStore {
 
   /**
    * Absurd's retry_task: revive a FAILED task in place with a new pending run at
-   * the next ordinal, due now. A top run no counter recorded (an infrastructure or
-   * relaunch cap) is charged as a user attempt, the budget becomes one more than
-   * the larger of the old budget and the attempts, and the task's failure reason
-   * is cleared. Null when the task is not failed or already has a live run.
+   * the next ordinal, due now, that carries the top run's parked wake. A top run no
+   * counter recorded (an infrastructure or relaunch cap) is charged as a user
+   * attempt, the budget grows by one, and the task's failure reason is cleared.
+   * Null, writing nothing, when the task is not in this queue, is not failed, has
+   * no runs or a live run, owns a run in another queue, or its failure is corrupt:
+   * no reason, a completed payload, or counters out of range or out of accounting.
    */
   retryTask(queue: string, taskId: string): Promise<{ runId: string; attempt: number } | null>
 }
