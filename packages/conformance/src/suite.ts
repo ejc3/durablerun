@@ -1810,6 +1810,33 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
 
+    describe('claimedTaskName (the pre-activation name read)', () => {
+      it('answers the claimed task name only for this unactivated claim', async () => {
+        await f.store.spawn(Q, 'named-job', '{}')
+        const run = await claimOne(f.store, Q, 'w-name')
+        const read = (queue: string, token: string, generation: number) =>
+          f.store.claimedTaskName(queue, run.runId, token, generation)
+        const unactivated = {
+          claim: await read(Q, run.claimToken, run.claimGen),
+          otherQueue: await read('other-queue', run.claimToken, run.claimGen),
+          otherToken: await read(Q, 'not-this-token', run.claimGen),
+          otherGeneration: await read(Q, run.claimToken, run.claimGen + 1),
+        }
+        await f.store.activate(Q, run.runId, run.claimToken, run.claimGen)
+        const activated = await read(Q, run.claimToken, run.claimGen)
+        expect(
+          { ...unactivated, activated },
+          'mutation-verdict:behavior:claimed-task-name-requires-queue',
+        ).toEqual({
+          claim: 'named-job',
+          otherQueue: null,
+          otherToken: null,
+          otherGeneration: null,
+          activated: null,
+        })
+      })
+    })
+
     describe('cancellation discovery', () => {
       it('a write on a run cancelled mid-pass raises RunCancelledError, while a swept lease raises LeaseLostError', async () => {
         const cancelled = await f.store.spawn(Q, 'cancel-me', '{}')

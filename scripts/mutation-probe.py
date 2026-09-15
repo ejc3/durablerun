@@ -2454,6 +2454,17 @@ MUTATION_SPECS = [
         "cancelTask terminalizes a task while one of its runs belongs to another queue",
     ),
     (
+        "claimed-task-name-requires-queue",
+        "packages/store-libsql/src/store.ts",
+        "                WHERE r.run_id = ? AND r.queue = ? AND r.claimed_by = ? AND r.state = 'running'\n"
+        "                  AND r.claim_gen = ? AND r.activated_gen < ?`,\n"
+        "          args: [runId, queue, claimToken, validClaimGen, validClaimGen],\n",
+        "                WHERE r.run_id = ? AND r.claimed_by = ? AND r.state = 'running'\n"
+        "                  AND r.claim_gen = ? AND r.activated_gen < ?`,\n"
+        "          args: [runId, claimToken, validClaimGen, validClaimGen],\n",
+        "a worker learns the task name of a claim in another queue",
+    ),
+    (
         "generated-relation-queue-ownership",
         "packages/core/src/fenced-batch.ts",
         "    const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''\n"
@@ -5804,6 +5815,13 @@ VERDICTS = {
         "mutation-verdict:behavior:cancel-task-requires-run-task-queue-ownership",
         "packages/conformance/src/store-conformance.ts",
     ),
+    "claimed-task-name-requires-queue": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] claimedTaskName (the pre-activation name read) answers the claimed task name only for this unactivated claim",
+        "mutation-verdict:behavior:claimed-task-name-requires-queue",
+        "packages/conformance/src/suite.ts",
+    ),
     "generated-relation-queue-ownership": ExpectedVerdict(
         "construction",
         "packages/conformance/test/fence-provenance-regressions.test.ts",
@@ -6856,6 +6874,9 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "claimed-task-name-requires-queue": (
+        "replacement removes the queue condition's SQL bind together with its argument"
+    ),
     "poison-targeted-settlement-owner": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
@@ -9398,7 +9419,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 425:
+        if len(MUTATIONS) != 426:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
