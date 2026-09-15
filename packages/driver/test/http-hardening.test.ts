@@ -81,6 +81,34 @@ describe('worker server hardening', () => {
     await f.close()
   })
 
+  it('accepts a launch from an older driver that sends no taskName and runs its task', async () => {
+    const f = await workerFx('http-older-driver')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const [run] = await f.store.claim(Q, 'w1', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('claim')
+    const body = JSON.stringify({
+      queue: Q,
+      runId: run.runId,
+      claimToken: run.claimToken,
+      claimGen: run.claimGen,
+    })
+    const res = await fetch(`http://127.0.0.1:${f.port}/launch`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-durablerun-signature': signBody(SECRET, body),
+      },
+      body,
+    })
+    const status = res.status
+    await new Promise((r) => setTimeout(r, 150))
+    expect({ status, state: (await f.store.getTaskResult(Q, spawned.taskId))?.state }).toEqual({
+      status: 202,
+      state: 'completed',
+    })
+    await f.close()
+  })
+
   it('an oversized body is rejected without being buffered whole', async () => {
     const f = await workerFx('http-big')
     // Stream 4x the cap over a raw socket; the server must answer 413 (or

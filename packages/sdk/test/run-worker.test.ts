@@ -1495,6 +1495,59 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a resolver that stops resolving after the first lookup still runs the handler it resolved', async () => {
+    const f = await fx('sdk-flapping-registry')
+    await f.store.spawn(Q, 'job', '{}')
+    const handler: TaskHandler = async () => 'done'
+    let lookups = 0
+    // A structural resolver is trusted host code, so the worker calls its own get.
+    const reg = {
+      get(name: string): TaskHandler | undefined {
+        lookups++
+        return lookups === 1 && name === 'job' ? handler : undefined
+      },
+    } as unknown as TaskRegistry
+    const outcome = await claimAndRun(f, reg, 'w1').then(
+      (value) => value,
+      (error: unknown) => String(error),
+    )
+    expect(outcome).toEqual({ kind: 'completed' })
+    f.close()
+  })
+
+  it('a launch that names another task still runs the task its claim holds', async () => {
+    const f = await fx('sdk-mismatched-launch')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    const reg = registry({ job: async () => 'done', other: async () => 'wrong' })
+    const invocation = { ...(await claimInvocation(f, 'w1')), taskName: 'other' }
+    const outcome = await runClaimedRun(
+      { store: f.store, clock: f.clock, registry: reg },
+      invocation,
+    ).then(
+      (value) => value,
+      (error: unknown) => String(error),
+    )
+    expect({ outcome, result: await f.store.getTaskResult(Q, spawned.taskId) }).toEqual({
+      outcome: { kind: 'completed' },
+      result: { state: 'completed', completedPayloadJson: '"done"' },
+    })
+    f.close()
+  })
+
+  it('a duplicate delivery of an unregistered task is superseded after the first parks it', async () => {
+    const f = await fx('sdk-dup-deferred')
+    await f.store.spawn(Q, 'new-task', '{}')
+    const invocation = await claimInvocation(f, 'w1')
+    const deps = { store: f.store, clock: f.clock, registry: registry({}) }
+    const first = await runClaimedRun(deps, invocation)
+    const second = await runClaimedRun(deps, invocation)
+    expect({ first, second }).toEqual({
+      first: { kind: 'deferred' },
+      second: { kind: 'superseded' },
+    })
+    f.close()
+  })
+
   it('a duplicate delivery of the same claim does nothing', async () => {
     const f = await fx('sdk-dup')
     const reg = registry({ job: async () => 'once' })
