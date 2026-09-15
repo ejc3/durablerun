@@ -28,4 +28,10 @@ ProbeNoForeverWait ==
 \* Witness: a max_duration deadline armed by first activation.
 ProbeNoDurDeadline ==
   \A t \in Tasks : ~(firstStarted[t] # Inf /\ cancelAt[t] # Inf)
+\* Witness: a launch deferral that parks a task with an armed start deadline
+\* and leaves the start unlatched.
+ProbeNoDeferredStartDeadline ==
+  \A t \in Tasks :
+    ~(lastAction = "Defer" /\ policy[t] = "delay" /\ cancelAt[t] # Inf
+      /\ firstStarted[t] = Inf)
 =========================================================================

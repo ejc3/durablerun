@@ -43,9 +43,9 @@
 \*                            carries wake_event/event_payload forward)
 \*   SleepSuspend /
 \*     VoluntaryChain     <-> reschedule()
-\*   DeferActivated       <-> reschedule(15s + jitter, 'preserve') after an
-\*                            activation whose task no registered handler
-\*                            knows (the rolling-deploy deferral)
+\*   DeferLaunch          <-> 'defer-launch' (SPEC-FIRST): the rolling-deploy
+\*                            deferral, decided from the launch before
+\*                            activation, fenced on the claim receipt
 \*   SweepLostLaunch / SweepRelaunchExhausted /
 \*     SweepClaimTimeout / SweepInfraExhausted
 \*                        <-> sweep()'s per-run fenced batches;
@@ -377,7 +377,7 @@ ActionNames ==
 
 WorkerWrites == {"Heartbeat", "Complete", "FailRunWithRetry",
                  "FailRunTerminal", "Sleep", "Chain",
-                 "AwaitHit", "AwaitMiss", "Defer"}
+                 "AwaitHit", "AwaitMiss"}
 SweepActions == {"SweepLostLaunch", "SweepRelaunchExhausted",
                  "SweepClaimTimeout", "SweepInfraExhausted"}
 CancelActions == {"CancelSweep", "CancelExplicit"}
@@ -640,6 +640,38 @@ Activate(m) ==
                  eventState, tokRuns, nextRun, channel>>
   /\ lastAction' = "Activate" /\ lastCtx' = CtxKey(m)
 
+\* DeferLaunch <-> 'defer-launch' (SPEC-FIRST): the rolling-deploy deferral,
+\* decided from the launch before activation.  A worker whose build has no
+\* handler for the launched task parks the claimed run: same row, no attempt,
+\* no relaunch, wake fields kept.  It is fenced on the claim receipt -- the run
+\* still running under this claim generation and not yet activated -- so a
+\* replay after the park, or after an activation, matches nothing.  It never
+\* activates, so the first-start latch, the start deadline, and the duration
+\* clock are untouched: a task no handler ever ran still carries its start
+\* deadline.  Its guard also requires an eligible task, as every suspension
+\* does.  Consumes a hop, the artificial suspension budget (header note);
+\* production deferral ends when a worker build that knows the task arrives,
+\* or at the start deadline.
+DeferLaunch(m) ==
+  /\ m \in channel
+  /\ runState[m.run] = "running"
+  /\ claimGen[m.run] = m.gen
+  /\ activatedGen[m.run] < m.gen
+  /\ LET t == runTask[m.run] IN
+       /\ cancelAt[t] > now
+       /\ hops[t] < MaxHops
+       /\ runState'    = [runState EXCEPT ![m.run] = "sleeping"]
+       /\ availableAt' = [availableAt EXCEPT ![m.run] = Clip(now + Backoff)]
+       /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
+       /\ hops'        = [hops EXCEPT ![t] = @ + 1]
+  /\ tokRuns' = tokRuns \ {m.run}   \* impl stamps claimed_by on exit
+  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, policy, cancelAt,
+                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
+                 relaunchCount, leaseDeadline, wakeEvent, runPayload,
+                 waitEv, waitAt, eventState, nextRun, channel, contexts,
+                 nextCtx>>
+  /\ lastAction' = "Defer" /\ lastCtx' = CtxKey(m)
+
 \* Heartbeat <-> batch('heartbeat'): extend the lease while claimed_by
 \* matches and state = running.  (Impl checks claimed_by+state only; the
 \* activatedGen conjunct of Fenced is implied -- see Fenced.)  A zombie's
@@ -778,31 +810,6 @@ VoluntaryChain(c) ==
                  relaunchCount, leaseDeadline, wakeEvent, runPayload,
                  waitEv, waitAt, eventState, nextRun, channel, nextCtx>>
   /\ lastAction' = "Chain" /\ lastCtx' = CtxKey(c)
-
-\* DeferActivated <-> the rolling-deploy deferral as run-worker implements it
-\* today: the worker activates the claim, finds no registered handler for the
-\* task, and parks the run through reschedule(15s + jitter, 'preserve') -- same
-\* row, no attempt, wake fields kept -- so the context exits having run no user
-\* code.  Its guard is reschedule's: the fence and an eligible task.  Consumes a
-\* hop, the artificial suspension budget (header note); production deferral ends
-\* when a worker build that knows the task arrives.
-DeferActivated(c) ==
-  /\ c \in contexts
-  /\ Fenced(c)
-  /\ LET t == runTask[c.run] IN
-       /\ cancelAt[t] > now
-       /\ hops[t] < MaxHops
-       /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
-       /\ availableAt' = [availableAt EXCEPT ![c.run] = Clip(now + Backoff)]
-       /\ taskState'   = [taskState EXCEPT ![t] = "sleeping"]
-       /\ hops'        = [hops EXCEPT ![t] = @ + 1]
-  /\ contexts' = contexts \ {c}
-  /\ tokRuns' = tokRuns \ {c.run}   \* impl stamps claimed_by on exit
-  /\ UNCHANGED <<dispatched, now, attempts, infraRetries, policy, cancelAt,
-                 firstStarted, runTask, runAttempt, claimGen, activatedGen,
-                 relaunchCount, leaseDeadline, wakeEvent, runPayload,
-                 waitEv, waitAt, eventState, nextRun, channel, nextCtx>>
-  /\ lastAction' = "Defer" /\ lastCtx' = CtxKey(c)
 
 -----------------------------------------------------------------------------
 \* 'await-event' (SPEC-FIRST), hit branch: the event already fired --
@@ -1068,12 +1075,11 @@ Next ==
   \/ \E r \in RunIds : Claim(r) \/ DuplicateClaim(r) \/ SweepLostLaunch(r)
                        \/ SweepRelaunchExhausted(r) \/ SweepClaimTimeout(r)
                        \/ SweepInfraExhausted(r)
-  \/ \E m \in LaunchMsgs : Drop(m) \/ Activate(m)
+  \/ \E m \in LaunchMsgs : Drop(m) \/ Activate(m) \/ DeferLaunch(m)
   \/ \E e \in Events, p \in Payloads : EmitEvent(e, p)
   \/ \E c \in contexts : Heartbeat(c) \/ CompleteRun(c)
                          \/ FailRunWithRetry(c) \/ FailRunTerminal(c)
                          \/ SleepSuspend(c) \/ VoluntaryChain(c)
-                         \/ DeferActivated(c)
                          \/ WorkerCrash(c)
                          \/ \E e \in Events : AwaitEventHit(c, e)
                                               \/ AwaitEventMiss(c, e)
