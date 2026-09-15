@@ -1907,7 +1907,8 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const revived = await f.store.retryTask(Q, spawned.taskId)
         const task = await readOne(
           f.raw,
-          `SELECT state, attempts, max_attempts, failure_reason FROM tasks WHERE task_id = ?`,
+          `SELECT state, attempts, max_attempts, failure_reason, last_attempt_run
+           FROM tasks WHERE task_id = ?`,
           [spawned.taskId],
         )
         const claimed = await claimOne(f.store, Q, 'w2')
@@ -1918,12 +1919,19 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
             attempts: Number(task?.attempts),
             maxAttempts: Number(task?.max_attempts),
             failureReason: task?.failure_reason,
+            lastAttemptRun: task?.last_attempt_run,
           },
           claimed: { runId: claimed.runId, attempt: claimed.attempt },
           violations: await engineInvariantViolations(f.raw),
         }).toEqual({
           revived: { runId: claimed.runId, attempt: 2 },
-          task: { state: 'pending', attempts: 1, maxAttempts: 2, failureReason: null },
+          task: {
+            state: 'pending',
+            attempts: 1,
+            maxAttempts: 2,
+            failureReason: null,
+            lastAttemptRun: claimed.runId,
+          },
           claimed: { runId: claimed.runId, attempt: 2 },
           violations: [],
         })
