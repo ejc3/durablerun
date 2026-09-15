@@ -2014,6 +2014,72 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }).toEqual({ refused: null, unchanged: before, violations: [] })
       })
 
+      it('refuses to revive over a counter out of range or a charge past the budget', async () => {
+        const failedTask = async (name: string, maxAttempts = 1) => {
+          const spawned = await f.store.spawn(Q, name, '{}', { maxAttempts })
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const run = await claimActivated(f.store, Q, `w-${name}-${attempt}`)
+            await f.store.fail(
+              Q,
+              run.runId,
+              run.claimToken,
+              '{"name":"Boom"}',
+              attempt < maxAttempts ? { delaySeconds: 0 } : null,
+            )
+          }
+          const [firstRun] = (await snapshot(f, spawned.taskId)).runs ?? []
+          if (typeof firstRun?.run_id !== 'string' || Number(firstRun.attempt) !== 1) {
+            throw new Error(`task ${spawned.taskId} has no first run`)
+          }
+          return { taskId: spawned.taskId, firstRunId: firstRun.run_id }
+        }
+        // Each corruption passes every other revival guard, so each names one.
+        const negativeAttempts = await failedTask('negative-attempts')
+        await f.raw.batch('corrupt-negative-attempts', [
+          {
+            sql: `UPDATE tasks SET attempts = -1, infra_retries = 2 WHERE task_id = ?`,
+            args: [negativeAttempts.taskId],
+          },
+        ])
+        const infraPastCap = await failedTask('infra-past-cap')
+        await f.raw.batch('corrupt-infra-past-cap', [
+          {
+            sql: `UPDATE tasks SET infra_retries = ? WHERE task_id = ?`,
+            args: [INFRA_RETRY_CAP + 1, infraPastCap.taskId],
+          },
+          {
+            sql: `UPDATE runs SET attempt = ? WHERE run_id = ?`,
+            args: [INFRA_RETRY_CAP + 2, infraPastCap.firstRunId],
+          },
+        ])
+        const chargePastBudget = await failedTask('charge-past-budget')
+        await f.raw.batch('corrupt-charge-past-budget', [
+          {
+            sql: `UPDATE runs SET attempt = 2 WHERE run_id = ?`,
+            args: [chargePastBudget.firstRunId],
+          },
+        ])
+        const invalidSibling = await failedTask('invalid-sibling', 2)
+        const disposition = await executeStorageCorruption(f, {
+          table: 'runs',
+          runId: invalidSibling.firstRunId,
+          column: 'attempt',
+          invalidRepresentation: 'fractional-real',
+        })
+        const corrupted = [negativeAttempts, infraPastCap, chargePastBudget].concat(
+          disposition === 'injected' ? [invalidSibling] : [],
+        )
+        const before = await Promise.all(corrupted.map(({ taskId }) => snapshot(f, taskId)))
+        const refusals = await Promise.all(
+          corrupted.map(({ taskId }) => f.store.retryTask(Q, taskId)),
+        )
+        const after = await Promise.all(corrupted.map(({ taskId }) => snapshot(f, taskId)))
+        expect({ refusals, unchanged: after }).toEqual({
+          refusals: corrupted.map(() => null),
+          unchanged: before,
+        })
+      })
+
       it('refuses to revive a failed task whose stored counters disagree with its runs', async () => {
         const spawned = await f.store.spawn(Q, 'drifted-counters', '{}', { maxAttempts: 1 })
         const run = await claimActivated(f.store, Q, 'w-drifted-counters')
