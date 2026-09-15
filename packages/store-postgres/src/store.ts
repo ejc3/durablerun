@@ -1303,7 +1303,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // matches nothing. Nothing is consumed and the wake fields are kept. Like
     // every suspension it requires an eligible task, and it refuses the corrupt
     // shapes activation refuses: another live run, drifted accounting, an
-    // obsolete ordinal, or an inadmissible stored retry strategy or header set.
+    // obsolete ordinal, an out-of-range lease or relaunch counter, or an
+    // inadmissible stored retry strategy or header set.
     const b = new FencedBatch('defer-launch', this.ids.token(), { now: NOW_MS })
     b.cas(
       'suspend',
@@ -1318,6 +1319,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
          AND ${storedPositiveClaimGeneration('runs')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
+         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')} AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}
          AND ${soleLiveRun('runs')}
          AND EXISTS (
            SELECT 1 FROM tasks t
