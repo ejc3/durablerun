@@ -2,6 +2,7 @@ import { type ClaimedRun, LeaseLostError } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
+import { withFixture } from './scenario.js'
 
 const Q = 'q'
 
@@ -43,12 +44,7 @@ export async function runFuzzScenario(
   seed: number | string,
   steps: number,
 ): Promise<FuzzStats> {
-  const f = await makeFixture(`fuzz-${seed}`)
-  try {
-    return await runWalk(f, seed, steps)
-  } finally {
-    await f.close()
-  }
+  return withFixture(makeFixture, `fuzz-${seed}`, (f) => runWalk(f, seed, steps))
 }
 
 async function runWalk(

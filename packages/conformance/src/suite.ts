@@ -12,7 +12,6 @@ import {
   SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SqlExecutor,
   type SqlRow,
-  type SqlStatement,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
@@ -24,6 +23,7 @@ import {
   interposeAfterBatch,
 } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
+import { readOne, withFixture } from './scenario.js'
 
 const Q = 'q'
 
@@ -42,16 +42,6 @@ async function snapshot(
   return { tasks: tasks?.rows, runs: runs?.rows }
 }
 
-/** Run one raw statement and return its first row. */
-async function readOne(
-  raw: SqlExecutor,
-  sql: string,
-  args: SqlStatement['args'],
-): Promise<SqlRow | undefined> {
-  const [result] = await raw.batch('t', [{ sql, args }])
-  return result?.rows[0]
-}
-
 /**
  * Run `body` once per seed against its own fixture. The fixture is closed even when
  * the body throws, and the engine invariants must hold at quiescence.
@@ -63,13 +53,10 @@ async function forEachSeed(
   body: (fx: StoreFixture, seed: number) => Promise<void>,
 ): Promise<void> {
   for (let seed = 0; seed < seeds; seed++) {
-    const fx = await makeFixture(name(seed))
-    try {
+    await withFixture(makeFixture, name(seed), async (fx) => {
       await body(fx, seed)
       expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
-    } finally {
-      await fx.close()
-    }
+    })
   }
 }
 
