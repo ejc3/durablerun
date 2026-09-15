@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import * as core from '../src/index.js'
 import { decodeTaskResult, taskResultContradictions } from '../src/task-result.js'
+import * as taskResult from '../src/task-result.js'
 
 describe('decodeTaskResult', () => {
   it('decodes each legitimate outcome shape', () => {
@@ -64,7 +64,14 @@ describe('decodeTaskResult', () => {
     ).toEqual([])
   })
 
-  it('publishes no outcome decoder that skips the contradiction check', () => {
-    expect(Object.keys(core)).not.toContain('readTaskResult')
+  it('publishes exactly the checked outcome readers and their column lists', () => {
+    // A new export from this module is a new way to read an outcome, so it must be
+    // added here deliberately, after checking that it refuses contradicting rows.
+    expect(Object.keys(taskResult).sort()).toEqual([
+      'TASK_OUTCOME_COLUMNS',
+      'TASK_RESULT_COLUMNS',
+      'decodeTaskResult',
+      'taskResultContradictions',
+    ])
   })
 })
