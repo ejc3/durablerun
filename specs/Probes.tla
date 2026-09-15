@@ -37,5 +37,5 @@ ProbeNoDeferredStartDeadline ==
 \* Witness: a live worker whose task's cancellation deadline is due, so every
 \* suspension it attempts is refused.
 ProbeNoRefusedSuspension ==
-  \A c \in contexts : ~(Fenced(c) /\ cancelAt[runTask[c.run]] <= now)
+  \A c \in contexts : ~(Fenced(c) /\ ~EligibleTask(runTask[c.run]))
 =========================================================================

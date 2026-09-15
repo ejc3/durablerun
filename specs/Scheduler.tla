@@ -453,6 +453,11 @@ Fenced(c) ==
   /\ claimGen[c.run] = c.gen
   /\ activatedGen[c.run] = c.gen
 
+\* An eligible task: its cancellation deadline is not yet due.  The twin of the
+\* stores' eligibleTask fragment; activation, the launch deferral, and every
+\* suspension require it.
+EligibleTask(t) == cancelAt[t] > now
+
 CtxKey(c) == [run |-> c.run, gen |-> c.gen]
 
 -----------------------------------------------------------------------------
@@ -629,7 +634,7 @@ Activate(m) ==
   /\ runState[m.run] = "running"
   /\ claimGen[m.run] = m.gen
   /\ activatedGen[m.run] < m.gen
-  /\ cancelAt[runTask[m.run]] > now
+  /\ EligibleTask(runTask[m.run])
   /\ LET t  == runTask[m.run]
          fs == IF firstStarted[t] = Inf THEN now ELSE firstStarted[t] IN
        /\ firstStarted' = [firstStarted EXCEPT ![t] = fs]
@@ -664,7 +669,7 @@ DeferLaunch(m) ==
   /\ claimGen[m.run] = m.gen
   /\ activatedGen[m.run] < m.gen
   /\ LET t == runTask[m.run] IN
-       /\ cancelAt[t] > now
+       /\ EligibleTask(t)
        /\ hops[t] < MaxHops
        /\ runState'    = [runState EXCEPT ![m.run] = "sleeping"]
        /\ availableAt' = [availableAt EXCEPT ![m.run] = Clip(now + Backoff)]
@@ -777,7 +782,7 @@ SleepSuspend(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ LET t == runTask[c.run] IN
-       /\ cancelAt[t] > now
+       /\ EligibleTask(t)
        /\ hops[t] < MaxHops
        /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
        /\ availableAt' = [availableAt EXCEPT ![c.run] = Clip(now + SleepDur)]
@@ -799,7 +804,7 @@ VoluntaryChain(c) ==
   /\ c \in contexts
   /\ Fenced(c)
   /\ LET t == runTask[c.run] IN
-       /\ cancelAt[t] > now
+       /\ EligibleTask(t)
        /\ hops[t] < MaxHops
        /\ runState'    = [runState EXCEPT ![c.run] = "pending"]
        /\ availableAt' = [availableAt EXCEPT ![c.run] = now]
@@ -844,6 +849,7 @@ AwaitEventHit(c, e) ==
 \* has no wait (WaitIntegrity), so registration never finds one to violate.
 AwaitRegister(c, e, tAt) ==
   LET t == runTask[c.run] IN
+    /\ EligibleTask(t)   \* eligible task, as every suspension
     /\ hops[t] < MaxHops
     /\ eventState[e] = NoPayload
     /\ runState'    = [runState EXCEPT ![c.run] = "sleeping"]
@@ -866,7 +872,6 @@ AwaitRegister(c, e, tAt) ==
 AwaitEventMiss(c, e) ==
   /\ c \in contexts
   /\ Fenced(c)
-  /\ cancelAt[runTask[c.run]] > now   \* eligible task, as every suspension
   /\ \/ AwaitRegister(c, e, Clip(now + SleepDur))    \* with timeout
      \/ /\ cancelAt[runTask[c.run]] # Inf  \* MODEL RESTRICTION: untimed
                                            \* waits only under an armed
