@@ -68,13 +68,14 @@ export interface SchedulerStore {
   ): Promise<string | null>
 
   /**
-   * §3.2 rolling-deploy deferral, decided from the launch before activation: a
-   * worker build with no handler for the launched task parks the claimed run
-   * `inSeconds` from database time. Fenced on the claim receipt (running under
-   * this token and generation, not yet activated), and like every suspension it
-   * requires an eligible task. It consumes no attempt or relaunch, keeps the
-   * run's wake fields, and never latches the first start. A refusal throws
-   * LeaseLostError.
+   * §3.2 rolling-deploy deferral, decided before activation: a worker build with
+   * no handler for the claimed task parks the claimed run `inSeconds` from
+   * database time. Fenced on the claim receipt (running under this token and
+   * generation, not yet activated), it refuses the corrupt or inadmissible claims
+   * activation refuses and, like every suspension, requires an eligible task. It
+   * consumes no attempt or relaunch, keeps the run's wake fields, and never
+   * latches the first start. A refusal throws RunCancelledError when the task's
+   * cancellation ended the run, and LeaseLostError otherwise.
    */
   deferLaunch(
     queue: string,

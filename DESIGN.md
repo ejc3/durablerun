@@ -967,9 +967,10 @@ are load-bearing):
    kind; diagnostics may not invoke serialization or user hooks and change the
    permanent `SchemaMismatchError` classification.
 
-**Fence-loss (AB002) contract:** `complete`/`fail`/`reschedule`/
-`setCheckpoint` throw `LeaseLostError` when their CAS matches zero rows;
-`heartbeat` reports `held: false`. A worker retrying `complete` after a lost
+**Fence-loss (AB002) contract:** a refused worker write (`complete`, `fail`,
+`reschedule`, `suspendRun`, `setCheckpoint`, `awaitEvent`, `deferLaunch`) throws
+`RunCancelledError` (AB001) when the task's cancellation ended the run and
+`LeaseLostError` otherwise; `heartbeat` reports `held: false`. A worker retrying `complete` after a lost
 response treats `LeaseLostError` as possible-prior-success: verify via
 `getTaskResult` and exit (verify-then-exit), never re-execute.
 
@@ -1073,7 +1074,7 @@ not depend on careful reading:
   Snapshot results are assembled by each projection's declared table key,
   never by a second hard-coded positional table list.
   Generated just-over-bound witnesses, along with the ownership witnesses,
-  keep the poison matrix complete. The poison surface crosses the 17 classified
+  keep the poison matrix complete. The poison surface crosses the 18 classified
   write labels with 144 corrupt-state witnesses covering that exact
   condition inventory: 2,592 generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
