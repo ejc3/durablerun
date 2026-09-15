@@ -2,7 +2,7 @@ import { type ClaimedRun, LeaseLostError } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
-import { withFixture } from './scenario.js'
+import { awaitOwned, checkpointOwned, withFixture } from './scenario.js'
 
 const Q = 'q'
 
@@ -77,20 +77,15 @@ async function runWalk(
   /** Fractional seconds are legal (rounded to ms) — exercise them freely. */
   const frac = (): number => (rng.next() < 0.3 ? 0.5005 : 0)
 
-  const expectLeaseLoss = async (op: () => Promise<unknown>): Promise<boolean> => {
+  /** Run a transition that may lose its lease, and count it only when it held. */
+  const countIfHeld = async (stat: keyof FuzzStats, op: () => Promise<unknown>): Promise<void> => {
     try {
       await op()
-      return true
+      stats[stat]++
     } catch (error) {
       // Abandoned/swept runs legitimately lose their lease mid-walk.
       if (!(error instanceof LeaseLostError)) throw error
-      return false
     }
-  }
-
-  /** Run a transition that may lose its lease, and count it only when it held. */
-  const countIfHeld = async (stat: keyof FuzzStats, op: () => Promise<unknown>): Promise<void> => {
-    if (await expectLeaseLoss(op)) stats[stat]++
   }
 
   for (let step = 0; step < steps; step++) {
@@ -170,11 +165,10 @@ async function runWalk(
         )
       } else if (kind < 0.9) {
         await countIfHeld('awaits', () =>
-          f.store.awaitEvent(
+          awaitOwned(
+            f.store,
             Q,
-            run.taskId,
-            run.runId,
-            run.claimToken,
+            run,
             `w${step}`,
             `ev${rng.int(3)}`,
             rng.next() < 0.5 ? 30 + rng.int(60) : null,
@@ -183,11 +177,10 @@ async function runWalk(
         // Parked or answered inline — either way this hold is finished.
       } else if (kind < 0.95) {
         await countIfHeld('checkpoints', () =>
-          f.store.setCheckpoint(
+          checkpointOwned(
+            f.store,
             Q,
-            run.taskId,
-            run.runId,
-            run.claimToken,
+            run,
             `cp-${rng.int(3)}`,
             '{"v":1}',
             30 + rng.int(60) + frac(),
