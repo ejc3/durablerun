@@ -27,6 +27,7 @@ Usage: mutation-probe.py [-k substring] [--jobs auto|N]
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -41,6 +42,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -7637,15 +7639,24 @@ SUITE_SELF_TEST_DESCENDANT_PROGRAM = (
     "stream.write(json.dumps({'label':sys.argv[1],"
     "'leader':int(sys.argv[3]),'descendant':os.getpid()})+'\\n'); "
     "stream.flush(); os.fsync(stream.fileno()); stream.close(); "
-    "time.sleep(30)"
+    "barrier=pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else None; "
+    "deadline=time.monotonic()+30; "
+    "exec(\"while time.monotonic() < deadline and not (barrier and barrier.exists()):\\n"
+    " time.sleep(0.01)\")"
 )
 
 
-def suite_self_test_command(label: str, state_path: Path, *, linger: bool = False) -> list[str]:
+def suite_self_test_command(
+    label: str,
+    state_path: Path,
+    *,
+    linger: bool = False,
+    barrier: Path | None = None,
+) -> list[str]:
     parent_program = (
         "import os,pathlib,subprocess,sys,time; "
         "child=subprocess.Popen([sys.executable,'-c',sys.argv[3],"
-        "sys.argv[1],sys.argv[2],str(os.getpid())]); "
+        "sys.argv[1],sys.argv[2],str(os.getpid()),*sys.argv[4:]]); "
         "deadline=time.monotonic()+2; path=pathlib.Path(sys.argv[2]); "
         "needle='\"label\": \"'+sys.argv[1]+'\"'; "
         "ready=False; "
@@ -7663,6 +7674,7 @@ def suite_self_test_command(label: str, state_path: Path, *, linger: bool = Fals
         label,
         str(state_path),
         SUITE_SELF_TEST_DESCENDANT_PROGRAM,
+        *(() if barrier is None else (str(barrier),)),
     ]
 
 
@@ -7888,6 +7900,73 @@ def suite_linger_self_test_child(state_path: Path) -> int:
         print(f"mutation-probe suite-linger self-test: {problems[0]}", file=sys.stderr)
         return 1
     print("mutation-probe suite-linger self-test reaped the exited leader's group")
+    return 0
+
+
+@contextlib.contextmanager
+def barrier_released_on_drain(barrier: Path) -> Iterator[None]:
+    """Create barrier when cleanup starts waiting for groups to drain.
+
+    A self-test child that waits on the barrier exits exactly once the runner has
+    seen its leader exit, so the case does not race a fixed child lifetime
+    against the runner's polling.
+    """
+    original_wait = wait_for_process_groups
+
+    def release_then_wait(groups: list[int], grace_seconds: float, **options: float) -> list[int]:
+        barrier.touch()
+        return original_wait(groups, grace_seconds, **options)
+
+    globals()["wait_for_process_groups"] = release_then_wait
+    try:
+        yield
+    finally:
+        globals()["wait_for_process_groups"] = original_wait
+
+
+def suite_drain_self_test_child(state_path: Path) -> int:
+    problems: list[str] = []
+    _, _, fixture_authority, fixture_audit_lock = suite_self_test_fixture()
+    try:
+        with tempfile.TemporaryDirectory(prefix="durablerun-suite-drain-") as temporary:
+            barrier = Path(temporary) / "drain-started"
+            command = suite_self_test_command("drain", state_path, linger=True, barrier=barrier)
+            with (
+                (Path(temporary) / "suite.log").open("wb") as output,
+                barrier_released_on_drain(barrier),
+            ):
+                try:
+                    returncode = run_suite_process(
+                        command,
+                        output=output,
+                        wall_time_seconds=1.0,
+                        audit_lock=fixture_authority.audit_lock,
+                    )
+                except SuiteInfrastructureError as error:
+                    problems.append(
+                        "a verifier group that drains after its leader exits was "
+                        f"rejected: {error}"
+                    )
+                except Exception as error:
+                    problems.append(f"draining verifier raised the wrong exception: {error}")
+                else:
+                    if returncode != 0:
+                        problems.append(f"draining verifier leader exited {returncode}")
+        identity, identity_problem = suite_self_test_record(state_path, "drain")
+        if identity_problem is not None:
+            problems.append(identity_problem)
+        elif identity is not None and any(process_id_is_live(pid) for pid in identity):
+            problems.append("a drained verifier group left its descendant live")
+    finally:
+        cleanup_suite_self_test_records(state_path)
+        fixture_audit_lock.close()
+    if problems:
+        print(f"mutation-probe suite-drain self-test: {problems[0]}", file=sys.stderr)
+        return 1
+    print(
+        "mutation-probe suite-drain self-test accepted a verifier group that drained "
+        "after its leader exited"
+    )
     return 0
 
 
@@ -14360,6 +14439,11 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     ap.add_argument(
+        "--suite-drain-self-test-child",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
         "--suite-interrupt-self-test-child",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -14443,6 +14527,7 @@ def main() -> int:
         args.routing_self_test,
         args.suite_timeout_self_test_child,
         args.suite_linger_self_test_child,
+        args.suite_drain_self_test_child,
         args.suite_interrupt_self_test_child,
         args.verifier_lock_self_test_child,
     )
@@ -14488,6 +14573,7 @@ def main() -> int:
         suite_process_self_test = (
             args.suite_timeout_self_test_child
             or args.suite_linger_self_test_child
+            or args.suite_drain_self_test_child
             or args.suite_interrupt_self_test_child
         )
         if suite_process_self_test:
@@ -14516,6 +14602,8 @@ def main() -> int:
                 )
             if args.suite_linger_self_test_child:
                 return suite_linger_self_test_child(args.suite_self_test_state)
+            if args.suite_drain_self_test_child:
+                return suite_drain_self_test_child(args.suite_self_test_state)
             return suite_interrupt_self_test_child(args.suite_self_test_state)
         if args.orchestration_self_test:
             if args.self_test_fault is not None:

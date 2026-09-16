@@ -5310,6 +5310,26 @@ def mutation_suite_linger_problem() -> str | None:
     return None
 
 
+def mutation_suite_drain_problem() -> str | None:
+    observation = run_mutation_suite_child("--suite-drain-self-test-child")
+    if observation.watchdog_problem is not None:
+        return observation.watchdog_problem
+    record_problem = mutation_suite_record_problem(observation, {"drain"})
+    if record_problem is not None:
+        return record_problem
+    if observation.live_processes:
+        return (
+            "a drained verifier group left live descendants: "
+            f"{observation.live_processes}"
+        )
+    if observation.returncode != 0:
+        return (
+            "a verifier group that drains after its leader exits was not accepted: "
+            f"{observation.output[:300]}"
+        )
+    return None
+
+
 def mutation_suite_interrupt_problem() -> str | None:
     observation = run_mutation_suite_child(
         "--suite-interrupt-self-test-child",
@@ -5347,6 +5367,15 @@ if sys.argv[1:] == ["--mutation-suite-linger-case"]:
         print(f"lint-selftest: {focused_problem}")
         sys.exit(1)
     print("lint-selftest: mutation suite lingering descendants rejected")
+    sys.exit(0)
+
+
+if sys.argv[1:] == ["--mutation-suite-drain-case"]:
+    focused_problem = mutation_suite_drain_problem()
+    if focused_problem is not None:
+        print(f"lint-selftest: {focused_problem}")
+        sys.exit(1)
+    print("lint-selftest: mutation suite draining descendants accepted")
     sys.exit(0)
 
 
@@ -5395,6 +5424,9 @@ if suite_timeout_problem is not None:
 suite_linger_problem = mutation_suite_linger_problem()
 if suite_linger_problem is not None:
     failures.append(suite_linger_problem)
+suite_drain_problem = mutation_suite_drain_problem()
+if suite_drain_problem is not None:
+    failures.append(suite_drain_problem)
 suite_interrupt_problem = mutation_suite_interrupt_problem()
 if suite_interrupt_problem is not None:
     failures.append(suite_interrupt_problem)
