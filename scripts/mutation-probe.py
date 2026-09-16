@@ -30,6 +30,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import io
 import json
 import math
 import os
@@ -10711,7 +10712,7 @@ def validate_baseline_report(
         or not isinstance(payload["diagnostic"], str)
     ):
         raise ValueError("worker baseline report does not match its assignment")
-    expected_returncode = 0 if payload["green"] else 2
+    expected_returncode = worker_baseline_returncode(payload["green"])
     if process_returncode != expected_returncode:
         raise ValueError(
             "worker baseline process/report disagreement: "
@@ -12370,7 +12371,7 @@ def worker_phase(
             "diagnostic": suite_failure_detail(baseline) if not baseline.green else "",
         }
         atomic_json(report_path, payload)
-        return 0 if baseline.green else 2
+        return worker_baseline_returncode(baseline.green)
     if phase != "mutations":
         print(f"mutation-probe worker {worker_id}: unknown phase {phase}", file=sys.stderr)
         return 2
@@ -12946,7 +12947,10 @@ def mutation_checkpoint_problems() -> list[str]:
                 return ["injected preflight rejection"]
             return []
 
-        def baseline_report(launch: ProcessLaunch) -> None:
+        red_baseline = [False]
+        red_baseline_diagnostic = "orchestration.test.ts > red baseline:\nred baseline"
+
+        def baseline_report(launch: ProcessLaunch, *, green: bool = True) -> None:
             command = launch.command
             worker_id = int(command_value(command, "--worker-id"))
             assigned_names = command_values(command, "--worker-mutation")
@@ -12960,8 +12964,8 @@ def mutation_checkpoint_problems() -> list[str]:
                     "worker_id": worker_id,
                     "assigned": assigned_names,
                     "complete": True,
-                    "green": True,
-                    "diagnostic": "",
+                    "green": green,
+                    "diagnostic": "" if green else red_baseline_diagnostic,
                 },
             )
 
@@ -12971,13 +12975,21 @@ def mutation_checkpoint_problems() -> list[str]:
             allowed_returncodes: frozenset[int],
             omit_exited_groups: bool = False,
         ) -> dict[str, int]:
-            del allowed_returncodes, omit_exited_groups
+            del omit_exited_groups
             if all(launch.label.startswith("install ") for launch in launches):
                 return {launch.label: 0 for launch in launches}
             if all(launch.label.startswith("baseline ") for launch in launches):
+                codes = {}
                 for launch in launches:
-                    baseline_report(launch)
-                return {launch.label: 0 for launch in launches}
+                    green = not red_baseline[0]
+                    baseline_report(launch, green=green)
+                    codes[launch.label] = worker_baseline_returncode(green)
+                for label, code in codes.items():
+                    if code not in allowed_returncodes:
+                        # A real launcher reports a disallowed exit from the worker log,
+                        # which the worker leaves empty.
+                        raise RuntimeError(f"{label} failed with exit {code}: ")
+                return codes
 
             codes: dict[str, int] = {}
             for launch in launches:
@@ -13050,6 +13062,18 @@ def mutation_checkpoint_problems() -> list[str]:
                 )
             preflighted_names.clear()
             reject_preflight[0] = False
+
+            red_baseline[0] = True
+            coordinator_log = io.StringIO()
+            with contextlib.redirect_stderr(coordinator_log):
+                red_code = coordinate_audit("", "1")
+            red_baseline[0] = False
+            preflighted_names.clear()
+            if red_code != 2 or "orchestration.test.ts > red baseline" not in coordinator_log.getvalue():
+                failures.append(
+                    "coordinator did not name a red worker baseline's failing test: "
+                    f"exit {red_code}, {coordinator_log.getvalue()[-300:]!r}"
+                )
 
             result_code = coordinate_audit("", "1")
             if result_code != 128 + signal.SIGTERM:
@@ -13386,6 +13410,11 @@ def choose_jobs(value: str, selected: int) -> int:
 
 def worker_infrastructure_returncode() -> int:
     return 2
+
+
+def worker_baseline_returncode(green: bool) -> int:
+    """A baseline worker's exit status: 0 when its unmutated suites pass."""
+    return 0 if green else 2
 
 
 def may_publish_success(
