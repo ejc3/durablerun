@@ -33,11 +33,11 @@ validated by that run.
 
 ## Current milestone — lifecycle correctness and the simplification sweep
 
-**Status: IN PROGRESS (started 2026-09-14).** Two plan entries land as one
-stack. The PR3.5 simplification sweep goes first. Apart from the behavior
-changes each of its PRs names, it only reshapes code, and it rewrites SDK,
-driver, and store code that the lifecycle work then edits.
-PR3.2 lifecycle polish follows on top of it.
+**Status: COMPLETE; pause after green merge (2026-09-15).** The stack merged
+green into `main` in order: PR3.5a, PR3.5b, and PR3.5c as PRs #25 to #27, then
+PR3.2a as PR #28 and PR3.2b as PR #29. `ci` passed on every merge commit, and
+the eight scheduled dogfood runs through 2026-09-16 01:54 UTC passed on the
+merged head `55412c3`.
 
 **Exit test:**
 
@@ -62,6 +62,13 @@ PR3.2 lifecycle polish follows on top of it.
    interval.
 7. Every finding in SIMPLIFY-BACKLOG.md is landed or rejected with a written
    reason under PR3.5, and the file is deleted.
+
+**Closeout:** exit tests 1, 2, 3, 5, and 6 landed in
+[PR #28](https://github.com/ejc3/durablerun/pull/28), exit test 4 in
+[PR #29](https://github.com/ejc3/durablerun/pull/29), and exit test 7 across
+PRs #25 to #27, where PR3.5c deleted SIMPLIFY-BACKLOG.md. Pause until the
+maintainer names the next milestone. Do not start another milestone or reopen
+source-identical proof work during that wait.
 
 **Non-goals:** exposing `/wake` beyond loopback or authenticating it, a hosted
 cancel route, stopping a handler mid-step when its task is cancelled (discovery
@@ -820,6 +827,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   explicitly, so a hand-maintained example is never the completeness claim.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
+  From PR3.2:
+  - One admission fragment shared by activation and the claim park, in place
+    of two copies of the same guards.
+  - A successor-carry case generated from every batch that inserts a run, in
+    place of one hand-listed family per path.
 
 - **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory
   IDs, makes every currently declared boolean/null/type arm witnessable; it
@@ -846,41 +858,33 @@ these three things; nothing else in the system does I/O, time, or randomness.
   distinct, ordered commits and that the red commit demonstrably leaves the
   named probe failing; the final attribution closeout showed that prose-only
   evidence still permits repair findings to be bundled into a green commit.
+  From PR3.2:
+  - Poison target profiles for a running, unactivated claim and for a failed
+    task, so the `activate`, `defer-launch`, and `retry-task` cells reach the
+    guards behind their state conditions.
+  - A generated clock-shape surface for the driver loop.
 
-- **PR3.2 lifecycle polish** — IN PROGRESS after PR3.5, as two stacked PRs:
-  - **PR3.2a:** the rolling-deploy deferral, decided before activation from the
-    claimed task's name the worker reads from the store, through a new
-    `defer-launch` batch fenced on the claim receipt. The same PR models the suspension paths' task-eligibility guard in
-    `specs/Scheduler.tla` with a probe that witnesses a refused suspension,
-    raises `RunCancelledError` from a refused worker write on a cancelled run
-    so the worker ends with a cancelled outcome, pins idempotency-key reuse to
-    Absurd's `spawn_task`, and floors `/wake` at one look per interval.
-    Deferred from its review round (`postmortems/pr3.2a-lifecycle-review.md`):
-    one admission fragment shared by activation and the deferral; a poison
-    target profile for a running, unactivated claim, so the `activate` and
-    `defer-launch` cells reach their corruption guards; a launch payload case
-    generated from `LaunchInvocation`'s fields that crosses older and newer
-    drivers and workers; and a generated clock-shape surface for the driver
-    loop.
-  - **PR3.2b:** `retryTask`, following Absurd's `retry_task`, modeled in TLA
-    before its SQL exists, with DESIGN.md stating its exception to terminal
-    inertness. A revival charges a failed run that no counter recorded, such as
-    an infrastructure-cap or relaunch-cap failure, grows the budget by one,
-    clears the failure reason, carries the top run's parked wake, and refuses a
-    failed task whose outcome or counters are corrupt.
-    Deferred from its review rounds (`postmortems/pr3.2b-retry-task-review.md`):
-    a poison target profile for a failed task, so the `retry-task` cells reach
-    the counter guards behind its state condition; and a successor-carry case
-    generated from every batch that inserts a run, in place of one hand-listed
-    family per path.
+- **PR3.2 lifecycle polish**: DONE. Merged green as two stacked PRs. PR3.2a
+  (PR #28) parks a claim that a build without the task's handler cannot run
+  before activating it, raises `RunCancelledError` from a refused write on a
+  cancelled run, models the suspension paths' eligibility guard, pins
+  idempotency-key reuse to Absurd's `spawn_task`, and floors `/wake` at one look
+  per interval. PR3.2b (PR #29) adds `retryTask`, following Absurd's
+  `retry_task`. Their review rounds are `postmortems/pr3.2a-lifecycle-review.md`
+  and `postmortems/pr3.2b-retry-task-review.md`.
+  Its residual is NOT recorded here: every item is owned by a named PR (PR3.3,
+  PR3.9, PR3.10).
+
+- **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
+  await, same-queue refusal; `/api/runs/:id` result route.
+  From PR3.2:
   - A heartbeat on a cancelled task still reports only a lost lease, so a
     handler that makes a context call after the next beat ends as lease-lost.
     Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the
     heartbeat batch on `FencedBatch` with a refusal read and a cancelled
     variant of `LeaseState`.
-
-- **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
-  await, same-queue refusal; `/api/runs/:id` result route.
+  - A launch payload case generated from `LaunchInvocation`'s fields that
+    crosses older and newer drivers and workers.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,
@@ -891,10 +895,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   never trigger rollback; `output === undefined` for started-not-persisted
   steps; rollback-failure halts the chain and surfaces in the result.
 
-- **PR3.5 simplification sweep** — IN PROGRESS. The findings recorded in
+- **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
-  landed or was rejected with a reason below, and PR3.5c deletes that file. It
-  lands as three stacked PRs:
+  landed or was rejected with a reason below, and PR3.5c deleted that file. It
+  landed as three stacked PRs, #25 to #27:
   - **PR3.5a:** core, driver, and SDK shapes, plus stale spec and script
     comments, and this milestone record.
   - **PR3.5b:** the successor's parent-taken columns defined once in core, a
