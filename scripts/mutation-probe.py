@@ -50,10 +50,12 @@ TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
 VERIFIER_KILL_GRACE_SECONDS = 0.5
-# A launcher's process group can briefly outlive the launcher: a host tool the
-# launcher ran last can leave a short-lived process in the group. Measured at up to
-# 410 ms, so launch cleanup waits this long for the group to drain before it calls
-# a descendant live.
+# A launcher's process group can briefly outlive the launcher. On some hosts `git` is
+# a wrapper that leaves an asynchronous logging process in the caller's group, so a
+# worker whose last act is a git call leaves that process behind for a moment:
+# measured at up to 410 ms. Launch cleanup waits this long for the group to drain
+# before it calls a descendant live. A group still live after the grace fails the
+# audit as before.
 LAUNCHER_DRAIN_GRACE_SECONDS = 5.0
 
 
@@ -11494,7 +11496,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
             zombie.wait()
 
         if fault in (None, "reject-draining-group"):
-            launch = descendant_launch(temporary, "drain-self-test", sleep_seconds=0.3)
+            launch = descendant_launch(temporary, "drain-self-test", sleep_seconds=2)
             options = {"drain_grace_seconds": 0.0} if fault else {}
             try:
                 run_launches([launch], allowed_returncodes=frozenset((0,)), **options)
@@ -11515,8 +11517,12 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     allowed_returncodes=frozenset((0,)),
                     drain_grace_seconds=0.2,
                 )
-            except RuntimeError:
-                pass
+            except RuntimeError as error:
+                if "live descendant groups after a" not in str(error):
+                    failures.append(
+                        "process cleanup: a launcher group that outlived its drain was "
+                        f"rejected for another reason: {error}"
+                    )
             else:
                 failures.append(
                     "process cleanup: a launcher group that outlived its drain was accepted"
