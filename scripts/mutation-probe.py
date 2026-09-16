@@ -7682,7 +7682,7 @@ def suite_self_test_command(
     label: str,
     state_path: Path,
     *,
-    linger: bool = False,
+    leader_exits: bool = False,
     barrier: Path | None = None,
 ) -> list[str]:
     parent_program = (
@@ -7697,7 +7697,7 @@ def suite_self_test_command(
         "  ready=True; break\\n"
         " time.sleep(0.01)\"); "
         "assert ready, 'descendant did not authenticate readiness'; "
-        + ("pass" if linger else "time.sleep(30)")
+        + ("pass" if leader_exits else "time.sleep(30)")
     )
     return [
         sys.executable,
@@ -7957,7 +7957,7 @@ def suite_self_test_verifier_run(
     wall_time_seconds: float = 1.0,
     leader_exits: bool = True,
 ) -> tuple[int | SuiteInfrastructureError | None, list[str]]:
-    """Run a verifier whose leader exits while its descendant lives, and check what it left.
+    """Run a verifier whose descendant outlives its leader's readiness, and check what it left.
 
     A lingering descendant never exits. A draining one waits on a barrier released
     around the drain, as barrier_released_on_drain describes. Returns the runner's
@@ -7972,7 +7972,7 @@ def suite_self_test_verifier_run(
         with tempfile.TemporaryDirectory(prefix=f"durablerun-suite-{label}-") as temporary:
             barrier = None if descendant == "lingers" else Path(temporary) / "barrier"
             command = suite_self_test_command(
-                label, state_path, linger=leader_exits, barrier=barrier
+                label, state_path, leader_exits=leader_exits, barrier=barrier
             )
             release = (
                 contextlib.nullcontext()
@@ -8012,6 +8012,9 @@ def suite_linger_self_test_child(state_path: Path, fault: str | None) -> int:
     descendant records itself, so the verifier hits a 0.5 s wall-time limit instead.
     That infrastructure error must not pass for the rejection.
     """
+    if fault not in (None, "wall-time-instead-of-descendant"):
+        raise ValueError(f"unknown suite linger self-test fault: {fault}")
+    wall_time_fault = fault == "wall-time-instead-of-descendant"
     outcome, problems = suite_self_test_verifier_run(
         state_path,
         "linger",
@@ -8019,8 +8022,8 @@ def suite_linger_self_test_child(state_path: Path, fault: str | None) -> int:
         # The descendant never exits, so any drain only spends lint-selftest's 1.5s
         # watchdog budget.
         drain_grace_seconds=0.0,
-        wall_time_seconds=0.5 if fault else 1.0,
-        leader_exits=fault is None,
+        wall_time_seconds=0.5 if wall_time_fault else 1.0,
+        leader_exits=not wall_time_fault,
     )
     if isinstance(outcome, int):
         problems.insert(0, "exited verifier leader was accepted with a live descendant")
@@ -8041,13 +8044,16 @@ def suite_drain_self_test_child(state_path: Path, fault: str | None) -> int:
     Under reject-draining-group the runner checks with no drain, and the barrier
     appears only after that check, so the group is live when it is checked.
     """
+    if fault not in (None, "reject-draining-group"):
+        raise ValueError(f"unknown suite drain self-test fault: {fault}")
+    no_drain = fault == "reject-draining-group"
     outcome, problems = suite_self_test_verifier_run(
         state_path,
         "drain",
-        descendant="drains-after-check" if fault else "drains",
+        descendant="drains-after-check" if no_drain else "drains",
         # Short enough that a group that never drains is reported by name inside
         # lint-selftest's 1.5s watchdog.
-        drain_grace_seconds=0.0 if fault else 0.5,
+        drain_grace_seconds=0.0 if no_drain else 0.5,
     )
     if isinstance(outcome, SuiteLiveDescendantsError):
         problems.insert(
@@ -11735,14 +11741,24 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 return []
 
             def drop_live_groups_while_polling(
-                _real_wait: DrainWait, groups: list[int], grace_seconds: float
+                real_wait: DrainWait, groups: list[int], grace_seconds: float
             ) -> list[int]:
-                deadline = time.monotonic() + grace_seconds
-                live = [group for group in groups if process_group_exists(group)]
-                while live and time.monotonic() < deadline:
-                    time.sleep(PROCESS_GROUP_DRAIN_POLL_SECONDS)
-                    live = [group for group in live if not process_group_exists(group)]
-                return live
+                # The real wait with every existence check after its initial filter
+                # inverted, so each poll drops the groups that are still live.
+                real_exists = process_group_exists
+                checks = 0
+
+                def inverted_after_filter(group: int) -> bool:
+                    nonlocal checks
+                    checks += 1
+                    exists = real_exists(group)
+                    return exists if checks <= len(groups) else not exists
+
+                globals()["process_group_exists"] = inverted_after_filter
+                try:
+                    return real_wait(groups, grace_seconds)
+                finally:
+                    globals()["process_group_exists"] = real_exists
 
             broken_waits = {
                 "accept-lingering-group": accept_every_group,

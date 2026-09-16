@@ -5126,6 +5126,7 @@ def run_mutation_suite_child(
     signal_after_label: str | None = None,
     signal_count: int = 1,
     signal_settle_seconds: float = 0.0,
+    completion_watchdog_seconds: float = 1.5,
 ) -> MutationSuiteChildObservation:
     with tempfile.TemporaryDirectory(prefix="durablerun-suite-self-test-") as temporary:
         state_path = Path(temporary) / "verifiers.jsonl"
@@ -5181,10 +5182,11 @@ def run_mutation_suite_child(
                         if signal_index + 1 < signal_count:
                             time.sleep(0.05)
             try:
-                stdout, stderr = process.communicate(timeout=1.5)
+                stdout, stderr = process.communicate(timeout=completion_watchdog_seconds)
             except subprocess.TimeoutExpired:
                 watchdog_problem = watchdog_problem or (
-                    f"{mode} exceeded its external 1.5s completion watchdog"
+                    f"{mode} exceeded its external {completion_watchdog_seconds:g}s "
+                    "completion watchdog"
                 )
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -5316,6 +5318,9 @@ def mutation_suite_linger_problem() -> str | None:
     false_negative = run_mutation_suite_child(
         "--suite-linger-self-test-child",
         fault="wall-time-instead-of-descendant",
+        # The fault waits out a 0.5 s wall-time limit, then a SIGTERM grace its
+        # descendant ignores, so it runs about 1 s before any load.
+        completion_watchdog_seconds=3.0,
     )
     problem = suite_observation_problem(
         false_negative,
@@ -5326,7 +5331,8 @@ def mutation_suite_linger_problem() -> str | None:
         return problem
     if (
         false_negative.returncode == 0
-        or "rejected for another reason" not in false_negative.output
+        or "rejected for another reason: suite wall-time limit of"
+        not in false_negative.output
     ):
         return (
             "suite linger regression accepted a wall-time error as the live-descendant "
