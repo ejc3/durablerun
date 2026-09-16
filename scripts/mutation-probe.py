@@ -10175,7 +10175,7 @@ ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS = {
         "['vitest', 'tsc:store-libsql:red', 'tsc:conformance']"
     ),
     "accept-conformance-typecheck-red": (
-        "conformance-red baseline: expected status 2, observed 0"
+        "conformance-red baseline: expected status 1, observed 0"
     ),
     "misroute-conformance-mutation": (
         "conformance mutation dispatch: expected verifier trace "
@@ -12161,7 +12161,9 @@ def suite_failure_detail(result: SuiteResult) -> str:
         for failure in result.assertions
     ]
     observed.extend(result.suite_errors)
-    if not observed and result.diagnostic:
+    # A suite error alone, such as a failed compiler leg, names no file or test, so
+    # its output carries the reason.
+    if not result.assertions and result.diagnostic:
         observed.append(result.diagnostic)
     return "\n".join(observed) if observed else "(no structured failure)"
 
@@ -12608,18 +12610,23 @@ def routing_self_test(fault: str | None = None) -> int:
                     ["vitest"],
                     0,
                 ),
-                ("vitest-red", [store.name, conformance.name], ["vitest:red"], 2),
+                (
+                    "vitest-red",
+                    [store.name, conformance.name],
+                    ["vitest:red"],
+                    worker_baseline_returncode(False),
+                ),
                 (
                     "store-red",
                     [store.name, conformance.name],
                     ["vitest", "tsc:store-libsql:red"],
-                    2,
+                    worker_baseline_returncode(False),
                 ),
                 (
                     "conformance-red",
                     [conformance.name],
                     ["vitest", "tsc:conformance:red"],
-                    2,
+                    worker_baseline_returncode(False),
                 ),
             )
             baseline_fault_cases = {
@@ -13413,8 +13420,10 @@ def worker_infrastructure_returncode() -> int:
 
 
 def worker_baseline_returncode(green: bool) -> int:
-    """A baseline worker's exit status: 0 when its unmutated suites pass."""
-    return 0 if green else 2
+    """A baseline worker's exit status: 0 when its unmutated suites pass, and 1 when
+    they fail. A red baseline is a result the coordinator reads from the report, not
+    an infrastructure failure, like a mutation worker's 1."""
+    return 0 if green else 1
 
 
 def may_publish_success(
@@ -14501,7 +14510,9 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             ]
             baseline_codes = run_launches(
                 baseline_launches,
-                allowed_returncodes=frozenset((0,)),
+                allowed_returncodes=frozenset(
+                    (worker_baseline_returncode(True), worker_baseline_returncode(False))
+                ),
             )
             baseline_barrier = establish_baseline_barrier(
                 plans,
