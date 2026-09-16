@@ -5126,6 +5126,7 @@ def run_mutation_suite_child(
     signal_after_label: str | None = None,
     signal_count: int = 1,
     signal_settle_seconds: float = 0.0,
+    fault_flag: str = "--suite-timeout-self-test-fault",
 ) -> MutationSuiteChildObservation:
     with tempfile.TemporaryDirectory(prefix="durablerun-suite-self-test-") as temporary:
         state_path = Path(temporary) / "verifiers.jsonl"
@@ -5137,7 +5138,7 @@ def run_mutation_suite_child(
             str(state_path),
         ]
         if fault is not None:
-            command.extend(("--suite-timeout-self-test-fault", fault))
+            command.extend((fault_flag, fault))
         process = subprocess.Popen(
             command,
             cwd=SCRIPTS.parent,
@@ -5326,6 +5327,31 @@ def mutation_suite_drain_problem() -> str | None:
         return (
             "a verifier group that drains after its leader exits was not accepted: "
             f"{observation.output[:300]}"
+        )
+
+    false_negative = run_mutation_suite_child(
+        "--suite-drain-self-test-child",
+        fault="reject-draining-group",
+        fault_flag="--suite-drain-self-test-fault",
+    )
+    if false_negative.watchdog_problem is not None:
+        return false_negative.watchdog_problem
+    record_problem = mutation_suite_record_problem(false_negative, {"drain"})
+    if record_problem is not None:
+        return record_problem
+    if false_negative.live_processes:
+        return (
+            "a verifier group checked with no drain left live descendants: "
+            f"{false_negative.live_processes}"
+        )
+    if (
+        false_negative.returncode == 0
+        or "a verifier group that drains after its leader exits was rejected"
+        not in false_negative.output
+    ):
+        return (
+            "suite drain regression accepted a verifier group checked with no drain: "
+            f"{false_negative.output[:300]}"
         )
     return None
 
