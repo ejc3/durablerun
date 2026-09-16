@@ -31,7 +31,42 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — lifecycle correctness and the simplification sweep
+## Current milestone: cancellation discovery, child tasks, sagas, SQL trees, and MySQL
+
+**Status: IN PROGRESS (named 2026-09-16).** The maintainer named six items, in
+this order: PR3.11, the mutation-runner fixes, PR3.9, PR3.3, PR3.4, and PR4.3.
+Each lands as its own PR, and only one implementation PR is in flight at a time.
+PR3.9 lands before the new batches, so child tasks, sagas, and the MySQL store
+write their SQL as trees once. PR4.3 lands last, so the third dialect
+implements the finished surface once.
+
+**Exit test:**
+
+1. A heartbeat on a cancelled task reports the cancellation, and a handler
+   that makes a context call after that beat ends with a cancelled outcome.
+   Conformance cases on libSQL and PostgreSQL and an SDK case show it and were
+   committed red first. PR3.11's two generated surfaces also land: a launch
+   payload case crossing older and newer driver and worker builds, and a
+   driver clock-shape surface.
+2. A mutation audit whose worker baseline goes red names the failing test in
+   the coordinator's failure message, and an aborted audit's teardown either
+   reaps every worker group or reports a measured reason it cannot.
+3. Every store batch's SQL is built as a tree and checked as a tree, per
+   PR3.9, and the textual scanners it replaces are deleted.
+4. A task can spawn a child from a step and await the child's completion as an
+   event, and awaiting a same-queue child from a worker is refused. It is
+   modeled in TLA before its SQL exists, and conformance on every dialect pins
+   it.
+5. A step can declare a rollback that the engine runs in reverse step-start
+   order on terminal failure, per DESIGN.md §3.10, with the PR3.4 conformance
+   cases on every dialect. It is modeled in TLA before its SQL exists.
+6. `store-mysql` passes the identical conformance suite against MySQL 8 in CI.
+
+**Non-goals:** active-wait identity (PR3.8), the condition-mutation ratchet
+(PR3.10), operations and sharding (Phase 5), dedicated placement (Phase 6), and
+the cloudification PRs.
+
+## Completed milestone — lifecycle correctness and the simplification sweep
 
 **Status: COMPLETE, with exit test 2 qualified; pause after green merge
 (2026-09-15).** The stack merged green into `main` in order: PR3.5a, PR3.5b, and
@@ -73,9 +108,7 @@ PRs #25 to #27, where PR3.5c deleted SIMPLIFY-BACKLOG.md. Exit test 2 landed for
 refused writes in PR #28: a worker whose write is refused on a cancelled run
 raises `RunCancelledError` and ends with a cancelled outcome. A heartbeat on a
 cancelled task still reports only a lost lease, so a handler that makes a
-context call after that beat ends as lease-lost. PR3.11 owns that path. Pause
-until the maintainer names the next milestone. Do not start another milestone
-or reopen source-identical proof work during that wait.
+context call after that beat ends as lease-lost. PR3.11 owns that path.
 
 **Non-goals:** exposing `/wake` beyond loopback or authenticating it, a hosted
 cancel route, stopping a handler mid-step when its task is cancelled (discovery
