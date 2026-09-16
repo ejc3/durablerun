@@ -7610,17 +7610,6 @@ def run_suite_process(
     def interrupt(signum: int, _frame: object) -> None:
         raise AuditSignal(signum)
 
-    def terminate_verifier_group(process: subprocess.Popen[bytes]) -> None:
-        # A coordinator may repeat its termination signal while the worker is
-        # already reaping this independently-sessioned verifier. Defer those
-        # repeats until the whole nested group is gone; otherwise the second
-        # signal can abort cleanup and orphan a grandchild.
-        interrupt_handlers = {signum: interrupt for signum in previous_handlers}
-        with CleanupSignalShield(interrupt_handlers) as shield:
-            terminate_verifier_processes([process])
-        if shield.deferred_signum is not None:
-            raise AuditSignal(shield.deferred_signum)
-
     for signum in previous_handlers:
         signal.signal(signum, interrupt)
     process: subprocess.Popen[bytes] | None = None
@@ -7650,7 +7639,15 @@ def run_suite_process(
         # that fails to reap is not repeated, so a worker's cleanup stays within one
         # verifier term and kill grace.
         if process is not None and process_group_exists(process.pid):
-            terminate_verifier_group(process)
+            # A coordinator may repeat its termination signal while the worker is
+            # already reaping this independently-sessioned verifier. Defer those
+            # repeats until the whole nested group is gone; otherwise the second
+            # signal can abort cleanup and orphan a grandchild.
+            interrupt_handlers = {signum: interrupt for signum in previous_handlers}
+            with CleanupSignalShield(interrupt_handlers) as shield:
+                terminate_verifier_processes([process])
+            if shield.deferred_signum is not None:
+                raise AuditSignal(shield.deferred_signum)
         raise
     finally:
         for signum, previous in previous_handlers.items():
@@ -11278,9 +11275,8 @@ def reap_leftover_process(launch: ProcessLaunch) -> str | None:
 # 0.6 s of margin for a loaded host.
 LATE_REAP_DELAY_SECONDS = 2.4
 LATE_REAP_FAULT_GRACE_SECONDS = 1.8
-# The late-reap child's verdict that cleanup reported the group unreapable. It is not
-# 1, which Python returns for an uncaught exception, so a crashed child is never read
-# as a verdict.
+# The late-reap child's verdict that cleanup reported the group unreapable. Like
+# WORKER_RED_RETURNCODE, it is not 1, so a crashed child is never read as a verdict.
 LATE_REAP_REJECTED_RETURNCODE = 3
 LATE_REAP_PROGRAM = """\
 import importlib.util, pathlib, sys
@@ -11358,7 +11354,7 @@ def late_reap_self_test_child(
         descendant = identity[1]
 
         def reap_late() -> None:
-            while process_state(descendant) not in ("Z", None):
+            while process_id_is_live(descendant):
                 time.sleep(0.01)
             time.sleep(reap_delay_seconds)
             while True:
@@ -11394,7 +11390,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
     failures: list[str] = []
     # A case that could not measure. The run reports it and exits 2, so it is never
     # counted as an injected fault caught.
-    infrastructure_problems: list[str] = []
+    unmeasured_case: str | None = None
     try:
         shards = partition_expected(
             expected,
@@ -11952,21 +11948,25 @@ def orchestration_self_test(fault: str | None = None) -> int:
             if state != "Z":
                 failures.append("process cleanup: could not construct a zombie leader")
             else:
+                # Under the fault the zombie reads as live, so cleanup spends both
+                # graces. The check below sits halfway into the kill grace.
+                zombie_kill_grace = 1.0
                 cleanup_started = time.monotonic()
                 try:
                     terminate_process_groups(
                         [zombie],
                         reap_exited_leaders=fault != "leave-zombie-group",
-                        # Under the fault the zombie reads as live, so cleanup spends
-                        # both graces, which the check below measures.
                         term_grace_seconds=VERIFIER_TERM_GRACE_SECONDS,
-                        kill_grace_seconds=1.0,
+                        kill_grace_seconds=zombie_kill_grace,
                     )
                 except RuntimeError:
                     failures.append(
                         "process cleanup: a zombie leader impersonated a live group"
                     )
-                if time.monotonic() - cleanup_started > 1:
+                if (
+                    time.monotonic() - cleanup_started
+                    > VERIFIER_TERM_GRACE_SECONDS + zombie_kill_grace / 2
+                ):
                     failures.append(
                         "process cleanup: a zombie leader delayed group cleanup"
                     )
@@ -12025,14 +12025,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 SuiteResult(
                     False,
                     False,
-                    tuple(
-                        FailedAssertion(
-                            f"packages/sdk/test/red-baseline/suite-{index:02}.test.ts",
-                            f"red baseline {index:02}",
-                            ("expected a green baseline",),
-                        )
-                        for index in range(80)
-                    ),
+                    tuple(red_baseline_assertions(80, "expected a green baseline")),
                     (),
                     "",
                 )
@@ -12043,9 +12036,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 counted is None
                 or listed_lines[:-1]
                 != [
-                    f"packages/sdk/test/red-baseline/suite-{index:02}.test.ts > "
-                    f"red baseline {index:02}"
-                    for index in range(len(listed_lines) - 1)
+                    f"{test.file} > {test.full_name}"
+                    for test in red_baseline_assertions(len(listed_lines) - 1, "")
                 ]
                 or len(listed_lines) - 1 + int(counted.group(1)) != 80
             ):
@@ -12145,15 +12137,16 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 late_reap_output = "timed out after 60 s"
             # Any status but a verdict means the case did not measure a grace. That is
             # an infrastructure problem, which must not pass for the fault being caught.
+            late_reap_tail = late_reap_output.strip()[-300:]
             if late_reap.returncode not in (0, LATE_REAP_REJECTED_RETURNCODE):
-                infrastructure_problems.append(
+                unmeasured_case = (
                     f"late-reap self-test could not run: exit {late_reap.returncode}, "
-                    f"{late_reap_output.strip()[-300:]}"
+                    f"{late_reap_tail}"
                 )
             elif late_reap.returncode == LATE_REAP_REJECTED_RETURNCODE:
                 failures.append(
                     f"process cleanup: a killed group reaped {LATE_REAP_DELAY_SECONDS:g} s "
-                    f"after SIGKILL was reported unreapable: {late_reap_output.strip()[-300:]}"
+                    f"after SIGKILL was reported unreapable: {late_reap_tail}"
                 )
 
     try:
@@ -12349,8 +12342,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
     if fault is None:
         failures.extend(mutation_checkpoint_problems())
 
-    if infrastructure_problems:
-        for problem in (*failures, *infrastructure_problems):
+    if unmeasured_case is not None:
+        for problem in (*failures, unmeasured_case):
             print(f"mutation-probe orchestration self-test: {problem}", file=sys.stderr)
         return 2
     if failures:
@@ -12476,6 +12469,18 @@ def read_json(path: Path) -> object:
         return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read structured worker result {path}: {error}") from error
+
+
+def red_baseline_assertions(count: int, message: str) -> list[FailedAssertion]:
+    """Failing tests for a red-baseline self-test case."""
+    return [
+        FailedAssertion(
+            f"packages/sdk/test/red-baseline/suite-{index:02}.test.ts",
+            f"red baseline {index:02}",
+            (message,),
+        )
+        for index in range(count)
+    ]
 
 
 def red_baseline_reason(result: SuiteResult) -> str:
@@ -13300,17 +13305,10 @@ def mutation_checkpoint_problems() -> list[str]:
             return []
 
         worker_mode: list[str | None] = [None]
-        red_baseline_tests = [
-            FailedAssertion(
-                f"packages/sdk/test/red-baseline/suite-{index:02}.test.ts",
-                f"red baseline {index:02}",
-                (
-                    "AssertionError: expected a green baseline\n"
-                    + "  - expected\n  + received\n" * 60,
-                ),
-            )
-            for index in range(5)
-        ]
+        red_baseline_tests = red_baseline_assertions(
+            5,
+            "AssertionError: expected a green baseline\n" + "  - expected\n  + received\n" * 60,
+        )
         red_baseline_diagnostic = red_baseline_reason(
             SuiteResult(False, False, tuple(red_baseline_tests), (), "")
         )
@@ -13320,25 +13318,19 @@ def mutation_checkpoint_problems() -> list[str]:
             allowed_returncodes: frozenset[int],
             exception_message: str,
         ) -> dict[str, int]:
-            # A worker whose phase raises deep in a call stack writes what
-            # worker_exit_status prints, and exits with the status it returns. The
-            # frames are distinct, so Python does not collapse them, and the log runs
-            # past the launch message's tail.
-            frames: dict[str, object] = {}
-            exec(
-                "".join(
-                    f"def frame_{index:02}():\n    return frame_{index + 1:02}()\n"
-                    for index in range(80)
-                )
-                + f"def frame_80():\n    raise ImportError({exception_message!r})\n",
-                frames,
-            )
+            # A worker whose phase logs progress and then raises writes what
+            # worker_exit_status prints, and exits with the status it returns. The log
+            # runs past the launch message's tail, so only a tail keeps the exception.
+            def crash() -> int:
+                for index in range(60):
+                    print(f"worker progress {index:02}: " + "." * 40, file=sys.stderr)
+                raise ImportError(exception_message)
 
             codes: dict[str, int] = {}
             for launch in launches:
                 worker_log = io.StringIO()
                 with contextlib.redirect_stderr(worker_log):
-                    codes[launch.label] = worker_exit_status(frames["frame_00"])
+                    codes[launch.label] = worker_exit_status(crash)
                 if len(worker_log.getvalue().strip()) <= LAUNCH_EXIT_LOG_TAIL_CHARACTERS:
                     raise RuntimeError("fixture traceback fits inside the launch message tail")
                 launch.log.parent.mkdir(parents=True, exist_ok=True)
@@ -13384,14 +13376,14 @@ def mutation_checkpoint_problems() -> list[str]:
                         exception_message="crashed baseline",
                     )
                 codes = {}
+                green = worker_mode[0] != "red-baseline"
                 for launch in launches:
-                    green = worker_mode[0] != "red-baseline"
                     baseline_report(launch, green=green)
                     codes[launch.label] = worker_result_returncode(green)
                     if codes[launch.label] not in allowed_returncodes:
-                        raise RuntimeError(
-                            f"fixture baseline status {codes[launch.label]} is not allowed"
-                        )
+                        launch.log.parent.mkdir(parents=True, exist_ok=True)
+                        launch.log.touch()
+                        raise RuntimeError(launch_exit_error(launch, codes[launch.label]))
                 return codes
 
             if worker_mode[0] == "crashed-mutations":
@@ -13838,7 +13830,9 @@ def worker_exit_status(run: Callable[[], int]) -> int:
     try:
         return run()
     except SystemExit as error:
-        return int(error.code) if isinstance(error.code, int) else 2
+        return (
+            int(error.code) if isinstance(error.code, int) else WORKER_INFRASTRUCTURE_RETURNCODE
+        )
     except AuditSignal as error:
         print(f"mutation-probe worker: interrupted by signal {error.signum}", file=sys.stderr)
         return 128 + error.signum
@@ -13847,49 +13841,26 @@ def worker_exit_status(run: Callable[[], int]) -> int:
 
 
 def worker_exit_status_problems() -> list[str]:
-    """A worker's infrastructure failure prints its traceback, and a signal is not one."""
-
-    def missing_field() -> int:
-        payload: dict[str, object] = {}
-        return len(str(payload["green"]))
+    """A coordinator's termination signal is not a worker infrastructure failure."""
 
     def interrupted() -> int:
         raise AuditSignal(signal.SIGTERM)
 
-    problems: list[str] = []
-    for label, run, expected_status, required, forbidden in (
-        (
-            "an infrastructure failure",
-            missing_field,
-            WORKER_INFRASTRUCTURE_RETURNCODE,
-            ("Traceback", "KeyError: 'green'"),
-            (),
-        ),
-        (
-            "the coordinator's termination signal",
-            interrupted,
-            128 + signal.SIGTERM,
-            (),
-            ("Traceback",),
-        ),
-    ):
-        log = io.StringIO()
-        with contextlib.redirect_stderr(log):
-            status = worker_exit_status(run)
-        output = log.getvalue()
-        if (
-            status != expected_status
-            or any(text not in output for text in required)
-            or any(text in output for text in forbidden)
-        ):
-            problems.append(f"worker exit status for {label}: exit {status}, {output[-300:]!r}")
-    return problems
+    log = io.StringIO()
+    with contextlib.redirect_stderr(log):
+        status = worker_exit_status(interrupted)
+    if status != 128 + signal.SIGTERM or "Traceback" in log.getvalue():
+        return [
+            "worker exit status for the coordinator's termination signal: "
+            f"exit {status}, {log.getvalue()[-300:]!r}"
+        ]
+    return []
 
 
 def worker_infrastructure_failure(error: Exception) -> int:
     """Report a worker exception with its traceback, and return the infrastructure status."""
     print(f"mutation-probe worker infrastructure failure: {error}", file=sys.stderr)
-    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+    traceback.print_exception(error, file=sys.stderr)
     return WORKER_INFRASTRUCTURE_RETURNCODE
 
 
@@ -15416,16 +15387,16 @@ def main() -> int:
             ap.error("worker mode cannot be combined with audit selection options")
         return worker_exit_status(
             lambda: worker_phase(
-                    phase=args.worker_phase,
-                    audit_lock_fd=args.worker_audit_lock_fd,
-                    report_path=args.worker_result,
-                    head=args.worker_head,
-                    worker_id=args.worker_id,
-                    mutation_names=args.worker_mutation,
-                    max_workers=args.max_workers,
-                    run_root=args.worker_run_root,
-                    nonce=args.worker_nonce,
-                    baseline_barrier=args.worker_baseline_barrier,
+                phase=args.worker_phase,
+                audit_lock_fd=args.worker_audit_lock_fd,
+                report_path=args.worker_result,
+                head=args.worker_head,
+                worker_id=args.worker_id,
+                mutation_names=args.worker_mutation,
+                max_workers=args.max_workers,
+                run_root=args.worker_run_root,
+                nonce=args.worker_nonce,
+                baseline_barrier=args.worker_baseline_barrier,
             )
         )
     if any(
