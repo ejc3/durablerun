@@ -59,7 +59,9 @@ VERIFIER_TERM_GRACE_SECONDS = 0.25
 # group before it calls the group unreapable.
 KILLED_GROUP_REAP_GRACE_SECONDS = 3.0
 # The coordinator's termination grace for a worker covers the worker's one verifier
-# cleanup, with margin for the worker to restore its source and exit.
+# cleanup, with margin for the worker to restore its source, check its worktree, and
+# exit. That check, `git status --porcelain` in an audit worker worktree, took median
+# 18 ms and at most 35 ms over 20 runs on a 176-core host at load 230.
 LAUNCHER_TERM_GRACE_SECONDS = (
     VERIFIER_TERM_GRACE_SECONDS + KILLED_GROUP_REAP_GRACE_SECONDS + 1.75
 )
@@ -69,6 +71,8 @@ LAUNCHER_TERM_GRACE_SECONDS = (
 WORKER_INFRASTRUCTURE_RETURNCODE = 2
 WORKER_RED_RETURNCODE = 3
 WORKER_RESULT_RETURNCODES = frozenset((0, WORKER_RED_RETURNCODE))
+# The coordinator keeps this much of a red baseline's reason.
+RED_BASELINE_REASON_LIMIT = 4000
 # A process group can briefly outlive its leader. On some hosts `git` is a wrapper
 # that leaves an asynchronous logging process in the caller's group, so a launcher or
 # verifier whose last act is a git call leaves that process behind for a moment:
@@ -10810,7 +10814,9 @@ def validate_baseline_report(
             f"exit={process_returncode}, report expects {expected_returncode}"
         )
     if not payload["green"]:
-        raise ValueError(f"worker baseline is red: {payload['diagnostic'][:4000]}")
+        raise ValueError(
+            f"worker baseline is red: {payload['diagnostic'][:RED_BASELINE_REASON_LIMIT]}"
+        )
 
 
 def validate_owned_worktree_path(
@@ -11272,6 +11278,10 @@ def reap_leftover_process(launch: ProcessLaunch) -> str | None:
 # 0.6 s of margin for a loaded host.
 LATE_REAP_DELAY_SECONDS = 2.4
 LATE_REAP_FAULT_GRACE_SECONDS = 1.8
+# The late-reap child's verdict that cleanup reported the group unreapable. It is not
+# 1, which Python returns for an uncaught exception, so a crashed child is never read
+# as a verdict.
+LATE_REAP_REJECTED_RETURNCODE = 3
 LATE_REAP_PROGRAM = """\
 import importlib.util, pathlib, sys
 spec = importlib.util.spec_from_file_location("probe", sys.argv[1])
@@ -11289,11 +11299,15 @@ raise SystemExit(
 
 
 def stop_late_reap_child(process: subprocess.Popen[str], state_path: Path) -> None:
-    """Stop a late-reap self-test child and the verifier-shaped group it started."""
+    """Stop a late-reap self-test child that was never collected, and its group.
+
+    A collected child already cleaned its records, and cleaning them again later could
+    signal a process that reused a recorded PID.
+    """
     if process.poll() is None:
         process.kill()
         process.wait()
-    cleanup_suite_self_test_records(state_path)
+        cleanup_suite_self_test_records(state_path)
 
 
 def process_state(process_id: int) -> str | None:
@@ -11314,7 +11328,8 @@ def late_reap_self_test_child(
     This process becomes the orphaned descendant's subreaper, and a thread reaps it
     reap_delay_seconds after SIGKILL leaves it a zombie. The descendant ignores
     SIGTERM, so SIGKILL is what ends it. Returns 0 when verifier cleanup accepts the
-    group, 1 when it reports the group unreapable, and 2 when the case cannot run.
+    group, LATE_REAP_REJECTED_RETURNCODE when it reports the group unreapable, and 2
+    when the case cannot run.
     """
     global KILLED_GROUP_REAP_GRACE_SECONDS
     import ctypes
@@ -11355,7 +11370,7 @@ def late_reap_self_test_child(
             terminate_verifier_processes([leader])
         except RuntimeError as error:
             print(f"rejected: {error}")
-            return 1
+            return LATE_REAP_REJECTED_RETURNCODE
         print("reaped")
         return 0
     finally:
@@ -11375,6 +11390,9 @@ def orchestration_self_test(fault: str | None = None) -> int:
         for ordinal in range(7)
     ]
     failures: list[str] = []
+    # A case that could not measure. The run reports it and exits 2, so it is never
+    # counted as an injected fault caught.
+    infrastructure_problems: list[str] = []
     try:
         shards = partition_expected(
             expected,
@@ -12001,6 +12019,27 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     )
             failures.extend(verifier_cleanup_once_problems(temporary))
             failures.extend(worker_exit_status_problems())
+            many_red = red_baseline_reason(
+                SuiteResult(
+                    False,
+                    False,
+                    tuple(
+                        FailedAssertion(
+                            f"packages/sdk/test/red-baseline/suite-{index:02}.test.ts",
+                            f"red baseline {index:02}",
+                            ("expected a green baseline",),
+                        )
+                        for index in range(80)
+                    ),
+                    (),
+                    "",
+                )
+            )[:RED_BASELINE_REASON_LIMIT]
+            if "red baseline 00" not in many_red or "more failing tests" not in many_red:
+                failures.append(
+                    "a red baseline with 80 failing tests neither names nor counts them: "
+                    f"{many_red[-200:]!r}"
+                )
 
         if fault in (None, "reject-draining-group"):
             # The child exits once the barrier appears. Normally that is when cleanup
@@ -12091,13 +12130,14 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 late_reap_output, _ = late_reap.communicate(timeout=60)
             except subprocess.TimeoutExpired:
                 late_reap_output = "timed out after 60 s"
-            # Exit 1 is the verdict "unreapable". Anything else means the case did not
-            # measure a grace, which must not pass for the fault being caught.
-            if late_reap.returncode not in (0, 1):
-                raise RuntimeError(
-                    f"late-reap self-test could not run: {late_reap_output.strip()[-300:]}"
+            # Any status but a verdict means the case did not measure a grace. That is
+            # an infrastructure problem, which must not pass for the fault being caught.
+            if late_reap.returncode not in (0, LATE_REAP_REJECTED_RETURNCODE):
+                infrastructure_problems.append(
+                    f"late-reap self-test could not run: exit {late_reap.returncode}, "
+                    f"{late_reap_output.strip()[-300:]}"
                 )
-            if late_reap.returncode == 1:
+            elif late_reap.returncode == LATE_REAP_REJECTED_RETURNCODE:
                 failures.append(
                     f"process cleanup: a killed group reaped {LATE_REAP_DELAY_SECONDS:g} s "
                     f"after SIGKILL was reported unreapable: {late_reap_output.strip()[-300:]}"
@@ -12296,6 +12336,10 @@ def orchestration_self_test(fault: str | None = None) -> int:
     if fault is None:
         failures.extend(mutation_checkpoint_problems())
 
+    if infrastructure_problems:
+        for problem in (*failures, *infrastructure_problems):
+            print(f"mutation-probe orchestration self-test: {problem}", file=sys.stderr)
+        return 2
     if failures:
         if fault is not None:
             print(
@@ -12415,12 +12459,24 @@ def read_json(path: Path) -> object:
 def red_baseline_reason(result: SuiteResult) -> str:
     """The reason a worker reports for a red baseline.
 
-    It names every failing test before any failure message, so a reason cut to its
-    front still names them all.
+    It names failing tests before any failure message, within half of
+    RED_BASELINE_REASON_LIMIT, and counts the tests whose names do not fit. So a
+    reason cut to that limit names or counts every failing test.
     """
     names = [f"{failure.file} > {failure.full_name}" for failure in result.assertions]
     detail = suite_failure_detail(result)
-    return "\n".join((*names, "", detail)) if names else detail
+    if not names:
+        return detail
+    listed: list[str] = []
+    listed_length = 0
+    for name in names:
+        if listed_length + len(name) + 1 > RED_BASELINE_REASON_LIMIT // 2:
+            break
+        listed.append(name)
+        listed_length += len(name) + 1
+    if len(listed) < len(names):
+        listed.append(f"and {len(names) - len(listed)} more failing tests")
+    return "\n".join((*listed, "", detail))
 
 
 def suite_failure_detail(result: SuiteResult) -> str:
@@ -13243,17 +13299,26 @@ def mutation_checkpoint_problems() -> list[str]:
             exception_message: str,
         ) -> dict[str, int]:
             # A worker whose phase raises deep in a call stack writes what
-            # worker_exit_status prints, and exits with the status it returns.
-            def crash(depth: int) -> int:
-                if depth:
-                    return crash(depth - 1)
-                raise ImportError(exception_message)
+            # worker_exit_status prints, and exits with the status it returns. The
+            # frames are distinct, so Python does not collapse them, and the log runs
+            # past the launch message's tail.
+            frames: dict[str, object] = {}
+            exec(
+                "".join(
+                    f"def frame_{index:02}():\n    return frame_{index + 1:02}()\n"
+                    for index in range(80)
+                )
+                + f"def frame_80():\n    raise ImportError({exception_message!r})\n",
+                frames,
+            )
 
             codes: dict[str, int] = {}
             for launch in launches:
                 worker_log = io.StringIO()
                 with contextlib.redirect_stderr(worker_log):
-                    codes[launch.label] = worker_exit_status(lambda: crash(40))
+                    codes[launch.label] = worker_exit_status(frames["frame_00"])
+                if len(worker_log.getvalue()) <= 2000:
+                    raise RuntimeError("fixture traceback fits inside the launch message tail")
                 launch.log.parent.mkdir(parents=True, exist_ok=True)
                 launch.log.write_text(worker_log.getvalue())
                 if codes[launch.label] not in allowed_returncodes:
