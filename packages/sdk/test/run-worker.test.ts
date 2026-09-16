@@ -1477,6 +1477,57 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a cancellation the heartbeat discovers ends the pass as cancelled at the next context call', async () => {
+    const f = await fx('sdk-cancelled-heartbeat')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    let beats = 0
+    let beatSettled: () => void = () => undefined
+    const firstBeat = new Promise<void>((resolve) => {
+      beatSettled = resolve
+    })
+    const counting = new Proxy(f.store, {
+      get(target, prop, receiver) {
+        if (prop === 'heartbeat') {
+          return async (...args: Parameters<SchedulerStore['heartbeat']>) => {
+            beats++
+            try {
+              return await target.heartbeat(...args)
+            } finally {
+              beatSettled()
+            }
+          }
+        }
+        const value = Reflect.get(target, prop, receiver)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    let stepRan = false
+    const reg = registry({
+      job: async (ctx) => {
+        expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
+        // One pump beat, at half the 60 s lease, observes the cancellation.
+        await f.advance(30_000)
+        await firstBeat
+        await new Promise((resolve) => setTimeout(resolve, 2))
+        await ctx.step('after-the-beat', () => {
+          stepRan = true
+          return 1
+        })
+        return 'done'
+      },
+    })
+    const outcome = await runClaimedRun(
+      { store: counting as SchedulerStore, clock: f.clock, registry: reg },
+      await claimInvocation(f, 'w1'),
+    )
+    expect({ outcome, beats, stepRan }).toEqual({
+      outcome: { kind: 'cancelled' },
+      beats: 1,
+      stepRan: false,
+    })
+    f.close()
+  })
+
   it('a resolver that stops resolving after the first lookup still runs the handler it resolved', async () => {
     const f = await fx('sdk-flapping-registry')
     await f.store.spawn(Q, 'job', '{}')

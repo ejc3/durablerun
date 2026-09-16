@@ -1877,6 +1877,25 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           swept: Array(7).fill('LeaseLostError'),
         })
       })
+
+      it('a heartbeat on a cancelled task reports the cancellation, while a swept lease reports a lost lease', async () => {
+        const cancelled = await f.store.spawn(Q, 'cancel-beat', '{}')
+        const cancelledRun = await claimActivated(f.store, Q, 'w-cancel-beat')
+        await f.store.spawn(Q, 'sweep-beat', '{}')
+        const sweptRun = await claimActivated(f.store, Q, 'w-sweep-beat')
+        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
+        expect(await f.store.expireLeaseNow(Q, sweptRun.runId, sweptRun.claimToken)).toBe(true)
+        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
+          'claim-timeout',
+        ])
+        expect({
+          cancelled: await f.store.heartbeat(Q, cancelledRun.runId, cancelledRun.claimToken, 60),
+          swept: await f.store.heartbeat(Q, sweptRun.runId, sweptRun.claimToken, 60),
+        }).toEqual({
+          cancelled: { held: false, remainingMs: 0, reason: 'cancelled' },
+          swept: { held: false, remainingMs: 0, reason: 'lease-lost' },
+        })
+      })
     })
 
     describe('retryTask (Absurd retry_task)', () => {
