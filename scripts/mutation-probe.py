@@ -11299,14 +11299,16 @@ raise SystemExit(
 
 
 def stop_late_reap_child(process: subprocess.Popen[str], state_path: Path) -> None:
-    """Stop a late-reap self-test child that was never collected, and its group.
+    """Stop a late-reap self-test child, and clean its group if the child could not.
 
-    A collected child already cleaned its records, and cleaning them again later could
-    signal a process that reused a recorded PID.
+    A child that exited on its own already cleaned its records, and cleaning them
+    again later could signal a process that reused a recorded PID. A child ended by
+    a signal, including the kill here, never ran its own cleanup.
     """
     if process.poll() is None:
         process.kill()
         process.wait()
+    if process.returncode < 0:
         cleanup_suite_self_test_records(state_path)
 
 
@@ -12035,9 +12037,20 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "",
                 )
             )[:RED_BASELINE_REASON_LIMIT]
-            if "red baseline 00" not in many_red or "more failing tests" not in many_red:
+            listed_lines = many_red.split("\n\n", 1)[0].splitlines()
+            counted = re.fullmatch(r"and (\d+) more failing tests", listed_lines[-1])
+            if (
+                counted is None
+                or listed_lines[:-1]
+                != [
+                    f"packages/sdk/test/red-baseline/suite-{index:02}.test.ts > "
+                    f"red baseline {index:02}"
+                    for index in range(len(listed_lines) - 1)
+                ]
+                or len(listed_lines) - 1 + int(counted.group(1)) != 80
+            ):
                 failures.append(
-                    "a red baseline with 80 failing tests neither names nor counts them: "
+                    "a red baseline with 80 failing tests does not name or count each once: "
                     f"{many_red[-200:]!r}"
                 )
 
@@ -12378,6 +12391,15 @@ def orchestration_self_test(fault: str | None = None) -> int:
             "mutation-probe orchestration self-test caught injected fault "
             f"{injected_fault}"
         )
+        if result.returncode == 2:
+            # The fault run could not measure, so it is neither caught nor missed.
+            print(
+                "mutation-probe orchestration self-test: declared fault "
+                f"{injected_fault!r} could not run: "
+                f"{(result.stdout + result.stderr).strip()[-600:]}",
+                file=sys.stderr,
+            )
+            return 2
         if result.returncode != 1 or marker not in (result.stdout + result.stderr):
             print(
                 "mutation-probe orchestration self-test: declared fault "
@@ -13317,7 +13339,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 worker_log = io.StringIO()
                 with contextlib.redirect_stderr(worker_log):
                     codes[launch.label] = worker_exit_status(frames["frame_00"])
-                if len(worker_log.getvalue()) <= 2000:
+                if len(worker_log.getvalue().strip()) <= LAUNCH_EXIT_LOG_TAIL_CHARACTERS:
                     raise RuntimeError("fixture traceback fits inside the launch message tail")
                 launch.log.parent.mkdir(parents=True, exist_ok=True)
                 launch.log.write_text(worker_log.getvalue())
@@ -14009,6 +14031,10 @@ def terminate_process_groups(
         )
 
 
+# A launch failure message keeps this much of the end of the launch log.
+LAUNCH_EXIT_LOG_TAIL_CHARACTERS = 2000
+
+
 def launch_exit_error(launch: ProcessLaunch, returncode: int) -> str:
     """The message for a launch that exited with a status its caller did not allow.
 
@@ -14016,7 +14042,7 @@ def launch_exit_error(launch: ProcessLaunch, returncode: int) -> str:
     """
     return (
         f"{launch.label} failed with exit {returncode}: "
-        f"{diagnostic_tail(launch.log)[-2000:]}"
+        f"{diagnostic_tail(launch.log)[-LAUNCH_EXIT_LOG_TAIL_CHARACTERS:]}"
     )
 
 
