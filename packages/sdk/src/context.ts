@@ -4,6 +4,7 @@ import {
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
+  type LeaseState,
   type SchedulerStore,
   UserName,
   type WakeSpec,
@@ -15,7 +16,6 @@ import {
 } from '@durablerun/core'
 import {
   TaskMap,
-  abortSignalAborted,
   taskHasOwn,
   taskMapGet,
   taskMapHas,
@@ -113,6 +113,9 @@ function memoOfWake(wake: EventWake): EventMemo {
   return { timedOut: timedOut.timedOut }
 }
 
+/** Why a refused heartbeat ended this pass's lease: the task was cancelled, or the lease is lost. */
+export type LeaseEnd = Extract<LeaseState, { held: false }>['reason']
+
 /** One execution pass over a claimed run. */
 export class ReplayContext implements TaskContext {
   readonly #attempt: number
@@ -120,7 +123,7 @@ export class ReplayContext implements TaskContext {
   readonly #store: SchedulerStore
   readonly #queue: string
   readonly #run: ClaimedRun
-  readonly #leaseLost: AbortSignal | undefined
+  readonly #leaseEnded: (() => LeaseEnd | undefined) | undefined
   readonly #controls: TaskControlIssuer
   private readonly seen = new TaskMap<string, unknown>()
   private readonly nameUses = new TaskMap<string, number>()
@@ -139,14 +142,14 @@ export class ReplayContext implements TaskContext {
     queue: string,
     run: ClaimedRun,
     checkpoints: Checkpoint[],
-    leaseLost?: AbortSignal,
+    leaseEnded?: () => LeaseEnd | undefined,
     controls: TaskControlIssuer = createTaskControlScope().issuer,
     attempt: number = run.attempt - run.infraRetries,
   ) {
     this.#store = store
     this.#queue = queue
     this.#run = run
-    this.#leaseLost = leaseLost
+    this.#leaseEnded = leaseEnded
     this.#controls = controls
     this.#attempt = attempt
     this.taskName = run.taskName
@@ -205,10 +208,14 @@ export class ReplayContext implements TaskContext {
   }
 
   private assertLeaseHeld(): void {
-    // The pump observed the lease gone: stop the handler at the next
-    // context call — the fences protect STATE regardless; this stops a
+    // A pump beat was refused: stop the handler at the next context call, as
+    // the refusal named it. The fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
-    if (this.#leaseLost !== undefined && abortSignalAborted(this.#leaseLost)) {
+    const ended = this.#leaseEnded?.()
+    if (ended === 'cancelled') {
+      this.#controls.runCancelled(`task cancelled during pass (run ${this.#run.runId})`)
+    }
+    if (ended === 'lease-lost') {
       this.#controls.leaseLost(`lease lost during pass (run ${this.#run.runId})`)
     }
   }
@@ -256,7 +263,7 @@ export class ReplayContext implements TaskContext {
     const payload = userJsonValue('event payload', payloadJson)
     // A zombie whose lease was lost must not win a first-write event and
     // wake waiters — emitEvent is not fenced by the store (the emit is
-    // global), so the pump's lease-loss signal is the only stop. (emitEvent
+    // global), so the pump's refused beat is the only stop. (emitEvent
     // allocates no replay key, so unlike the other durable ops it may run
     // inside a step; hence the bare lease check, not the full nesting gate.)
     this.assertLeaseHeld()

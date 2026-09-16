@@ -1080,6 +1080,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.heartbeat(Q, run.runId, 'stale-token', 60)).toEqual({
           held: false,
           remainingMs: 0,
+          reason: 'lease-lost',
         })
       })
     })
@@ -1620,6 +1621,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(await f.store.heartbeat(Q, run.runId, run.claimToken, 60)).toEqual({
           held: false,
           remainingMs: 0,
+          reason: 'lease-lost',
         })
       })
     })
@@ -1888,10 +1890,13 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
           'claim-timeout',
         ])
-        expect({
-          cancelled: await f.store.heartbeat(Q, cancelledRun.runId, cancelledRun.claimToken, 60),
-          swept: await f.store.heartbeat(Q, sweptRun.runId, sweptRun.claimToken, 60),
-        }).toEqual({
+        expect(
+          {
+            cancelled: await f.store.heartbeat(Q, cancelledRun.runId, cancelledRun.claimToken, 60),
+            swept: await f.store.heartbeat(Q, sweptRun.runId, sweptRun.claimToken, 60),
+          },
+          'mutation-verdict:behavior:heartbeat-names-cancellation',
+        ).toEqual({
           cancelled: { held: false, remainingMs: 0, reason: 'cancelled' },
           swept: { held: false, remainingMs: 0, reason: 'lease-lost' },
         })

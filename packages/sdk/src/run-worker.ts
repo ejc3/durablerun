@@ -7,7 +7,7 @@ import {
   serializeTaskValue,
   snapshotTaskThrowable,
 } from '@durablerun/core'
-import { ReplayContext, type TaskContext } from './context.js'
+import { type LeaseEnd, ReplayContext, type TaskContext } from './context.js'
 import {
   TaskAbortController,
   abortControllerAbort,
@@ -152,14 +152,13 @@ export async function runClaimedRun(
   const userAttempt = claimedRun.attempt - claimedRun.infraRetries
 
   // Heartbeat pump FIRST (before any further unfenced reads): extend at
-  // half-lease cadence until the pass ends. A zero-row heartbeat is the
-  // lease-lost signal — the fences already refuse a zombie's writes; the
-  // leaseLost signal additionally stops the HANDLER at its next context
-  // call, so a zombie stops burning side effects too.
+  // half-lease cadence until the pass ends. A refused heartbeat names why:
+  // the task was cancelled, or the lease is lost. The fences already refuse a
+  // zombie's writes; the recorded reason additionally stops the HANDLER at its
+  // next context call, so a zombie stops burning side effects too.
   const pumpStop = new TaskAbortController()
   const pumpStopSignal = abortControllerSignal(pumpStop)
-  const leaseLost = new TaskAbortController()
-  const leaseLostSignal = abortControllerSignal(leaseLost)
+  let leaseEnd: LeaseEnd | undefined
   const leaseMs = run.leaseSeconds * 1000
   const pump = (async () => {
     for (;;) {
@@ -168,7 +167,7 @@ export async function runClaimedRun(
       try {
         const lease = await store.heartbeat(queue, runId, claimToken, run.leaseSeconds)
         if (!lease.held) {
-          abortControllerAbort(leaseLost)
+          leaseEnd = lease.reason
           return
         }
       } catch {
@@ -190,7 +189,7 @@ export async function runClaimedRun(
       queue,
       run,
       checkpoints,
-      leaseLostSignal,
+      () => leaseEnd,
       taskControls.issuer,
       userAttempt,
     )

@@ -6,7 +6,7 @@
  */
 
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { CheckpointWrite, WakeSpec } from './types.js'
+import type { CheckpointWrite, LeaseState, WakeSpec } from './types.js'
 
 export type TaskThrowableSnapshot = Readonly<{
   kind: 'failure'
@@ -170,6 +170,15 @@ export async function refusedWriteError(
     return new LeaseLostError(message, { cause })
   }
   return state === 'cancelled' ? new RunCancelledError(message) : new LeaseLostError(message)
+}
+
+/** A refused heartbeat's answer, named by the same classification as a refused write. */
+export function refusedLease(error: LeaseLostError | RunCancelledError): LeaseState {
+  return {
+    held: false,
+    remainingMs: 0,
+    reason: error instanceof RunCancelledError ? 'cancelled' : 'lease-lost',
+  }
 }
 
 /**

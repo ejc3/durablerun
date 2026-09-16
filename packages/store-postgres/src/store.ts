@@ -44,6 +44,7 @@ import {
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
+  refusedLease,
   refusedWriteError,
   requireDerivedInteger,
   requireDurableString,
@@ -805,7 +806,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
   ): Promise<LeaseState> {
     // Buggify: lease-lost can arrive at ANY heartbeat — workers must abort
     // cleanly on the AB002 signal no matter when it fires.
-    if (this.buggify('heartbeat:lease-lost')) return { held: false, remainingMs: 0 }
+    if (this.buggify('heartbeat:lease-lost')) {
+      return { held: false, remainingMs: 0, reason: 'lease-lost' }
+    }
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
     // ONE statement. It was two — the extend, then a SELECT computing
     // `claim_expires_at_ms - <clock>` — which read the clock twice in one
@@ -828,7 +831,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
       },
     ])
     const row = extended?.rows[0]
-    if (!row) return { held: false, remainingMs: 0 }
+    if (!row) return refusedLease(await this.refusal('heartbeat', runId))
     return {
       held: true,
       remainingMs: requireDerivedInteger(
@@ -1323,7 +1326,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
    * run is terminal, so the read never misses a cancellation that refused the
    * write.
    */
-  private refusal(operation: string, runId: string): Promise<Error> {
+  private refusal(operation: string, runId: string): ReturnType<typeof refusedWriteError> {
     return refusedWriteError(operation, runId, async () => {
       const [rows] = await this.db.batch(
         'refusal-state',

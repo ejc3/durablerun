@@ -2257,7 +2257,7 @@ MUTATION_SPECS = [
         "      queue,\n"
         "      run,\n"
         "      checkpoints,\n"
-        "      leaseLostSignal,\n"
+        "      () => leaseEnd,\n"
         "      taskControls.issuer,\n"
         "      userAttempt,\n"
         "    )\n"
@@ -2273,7 +2273,7 @@ MUTATION_SPECS = [
         "      queue,\n"
         "      run,\n"
         "      checkpoints,\n"
-        "      leaseLostSignal,\n"
+        "      () => leaseEnd,\n"
         "      taskControls.issuer,\n"
         "      userAttempt,\n"
         "    )\n"
@@ -2302,7 +2302,7 @@ MUTATION_SPECS = [
         "      queue,\n"
         "      run,\n"
         "      checkpoints,\n"
-        "      leaseLostSignal,\n"
+        "      () => leaseEnd,\n"
         "      taskControls.issuer,\n"
         "      userAttempt,\n"
         "    )\n",
@@ -2318,7 +2318,7 @@ MUTATION_SPECS = [
         "    queue,\n"
         "    run,\n"
         "    checkpoints,\n"
-        "    leaseLostSignal,\n"
+        "    () => leaseEnd,\n"
         "    taskControls.issuer,\n"
         "    userAttempt,\n"
         "  )\n"
@@ -2331,6 +2331,17 @@ MUTATION_SPECS = [
         "  const leaseMs = run.leaseSeconds * 1000\n",
         "  const leaseMs = Math.max(run.leaseSeconds * 1000, 1_000)\n",
         "a legal sub-second lease waits until after expiry for its first upkeep",
+    ),
+    (
+        "sdk-heartbeat-cancellation-outcome",
+        "packages/sdk/src/context.ts",
+        "    if (ended === 'cancelled') {\n"
+        "      this.#controls.runCancelled(`task cancelled during pass (run ${this.#run.runId})`)\n"
+        "    }\n",
+        "    if (ended === 'cancelled') {\n"
+        "      this.#controls.leaseLost(`lease lost during pass (run ${this.#run.runId})`)\n"
+        "    }\n",
+        "a context call after a heartbeat that reported the cancellation ends the pass as lease-lost",
     ),
     (
         "suspend-rejects-noninteger-attempt",
@@ -2400,6 +2411,13 @@ MUTATION_SPECS = [
         "                            WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})\n"
         "                AND ${epochAdditionFits(NOW_MS, '?')}\n",
         "heartbeat extends a run after its task crosses the immutable queue boundary",
+    ),
+    (
+        "heartbeat-names-cancellation",
+        "packages/store-libsql/src/store.ts",
+        "    if (!row) return refusedLease(await this.refusal('heartbeat', runId))\n",
+        "    if (!row) return { held: false, remainingMs: 0, reason: 'lease-lost' }\n",
+        "a refused heartbeat on a cancelled task reports a lost lease",
     ),
     (
         "reschedule-requires-run-task-queue-ownership",
@@ -4433,13 +4451,6 @@ MUTATION_SPECS.extend(
             "the sleep checkpoint resolves mutable ambient JSON.stringify after task initialization",
         ),
         (
-            "sdk-context-captured-aborted-getter",
-            "packages/sdk/src/context.ts",
-            "    if (this.#leaseLost !== undefined && abortSignalAborted(this.#leaseLost)) {",
-            "    if (this.#leaseLost !== undefined && this.#leaseLost.aborted) { // MUTATION",
-            "context lease-loss classification resolves the mutable AbortSignal.aborted getter",
-        ),
-        (
             "sdk-captured-promise-race",
             "packages/sdk/src/intrinsics.ts",
             "export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): Promise<void> {\n"
@@ -5838,6 +5849,12 @@ VERDICTS = {
         "runClaimedRun schedules upkeep before a legal sub-second lease expires",
         "mutation-verdict:behavior:sdk-subsecond-lease-upkeep-before-expiry",
     ),
+    "sdk-heartbeat-cancellation-outcome": ExpectedVerdict(
+        "behavior",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun a cancellation the heartbeat discovers ends the pass as cancelled at the next context call",
+        "mutation-verdict:behavior:sdk-heartbeat-cancellation-outcome",
+    ),
     "suspend-rejects-noninteger-attempt": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -5857,6 +5874,13 @@ VERDICTS = {
         "packages/conformance/test/fence-provenance-regressions.test.ts",
         "fence provenance heartbeat refuses a run whose task moved to a different queue",
         "mutation-verdict:behavior:heartbeat-requires-run-task-queue-ownership",
+    ),
+    "heartbeat-names-cancellation": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] cancellation discovery a heartbeat on a cancelled task reports the cancellation, while a swept lease reports a lost lease",
+        "mutation-verdict:behavior:heartbeat-names-cancellation",
+        "packages/conformance/src/suite.ts",
     ),
     "reschedule-requires-run-task-queue-ownership": ExpectedVerdict(
         "behavior",
@@ -6755,12 +6779,6 @@ VERDICTS.update(
             "packages/sdk/test/run-worker.test.ts",
             "runClaimedRun owns task serialization and permanent-failure boundaries in one aggregate",
             "mutation-verdict:behavior:task-boundary-aggregate",
-        ),
-        "sdk-context-captured-aborted-getter": ExpectedVerdict(
-            "behavior",
-            "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun a handler cannot replace context lease-loss signal classification",
-            "mutation-verdict:behavior:sdk-context-captured-aborted-getter",
         ),
         "sdk-captured-promise-race": ExpectedVerdict(
             "construction",
@@ -9727,7 +9745,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 434:
+        if len(MUTATIONS) != 435:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

@@ -32,6 +32,7 @@ export interface TaskControlIssuer {
   sleep(wake: WakeSpec, checkpoint: CheckpointWrite): never
   awaitEvent(): never
   leaseLost(message: string): never
+  runCancelled(message: string): never
   storeCall<T>(operation: () => Promise<T>): Promise<T>
 }
 
@@ -107,6 +108,10 @@ export function createTaskControlScope(): TaskControlScope {
 
     leaseLost(message: string): never {
       return enroll(new LeaseLostError(message), LEASE_LOST)
+    },
+
+    runCancelled(message: string): never {
+      return enroll(new RunCancelledError(message), RUN_CANCELLED)
     },
 
     async storeCall<T>(operation: () => Promise<T>): Promise<T> {

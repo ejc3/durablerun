@@ -1520,7 +1520,10 @@ describe('runClaimedRun', () => {
       { store: counting as SchedulerStore, clock: f.clock, registry: reg },
       await claimInvocation(f, 'w1'),
     )
-    expect({ outcome, beats, stepRan }).toEqual({
+    expect(
+      { outcome, beats, stepRan },
+      'mutation-verdict:behavior:sdk-heartbeat-cancellation-outcome',
+    ).toEqual({
       outcome: { kind: 'cancelled' },
       beats: 1,
       stepRan: false,
@@ -1726,7 +1729,7 @@ describe('runClaimedRun', () => {
               beats++
               // End the leaked pump after observing the one call, so the red
               // test itself leaves no live upkeep loop behind.
-              return { held: false, remainingMs: 0 }
+              return { held: false, remainingMs: 0, reason: 'lease-lost' as const }
             }
           }
           const value = Reflect.get(target, prop, receiver)
@@ -1817,10 +1820,7 @@ describe('runClaimedRun', () => {
           }
         },
       })
-      expect(
-        await claimAndRun(f, reg, 'w1'),
-        'mutation-verdict:behavior:sdk-context-captured-aborted-getter',
-      ).toEqual({ kind: 'completed' })
+      expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'completed' })
       const result = await f.store.getTaskResult(Q, spawned.taskId)
       expect(result).toEqual({
         state: 'completed',

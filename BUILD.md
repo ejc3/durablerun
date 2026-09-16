@@ -911,14 +911,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     guards behind its state condition. The conformance cases pin each guard
     today.
 
-- **PR3.11 lifecycle residual** (not started). PR3.2's rounds left three items
-  that no other entry owns.
-  - A heartbeat on a cancelled task still reports only a lost lease, so a
-    handler that makes a context call after the next beat ends as lease-lost.
-    Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the
-    heartbeat batch on `FencedBatch` with a refusal read and a cancelled
-    variant of `LeaseState`. This is the qualified part of the lifecycle
-    milestone's exit test 2.
+- **PR3.11 lifecycle residual** (in progress). PR3.2's rounds left three items
+  that no other entry owns. The first landed in PR3.11a: a refused heartbeat
+  names the cancellation, and a cancelled handler ends as cancelled at its next
+  context call. Two remain for PR3.11b.
   - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a launch payload
     case generated from `LaunchInvocation`'s fields that crosses an older
     driver with a newer worker and the reverse.
