@@ -85,7 +85,11 @@ export interface SchedulerStore {
     inSeconds: number,
   ): Promise<void>
 
-  /** Zero-rows result surfaces as `held: false` — the AB002 signal. */
+  /**
+   * A refused extension reports `held: false` and names why, like a refused
+   * write: `cancelled` when the task's cancellation ended the run, and
+   * `lease-lost` otherwise.
+   */
   heartbeat(
     queue: string,
     runId: string,

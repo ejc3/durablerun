@@ -1477,6 +1477,113 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a refused heartbeat whose reason this build cannot name still stops the handler as a lost lease', async () => {
+    // Stores built against other contracts: one names no reason, and one names a
+    // reason this build does not know.
+    const answers = [
+      { held: false, remainingMs: 0 },
+      { held: false, remainingMs: 0, reason: 'expired' },
+    ]
+    const observed: unknown[] = []
+    for (const [index, answer] of answers.entries()) {
+      const f = await fx(`sdk-unnamed-refused-heartbeat-${index}`)
+      await f.store.spawn(Q, 'job', '{}')
+      let beatSettled: () => void = () => undefined
+      const firstBeat = new Promise<void>((resolve) => {
+        beatSettled = resolve
+      })
+      const other = new Proxy(f.store, {
+        get(target, prop, receiver) {
+          if (prop === 'heartbeat') {
+            return async () => {
+              beatSettled()
+              return answer as unknown as Awaited<ReturnType<SchedulerStore['heartbeat']>>
+            }
+          }
+          const value = Reflect.get(target, prop, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+      let stepRan = false
+      const reg = registry({
+        job: async (ctx) => {
+          await f.advance(30_000)
+          await firstBeat
+          await f.clock.yieldTurn()
+          await ctx.step('after-the-beat', () => {
+            stepRan = true
+            return 1
+          })
+          return 'done'
+        },
+      })
+      const outcome = await runClaimedRun(
+        { store: other as SchedulerStore, clock: f.clock, registry: reg },
+        await claimInvocation(f, 'w1'),
+      )
+      observed.push({ outcome, stepRan })
+      f.close()
+    }
+    expect(observed, 'mutation-verdict:behavior:sdk-reasonless-refusal-is-lease-lost').toEqual([
+      { outcome: { kind: 'lease-lost' }, stepRan: false },
+      { outcome: { kind: 'lease-lost' }, stepRan: false },
+    ])
+  })
+
+  it('a cancellation the heartbeat discovers ends the pass as cancelled at the next context call', async () => {
+    const f = await fx('sdk-cancelled-heartbeat')
+    const spawned = await f.store.spawn(Q, 'job', '{}')
+    let beats = 0
+    let beatSettled: () => void = () => undefined
+    const firstBeat = new Promise<void>((resolve) => {
+      beatSettled = resolve
+    })
+    const counting = new Proxy(f.store, {
+      get(target, prop, receiver) {
+        if (prop === 'heartbeat') {
+          return async (...args: Parameters<SchedulerStore['heartbeat']>) => {
+            beats++
+            try {
+              return await target.heartbeat(...args)
+            } finally {
+              beatSettled()
+            }
+          }
+        }
+        const value = Reflect.get(target, prop, receiver)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    let stepRan = false
+    const reg = registry({
+      job: async (ctx) => {
+        expect(await f.store.cancelTask(Q, spawned.taskId)).toBe(true)
+        // One pump beat, at half the 60 s lease, observes the cancellation.
+        await f.advance(30_000)
+        await firstBeat
+        await f.clock.yieldTurn()
+        await ctx.step('after-the-beat', () => {
+          stepRan = true
+          return 1
+        })
+        return 'done'
+      },
+    })
+    const outcome = await runClaimedRun(
+      { store: counting as SchedulerStore, clock: f.clock, registry: reg },
+      await claimInvocation(f, 'w1'),
+    )
+    expect(
+      { outcome, beats, stepRan },
+      'mutation-verdict:behavior:sdk-heartbeat-cancellation-outcome',
+    ).toEqual({
+      outcome: { kind: 'cancelled' },
+      beats: 1,
+      stepRan: false,
+    })
+    f.close()
+  })
+
   it('a resolver that stops resolving after the first lookup still runs the handler it resolved', async () => {
     const f = await fx('sdk-flapping-registry')
     await f.store.spawn(Q, 'job', '{}')
@@ -1675,7 +1782,7 @@ describe('runClaimedRun', () => {
               beats++
               // End the leaked pump after observing the one call, so the red
               // test itself leaves no live upkeep loop behind.
-              return { held: false, remainingMs: 0 }
+              return { held: false, remainingMs: 0, reason: 'lease-lost' as const }
             }
           }
           const value = Reflect.get(target, prop, receiver)
@@ -1743,39 +1850,6 @@ describe('runClaimedRun', () => {
       ).toBeLessThan(1)
     } finally {
       releaseHandler?.()
-      f.close()
-    }
-  })
-
-  it('a handler cannot replace context lease-loss signal classification', async () => {
-    const f = await fx('sdk-context-captured-aborted')
-    try {
-      const spawned = await f.store.spawn(Q, 'job', '{}')
-      const reg = registry({
-        job: async (ctx) => {
-          const descriptor = Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted')
-          if (descriptor === undefined) throw new Error('expected AbortSignal.aborted')
-          Object.defineProperty(AbortSignal.prototype, 'aborted', {
-            configurable: true,
-            get: () => true,
-          })
-          try {
-            return await ctx.step('value', () => ({ real: true }))
-          } finally {
-            Object.defineProperty(AbortSignal.prototype, 'aborted', descriptor)
-          }
-        },
-      })
-      expect(
-        await claimAndRun(f, reg, 'w1'),
-        'mutation-verdict:behavior:sdk-context-captured-aborted-getter',
-      ).toEqual({ kind: 'completed' })
-      const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(result).toEqual({
-        state: 'completed',
-        completedPayloadJson: '{"real":true}',
-      })
-    } finally {
       f.close()
     }
   })

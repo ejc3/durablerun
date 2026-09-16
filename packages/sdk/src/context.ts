@@ -4,6 +4,7 @@ import {
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
+  type LeaseEnd,
   type SchedulerStore,
   UserName,
   type WakeSpec,
@@ -13,14 +14,7 @@ import {
   userEpochMs,
   userJsonValue,
 } from '@durablerun/core'
-import {
-  TaskMap,
-  abortSignalAborted,
-  taskHasOwn,
-  taskMapGet,
-  taskMapHas,
-  taskMapSet,
-} from './intrinsics.js'
+import { TaskMap, taskHasOwn, taskMapGet, taskMapHas, taskMapSet } from './intrinsics.js'
 import { type TaskControlIssuer, createTaskControlScope } from './task-control.js'
 
 /**
@@ -113,6 +107,11 @@ function memoOfWake(wake: EventWake): EventMemo {
   return { timedOut: timedOut.timedOut }
 }
 
+/** The reason the pass's heartbeat pump saw a refused beat, unset while every beat is held. */
+export interface LeaseEndLatch {
+  reason: LeaseEnd | undefined
+}
+
 /** One execution pass over a claimed run. */
 export class ReplayContext implements TaskContext {
   readonly #attempt: number
@@ -120,7 +119,7 @@ export class ReplayContext implements TaskContext {
   readonly #store: SchedulerStore
   readonly #queue: string
   readonly #run: ClaimedRun
-  readonly #leaseLost: AbortSignal | undefined
+  readonly #leaseEnd: LeaseEndLatch
   readonly #controls: TaskControlIssuer
   private readonly seen = new TaskMap<string, unknown>()
   private readonly nameUses = new TaskMap<string, number>()
@@ -139,14 +138,14 @@ export class ReplayContext implements TaskContext {
     queue: string,
     run: ClaimedRun,
     checkpoints: Checkpoint[],
-    leaseLost?: AbortSignal,
+    leaseEnd: LeaseEndLatch = { reason: undefined },
     controls: TaskControlIssuer = createTaskControlScope().issuer,
     attempt: number = run.attempt - run.infraRetries,
   ) {
     this.#store = store
     this.#queue = queue
     this.#run = run
-    this.#leaseLost = leaseLost
+    this.#leaseEnd = leaseEnd
     this.#controls = controls
     this.#attempt = attempt
     this.taskName = run.taskName
@@ -205,12 +204,11 @@ export class ReplayContext implements TaskContext {
   }
 
   private assertLeaseHeld(): void {
-    // The pump observed the lease gone: stop the handler at the next
-    // context call — the fences protect STATE regardless; this stops a
+    // A pump beat was refused: stop the handler at the next context call, as
+    // the refusal named it. The fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
-    if (this.#leaseLost !== undefined && abortSignalAborted(this.#leaseLost)) {
-      this.#controls.leaseLost(`lease lost during pass (run ${this.#run.runId})`)
-    }
+    const reason = this.#leaseEnd.reason
+    if (reason !== undefined) this.#controls.leaseEnded(reason, this.#run)
   }
 
   async step<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
@@ -256,7 +254,7 @@ export class ReplayContext implements TaskContext {
     const payload = userJsonValue('event payload', payloadJson)
     // A zombie whose lease was lost must not win a first-write event and
     // wake waiters — emitEvent is not fenced by the store (the emit is
-    // global), so the pump's lease-loss signal is the only stop. (emitEvent
+    // global), so the pump's refused beat is the only stop. (emitEvent
     // allocates no replay key, so unlike the other durable ops it may run
     // inside a step; hence the bare lease check, not the full nesting gate.)
     this.assertLeaseHeld()

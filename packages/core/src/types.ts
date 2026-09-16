@@ -156,11 +156,18 @@ export type SweptRun =
   | { kind: 'infra-cap-exhausted'; runId: string; taskId: string }
   | { kind: 'cancelled'; runId: string | null; taskId: string }
 
-export interface LeaseState {
-  held: boolean
-  /** Engine-clock milliseconds remaining; 0 when not held. */
-  remainingMs: number
-}
+/**
+ * A heartbeat's answer. A held lease carries the engine-clock milliseconds it
+ * has left. A refused extension names why, from its run's state read after the
+ * refusal: `cancelled` when the task's cancellation ended the run (Absurd
+ * AB001), and `lease-lost` otherwise, including when that read fails (AB002).
+ */
+export type LeaseState =
+  | { held: true; remainingMs: number }
+  | { held: false; remainingMs: 0; reason: LeaseEnd }
+
+/** Why a worker's fence was refused: the task's cancellation ended the run, or the lease is lost. */
+export type LeaseEnd = 'cancelled' | 'lease-lost'
 
 /**
  * A task's observable outcome. A completed task always carries its payload, a

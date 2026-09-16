@@ -521,8 +521,9 @@ One invocation executes one claimed run to its next suspension point:
   throttled, so shard-DB write rate stays transitions + throttled heartbeats.
   The cadence is derived from the exact lease milliseconds, including legal
   subsecond leases; no one-second floor may outlive the lease it protects. A
-  zero-row `heartbeat` is the AB002 equivalent (lease gone): abort the handler
-  immediately.
+  refused `heartbeat` names why, like a refused write: `cancelled` when the
+  task's cancellation ended the run (the AB001 equivalent), and `lease-lost`
+  otherwise (AB002). Either one stops the handler at its next context call.
 - On completion/failure: `complete_run` / `fail_run` — the leading CAS checks
   `claimed_by=:token AND state='running'`, so a zombie whose lease was swept
   cannot win; every mutating follow-on keys on that CAS's per-invocation
@@ -565,12 +566,13 @@ One invocation executes one claimed run to its next suspension point:
   refused.
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
-  outcome, consuming nothing. A heartbeat still reports only that the lease is
-  gone. The pump beats every half lease, and once it sees the lease gone the
-  handler's next context call throws lease-lost, even a replayed step that
-  writes nothing. So a cancelled handler that makes a context call after that
-  beat ends as lease-lost, while one that returns or throws first ends as
-  cancelled when its complete or fail is refused. A suspension refused because
+  outcome, consuming nothing. A refused heartbeat names the cancellation the
+  same way. The pump beats every half lease, and once a beat is refused the
+  handler's next context call throws, even a replayed step that writes nothing:
+  `RunCancelledError` when the beat reported the cancellation, `LeaseLostError`
+  otherwise. So a cancelled handler ends as cancelled whether its next engine
+  call is a context call after that beat, or a complete or fail that is
+  refused. A suspension refused because
   the task's cancellation deadline is due, before the sweep has cancelled the
   task, raises `LeaseLostError`, because the run is not cancelled yet.
 
@@ -993,7 +995,8 @@ are load-bearing):
 `deferLaunch`) reads its run's state only after the refusal (`refusal-state`),
 so a write that wins pays for no read. It throws `RunCancelledError` (AB001)
 when the task's cancellation ended the run and `LeaseLostError` (AB002)
-otherwise, including when that read fails; `heartbeat` reports `held: false`. A worker retrying `complete` after a lost
+otherwise, including when that read fails. `heartbeat` reports `held: false`
+with `reason: 'cancelled'` or `reason: 'lease-lost'`, from the same read. A worker retrying `complete` after a lost
 response treats `LeaseLostError` as possible-prior-success: verify via
 `getTaskResult` and exit (verify-then-exit), never re-execute.
 

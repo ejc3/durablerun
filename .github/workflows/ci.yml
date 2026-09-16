@@ -323,6 +323,62 @@ jobs:
                   for marker in markers
               )
               repaired = repaired.replace(exemptions, exemptions + entries)
+          elif digest == 'd72b80282762dd41b7f2a6acc495250a7fb9f38a52180bc99fa7e0bc8ac68839':
+              # Naming the cancellation on a refused heartbeat re-aimed three finds,
+              # removed one guard whose code path no longer exists, and registered five
+              # verdict markers this registry predates.
+              def spec_block(text, key, opener, closer):
+                  if text.count(key) != 1:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
+                  start = text.rindex(opener, 0, text.index(key))
+                  end = text.index(closer, start) + len(closer)
+                  return start, end
+              repaired = previous
+              for key, opener, closer in (
+                  ('        "sdk-owned-retry-attempt",\n', '    (\n', '    ),\n'),
+                  ('        "sdk-malformed-checkpoint-stops-pump",\n', '    (\n', '    ),\n'),
+                  ('            "task-control-runtime-lease-auth",\n', '        (\n', '        ),\n'),
+              ):
+                  start, end = spec_block(repaired, key, opener, closer)
+                  new_start, new_end = spec_block(candidate, key, opener, closer)
+                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
+                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+              removed = 'sdk-context-captured-aborted-getter'
+              if f'"{removed}"' in candidate:
+                  raise SystemExit(f'{removed}: the bridge removes only a spec this tree no longer registers.')
+              start, end = spec_block(repaired, f'            "{removed}",\n', '        (\n', '        ),\n')
+              repaired = repaired[:start] + repaired[end:]
+              verdict = f'        "{removed}": ExpectedVerdict(\n'
+              if repaired.count(verdict) != 1:
+                  raise SystemExit(f'{removed}: the bridge requires exactly one verdict entry.')
+              start = repaired.index(verdict)
+              end = repaired.index('        ),\n', start) + len('        ),\n')
+              repaired = repaired[:start] + repaired[end:]
+              cardinality = '        if len(MUTATIONS) != 434:\n'
+              if repaired.count(cardinality) != 1:
+                  raise SystemExit('the bridge requires the base inventory size assertion.')
+              repaired = repaired.replace(cardinality, '        if len(MUTATIONS) != 433:\n')
+              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(exemptions) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              markers = (
+                  'mutation-verdict:behavior:heartbeat-names-cancellation',
+                  'mutation-verdict:behavior:sdk-heartbeat-cancellation-outcome',
+                  'mutation-verdict:behavior:sdk-reasonless-refusal-is-lease-lost',
+                  'mutation-verdict:behavior:task-control-cancellation-error-class',
+                  'mutation-verdict:construction:task-control-runtime-cancellation-auth',
+              )
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              repaired = repaired.replace(
+                  exemptions,
+                  exemptions + ''.join(
+                      f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                      for marker in markers
+                  ),
+              )
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

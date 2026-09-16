@@ -6,7 +6,7 @@
  */
 
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { CheckpointWrite, WakeSpec } from './types.js'
+import type { CheckpointWrite, LeaseState, WakeSpec } from './types.js'
 
 export type TaskThrowableSnapshot = Readonly<{
   kind: 'failure'
@@ -163,13 +163,60 @@ export async function refusedWriteError(
   readRunState: () => Promise<unknown>,
 ): Promise<LeaseLostError | RunCancelledError> {
   const message = `${operation} ${runId}`
-  let state: unknown
+  const refusal = await refusalReason(readRunState)
+  if (refusal.reason === 'cancelled') return new RunCancelledError(message)
+  return refusal.readFailed
+    ? new LeaseLostError(message, { cause: refusal.cause })
+    : new LeaseLostError(message)
+}
+
+/** A refusal's classification. Only a failed read carries a cause. */
+export type Refusal =
+  | { reason: 'cancelled' }
+  | { reason: 'lease-lost'; readFailed: false }
+  | { reason: 'lease-lost'; readFailed: true; cause: unknown }
+
+/**
+ * Why a fence was refused, from its run's state read after the refusal. Only a
+ * run the task's cancellation ended is `cancelled`; every other state, and a
+ * read that fails, is `lease-lost`.
+ */
+export async function refusalReason(readRunState: () => Promise<unknown>): Promise<Refusal> {
   try {
-    state = await readRunState()
+    const state = await readRunState()
+    return state === 'cancelled'
+      ? { reason: 'cancelled' }
+      : { reason: 'lease-lost', readFailed: false }
   } catch (cause) {
-    return new LeaseLostError(message, { cause })
+    return { reason: 'lease-lost', readFailed: true, cause }
   }
-  return state === 'cancelled' ? new RunCancelledError(message) : new LeaseLostError(message)
+}
+
+/** A heartbeat's answer when the lease is gone. */
+export const LOST_LEASE: LeaseState = Object.freeze({
+  held: false,
+  remainingMs: 0,
+  reason: 'lease-lost',
+})
+
+/** A heartbeat's answer when the task's cancellation ended the run. */
+export const CANCELLED_LEASE: LeaseState = Object.freeze({
+  held: false,
+  remainingMs: 0,
+  reason: 'cancelled',
+})
+
+/** A refused heartbeat's answer, named by the same classification as a refused write. */
+export async function refusedLease(readRunState: () => Promise<unknown>): Promise<LeaseState> {
+  const refusal = await refusalReason(readRunState)
+  switch (refusal.reason) {
+    case 'cancelled':
+      return CANCELLED_LEASE
+    case 'lease-lost':
+      return LOST_LEASE
+    default:
+      return refusal satisfies never
+  }
 }
 
 /**

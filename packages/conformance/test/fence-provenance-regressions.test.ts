@@ -930,7 +930,7 @@ describe('fence provenance', () => {
         { lease, after },
         'mutation-verdict:behavior:heartbeat-requires-run-task-queue-ownership',
       ).toEqual({
-        lease: { held: false, remainingMs: 0 },
+        lease: { held: false, remainingMs: 0, reason: 'lease-lost' },
         after: before,
       })
     } finally {

@@ -279,8 +279,8 @@ standing in for the property it approximates. The catalogue, all paid for:
 So when a finding lands, the question is not only "what mechanism catches
 this" but "is that mechanism the property, or a picture of it?" If replacement
 advances the current milestone, record it in BUILD.md with a named PR; otherwise
-put it in the options backlog. PR3.9's SQL-tree work and PR3.10's per-condition
-mutation work are explicitly deferred from the current milestone.
+put it in the options backlog. PR3.9's SQL-tree work is part of the current
+milestone, and PR3.10's per-condition mutation work stays deferred from it.
 
 The ratchet advances by substitution, not accumulation. A stronger structural
 guarantee identifies and deletes the lower-rung checks, fixtures, and process
