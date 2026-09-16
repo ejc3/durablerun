@@ -7644,8 +7644,12 @@ SUITE_TIMEOUT_SELF_TEST_PASSED = (
 SUITE_TIMEOUT_SELF_TEST_REJECTED = (
     "mutation-probe suite-timeout self-test rejected unauthenticated verifier"
 )
-SUITE_TIMEOUT_SELF_TEST_FAULTS = ("immediate-magic-error",)
-SUITE_DRAIN_SELF_TEST_FAULTS = ("reject-draining-group",)
+# Each suite self-test fault and the argparse destination of the child it belongs to.
+SUITE_SELF_TEST_FAULT_CHILDREN = {
+    "immediate-magic-error": "suite_timeout_self_test_child",
+    "reject-draining-group": "suite_drain_self_test_child",
+    "wall-time-instead-of-descendant": "suite_linger_self_test_child",
+}
 SUITE_SELF_TEST_DEADLINE_SECONDS = 0.1
 # A self-test child's last act: wait until `barrier` exists, or 30 seconds pass. The
 # program that includes it imports `time` and binds `barrier`, which may be None.
@@ -7892,13 +7896,23 @@ def suite_timeout_self_test_child(
     return 0
 
 
+DrainWait = Callable[[list[int], float], list[int]]
+
+
 @contextlib.contextmanager
 def drain_wait_replaced(
-    replacement: Callable[[list[int], float], list[int]],
+    replacement: Callable[[DrainWait, list[int], float], list[int]],
 ) -> Iterator[None]:
-    """Make both runners wait for group drains through replacement."""
+    """Make both runners wait for group drains through replacement.
+
+    The replacement receives the wait that was in place when the swap began.
+    """
     original_wait = wait_for_process_groups
-    globals()["wait_for_process_groups"] = replacement
+
+    def replaced(groups: list[int], grace_seconds: float) -> list[int]:
+        return replacement(original_wait, groups, grace_seconds)
+
+    globals()["wait_for_process_groups"] = replaced
     try:
         yield
     finally:
@@ -7916,9 +7930,9 @@ def barrier_released_on_drain(
     the drain has returned, so a check with no drain always sees the group live
     and the child still exits a moment later.
     """
-    real_wait = wait_for_process_groups
-
-    def release_around_wait(groups: list[int], grace_seconds: float) -> list[int]:
+    def release_around_wait(
+        real_wait: DrainWait, groups: list[int], grace_seconds: float
+    ) -> list[int]:
         if not after_check:
             barrier.touch()
         try:
@@ -7936,13 +7950,16 @@ def suite_self_test_verifier_run(
     *,
     descendant: Literal["lingers", "drains", "drains-after-check"],
     drain_grace_seconds: float,
+    wall_time_seconds: float = 1.0,
+    leader_exits: bool = True,
 ) -> tuple[int | SuiteInfrastructureError | None, list[str]]:
     """Run a verifier whose leader exits while its descendant lives, and check what it left.
 
     A lingering descendant never exits. A draining one waits on a barrier released
     around the drain, as barrier_released_on_drain describes. Returns the runner's
     exit code, its infrastructure error, or None if it raised anything else, with
-    the problems found in the verifier's records and processes.
+    the problems found in the verifier's records and processes. With leader_exits
+    False the leader keeps running after its descendant records itself.
     """
     problems: list[str] = []
     outcome: int | SuiteInfrastructureError | None = None
@@ -7950,7 +7967,9 @@ def suite_self_test_verifier_run(
     try:
         with tempfile.TemporaryDirectory(prefix=f"durablerun-suite-{label}-") as temporary:
             barrier = None if descendant == "lingers" else Path(temporary) / "barrier"
-            command = suite_self_test_command(label, state_path, linger=True, barrier=barrier)
+            command = suite_self_test_command(
+                label, state_path, linger=leader_exits, barrier=barrier
+            )
             release = (
                 contextlib.nullcontext()
                 if barrier is None
@@ -7963,7 +7982,7 @@ def suite_self_test_verifier_run(
                     outcome = run_suite_process(
                         command,
                         output=output,
-                        wall_time_seconds=1.0,
+                        wall_time_seconds=wall_time_seconds,
                         audit_lock=fixture_authority.audit_lock,
                         drain_grace_seconds=drain_grace_seconds,
                     )
@@ -7982,7 +8001,13 @@ def suite_self_test_verifier_run(
     return outcome, problems
 
 
-def suite_linger_self_test_child(state_path: Path) -> int:
+def suite_linger_self_test_child(state_path: Path, fault: str | None) -> int:
+    """An exited verifier leader whose descendant never exits must be rejected and reaped.
+
+    Under wall-time-instead-of-descendant the leader keeps running after its
+    descendant records itself, so the verifier hits a 0.5 s wall-time limit instead.
+    That infrastructure error must not pass for the rejection.
+    """
     outcome, problems = suite_self_test_verifier_run(
         state_path,
         "linger",
@@ -7990,6 +8015,8 @@ def suite_linger_self_test_child(state_path: Path) -> int:
         # The descendant never exits, so any drain only spends lint-selftest's 1.5s
         # watchdog budget.
         drain_grace_seconds=0.0,
+        wall_time_seconds=0.5 if fault else 1.0,
+        leader_exits=fault is None,
     )
     if isinstance(outcome, int):
         problems.insert(0, "exited verifier leader was accepted with a live descendant")
@@ -10019,6 +10046,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "allow-worker-bytecode-artifacts",
     "reject-draining-group",
     "accept-lingering-group",
+    "drop-live-groups-while-polling",
 )
 
 
@@ -11685,17 +11713,32 @@ def orchestration_self_test(fault: str | None = None) -> int:
             if leftover := reap_leftover_process(launch):
                 failures.append(f"process cleanup: {leftover}")
 
-        if fault in (None, "accept-lingering-group"):
+        if fault in (None, "accept-lingering-group", "drop-live-groups-while-polling"):
             launch = descendant_launch(temporary, "linger-self-test")
-            real_wait = wait_for_process_groups
 
-            def accept_every_group(groups: list[int], grace_seconds: float) -> list[int]:
+            def accept_every_group(
+                real_wait: DrainWait, groups: list[int], grace_seconds: float
+            ) -> list[int]:
                 real_wait(groups, grace_seconds)
                 return []
 
+            def drop_live_groups_while_polling(
+                _real_wait: DrainWait, groups: list[int], grace_seconds: float
+            ) -> list[int]:
+                deadline = time.monotonic() + grace_seconds
+                live = [group for group in groups if process_group_exists(group)]
+                while live and time.monotonic() < deadline:
+                    time.sleep(PROCESS_GROUP_DRAIN_POLL_SECONDS)
+                    live = [group for group in live if not process_group_exists(group)]
+                return live
+
+            broken_waits = {
+                "accept-lingering-group": accept_every_group,
+                "drop-live-groups-while-polling": drop_live_groups_while_polling,
+            }
             try:
                 with (
-                    drain_wait_replaced(accept_every_group)
+                    drain_wait_replaced(broken_waits[fault])
                     if fault
                     else contextlib.nullcontext()
                 ):
@@ -14599,7 +14642,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--suite-self-test-fault",
-        choices=SUITE_TIMEOUT_SELF_TEST_FAULTS + SUITE_DRAIN_SELF_TEST_FAULTS,
+        choices=tuple(SUITE_SELF_TEST_FAULT_CHILDREN),
         help=argparse.SUPPRESS,
     )
     ap.add_argument("--self-test-fault", choices=SELF_TEST_FAULTS, help=argparse.SUPPRESS)
@@ -14693,21 +14736,11 @@ def main() -> int:
             if args.routing_self_test_fault is not None:
                 ap.error("--routing-self-test-fault requires --routing-self-test")
             if args.suite_self_test_fault is not None:
-                fault_children = {
-                    **dict.fromkeys(
-                        SUITE_TIMEOUT_SELF_TEST_FAULTS,
-                        ("--suite-timeout-self-test-child", args.suite_timeout_self_test_child),
-                    ),
-                    **dict.fromkeys(
-                        SUITE_DRAIN_SELF_TEST_FAULTS,
-                        ("--suite-drain-self-test-child", args.suite_drain_self_test_child),
-                    ),
-                }
-                child_flag, child_selected = fault_children[args.suite_self_test_fault]
-                if not child_selected:
+                fault_child = SUITE_SELF_TEST_FAULT_CHILDREN[args.suite_self_test_fault]
+                if not getattr(args, fault_child):
                     ap.error(
                         f"--suite-self-test-fault {args.suite_self_test_fault} "
-                        f"requires {child_flag}"
+                        f"requires --{fault_child.replace('_', '-')}"
                     )
             if args.suite_timeout_self_test_child:
                 return suite_timeout_self_test_child(
@@ -14715,7 +14748,10 @@ def main() -> int:
                     args.suite_self_test_fault,
                 )
             if args.suite_linger_self_test_child:
-                return suite_linger_self_test_child(args.suite_self_test_state)
+                return suite_linger_self_test_child(
+                    args.suite_self_test_state,
+                    args.suite_self_test_fault,
+                )
             if args.suite_drain_self_test_child:
                 return suite_drain_self_test_child(
                     args.suite_self_test_state,

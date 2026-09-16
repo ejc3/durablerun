@@ -5312,6 +5312,26 @@ def mutation_suite_linger_problem() -> str | None:
             "normal verifier leader exit with a descendant was not rejected and "
             f"reaped as infrastructure: {observation.output[:300]}"
         )
+
+    false_negative = run_mutation_suite_child(
+        "--suite-linger-self-test-child",
+        fault="wall-time-instead-of-descendant",
+    )
+    problem = suite_observation_problem(
+        false_negative,
+        {"linger"},
+        "a verifier stopped by its wall-time limit left live descendants",
+    )
+    if problem is not None:
+        return problem
+    if (
+        false_negative.returncode == 0
+        or "rejected for another reason" not in false_negative.output
+    ):
+        return (
+            "suite linger regression accepted a wall-time error as the live-descendant "
+            f"rejection: {false_negative.output[:300]}"
+        )
     return None
 
 
