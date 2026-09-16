@@ -119,6 +119,10 @@ class SuiteInfrastructureError(RuntimeError):
     pass
 
 
+class SuiteLiveDescendantsError(SuiteInfrastructureError):
+    """A verifier's leader exited, but its process group outlived the drain grace."""
+
+
 def reject_suite_transport(
     message: str,
     fallback: SuiteResult,
@@ -7559,7 +7563,7 @@ def run_suite_process(
             ) from error
         if wait_for_process_groups([process.pid], drain_grace_seconds):
             terminate_verifier_group(process)
-            raise SuiteInfrastructureError(
+            raise SuiteLiveDescendantsError(
                 "suite process leader exited with live descendants after a "
                 f"{drain_grace_seconds:g}s drain"
             )
@@ -8020,6 +8024,10 @@ def suite_linger_self_test_child(state_path: Path, fault: str | None) -> int:
     )
     if isinstance(outcome, int):
         problems.insert(0, "exited verifier leader was accepted with a live descendant")
+    elif isinstance(outcome, SuiteInfrastructureError) and not isinstance(
+        outcome, SuiteLiveDescendantsError
+    ):
+        problems.insert(0, f"exited verifier leader was rejected for another reason: {outcome}")
     if problems:
         print(f"mutation-probe suite-linger self-test: {problems[0]}", file=sys.stderr)
         return 1
@@ -8041,11 +8049,13 @@ def suite_drain_self_test_child(state_path: Path, fault: str | None) -> int:
         # lint-selftest's 1.5s watchdog.
         drain_grace_seconds=0.0 if fault else 0.5,
     )
-    if isinstance(outcome, SuiteInfrastructureError):
+    if isinstance(outcome, SuiteLiveDescendantsError):
         problems.insert(
             0,
             f"a verifier group that drains after its leader exits was rejected: {outcome}",
         )
+    elif isinstance(outcome, SuiteInfrastructureError):
+        problems.insert(0, f"a draining verifier group was rejected for another reason: {outcome}")
     elif isinstance(outcome, int) and outcome != 0:
         problems.insert(0, f"draining verifier leader exited {outcome}")
     if problems:
@@ -11703,7 +11713,9 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     run_launches(
                         [launch],
                         allowed_returncodes=frozenset((0,)),
-                        drain_grace_seconds=0.0 if fault else PROCESS_GROUP_DRAIN_GRACE_SECONDS,
+                        # The fault checks with no drain. Otherwise the case runs with
+                        # the production default grace.
+                        **({"drain_grace_seconds": 0.0} if fault else {}),
                     )
             except RuntimeError as error:
                 failures.append(
@@ -11745,8 +11757,9 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     run_launches(
                         [launch],
                         allowed_returncodes=frozenset((0,)),
-                        # The child never exits, so a drain has nothing to wait for.
-                        drain_grace_seconds=0.0,
+                        # The child never exits, so the drain must poll until the grace
+                        # runs out and still reject the group.
+                        drain_grace_seconds=0.2,
                     )
             except LiveDescendantGroupsError:
                 pass
