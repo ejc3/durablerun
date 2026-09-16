@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import fcntl
 import hashlib
 import io
@@ -7654,6 +7655,53 @@ def run_suite_process(
             signal.signal(signum, previous)
 
 
+VITEST_TITLE_METACHARACTERS = frozenset("\\^$.*+?()[]{}|/")
+
+
+def vitest_title_pattern(full_names: list[str]) -> str:
+    """A Vitest `-t` pattern that matches exactly these full test names.
+
+    Vitest reads `-t` as a regular expression, so an unescaped `[libsql]` is a
+    character class and matches nothing, and a run that matches nothing still exits 0.
+    """
+    escaped = [
+        "".join(f"\\{character}" if character in VITEST_TITLE_METACHARACTERS else character for character in name)
+        for name in full_names
+    ]
+    return f"^(?:{'|'.join(escaped)})$"
+
+
+def targeted_test_arguments(targets: tuple[ExpectedVerdict, ...]) -> list[str]:
+    """Vitest arguments that run only the registered tests of these verdicts."""
+    files = list(dict.fromkeys(target.file for target in targets))
+    names = list(dict.fromkeys(target.full_name for target in targets))
+    return [*files, "-t", vitest_title_pattern(names)]
+
+
+def targeted_tests_not_run(report_text: str, targets: tuple[ExpectedVerdict, ...]) -> tuple[str, ...]:
+    """Registered tests that a targeted Vitest report did not run.
+
+    A targeted test that was filtered out or skipped proves nothing about its guard,
+    so each one is a suite error rather than a pass.
+    """
+    try:
+        report = json.loads(report_text)
+        ran = {
+            (relative_test_file(result["name"]), assertion["fullName"])
+            for result in report["testResults"]
+            for assertion in result["assertionResults"]
+            if assertion.get("status") in ("passed", "failed")
+        }
+    except (json.JSONDecodeError, KeyError, TypeError):
+        # parse_report already names a malformed report.
+        return ()
+    return tuple(
+        f"targeted test did not run: {target.file} > {target.full_name}"
+        for target in dict.fromkeys(targets)
+        if (target.file, target.full_name) not in ran
+    )
+
+
 def run_suite(
     max_workers: int,
     *,
@@ -7662,7 +7710,9 @@ def run_suite(
     authority: WorkerAuthority,
     return_transport_as_domain: bool = False,
     suite_wall_time_seconds: float | None = None,
+    targets: tuple[ExpectedVerdict, ...] = (),
 ) -> SuiteResult:
+    """Run Vitest, only over the registered tests of `targets` when there are any."""
     require_verifier_capabilities(
         scope=scope,
         workspace=workspace,
@@ -7672,6 +7722,8 @@ def run_suite(
         report = Path(temporary) / "vitest.json"
         log = Path(temporary) / "vitest.log"
         command = [*TEST_CMD]
+        if targets:
+            command.extend(targeted_test_arguments(targets))
         if max_workers is not None:
             command.extend(("--maxWorkers", str(max_workers)))
         command.extend(("--reporter=json", "--outputFile", str(report)))
@@ -7700,12 +7752,19 @@ def run_suite(
                 ),
                 return_as_domain=return_transport_as_domain,
             )
+        report_text = report.read_text()
         parsed = parse_report(
-            report.read_text(),
+            report_text,
             returncode == 0,
             diagnostic,
             return_transport_as_domain=return_transport_as_domain,
         )
+        if not_run := targeted_tests_not_run(report_text, targets):
+            parsed = dataclasses.replace(
+                parsed,
+                report_ok=False,
+                suite_errors=(*parsed.suite_errors, *not_run),
+            )
         if returncode >= 0:
             return parsed
         message = f"Vitest terminated by signal {-returncode}"
@@ -11430,6 +11489,44 @@ def orchestration_fault_verdict_problems() -> list[str]:
     return problems
 
 
+def targeted_suite_problems() -> list[str]:
+    """The targeted filter matches only registered names, and a skipped target is an error."""
+    problems: list[str] = []
+    names = [
+        "scheduler conformance [libsql] checkpoints validates checkpoint visibility",
+        "fence() names a statement, and the primitive supplies the value (a.b+c?)",
+    ]
+    pattern = vitest_title_pattern(names)
+    for name in names:
+        if not re.fullmatch(pattern, name):
+            problems.append(f"targeted filter does not match its own test name: {name!r}")
+    for near_miss in (
+        "scheduler conformance l checkpoints validates checkpoint visibility",
+        "scheduler conformance [libsql] checkpoints validates checkpoint visibility too",
+    ):
+        if re.fullmatch(pattern, near_miss):
+            problems.append(f"targeted filter matches another test name: {near_miss!r}")
+    target = ExpectedVerdict("behavior", "packages/core/test/x.test.ts", names[0], "marker")
+
+    def report(status: str) -> str:
+        return json.dumps(
+            {
+                "testResults": [
+                    {
+                        "name": "packages/core/test/x.test.ts",
+                        "assertionResults": [{"fullName": names[0], "status": status}],
+                    }
+                ]
+            }
+        )
+
+    if targeted_tests_not_run(report("passed"), (target,)):
+        problems.append("a targeted test that ran was reported as not run")
+    if not targeted_tests_not_run(report("skipped"), (target,)):
+        problems.append("a skipped targeted test was accepted as run")
+    return problems
+
+
 def orchestration_self_test(fault: str | None = None) -> int:
     """Generated false-positive surface for the parallel coordinator."""
     expected = [
@@ -12076,6 +12173,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     )
             failures.extend(verifier_cleanup_once_problems(temporary))
             failures.extend(worker_exit_status_problems())
+            failures.extend(targeted_suite_problems())
             failures.extend(orchestration_fault_verdict_problems())
             many_red = red_baseline_reason(
                 SuiteResult(
@@ -12647,6 +12745,7 @@ def execute_mutation(
                 scope=scope,
                 workspace=workspace,
                 authority=authority,
+                targets=(mutation.verdict,),
             )
         outcome = classify_verdict(result, mutation.verdict)
         if outcome == "caught":
@@ -12731,11 +12830,18 @@ def worker_phase(
         if routing_self_test_fault == "skip-vitest":
             baseline = SuiteResult(True, True, (), (), "")
         else:
+            # The baseline runs, unmutated, exactly the tests the worker's Vitest
+            # mutations will run, so each registered test is shown to exist and pass.
             baseline = run_suite(
                 max_workers,
                 scope=scope,
                 workspace=workspace,
                 authority=authority,
+                targets=tuple(
+                    by_name[name][1].verdict
+                    for name in mutation_names
+                    if by_name[name][1].typecheck_project is None
+                ),
             )
         if (
             baseline.green
