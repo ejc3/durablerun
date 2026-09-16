@@ -11375,6 +11375,37 @@ def late_reap_self_test_child(
         cleanup_suite_self_test_records(state_path)
 
 
+def orchestration_fault_verdict(
+    returncode: int, output: str, fault: str
+) -> Literal["caught", "missed", "unmeasured"]:
+    """How the fault loop reads one fault run."""
+    if returncode == 2:
+        return "unmeasured"
+    marker = f"mutation-probe orchestration self-test caught injected fault {fault}"
+    return "caught" if returncode == 1 and marker in output else "missed"
+
+
+def orchestration_fault_verdict_problems() -> list[str]:
+    """A fault run is unmeasured only when it says so, and never on a usage error."""
+    problems: list[str] = []
+    for returncode, output, expected in (
+        (
+            2,
+            "usage: mutation-probe.py [-h]\nmutation-probe.py: error: argument "
+            "--orchestration-self-test-fault: invalid choice: 'typo'\n",
+            "missed",
+        ),
+        (1, "mutation-probe orchestration self-test caught injected fault typo: x\n", "caught"),
+        (2, "mutation-probe orchestration self-test could not measure: x\n", "unmeasured"),
+    ):
+        verdict = orchestration_fault_verdict(returncode, output, "typo")
+        if verdict != expected:
+            problems.append(
+                f"fault run verdict for exit {returncode}: {verdict}, expected {expected}"
+            )
+    return problems
+
+
 def orchestration_self_test(fault: str | None = None) -> int:
     """Generated false-positive surface for the parallel coordinator."""
     expected = [
@@ -12021,6 +12052,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     )
             failures.extend(verifier_cleanup_once_problems(temporary))
             failures.extend(worker_exit_status_problems())
+            failures.extend(orchestration_fault_verdict_problems())
             many_red = red_baseline_reason(
                 SuiteResult(
                     False,
@@ -12380,20 +12412,17 @@ def orchestration_self_test(fault: str | None = None) -> int:
             capture_output=True,
             text=True,
         )
-        marker = (
-            "mutation-probe orchestration self-test caught injected fault "
-            f"{injected_fault}"
-        )
-        if result.returncode == 2:
+        output = result.stdout + result.stderr
+        verdict = orchestration_fault_verdict(result.returncode, output, injected_fault)
+        if verdict == "unmeasured":
             # The fault run could not measure, so it is neither caught nor missed.
             print(
                 "mutation-probe orchestration self-test: declared fault "
-                f"{injected_fault!r} could not run: "
-                f"{(result.stdout + result.stderr).strip()[-600:]}",
+                f"{injected_fault!r} could not run: {output.strip()[-600:]}",
                 file=sys.stderr,
             )
             return 2
-        if result.returncode != 1 or marker not in (result.stdout + result.stderr):
+        if verdict == "missed":
             print(
                 "mutation-probe orchestration self-test: declared fault "
                 f"{injected_fault!r} was not caught through its CLI path",
@@ -13841,20 +13870,50 @@ def worker_exit_status(run: Callable[[], int]) -> int:
 
 
 def worker_exit_status_problems() -> list[str]:
-    """A coordinator's termination signal is not a worker infrastructure failure."""
+    """Each way a worker phase ends maps to its own exit status."""
 
-    def interrupted() -> int:
-        raise AuditSignal(signal.SIGTERM)
+    def raising(error: BaseException) -> Callable[[], int]:
+        def run() -> int:
+            raise error
 
-    log = io.StringIO()
-    with contextlib.redirect_stderr(log):
-        status = worker_exit_status(interrupted)
-    if status != 128 + signal.SIGTERM or "Traceback" in log.getvalue():
-        return [
-            "worker exit status for the coordinator's termination signal: "
-            f"exit {status}, {log.getvalue()[-300:]!r}"
-        ]
-    return []
+        return run
+
+    problems: list[str] = []
+    for label, run, expected_status, required, forbidden in (
+        (
+            "an infrastructure failure",
+            raising(KeyError("green")),
+            WORKER_INFRASTRUCTURE_RETURNCODE,
+            (),
+            (),
+        ),
+        (
+            "the coordinator's termination signal",
+            raising(AuditSignal(signal.SIGTERM)),
+            128 + signal.SIGTERM,
+            (),
+            ("Traceback",),
+        ),
+        ("a successful exit", raising(SystemExit(None)), 0, (), ("Traceback",)),
+        (
+            "an exit with a message",
+            raising(SystemExit("worker stopped")),
+            1,
+            ("worker stopped",),
+            ("Traceback",),
+        ),
+    ):
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            status = worker_exit_status(run)
+        output = log.getvalue()
+        if (
+            status != expected_status
+            or any(text not in output for text in required)
+            or any(text in output for text in forbidden)
+        ):
+            problems.append(f"worker exit status for {label}: exit {status}, {output[-300:]!r}")
+    return problems
 
 
 def worker_infrastructure_failure(error: Exception) -> int:
