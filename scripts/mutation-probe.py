@@ -53,11 +53,16 @@ TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
 LAUNCHER_TERM_GRACE_SECONDS = 5.0
-# After SIGKILL, a process group can take well over a second to empty on a loaded
-# host: sixteen suites of ten Vitest workers killed at once took 1.556 to 1.773 s
-# per group over six trials on a 176-core host. Cleanup waits this long for a
-# killed group to be reaped before it calls the group unreapable.
-KILLED_GROUP_REAP_GRACE_SECONDS = 5.0
+# After SIGKILL, a verifier's process group can take well over a second to empty on
+# a loaded host: sixteen suites of ten Vitest workers killed at once took 1.556 to
+# 1.773 s per group over six trials on a 176-core host. Verifier cleanup waits this
+# long. With VERIFIER_TERM_GRACE_SECONDS it must still end before the coordinator's
+# LAUNCHER_TERM_GRACE_SECONDS for the worker, which the orchestration self-test checks.
+VERIFIER_KILL_GRACE_SECONDS = 3.0
+# A red baseline is a result read from the report. Its status is neither 1, the
+# status of a worker that crashed with an uncaught exception, nor 2, the
+# infrastructure status.
+BASELINE_RED_RETURNCODE = 3
 # A process group can briefly outlive its leader. On some hosts `git` is a wrapper
 # that leaves an asynchronous logging process in the caller's group, so a launcher or
 # verifier whose last act is a git call leaves that process behind for a moment:
@@ -7557,6 +7562,15 @@ def require_verifier_capabilities(
         raise RuntimeError("mutation verifier lacks its runtime safety capabilities")
 
 
+def terminate_verifier_processes(processes: list[subprocess.Popen[bytes]]) -> None:
+    """Terminate verifier process groups with the verifier graces."""
+    terminate_process_groups(
+        processes,
+        term_grace_seconds=VERIFIER_TERM_GRACE_SECONDS,
+        kill_grace_seconds=VERIFIER_KILL_GRACE_SECONDS,
+    )
+
+
 def run_suite_process(
     command: list[str],
     *,
@@ -7593,11 +7607,7 @@ def run_suite_process(
         # signal can abort cleanup and orphan a grandchild.
         interrupt_handlers = {signum: interrupt for signum in previous_handlers}
         with CleanupSignalShield(interrupt_handlers) as shield:
-            terminate_process_groups(
-                [process],
-                term_grace_seconds=VERIFIER_TERM_GRACE_SECONDS,
-                kill_grace_seconds=KILLED_GROUP_REAP_GRACE_SECONDS,
-            )
+            terminate_verifier_processes([process])
         if shield.deferred_signum is not None:
             raise AuditSignal(shield.deferred_signum)
 
@@ -8156,6 +8166,21 @@ def suite_interrupt_self_test_child(state_path: Path) -> int:
     return 1
 
 
+def typecheck_baseline_failure(compiler_output: str, diagnostic: str) -> SuiteResult:
+    """A red unmutated compiler leg, named by the compiler's own error lines."""
+    error_lines = re.findall(
+        r"(?m)^.+?\.tsx?\(\d+,\d+\): error TS\d+:.*$",
+        re.sub(r"\x1b\[[0-9;]*m", "", compiler_output),
+    )
+    return SuiteResult(
+        False,
+        False,
+        (),
+        ("the unmutated TypeScript construction baseline failed", *error_lines[:20]),
+        diagnostic,
+    )
+
+
 def run_typecheck(
     expected: ExpectedVerdict | None,
     *,
@@ -8189,13 +8214,7 @@ def run_typecheck(
     if returncode == 0:
         return SuiteResult(True, True, (), (), diagnostic)
     if expected is None:
-        return SuiteResult(
-            False,
-            False,
-            (),
-            ("the unmutated TypeScript construction baseline failed",),
-            diagnostic,
-        )
+        return typecheck_baseline_failure(compiler_output, diagnostic)
 
     marker_file = expected.marker_file or expected.file
     verdict_source = (ROOT / marker_file).read_text()
@@ -10181,7 +10200,7 @@ ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS = {
         "['vitest', 'tsc:store-libsql:red', 'tsc:conformance']"
     ),
     "accept-conformance-typecheck-red": (
-        "conformance-red baseline: expected status 1, observed 0"
+        f"conformance-red baseline: expected status {BASELINE_RED_RETURNCODE}, observed 0"
     ),
     "misroute-conformance-mutation": (
         "conformance mutation dispatch: expected verifier trace "
@@ -11181,11 +11200,11 @@ def reap_leftover_process(launch: ProcessLaunch) -> str | None:
     return f"{launch.label} left child {child_pid} running in group {group}"
 
 
-# A subreaper that kills a verifier-shaped group and reaps its orphaned descendant
-# one second late, as a loaded host reaps a killed suite's processes late. It exits
-# 0 when terminate_process_groups accepts the group within the given kill grace.
+# A subreaper that kills a verifier-shaped group through the production verifier
+# cleanup and reaps its orphaned descendant two seconds late, as a loaded host reaps
+# a killed suite's processes late. It exits 0 when the cleanup accepts the group.
 LATE_REAP_PROGRAM = """\
-import ctypes, importlib.util, os, subprocess, sys, threading, time
+import ctypes, importlib.util, os, pathlib, subprocess, sys, threading, time
 if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
     print("could not become a child subreaper")
     raise SystemExit(3)
@@ -11193,28 +11212,39 @@ spec = importlib.util.spec_from_file_location("probe", sys.argv[1])
 probe = importlib.util.module_from_spec(spec)
 sys.modules["probe"] = probe
 spec.loader.exec_module(probe)
+if len(sys.argv) > 2:
+    probe.VERIFIER_KILL_GRACE_SECONDS = float(sys.argv[2])
+ready = pathlib.Path("late-reap-descendant.pid")
+ready.unlink(missing_ok=True)
 descendant = "import time; time.sleep(30)"
-leader_program = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', sys.argv[1]]); time.sleep(30)"
-leader = subprocess.Popen([sys.executable, "-c", leader_program, descendant], start_new_session=True)
-time.sleep(0.5)
+leader_program = (
+    "import pathlib, subprocess, sys, time; "
+    "child = subprocess.Popen([sys.executable, '-c', sys.argv[1]]); "
+    "pathlib.Path(sys.argv[2]).write_text(str(child.pid)); "
+    "time.sleep(30)"
+)
+leader = subprocess.Popen(
+    [sys.executable, "-B", "-c", leader_program, descendant, str(ready)],
+    start_new_session=True,
+)
+deadline = time.monotonic() + 10
+while not ready.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+if not ready.exists():
+    print("the leader never started its descendant")
+    raise SystemExit(4)
 
 def reap_late():
-    time.sleep(1.0)
+    time.sleep(2.0)
     while True:
         try:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
+            os.waitpid(-1, 0)
         except ChildProcessError:
             return
-        if pid == 0:
-            time.sleep(0.01)
 
 threading.Thread(target=reap_late, daemon=True).start()
 try:
-    probe.terminate_process_groups(
-        [leader],
-        term_grace_seconds=probe.VERIFIER_TERM_GRACE_SECONDS,
-        kill_grace_seconds=float(sys.argv[2]),
-    )
+    probe.terminate_verifier_processes([leader])
 except RuntimeError as error:
     print(f"rejected: {error}")
     raise SystemExit(1)
@@ -11809,31 +11839,44 @@ def orchestration_self_test(fault: str | None = None) -> int:
             zombie.wait()
 
         if fault in (None, "short-kill-grace"):
-            # Under audit load a killed suite's group took up to 1.8 s to empty, while
-            # its members had already exited. The fault keeps the half-second grace
-            # that reported those groups as unreapable.
+            # Under audit load a killed suite's group took up to 1.773 s to empty. The
+            # child reaps its orphaned descendant two seconds late, so the production
+            # verifier cleanup must wait longer than that. The fault's 1.2 s grace, just
+            # below the measured worst case, must be rejected.
             late_reap = subprocess.run(
                 (
                     sys.executable,
+                    "-B",
                     "-c",
                     LATE_REAP_PROGRAM,
                     str(Path(__file__).resolve()),
-                    repr(1.2 if fault else KILLED_GROUP_REAP_GRACE_SECONDS),
+                    *(("1.2",) if fault else ()),
                 ),
                 cwd=temporary,
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
             if late_reap.returncode != 0:
                 failures.append(
-                    "process cleanup: a killed group reaped a second late was reported "
+                    "process cleanup: a killed group reaped two seconds late was reported "
                     f"unreapable: {(late_reap.stdout + late_reap.stderr).strip()[-300:]}"
                 )
 
+        if fault is None:
+            compiler_red = suite_failure_detail(
+                typecheck_baseline_failure(
+                    "packages/core/src/x.ts(3,7): error TS2322: Type 'string' is not assignable.\n",
+                    "",
+                )
+            )
+            if "packages/core/src/x.ts(3,7): error TS2322" not in compiler_red:
+                failures.append(
+                    "a red compiler baseline does not name its compiler errors: "
+                    f"{compiler_red[:200]!r}"
+                )
         if fault is None and (
-            VERIFIER_TERM_GRACE_SECONDS + KILLED_GROUP_REAP_GRACE_SECONDS
+            VERIFIER_TERM_GRACE_SECONDS + VERIFIER_KILL_GRACE_SECONDS
             >= LAUNCHER_TERM_GRACE_SECONDS
         ):
             failures.append(
@@ -12241,9 +12284,7 @@ def suite_failure_detail(result: SuiteResult) -> str:
         for failure in result.assertions
     ]
     observed.extend(result.suite_errors)
-    # A suite error alone, such as a failed compiler leg, names no file or test, so
-    # its output carries the reason.
-    if not result.assertions and result.diagnostic:
+    if not observed and result.diagnostic:
         observed.append(result.diagnostic)
     return "\n".join(observed) if observed else "(no structured failure)"
 
@@ -13037,9 +13078,10 @@ def mutation_checkpoint_problems() -> list[str]:
         red_baseline = [False]
         crashed_baseline = [False]
         crashed_baseline_detail = "Traceback (most recent call last):\nImportError: crashed baseline"
-        red_baseline_diagnostic = "orchestration.test.ts > red baseline:\nred baseline"
+        red_baseline_test = "orchestration.test.ts > red baseline"
+        red_baseline_diagnostic = f"{red_baseline_test}:\nred baseline"
 
-        def baseline_report(launch: ProcessLaunch, *, green: bool = True) -> None:
+        def baseline_report(launch: ProcessLaunch, *, green: bool) -> None:
             command = launch.command
             worker_id = int(command_value(command, "--worker-id"))
             assigned_names = command_values(command, "--worker-mutation")
@@ -13083,7 +13125,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 for label, code in codes.items():
                     if code not in allowed_returncodes:
                         # A real launcher reports a disallowed exit from the worker log.
-                        raise RuntimeError(f"{label} failed with exit {code}: {details.get(label, '')[:500]}")
+                        raise RuntimeError(launch_exit_error(label, code, details.get(label, "")))
                 return codes
 
             codes: dict[str, int] = {}
@@ -13164,7 +13206,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 red_code = coordinate_audit("", "1")
             red_baseline[0] = False
             preflighted_names.clear()
-            if red_code != 2 or "orchestration.test.ts > red baseline" not in coordinator_log.getvalue():
+            if red_code != 2 or red_baseline_test not in coordinator_log.getvalue():
                 failures.append(
                     "coordinator did not name a red worker baseline's failing test: "
                     f"exit {red_code}, {coordinator_log.getvalue()[-300:]!r}"
@@ -13520,10 +13562,9 @@ def worker_infrastructure_returncode() -> int:
 
 
 def worker_baseline_returncode(green: bool) -> int:
-    """A baseline worker's exit status: 0 when its unmutated suites pass, and 1 when
-    they fail. A red baseline is a result the coordinator reads from the report, not
-    an infrastructure failure, like a mutation worker's 1."""
-    return 0 if green else 1
+    """A baseline worker's exit status: 0 when its unmutated suites pass, and
+    BASELINE_RED_RETURNCODE when they fail."""
+    return 0 if green else BASELINE_RED_RETURNCODE
 
 
 def may_publish_success(
@@ -13610,7 +13651,7 @@ def terminate_process_groups(
     omit_exited_groups: bool = False,
     reap_exited_leaders: bool = True,
     term_grace_seconds: float = LAUNCHER_TERM_GRACE_SECONDS,
-    kill_grace_seconds: float = KILLED_GROUP_REAP_GRACE_SECONDS,
+    kill_grace_seconds: float = 2.0,
 ) -> None:
     if (
         not math.isfinite(term_grace_seconds)
@@ -13653,7 +13694,7 @@ def terminate_process_groups(
             time.sleep(0.05)
     for process in processes:
         try:
-            process.wait(timeout=max(kill_grace_seconds, 0.1))
+            process.wait(timeout=max(kill_deadline - time.monotonic(), 0.0))
         except subprocess.TimeoutExpired:
             pass
     live_groups = live_process_groups()
@@ -13661,6 +13702,11 @@ def terminate_process_groups(
         raise RuntimeError(
             f"cannot reap descendant process groups after SIGKILL: {live_groups}"
         )
+
+
+def launch_exit_error(label: str, returncode: int, detail: str) -> str:
+    """The message for a launch that exited with a status its caller did not allow."""
+    return f"{label} failed with exit {returncode}: {detail[:500]}"
 
 
 def run_launches(
@@ -13712,7 +13758,7 @@ def run_launches(
                     launch = next(item for item in launches if item.label == label)
                     detail = diagnostic_tail(launch.log)
                     raise RuntimeError(
-                        f"{label} failed with exit {returncode}: {detail[:500]}"
+                        launch_exit_error(label, returncode, detail)
                     )
             if pending:
                 time.sleep(0.1)
