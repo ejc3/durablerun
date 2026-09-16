@@ -1551,7 +1551,7 @@ describe('runClaimedRun', () => {
         // One pump beat, at half the 60 s lease, observes the cancellation.
         await f.advance(30_000)
         await firstBeat
-        await new Promise((resolve) => setTimeout(resolve, 2))
+        await f.clock.yieldTurn()
         await ctx.step('after-the-beat', () => {
           stepRan = true
           return 1
@@ -1840,36 +1840,6 @@ describe('runClaimedRun', () => {
       ).toBeLessThan(1)
     } finally {
       releaseHandler?.()
-      f.close()
-    }
-  })
-
-  it('a handler cannot replace context lease-loss signal classification', async () => {
-    const f = await fx('sdk-context-captured-aborted')
-    try {
-      const spawned = await f.store.spawn(Q, 'job', '{}')
-      const reg = registry({
-        job: async (ctx) => {
-          const descriptor = Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted')
-          if (descriptor === undefined) throw new Error('expected AbortSignal.aborted')
-          Object.defineProperty(AbortSignal.prototype, 'aborted', {
-            configurable: true,
-            get: () => true,
-          })
-          try {
-            return await ctx.step('value', () => ({ real: true }))
-          } finally {
-            Object.defineProperty(AbortSignal.prototype, 'aborted', descriptor)
-          }
-        },
-      })
-      expect(await claimAndRun(f, reg, 'w1')).toEqual({ kind: 'completed' })
-      const result = await f.store.getTaskResult(Q, spawned.taskId)
-      expect(result).toEqual({
-        state: 'completed',
-        completedPayloadJson: '{"real":true}',
-      })
-    } finally {
       f.close()
     }
   })

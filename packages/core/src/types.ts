@@ -164,7 +164,10 @@ export type SweptRun =
  */
 export type LeaseState =
   | { held: true; remainingMs: number }
-  | { held: false; remainingMs: 0; reason: 'lease-lost' | 'cancelled' }
+  | { held: false; remainingMs: 0; reason: LeaseEnd }
+
+/** Why a worker's fence was refused: the task's cancellation ended the run, or the lease is lost. */
+export type LeaseEnd = 'cancelled' | 'lease-lost'
 
 /**
  * A task's observable outcome. A completed task always carries its payload, a

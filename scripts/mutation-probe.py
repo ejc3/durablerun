@@ -2257,7 +2257,7 @@ MUTATION_SPECS = [
         "      queue,\n"
         "      run,\n"
         "      checkpoints,\n"
-        "      () => leaseEnd,\n"
+        "      leaseEnd,\n"
         "      taskControls.issuer,\n"
         "      userAttempt,\n"
         "    )\n"
@@ -2273,7 +2273,7 @@ MUTATION_SPECS = [
         "      queue,\n"
         "      run,\n"
         "      checkpoints,\n"
-        "      () => leaseEnd,\n"
+        "      leaseEnd,\n"
         "      taskControls.issuer,\n"
         "      userAttempt,\n"
         "    )\n"
@@ -2302,7 +2302,7 @@ MUTATION_SPECS = [
         "      queue,\n"
         "      run,\n"
         "      checkpoints,\n"
-        "      () => leaseEnd,\n"
+        "      leaseEnd,\n"
         "      taskControls.issuer,\n"
         "      userAttempt,\n"
         "    )\n",
@@ -2318,7 +2318,7 @@ MUTATION_SPECS = [
         "    queue,\n"
         "    run,\n"
         "    checkpoints,\n"
-        "    () => leaseEnd,\n"
+        "    leaseEnd,\n"
         "    taskControls.issuer,\n"
         "    userAttempt,\n"
         "  )\n"
@@ -2334,13 +2334,11 @@ MUTATION_SPECS = [
     ),
     (
         "sdk-heartbeat-cancellation-outcome",
-        "packages/sdk/src/context.ts",
-        "    if (ended === 'cancelled') {\n"
-        "      this.#controls.runCancelled(`task cancelled during pass (run ${this.#run.runId})`)\n"
-        "    }\n",
-        "    if (ended === 'cancelled') {\n"
-        "      this.#controls.leaseLost(`lease lost during pass (run ${this.#run.runId})`)\n"
-        "    }\n",
+        "packages/sdk/src/task-control.ts",
+        "        case 'cancelled':\n"
+        "          return enroll(new RunCancelledError(message), RUN_CANCELLED)\n",
+        "        case 'cancelled':\n"
+        "          return enroll(new LeaseLostError(message), LEASE_LOST) // MUTATION\n",
         "a context call after a heartbeat that reported the cancellation ends the pass as lease-lost",
     ),
     (
@@ -2415,8 +2413,8 @@ MUTATION_SPECS = [
     (
         "heartbeat-names-cancellation",
         "packages/store-libsql/src/store.ts",
-        "    if (!row) return refusedLease(await this.refusal('heartbeat', runId))\n",
-        "    if (!row) return { held: false, remainingMs: 0, reason: 'lease-lost' }\n",
+        "    if (!row) return refusedLease(() => this.refusalState(runId))\n",
+        "    if (!row) return LOST_LEASE\n",
         "a refused heartbeat on a cancelled task reports a lost lease",
     ),
     (
@@ -3889,8 +3887,8 @@ MUTATION_SPECS.extend(
         (
             "task-control-runtime-lease-auth",
             "packages/sdk/src/task-control.ts",
-            "      return enroll(new LeaseLostError(message), LEASE_LOST)",
-            "      throw new LeaseLostError(message) // MUTATION",
+            "          return enroll(new LeaseLostError(message), LEASE_LOST)",
+            "          throw new LeaseLostError(message) // MUTATION",
             "lease loss minted by the invocation runtime is not enrolled",
         ),
         (

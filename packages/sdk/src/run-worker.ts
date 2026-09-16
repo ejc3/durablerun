@@ -7,7 +7,7 @@ import {
   serializeTaskValue,
   snapshotTaskThrowable,
 } from '@durablerun/core'
-import { type LeaseEnd, ReplayContext, type TaskContext } from './context.js'
+import { type LeaseEndLatch, ReplayContext, type TaskContext } from './context.js'
 import {
   TaskAbortController,
   abortControllerAbort,
@@ -158,7 +158,7 @@ export async function runClaimedRun(
   // next context call, so a zombie stops burning side effects too.
   const pumpStop = new TaskAbortController()
   const pumpStopSignal = abortControllerSignal(pumpStop)
-  let leaseEnd: LeaseEnd | undefined
+  const leaseEnd: LeaseEndLatch = { reason: undefined }
   const leaseMs = run.leaseSeconds * 1000
   const pump = (async () => {
     for (;;) {
@@ -167,7 +167,8 @@ export async function runClaimedRun(
       try {
         const lease = await store.heartbeat(queue, runId, claimToken, run.leaseSeconds)
         if (!lease.held) {
-          leaseEnd = lease.reason
+          // A store built against the earlier contract names no reason: that is a lost lease.
+          leaseEnd.reason = lease.reason === 'cancelled' ? 'cancelled' : 'lease-lost'
           return
         }
       } catch {
@@ -189,7 +190,7 @@ export async function runClaimedRun(
       queue,
       run,
       checkpoints,
-      () => leaseEnd,
+      leaseEnd,
       taskControls.issuer,
       userAttempt,
     )

@@ -31,7 +31,7 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone: cancellation discovery, child tasks, sagas, SQL trees, and MySQL
+## Current milestone — cancellation discovery, child tasks, sagas, SQL trees, and MySQL
 
 **Status: IN PROGRESS (named 2026-09-16).** The maintainer named six items, in
 this order: PR3.11, the mutation-runner fixes, PR3.9, PR3.3, PR3.4, and PR4.3.
@@ -107,8 +107,8 @@ through [run 35049435712](https://github.com/ejc3/durablerun/actions/runs/350494
 PRs #25 to #27, where PR3.5c deleted SIMPLIFY-BACKLOG.md. Exit test 2 landed for
 refused writes in PR #28: a worker whose write is refused on a cancelled run
 raises `RunCancelledError` and ends with a cancelled outcome. A heartbeat on a
-cancelled task still reports only a lost lease, so a handler that makes a
-context call after that beat ends as lease-lost. PR3.11 owns that path.
+cancelled task then still reported only a lost lease, so a handler that made a
+context call after that beat ended as lease-lost. PR3.11a closed that path.
 
 **Non-goals:** exposing `/wake` beyond loopback or authenticating it, a hosted
 cancel route, stopping a handler mid-step when its task is cancelled (discovery

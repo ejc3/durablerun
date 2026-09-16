@@ -4,7 +4,7 @@ import {
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
-  type LeaseState,
+  type LeaseEnd,
   type SchedulerStore,
   UserName,
   type WakeSpec,
@@ -14,13 +14,7 @@ import {
   userEpochMs,
   userJsonValue,
 } from '@durablerun/core'
-import {
-  TaskMap,
-  taskHasOwn,
-  taskMapGet,
-  taskMapHas,
-  taskMapSet,
-} from './intrinsics.js'
+import { TaskMap, taskHasOwn, taskMapGet, taskMapHas, taskMapSet } from './intrinsics.js'
 import { type TaskControlIssuer, createTaskControlScope } from './task-control.js'
 
 /**
@@ -113,8 +107,10 @@ function memoOfWake(wake: EventWake): EventMemo {
   return { timedOut: timedOut.timedOut }
 }
 
-/** Why a refused heartbeat ended this pass's lease: the task was cancelled, or the lease is lost. */
-export type LeaseEnd = Extract<LeaseState, { held: false }>['reason']
+/** The reason the pass's heartbeat pump saw a refused beat, unset while every beat is held. */
+export interface LeaseEndLatch {
+  reason: LeaseEnd | undefined
+}
 
 /** One execution pass over a claimed run. */
 export class ReplayContext implements TaskContext {
@@ -123,7 +119,7 @@ export class ReplayContext implements TaskContext {
   readonly #store: SchedulerStore
   readonly #queue: string
   readonly #run: ClaimedRun
-  readonly #leaseEnded: (() => LeaseEnd | undefined) | undefined
+  readonly #leaseEnd: LeaseEndLatch
   readonly #controls: TaskControlIssuer
   private readonly seen = new TaskMap<string, unknown>()
   private readonly nameUses = new TaskMap<string, number>()
@@ -142,14 +138,14 @@ export class ReplayContext implements TaskContext {
     queue: string,
     run: ClaimedRun,
     checkpoints: Checkpoint[],
-    leaseEnded?: () => LeaseEnd | undefined,
+    leaseEnd: LeaseEndLatch = { reason: undefined },
     controls: TaskControlIssuer = createTaskControlScope().issuer,
     attempt: number = run.attempt - run.infraRetries,
   ) {
     this.#store = store
     this.#queue = queue
     this.#run = run
-    this.#leaseEnded = leaseEnded
+    this.#leaseEnd = leaseEnd
     this.#controls = controls
     this.#attempt = attempt
     this.taskName = run.taskName
@@ -211,12 +207,14 @@ export class ReplayContext implements TaskContext {
     // A pump beat was refused: stop the handler at the next context call, as
     // the refusal named it. The fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
-    const ended = this.#leaseEnded?.()
-    if (ended === 'cancelled') {
-      this.#controls.runCancelled(`task cancelled during pass (run ${this.#run.runId})`)
-    }
-    if (ended === 'lease-lost') {
-      this.#controls.leaseLost(`lease lost during pass (run ${this.#run.runId})`)
+    const reason = this.#leaseEnd.reason
+    if (reason !== undefined) {
+      this.#controls.leaseEnded(
+        reason,
+        reason === 'cancelled'
+          ? `task cancelled during pass (run ${this.#run.runId})`
+          : `lease lost during pass (run ${this.#run.runId})`,
+      )
     }
   }
 

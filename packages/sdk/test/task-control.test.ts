@@ -192,7 +192,9 @@ describe('task control scope', () => {
 
   it('enrolls lease loss minted by the invocation runtime', () => {
     const scope = createTaskControlScope()
-    const signal = captureThrown(() => scope.issuer.leaseLost('heartbeat lost the lease'))
+    const signal = captureThrown(() =>
+      scope.issuer.leaseEnded('lease-lost', 'heartbeat lost the lease'),
+    )
     expect(
       scope.snapshot(signal),
       'mutation-verdict:construction:task-control-runtime-lease-auth',

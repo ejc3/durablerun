@@ -1,5 +1,6 @@
 import {
   type CheckpointWrite,
+  type LeaseEnd,
   LeaseLostError,
   RunCancelledError,
   StoreUnavailableError,
@@ -31,8 +32,7 @@ export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControl
 export interface TaskControlIssuer {
   sleep(wake: WakeSpec, checkpoint: CheckpointWrite): never
   awaitEvent(): never
-  leaseLost(message: string): never
-  runCancelled(message: string): never
+  leaseEnded(reason: LeaseEnd, message: string): never
   storeCall<T>(operation: () => Promise<T>): Promise<T>
 }
 
@@ -106,12 +106,15 @@ export function createTaskControlScope(): TaskControlScope {
       return enroll(new SuspendSignal('await-event'), AWAIT_EVENT)
     },
 
-    leaseLost(message: string): never {
-      return enroll(new LeaseLostError(message), LEASE_LOST)
-    },
-
-    runCancelled(message: string): never {
-      return enroll(new RunCancelledError(message), RUN_CANCELLED)
+    leaseEnded(reason: LeaseEnd, message: string): never {
+      switch (reason) {
+        case 'cancelled':
+          return enroll(new RunCancelledError(message), RUN_CANCELLED)
+        case 'lease-lost':
+          return enroll(new LeaseLostError(message), LEASE_LOST)
+        default:
+          throw new TypeError(`unknown lease end: ${String(reason satisfies never)}`)
+      }
     },
 
     async storeCall<T>(operation: () => Promise<T>): Promise<T> {

@@ -1837,16 +1837,22 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     describe('cancellation discovery', () => {
-      it('a write on a run cancelled mid-pass raises RunCancelledError, while a swept lease raises LeaseLostError', async () => {
-        const cancelled = await f.store.spawn(Q, 'cancel-me', '{}')
-        const cancelledRun = await claimActivated(f.store, Q, 'w-cancel')
-        await f.store.spawn(Q, 'sweep-me', '{}')
-        const sweptRun = await claimActivated(f.store, Q, 'w-sweep')
+      // One run whose task was cancelled mid-pass, and one whose lease the sweep took.
+      const cancelledAndSweptRuns = async (tag: string) => {
+        const cancelled = await f.store.spawn(Q, `cancel-${tag}`, '{}')
+        const cancelledRun = await claimActivated(f.store, Q, `w-cancel-${tag}`)
+        await f.store.spawn(Q, `sweep-${tag}`, '{}')
+        const sweptRun = await claimActivated(f.store, Q, `w-sweep-${tag}`)
         expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
         expect(await f.store.expireLeaseNow(Q, sweptRun.runId, sweptRun.claimToken)).toBe(true)
         expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
           'claim-timeout',
         ])
+        return { cancelledRun, sweptRun }
+      }
+
+      it('a write on a run cancelled mid-pass raises RunCancelledError, while a swept lease raises LeaseLostError', async () => {
+        const { cancelledRun, sweptRun } = await cancelledAndSweptRuns('write')
 
         const writes = (run: ClaimedRun) => [
           () => f.store.complete(Q, run.runId, run.claimToken, '{}'),
@@ -1881,15 +1887,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('a heartbeat on a cancelled task reports the cancellation, while a swept lease reports a lost lease', async () => {
-        const cancelled = await f.store.spawn(Q, 'cancel-beat', '{}')
-        const cancelledRun = await claimActivated(f.store, Q, 'w-cancel-beat')
-        await f.store.spawn(Q, 'sweep-beat', '{}')
-        const sweptRun = await claimActivated(f.store, Q, 'w-sweep-beat')
-        expect(await f.store.cancelTask(Q, cancelled.taskId)).toBe(true)
-        expect(await f.store.expireLeaseNow(Q, sweptRun.runId, sweptRun.claimToken)).toBe(true)
-        expect((await f.store.sweep(Q, 10)).map((outcome) => outcome.kind)).toEqual([
-          'claim-timeout',
-        ])
+        const { cancelledRun, sweptRun } = await cancelledAndSweptRuns('beat')
         expect(
           {
             cancelled: await f.store.heartbeat(Q, cancelledRun.runId, cancelledRun.claimToken, 60),
