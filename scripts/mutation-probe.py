@@ -11408,6 +11408,11 @@ def orchestration_fault_verdict_problems() -> list[str]:
         ),
         (1, "mutation-probe orchestration self-test caught injected fault typo: x\n", "caught"),
         (2, f"{ORCHESTRATION_UNMEASURED_MARKER}: x\n", "unmeasured"),
+        (
+            2,
+            f"{ORCHESTRATION_UNMEASURED_MARKER}: x\nTraceback (most recent call last):\n",
+            "missed",
+        ),
     ):
         verdict = orchestration_fault_verdict(returncode, output, "typo")
         if verdict != expected:
@@ -13912,6 +13917,13 @@ def worker_exit_status_problems() -> list[str]:
             ("Traceback",),
         ),
         ("a successful exit", raising(SystemExit(None)), 0, (), ("Traceback",)),
+        (
+            "a refusal through SystemExit",
+            raising(SystemExit(WORKER_INFRASTRUCTURE_RETURNCODE)),
+            WORKER_INFRASTRUCTURE_RETURNCODE,
+            (),
+            ("Traceback",),
+        ),
         (
             "an exit with a message",
             raising(SystemExit("worker stopped")),
