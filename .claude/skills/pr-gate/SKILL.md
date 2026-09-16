@@ -87,7 +87,9 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    `caught-with-collateral` is a successful, separately counted attribution:
    the clean baseline passed, the failed report is coherent, and the exact
    registered owner file, full test title, and single verdict message fired
-   alongside other failed tests. The transcript retains every failed test's
+   alongside other failed targeted tests. Each mutation and each worker baseline
+   runs only the registered tests it checks, and a registered test that did not
+   run is a suite error. The transcript retains every failed test's
    file, full title, and complete messages. Collateral-only or wrong-owner
    failures, suite-level errors, missing collateral messages, and ambiguous
    multiple owner messages remain blocking. Report exact-only and
