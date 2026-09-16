@@ -33,11 +33,14 @@ validated by that run.
 
 ## Current milestone — lifecycle correctness and the simplification sweep
 
-**Status: COMPLETE; pause after green merge (2026-09-15).** The stack merged
-green into `main` in order: PR3.5a, PR3.5b, and PR3.5c as PRs #25 to #27, then
-PR3.2a as PR #28 and PR3.2b as PR #29. `ci` passed on every merge commit, and
-the eight scheduled dogfood runs through 2026-09-16 01:54 UTC passed on the
-merged head `55412c3`.
+**Status: COMPLETE, with exit test 2 qualified; pause after green merge
+(2026-09-15).** The stack merged green into `main` in order: PR3.5a, PR3.5b, and
+PR3.5c as PRs #25 to #27, then PR3.2a as PR #28 and PR3.2b as PR #29. `ci`
+passed on each merge commit, ending with
+[run 35006099023](https://github.com/ejc3/durablerun/actions/runs/35006099023)
+on the merged head `55412c3`. Every scheduled dogfood run on that head passed,
+from [run 35009666322](https://github.com/ejc3/durablerun/actions/runs/35009666322)
+through [run 35049435712](https://github.com/ejc3/durablerun/actions/runs/35049435712).
 
 **Exit test:**
 
@@ -63,12 +66,16 @@ merged head `55412c3`.
 7. Every finding in SIMPLIFY-BACKLOG.md is landed or rejected with a written
    reason under PR3.5, and the file is deleted.
 
-**Closeout:** exit tests 1, 2, 3, 5, and 6 landed in
+**Closeout:** exit tests 1, 3, 5, and 6 landed in
 [PR #28](https://github.com/ejc3/durablerun/pull/28), exit test 4 in
 [PR #29](https://github.com/ejc3/durablerun/pull/29), and exit test 7 across
-PRs #25 to #27, where PR3.5c deleted SIMPLIFY-BACKLOG.md. Pause until the
-maintainer names the next milestone. Do not start another milestone or reopen
-source-identical proof work during that wait.
+PRs #25 to #27, where PR3.5c deleted SIMPLIFY-BACKLOG.md. Exit test 2 landed for
+refused writes in PR #28: a worker whose write is refused on a cancelled run
+raises `RunCancelledError` and ends with a cancelled outcome. A heartbeat on a
+cancelled task still reports only a lost lease, so a handler that makes a
+context call after that beat ends as lease-lost. PR3.11 owns that path. Pause
+until the maintainer names the next milestone. Do not start another milestone
+or reopen source-identical proof work during that wait.
 
 **Non-goals:** exposing `/wake` beyond loopback or authenticating it, a hosted
 cancel route, stopping a handler mid-step when its task is cancelled (discovery
@@ -827,11 +834,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   explicitly, so a hand-maintained example is never the completeness claim.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
-  From PR3.2:
-  - One admission fragment shared by activation and the claim park, in place
-    of two copies of the same guards.
-  - A successor-carry case generated from every batch that inserts a run, in
-    place of one hand-listed family per path.
+  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: one admission
+    fragment for the claim receipt, used by both activation and `deferLaunch`,
+    so a guard added to one reaches the other. Deferred because seven
+    registered mutations own find texts inside activation's SQL, and a shared
+    fragment rewrites every one of those texts and their verdicts.
+  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a successor-carry
+    case generated from every batch that inserts a run, in place of one
+    hand-listed family per path. The model property covers the protocol today,
+    and generating the SQL-side enumeration belongs with this PR's SQL-tree work.
 
 - **PR3.10 condition-mutation ratchet**. PR3.7's condition inventory
   IDs, makes every currently declared boolean/null/type arm witnessable; it
@@ -858,11 +869,29 @@ these three things; nothing else in the system does I/O, time, or randomness.
   distinct, ordered commits and that the red commit demonstrably leaves the
   named probe failing; the final attribution closeout showed that prose-only
   evidence still permits repair findings to be bundled into a green commit.
-  From PR3.2:
-  - Poison target profiles for a running, unactivated claim and for a failed
-    task, so the `activate`, `defer-launch`, and `retry-task` cells reach the
-    guards behind their state conditions.
-  - A generated clock-shape surface for the driver loop.
+  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a poison target
+    profile for a running, unactivated claim, so the `activate` and
+    `defer-launch` cells reach their corruption guards instead of refusing on
+    the receipt.
+  - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a poison target
+    profile for a failed task, so the `retry-task` cells reach the counter
+    guards behind its state condition. The conformance cases pin each guard
+    today.
+
+- **PR3.11 lifecycle residual** (not started). PR3.2's rounds left three items
+  that no other entry owns.
+  - A heartbeat on a cancelled task still reports only a lost lease, so a
+    handler that makes a context call after the next beat ends as lease-lost.
+    Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the
+    heartbeat batch on `FencedBatch` with a refusal read and a cancelled
+    variant of `LeaseState`. This is the qualified part of the lifecycle
+    milestone's exit test 2.
+  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a launch payload
+    case generated from `LaunchInvocation`'s fields that crosses an older
+    driver with a newer worker and the reverse.
+  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a generated
+    clock-shape surface for the driver loop: forward and backward steps, and
+    registry intervals shorter than the ceilings.
 
 - **PR3.2 lifecycle polish**: DONE. Merged green as two stacked PRs. PR3.2a
   (PR #28) parks a claim that a build without the task's handler cannot run
@@ -872,19 +901,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   per interval. PR3.2b (PR #29) adds `retryTask`, following Absurd's
   `retry_task`. Their review rounds are `postmortems/pr3.2a-lifecycle-review.md`
   and `postmortems/pr3.2b-retry-task-review.md`.
-  Its residual is NOT recorded here: every item is owned by a named PR (PR3.3,
-  PR3.9, PR3.10).
+  Its residual is NOT recorded here: each item sits under the named PR that will
+  do it, with its source postmortem.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, same-queue refusal; `/api/runs/:id` result route.
-  From PR3.2:
-  - A heartbeat on a cancelled task still reports only a lost lease, so a
-    handler that makes a context call after the next beat ends as lease-lost.
-    Absurd's `extend_claim` raises AB001 instead. Distinguishing it needs the
-    heartbeat batch on `FencedBatch` with a refusal read and a cancelled
-    variant of `LeaseState`.
-  - A launch payload case generated from `LaunchInvocation`'s fields that
-    crosses older and newer drivers and workers.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,
