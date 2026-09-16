@@ -50,6 +50,11 @@ TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
 VERIFIER_KILL_GRACE_SECONDS = 0.5
+# A launcher's process group can briefly outlive the launcher: a host tool the
+# launcher ran last can leave a short-lived process in the group. Measured at up to
+# 410 ms, so launch cleanup waits this long for the group to drain before it calls
+# a descendant live.
+LAUNCHER_DRAIN_GRACE_SECONDS = 5.0
 
 
 VerdictKind = Literal["behavior", "construction"]
@@ -9870,6 +9875,8 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "replace-worker-install-command",
     "allow-host-sized-tokio-pools",
     "allow-worker-bytecode-artifacts",
+    "reject-draining-group",
+    "accept-lingering-group",
 )
 
 
@@ -11470,7 +11477,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     )
             zombie.wait()
 
-        if fault is None:
+        if fault in (None, "reject-draining-group"):
             drain_log = temporary / "drain.log"
             child_code = (
                 "import subprocess,sys; "
@@ -11486,12 +11493,59 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 os.environ.copy(),
             )
             try:
-                run_launches([launch], allowed_returncodes=frozenset((0,)))
+                run_launches(
+                    [launch],
+                    allowed_returncodes=frozenset((0,)),
+                    drain_grace_seconds=(
+                        0.0 if fault == "reject-draining-group" else LAUNCHER_DRAIN_GRACE_SECONDS
+                    ),
+                )
             except RuntimeError as error:
                 failures.append(
                     "process cleanup: a launcher group that drains after its leader "
                     f"exits was reported live: {error}"
                 )
+
+        if fault in (None, "accept-lingering-group"):
+            linger_log = temporary / "linger.log"
+            child_code = (
+                "import subprocess,sys; "
+                "child=subprocess.Popen([sys.executable,'-c',"
+                "'import time; time.sleep(30)']); "
+                "print(child.pid, flush=True)"
+            )
+            launch = ProcessLaunch(
+                "linger-self-test",
+                (sys.executable, "-c", child_code),
+                temporary,
+                linger_log,
+                os.environ.copy(),
+            )
+            try:
+                run_launches(
+                    [launch],
+                    allowed_returncodes=frozenset((0,)),
+                    drain_grace_seconds=0.2,
+                    accept_live_groups=fault == "accept-lingering-group",
+                )
+            except RuntimeError:
+                pass
+            else:
+                failures.append(
+                    "process cleanup: a launcher group that outlived its drain was accepted"
+                )
+            child_pid = int(linger_log.read_text().splitlines()[0])
+            deadline = time.monotonic() + 2
+            while process_id_is_live(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if process_id_is_live(child_pid):
+                failures.append(
+                    "process cleanup: a launcher group that outlived its drain was left running"
+                )
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     try:
         validate_scope_limits(
@@ -13164,6 +13218,8 @@ def run_launches(
     *,
     allowed_returncodes: frozenset[int],
     omit_exited_groups: bool = False,
+    drain_grace_seconds: float = LAUNCHER_DRAIN_GRACE_SECONDS,
+    accept_live_groups: bool = False,
 ) -> dict[str, int]:
     processes: dict[str, subprocess.Popen[bytes]] = {}
     handles: dict[str, object] = {}
@@ -13215,10 +13271,15 @@ def run_launches(
             for process in processes.values()
             if process_group_exists(process.pid)
         ]
-        if live_groups:
+        drain_deadline = time.monotonic() + drain_grace_seconds
+        while live_groups and time.monotonic() < drain_deadline:
+            time.sleep(0.01)
+            live_groups = [group for group in live_groups if process_group_exists(group)]
+        if live_groups and not accept_live_groups:
             terminate_process_groups(list(processes.values()))
             raise RuntimeError(
-                f"launchers exited with live descendant groups: {live_groups}"
+                "launchers exited with live descendant groups after a "
+                f"{drain_grace_seconds:g}s drain: {live_groups}"
             )
         return completed
     except BaseException:
