@@ -19,11 +19,14 @@ The escaped defect would have shipped with the new SDK package. A deployment tha
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | Fable `/code-review` round 1 over `f3f8392...272c19c` | 1 | no |
-| Fable `/code-review` round 2 over `272c19c...6263223` | 0 product defects; 2 registry gaps in the fold | no |
-| Fable `/code-review` round 3 over `6263223...f43bffa` | 0 product defects; 1 registry gap and postmortem errata | no |
+| Fable `/code-review` round 2 over `272c19c...6263223` | 0 | no |
+| Fable `/code-review` round 3 over `6263223...f43bffa` | 0 | no |
+| Fable `/code-review` round 4 over `f43bffa...0d54d55` | 0 | no |
 | Existing conformance, SDK, fault matrix, mutation, and lint gates before review | 0 | yes |
 
 Self-catch rate: 0 of 1, or 0% (previous round: 0%, `pr3.2b-retry-task-review.md`).
+
+Rounds 2 to 4 found no product defect, so they count zero above. They did find registry gaps and postmortem errata in the folds. Round 2 found two unregistered guards, and round 3 found one unrecorded issuer step and a wrong commit parent. Round 4 found a mutation that did not isolate its verdict, a false-negative row that was never run, and an overclaimed coverage list. Each is fixed in this PR.
 
 Our machinery did catch one defect of this PR before review, and it is not counted above. The milestone heading was written `## Current milestone:`, and `tla-artifact.test.ts` requires exactly one `## Current milestone — ` heading. The remote affected-closure baselines all went red on that test before any mutation ran. That is the machinery working. The escape is the one defect that crosses a package-version boundary, which no layer exercises.
 
