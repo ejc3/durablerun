@@ -3907,8 +3907,8 @@ MUTATION_SPECS.extend(
             "task-control-cancellation-error-class",
             "packages/sdk/src/task-control.ts",
             "          return enroll(new RunCancelledError(message), RUN_CANCELLED)",
-            "          return enroll(new LeaseLostError(message), LEASE_LOST) // MUTATION",
-            "a cancellation minted by the invocation runtime becomes a lost lease",
+            "          return enroll(new LeaseLostError(message), RUN_CANCELLED) // MUTATION",
+            "a cancellation minted by the invocation runtime is a LeaseLostError under the cancellation snapshot",
         ),
         (
             "task-control-store-lease-auth",
@@ -5875,7 +5875,7 @@ VERDICTS = {
     "sdk-reasonless-refusal-is-lease-lost": ExpectedVerdict(
         "behavior",
         "packages/sdk/test/run-worker.test.ts",
-        "runClaimedRun a refused heartbeat that names no reason still stops the handler as a lost lease",
+        "runClaimedRun a refused heartbeat whose reason this build cannot name still stops the handler as a lost lease",
         "mutation-verdict:behavior:sdk-reasonless-refusal-is-lease-lost",
     ),
     "suspend-rejects-noninteger-attempt": ExpectedVerdict(
