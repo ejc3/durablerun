@@ -52,6 +52,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
+LAUNCHER_TERM_GRACE_SECONDS = 5.0
 # After SIGKILL, a process group can take well over a second to empty on a loaded
 # host: sixteen suites of ten Vitest workers killed at once took 1.556 to 1.773 s
 # per group over six trials on a 176-core host. Cleanup waits this long for a
@@ -11817,7 +11818,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "-c",
                     LATE_REAP_PROGRAM,
                     str(Path(__file__).resolve()),
-                    repr(0.5 if fault else KILLED_GROUP_REAP_GRACE_SECONDS),
+                    repr(1.2 if fault else KILLED_GROUP_REAP_GRACE_SECONDS),
                 ),
                 cwd=temporary,
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
@@ -11830,6 +11831,15 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "process cleanup: a killed group reaped a second late was reported "
                     f"unreapable: {(late_reap.stdout + late_reap.stderr).strip()[-300:]}"
                 )
+
+        if fault is None and (
+            VERIFIER_TERM_GRACE_SECONDS + KILLED_GROUP_REAP_GRACE_SECONDS
+            >= LAUNCHER_TERM_GRACE_SECONDS
+        ):
+            failures.append(
+                "process cleanup: a worker's verifier cleanup can outlast the coordinator's "
+                "termination grace, so the coordinator kills the worker mid-cleanup"
+            )
 
         if fault in (None, "reject-draining-group"):
             # The child exits once the barrier appears. Normally that is when cleanup
@@ -13025,6 +13035,8 @@ def mutation_checkpoint_problems() -> list[str]:
             return []
 
         red_baseline = [False]
+        crashed_baseline = [False]
+        crashed_baseline_detail = "Traceback (most recent call last):\nImportError: crashed baseline"
         red_baseline_diagnostic = "orchestration.test.ts > red baseline:\nred baseline"
 
         def baseline_report(launch: ProcessLaunch, *, green: bool = True) -> None:
@@ -13057,15 +13069,21 @@ def mutation_checkpoint_problems() -> list[str]:
                 return {launch.label: 0 for launch in launches}
             if all(launch.label.startswith("baseline ") for launch in launches):
                 codes = {}
+                details = {}
                 for launch in launches:
+                    if crashed_baseline[0]:
+                        # A worker that crashes before it writes a report exits 1, the
+                        # uncaught-exception status, with its traceback in the log.
+                        codes[launch.label] = 1
+                        details[launch.label] = crashed_baseline_detail
+                        continue
                     green = not red_baseline[0]
                     baseline_report(launch, green=green)
                     codes[launch.label] = worker_baseline_returncode(green)
                 for label, code in codes.items():
                     if code not in allowed_returncodes:
-                        # A real launcher reports a disallowed exit from the worker log,
-                        # which the worker leaves empty.
-                        raise RuntimeError(f"{label} failed with exit {code}: ")
+                        # A real launcher reports a disallowed exit from the worker log.
+                        raise RuntimeError(f"{label} failed with exit {code}: {details.get(label, '')[:500]}")
                 return codes
 
             codes: dict[str, int] = {}
@@ -13150,6 +13168,18 @@ def mutation_checkpoint_problems() -> list[str]:
                 failures.append(
                     "coordinator did not name a red worker baseline's failing test: "
                     f"exit {red_code}, {coordinator_log.getvalue()[-300:]!r}"
+                )
+
+            crashed_baseline[0] = True
+            coordinator_log = io.StringIO()
+            with contextlib.redirect_stderr(coordinator_log):
+                crashed_code = coordinate_audit("", "1")
+            crashed_baseline[0] = False
+            preflighted_names.clear()
+            if crashed_code != 2 or "ImportError: crashed baseline" not in coordinator_log.getvalue():
+                failures.append(
+                    "coordinator lost a crashed worker baseline's traceback: "
+                    f"exit {crashed_code}, {coordinator_log.getvalue()[-300:]!r}"
                 )
 
             result_code = coordinate_audit("", "1")
@@ -13579,7 +13609,7 @@ def terminate_process_groups(
     *,
     omit_exited_groups: bool = False,
     reap_exited_leaders: bool = True,
-    term_grace_seconds: float = 5.0,
+    term_grace_seconds: float = LAUNCHER_TERM_GRACE_SECONDS,
     kill_grace_seconds: float = KILLED_GROUP_REAP_GRACE_SECONDS,
 ) -> None:
     if (
