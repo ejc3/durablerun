@@ -10872,6 +10872,41 @@ def resolve_pnpm_store(root: Path) -> Path:
     return pnpm_store_from_result(result)
 
 
+def descendant_launch(
+    temporary: Path,
+    label: str,
+    *,
+    sleep_seconds: float,
+    exit_code: int = 0,
+) -> ProcessLaunch:
+    """A launcher that starts one sleeping child in its own group, records the child's pid, and exits."""
+    child_code = (
+        "import subprocess,sys; "
+        "child=subprocess.Popen([sys.executable,'-c',"
+        f"'import time; time.sleep({sleep_seconds:g})']); "
+        f"print(child.pid, flush=True); raise SystemExit({exit_code})"
+    )
+    return ProcessLaunch(
+        label,
+        (sys.executable, "-c", child_code),
+        temporary,
+        temporary / f"{label}.log",
+        os.environ.copy(),
+    )
+
+
+def reap_leftover_process(launch: ProcessLaunch) -> bool:
+    """Kill the launch's recorded child if it is still live, and report whether it was."""
+    child_pid = int(launch.log.read_text().splitlines()[0])
+    if not process_id_is_live(child_pid):
+        return False
+    try:
+        os.kill(child_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return True
+
+
 def orchestration_self_test(fault: str | None = None) -> int:
     """Generated false-positive surface for the parallel coordinator."""
     expected = [
@@ -11409,19 +11444,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
             failures.append("baseline barrier: mutation phase accepted no barrier")
 
         if fault in (None, "leave-descendant-running"):
-            descendant_log = temporary / "descendant.log"
-            child_code = (
-                "import subprocess,sys; "
-                "child=subprocess.Popen([sys.executable,'-c',"
-                "'import time; time.sleep(30)']); "
-                "print(child.pid, flush=True); raise SystemExit(2)"
-            )
-            launch = ProcessLaunch(
-                "descendant-self-test",
-                (sys.executable, "-c", child_code),
-                temporary,
-                descendant_log,
-                os.environ.copy(),
+            launch = descendant_launch(
+                temporary, "descendant-self-test", sleep_seconds=30, exit_code=2
             )
             try:
                 run_launches(
@@ -11431,16 +11455,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 )
             except RuntimeError:
                 pass
-            child_pid = int(descendant_log.read_text().splitlines()[0])
-            deadline = time.monotonic() + 2
-            while process_id_is_live(child_pid) and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if process_id_is_live(child_pid):
+            if reap_leftover_process(launch):
                 failures.append("process cleanup: exited leader left a live descendant")
-                try:
-                    os.kill(child_pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
 
         if fault in (None, "leave-zombie-group"):
             zombie = subprocess.Popen(
@@ -11478,28 +11494,10 @@ def orchestration_self_test(fault: str | None = None) -> int:
             zombie.wait()
 
         if fault in (None, "reject-draining-group"):
-            drain_log = temporary / "drain.log"
-            child_code = (
-                "import subprocess,sys; "
-                "child=subprocess.Popen([sys.executable,'-c',"
-                "'import time; time.sleep(0.3)']); "
-                "print(child.pid, flush=True)"
-            )
-            launch = ProcessLaunch(
-                "drain-self-test",
-                (sys.executable, "-c", child_code),
-                temporary,
-                drain_log,
-                os.environ.copy(),
-            )
+            launch = descendant_launch(temporary, "drain-self-test", sleep_seconds=0.3)
+            options = {"drain_grace_seconds": 0.0} if fault else {}
             try:
-                run_launches(
-                    [launch],
-                    allowed_returncodes=frozenset((0,)),
-                    drain_grace_seconds=(
-                        0.0 if fault == "reject-draining-group" else LAUNCHER_DRAIN_GRACE_SECONDS
-                    ),
-                )
+                run_launches([launch], allowed_returncodes=frozenset((0,)), **options)
             except RuntimeError as error:
                 failures.append(
                     "process cleanup: a launcher group that drains after its leader "
@@ -11507,26 +11505,15 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 )
 
         if fault in (None, "accept-lingering-group"):
-            linger_log = temporary / "linger.log"
-            child_code = (
-                "import subprocess,sys; "
-                "child=subprocess.Popen([sys.executable,'-c',"
-                "'import time; time.sleep(30)']); "
-                "print(child.pid, flush=True)"
-            )
-            launch = ProcessLaunch(
-                "linger-self-test",
-                (sys.executable, "-c", child_code),
-                temporary,
-                linger_log,
-                os.environ.copy(),
-            )
+            launch = descendant_launch(temporary, "linger-self-test", sleep_seconds=30)
+            original_wait = wait_for_process_groups
+            if fault:
+                globals()["wait_for_process_groups"] = lambda groups, grace_seconds, **_: []
             try:
                 run_launches(
                     [launch],
                     allowed_returncodes=frozenset((0,)),
                     drain_grace_seconds=0.2,
-                    accept_live_groups=fault == "accept-lingering-group",
                 )
             except RuntimeError:
                 pass
@@ -11534,18 +11521,12 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 failures.append(
                     "process cleanup: a launcher group that outlived its drain was accepted"
                 )
-            child_pid = int(linger_log.read_text().splitlines()[0])
-            deadline = time.monotonic() + 2
-            while process_id_is_live(child_pid) and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if process_id_is_live(child_pid):
+            finally:
+                globals()["wait_for_process_groups"] = original_wait
+            if reap_leftover_process(launch):
                 failures.append(
                     "process cleanup: a launcher group that outlived its drain was left running"
                 )
-                try:
-                    os.kill(child_pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
 
     try:
         validate_scope_limits(
@@ -13154,6 +13135,23 @@ def process_group_exists(process_group: int) -> bool:
         return True
 
 
+def wait_for_process_groups(
+    groups: list[int],
+    grace_seconds: float,
+    *,
+    interval_seconds: float = 0.01,
+) -> list[int]:
+    """Return the groups still live after waiting up to grace_seconds for them to drain."""
+    if not math.isfinite(grace_seconds) or grace_seconds < 0:
+        raise ValueError("process group drain grace must be finite and nonnegative")
+    deadline = time.monotonic() + grace_seconds
+    live = [group for group in groups if process_group_exists(group)]
+    while live and time.monotonic() < deadline:
+        time.sleep(interval_seconds)
+        live = [group for group in live if process_group_exists(group)]
+    return live
+
+
 def terminate_process_groups(
     processes: list[subprocess.Popen[bytes]],
     *,
@@ -13219,7 +13217,6 @@ def run_launches(
     allowed_returncodes: frozenset[int],
     omit_exited_groups: bool = False,
     drain_grace_seconds: float = LAUNCHER_DRAIN_GRACE_SECONDS,
-    accept_live_groups: bool = False,
 ) -> dict[str, int]:
     processes: dict[str, subprocess.Popen[bytes]] = {}
     handles: dict[str, object] = {}
@@ -13266,16 +13263,11 @@ def run_launches(
                     )
             if pending:
                 time.sleep(0.1)
-        live_groups = [
-            process.pid
-            for process in processes.values()
-            if process_group_exists(process.pid)
-        ]
-        drain_deadline = time.monotonic() + drain_grace_seconds
-        while live_groups and time.monotonic() < drain_deadline:
-            time.sleep(0.01)
-            live_groups = [group for group in live_groups if process_group_exists(group)]
-        if live_groups and not accept_live_groups:
+        live_groups = wait_for_process_groups(
+            [process.pid for process in processes.values()],
+            drain_grace_seconds,
+        )
+        if live_groups:
             terminate_process_groups(list(processes.values()))
             raise RuntimeError(
                 "launchers exited with live descendant groups after a "
