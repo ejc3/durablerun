@@ -1,5 +1,6 @@
 import {
   type CheckpointWrite,
+  type ClaimedRun,
   type LeaseEnd,
   LeaseLostError,
   RunCancelledError,
@@ -32,7 +33,7 @@ export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControl
 export interface TaskControlIssuer {
   sleep(wake: WakeSpec, checkpoint: CheckpointWrite): never
   awaitEvent(): never
-  leaseEnded(reason: LeaseEnd, runId: string): never
+  leaseEnded(reason: LeaseEnd, run: Pick<ClaimedRun, 'runId'>): never
   storeCall<T>(operation: () => Promise<T>): Promise<T>
 }
 
@@ -106,14 +107,14 @@ export function createTaskControlScope(): TaskControlScope {
       return enroll(new SuspendSignal('await-event'), AWAIT_EVENT)
     },
 
-    leaseEnded(reason: LeaseEnd, runId: string): never {
+    leaseEnded(reason: LeaseEnd, run: Pick<ClaimedRun, 'runId'>): never {
       switch (reason) {
         case 'cancelled': {
-          const message = `task cancelled during pass (run ${runId})`
+          const message = `task cancelled during pass (run ${run.runId})`
           return enroll(new RunCancelledError(message), RUN_CANCELLED)
         }
         case 'lease-lost': {
-          const message = `lease lost during pass (run ${runId})`
+          const message = `lease lost during pass (run ${run.runId})`
           return enroll(new LeaseLostError(message), LEASE_LOST)
         }
         default:

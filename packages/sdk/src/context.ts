@@ -208,7 +208,7 @@ export class ReplayContext implements TaskContext {
     // the refusal named it. The fences protect STATE regardless; this stops a
     // zombie from burning further side effects and worker time.
     const reason = this.#leaseEnd.reason
-    if (reason !== undefined) this.#controls.leaseEnded(reason, this.#run.runId)
+    if (reason !== undefined) this.#controls.leaseEnded(reason, this.#run)
   }
 
   async step<T>(name: string, fn: () => Promise<T> | T): Promise<T> {

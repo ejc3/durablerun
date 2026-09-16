@@ -1,4 +1,4 @@
-import { LeaseLostError, StoreUnavailableError } from '@durablerun/core'
+import { LeaseLostError, RunCancelledError, StoreUnavailableError } from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import {
@@ -192,7 +192,7 @@ describe('task control scope', () => {
 
   it('enrolls lease loss minted by the invocation runtime', () => {
     const scope = createTaskControlScope()
-    const signal = captureThrown(() => scope.issuer.leaseEnded('lease-lost', 'run-1'))
+    const signal = captureThrown(() => scope.issuer.leaseEnded('lease-lost', { runId: 'run-1' }))
     expect(
       scope.snapshot(signal),
       'mutation-verdict:construction:task-control-runtime-lease-auth',
@@ -201,11 +201,20 @@ describe('task control scope', () => {
 
   it('enrolls a cancellation minted by the invocation runtime', () => {
     const scope = createTaskControlScope()
-    const signal = captureThrown(() => scope.issuer.leaseEnded('cancelled', 'run-1'))
+    const signal = captureThrown(() => scope.issuer.leaseEnded('cancelled', { runId: 'run-1' }))
     expect(
       scope.snapshot(signal),
       'mutation-verdict:construction:task-control-runtime-cancellation-auth',
     ).toEqual({ kind: 'run-cancelled' })
+  })
+
+  it('mints a runtime cancellation as RunCancelledError, not a lost lease', () => {
+    const scope = createTaskControlScope()
+    const signal = captureThrown(() => scope.issuer.leaseEnded('cancelled', { runId: 'run-1' }))
+    expect(
+      signal,
+      'mutation-verdict:behavior:task-control-cancellation-error-class',
+    ).toBeInstanceOf(RunCancelledError)
   })
 
   it('enrolls typed failures only at the immediate trusted store boundary', async () => {

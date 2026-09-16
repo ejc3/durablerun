@@ -19,6 +19,8 @@ The escaped defect would have shipped with the new SDK package. A deployment tha
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | Fable `/code-review` round 1 over `f3f8392...272c19c` | 1 | no |
+| Fable `/code-review` round 2 over `272c19c...6263223` | 0 product defects; 2 registry gaps in the fold | no |
+| Fable `/code-review` round 3 over `6263223...f43bffa` | 0 product defects; 1 registry gap and postmortem errata | no |
 | Existing conformance, SDK, fault matrix, mutation, and lint gates before review | 0 | yes |
 
 Self-catch rate: 0 of 1, or 0% (previous round: 0%, `pr3.2b-retry-task-review.md`).
@@ -35,15 +37,16 @@ Yes. This is the class PR3.2a's finding 1 instituted a mechanism against: an int
 |-----------|------|----------------------------------------------|
 | The pump records `lease-lost` for any refusal that does not name the cancellation | 1 at the pump | A store whose `heartbeat` throws instead of refusing. The pump treats a heartbeat error as advisory upkeep and returns without recording a reason, so the handler runs to completion. Run against `6263223` with a proxy whose `heartbeat` throws `new Error('store connection dropped during heartbeat')`: `-     "kind": "lease-lost",` `+     "kind": "completed",` `-   "stepRan": false,` `+   "stepRan": true,`. This is the designed advisory behavior; the fences refuse the zombie's writes. |
 | Red case `a refused heartbeat that names no reason still stops the handler as a lost lease` | 3 | A store that answers `{ held: true, remainingMs: 60000 }` for an extension it did not make. The pump keeps the handler running, and the case never builds that answer. |
-| Registered mutation `sdk-reasonless-refusal-is-lease-lost` | 3 | The mutation replaces the normalization with `leaseEnd.reason = lease.reason`. A different regression, such as recording `lease.reason ?? 'cancelled'`, is caught by the same case, but no registered mutation names it. The mutation is a proxy for its one spelling. |
+| Registered mutation `sdk-reasonless-refusal-is-lease-lost` | 3 | The mutation replaces the normalization with `leaseEnd.reason = lease.reason === 'cancelled' ? 'cancelled' : lease.reason`. A different regression, such as recording `lease.reason ?? 'cancelled'`, is caught by the same case, but no registered mutation names it. The mutation is a proxy for its one spelling. |
+| Registered mutations `sdk-heartbeat-cancellation-outcome`, `task-control-runtime-cancellation-auth`, and `task-control-cancellation-error-class` | 3 | Each names one spelling. A regression that drops the reason on the latch before the context reads it, such as a pump that sets `leaseEnd.reason` only on its second refused beat, matches none of their anchors. The SDK cancellation case still catches it, but the registry records no owner for it. |
 
 ## Fix-induced defects
 
-No correctness defect was introduced by the fixes. The round-1 fold did leave two registry gaps that a second `/code-review` round found in the fold as new code. The new pump guard had no registered mutation, and re-aiming `sdk-heartbeat-cancellation-outcome` into the issuer left the context's hand-off unrecorded. Both are fixed in this PR with registered mutations owned by attributable verdicts.
+No correctness defect was introduced by the fixes. The folds did leave registry gaps, and each later round reviewed the previous fold as new code. Round 2 found that the new pump guard had no registered mutation, and that re-aiming `sdk-heartbeat-cancellation-outcome` into the issuer left the context's hand-off unrecorded. Round 3 found that moving it back left the issuer's error-class swap unrecorded. All three are fixed in this PR with registered mutations owned by attributable verdicts.
 
 ## Evidence
 
-- Red test: commit `d4c4177`, run and seen failing (1 test) against `6263223`'s parent, `272c19c`: `-     "kind": "lease-lost",` `+     "kind": "completed",` `-   "stepRan": false,` `+   "stepRan": true,`.
+- Red test: commit `d4c4177`, whose parent is the unfixed `272c19c`, run and seen failing (1 test): `-     "kind": "lease-lost",` `+     "kind": "completed",` `-   "stepRan": false,` `+   "stepRan": true,`.
 - Fix: commit `6263223`; after the fix the SDK, provenance, and TLA artifact tests pass (117), and the heartbeat, cancellation, and refusal conformance cases pass on libSQL and PostgreSQL (822). Remote `pnpm verify` at `6263223` passed with 109 test files and 6794 tests.
 - Finder: Fable `/code-review` round 1, quoted: "In plain JS, a store that still returns `{held:false, remainingMs:0}` leaves `leaseEnd = undefined`. The pump then returns without stopping the handler, which keeps running side effects until a fenced write is refused."
 - Did not reproduce as a reachable defect: round 1's finding that the refusal read ignores queue and claim token. A run with a live pump is activated, an activated run is never reopened under its run id, and a caller passing another queue is outside the worker contract. It is rejected with that reason in the PR body.
@@ -58,6 +61,7 @@ Built in this PR:
 
 - The pump stops the handler on any refusal that does not name the cancellation (rung 1 at the pump), in `packages/sdk/src/run-worker.ts`.
 - Red case and registered mutation `sdk-reasonless-refusal-is-lease-lost` (rung 3), in `packages/sdk/test/run-worker.test.ts` and `scripts/mutation-probe.py`.
+- Registered mutations for each step the reason crosses on its way to the handler (rung 3): `heartbeat-names-cancellation` in the store, `sdk-heartbeat-cancellation-outcome` in the context, and `task-control-runtime-cancellation-auth` and `task-control-cancellation-error-class` in the issuer.
 
 Deferred (recorded in BUILD.md):
 

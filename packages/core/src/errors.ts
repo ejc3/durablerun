@@ -209,7 +209,14 @@ export const CANCELLED_LEASE: LeaseState = Object.freeze({
 /** A refused heartbeat's answer, named by the same classification as a refused write. */
 export async function refusedLease(readRunState: () => Promise<unknown>): Promise<LeaseState> {
   const refusal = await refusalReason(readRunState)
-  return refusal.reason === 'cancelled' ? CANCELLED_LEASE : LOST_LEASE
+  switch (refusal.reason) {
+    case 'cancelled':
+      return CANCELLED_LEASE
+    case 'lease-lost':
+      return LOST_LEASE
+    default:
+      return refusal satisfies never
+  }
 }
 
 /**

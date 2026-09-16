@@ -2335,8 +2335,8 @@ MUTATION_SPECS = [
     (
         "sdk-heartbeat-cancellation-outcome",
         "packages/sdk/src/context.ts",
-        "this.#controls.leaseEnded(reason, this.#run.runId)",
-        "this.#controls.leaseEnded('lease-lost', this.#run.runId)",
+        "this.#controls.leaseEnded(reason, this.#run)",
+        "this.#controls.leaseEnded('lease-lost', this.#run)",
         "a context call after a heartbeat that reported the cancellation ends the pass as lease-lost",
     ),
     (
@@ -3902,6 +3902,13 @@ MUTATION_SPECS.extend(
             "          return enroll(new RunCancelledError(message), RUN_CANCELLED)",
             "          throw new RunCancelledError(message) // MUTATION",
             "a cancellation minted by the invocation runtime is not enrolled",
+        ),
+        (
+            "task-control-cancellation-error-class",
+            "packages/sdk/src/task-control.ts",
+            "          return enroll(new RunCancelledError(message), RUN_CANCELLED)",
+            "          return enroll(new LeaseLostError(message), LEASE_LOST) // MUTATION",
+            "a cancellation minted by the invocation runtime becomes a lost lease",
         ),
         (
             "task-control-store-lease-auth",
@@ -6405,6 +6412,12 @@ VERDICTS.update(
             "packages/sdk/test/task-control.test.ts",
             "task control scope enrolls a cancellation minted by the invocation runtime",
             "mutation-verdict:construction:task-control-runtime-cancellation-auth",
+        ),
+        "task-control-cancellation-error-class": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope mints a runtime cancellation as RunCancelledError, not a lost lease",
+            "mutation-verdict:behavior:task-control-cancellation-error-class",
         ),
         "task-control-store-lease-auth": ExpectedVerdict(
             "construction",
@@ -9767,7 +9780,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 437:
+        if len(MUTATIONS) != 438:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
