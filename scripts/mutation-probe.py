@@ -52,13 +52,13 @@ TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
 VERIFIER_KILL_GRACE_SECONDS = 0.5
-# A launcher's process group can briefly outlive the launcher. On some hosts `git` is
-# a wrapper that leaves an asynchronous logging process in the caller's group, so a
-# worker whose last act is a git call leaves that process behind for a moment:
-# measured at up to 410 ms. Launch cleanup waits this long for the group to drain
-# before it calls a descendant live. A group still live after the grace fails the
-# audit as before.
-LAUNCHER_DRAIN_GRACE_SECONDS = 5.0
+# A process group can briefly outlive its leader. On some hosts `git` is a wrapper
+# that leaves an asynchronous logging process in the caller's group, so a launcher or
+# verifier whose last act is a git call leaves that process behind for a moment:
+# measured at up to 410 ms. Launcher and suite cleanup wait this long for the group
+# to drain before they call a descendant live. A group still live after the grace
+# fails the audit as before.
+PROCESS_GROUP_DRAIN_GRACE_SECONDS = 5.0
 
 
 VerdictKind = Literal["behavior", "construction"]
@@ -7496,10 +7496,12 @@ def run_suite_process(
     wall_time_seconds: float,
     audit_lock: InheritedAuditLock,
     drop_audit_lock_inheritance: bool = False,
+    drain_grace_seconds: float = PROCESS_GROUP_DRAIN_GRACE_SECONDS,
 ) -> int:
     """Run one verifier suite with a deadline that owns its whole process group."""
     if not math.isfinite(wall_time_seconds) or wall_time_seconds <= 0:
         raise ValueError("suite wall-time limit must be finite and positive")
+    validate_drain_grace(drain_grace_seconds)
     if prove_inherited_audit_lock(audit_lock.path, audit_lock.fd) != audit_lock:
         raise ValueError("mutation verifier audit-lock capability changed")
     previous_handlers = {
@@ -7544,10 +7546,11 @@ def run_suite_process(
             raise SuiteInfrastructureError(
                 f"suite wall-time limit of {wall_time_seconds:g}s exceeded"
             ) from error
-        if process_group_exists(process.pid):
+        if wait_for_process_groups([process.pid], drain_grace_seconds):
             terminate_verifier_group(process)
             raise SuiteInfrastructureError(
-                "suite process leader exited with live descendants"
+                "suite process leader exited with live descendants after a "
+                f"{drain_grace_seconds:g}s drain"
             )
         return returncode
     except BaseException:
@@ -7881,6 +7884,7 @@ def suite_linger_self_test_child(state_path: Path) -> int:
                         output=output,
                         wall_time_seconds=1.0,
                         audit_lock=fixture_authority.audit_lock,
+                        drain_grace_seconds=0.2,
                     )
                 except SuiteInfrastructureError:
                     pass
@@ -13220,6 +13224,11 @@ def process_group_exists(process_group: int) -> bool:
         return True
 
 
+def validate_drain_grace(grace_seconds: float) -> None:
+    if not math.isfinite(grace_seconds) or grace_seconds < 0:
+        raise ValueError("process group drain grace must be finite and nonnegative")
+
+
 def wait_for_process_groups(
     groups: list[int],
     grace_seconds: float,
@@ -13227,8 +13236,7 @@ def wait_for_process_groups(
     interval_seconds: float = 0.01,
 ) -> list[int]:
     """Return the groups still live after waiting up to grace_seconds for them to drain."""
-    if not math.isfinite(grace_seconds) or grace_seconds < 0:
-        raise ValueError("process group drain grace must be finite and nonnegative")
+    validate_drain_grace(grace_seconds)
     deadline = time.monotonic() + grace_seconds
     live = [group for group in groups if process_group_exists(group)]
     while live and time.monotonic() < deadline:
@@ -13301,7 +13309,7 @@ def run_launches(
     *,
     allowed_returncodes: frozenset[int],
     omit_exited_groups: bool = False,
-    drain_grace_seconds: float = LAUNCHER_DRAIN_GRACE_SECONDS,
+    drain_grace_seconds: float = PROCESS_GROUP_DRAIN_GRACE_SECONDS,
 ) -> dict[str, int]:
     processes: dict[str, subprocess.Popen[bytes]] = {}
     handles: dict[str, object] = {}
