@@ -11278,8 +11278,6 @@ LATE_REAP_FAULT_GRACE_SECONDS = 1.8
 # The late-reap child's verdict that cleanup reported the group unreapable. Like
 # WORKER_RED_RETURNCODE, it is not 1, so a crashed child is never read as a verdict.
 LATE_REAP_REJECTED_RETURNCODE = 3
-# The statuses the late-reap child returns after its own cleanup has run.
-LATE_REAP_SELF_CLEANED_RETURNCODES = frozenset((0, 2, LATE_REAP_REJECTED_RETURNCODE))
 LATE_REAP_PROGRAM = """\
 import importlib.util, pathlib, sys
 spec = importlib.util.spec_from_file_location("probe", sys.argv[1])
@@ -11296,18 +11294,23 @@ raise SystemExit(
 """
 
 
-def stop_late_reap_child(process: subprocess.Popen[str], state_path: Path) -> None:
-    """Stop a late-reap self-test child, and clean its group if the child could not.
+def late_reap_cleaned_path(state_path: Path) -> Path:
+    """The file a late-reap child writes once its own cleanup has finished."""
+    return state_path.with_name(f"{state_path.name}.cleaned")
 
-    Every status the child returns itself comes after its own cleanup, and cleaning
-    again later could signal a process that reused a recorded PID. Any other status,
-    such as a signal or an exception raised during that cleanup, means the group may
-    still be live.
+
+def stop_late_reap_child(process: subprocess.Popen[str], state_path: Path) -> None:
+    """Stop a late-reap self-test child, and clean its group if the child did not.
+
+    A child that finished its own cleanup says so in late_reap_cleaned_path, and
+    cleaning again later could signal a process that reused a recorded PID. Without
+    that file, whether the child was killed or its cleanup raised, the group may still
+    be live.
     """
     if process.poll() is None:
         process.kill()
         process.wait()
-    if process.returncode not in LATE_REAP_SELF_CLEANED_RETURNCODES:
+    if not late_reap_cleaned_path(state_path).exists():
         cleanup_suite_self_test_records(state_path)
 
 
@@ -11376,6 +11379,7 @@ def late_reap_self_test_child(
         return 0
     finally:
         cleanup_suite_self_test_records(state_path)
+        late_reap_cleaned_path(state_path).touch()
 
 
 # The last line of an orchestration self-test run that could not measure a case.
@@ -11388,9 +11392,10 @@ def orchestration_fault_verdict(
     """How the fault loop reads one fault run.
 
     Exit 2 alone is also what a usage error gives, so a run is unmeasured only when
-    it prints ORCHESTRATION_UNMEASURED_MARKER.
+    its last line starts with ORCHESTRATION_UNMEASURED_MARKER.
     """
-    if returncode == 2 and ORCHESTRATION_UNMEASURED_MARKER in output:
+    lines = output.strip().splitlines()
+    if returncode == 2 and lines and lines[-1].startswith(ORCHESTRATION_UNMEASURED_MARKER):
         return "unmeasured"
     marker = f"mutation-probe orchestration self-test caught injected fault {fault}"
     return "caught" if returncode == 1 and marker in output else "missed"
