@@ -110,6 +110,17 @@ class SuiteResult:
         )
 
 
+class LiveDescendantGroupsError(RuntimeError):
+    """Launchers exited, but their process groups outlived the drain grace."""
+
+    def __init__(self, groups: list[int], grace_seconds: float) -> None:
+        super().__init__(
+            "launchers exited with live descendant groups after a "
+            f"{grace_seconds:g}s drain: {groups}"
+        )
+        self.groups = groups
+
+
 class SuiteInfrastructureError(RuntimeError):
     pass
 
@@ -10957,39 +10968,72 @@ def resolve_pnpm_store(root: Path) -> Path:
     return pnpm_store_from_result(result)
 
 
+DESCENDANT_LAUNCHER_PROGRAM = """\
+import os, subprocess, sys
+child = subprocess.Popen([sys.executable, "-c", sys.argv[1], *sys.argv[3:]])
+print(child.pid, os.getpgrp(), flush=True)
+raise SystemExit(int(sys.argv[2]))
+"""
+
+DESCENDANT_CHILD_PROGRAM = """\
+import pathlib, sys, time
+deadline = time.monotonic() + float(sys.argv[1])
+barrier = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else None
+while time.monotonic() < deadline and not (barrier is not None and barrier.exists()):
+    time.sleep(0.01)
+"""
+
+
 def descendant_launch(
     temporary: Path,
     label: str,
     *,
-    sleep_seconds: float,
+    lifetime_seconds: float,
     exit_code: int = 0,
+    barrier: Path | None = None,
 ) -> ProcessLaunch:
-    """A launcher that starts one sleeping child in its own group, records the child's pid, and exits."""
-    child_code = (
-        "import subprocess,sys; "
-        "child=subprocess.Popen([sys.executable,'-c',"
-        f"'import time; time.sleep({sleep_seconds:g})']); "
-        f"print(child.pid, flush=True); raise SystemExit({exit_code})"
-    )
+    """A launcher that starts one child inside its own process group, records both, and exits.
+
+    The child lives for lifetime_seconds, or until barrier exists when one is given.
+    """
     return ProcessLaunch(
         label,
-        (sys.executable, "-c", child_code),
+        (
+            sys.executable,
+            "-c",
+            DESCENDANT_LAUNCHER_PROGRAM,
+            DESCENDANT_CHILD_PROGRAM,
+            str(exit_code),
+            f"{lifetime_seconds:g}",
+            *(() if barrier is None else (str(barrier),)),
+        ),
         temporary,
         temporary / f"{label}.log",
         os.environ.copy(),
     )
 
 
-def reap_leftover_process(launch: ProcessLaunch) -> bool:
-    """Kill the launch's recorded child if it is still live, and report whether it was."""
-    child_pid = int(launch.log.read_text().splitlines()[0])
-    if not process_id_is_live(child_pid):
-        return False
+def reap_leftover_process(launch: ProcessLaunch) -> str | None:
+    """Kill the launch's recorded child if it is still live in the launcher's group.
+
+    Returns a description of what was left behind, or None when nothing was.
+    """
+    first_line = launch.log.read_text(errors="replace").splitlines()[:1]
+    fields = first_line[0].split() if first_line else []
+    if len(fields) != 2 or not all(field.isdigit() for field in fields):
+        return (
+            f"{launch.label} launcher did not record its child: "
+            f"{diagnostic_tail(launch.log)[:300]}"
+        )
+    child_pid, group = int(fields[0]), int(fields[1])
     try:
+        # A pid outside the launcher's group was reused by an unrelated process.
+        if os.getpgid(child_pid) != group or not process_id_is_live(child_pid):
+            return None
         os.kill(child_pid, signal.SIGKILL)
     except ProcessLookupError:
-        pass
-    return True
+        return None
+    return f"child {child_pid} in group {group} was still live"
 
 
 def orchestration_self_test(fault: str | None = None) -> int:
@@ -11530,7 +11574,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
 
         if fault in (None, "leave-descendant-running"):
             launch = descendant_launch(
-                temporary, "descendant-self-test", sleep_seconds=30, exit_code=2
+                temporary, "descendant-self-test", lifetime_seconds=30, exit_code=2
             )
             try:
                 run_launches(
@@ -11540,8 +11584,11 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 )
             except RuntimeError:
                 pass
-            if reap_leftover_process(launch):
-                failures.append("process cleanup: exited leader left a live descendant")
+            leftover = reap_leftover_process(launch)
+            if leftover:
+                failures.append(
+                    f"process cleanup: exited leader left a live descendant: {leftover}"
+                )
 
         if fault in (None, "leave-zombie-group"):
             zombie = subprocess.Popen(
@@ -11579,42 +11626,67 @@ def orchestration_self_test(fault: str | None = None) -> int:
             zombie.wait()
 
         if fault in (None, "reject-draining-group"):
-            launch = descendant_launch(temporary, "drain-self-test", sleep_seconds=2)
+            # The child exits once cleanup starts draining. Under the fault the
+            # runner checks with no drain and never releases the barrier, so the
+            # group is live at the check however late the runner sees the exit.
+            barrier = temporary / "drain-self-test.released"
+            launch = descendant_launch(
+                temporary, "drain-self-test", lifetime_seconds=30, barrier=barrier
+            )
+            release = (
+                contextlib.nullcontext() if fault else barrier_released_on_drain(barrier)
+            )
             options = {"drain_grace_seconds": 0.0} if fault else {}
             try:
-                run_launches([launch], allowed_returncodes=frozenset((0,)), **options)
+                with release:
+                    run_launches([launch], allowed_returncodes=frozenset((0,)), **options)
             except RuntimeError as error:
                 failures.append(
                     "process cleanup: a launcher group that drains after its leader "
                     f"exits was reported live: {error}"
                 )
+            leftover = reap_leftover_process(launch)
+            if leftover:
+                failures.append(
+                    f"process cleanup: a draining launcher group was left running: {leftover}"
+                )
 
         if fault in (None, "accept-lingering-group"):
-            launch = descendant_launch(temporary, "linger-self-test", sleep_seconds=30)
+            launch = descendant_launch(temporary, "linger-self-test", lifetime_seconds=30)
             original_wait = wait_for_process_groups
+
+            def accept_every_group(
+                groups: list[int], grace_seconds: float, **options: float
+            ) -> list[int]:
+                original_wait(groups, grace_seconds, **options)
+                return []
+
             if fault:
-                globals()["wait_for_process_groups"] = lambda groups, grace_seconds, **_: []
+                globals()["wait_for_process_groups"] = accept_every_group
             try:
                 run_launches(
                     [launch],
                     allowed_returncodes=frozenset((0,)),
                     drain_grace_seconds=0.2,
                 )
+            except LiveDescendantGroupsError:
+                pass
             except RuntimeError as error:
-                if "live descendant groups after a" not in str(error):
-                    failures.append(
-                        "process cleanup: a launcher group that outlived its drain was "
-                        f"rejected for another reason: {error}"
-                    )
+                failures.append(
+                    "process cleanup: a launcher group that outlived its drain was "
+                    f"rejected for another reason: {error}"
+                )
             else:
                 failures.append(
                     "process cleanup: a launcher group that outlived its drain was accepted"
                 )
             finally:
                 globals()["wait_for_process_groups"] = original_wait
-            if reap_leftover_process(launch):
+            leftover = reap_leftover_process(launch)
+            if leftover:
                 failures.append(
-                    "process cleanup: a launcher group that outlived its drain was left running"
+                    "process cleanup: a launcher group that outlived its drain was left "
+                    f"running: {leftover}"
                 )
 
     try:
@@ -13311,6 +13383,7 @@ def run_launches(
     omit_exited_groups: bool = False,
     drain_grace_seconds: float = PROCESS_GROUP_DRAIN_GRACE_SECONDS,
 ) -> dict[str, int]:
+    validate_drain_grace(drain_grace_seconds)
     processes: dict[str, subprocess.Popen[bytes]] = {}
     handles: dict[str, object] = {}
     completed: dict[str, int] = {}
@@ -13362,10 +13435,7 @@ def run_launches(
         )
         if live_groups:
             terminate_process_groups(list(processes.values()))
-            raise RuntimeError(
-                "launchers exited with live descendant groups after a "
-                f"{drain_grace_seconds:g}s drain: {live_groups}"
-            )
+            raise LiveDescendantGroupsError(live_groups, drain_grace_seconds)
         return completed
     except BaseException:
         terminate_process_groups(
