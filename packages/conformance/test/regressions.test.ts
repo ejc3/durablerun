@@ -622,6 +622,8 @@ describe('transition-layer review regressions (first round)', () => {
 })
 
 describe('sweep and cancellation review regressions', () => {
+  // 150 seeded fixtures take about 2 s on an idle core. A full mutation audit runs one
+  // Vitest worker per core, where the default 5 s timeout failed green baselines.
   it('losing sweeper can never terminally fail a task whose successor lives (stamp fencing)', async () => {
     const corruptSeeds: number[] = []
     for (let seed = 0; seed < 150; seed++) {
@@ -662,7 +664,7 @@ describe('sweep and cancellation review regressions', () => {
       await f.close()
     }
     expect(corruptSeeds, 'seeds reaching an invariant-violating state').toEqual([])
-  })
+  }, 60_000)
 
   // fenceTwin('CancelSweep') — the disarmed-deadline guard blocks the
   // sweep's cancel CAS from firing on a task that started in time.
