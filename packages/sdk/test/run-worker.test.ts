@@ -1477,6 +1477,49 @@ describe('runClaimedRun', () => {
     f.close()
   })
 
+  it('a refused heartbeat that names no reason still stops the handler as a lost lease', async () => {
+    const f = await fx('sdk-reasonless-refused-heartbeat')
+    await f.store.spawn(Q, 'job', '{}')
+    let beatSettled: () => void = () => undefined
+    const firstBeat = new Promise<void>((resolve) => {
+      beatSettled = resolve
+    })
+    // A store built against the earlier contract reports a refusal with no reason.
+    const legacy = new Proxy(f.store, {
+      get(target, prop, receiver) {
+        if (prop === 'heartbeat') {
+          return async () => {
+            beatSettled()
+            return { held: false, remainingMs: 0 } as unknown as Awaited<
+              ReturnType<SchedulerStore['heartbeat']>
+            >
+          }
+        }
+        const value = Reflect.get(target, prop, receiver)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    let stepRan = false
+    const reg = registry({
+      job: async (ctx) => {
+        await f.advance(30_000)
+        await firstBeat
+        await f.clock.yieldTurn()
+        await ctx.step('after-the-beat', () => {
+          stepRan = true
+          return 1
+        })
+        return 'done'
+      },
+    })
+    const outcome = await runClaimedRun(
+      { store: legacy as SchedulerStore, clock: f.clock, registry: reg },
+      await claimInvocation(f, 'w1'),
+    )
+    expect({ outcome, stepRan }).toEqual({ outcome: { kind: 'lease-lost' }, stepRan: false })
+    f.close()
+  })
+
   it('a cancellation the heartbeat discovers ends the pass as cancelled at the next context call', async () => {
     const f = await fx('sdk-cancelled-heartbeat')
     const spawned = await f.store.spawn(Q, 'job', '{}')
