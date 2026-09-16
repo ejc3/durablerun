@@ -64,8 +64,8 @@ LAUNCHER_TERM_GRACE_SECONDS = (
     VERIFIER_TERM_GRACE_SECONDS + KILLED_GROUP_REAP_GRACE_SECONDS + 1.75
 )
 # A worker's exit status. A red result is read from the worker's report, so its
-# status is neither 1, the status of a worker that crashed with an uncaught exception
-# and wrote no report, nor 2, the infrastructure status.
+# status is neither 2, which a worker returns when its phase raises, nor 1, Python's
+# status for an exception the worker cannot catch, such as one raised while it imports.
 WORKER_INFRASTRUCTURE_RETURNCODE = 2
 WORKER_RED_RETURNCODE = 3
 WORKER_RESULT_RETURNCODES = frozenset((0, WORKER_RED_RETURNCODE))
@@ -8221,6 +8221,8 @@ def suite_interrupt_self_test_child(state_path: Path) -> int:
 
 
 COMPILER_ERROR_PATTERN = re.compile(r"(?m)^(.+?\.tsx?)\((\d+),(\d+)\): error TS(\d+):.*$")
+# A project error, such as a missing configuration file, has no file position.
+COMPILER_PROJECT_ERROR_PATTERN = re.compile(r"(?m)^error TS\d+:.*$")
 
 
 def compiler_errors(compiler_output: str) -> tuple[str, list[re.Match[str]]]:
@@ -8232,13 +8234,14 @@ def compiler_errors(compiler_output: str) -> tuple[str, list[re.Match[str]]]:
 def typecheck_baseline_failure(compiler_output: str, diagnostic: str) -> SuiteResult:
     """A red unmutated compiler leg, named by the compiler's own error lines.
 
-    Output with no located error line, such as a configuration error or a crashed
-    compiler, is named by its last lines instead.
+    Project errors come first, since located errors often follow from them. Output
+    with neither, such as a crashed compiler, is named by its last lines instead.
     """
     plain, located = compiler_errors(compiler_output)
-    named = [error.group(0) for error in located] or [
-        line for line in plain.splitlines() if line.strip()
-    ][-20:]
+    named = [
+        *COMPILER_PROJECT_ERROR_PATTERN.findall(plain),
+        *(error.group(0) for error in located),
+    ] or [line for line in plain.splitlines() if line.strip()][-20:]
     return SuiteResult(
         False,
         False,
@@ -11263,13 +11266,11 @@ def reap_leftover_process(launch: ProcessLaunch) -> str | None:
     return f"{launch.label} left child {child_pid} running in group {group}"
 
 
-# A subreaper that kills a verifier-shaped group through the production verifier
-# cleanup and reaps its orphaned descendant two seconds late, as a loaded host reaps
-# a killed suite's processes late. It exits 0 when the cleanup accepts the group.
 # The late-reap case reaps a killed group's descendant this long after SIGKILL, above
-# the measured worst case recorded at KILLED_GROUP_REAP_GRACE_SECONDS. Its fault's
-# grace sits above that worst case and below the late reap, and must be rejected.
-LATE_REAP_DELAY_SECONDS = 2.0
+# the measured worst case recorded at KILLED_GROUP_REAP_GRACE_SECONDS. The production
+# grace must accept the group and the fault's grace must reject it, each with about
+# 0.6 s of margin for a loaded host.
+LATE_REAP_DELAY_SECONDS = 2.4
 LATE_REAP_FAULT_GRACE_SECONDS = 1.8
 LATE_REAP_PROGRAM = """\
 import importlib.util, pathlib, sys
@@ -11285,6 +11286,14 @@ raise SystemExit(
     )
 )
 """
+
+
+def stop_late_reap_child(process: subprocess.Popen[str], state_path: Path) -> None:
+    """Stop a late-reap self-test child and the verifier-shaped group it started."""
+    if process.poll() is None:
+        process.kill()
+        process.wait()
+    cleanup_suite_self_test_records(state_path)
 
 
 def process_state(process_id: int) -> str | None:
@@ -11546,7 +11555,10 @@ def orchestration_self_test(fault: str | None = None) -> int:
     else:
         failures.append("malformed baseline identity types were accepted")
 
-    with tempfile.TemporaryDirectory(prefix="durablerun-orchestration-selftest-") as tmp:
+    with (
+        tempfile.TemporaryDirectory(prefix="durablerun-orchestration-selftest-") as tmp,
+        contextlib.ExitStack() as child_cleanup,
+    ):
         temporary = Path(tmp)
         if fault in (None, "drop-audit-lock-inheritance"):
             failures.extend(
@@ -11913,10 +11925,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
             deadline = time.monotonic() + 2
             state = ""
             while time.monotonic() < deadline:
-                try:
-                    state = Path(f"/proc/{zombie.pid}/stat").read_text().split()[2]
-                except OSError:
-                    state = ""
+                state = process_state(zombie.pid) or ""
                 if state == "Z":
                     break
                 time.sleep(0.01)
@@ -11946,7 +11955,8 @@ def orchestration_self_test(fault: str | None = None) -> int:
         late_reap: subprocess.Popen[str] | None = None
         if fault in (None, "short-kill-grace"):
             # It runs beside the cases below and is collected before the temporary
-            # directory goes away.
+            # directory goes away, or stopped if a case raises first.
+            late_reap_state = temporary / "late-reap.jsonl"
             late_reap = subprocess.Popen(
                 (
                     sys.executable,
@@ -11954,7 +11964,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "-c",
                     LATE_REAP_PROGRAM,
                     str(Path(__file__).resolve()),
-                    str(temporary / "late-reap.jsonl"),
+                    str(late_reap_state),
                     repr(LATE_REAP_DELAY_SECONDS),
                     *((repr(LATE_REAP_FAULT_GRACE_SECONDS),) if fault else ()),
                 ),
@@ -11963,6 +11973,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 stderr=subprocess.STDOUT,
                 text=True,
             )
+            child_cleanup.callback(stop_late_reap_child, late_reap, late_reap_state)
 
         if fault is None:
             for compiler_output, compiler_error in (
@@ -12079,12 +12090,17 @@ def orchestration_self_test(fault: str | None = None) -> int:
             try:
                 late_reap_output, _ = late_reap.communicate(timeout=60)
             except subprocess.TimeoutExpired:
-                late_reap.kill()
-                late_reap_output, _ = late_reap.communicate()
-            if late_reap.returncode != 0:
+                late_reap_output = "timed out after 60 s"
+            # Exit 1 is the verdict "unreapable". Anything else means the case did not
+            # measure a grace, which must not pass for the fault being caught.
+            if late_reap.returncode not in (0, 1):
+                raise RuntimeError(
+                    f"late-reap self-test could not run: {late_reap_output.strip()[-300:]}"
+                )
+            if late_reap.returncode == 1:
                 failures.append(
-                    "process cleanup: a killed group reaped two seconds after SIGKILL was "
-                    f"reported unreapable: {late_reap_output.strip()[-300:]}"
+                    f"process cleanup: a killed group reaped {LATE_REAP_DELAY_SECONDS:g} s "
+                    f"after SIGKILL was reported unreapable: {late_reap_output.strip()[-300:]}"
                 )
 
     try:
@@ -12397,8 +12413,14 @@ def read_json(path: Path) -> object:
 
 
 def red_baseline_reason(result: SuiteResult) -> str:
-    """The reason a worker reports for a red baseline."""
-    return suite_failure_detail(result)
+    """The reason a worker reports for a red baseline.
+
+    It names every failing test before any failure message, so a reason cut to its
+    front still names them all.
+    """
+    names = [f"{failure.file} > {failure.full_name}" for failure in result.assertions]
+    detail = suite_failure_detail(result)
+    return "\n".join((*names, "", detail)) if names else detail
 
 
 def suite_failure_detail(result: SuiteResult) -> str:
@@ -13214,27 +13236,30 @@ def mutation_checkpoint_problems() -> list[str]:
         red_baseline_diagnostic = red_baseline_reason(
             SuiteResult(False, False, tuple(red_baseline_tests), (), "")
         )
-        crashed_worker_traceback = "Traceback (most recent call last):\n" + "".join(
-            f'  File "/workspace/scripts/mutation-probe.py", line {1000 + index}, '
-            f"in frame_{index:02}\n    frame_{index + 1:02}()\n"
-            for index in range(40)
-        )
-
         def crashed_launches(
             launches: list[ProcessLaunch],
             *,
             allowed_returncodes: frozenset[int],
-            exception_line: str,
+            exception_message: str,
         ) -> dict[str, int]:
-            # A worker that crashes before it writes a report exits 1, the
-            # uncaught-exception status, with its traceback in its log.
+            # A worker whose phase raises deep in a call stack writes what
+            # worker_exit_status prints, and exits with the status it returns.
+            def crash(depth: int) -> int:
+                if depth:
+                    return crash(depth - 1)
+                raise ImportError(exception_message)
+
+            codes: dict[str, int] = {}
             for launch in launches:
+                worker_log = io.StringIO()
+                with contextlib.redirect_stderr(worker_log):
+                    codes[launch.label] = worker_exit_status(lambda: crash(40))
                 launch.log.parent.mkdir(parents=True, exist_ok=True)
-                launch.log.write_text(f"{crashed_worker_traceback}{exception_line}\n")
-                if 1 not in allowed_returncodes:
+                launch.log.write_text(worker_log.getvalue())
+                if codes[launch.label] not in allowed_returncodes:
                     # A real launcher reports a disallowed exit from the worker log.
-                    raise RuntimeError(launch_exit_error(launch, 1))
-            return {launch.label: 1 for launch in launches}
+                    raise RuntimeError(launch_exit_error(launch, codes[launch.label]))
+            return codes
 
         def baseline_report(launch: ProcessLaunch, *, green: bool) -> None:
             command = launch.command
@@ -13269,7 +13294,7 @@ def mutation_checkpoint_problems() -> list[str]:
                     return crashed_launches(
                         launches,
                         allowed_returncodes=allowed_returncodes,
-                        exception_line="ImportError: crashed baseline",
+                        exception_message="crashed baseline",
                     )
                 codes = {}
                 for launch in launches:
@@ -13286,7 +13311,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 return crashed_launches(
                     launches,
                     allowed_returncodes=allowed_returncodes,
-                    exception_line="ImportError: crashed mutations worker",
+                    exception_message="crashed mutations worker",
                 )
             codes: dict[str, int] = {}
             for launch in launches:
@@ -13727,6 +13752,9 @@ def worker_exit_status(run: Callable[[], int]) -> int:
         return run()
     except SystemExit as error:
         return int(error.code) if isinstance(error.code, int) else 2
+    except AuditSignal as error:
+        print(f"mutation-probe worker: interrupted by signal {error.signum}", file=sys.stderr)
+        return 128 + error.signum
     except Exception as error:
         return worker_infrastructure_failure(error)
 
@@ -13829,11 +13857,7 @@ class ProcessLaunch:
 
 
 def process_id_is_live(process_id: int) -> bool:
-    try:
-        fields = Path(f"/proc/{process_id}/stat").read_text().split()
-    except OSError:
-        return False
-    return len(fields) > 2 and fields[2] != "Z"
+    return process_state(process_id) not in ("Z", None)
 
 
 def process_group_exists(process_group: int) -> bool:
