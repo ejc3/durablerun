@@ -1516,7 +1516,10 @@ describe('runClaimedRun', () => {
       { store: legacy as SchedulerStore, clock: f.clock, registry: reg },
       await claimInvocation(f, 'w1'),
     )
-    expect({ outcome, stepRan }).toEqual({ outcome: { kind: 'lease-lost' }, stepRan: false })
+    expect(
+      { outcome, stepRan },
+      'mutation-verdict:behavior:sdk-reasonless-refusal-is-lease-lost',
+    ).toEqual({ outcome: { kind: 'lease-lost' }, stepRan: false })
     f.close()
   })
 

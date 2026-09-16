@@ -921,6 +921,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a generated
     clock-shape surface for the driver loop: forward and backward steps, and
     registry intervals shorter than the ceilings.
+  - Deferred from `postmortems/pr3.11a-cancelled-heartbeat-review.md`: a
+    cross-version answer case generated from the `SchedulerStore` port's result
+    types, crossing an older store with a newer worker and the reverse. It
+    belongs with the launch payload case above, which crosses the same
+    boundary from the driver's side.
 
 - **PR3.2 lifecycle polish**: DONE. Merged green as two stacked PRs. PR3.2a
   (PR #28) parks a claim that a build without the task's handler cannot run

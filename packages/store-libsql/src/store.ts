@@ -1342,7 +1342,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
    * run is terminal, so the read never misses a cancellation that refused the
    * write.
    */
-  private refusal(operation: string, runId: string): Promise<Error> {
+  private refusal(operation: string, runId: string): ReturnType<typeof refusedWriteError> {
     return refusedWriteError(operation, runId, () => this.refusalState(runId))
   }
 

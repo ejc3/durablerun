@@ -192,13 +192,20 @@ describe('task control scope', () => {
 
   it('enrolls lease loss minted by the invocation runtime', () => {
     const scope = createTaskControlScope()
-    const signal = captureThrown(() =>
-      scope.issuer.leaseEnded('lease-lost', 'heartbeat lost the lease'),
-    )
+    const signal = captureThrown(() => scope.issuer.leaseEnded('lease-lost', 'run-1'))
     expect(
       scope.snapshot(signal),
       'mutation-verdict:construction:task-control-runtime-lease-auth',
     ).toEqual({ kind: 'lease-lost' })
+  })
+
+  it('enrolls a cancellation minted by the invocation runtime', () => {
+    const scope = createTaskControlScope()
+    const signal = captureThrown(() => scope.issuer.leaseEnded('cancelled', 'run-1'))
+    expect(
+      scope.snapshot(signal),
+      'mutation-verdict:construction:task-control-runtime-cancellation-auth',
+    ).toEqual({ kind: 'run-cancelled' })
   })
 
   it('enrolls typed failures only at the immediate trusted store boundary', async () => {

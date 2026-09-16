@@ -2334,12 +2334,17 @@ MUTATION_SPECS = [
     ),
     (
         "sdk-heartbeat-cancellation-outcome",
-        "packages/sdk/src/task-control.ts",
-        "        case 'cancelled':\n"
-        "          return enroll(new RunCancelledError(message), RUN_CANCELLED)\n",
-        "        case 'cancelled':\n"
-        "          return enroll(new LeaseLostError(message), LEASE_LOST) // MUTATION\n",
+        "packages/sdk/src/context.ts",
+        "this.#controls.leaseEnded(reason, this.#run.runId)",
+        "this.#controls.leaseEnded('lease-lost', this.#run.runId)",
         "a context call after a heartbeat that reported the cancellation ends the pass as lease-lost",
+    ),
+    (
+        "sdk-reasonless-refusal-is-lease-lost",
+        "packages/sdk/src/run-worker.ts",
+        "leaseEnd.reason = lease.reason === 'cancelled' ? 'cancelled' : 'lease-lost'",
+        "leaseEnd.reason = lease.reason === 'cancelled' ? 'cancelled' : lease.reason // MUTATION",
+        "a refused heartbeat that names no reason records nothing and the handler keeps running",
     ),
     (
         "suspend-rejects-noninteger-attempt",
@@ -3890,6 +3895,13 @@ MUTATION_SPECS.extend(
             "          return enroll(new LeaseLostError(message), LEASE_LOST)",
             "          throw new LeaseLostError(message) // MUTATION",
             "lease loss minted by the invocation runtime is not enrolled",
+        ),
+        (
+            "task-control-runtime-cancellation-auth",
+            "packages/sdk/src/task-control.ts",
+            "          return enroll(new RunCancelledError(message), RUN_CANCELLED)",
+            "          throw new RunCancelledError(message) // MUTATION",
+            "a cancellation minted by the invocation runtime is not enrolled",
         ),
         (
             "task-control-store-lease-auth",
@@ -5853,6 +5865,12 @@ VERDICTS = {
         "runClaimedRun a cancellation the heartbeat discovers ends the pass as cancelled at the next context call",
         "mutation-verdict:behavior:sdk-heartbeat-cancellation-outcome",
     ),
+    "sdk-reasonless-refusal-is-lease-lost": ExpectedVerdict(
+        "behavior",
+        "packages/sdk/test/run-worker.test.ts",
+        "runClaimedRun a refused heartbeat that names no reason still stops the handler as a lost lease",
+        "mutation-verdict:behavior:sdk-reasonless-refusal-is-lease-lost",
+    ),
     "suspend-rejects-noninteger-attempt": ExpectedVerdict(
         "behavior",
         "packages/conformance/test/libsql.test.ts",
@@ -6381,6 +6399,12 @@ VERDICTS.update(
             "packages/sdk/test/task-control.test.ts",
             "task control scope enrolls lease loss minted by the invocation runtime",
             "mutation-verdict:construction:task-control-runtime-lease-auth",
+        ),
+        "task-control-runtime-cancellation-auth": ExpectedVerdict(
+            "construction",
+            "packages/sdk/test/task-control.test.ts",
+            "task control scope enrolls a cancellation minted by the invocation runtime",
+            "mutation-verdict:construction:task-control-runtime-cancellation-auth",
         ),
         "task-control-store-lease-auth": ExpectedVerdict(
             "construction",
@@ -9743,7 +9767,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 435:
+        if len(MUTATIONS) != 437:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

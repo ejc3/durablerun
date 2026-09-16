@@ -6,7 +6,7 @@
  */
 
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { CheckpointWrite, LeaseEnd, LeaseState, WakeSpec } from './types.js'
+import type { CheckpointWrite, LeaseState, WakeSpec } from './types.js'
 
 export type TaskThrowableSnapshot = Readonly<{
   kind: 'failure'
@@ -170,17 +170,23 @@ export async function refusedWriteError(
     : new LeaseLostError(message)
 }
 
+/** A refusal's classification. Only a failed read carries a cause. */
+export type Refusal =
+  | { reason: 'cancelled' }
+  | { reason: 'lease-lost'; readFailed: false }
+  | { reason: 'lease-lost'; readFailed: true; cause: unknown }
+
 /**
  * Why a fence was refused, from its run's state read after the refusal. Only a
  * run the task's cancellation ended is `cancelled`; every other state, and a
  * read that fails, is `lease-lost`.
  */
-export async function refusalReason(
-  readRunState: () => Promise<unknown>,
-): Promise<{ reason: LeaseEnd; readFailed: boolean; cause?: unknown }> {
+export async function refusalReason(readRunState: () => Promise<unknown>): Promise<Refusal> {
   try {
     const state = await readRunState()
-    return { reason: state === 'cancelled' ? 'cancelled' : 'lease-lost', readFailed: false }
+    return state === 'cancelled'
+      ? { reason: 'cancelled' }
+      : { reason: 'lease-lost', readFailed: false }
   } catch (cause) {
     return { reason: 'lease-lost', readFailed: true, cause }
   }
@@ -193,12 +199,17 @@ export const LOST_LEASE: LeaseState = Object.freeze({
   reason: 'lease-lost',
 })
 
+/** A heartbeat's answer when the task's cancellation ended the run. */
+export const CANCELLED_LEASE: LeaseState = Object.freeze({
+  held: false,
+  remainingMs: 0,
+  reason: 'cancelled',
+})
+
 /** A refused heartbeat's answer, named by the same classification as a refused write. */
 export async function refusedLease(readRunState: () => Promise<unknown>): Promise<LeaseState> {
-  const { reason } = await refusalReason(readRunState)
-  return reason === 'lease-lost'
-    ? LOST_LEASE
-    : Object.freeze({ held: false, remainingMs: 0, reason })
+  const refusal = await refusalReason(readRunState)
+  return refusal.reason === 'cancelled' ? CANCELLED_LEASE : LOST_LEASE
 }
 
 /**

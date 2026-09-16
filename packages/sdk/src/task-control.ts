@@ -32,7 +32,7 @@ export type TaskControlSnapshot = SuspendControlSnapshot | InfrastructureControl
 export interface TaskControlIssuer {
   sleep(wake: WakeSpec, checkpoint: CheckpointWrite): never
   awaitEvent(): never
-  leaseEnded(reason: LeaseEnd, message: string): never
+  leaseEnded(reason: LeaseEnd, runId: string): never
   storeCall<T>(operation: () => Promise<T>): Promise<T>
 }
 
@@ -106,12 +106,16 @@ export function createTaskControlScope(): TaskControlScope {
       return enroll(new SuspendSignal('await-event'), AWAIT_EVENT)
     },
 
-    leaseEnded(reason: LeaseEnd, message: string): never {
+    leaseEnded(reason: LeaseEnd, runId: string): never {
       switch (reason) {
-        case 'cancelled':
+        case 'cancelled': {
+          const message = `task cancelled during pass (run ${runId})`
           return enroll(new RunCancelledError(message), RUN_CANCELLED)
-        case 'lease-lost':
+        }
+        case 'lease-lost': {
+          const message = `lease lost during pass (run ${runId})`
           return enroll(new LeaseLostError(message), LEASE_LOST)
+        }
         default:
           throw new TypeError(`unknown lease end: ${String(reason satisfies never)}`)
       }
