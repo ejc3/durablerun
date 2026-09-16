@@ -43,6 +43,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,17 +53,22 @@ ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
-LAUNCHER_TERM_GRACE_SECONDS = 5.0
-# After SIGKILL, a verifier's process group can take well over a second to empty on
-# a loaded host: sixteen suites of ten Vitest workers killed at once took 1.556 to
-# 1.773 s per group over six trials on a 176-core host. Verifier cleanup waits this
-# long. With VERIFIER_TERM_GRACE_SECONDS it must still end before the coordinator's
-# LAUNCHER_TERM_GRACE_SECONDS for the worker, which the orchestration self-test checks.
-VERIFIER_KILL_GRACE_SECONDS = 3.0
-# A red baseline is a result read from the report. Its status is neither 1, the
-# status of a worker that crashed with an uncaught exception, nor 2, the
-# infrastructure status.
-BASELINE_RED_RETURNCODE = 3
+# After SIGKILL, a process group can take well over a second to empty on a loaded
+# host: sixteen suites of ten Vitest workers killed at once took 1.556 to 1.773 s per
+# group over six trials on a 176-core host. Every cleanup waits this long for a killed
+# group before it calls the group unreapable.
+KILLED_GROUP_REAP_GRACE_SECONDS = 3.0
+# The coordinator's termination grace for a worker covers the worker's one verifier
+# cleanup, with margin for the worker to restore its source and exit.
+LAUNCHER_TERM_GRACE_SECONDS = (
+    VERIFIER_TERM_GRACE_SECONDS + KILLED_GROUP_REAP_GRACE_SECONDS + 1.75
+)
+# A worker's exit status. A red result is read from the worker's report, so its
+# status is neither 1, the status of a worker that crashed with an uncaught exception
+# and wrote no report, nor 2, the infrastructure status.
+WORKER_INFRASTRUCTURE_RETURNCODE = 2
+WORKER_RED_RETURNCODE = 3
+WORKER_RESULT_RETURNCODES = frozenset((0, WORKER_RED_RETURNCODE))
 # A process group can briefly outlive its leader. On some hosts `git` is a wrapper
 # that leaves an asynchronous logging process in the caller's group, so a launcher or
 # verifier whose last act is a git call leaves that process behind for a moment:
@@ -7567,7 +7573,7 @@ def terminate_verifier_processes(processes: list[subprocess.Popen[bytes]]) -> No
     terminate_process_groups(
         processes,
         term_grace_seconds=VERIFIER_TERM_GRACE_SECONDS,
-        kill_grace_seconds=VERIFIER_KILL_GRACE_SECONDS,
+        kill_grace_seconds=KILLED_GROUP_REAP_GRACE_SECONDS,
     )
 
 
@@ -7626,18 +7632,19 @@ def run_suite_process(
         try:
             returncode = process.wait(timeout=wall_time_seconds)
         except subprocess.TimeoutExpired as error:
-            terminate_verifier_group(process)
             raise SuiteInfrastructureError(
                 f"suite wall-time limit of {wall_time_seconds:g}s exceeded"
             ) from error
         if wait_for_process_groups([process.pid], drain_grace_seconds):
-            terminate_verifier_group(process)
             raise SuiteLiveDescendantsError(
                 "suite process leader exited with live descendants after a "
                 f"{drain_grace_seconds:g}s drain"
             )
         return returncode
     except BaseException:
+        # The one cleanup of the verifier group, however the suite ended. A cleanup
+        # that fails to reap is not repeated, so a worker's cleanup stays within one
+        # verifier term and kill grace.
         if process is not None and process_group_exists(process.pid):
             terminate_verifier_group(process)
         raise
@@ -8213,17 +8220,30 @@ def suite_interrupt_self_test_child(state_path: Path) -> int:
     return 1
 
 
+COMPILER_ERROR_PATTERN = re.compile(r"(?m)^(.+?\.tsx?)\((\d+),(\d+)\): error TS(\d+):.*$")
+
+
+def compiler_errors(compiler_output: str) -> tuple[str, list[re.Match[str]]]:
+    """The compiler output without ANSI colors, and its located error lines."""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", compiler_output)
+    return plain, list(COMPILER_ERROR_PATTERN.finditer(plain))
+
+
 def typecheck_baseline_failure(compiler_output: str, diagnostic: str) -> SuiteResult:
-    """A red unmutated compiler leg, named by the compiler's own error lines."""
-    error_lines = re.findall(
-        r"(?m)^.+?\.tsx?\(\d+,\d+\): error TS\d+:.*$",
-        re.sub(r"\x1b\[[0-9;]*m", "", compiler_output),
-    )
+    """A red unmutated compiler leg, named by the compiler's own error lines.
+
+    Output with no located error line, such as a configuration error or a crashed
+    compiler, is named by its last lines instead.
+    """
+    plain, located = compiler_errors(compiler_output)
+    named = [error.group(0) for error in located] or [
+        line for line in plain.splitlines() if line.strip()
+    ][-20:]
     return SuiteResult(
         False,
         False,
         (),
-        ("the unmutated TypeScript construction baseline failed", *error_lines[:20]),
+        ("the unmutated TypeScript construction baseline failed", *named[:20]),
         diagnostic,
     )
 
@@ -8306,10 +8326,7 @@ def run_typecheck(
         )
     marker_line = marker_lines[0]
 
-    compiler_errors = re.findall(
-        r"(?m)^(.+?\.tsx?)\((\d+),(\d+)\): error TS(\d+):.*$",
-        re.sub(r"\x1b\[[0-9;]*m", "", compiler_output),
-    )
+    _, located_errors = compiler_errors(compiler_output)
     wanted = (marker_file, str(marker_line), "2578")
 
     def relative_compiler_path(path: str) -> str:
@@ -8323,7 +8340,7 @@ def run_typecheck(
 
     observed = [
         (relative_compiler_path(path), line, code)
-        for path, line, _column, code in compiler_errors
+        for path, line, _column, code in (error.groups() for error in located_errors)
     ]
     if observed != [wanted]:
         return SuiteResult(
@@ -10247,7 +10264,7 @@ ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS = {
         "['vitest', 'tsc:store-libsql:red', 'tsc:conformance']"
     ),
     "accept-conformance-typecheck-red": (
-        f"conformance-red baseline: expected status {BASELINE_RED_RETURNCODE}, observed 0"
+        f"conformance-red baseline: expected status {WORKER_RED_RETURNCODE}, observed 0"
     ),
     "misroute-conformance-mutation": (
         "conformance mutation dispatch: expected verifier trace "
@@ -10577,10 +10594,9 @@ def validate_mutation_report(
             raise ValueError(
                 "worker mutation checkpoint completion disagrees with its result prefix"
             )
-    expected_returncode = (
-        0
-        if len(seen) == len(expected) and all(mutation_is_caught(row["outcome"]) for row in known_rows)
-        else 1
+    expected_returncode = worker_result_returncode(
+        len(seen) == len(expected)
+        and all(mutation_is_caught(row["outcome"]) for row in known_rows)
     )
     if (
         process_returncode is not None
@@ -10784,14 +10800,14 @@ def validate_baseline_report(
         or not isinstance(payload["diagnostic"], str)
     ):
         raise ValueError("worker baseline report does not match its assignment")
-    expected_returncode = worker_baseline_returncode(payload["green"])
+    expected_returncode = worker_result_returncode(payload["green"])
     if process_returncode != expected_returncode:
         raise ValueError(
             "worker baseline process/report disagreement: "
             f"exit={process_returncode}, report expects {expected_returncode}"
         )
     if not payload["green"]:
-        raise ValueError(f"worker baseline is red: {payload['diagnostic'][:500]}")
+        raise ValueError(f"worker baseline is red: {payload['diagnostic'][:4000]}")
 
 
 def validate_owned_worktree_path(
@@ -11250,53 +11266,91 @@ def reap_leftover_process(launch: ProcessLaunch) -> str | None:
 # A subreaper that kills a verifier-shaped group through the production verifier
 # cleanup and reaps its orphaned descendant two seconds late, as a loaded host reaps
 # a killed suite's processes late. It exits 0 when the cleanup accepts the group.
+# The late-reap case reaps a killed group's descendant this long after SIGKILL, above
+# the measured worst case recorded at KILLED_GROUP_REAP_GRACE_SECONDS. Its fault's
+# grace sits above that worst case and below the late reap, and must be rejected.
+LATE_REAP_DELAY_SECONDS = 2.0
+LATE_REAP_FAULT_GRACE_SECONDS = 1.8
 LATE_REAP_PROGRAM = """\
-import ctypes, importlib.util, os, pathlib, subprocess, sys, threading, time
-if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
-    print("could not become a child subreaper")
-    raise SystemExit(3)
+import importlib.util, pathlib, sys
 spec = importlib.util.spec_from_file_location("probe", sys.argv[1])
 probe = importlib.util.module_from_spec(spec)
 sys.modules["probe"] = probe
 spec.loader.exec_module(probe)
-if len(sys.argv) > 2:
-    probe.VERIFIER_KILL_GRACE_SECONDS = float(sys.argv[2])
-ready = pathlib.Path("late-reap-descendant.pid")
-ready.unlink(missing_ok=True)
-descendant = "import time; time.sleep(30)"
-leader_program = (
-    "import pathlib, subprocess, sys, time; "
-    "child = subprocess.Popen([sys.executable, '-c', sys.argv[1]]); "
-    "pathlib.Path(sys.argv[2]).write_text(str(child.pid)); "
-    "time.sleep(30)"
+raise SystemExit(
+    probe.late_reap_self_test_child(
+        pathlib.Path(sys.argv[2]),
+        float(sys.argv[3]),
+        float(sys.argv[4]) if len(sys.argv) > 4 else None,
+    )
 )
-leader = subprocess.Popen(
-    [sys.executable, "-B", "-c", leader_program, descendant, str(ready)],
-    start_new_session=True,
-)
-deadline = time.monotonic() + 10
-while not ready.exists() and time.monotonic() < deadline:
-    time.sleep(0.01)
-if not ready.exists():
-    print("the leader never started its descendant")
-    raise SystemExit(4)
-
-def reap_late():
-    time.sleep(2.0)
-    while True:
-        try:
-            os.waitpid(-1, 0)
-        except ChildProcessError:
-            return
-
-threading.Thread(target=reap_late, daemon=True).start()
-try:
-    probe.terminate_verifier_processes([leader])
-except RuntimeError as error:
-    print(f"rejected: {error}")
-    raise SystemExit(1)
-print("reaped")
 """
+
+
+def process_state(process_id: int) -> str | None:
+    """A process's state letter from /proc, or None once it has been reaped."""
+    try:
+        return Path(f"/proc/{process_id}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def late_reap_self_test_child(
+    state_path: Path,
+    reap_delay_seconds: float,
+    kill_grace_seconds: float | None,
+) -> int:
+    """Kill a verifier-shaped group through production cleanup and reap its descendant late.
+
+    This process becomes the orphaned descendant's subreaper, and a thread reaps it
+    reap_delay_seconds after SIGKILL leaves it a zombie. The descendant ignores
+    SIGTERM, so SIGKILL is what ends it. Returns 0 when verifier cleanup accepts the
+    group, 1 when it reports the group unreapable, and 2 when the case cannot run.
+    """
+    global KILLED_GROUP_REAP_GRACE_SECONDS
+    import ctypes
+
+    pr_set_child_subreaper = 36
+    if ctypes.CDLL(None, use_errno=True).prctl(pr_set_child_subreaper, 1, 0, 0, 0) != 0:
+        print("late-reap self-test could not become a child subreaper")
+        return 2
+    if kill_grace_seconds is not None:
+        KILLED_GROUP_REAP_GRACE_SECONDS = kill_grace_seconds
+    try:
+        leader = subprocess.Popen(
+            suite_self_test_command("late-reap", state_path),
+            start_new_session=True,
+        )
+        identity = None
+        deadline = time.monotonic() + 10
+        while identity is None and time.monotonic() < deadline:
+            identity, _ = suite_self_test_record(state_path, "late-reap")
+            time.sleep(0.01)
+        if identity is None:
+            print("late-reap self-test leader never started its descendant")
+            return 2
+        descendant = identity[1]
+
+        def reap_late() -> None:
+            while process_state(descendant) not in ("Z", None):
+                time.sleep(0.01)
+            time.sleep(reap_delay_seconds)
+            while True:
+                try:
+                    os.waitpid(-1, 0)
+                except ChildProcessError:
+                    return
+
+        threading.Thread(target=reap_late, daemon=True).start()
+        try:
+            terminate_verifier_processes([leader])
+        except RuntimeError as error:
+            print(f"rejected: {error}")
+            return 1
+        print("reaped")
+        return 0
+    finally:
+        cleanup_suite_self_test_records(state_path)
 
 
 def orchestration_self_test(fault: str | None = None) -> int:
@@ -11344,7 +11398,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
     except ValueError as error:
         failures.append(f"valid report rejected: {error}")
 
-    for outcome, returncode in (("caught-with-collateral", 0), ("wrong-path", 1)):
+    for outcome, returncode in (("caught-with-collateral", 0), ("wrong-path", WORKER_RED_RETURNCODE)):
         rows = [mutation_result_row(item, outcome, "full failure evidence") for item in assigned]
         payload = mutation_report_payload(
             head="a" * 40,
@@ -11424,7 +11478,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
     expect_rejected(
         "missing result",
         missing,
-        returncode=1,
+        returncode=WORKER_RED_RETURNCODE,
         accept_missing_result=fault == "accept-missing-result",
     )
     duplicate = json.loads(json.dumps(good))
@@ -11454,7 +11508,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
     expect_rejected(
         "process/report disagreement",
         good,
-        returncode=1,
+        returncode=WORKER_RED_RETURNCODE,
         accept_process_disagreement=fault
         == "accept-process-report-disagreement",
     )
@@ -11874,6 +11928,10 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     terminate_process_groups(
                         [zombie],
                         reap_exited_leaders=fault != "leave-zombie-group",
+                        # Under the fault the zombie reads as live, so cleanup spends
+                        # both graces, which the check below measures.
+                        term_grace_seconds=VERIFIER_TERM_GRACE_SECONDS,
+                        kill_grace_seconds=1.0,
                     )
                 except RuntimeError:
                     failures.append(
@@ -11885,31 +11943,26 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     )
             zombie.wait()
 
+        late_reap: subprocess.Popen[str] | None = None
         if fault in (None, "short-kill-grace"):
-            # Under audit load a killed suite's group took up to 1.773 s to empty. The
-            # child reaps its orphaned descendant two seconds after SIGKILL, so the
-            # production verifier cleanup must wait longer than that. The fault's 1.8 s
-            # grace, above the measured worst case and below the late reap, must be
-            # rejected.
-            late_reap = subprocess.run(
+            # It runs beside the cases below and is collected before the temporary
+            # directory goes away.
+            late_reap = subprocess.Popen(
                 (
                     sys.executable,
                     "-B",
                     "-c",
                     LATE_REAP_PROGRAM,
                     str(Path(__file__).resolve()),
-                    *(("1.8",) if fault else ()),
+                    str(temporary / "late-reap.jsonl"),
+                    repr(LATE_REAP_DELAY_SECONDS),
+                    *((repr(LATE_REAP_FAULT_GRACE_SECONDS),) if fault else ()),
                 ),
                 cwd=temporary,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=60,
             )
-            if late_reap.returncode != 0:
-                failures.append(
-                    "process cleanup: a killed group reaped two seconds late was reported "
-                    f"unreapable: {(late_reap.stdout + late_reap.stderr).strip()[-300:]}"
-                )
 
         if fault is None:
             for compiler_output, compiler_error in (
@@ -11943,14 +11996,6 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "a worker infrastructure failure lost its traceback: "
                     f"{worker_log.getvalue()[-300:]!r}"
                 )
-        if fault is None and (
-            VERIFIER_TERM_GRACE_SECONDS + VERIFIER_KILL_GRACE_SECONDS
-            >= LAUNCHER_TERM_GRACE_SECONDS
-        ):
-            failures.append(
-                "process cleanup: a worker's verifier cleanup can outlast the coordinator's "
-                "termination grace, so the coordinator kills the worker mid-cleanup"
-            )
 
         if fault in (None, "reject-draining-group"):
             # The child exits once the barrier appears. Normally that is when cleanup
@@ -12035,6 +12080,18 @@ def orchestration_self_test(fault: str | None = None) -> int:
                 )
             if leftover := reap_leftover_process(launch):
                 failures.append(f"process cleanup: {leftover}")
+
+        if late_reap is not None:
+            try:
+                late_reap_output, _ = late_reap.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                late_reap.kill()
+                late_reap_output, _ = late_reap.communicate()
+            if late_reap.returncode != 0:
+                failures.append(
+                    "process cleanup: a killed group reaped two seconds after SIGKILL was "
+                    f"reported unreapable: {late_reap_output.strip()[-300:]}"
+                )
 
     try:
         validate_scope_limits(
@@ -12470,7 +12527,7 @@ def worker_phase(
 ) -> int:
     if os.environ.get(CONFINEMENT_ENV) != "1":
         print("mutation-probe worker refuses to run outside its coordinator scope", file=sys.stderr)
-        return 2
+        return WORKER_INFRASTRUCTURE_RETURNCODE
     scope = prove_confined_scope()
     authority = prove_worker_authority(
         worker_root=ROOT,
@@ -12493,7 +12550,7 @@ def worker_phase(
             f"mutation-probe worker {worker_id}: expected {head}, found {actual_head}",
             file=sys.stderr,
         )
-        return 2
+        return WORKER_INFRASTRUCTURE_RETURNCODE
     assert_clean(ROOT)
     workspace = prove_workspace_links(ROOT)
     by_name = {mutation.name: (ordinal, mutation) for ordinal, mutation in enumerate(MUTATIONS)}
@@ -12507,7 +12564,7 @@ def worker_phase(
             f"mutation-probe worker {worker_id}: invalid mutation assignment",
             file=sys.stderr,
         )
-        return 2
+        return WORKER_INFRASTRUCTURE_RETURNCODE
     assigned = [
         expected_result(by_name[name][0], by_name[name][1], root=ROOT)
         for name in mutation_names
@@ -12562,10 +12619,10 @@ def worker_phase(
             "diagnostic": suite_failure_detail(baseline) if not baseline.green else "",
         }
         atomic_json(report_path, payload)
-        return worker_baseline_returncode(baseline.green)
+        return worker_result_returncode(baseline.green)
     if phase != "mutations":
         print(f"mutation-probe worker {worker_id}: unknown phase {phase}", file=sys.stderr)
-        return 2
+        return WORKER_INFRASTRUCTURE_RETURNCODE
 
     if report_path.exists():
         rows = validate_mutation_report(
@@ -12612,7 +12669,7 @@ def worker_phase(
                 complete=len(rows) == len(assigned),
             ),
         )
-    return 0 if all(mutation_is_caught(row["outcome"]) for row in rows) else 1
+    return worker_result_returncode(all(mutation_is_caught(row["outcome"]) for row in rows))
 
 
 def routing_self_test(fault: str | None = None) -> int:
@@ -12803,19 +12860,19 @@ def routing_self_test(fault: str | None = None) -> int:
                     "vitest-red",
                     [store.name, conformance.name],
                     ["vitest:red"],
-                    worker_baseline_returncode(False),
+                    WORKER_RED_RETURNCODE,
                 ),
                 (
                     "store-red",
                     [store.name, conformance.name],
                     ["vitest", "tsc:store-libsql:red"],
-                    worker_baseline_returncode(False),
+                    WORKER_RED_RETURNCODE,
                 ),
                 (
                     "conformance-red",
                     [conformance.name],
                     ["vitest", "tsc:conformance:red"],
-                    worker_baseline_returncode(False),
+                    WORKER_RED_RETURNCODE,
                 ),
             )
             baseline_fault_cases = {
@@ -13171,9 +13228,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 launch.log.write_text(f"{crashed_worker_traceback}{exception_line}\n")
                 if 1 not in allowed_returncodes:
                     # A real launcher reports a disallowed exit from the worker log.
-                    raise RuntimeError(
-                        launch_exit_error(launch.label, 1, diagnostic_tail(launch.log))
-                    )
+                    raise RuntimeError(launch_exit_error(launch, 1))
             return {launch.label: 1 for launch in launches}
 
         def baseline_report(launch: ProcessLaunch, *, green: bool) -> None:
@@ -13215,7 +13270,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 for launch in launches:
                     green = worker_mode[0] != "red-baseline"
                     baseline_report(launch, green=green)
-                    codes[launch.label] = worker_baseline_returncode(green)
+                    codes[launch.label] = worker_result_returncode(green)
                     if codes[launch.label] not in allowed_returncodes:
                         raise RuntimeError(
                             f"fixture baseline status {codes[launch.label]} is not allowed"
@@ -13476,7 +13531,7 @@ def mutation_checkpoint_problems() -> list[str]:
                 rejected = False
                 try:
                     mismatch_code = invoke_worker()
-                    rejected = mismatch_code == worker_infrastructure_returncode()
+                    rejected = mismatch_code == WORKER_INFRASTRUCTURE_RETURNCODE
                 except ValueError:
                     rejected = True
                 except UnexpectedCheckpointExecution:
@@ -13661,20 +13716,16 @@ def choose_jobs(value: str, selected: int) -> int:
     return min(jobs, selected)
 
 
-def worker_infrastructure_returncode() -> int:
-    return 2
-
-
 def worker_infrastructure_failure(error: Exception) -> int:
-    """Report a worker exception and return the infrastructure status."""
+    """Report a worker exception with its traceback, and return the infrastructure status."""
     print(f"mutation-probe worker infrastructure failure: {error}", file=sys.stderr)
-    return worker_infrastructure_returncode()
+    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+    return WORKER_INFRASTRUCTURE_RETURNCODE
 
 
-def worker_baseline_returncode(green: bool) -> int:
-    """A baseline worker's exit status: 0 when its unmutated suites pass, and
-    BASELINE_RED_RETURNCODE when they fail."""
-    return 0 if green else BASELINE_RED_RETURNCODE
+def worker_result_returncode(passed: bool) -> int:
+    """A worker's exit status for a result it wrote to its report."""
+    return 0 if passed else WORKER_RED_RETURNCODE
 
 
 def may_publish_success(
@@ -13761,7 +13812,7 @@ def terminate_process_groups(
     omit_exited_groups: bool = False,
     reap_exited_leaders: bool = True,
     term_grace_seconds: float = LAUNCHER_TERM_GRACE_SECONDS,
-    kill_grace_seconds: float = 2.0,
+    kill_grace_seconds: float = KILLED_GROUP_REAP_GRACE_SECONDS,
 ) -> None:
     if (
         not math.isfinite(term_grace_seconds)
@@ -13814,9 +13865,15 @@ def terminate_process_groups(
         )
 
 
-def launch_exit_error(label: str, returncode: int, detail: str) -> str:
-    """The message for a launch that exited with a status its caller did not allow."""
-    return f"{label} failed with exit {returncode}: {detail[:500]}"
+def launch_exit_error(launch: ProcessLaunch, returncode: int) -> str:
+    """The message for a launch that exited with a status its caller did not allow.
+
+    It keeps the end of the launch log, where a traceback names its exception.
+    """
+    return (
+        f"{launch.label} failed with exit {returncode}: "
+        f"{diagnostic_tail(launch.log)[-2000:]}"
+    )
 
 
 def run_launches(
@@ -13866,10 +13923,7 @@ def run_launches(
                         omit_exited_groups=omit_exited_groups,
                     )
                     launch = next(item for item in launches if item.label == label)
-                    detail = diagnostic_tail(launch.log)
-                    raise RuntimeError(
-                        launch_exit_error(label, returncode, detail)
-                    )
+                    raise RuntimeError(launch_exit_error(launch, returncode))
             if pending:
                 time.sleep(0.1)
         live_groups = wait_for_process_groups(
@@ -14766,9 +14820,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             ]
             baseline_codes = run_launches(
                 baseline_launches,
-                allowed_returncodes=frozenset(
-                    (worker_baseline_returncode(True), worker_baseline_returncode(False))
-                ),
+                allowed_returncodes=WORKER_RESULT_RETURNCODES,
             )
             baseline_barrier = establish_baseline_barrier(
                 plans,
@@ -14806,7 +14858,7 @@ def coordinate_audit(filter_text: str, jobs_value: str) -> int:
             ]
             mutation_codes = run_launches(
                 mutation_launches,
-                allowed_returncodes=frozenset((0, 1)),
+                allowed_returncodes=WORKER_RESULT_RETURNCODES,
             )
             for plan in plans:
                 rows.extend(
