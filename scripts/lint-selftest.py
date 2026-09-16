@@ -5126,6 +5126,7 @@ def run_mutation_suite_child(
     signal_after_label: str | None = None,
     signal_count: int = 1,
     signal_settle_seconds: float = 0.0,
+    completion_watchdog_seconds: float = 1.5,
 ) -> MutationSuiteChildObservation:
     with tempfile.TemporaryDirectory(prefix="durablerun-suite-self-test-") as temporary:
         state_path = Path(temporary) / "verifiers.jsonl"
@@ -5137,7 +5138,7 @@ def run_mutation_suite_child(
             str(state_path),
         ]
         if fault is not None:
-            command.extend(("--suite-timeout-self-test-fault", fault))
+            command.extend(("--suite-self-test-fault", fault))
         process = subprocess.Popen(
             command,
             cwd=SCRIPTS.parent,
@@ -5181,10 +5182,11 @@ def run_mutation_suite_child(
                         if signal_index + 1 < signal_count:
                             time.sleep(0.05)
             try:
-                stdout, stderr = process.communicate(timeout=1.5)
+                stdout, stderr = process.communicate(timeout=completion_watchdog_seconds)
             except subprocess.TimeoutExpired:
                 watchdog_problem = watchdog_problem or (
-                    f"{mode} exceeded its external 1.5s completion watchdog"
+                    f"{mode} exceeded its external {completion_watchdog_seconds:g}s "
+                    "completion watchdog"
                 )
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -5246,22 +5248,32 @@ def mutation_suite_record_problem(
     return None
 
 
-def mutation_suite_timeout_problem() -> str | None:
-    """Prove both production defaults with verifier-authenticated processes."""
-    observation = run_mutation_suite_child("--suite-timeout-self-test-child")
+def suite_observation_problem(
+    observation: MutationSuiteChildObservation,
+    expected_labels: set[str],
+    live_message: str,
+) -> str | None:
+    """The watchdog, record, and leftover-process checks every suite case makes."""
     if observation.watchdog_problem is not None:
         return observation.watchdog_problem
-    record_problem = mutation_suite_record_problem(
-        observation,
-        {"vitest", "typecheck"},
-    )
+    record_problem = mutation_suite_record_problem(observation, expected_labels)
     if record_problem is not None:
         return record_problem
     if observation.live_processes:
-        return (
-            "production deadline left verifier processes live: "
-            f"{observation.live_processes}"
-        )
+        return f"{live_message}: {observation.live_processes}"
+    return None
+
+
+def mutation_suite_timeout_problem() -> str | None:
+    """Prove both production defaults with verifier-authenticated processes."""
+    observation = run_mutation_suite_child("--suite-timeout-self-test-child")
+    problem = suite_observation_problem(
+        observation,
+        {"vitest", "typecheck"},
+        "production deadline left verifier processes live",
+    )
+    if problem is not None:
+        return problem
     if (
         observation.returncode != 0
         or MUTATION_SUITE_TIMEOUT_PASSED not in observation.output
@@ -5292,20 +5304,75 @@ def mutation_suite_timeout_problem() -> str | None:
 
 def mutation_suite_linger_problem() -> str | None:
     observation = run_mutation_suite_child("--suite-linger-self-test-child")
-    if observation.watchdog_problem is not None:
-        return observation.watchdog_problem
-    record_problem = mutation_suite_record_problem(observation, {"linger"})
-    if record_problem is not None:
-        return record_problem
-    if observation.live_processes:
-        return (
-            "exited verifier leader left live descendants: "
-            f"{observation.live_processes}"
-        )
+    problem = suite_observation_problem(
+        observation, {"linger"}, "exited verifier leader left live descendants"
+    )
+    if problem is not None:
+        return problem
     if observation.returncode != 0:
         return (
             "normal verifier leader exit with a descendant was not rejected and "
             f"reaped as infrastructure: {observation.output[:300]}"
+        )
+
+    false_negative = run_mutation_suite_child(
+        "--suite-linger-self-test-child",
+        fault="wall-time-instead-of-descendant",
+        # The fault waits out a 0.5 s wall-time limit, then a SIGTERM grace its
+        # descendant ignores, so it runs about 1 s before any load.
+        completion_watchdog_seconds=3.0,
+    )
+    problem = suite_observation_problem(
+        false_negative,
+        {"linger"},
+        "a verifier stopped by its wall-time limit left live descendants",
+    )
+    if problem is not None:
+        return problem
+    if (
+        false_negative.returncode == 0
+        or "rejected for another reason: suite wall-time limit of"
+        not in false_negative.output
+    ):
+        return (
+            "suite linger regression accepted a wall-time error as the live-descendant "
+            f"rejection: {false_negative.output[:300]}"
+        )
+    return None
+
+
+def mutation_suite_drain_problem() -> str | None:
+    observation = run_mutation_suite_child("--suite-drain-self-test-child")
+    problem = suite_observation_problem(
+        observation, {"drain"}, "a drained verifier group left live descendants"
+    )
+    if problem is not None:
+        return problem
+    if observation.returncode != 0:
+        return (
+            "a verifier group that drains after its leader exits was not accepted: "
+            f"{observation.output[:300]}"
+        )
+
+    false_negative = run_mutation_suite_child(
+        "--suite-drain-self-test-child",
+        fault="reject-draining-group",
+    )
+    problem = suite_observation_problem(
+        false_negative,
+        {"drain"},
+        "a verifier group checked with no drain left live descendants",
+    )
+    if problem is not None:
+        return problem
+    if (
+        false_negative.returncode == 0
+        or "a verifier group that drains after its leader exits was rejected"
+        not in false_negative.output
+    ):
+        return (
+            "suite drain regression accepted a verifier group checked with no drain: "
+            f"{false_negative.output[:300]}"
         )
     return None
 
@@ -5317,16 +5384,13 @@ def mutation_suite_interrupt_problem() -> str | None:
         signal_count=2,
         signal_settle_seconds=0.2,
     )
-    if observation.watchdog_problem is not None:
-        return observation.watchdog_problem
-    record_problem = mutation_suite_record_problem(observation, {"interrupt"})
-    if record_problem is not None:
-        return record_problem
-    if observation.live_processes:
-        return (
-            "repeated SIGTERM interrupted cleanup without reaping nested verifier processes: "
-            f"{observation.live_processes}"
-        )
+    problem = suite_observation_problem(
+        observation,
+        {"interrupt"},
+        "repeated SIGTERM interrupted cleanup without reaping nested verifier processes",
+    )
+    if problem is not None:
+        return problem
     if observation.returncode == 0:
         return "SIGTERM interruption returned successful verifier status"
     return None
@@ -5347,6 +5411,15 @@ if sys.argv[1:] == ["--mutation-suite-linger-case"]:
         print(f"lint-selftest: {focused_problem}")
         sys.exit(1)
     print("lint-selftest: mutation suite lingering descendants rejected")
+    sys.exit(0)
+
+
+if sys.argv[1:] == ["--mutation-suite-drain-case"]:
+    focused_problem = mutation_suite_drain_problem()
+    if focused_problem is not None:
+        print(f"lint-selftest: {focused_problem}")
+        sys.exit(1)
+    print("lint-selftest: mutation suite draining descendants accepted")
     sys.exit(0)
 
 
@@ -5395,6 +5468,9 @@ if suite_timeout_problem is not None:
 suite_linger_problem = mutation_suite_linger_problem()
 if suite_linger_problem is not None:
     failures.append(suite_linger_problem)
+suite_drain_problem = mutation_suite_drain_problem()
+if suite_drain_problem is not None:
+    failures.append(suite_drain_problem)
 suite_interrupt_problem = mutation_suite_interrupt_problem()
 if suite_interrupt_problem is not None:
     failures.append(suite_interrupt_problem)
