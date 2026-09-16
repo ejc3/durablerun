@@ -11470,6 +11470,29 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     )
             zombie.wait()
 
+        if fault is None:
+            drain_log = temporary / "drain.log"
+            child_code = (
+                "import subprocess,sys; "
+                "child=subprocess.Popen([sys.executable,'-c',"
+                "'import time; time.sleep(0.3)']); "
+                "print(child.pid, flush=True)"
+            )
+            launch = ProcessLaunch(
+                "drain-self-test",
+                (sys.executable, "-c", child_code),
+                temporary,
+                drain_log,
+                os.environ.copy(),
+            )
+            try:
+                run_launches([launch], allowed_returncodes=frozenset((0,)))
+            except RuntimeError as error:
+                failures.append(
+                    "process cleanup: a launcher group that drains after its leader "
+                    f"exits was reported live: {error}"
+                )
+
     try:
         validate_scope_limits(
             "750",
