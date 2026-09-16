@@ -11379,7 +11379,10 @@ def late_reap_self_test_child(
         return 0
     finally:
         cleanup_suite_self_test_records(state_path)
-        late_reap_cleaned_path(state_path).touch()
+        # A failed write must not turn a measured verdict into an unmeasured one. The
+        # parent then cleans the group again, which is safe.
+        with contextlib.suppress(OSError):
+            late_reap_cleaned_path(state_path).touch()
 
 
 # The last line of an orchestration self-test run that could not measure a case.
