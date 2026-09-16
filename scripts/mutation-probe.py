@@ -10117,6 +10117,7 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
     "reject-draining-group",
     "accept-lingering-group",
     "drop-live-groups-while-polling",
+    "short-kill-grace",
 )
 
 
@@ -11175,6 +11176,47 @@ def reap_leftover_process(launch: ProcessLaunch) -> str | None:
     return f"{launch.label} left child {child_pid} running in group {group}"
 
 
+# A subreaper that kills a verifier-shaped group and reaps its orphaned descendant
+# one second late, as a loaded host reaps a killed suite's processes late. It exits
+# 0 when terminate_process_groups accepts the group within the given kill grace.
+LATE_REAP_PROGRAM = """\
+import ctypes, importlib.util, os, subprocess, sys, threading, time
+if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+    print("could not become a child subreaper")
+    raise SystemExit(3)
+spec = importlib.util.spec_from_file_location("probe", sys.argv[1])
+probe = importlib.util.module_from_spec(spec)
+sys.modules["probe"] = probe
+spec.loader.exec_module(probe)
+descendant = "import time; time.sleep(30)"
+leader_program = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', sys.argv[1]]); time.sleep(30)"
+leader = subprocess.Popen([sys.executable, "-c", leader_program, descendant], start_new_session=True)
+time.sleep(0.5)
+
+def reap_late():
+    time.sleep(1.0)
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            time.sleep(0.01)
+
+threading.Thread(target=reap_late, daemon=True).start()
+try:
+    probe.terminate_process_groups(
+        [leader],
+        term_grace_seconds=probe.VERIFIER_TERM_GRACE_SECONDS,
+        kill_grace_seconds=float(sys.argv[2]),
+    )
+except RuntimeError as error:
+    print(f"rejected: {error}")
+    raise SystemExit(1)
+print("reaped")
+"""
+
+
 def orchestration_self_test(fault: str | None = None) -> int:
     """Generated false-positive surface for the parallel coordinator."""
     expected = [
@@ -11760,6 +11802,30 @@ def orchestration_self_test(fault: str | None = None) -> int:
                         "process cleanup: a zombie leader delayed group cleanup"
                     )
             zombie.wait()
+
+        if fault in (None, "short-kill-grace"):
+            # Under audit load a killed suite's group took up to 1.8 s to empty, while
+            # its members had already exited. The fault keeps the half-second grace
+            # that reported those groups as unreapable.
+            late_reap = subprocess.run(
+                (
+                    sys.executable,
+                    "-c",
+                    LATE_REAP_PROGRAM,
+                    str(Path(__file__).resolve()),
+                    repr(0.5 if fault else VERIFIER_KILL_GRACE_SECONDS),
+                ),
+                cwd=temporary,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if late_reap.returncode != 0:
+                failures.append(
+                    "process cleanup: a killed group reaped a second late was reported "
+                    f"unreapable: {(late_reap.stdout + late_reap.stderr).strip()[-300:]}"
+                )
 
         if fault in (None, "reject-draining-group"):
             # The child exits once the barrier appears. Normally that is when cleanup
