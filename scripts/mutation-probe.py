@@ -11974,6 +11974,11 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "error TS5083: Cannot read file '/workspace/tsconfig.base.json'.\n",
                     "error TS5083",
                 ),
+                (
+                    "packages/core/src/x.ts(3,7): error TS2322: Type 'string' is not assignable.\n"
+                    "error TS6053: File '/workspace/tsconfig.base.json' not found.\n",
+                    "error TS6053",
+                ),
             ):
                 compiler_red = suite_failure_detail(
                     typecheck_baseline_failure(compiler_output, "")
@@ -11984,18 +11989,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                         f"{compiler_red[:200]!r}"
                     )
             failures.extend(verifier_cleanup_once_problems(temporary))
-            worker_log = io.StringIO()
-            payload: dict[str, object] = {}
-            try:
-                payload["green"]
-            except KeyError as error:
-                with contextlib.redirect_stderr(worker_log):
-                    worker_infrastructure_failure(error)
-            if "Traceback" not in worker_log.getvalue() or "KeyError: 'green'" not in worker_log.getvalue():
-                failures.append(
-                    "a worker infrastructure failure lost its traceback: "
-                    f"{worker_log.getvalue()[-300:]!r}"
-                )
+            failures.extend(worker_exit_status_problems())
 
         if fault in (None, "reject-draining-group"):
             # The child exits once the barrier appears. Normally that is when cleanup
@@ -12402,6 +12396,11 @@ def read_json(path: Path) -> object:
         raise ValueError(f"cannot read structured worker result {path}: {error}") from error
 
 
+def red_baseline_reason(result: SuiteResult) -> str:
+    """The reason a worker reports for a red baseline."""
+    return suite_failure_detail(result)
+
+
 def suite_failure_detail(result: SuiteResult) -> str:
     observed = [
         f"{failure.file} > {failure.full_name}:\n"
@@ -12616,7 +12615,7 @@ def worker_phase(
             "assigned": mutation_names,
             "complete": True,
             "green": baseline.green,
-            "diagnostic": suite_failure_detail(baseline) if not baseline.green else "",
+            "diagnostic": red_baseline_reason(baseline) if not baseline.green else "",
         }
         atomic_json(report_path, payload)
         return worker_result_returncode(baseline.green)
@@ -13202,12 +13201,18 @@ def mutation_checkpoint_problems() -> list[str]:
 
         worker_mode: list[str | None] = [None]
         red_baseline_tests = [
-            f"packages/sdk/test/red-baseline/suite-{index:02}/orchestration.test.ts > "
-            f"red baseline {index:02}"
-            for index in range(20)
+            FailedAssertion(
+                f"packages/sdk/test/red-baseline/suite-{index:02}.test.ts",
+                f"red baseline {index:02}",
+                (
+                    "AssertionError: expected a green baseline\n"
+                    + "  - expected\n  + received\n" * 60,
+                ),
+            )
+            for index in range(5)
         ]
-        red_baseline_diagnostic = "\n".join(
-            f"{test}:\nexpected a green baseline" for test in red_baseline_tests
+        red_baseline_diagnostic = red_baseline_reason(
+            SuiteResult(False, False, tuple(red_baseline_tests), (), "")
         )
         crashed_worker_traceback = "Traceback (most recent call last):\n" + "".join(
             f'  File "/workspace/scripts/mutation-probe.py", line {1000 + index}, '
@@ -13358,7 +13363,7 @@ def mutation_checkpoint_problems() -> list[str]:
             for mode, expected_text, failure in (
                 (
                     "red-baseline",
-                    red_baseline_tests[-1],
+                    f"{red_baseline_tests[-1].file} > {red_baseline_tests[-1].full_name}",
                     "coordinator did not name a red worker baseline's last failing test",
                 ),
                 (
@@ -13714,6 +13719,56 @@ def choose_jobs(value: str, selected: int) -> int:
             f"--jobs {jobs} exceeds the aggregate CPU budget of {available} cores"
         )
     return min(jobs, selected)
+
+
+def worker_exit_status(run: Callable[[], int]) -> int:
+    """A worker process's exit status for one run of its phase."""
+    try:
+        return run()
+    except SystemExit as error:
+        return int(error.code) if isinstance(error.code, int) else 2
+    except Exception as error:
+        return worker_infrastructure_failure(error)
+
+
+def worker_exit_status_problems() -> list[str]:
+    """A worker's infrastructure failure prints its traceback, and a signal is not one."""
+
+    def missing_field() -> int:
+        payload: dict[str, object] = {}
+        return len(str(payload["green"]))
+
+    def interrupted() -> int:
+        raise AuditSignal(signal.SIGTERM)
+
+    problems: list[str] = []
+    for label, run, expected_status, required, forbidden in (
+        (
+            "an infrastructure failure",
+            missing_field,
+            WORKER_INFRASTRUCTURE_RETURNCODE,
+            ("Traceback", "KeyError: 'green'"),
+            (),
+        ),
+        (
+            "the coordinator's termination signal",
+            interrupted,
+            128 + signal.SIGTERM,
+            (),
+            ("Traceback",),
+        ),
+    ):
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            status = worker_exit_status(run)
+        output = log.getvalue()
+        if (
+            status != expected_status
+            or any(text not in output for text in required)
+            or any(text in output for text in forbidden)
+        ):
+            problems.append(f"worker exit status for {label}: exit {status}, {output[-300:]!r}")
+    return problems
 
 
 def worker_infrastructure_failure(error: Exception) -> int:
@@ -15244,23 +15299,20 @@ def main() -> int:
             ap.error("only mutation workers require a baseline barrier")
         if args.k or args.jobs != "auto":
             ap.error("worker mode cannot be combined with audit selection options")
-        try:
-            return worker_phase(
-                phase=args.worker_phase,
-                audit_lock_fd=args.worker_audit_lock_fd,
-                report_path=args.worker_result,
-                head=args.worker_head,
-                worker_id=args.worker_id,
-                mutation_names=args.worker_mutation,
-                max_workers=args.max_workers,
-                run_root=args.worker_run_root,
-                nonce=args.worker_nonce,
-                baseline_barrier=args.worker_baseline_barrier,
+        return worker_exit_status(
+            lambda: worker_phase(
+                    phase=args.worker_phase,
+                    audit_lock_fd=args.worker_audit_lock_fd,
+                    report_path=args.worker_result,
+                    head=args.worker_head,
+                    worker_id=args.worker_id,
+                    mutation_names=args.worker_mutation,
+                    max_workers=args.max_workers,
+                    run_root=args.worker_run_root,
+                    nonce=args.worker_nonce,
+                    baseline_barrier=args.worker_baseline_barrier,
             )
-        except SystemExit as error:
-            return int(error.code) if isinstance(error.code, int) else 2
-        except Exception as error:
-            return worker_infrastructure_failure(error)
+        )
     if any(
         value is not None
         for value in (
