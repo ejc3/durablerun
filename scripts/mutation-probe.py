@@ -52,7 +52,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TYPESCRIPT_ANALYZER = ROOT / "scripts" / "typescript-verdict-analyzer.cjs"
 MUTATION_SUITE_WALL_TIME_SECONDS = 600.0
 VERIFIER_TERM_GRACE_SECONDS = 0.25
-VERIFIER_KILL_GRACE_SECONDS = 0.5
+# After SIGKILL, a process group can take well over a second to empty on a loaded
+# host: sixteen suites of ten Vitest workers killed at once took 1.556 to 1.773 s
+# per group over six trials on a 176-core host. Cleanup waits this long for a
+# killed group to be reaped before it calls the group unreapable.
+KILLED_GROUP_REAP_GRACE_SECONDS = 5.0
 # A process group can briefly outlive its leader. On some hosts `git` is a wrapper
 # that leaves an asynchronous logging process in the caller's group, so a launcher or
 # verifier whose last act is a git call leaves that process behind for a moment:
@@ -7591,7 +7595,7 @@ def run_suite_process(
             terminate_process_groups(
                 [process],
                 term_grace_seconds=VERIFIER_TERM_GRACE_SECONDS,
-                kill_grace_seconds=VERIFIER_KILL_GRACE_SECONDS,
+                kill_grace_seconds=KILLED_GROUP_REAP_GRACE_SECONDS,
             )
         if shield.deferred_signum is not None:
             raise AuditSignal(shield.deferred_signum)
@@ -11813,7 +11817,7 @@ def orchestration_self_test(fault: str | None = None) -> int:
                     "-c",
                     LATE_REAP_PROGRAM,
                     str(Path(__file__).resolve()),
-                    repr(0.5 if fault else VERIFIER_KILL_GRACE_SECONDS),
+                    repr(0.5 if fault else KILLED_GROUP_REAP_GRACE_SECONDS),
                 ),
                 cwd=temporary,
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
@@ -13576,7 +13580,7 @@ def terminate_process_groups(
     omit_exited_groups: bool = False,
     reap_exited_leaders: bool = True,
     term_grace_seconds: float = 5.0,
-    kill_grace_seconds: float = 2.0,
+    kill_grace_seconds: float = KILLED_GROUP_REAP_GRACE_SECONDS,
 ) -> None:
     if (
         not math.isfinite(term_grace_seconds)
