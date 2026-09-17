@@ -236,6 +236,50 @@ jobs:
           base.write_text(previous.replace(anchor, anchor + ''.join(f'    "{label}",\n' for label in labels)))
           print('Added two read labels to the base batch lint; all other base bytes are unchanged.')
           PY
+      - name: Bridge the shared statements past the older base outcome lint
+        # This tree lets core's shared statements and their column descriptor name
+        # the task outcome columns, because fail and the cancel transition assign
+        # failure_reason. The base lint predates that allowance and rejects them.
+        # The arm is pinned to one base lint hash. It applies exactly three edits,
+        # the docstring, two path constants, and the allowance line, and only when
+        # the result is this tree's lint byte for byte. Any other base skips.
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          base = Path('/tmp/base/scripts/outcome-lint.py')
+          previous = base.read_text()
+          if hashlib.sha256(previous.encode()).hexdigest() != '67b32d020579c27abf73fed876b699efaa35fcbf93fc0ff5913963d04d49dde5':
+              print('Base outcome lint does not need the shared-statement bridge.')
+              raise SystemExit(0)
+          candidate = Path('scripts/outcome-lint.py').read_text()
+          def between(text, opening, closing):
+              if text.count(opening) != 1 or text.count(closing) != 1:
+                  raise SystemExit('outcome lint bridge requires unique docstring boundaries.')
+              return text.index(opening), text.index(closing)
+          opening, closing = "the stores, core's `task-result.ts`", 'Read an outcome'
+          start, end = between(previous, opening, closing)
+          new_start, new_end = between(candidate, opening, closing)
+          repaired = previous[:start] + candidate[new_start:new_end] + previous[end:]
+          constants = 'DECODER = Path("packages/core/src/task-result.ts")\n'
+          allowance = '    if relative == DECODER:\n'
+          if repaired.count(constants) != 1 or repaired.count(allowance) != 1:
+              raise SystemExit('outcome lint bridge requires one decoder constant and one allowance line.')
+          repaired = repaired.replace(
+              constants,
+              constants
+              + "# The stores' shared compare-and-sets and the column descriptor they are typed by.\n"
+              + 'STATEMENTS = Path("packages/core/src/statements")\n'
+              + 'STORE_TABLES = Path("packages/core/src/store-tables.ts")\n',
+          ).replace(
+              allowance,
+              '    if relative in (DECODER, STORE_TABLES) or relative.parent == STATEMENTS:\n',
+          )
+          if repaired != candidate:
+              raise SystemExit('outcome lint bridge may only widen the allowance to the shared statements.')
+          base.write_text(repaired)
+          print('Widened the base outcome lint to the shared statements; all other base bytes are unchanged.')
+          PY
       - name: Bridge re-aimed mutation targets in the older base registry
         # A base registry's find strings must occur in this tree, and every verdict
         # marker in this tree's tests must be registered or exempted by it. Some
