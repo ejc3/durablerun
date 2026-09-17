@@ -1,0 +1,345 @@
+[
+  {
+    "name": "start-on-a-dead-task",
+    "guard": "StartStep(s) needs a live task",
+    "caughtBy": "TerminalIsQuiet",
+    "find": "StartStep(s) ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "StartStep(s) ==\n  /\\ phase = \"forward\"\n"
+  },
+  {
+    "name": "finish-step-on-a-dead-task",
+    "guard": "FinishStep(s) needs a live task",
+    "caughtBy": "TerminalIsQuiet",
+    "find": "FinishStep(s) ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "FinishStep(s) ==\n  /\\ phase = \"forward\"\n"
+  },
+  {
+    "name": "complete-on-a-dead-task",
+    "guard": "Complete needs a live task",
+    "caughtBy": "TerminalIsQuiet",
+    "find": "Complete ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "Complete ==\n  /\\ phase = \"forward\"\n"
+  },
+  {
+    "name": "terminal-on-a-dead-task",
+    "guard": "UserTerminal needs a live task",
+    "caughtBy": "TerminalIsQuiet",
+    "find": "UserTerminal ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "UserTerminal ==\n  /\\ phase = \"forward\"\n"
+  },
+  {
+    "name": "start-during-a-saga",
+    "guard": "no forward step starts once the saga began",
+    "caughtBy": "ForwardFrozenInSaga",
+    "find": "StartStep(s) ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "StartStep(s) ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "finish-step-during-a-saga",
+    "guard": "no forward step commits once the saga began",
+    "caughtBy": "ForwardFrozenInSaga",
+    "find": "FinishStep(s) ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "FinishStep(s) ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "complete-during-a-saga",
+    "guard": "a rolling-back task cannot complete",
+    "caughtBy": "SagaEndsFailed",
+    "find": "Complete ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "Complete ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "terminal-decided-twice",
+    "guard": "the terminal decision is made once",
+    "caughtBy": "DecisionIsMadeOnce",
+    "find": "UserTerminal ==\n  /\\ task = \"live\" /\\ phase = \"forward\"\n",
+    "replace": "UserTerminal ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "start-a-started-step",
+    "guard": "a step starts once and keeps its index",
+    "caughtBy": "StartOrderImmutable",
+    "find": "  /\\ fwd[s] = \"none\"\n  /\\ effect' = [effect EXCEPT ![s] = \"maybe\"]\n  /\\ IF MarkerFirst",
+    "replace": "  /\\ fwd[s] # \"done\"\n  /\\ effect' = [effect EXCEPT ![s] = \"maybe\"]\n  /\\ IF MarkerFirst"
+  },
+  {
+    "name": "marker-after-the-body",
+    "guard": "the start marker commits before the step body runs",
+    "caughtBy": "MemoMatchesEffect",
+    "find": "  /\\ IF MarkerFirst\n",
+    "replace": "  /\\ IF FALSE\n"
+  },
+  {
+    "name": "start-reuses-an-index",
+    "guard": "a start takes an index above every other",
+    "caughtBy": "StartOrderDistinct",
+    "find": "     THEN /\\ fwd' = [fwd EXCEPT ![s] = \"started\"]\n          /\\ startIdx' = [startIdx EXCEPT ![s] = TopIdx + 1]",
+    "replace": "     THEN /\\ fwd' = [fwd EXCEPT ![s] = \"started\"]\n          /\\ startIdx' = [startIdx EXCEPT ![s] = 1]"
+  },
+  {
+    "name": "finish-an-unstarted-step",
+    "guard": "only a started step commits its result",
+    "caughtBy": "StartOrderDistinct",
+    "find": "  /\\ fwd[s] = \"started\"\n",
+    "replace": "  /\\ fwd[s] # \"done\"\n"
+  },
+  {
+    "name": "decision-without-the-marker",
+    "guard": "the terminal decision and the phase marker are one batch",
+    "caughtBy": "FailedImpliesSettled",
+    "find": "  /\\ IF AtomicEnter\n",
+    "replace": "  /\\ IF FALSE\n"
+  },
+  {
+    "name": "infra-cap-on-a-dead-task",
+    "guard": "a sweep fails only a live task",
+    "caughtBy": "TerminalIsQuiet",
+    "find": "InfraCap ==\n  /\\ task = \"live\"\n",
+    "replace": "InfraCap ==\n  /\\ TRUE\n"
+  },
+  {
+    "name": "infra-cap-reenters-a-saga",
+    "guard": "an infrastructure cap inside a saga halts it and decides nothing new",
+    "caughtBy": "DecisionIsMadeOnce",
+    "find": "  /\\ IF phase = \"forward\"\n     THEN /\\ cause' = \"infra\"",
+    "replace": "  /\\ IF TRUE\n     THEN /\\ cause' = \"infra\""
+  },
+  {
+    "name": "infra-cap-always-skips",
+    "guard": "with the rule TRUE an infrastructure cap rolls back",
+    "caughtBy": "FailedImpliesSettled",
+    "find": "          /\\ IF InfraCapRollsBack\n",
+    "replace": "          /\\ IF FALSE\n"
+  },
+  {
+    "name": "infra-cap-always-rolls-back",
+    "guard": "with the rule FALSE an infrastructure cap skips the saga",
+    "caughtBy": "InfraSkipNeverRollsBack",
+    "find": "          /\\ IF InfraCapRollsBack\n",
+    "replace": "          /\\ IF TRUE\n"
+  },
+  {
+    "name": "infra-halt-hides-the-outcome",
+    "guard": "a saga an infrastructure cap halts records a failed outcome",
+    "caughtBy": "FailedImpliesSettled",
+    "find": "     ELSE task' = \"failed\" /\\ outcome' = \"failed\" /\\ UNCHANGED <<phase, cause>>",
+    "replace": "     ELSE task' = \"failed\" /\\ UNCHANGED <<phase, cause, outcome>>"
+  },
+  {
+    "name": "rollback-on-a-dead-task",
+    "guard": "RunRollback(s) needs a live task",
+    "caughtBy": "FailedMovesOnlyByRevival",
+    "find": "RunRollback(s) ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "RunRollback(s) ==\n  /\\ phase = \"rolling_back\"\n"
+  },
+  {
+    "name": "rollback-before-the-decision",
+    "guard": "RunRollback(s) needs the rolling-back phase",
+    "caughtBy": "SagaOnlyAfterDecision",
+    "find": "RunRollback(s) ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "RunRollback(s) ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "retry-on-a-dead-task",
+    "guard": "RollbackRetry(s) needs a live task",
+    "caughtBy": "FailedMovesOnlyByRevival",
+    "find": "RollbackRetry(s) ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "RollbackRetry(s) ==\n  /\\ phase = \"rolling_back\"\n"
+  },
+  {
+    "name": "retry-before-the-decision",
+    "guard": "RollbackRetry(s) needs the rolling-back phase",
+    "caughtBy": "SagaOnlyAfterDecision",
+    "find": "RollbackRetry(s) ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "RollbackRetry(s) ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "halt-on-a-dead-task",
+    "guard": "RollbackHalts(s) needs a live task",
+    "caughtBy": "FailedMovesOnlyByRevival",
+    "find": "RollbackHalts(s) ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "RollbackHalts(s) ==\n  /\\ phase = \"rolling_back\"\n"
+  },
+  {
+    "name": "halt-before-the-decision",
+    "guard": "RollbackHalts(s) needs the rolling-back phase",
+    "caughtBy": "SagaOnlyAfterDecision",
+    "find": "RollbackHalts(s) ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "RollbackHalts(s) ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "finish-saga-on-a-dead-task",
+    "guard": "FinishSaga needs a live task",
+    "caughtBy": "OutcomeIsFinal",
+    "find": "FinishSaga ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "FinishSaga ==\n  /\\ phase = \"rolling_back\"\n"
+  },
+  {
+    "name": "finish-saga-before-the-decision",
+    "guard": "FinishSaga needs the rolling-back phase",
+    "caughtBy": "SagaOnlyAfterDecision",
+    "find": "FinishSaga ==\n  /\\ task = \"live\" /\\ phase = \"rolling_back\"\n",
+    "replace": "FinishSaga ==\n  /\\ task = \"live\"\n"
+  },
+  {
+    "name": "rollback-out-of-order",
+    "guard": "the next rollback is the pending step that started last",
+    "caughtBy": "ReverseOrder",
+    "find": "  /\\ \\A t \\in Pending : startIdx[t] <= startIdx[s]\n",
+    "replace": "  /\\ TRUE\n"
+  },
+  {
+    "name": "rollback-of-an-unregistered-step",
+    "guard": "only a registered step is rolled back",
+    "caughtBy": "RollbackOnlyEligible",
+    "find": "Eligible == {s \\in Registered : fwd[s] # \"none\"}",
+    "replace": "Eligible == {s \\in Steps : fwd[s] # \"none\"}"
+  },
+  {
+    "name": "rollback-of-an-unstarted-step",
+    "guard": "only a step that started is rolled back",
+    "caughtBy": "RollbackOnlyEligible",
+    "find": "Eligible == {s \\in Registered : fwd[s] # \"none\"}",
+    "replace": "Eligible == {s \\in Registered : TRUE}"
+  },
+  {
+    "name": "rollback-runs-twice",
+    "guard": "a rollback that is done is not pending",
+    "caughtBy": "RollbackIsFinal",
+    "find": "Pending == {s \\in Eligible : rb[s] = \"none\"}",
+    "replace": "Pending == {s \\in Eligible : rb[s] # \"failed\"}"
+  },
+  {
+    "name": "retry-past-the-budget",
+    "guard": "a rollback retries only within its own budget",
+    "caughtBy": "TypeOK",
+    "find": "  /\\ rbTries[s] + 1 < MaxRollbackAttempts\n",
+    "replace": "  /\\ TRUE\n"
+  },
+  {
+    "name": "halt-hides-the-outcome",
+    "guard": "a halted saga records a failed outcome",
+    "caughtBy": "FailedImpliesSettled",
+    "find": "  /\\ outcome' = \"failed\" /\\ task' = \"failed\"\n  /\\ UNCHANGED <<phase, fwd, startIdx, rbTries, cause,",
+    "replace": "  /\\ task' = \"failed\"\n  /\\ UNCHANGED <<outcome, phase, fwd, startIdx, rbTries, cause,"
+  },
+  {
+    "name": "halt-leaves-the-task-live",
+    "guard": "a halt ends the task in the same batch",
+    "caughtBy": "OutcomeOnlyWhenTerminal",
+    "find": "  /\\ outcome' = \"failed\" /\\ task' = \"failed\"\n  /\\ UNCHANGED <<phase, fwd, startIdx, rbTries, cause,",
+    "replace": "  /\\ outcome' = \"failed\"\n  /\\ UNCHANGED <<task, phase, fwd, startIdx, rbTries, cause,"
+  },
+  {
+    "name": "finish-with-rollbacks-pending",
+    "guard": "a saga completes only with nothing pending",
+    "caughtBy": "OutcomeHonest",
+    "find": "  /\\ Pending = {}\n",
+    "replace": "  /\\ TRUE\n"
+  },
+  {
+    "name": "cancel-a-dead-task",
+    "guard": "only a live task is cancelled",
+    "caughtBy": "TerminalIsQuiet",
+    "find": "Cancel ==\n  /\\ task = \"live\"\n",
+    "replace": "Cancel ==\n  /\\ TRUE\n"
+  },
+  {
+    "name": "cancel-ignores-the-rule",
+    "guard": "under \"refused\" a rolling-back task is not cancelled",
+    "caughtBy": "RefusedCancelNeverHalts",
+    "find": "  /\\ (phase = \"rolling_back\") => (CancelMidRollback = \"halts\")\n",
+    "replace": "  /\\ TRUE\n"
+  },
+  {
+    "name": "cancel-hides-the-halt",
+    "guard": "a cancellation that halts a saga records a failed outcome",
+    "caughtBy": "CancelledSagaIsSurfaced",
+    "find": "  /\\ outcome' = IF phase = \"rolling_back\" THEN \"failed\" ELSE outcome\n",
+    "replace": "  /\\ outcome' = outcome\n"
+  },
+  {
+    "name": "revive-a-live-task",
+    "guard": "only a failed task revives",
+    "caughtBy": "RevivalOnlyOfFailed",
+    "find": "Revive ==\n  /\\ task = \"failed\" /\\ revivals < MaxRevivals\n",
+    "replace": "Revive ==\n  /\\ task \\in {\"failed\", \"live\"} /\\ revivals < MaxRevivals\n"
+  },
+  {
+    "name": "revive-past-the-budget",
+    "guard": "revivals are bounded",
+    "caughtBy": "TypeOK",
+    "find": "Revive ==\n  /\\ task = \"failed\" /\\ revivals < MaxRevivals\n",
+    "replace": "Revive ==\n  /\\ task = \"failed\"\n"
+  },
+  {
+    "name": "revive-keeps-the-cause",
+    "guard": "a revival clears the decision",
+    "caughtBy": "DecisionIsMadeOnce",
+    "find": "revivals' = revivals + 1 /\\ cause' = \"none\"",
+    "replace": "revivals' = revivals + 1 /\\ cause' = cause"
+  },
+  {
+    "name": "revive-ignores-the-rule",
+    "guard": "under \"refused\" a task whose saga began is not revived",
+    "caughtBy": "RefusedRevivalNeverRestarts",
+    "find": "     ELSE /\\ ReviveAfterSaga = \"fresh\"\n",
+    "replace": "     ELSE /\\ TRUE\n"
+  },
+  {
+    "name": "revive-a-halted-saga",
+    "guard": "only a completed saga is revived",
+    "caughtBy": "MemoMatchesEffect",
+    "find": "          /\\ outcome = \"complete\"\n",
+    "replace": "          /\\ TRUE\n"
+  },
+  {
+    "name": "revive-stays-in-the-saga",
+    "guard": "a revival returns the task to the forward phase",
+    "caughtBy": "SagaOnlyAfterDecision",
+    "find": "          /\\ phase' = \"forward\" /\\ outcome' = \"none\"\n",
+    "replace": "          /\\ phase' = phase /\\ outcome' = \"none\"\n"
+  },
+  {
+    "name": "revive-keeps-the-outcome",
+    "guard": "a revival clears the rollback outcome",
+    "caughtBy": "SagaOnlyAfterDecision",
+    "find": "          /\\ phase' = \"forward\" /\\ outcome' = \"none\"\n",
+    "replace": "          /\\ phase' = \"forward\" /\\ outcome' = outcome\n"
+  },
+  {
+    "name": "revive-keeps-the-generation",
+    "guard": "a revival after a saga starts a new generation",
+    "caughtBy": "OutcomeIsFinal",
+    "find": "          /\\ generation' = generation + 1\n",
+    "replace": "          /\\ generation' = generation\n"
+  },
+  {
+    "name": "revive-keeps-the-memo",
+    "guard": "a revival forgets every rolled-back step",
+    "caughtBy": "StartOrderDistinct",
+    "find": "          /\\ fwd' = [s \\in Steps |-> IF s \\in Eligible THEN \"none\" ELSE fwd[s]]\n",
+    "replace": "          /\\ fwd' = fwd\n"
+  },
+  {
+    "name": "revive-keeps-the-order",
+    "guard": "a forgotten step gives up its index",
+    "caughtBy": "StartOrderDistinct",
+    "find": "          /\\ startIdx' = [s \\in Steps |-> IF s \\in Eligible THEN 0 ELSE startIdx[s]]\n",
+    "replace": "          /\\ startIdx' = startIdx\n"
+  },
+  {
+    "name": "revive-keeps-the-rollbacks",
+    "guard": "a new generation starts with no rollback done",
+    "caughtBy": "RollbackOnlyEligible",
+    "find": "          /\\ rb' = [s \\in Steps |-> \"none\"]\n",
+    "replace": "          /\\ rb' = rb\n"
+  },
+  {
+    "name": "revive-keeps-the-tries",
+    "guard": "a new generation starts with fresh rollback budgets",
+    "caughtBy": "RollbackOnlyEligible",
+    "find": "          /\\ rbTries' = [s \\in Steps |-> 0]\n",
+    "replace": "          /\\ rbTries' = rbTries\n"
+  }
+]
