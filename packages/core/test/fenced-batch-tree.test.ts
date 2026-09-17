@@ -870,13 +870,14 @@ describe('FencedBatch tree statements', () => {
       eventName: 'e',
       timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
       timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
-      claimHolds: sqlFragment('EXISTS (SELECT 1 FROM runs r WHERE r.run_id = ?)', ['r1']),
+      claimToken: 'tok',
+      taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),
+      taskEligible: sqlFragment('t.cancel_at_ms IS NULL'),
     })
     const emit = emitEventCas({
       queue: 'q',
       eventName: 'e',
       payloadJson: '{}',
-      stampDiffers: 'is distinct from',
       existingEventAdmits: sqlFragment('events.payload IS NOT NULL'),
     })
     const sent: string[] = []
@@ -894,6 +895,10 @@ describe('FencedBatch tree statements', () => {
       `case when ((CASE WHEN ? = 1 THEN ${CLOCK} + ? ELSE ? END)) <= ${CLOCK}`,
     )
     expect(sent[1]).toContain('on conflict ("run_id", "step_name") do nothing')
+    // The claim's identity is nodes, whatever fragments a store passes.
+    expect(sent[1]).toContain(
+      'inner join "tasks" as "t" on (t.task_id = r.task_id AND t.queue = r.queue) where "r"."run_id" = ? and "r"."queue" = ? and "r"."task_id" = ? and "r"."claimed_by" = ? and "r"."state" = ? and (t.cancel_at_ms IS NULL)',
+    )
     expect(sent[1]).toContain(
       `(CASE WHEN ? IS NOT NULL THEN ${CLOCK} + ? ELSE NULL END) as "timeout_at_ms"`,
     )

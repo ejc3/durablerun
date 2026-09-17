@@ -3,11 +3,21 @@ import { type SqlFragment, nowValue, rawSql, stampValue } from '../sql-tree.js'
 import type { StoreTables } from '../store-tables.js'
 
 /** The claim columns a parked run clears, so it carries no live token, lease deadline, or heartbeat. */
-export const PARKED_CLAIM_COLUMNS = {
+const PARKED_CLAIM_COLUMNS = {
   claimed_by: null,
   claim_expires_at_ms: null,
   heartbeat_at_ms: null,
 } as const
+
+/**
+ * The same columns as text assignments, for a follow-on that parks a run and is still
+ * text. The type holds the two lists to the same columns.
+ */
+export const PARKED_CLAIM_CLEARED_TEXT = {
+  claimed_by: 'NULL',
+  claim_expires_at_ms: 'NULL',
+  heartbeat_at_ms: 'NULL',
+} as const satisfies Record<keyof typeof PARKED_CLAIM_COLUMNS, 'NULL'>
 
 /**
  * What parking a claimed run assigns, for every transition that parks one: the run is

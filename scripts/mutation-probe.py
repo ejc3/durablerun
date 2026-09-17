@@ -2452,12 +2452,8 @@ MUTATION_SPECS = [
     (
         "await-event-register-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "          `EXISTS (SELECT 1 FROM runs r\n"
-        "                     JOIN tasks t ON ${runOwnedByTask('r', 't')}\n"
-        "                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?\n",
-        "          `EXISTS (SELECT 1 FROM runs r\n"
-        "                     JOIN tasks t ON t.task_id = r.task_id\n"
-        "                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?\n",
+        "        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),\n",
+        "        taskOwnsRun: sqlFragment('t.task_id = r.task_id'),\n",
         "awaitEvent registers and parks after its task crosses the immutable queue boundary",
     ),
     (

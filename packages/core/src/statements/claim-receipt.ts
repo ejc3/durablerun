@@ -1,6 +1,6 @@
-import type { UpdateQueryBuilder, UpdateResult } from 'kysely'
 import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
-import { type StoreTables, treeBuilder } from '../store-tables.js'
+import { treeBuilder } from '../store-tables.js'
+import { type RunsUpdate, whereClaimedRun } from './claimed-run.js'
 import { parkAssignments } from './park.js'
 
 /** The claim a launch names: a run still running under this token and generation, not yet activated. */
@@ -13,8 +13,6 @@ type ClaimReceipt = {
   admission: SqlFragment
 }
 
-type RunsUpdate = UpdateQueryBuilder<StoreTables, 'runs', 'runs', UpdateResult>
-
 /**
  * What every transition acting on a claim receipt requires of it: the receipt's
  * identity, the generation latch, and the store's admission predicate. Activation and
@@ -23,11 +21,7 @@ type RunsUpdate = UpdateQueryBuilder<StoreTables, 'runs', 'runs', UpdateResult>
 const whereClaimReceipt =
   (binds: ClaimReceipt) =>
   (update: RunsUpdate): RunsUpdate =>
-    update
-      .where('run_id', '=', binds.runId)
-      .where('queue', '=', binds.queue)
-      .where('claimed_by', '=', binds.claimToken)
-      .where('state', '=', 'running')
+    whereClaimedRun(binds)(update)
       .where('claim_gen', '=', binds.claimGen)
       .where('activated_gen', '<', binds.claimGen)
       .where(rawSql<boolean>(binds.admission, 'predicate'))

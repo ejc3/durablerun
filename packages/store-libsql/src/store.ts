@@ -14,6 +14,7 @@ import {
   type LeaseState,
   MAX_DURATION_MS,
   NOW,
+  PARKED_CLAIM_CLEARED_TEXT,
   PERSISTED_INTEGER_BOUNDS,
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
@@ -1853,7 +1854,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         queue,
         eventName,
         payloadJson,
-        stampDiffers: 'is not',
         existingEventAdmits: sqlFragment(
           `typeof(events.payload) = 'text'
          AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`,
@@ -2056,6 +2056,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         queue,
         runId,
         taskId,
+        claimToken,
         stepName,
         eventName,
         timeoutAt: sqlFragment(`CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END`, [
@@ -2066,14 +2067,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
           timeoutMs,
           timeoutMs,
         ]),
-        claimHolds: sqlFragment(
-          `EXISTS (SELECT 1 FROM runs r
-                     JOIN tasks t ON ${runOwnedByTask('r', 't')}
-                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                       AND r.claimed_by = ? AND r.state = 'running'
-                       AND ${eligibleTask('t', NOW)})`,
-          [runId, queue, taskId, claimToken],
-        ),
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+        taskEligible: sqlFragment(eligibleTask('t', NOW)),
       }),
     )
     // available_at_ms IS this wait's own timeout_at_ms — copied from the row
@@ -2094,9 +2089,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         wake_event: '?',
         event_payload: 'NULL',
         wake_step: '?',
-        claimed_by: 'NULL',
-        claim_expires_at_ms: 'NULL',
-        heartbeat_at_ms: 'NULL',
+        ...PARKED_CLAIM_CLEARED_TEXT,
       },
       setArgs: [runId, stepName, eventName, stepName],
       narrow: `queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'

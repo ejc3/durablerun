@@ -1,5 +1,6 @@
 import { type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
+import { CLEARED_WAKE_COLUMNS, whereClaimedRun } from './claimed-run.js'
 import { parkAssignments } from './park.js'
 
 /**
@@ -21,14 +22,9 @@ export const suspendCas = defineStatement(
       .updateTable('runs')
       .set((eb) => ({
         ...parkAssignments(eb, binds.wakeAt),
-        wake_event: null,
-        event_payload: null,
-        wake_step: null,
+        ...CLEARED_WAKE_COLUMNS,
       }))
-      .where('run_id', '=', binds.runId)
-      .where('queue', '=', binds.queue)
-      .where('claimed_by', '=', binds.claimToken)
-      .where('state', '=', 'running')
+      .$call(whereClaimedRun(binds))
       .where(rawSql<boolean>(binds.admission, 'predicate'))
       .where(rawSql<boolean>(binds.wakeFits, 'predicate')),
 )

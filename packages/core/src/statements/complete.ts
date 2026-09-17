@@ -1,5 +1,6 @@
 import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
+import { CLEARED_WAKE_COLUMNS, whereClaimedRun } from './claimed-run.js'
 
 /**
  * `complete`'s compare-and-set, defined once for every dialect. A store supplies its
@@ -20,17 +21,12 @@ export const completeCas = defineStatement(
         state: 'completed',
         completed_at_ms: nowValue,
         result: binds.resultJson,
-        wake_event: null,
-        event_payload: null,
-        wake_step: null,
+        ...CLEARED_WAKE_COLUMNS,
         claimed_by: null,
         claim_expires_at_ms: null,
         fence_stamp: stampValue,
         fence_at_ms: nowValue,
       })
-      .where('run_id', '=', binds.runId)
-      .where('queue', '=', binds.queue)
-      .where('claimed_by', '=', binds.claimToken)
-      .where('state', '=', 'running')
+      .$call(whereClaimedRun(binds))
       .where(rawSql<boolean>(binds.taskAdmitsCompletion, 'predicate')),
 )
