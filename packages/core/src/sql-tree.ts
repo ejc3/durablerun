@@ -881,7 +881,9 @@ const GRAMMAR_NODES = [
  * insert's provenance go by column position, so a SELECT lists one plain selection for
  * each column: a star is one selection and many columns. A conflict clause names its
  * columns, or it would swallow a violation of any unique index. SQLite reads the ON of a
- * conflict clause as a join constraint when the SELECT before it has no WHERE.
+ * conflict clause as a join constraint when the SELECT before it has no WHERE. A
+ * partial-index predicate on the conflict target holds column references, operators,
+ * and inline values only.
  */
 function insertShapeProblem(insert: InsertQueryNode): string | null {
   const values = insert.values
@@ -902,6 +904,18 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
   }
   if (insert.onConflict !== undefined && (insert.onConflict.columns?.length ?? 0) === 0) {
     return 'an ON CONFLICT that names no columns'
+  }
+  // A partial index is matched by its predicate's text. SQLite refuses a predicate
+  // with a parameter in it and PostgreSQL accepts one, so a bound value would run on one
+  // dialect and fail on the other. Inline values such as NULL are part of the text.
+  const indexWhere = insert.onConflict?.indexWhere
+  if (indexWhere !== undefined) {
+    if (someNode(indexWhere, (node) => RawNode.is(node))) {
+      return 'an index predicate that holds a fragment'
+    }
+    if (someNode(indexWhere, (node) => ValueNode.is(node) && node.immediate !== true)) {
+      return 'an index predicate that holds a bound value or a token'
+    }
   }
   return null
 }
