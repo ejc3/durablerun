@@ -680,6 +680,8 @@ export function gatingFences(query: OperationNode): GatingFence[] {
  */
 function mayReturnNoRow(select: SelectQueryNode): boolean {
   if (select.groupBy !== undefined) return true
+  // An ungrouped HAVING makes the SELECT one group, which returns a row regardless.
+  if (select.having !== undefined) return false
   return (select.selections ?? []).every(
     (selection) =>
       !someNode(
@@ -713,18 +715,20 @@ function assignments(query: OperationNode): readonly ColumnUpdateNode[] {
 }
 
 /**
- * Whether a fragment's text may count on `column`. An unqualified mention is the
- * assigned row's own column, so any such mention counts: the tree cannot see what the
- * text does with it. A qualified mention may be another row, read through a subquery,
- * so it counts only beside an arithmetic or concatenation operator, under any qualifier:
- * `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are the same write as `x + 1`.
+ * Whether a fragment's text may count on `column` of the row being written. The tree
+ * cannot see what text does with a value, so any read of the assigned row counts: an
+ * unqualified mention, or one qualified by the table being written, whatever wraps it.
+ * A mention under another qualifier is another row, read through a subquery, and a copy
+ * of it is fine. Arithmetic on it is refused all the same, as the text path refused
+ * `x = t.x + 1` by name: `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are one write.
  */
-function mentions(text: string, column: string): boolean {
+function mentions(text: string, column: string, table: string | null): boolean {
   const name = String.raw`"?${column}"?(?!\w)`
   const qualified = String.raw`\w+"?\."?${column}"?(?!\w)`
   const operator = String.raw`(?:[-+*/%]|\|\|)`
   return (
     new RegExp(String.raw`(?<![\w."])${name}`, 'i').test(text) ||
+    (table !== null && new RegExp(String.raw`(?<!\w)"?${table}"?\.${name}`, 'i').test(text)) ||
     new RegExp(String.raw`${qualified}\s*\)*\s*${operator}`, 'i').test(text) ||
     new RegExp(String.raw`${operator}\s*\(*\s*"?${qualified}`, 'i').test(text)
   )
@@ -742,6 +746,7 @@ const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']
 export function selfCountingAssignments(
   query: OperationNode,
 ): { column: string; how: 'arithmetic' | 'raw' }[] {
+  const table = statementTable(query)
   return assignments(query).flatMap((update): { column: string; how: 'arithmetic' | 'raw' }[] => {
     const column = assignedColumn(update)
     if (column === null) return []
@@ -757,7 +762,8 @@ export function selfCountingAssignments(
     if (arithmetic) return [{ column, how: 'arithmetic' }]
     const raw = someNode(
       update.value,
-      (candidate) => RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column),
+      (candidate) =>
+        RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column, table),
     )
     return raw ? [{ column, how: 'raw' }] : []
   })
