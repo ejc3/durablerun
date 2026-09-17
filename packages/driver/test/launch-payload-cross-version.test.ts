@@ -1,4 +1,9 @@
-import { type LaunchInvocation, LaunchOutcome, systemClock } from '@durablerun/core'
+import {
+  LAUNCH_IDENTITY_FIELDS,
+  type LaunchInvocation,
+  LaunchOutcome,
+  systemClock,
+} from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
@@ -163,6 +168,13 @@ describe('launch payload across driver and worker versions', () => {
     try {
       const { payload } = await driverPayload(f)
       expect(Object.keys(payload).sort()).toEqual(Object.keys(LAUNCH_FIELD_ROLES).sort())
+      // The worker validates exactly the fields classified as identity here.
+      expect([...LAUNCH_IDENTITY_FIELDS].sort()).toEqual(
+        Object.entries(LAUNCH_FIELD_ROLES)
+          .filter(([, role]) => role === 'identity')
+          .map(([field]) => field)
+          .sort(),
+      )
     } finally {
       await f.close()
     }

@@ -48,8 +48,6 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
   const store = new LibsqlSchedulerStore(raw, ids)
   const clock = new FakeClock()
   let databaseNowMs = clock.now
-  // Real elapsed time, which a host clock step does not move.
-  let elapsedMs = 0
   await admin.setFakeNowEpochMs(databaseNowMs)
   let beats = 0
   const counted = new Proxy(store, {
@@ -96,8 +94,7 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
     return sleep
   }
   const advance = async (ms: number) => {
-    elapsedMs += ms
-    clock.now += ms
+    clock.advance(ms)
     databaseNowMs += ms
     await admin.setFakeNowEpochMs(databaseNowMs)
     clock.fire()
@@ -105,17 +102,16 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
   try {
     let sleep = await nextSleep(undefined, 'the first park')
     const park = sleep
-    const parkStartedAtElapsedMs = elapsedMs
+    const parkStartedAtElapsedMs = clock.elapsed
     if (shape.stepAt === 'middle') await advance(Math.floor(park.ms / 2))
-    // A host clock step moves wall time, not a pending timer: real timers measure
-    // elapsed time, so each pending sleep keeps its remaining duration.
+    // A host clock step moves wall time only. Timers and the loop's own waits run on
+    // elapsed time, which the step does not move.
     clock.now += shape.stepMs
-    for (const pending of clock.sleeps) pending.deadline += shape.stepMs
     if (shape.wake) {
       const ticksBeforeWake = loop.stats.ticks
       loop.wake()
       sleep = await nextSleep(park, 'the wait after a wake')
-      const overshootMs = elapsedMs + sleep.ms - (parkStartedAtElapsedMs + park.ms)
+      const overshootMs = clock.elapsed + sleep.ms - (parkStartedAtElapsedMs + park.ms)
       if (loop.stats.ticks === ticksBeforeWake && overshootMs > 0) {
         problems.push(
           `${label}: the wait after a wake ends ${overshootMs}ms past the look the park planned`,

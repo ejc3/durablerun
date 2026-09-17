@@ -7,9 +7,14 @@ import { type Clock, type LaunchInvocation, LaunchOutcome, type Launcher } from 
  */
 export class FakeClock implements Clock {
   now = 1_000_000
+  /** Elapsed time, which a host clock step does not move; timers run on it. */
+  elapsed = 0
   sleeps: { deadline: number; ms: number; resolve: () => void }[] = []
   nowEpochMs(): number {
     return this.now
+  }
+  elapsedMs(): number {
+    return this.elapsed
   }
   yieldTurn(): Promise<void> {
     return new Promise((resolve) => setImmediate(resolve))
@@ -20,7 +25,7 @@ export class FakeClock implements Clock {
         resolve()
         return
       }
-      const entry = { deadline: this.now + ms, ms, resolve }
+      const entry = { deadline: this.elapsed + ms, ms, resolve }
       this.sleeps.push(entry)
       interrupt?.addEventListener(
         'abort',
@@ -32,9 +37,14 @@ export class FakeClock implements Clock {
       )
     })
   }
+  /** Advance wall and elapsed time together. */
+  advance(ms: number): void {
+    this.now += ms
+    this.elapsed += ms
+  }
   fire(): void {
-    const due = this.sleeps.filter((s) => s.deadline <= this.now)
-    this.sleeps = this.sleeps.filter((s) => s.deadline > this.now)
+    const due = this.sleeps.filter((s) => s.deadline <= this.elapsed)
+    this.sleeps = this.sleeps.filter((s) => s.deadline > this.elapsed)
     for (const s of due) s.resolve()
   }
 }

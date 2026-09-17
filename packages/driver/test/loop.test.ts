@@ -15,7 +15,7 @@ async function fx(seed: string) {
   const clock = new FakeClock()
   await admin.setFakeNowEpochMs(clock.now)
   const advance = async (ms: number) => {
-    clock.now += ms
+    clock.advance(ms)
     await admin.setFakeNowEpochMs(clock.now)
     clock.fire()
   }

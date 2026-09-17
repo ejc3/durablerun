@@ -38,6 +38,9 @@ class FakeClock implements Clock {
   nowEpochMs(): number {
     return this.now
   }
+  elapsedMs(): number {
+    return this.nowEpochMs()
+  }
   yieldTurn(): Promise<void> {
     return new Promise((resolve) => setImmediate(resolve))
   }

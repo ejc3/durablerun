@@ -11,6 +11,9 @@ class InstantClock {
   nowEpochMs() {
     return this.now
   }
+  elapsedMs(): number {
+    return this.nowEpochMs()
+  }
   yieldTurn(): Promise<void> {
     return new Promise((r) => setImmediate(r))
   }

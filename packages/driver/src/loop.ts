@@ -177,7 +177,7 @@ export class DriverLoop {
     try {
       while (this.running) {
         let result: TickResult | null = null
-        lastTickStartedAtMs = this.clock.nowEpochMs()
+        lastTickStartedAtMs = this.clock.elapsedMs()
         try {
           result = await tick(
             { store: this.store, launcher: this.launcher, ids: this.ids },
@@ -230,9 +230,8 @@ export class DriverLoop {
           }
         }
         sleepMs = Math.min(sleepMs, this.msUntilBeatDue())
-        // The look this park plans, as a duration from when the park starts. A wake
-        // may coalesce pings, but never delays it.
-        const parkStartedAtMs = this.clock.nowEpochMs()
+        // When this park started, in elapsed time; the look it plans is `sleepMs` later.
+        const parkStartedAtMs = this.clock.elapsedMs()
         if (!this.wakeRequested) {
           this.chainedTicks = 0
           this.sleepInterrupt = new AbortController()
@@ -242,17 +241,14 @@ export class DriverLoop {
         if (this.wakeRequested && this.running) {
           // A wake looks again, but never sooner than the floor after the last
           // tick started, so every ping inside the interval coalesces into one
-          // look. The wait never exceeds the floor, so a backwards clock step
-          // cannot stretch it, and never passes the look this park planned, so
-          // coalescing delays neither a due wake nor the registry beat. Only
-          // stop() interrupts this wait.
-          // Both remainders are measured as elapsed durations floored at zero, so a
-          // backwards clock step cannot stretch the floor or the planned look past
-          // their own lengths, and the planned look is already capped at the beat.
-          const nowMs = this.clock.nowEpochMs()
+          // look, and never later than the look this park planned, which is
+          // already capped at the next registry beat. Both are measured in elapsed
+          // time, so a host clock step cannot stretch the wait. Only stop()
+          // interrupts it.
+          const nowMs = this.clock.elapsedMs()
           const remaining = Math.min(
-            this.wakeFloorMs - Math.max(0, nowMs - lastTickStartedAtMs),
-            sleepMs - Math.max(0, nowMs - parkStartedAtMs),
+            lastTickStartedAtMs + this.wakeFloorMs - nowMs,
+            parkStartedAtMs + sleepMs - nowMs,
           )
           if (remaining > 0) {
             this.chainedTicks = 0
@@ -289,10 +285,8 @@ export class DriverLoop {
    * only on success so failures retry next pass, not next interval.
    */
   private beatRegistry(): void {
-    const now = this.clock.nowEpochMs()
-    if (this.lastBeatAtMs !== null && now < this.lastBeatAtMs) {
-      this.lastBeatAtMs = now // wall clock jumped backward: re-anchor
-    }
+    // Beat cadence runs on elapsed time, so a host clock step cannot delay a beat.
+    const now = this.clock.elapsedMs()
     if (this.beatInFlight !== null) return
     if (this.lastBeatAtMs !== null && now - this.lastBeatAtMs < this.registryIntervalMs) return
     this.beatInFlight = this.store
@@ -314,7 +308,7 @@ export class DriverLoop {
    * fire-and-forget beat may still be in flight when the park is sized. */
   private msUntilBeatDue(): number {
     if (this.lastBeatAtMs === null) return this.registryIntervalMs
-    const due = this.lastBeatAtMs + this.registryIntervalMs - this.clock.nowEpochMs()
+    const due = this.lastBeatAtMs + this.registryIntervalMs - this.clock.elapsedMs()
     return Math.max(1, due)
   }
 }
