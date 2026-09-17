@@ -1160,8 +1160,10 @@ not depend on careful reading:
   separately from exact-only `caught`. Missing/wrong owners, suite errors,
   missing collateral messages, and ambiguous owner messages remain blocking.
   The verifier runs only the registered tests of the mutations it checks, so
-  collateral counts failures among those tests. A registered test that the
-  run filtered out or skipped is a suite error, never a survivor.
+  collateral counts failures among those tests. A mutation runs only its own
+  test, so collateral is rare, and whole-suite collateral is no longer measured.
+  A registered test that did not pass or fail in the report is a suite error,
+  never a survivor.
   Both
   `FencedBatch` compiler bind exits use one
   module-captured `TypeError` factory and private brand. The three canonical

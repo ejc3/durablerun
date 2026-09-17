@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import dataclasses
 import fcntl
 import hashlib
 import io
@@ -7267,7 +7266,9 @@ CONFINEMENT_ENV = "DURABLERUN_MUTATION_SCOPE"
 REPORT_VERSION = 2
 MUTATION_CHECKPOINT_DIRECTORY = "durablerun-mutation-checkpoints"
 MAX_AUTO_JOBS = 16
-MIN_CORES_PER_AUTO_JOB = 8
+# A worker runs one mutation's registered test at a time, so two cores per job keep a
+# small host parallel.
+MIN_CORES_PER_AUTO_JOB = 2
 
 
 def typecheck_command(project: TypecheckProject) -> list[str]:
@@ -7276,6 +7277,11 @@ def typecheck_command(project: TypecheckProject) -> list[str]:
     if project == "conformance":
         return CONFORMANCE_TYPECHECK_CMD
     raise ValueError(f"unknown mutation typecheck project {project!r}")
+
+
+def mutation_vitest_targets(mutations: list[Mutation]) -> tuple[ExpectedVerdict, ...]:
+    """The registered Vitest tests of the mutations that Vitest checks."""
+    return tuple(mutation.verdict for mutation in mutations if mutation.typecheck_project is None)
 
 
 def mutation_typecheck_projects(
@@ -7350,8 +7356,12 @@ def parse_report(
     diagnostic: str,
     *,
     return_transport_as_domain: bool = False,
+    targets: tuple[ExpectedVerdict, ...] | None = None,
 ) -> SuiteResult:
-    """Turn Vitest's JSON reporter into only the evidence attribution needs."""
+    """Turn Vitest's JSON reporter into only the evidence attribution needs.
+
+    With `targets`, every registered test that did not pass or fail is a suite error.
+    """
     try:
         report = json.loads(text)
     except (json.JSONDecodeError, TypeError) as error:
@@ -7423,6 +7433,7 @@ def parse_report(
 
     assertions: list[FailedAssertion] = []
     observed_tests = {"passed": 0, "failed": 0, "pending": 0, "todo": 0}
+    ran_tests: set[tuple[str, str]] = set()
     results = report.get("testResults")
     if not isinstance(results, list):
         message = "Vitest JSON report has no testResults array"
@@ -7475,6 +7486,8 @@ def parse_report(
             else:
                 invalid_report(f"{file}: assertion has invalid or missing status")
                 continue
+            if status in ("passed", "failed") and isinstance(assertion.get("fullName"), str):
+                ran_tests.add((file, assertion["fullName"]))
             if status != "failed":
                 continue
             failed_in_file = True
@@ -7534,6 +7547,8 @@ def parse_report(
             invalid_report(
                 "Vitest JSON report success contradicts its failure counters"
             )
+    if targets is not None:
+        suite_errors.extend(targeted_tests_not_run(ran_tests, targets))
     parsed = SuiteResult(
         process_ok,
         bool(report["success"]),
@@ -7655,17 +7670,19 @@ def run_suite_process(
             signal.signal(signum, previous)
 
 
-VITEST_TITLE_METACHARACTERS = frozenset("\\^$.*+?()[]{}|/")
+VITEST_TITLE_METACHARACTER = re.compile(r"[\\^$.*+?()\[\]{}|/]")
 
 
 def vitest_title_pattern(full_names: list[str]) -> str:
     """A Vitest `-t` pattern that matches exactly these full test names.
 
-    Vitest reads `-t` as a regular expression, so an unescaped `[libsql]` is a
-    character class and matches nothing, and a run that matches nothing still exits 0.
+    Vitest reads `-t` as a JavaScript regular expression, so an unescaped `[libsql]`
+    is a character class and matches nothing, and a run that matches nothing still
+    exits 0. `re.escape` is not used because it also escapes characters that a
+    JavaScript `u`-flag pattern rejects.
     """
     escaped = [
-        "".join(f"\\{character}" if character in VITEST_TITLE_METACHARACTERS else character for character in name)
+        VITEST_TITLE_METACHARACTER.sub(lambda match: "\\" + match.group(0), name)
         for name in full_names
     ]
     return f"^(?:{'|'.join(escaped)})$"
@@ -7678,23 +7695,36 @@ def targeted_test_arguments(targets: tuple[ExpectedVerdict, ...]) -> list[str]:
     return [*files, "-t", vitest_title_pattern(names)]
 
 
-def targeted_tests_not_run(report_text: str, targets: tuple[ExpectedVerdict, ...]) -> tuple[str, ...]:
-    """Registered tests that a targeted Vitest report did not run.
+# The longest `-t` pattern one Vitest launch gets. Linux caps a single argument at
+# 131072 bytes, so a baseline splits its targets across launches below this.
+TARGETED_PATTERN_LIMIT_BYTES = 32_000
 
-    A targeted test that was filtered out or skipped proves nothing about its guard,
-    so each one is a suite error rather than a pass.
+
+def targeted_chunks(targets: tuple[ExpectedVerdict, ...]) -> list[tuple[ExpectedVerdict, ...]]:
+    """Split targets so each launch's `-t` pattern stays under the argument limit."""
+    chunks: list[tuple[ExpectedVerdict, ...]] = []
+    current: list[ExpectedVerdict] = []
+    for target in targets:
+        candidate = [*current, target]
+        names = list(dict.fromkeys(item.full_name for item in candidate))
+        if current and len(vitest_title_pattern(names).encode()) > TARGETED_PATTERN_LIMIT_BYTES:
+            chunks.append(tuple(current))
+            current = [target]
+        else:
+            current = candidate
+    if current:
+        chunks.append(tuple(current))
+    return chunks
+
+
+def targeted_tests_not_run(
+    ran: set[tuple[str, str]], targets: tuple[ExpectedVerdict, ...]
+) -> tuple[str, ...]:
+    """Registered tests that did not pass or fail in a targeted run.
+
+    A targeted test that was filtered out, skipped, or missing proves nothing about
+    its guard, so each one is a suite error rather than a pass.
     """
-    try:
-        report = json.loads(report_text)
-        ran = {
-            (relative_test_file(result["name"]), assertion["fullName"])
-            for result in report["testResults"]
-            for assertion in result["assertionResults"]
-            if assertion.get("status") in ("passed", "failed")
-        }
-    except (json.JSONDecodeError, KeyError, TypeError):
-        # parse_report already names a malformed report.
-        return ()
     return tuple(
         f"targeted test did not run: {target.file} > {target.full_name}"
         for target in dict.fromkeys(targets)
@@ -7710,9 +7740,9 @@ def run_suite(
     authority: WorkerAuthority,
     return_transport_as_domain: bool = False,
     suite_wall_time_seconds: float | None = None,
-    targets: tuple[ExpectedVerdict, ...] = (),
+    targets: tuple[ExpectedVerdict, ...] | None = None,
 ) -> SuiteResult:
-    """Run Vitest, only over the registered tests of `targets` when there are any."""
+    """Run Vitest over the whole suite, or only over the registered tests of `targets`."""
     require_verifier_capabilities(
         scope=scope,
         workspace=workspace,
@@ -7722,7 +7752,10 @@ def run_suite(
         report = Path(temporary) / "vitest.json"
         log = Path(temporary) / "vitest.log"
         command = [*TEST_CMD]
-        if targets:
+        if targets is not None:
+            targets = tuple(dict.fromkeys(targets))
+            if not targets:
+                raise ValueError("a targeted Vitest run needs at least one registered test")
             command.extend(targeted_test_arguments(targets))
         if max_workers is not None:
             command.extend(("--maxWorkers", str(max_workers)))
@@ -7752,19 +7785,13 @@ def run_suite(
                 ),
                 return_as_domain=return_transport_as_domain,
             )
-        report_text = report.read_text()
         parsed = parse_report(
-            report_text,
+            report.read_text(),
             returncode == 0,
             diagnostic,
             return_transport_as_domain=return_transport_as_domain,
+            targets=targets,
         )
-        if not_run := targeted_tests_not_run(report_text, targets):
-            parsed = dataclasses.replace(
-                parsed,
-                report_ok=False,
-                suite_errors=(*parsed.suite_errors, *not_run),
-            )
         if returncode >= 0:
             return parsed
         message = f"Vitest terminated by signal {-returncode}"
@@ -10275,39 +10302,39 @@ ORCHESTRATION_SELF_TEST_FAULTS = (
 ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS = {
     "skip-store-typecheck": (
         "store baseline: expected verifier trace "
-        "['vitest', 'tsc:store-libsql'], observed ['vitest']"
+        "['tsc:store-libsql'], observed []"
     ),
     "misroute-store-typecheck": (
         "store baseline: expected verifier trace "
-        "['vitest', 'tsc:store-libsql'], observed "
-        "['vitest', 'tsc:conformance']"
+        "['tsc:store-libsql'], observed "
+        "['tsc:conformance']"
     ),
     "duplicate-store-typecheck": (
         "store baseline: expected verifier trace "
-        "['vitest', 'tsc:store-libsql'], observed "
-        "['vitest', 'tsc:store-libsql', 'tsc:store-libsql']"
+        "['tsc:store-libsql'], observed "
+        "['tsc:store-libsql', 'tsc:store-libsql']"
     ),
     "skip-conformance-typecheck": (
         "conformance baseline: expected verifier trace "
-        "['vitest', 'tsc:conformance'], observed ['vitest']"
+        "['tsc:conformance'], observed []"
     ),
     "misroute-conformance-typecheck": (
         "conformance baseline: expected verifier trace "
-        "['vitest', 'tsc:conformance'], observed "
-        "['vitest', 'tsc:store-libsql']"
+        "['tsc:conformance'], observed "
+        "['tsc:store-libsql']"
     ),
     "duplicate-conformance-typecheck": (
         "conformance baseline: expected verifier trace "
-        "['vitest', 'tsc:conformance'], observed "
-        "['vitest', 'tsc:conformance', 'tsc:conformance']"
+        "['tsc:conformance'], observed "
+        "['tsc:conformance', 'tsc:conformance']"
     ),
     "skip-vitest": (
         "behavior baseline: expected verifier trace ['vitest'], observed []"
     ),
     "reverse-typecheck-project-order": (
         "mixed baseline: expected verifier trace "
-        "['vitest', 'tsc:store-libsql', 'tsc:conformance'], observed "
-        "['vitest', 'tsc:conformance', 'tsc:store-libsql']"
+        "['tsc:store-libsql', 'tsc:conformance'], observed "
+        "['tsc:conformance', 'tsc:store-libsql']"
     ),
     "typecheck-behavior-only": (
         "behavior baseline: expected verifier trace ['vitest'], observed "
@@ -10319,12 +10346,12 @@ ROUTING_SELF_TEST_EXPECTED_DIAGNOSTICS = {
     ),
     "continue-after-vitest-red": (
         "vitest-red baseline: expected verifier trace ['vitest:red'], observed "
-        "['vitest:red', 'tsc:store-libsql', 'tsc:conformance']"
+        "['vitest:red', 'tsc:store-libsql']"
     ),
     "continue-after-store-typecheck-red": (
         "store-red baseline: expected verifier trace "
-        "['vitest', 'tsc:store-libsql:red'], observed "
-        "['vitest', 'tsc:store-libsql:red', 'tsc:conformance']"
+        "['tsc:store-libsql:red'], observed "
+        "['tsc:store-libsql:red', 'tsc:conformance']"
     ),
     "accept-conformance-typecheck-red": (
         f"conformance-red baseline: expected status {WORKER_RED_RETURNCODE}, observed 0"
@@ -11497,33 +11524,52 @@ def targeted_suite_problems() -> list[str]:
         "fence() names a statement, and the primitive supplies the value (a.b+c?)",
     ]
     pattern = vitest_title_pattern(names)
-    for name in names:
-        if not re.fullmatch(pattern, name):
-            problems.append(f"targeted filter does not match its own test name: {name!r}")
-    for near_miss in (
+    near_misses = [
         "scheduler conformance l checkpoints validates checkpoint visibility",
         "scheduler conformance [libsql] checkpoints validates checkpoint visibility too",
-    ):
-        if re.fullmatch(pattern, near_miss):
-            problems.append(f"targeted filter matches another test name: {near_miss!r}")
-    target = ExpectedVerdict("behavior", "packages/core/test/x.test.ts", names[0], "marker")
-
-    def report(status: str) -> str:
-        return json.dumps(
-            {
-                "testResults": [
-                    {
-                        "name": "packages/core/test/x.test.ts",
-                        "assertionResults": [{"fullName": names[0], "status": status}],
-                    }
-                ]
-            }
+    ]
+    # Vitest compiles `-t` with JavaScript's RegExp, so the check runs there.
+    matched = subprocess.run(
+        (
+            "node",
+            "-e",
+            "const [p, ...n] = JSON.parse(process.argv[1]); const r = new RegExp(p);"
+            " console.log(JSON.stringify(n.map((name) => r.test(name))))",
+            json.dumps([pattern, *names, *near_misses]),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    try:
+        verdicts = json.loads(matched.stdout)
+    except json.JSONDecodeError:
+        return [f"targeted filter check could not run: {(matched.stdout + matched.stderr)[-200:]!r}"]
+    for name, verdict in zip(names, verdicts[: len(names)], strict=True):
+        if not verdict:
+            problems.append(f"targeted filter does not match its own test name: {name!r}")
+    for name, verdict in zip(near_misses, verdicts[len(names) :], strict=True):
+        if verdict:
+            problems.append(f"targeted filter matches another test name: {name!r}")
+    long_targets = tuple(
+        ExpectedVerdict("behavior", "packages/core/test/x.test.ts", f"test {index:04} " + "n" * 200, "m")
+        for index in range(400)
+    )
+    chunks = targeted_chunks(long_targets)
+    if (
+        [target for chunk in chunks for target in chunk] != list(long_targets)
+        or any(
+            len(vitest_title_pattern([target.full_name for target in chunk]).encode())
+            > TARGETED_PATTERN_LIMIT_BYTES
+            for chunk in chunks
         )
-
-    if targeted_tests_not_run(report("passed"), (target,)):
+    ):
+        problems.append("targeted chunks drop targets or exceed the argument limit")
+    target = ExpectedVerdict("behavior", "packages/core/test/x.test.ts", names[0], "marker")
+    if targeted_tests_not_run({(target.file, target.full_name)}, (target,)):
         problems.append("a targeted test that ran was reported as not run")
-    if not targeted_tests_not_run(report("skipped"), (target,)):
-        problems.append("a skipped targeted test was accepted as run")
+    if not targeted_tests_not_run(set(), (target,)):
+        problems.append("a targeted test that did not run was accepted as run")
     return problems
 
 
@@ -12832,17 +12878,20 @@ def worker_phase(
         else:
             # The baseline runs, unmutated, exactly the tests the worker's Vitest
             # mutations will run, so each registered test is shown to exist and pass.
-            baseline = run_suite(
-                max_workers,
-                scope=scope,
-                workspace=workspace,
-                authority=authority,
-                targets=tuple(
-                    by_name[name][1].verdict
-                    for name in mutation_names
-                    if by_name[name][1].typecheck_project is None
-                ),
-            )
+            # A worker with no Vitest mutations runs no Vitest.
+            baseline = SuiteResult(True, True, (), (), "")
+            for chunk in targeted_chunks(
+                mutation_vitest_targets([by_name[name][1] for name in mutation_names])
+            ):
+                baseline = run_suite(
+                    max_workers,
+                    scope=scope,
+                    workspace=workspace,
+                    authority=authority,
+                    targets=chunk,
+                )
+                if not baseline.green:
+                    break
         if (
             baseline.green
             or routing_self_test_fault == "continue-after-vitest-red"
@@ -13011,14 +13060,16 @@ def routing_self_test(fault: str | None = None) -> int:
 
     def fixture_run_suite(
         _max_workers: int,
-        **_arguments: object,
+        **arguments: object,
     ) -> SuiteResult:
+        # A Vitest run without registered targets would rerun the whole suite.
+        vitest = "vitest" if arguments.get("targets") else "vitest:untargeted"
         dispatch_verdict = {
             "dispatch-behavior": behavior.verdict,
             "dispatch-Vitest construction": vitest_construction.verdict,
         }.get(active_case[0])
         if dispatch_verdict is not None:
-            verifier_trace.append("vitest")
+            verifier_trace.append(vitest)
             return SuiteResult(
                 False,
                 False,
@@ -13033,9 +13084,9 @@ def routing_self_test(fault: str | None = None) -> int:
                 "",
             )
         if active_case[0] == "vitest-red":
-            verifier_trace.append("vitest:red")
+            verifier_trace.append(f"{vitest}:red")
             return red
-        verifier_trace.append("vitest")
+        verifier_trace.append(vitest)
         return green
 
     def fixture_run_typecheck(
@@ -13098,19 +13149,19 @@ def routing_self_test(fault: str | None = None) -> int:
                 (
                     "store",
                     [store.name],
-                    ["vitest", "tsc:store-libsql"],
+                    ["tsc:store-libsql"],
                     0,
                 ),
                 (
                     "conformance",
                     [conformance.name],
-                    ["vitest", "tsc:conformance"],
+                    ["tsc:conformance"],
                     0,
                 ),
                 (
                     "mixed",
                     [store.name, conformance.name],
-                    ["vitest", "tsc:store-libsql", "tsc:conformance"],
+                    ["tsc:store-libsql", "tsc:conformance"],
                     0,
                 ),
                 ("behavior", [behavior.name], ["vitest"], 0),
@@ -13122,20 +13173,20 @@ def routing_self_test(fault: str | None = None) -> int:
                 ),
                 (
                     "vitest-red",
-                    [store.name, conformance.name],
+                    [behavior.name, store.name],
                     ["vitest:red"],
                     WORKER_RED_RETURNCODE,
                 ),
                 (
                     "store-red",
                     [store.name, conformance.name],
-                    ["vitest", "tsc:store-libsql:red"],
+                    ["tsc:store-libsql:red"],
                     WORKER_RED_RETURNCODE,
                 ),
                 (
                     "conformance-red",
                     [conformance.name],
-                    ["vitest", "tsc:conformance:red"],
+                    ["tsc:conformance:red"],
                     WORKER_RED_RETURNCODE,
                 ),
             )

@@ -125,11 +125,11 @@ first.
 
 ## Standing rule: mutation effort follows the changed guard
 
-Guard-changing PRs run the affected mutation closure and record the selected
-names and exact verdicts under the rules owned by `/pr-gate`. A filtered run is
-never a full audit. Full runs are reserved for mutation machinery or shared
-verification changes, unbounded closures, explicitly owned scheduled audits,
-and pre-release audits.
+CI's `mutations` job runs the unfiltered mutation audit on every pull request
+and every push to main, and each mutation runs only its registered test, so a
+green `mutations` check is the full-audit evidence. Guard-changing PRs still run
+their affected mutation closure locally while iterating, under the rules owned
+by `/pr-gate`. A filtered run is never a full audit.
 
 Any change to this cadence, or deviation from a full run required by
 `/pr-gate`, needs a PR-body `gate-changes:` entry explaining the old and new
