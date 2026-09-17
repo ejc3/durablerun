@@ -572,11 +572,32 @@ One invocation executes one claimed run to its next suspension point:
   new code. In-flight runs resuming under changed code rely on checkpoint
   stability: step names/order must stay compatible, or the task name is
   versioned (`report@v2`) so old runs finish on old handlers.
-- Child tasks: `spawn` from a step, then await the child *as an event* — the
-  child's terminal transition emits `task-done:<taskId>` and the parent's
-  `awaitEvent` suspends like any other wait (no polling worker slot). Absurd's
-  deadlock rule is kept: awaiting a same-queue child from inside a worker is
-  refused.
+- Child tasks: `spawn` from a step, then await the child *as an event*. The
+  parent's await is the ordinary `awaitEvent`, so it suspends like any other
+  wait and holds no worker slot. `specs/ChildTasks.tla` models the protocol
+  ahead of its implementation, and TLC checks it:
+  - The child's FIRST terminal transition writes the completion event
+    `$task-done:<taskId>` as a follow-on of the same fenced batch, and the same
+    batch wakes a registered waiter. Every terminal batch does this: complete,
+    terminal failure, both cancellations, and both sweep caps. A second step
+    would let a crash strand every waiter, which the model shows.
+  - The event is first-write-wins like every event (§3.8.3), so it means "the
+    first outcome this task reached", never "the task is terminal now".
+    `retryTask` can take a failed task back to live, and a revived child that
+    ends again does not rewrite the event. A parent that awaited before or
+    after the revival sees the same outcome, which keeps its replay
+    deterministic.
+  - The name is reserved. The SDK already refuses a user name that starts
+    with `$`, and the store's `emitEvent` port refuses one too, because HTTP
+    routes call the port with raw names. Otherwise a caller could win
+    first-write-wins and forge a child's result.
+  - Absurd's deadlock rule is kept for now: awaiting a same-queue child from
+    inside a worker is refused, as a permanent error that registers nothing.
+    Absurd refuses it because its await polls and holds a worker slot. Ours
+    suspends, and events are shard-local (§3.7), so a same-queue child is the
+    one case whose terminal batch can always wake the parent atomically. The
+    model isolates the rule as one guard and checks the protocol under both
+    answers, so the rule can change without touching the protocol.
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
   outcome, consuming nothing. A refused heartbeat names the cancellation the

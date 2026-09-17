@@ -120,6 +120,38 @@ tlc "$wake_heap" 2 -metadir "$STATES/wake-delivery" -config WakeDelivery.cfg \
   WakeDelivery.tla >"$STATES/wake-delivery.log" 2>&1 || wake_code=$?
 report "hosted wake delivery" "$wake_code" "$STATES/wake-delivery.log" || exit 1
 
+# The child-task completion event (specs/ChildTasks.tla), also small and on
+# every scope. Three configurations cover both answers to the same-queue rule
+# and a child in another queue. Each probe names the invariant it must violate:
+# two show an invariant is not vacuous, three that the behaviour is reachable.
+for cfg in ChildTasks ChildTasksRefuse ChildTasksCrossQueue; do
+  child_code=0
+  tlc "$wake_heap" 2 -metadir "$STATES/$cfg" -config "$cfg.cfg" \
+    ChildTasks.tla >"$STATES/$cfg.log" 2>&1 || child_code=$?
+  report "child tasks ($cfg)" "$child_code" "$STATES/$cfg.log" || exit 1
+done
+child_probe_fail=0
+for pair in NonAtomicEmit:TerminalImpliesDone ForgedEmit:DoneIsFirstOutcome \
+  WokenParent:ProbeNoWokenParent SecondOutcome:ProbeNoSecondOutcome \
+  RefusedAwait:ProbeNoRefusedAwait; do
+  probe="ChildTasksProbe${pair%%:*}"
+  invariant="${pair##*:}"
+  log="$STATES/$probe.log"
+  if tlc "$wake_heap" 2 -metadir "$STATES/$probe" -config "$probe.cfg" \
+    ChildTasks.tla >"$log" 2>&1; then
+    echo "VACUOUS: $probe found no witness against $invariant"
+    child_probe_fail=1
+  elif grep -q "Invariant $invariant is violated" "$log"; then
+    echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
+  else
+    echo "ERROR: $probe failed for the wrong reason:"
+    tail -20 "$log"
+    child_probe_fail=1
+  fi
+done
+[[ "$child_probe_fail" -eq 0 ]] || exit 1
+rm -f ./*_TTrace_*.tla ./*_TTrace_*.bin
+
 # TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
 # FULL budget — for CI matrix jobs where each runner hosts one TLC process.
 # Concurrent groups on a 7 GB runner starve each other: the shared disk

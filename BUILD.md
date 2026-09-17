@@ -1086,7 +1086,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   do it, with its source postmortem.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
-  await, same-queue refusal; `/api/runs/:id` result route.
+  await, same-queue refusal; `/api/runs/:id` result route. Spec first:
+  `specs/ChildTasks.tla` models the completion event and lands before its SQL.
+  TLC checks it under both answers to the same-queue rule and with the child
+  in another queue, and five probes show its invariants are not vacuous and
+  its behaviours are reachable. The implementation then maps every terminal
+  batch onto the model's ChildTerminal, reserves the `$task-done:` name at the
+  store's `emitEvent` port, and adds `ctx.spawn` and the child await to the
+  SDK. The same-queue rule is an open question recorded in DESIGN.md §3.2:
+  the model proves the protocol sound either way.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,
