@@ -1263,7 +1263,7 @@ describe('FencedBatch tree statements', () => {
             .select((eb: Loose) => [
               eb.val('r2').as('run_id'),
               eb.ref('f.queue').as('queue'),
-              (shape.task?.(eb) ?? eb.ref('f.task_id')).as('task_id'),
+              aliasedAs(shape.task?.(eb) ?? eb.ref('f.task_id'), 'task_id'),
               aliasedAs(shape.stamp ?? stampValue, 'fence_stamp'),
               aliasedAs(shape.instant?.(eb) ?? eb.ref('f.fence_at_ms'), 'fence_at_ms'),
             ])
@@ -1385,6 +1385,64 @@ describe('FencedBatch tree statements', () => {
         successor().onConflict((conflict: Loose) => conflict.columns(['run_id']).doNothing()),
         /may carry no conflict clause/,
       )
+    })
+
+    describe('what these rules still do not check', () => {
+      // Each exhibit is ACCEPTED, beside a control the same rule refuses. They mark
+      // where the rules stop, so nobody takes them for more than they are.
+      it('accepts a gate tied on a column that is not a key, which reaches rows the fenced row does not own', async () => {
+        const completeTasks = (tie: boolean) =>
+          db
+            .updateTable('tasks')
+            .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+            .where((eb) =>
+              eb.exists(
+                (tie
+                  ? eb.selectFrom('runs as f').whereRef('f.queue', '=', 'tasks.queue')
+                  : eb.selectFrom('runs as f')
+                )
+                  .select('f.run_id')
+                  .where('f.run_id', '=', 'r1')
+                  .where('f.fence_stamp', '=', fenceValue('win')),
+              ),
+            )
+        // The control: with no tie at all the write is refused.
+        refused(completeTasks(false), /not tied to the rows it reads or writes/)
+        // The exhibit: one run's stamp, tied by its queue alone, completes every task in
+        // that queue. The rule asks for a tie and cannot ask whether the tie is a key,
+        // because an event legitimately wakes every run in its queue this way.
+        const { captured, executor } = capturingExecutor(1)
+        await withCas()
+          .followOnTree('tasks', statement(completeTasks(true)), { many: 'the exhibit' })
+          .run(executor)
+        expect(captured[1]?.sql).toBe(
+          'update "tasks" set "state" = ?, "fence_stamp" = ?, "fence_at_ms" = ? where exists (select "f"."run_id" from "runs" as "f" where "f"."queue" = "tasks"."queue" and "f"."run_id" = ? and "f"."fence_stamp" = ?)',
+        )
+      })
+
+      it('accepts values read from a joined row that no node ties to the fenced row', () => {
+        // The join's ON is store text. The rule holds the instant to the fenced source
+        // and says nothing of where the other values come from.
+        const fromAnyTask = successor({
+          from: (select) =>
+            select.innerJoin('tasks as t', (join: Loose) => join.on(predicate('1 = 1'))),
+          task: (eb) => eb.ref('t.task_id'),
+        })
+        expect(() => followOn(fromAnyTask)).not.toThrow()
+        // The control: the same joined row may not supply the instant.
+        refused(
+          successor({ from: joined, instant: (eb) => eb.ref('t.fence_at_ms') }),
+          /fence_at_ms as the fenced row's own fence_at_ms/,
+        )
+      })
+
+      it('accepts an aggregate spelled inside a value fragment, which the plain-selection rule cannot read', () => {
+        const plain = /must select plain columns and values/
+        refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
+        expect(() =>
+          followOn(successor({ task: () => value<string>('max(f.task_id)') })),
+        ).not.toThrow()
+      })
     })
 
     it('reads a conflict arm under the counting rule', () => {
