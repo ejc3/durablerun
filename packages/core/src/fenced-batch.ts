@@ -746,7 +746,7 @@ export class FencedBatch {
     if (reason.trim() === '') {
       throw new Error(`FencedBatch[${this.label}] openTail '${name}' needs a reason`)
     }
-    return this.addTree('tail', name, statement, null, null, true)
+    return this.addTree('openTail', name, statement, null, null)
   }
 
   /** The batch-shape rules every statement passes, text or tree. Returns the error prefix. */
@@ -783,13 +783,15 @@ export class FencedBatch {
    * scans store sources.
    */
   private addTree(
-    kind: 'cas' | 'casMany' | 'followOn' | 'tail',
+    asked: Kind | 'openTail',
     name: string,
     statement: DefinedStatement,
     rows: RowBound | null,
     max: number | null,
-    open = false,
   ): this {
+    // An open tail is a tail in every way but one: no fence has to gate it.
+    const open = asked === 'openTail'
+    const kind: Kind = open ? 'tail' : asked
     const at = this.admit(kind, name)
     const dialect = this.tree
     if (dialect === null) {
@@ -929,20 +931,22 @@ export class FencedBatch {
     for (const fence of compiled.fences) {
       this.requireFenceSource(fence, `the fence token for '${fence}'`)
     }
-    if (!isCas && !open) {
+    if (!isCas) {
       const positional = gatingFences(tree)
       const gates = positional.filter((gate) => gate.tied)
-      if (gates.length === 0 && positional.length !== 0) {
+      if (!open && gates.length === 0 && positional.length !== 0) {
         throw new Error(
           `${at} is gated only by a subquery that is not tied to the rows it reads or writes: the subquery must read the fenced source alone, and either IN selects one plain column of it against a column of the outer row, or EXISTS equates a column of it with a column of the outer row (§3.4 rule 1)`,
         )
       }
-      if (gates.length === 0) {
+      if (!open && gates.length === 0) {
         throw new Error(
           `${at} has no fence gating every row it reads or writes: a top-level WHERE conjunct must be fence_stamp = <a fence of this batch>, or require a row from a subquery gated that way (§3.4 rule 1)`,
         )
       }
-      for (const gate of gates) {
+      // Asked of every fence in a gating position, of an open tail's too: a fence
+      // compared on a table its compare-and-set does not stamp never matches.
+      for (const gate of positional) {
         const source = this.requireFenceSource(gate.fence, `the fence token for '${gate.fence}'`)
         if (source.target !== gate.table) {
           throw new Error(

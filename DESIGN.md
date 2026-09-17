@@ -862,7 +862,8 @@ are load-bearing):
    - Every tail and open tail is a shared SELECT. `tailTree` takes a gated
      read. `openTailTree` takes a read of rows the batch did not write, keeps
      the declared reason `openTail` requires, and skips the gate and nothing
-     else. Both reads of a claimed run select one list,
+     else: a fence it does compare must still be on the table that fence's
+     compare-and-set stamps, as for a gated tail. Both reads of a claimed run select one list,
      `CLAIMED_RUN_SELECTION`, whose names every store's decoder reads. The
      claim receipt's identity is nodes and its admission is one store fragment.
      Spawn's receipt is one read of `tasks` whose store predicate joins its two
