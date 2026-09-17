@@ -1,7 +1,13 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { awaitOwned, claimActivated, claimOne, withFixture } from '../src/scenario.js'
+import {
+  awaitOwned,
+  checkpointOwned,
+  claimActivated,
+  claimOne,
+  withFixture,
+} from '../src/scenario.js'
 import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /**
@@ -22,6 +28,12 @@ const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
   suspend: ['suspended'],
   'await-event': ['registered'],
   'emit-event': ['emitted'],
+  'set-checkpoint': ['written'],
+  // A retrying failure carries the retry deadline's headroom guard, and a final one does not.
+  fail: ['retrying', 'final'],
+  'retry-task': ['revived'],
+  'cancel-task': ['cancelled'],
+  'sweep:cancel': ['cancelled'],
 }
 
 type Signature = readonly { sql: string; bindArity: number }[]
@@ -76,6 +88,21 @@ describe('generated SQL corpus', () => {
         const waiting = await claimActivated(store, 'q', 'w5')
         await awaitOwned(store, 'q', waiting, 'step', 'ready', 5)
         await store.emitEvent('q', 'ready', '{}')
+        await store.spawn('q', 'job', '{}', { maxAttempts: 2 })
+        const failing = await claimActivated(store, 'q', 'w6')
+        await checkpointOwned(store, 'q', failing, 'step', '{}', 30)
+        await store.fail('q', failing.runId, failing.claimToken, '{"name":"E"}', {
+          delaySeconds: 0,
+        })
+        const retried = await claimActivated(store, 'q', 'w7')
+        await store.fail('q', retried.runId, retried.claimToken, '{"name":"E"}', null)
+        await store.retryTask('q', retried.taskId)
+        await store.cancelTask('q', retried.taskId)
+        // Last, because it moves the clock: a task never started by its deadline.
+        await fixture.admin.setFakeNowEpochMs(1_000_000)
+        await store.spawn('q', 'job', '{}', { cancellation: { maxDelaySeconds: 30 } })
+        await fixture.admin.setFakeNowEpochMs(1_031_000)
+        await store.sweep('q', 10)
       })
       const corpus = Object.fromEntries(
         Object.entries(TREE_LABELS).map(([label, variants]) => {

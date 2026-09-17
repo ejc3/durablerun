@@ -150,5 +150,103 @@
         "bindArity": 2
       }
     ]
+  },
+  "set-checkpoint": {
+    "written": [
+      {
+        "sql": "update \"runs\" set \"claim_expires_at_ms\" = (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) + ?), \"heartbeat_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n), \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"run_id\" = ? and \"queue\" = ? and \"claimed_by\" = ? and \"state\" = ? and \"task_id\" = ? and ((typeof(runs.attempt) = 'integer' AND runs.attempt BETWEEN 1 AND 1000020)\n         AND EXISTS (SELECT 1 FROM tasks t\n                     WHERE t.task_id = runs.task_id AND t.queue = runs.queue AND t.state IN ('pending','running','sleeping'))\n         AND NOT EXISTS (\n    SELECT 1 FROM checkpoints c\n    WHERE c.task_id = runs.task_id\n      AND c.checkpoint_name = ?\n      AND NOT (\n        c.queue = runs.queue\n        AND EXISTS (\n          SELECT 1 FROM runs owner\n          WHERE (typeof(c.owner_attempt) = 'integer' AND c.owner_attempt BETWEEN 1 AND 1000020)\n   AND owner.run_id = c.owner_run_id\n   AND owner.task_id = c.task_id\n   AND owner.queue = c.queue\n   AND owner.attempt = c.owner_attempt\n        )\n      )\n  )) and ((typeof(COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) = 'integer'\n    AND (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) BETWEEN 0 AND 253402300799000\n    AND (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) <= 253402300799000 - ((?))))",
+        "bindArity": 9
+      },
+      {
+        "sql": "INSERT INTO checkpoints\n         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)\n       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms\n       FROM runs f WHERE f.run_id = ?\n         AND (typeof(f.attempt) = 'integer' AND f.attempt BETWEEN 1 AND 1000020)\n         AND f.fence_stamp = ?\n       ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET\n    state = excluded.state,\n    owner_run_id = excluded.owner_run_id,\n    owner_attempt = excluded.owner_attempt,\n    updated_at_ms = excluded.updated_at_ms\n  WHERE excluded.owner_attempt >= checkpoints.owner_attempt",
+        "bindArity": 4
+      }
+    ]
+  },
+  "fail": {
+    "retrying": [
+      {
+        "sql": "update \"runs\" set \"state\" = ?, \"failed_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n), \"failure_reason\" = ?, \"claimed_by\" = ?, \"claim_expires_at_ms\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"run_id\" = ? and \"queue\" = ? and \"claimed_by\" = ? and \"state\" = ? and (EXISTS (\n           SELECT 1 FROM tasks t\n           WHERE t.task_id = runs.task_id AND t.queue = runs.queue\n             AND (t.state NOT IN ('pending','running','sleeping')\n               OR (t.state IN ('pending','running','sleeping')\n                 AND NOT EXISTS (SELECT 1 FROM runs sibling\n               WHERE sibling.task_id = runs.task_id\n                 AND sibling.state IN ('pending','running','sleeping')\n                 AND sibling.run_id <> runs.run_id)\n                 AND ((typeof(runs.attempt) = 'integer' AND runs.attempt BETWEEN 1 AND 1000020)\n    AND (typeof(t.attempts) = 'integer' AND t.attempts BETWEEN 0 AND 1000000)\n    AND (typeof(t.max_attempts) = 'integer' AND t.max_attempts BETWEEN 1 AND 1000000)\n    AND (typeof(t.infra_retries) = 'integer' AND t.infra_retries BETWEEN 0 AND 20)\n    AND t.attempts < t.max_attempts\n    AND runs.attempt = t.attempts + t.infra_retries + 1)\n                 AND NOT EXISTS (\n    SELECT 1 FROM runs higher\n    WHERE higher.task_id = runs.task_id\n      AND (NOT (typeof(higher.attempt) = 'integer' AND higher.attempt BETWEEN 1 AND 1000020)\n        OR higher.attempt > runs.attempt)\n  )\n                 AND ((runs.attempt - t.infra_retries) >= t.max_attempts\n          OR (typeof(COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) = 'integer'\n    AND (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) BETWEEN 0 AND 253402300799000\n    AND (COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) <= 253402300799000 - ((?))))))\n         ))",
+        "bindArity": 10
+      },
+      {
+        "sql": "INSERT INTO runs\n           (run_id, queue, task_id, attempt, state, available_at_ms,\n            created_at_ms, wake_event, event_payload, wake_step, run_db, fence_stamp, fence_at_ms)\n         SELECT ?, f.queue, f.task_id, f.attempt + 1,\n                CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,\n                f.fence_at_ms + ?,\n                f.fence_at_ms, f.wake_event, f.event_payload, f.wake_step, f.run_db,\n                ?, f.fence_at_ms\n         FROM runs f JOIN tasks t ON t.task_id = f.task_id AND t.queue = f.queue\n         WHERE f.run_id = ? AND f.fence_stamp = ?\n           AND t.state IN ('pending','running','sleeping') AND (f.attempt - t.infra_retries) < t.max_attempts\n           AND (typeof(f.attempt) = 'integer' AND f.attempt BETWEEN 1 AND 1000019)\n           AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = f.task_id\n             AND s.attempt = f.attempt + 1)",
+        "bindArity": 7
+      },
+      {
+        "sql": "UPDATE tasks SET attempts = (SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?),\n         state = (SELECT f.state FROM runs f\n                   WHERE f.run_id = ? AND f.fence_stamp = ?),\n         last_attempt_run = ?,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 10
+      },
+      {
+        "sql": "UPDATE tasks SET attempts = (SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?),\n         state = 'failed',\n         failure_reason = ?,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')\n            AND NOT EXISTS (SELECT 1 FROM runs s\n           WHERE s.run_id = ? AND s.task_id = tasks.task_id\n             AND s.attempt = (SELECT p.attempt + 1 FROM runs p WHERE p.run_id = ?))))",
+        "bindArity": 10
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.fence_stamp = ?))",
+        "bindArity": 2
+      }
+    ],
+    "final": [
+      {
+        "sql": "update \"runs\" set \"state\" = ?, \"failed_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n), \"failure_reason\" = ?, \"claimed_by\" = ?, \"claim_expires_at_ms\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"run_id\" = ? and \"queue\" = ? and \"claimed_by\" = ? and \"state\" = ? and (EXISTS (\n           SELECT 1 FROM tasks t\n           WHERE t.task_id = runs.task_id AND t.queue = runs.queue\n             AND (t.state NOT IN ('pending','running','sleeping')\n               OR (t.state IN ('pending','running','sleeping')\n                 AND NOT EXISTS (SELECT 1 FROM runs sibling\n               WHERE sibling.task_id = runs.task_id\n                 AND sibling.state IN ('pending','running','sleeping')\n                 AND sibling.run_id <> runs.run_id)\n                 AND ((typeof(runs.attempt) = 'integer' AND runs.attempt BETWEEN 1 AND 1000020)\n    AND (typeof(t.attempts) = 'integer' AND t.attempts BETWEEN 0 AND 1000000)\n    AND (typeof(t.max_attempts) = 'integer' AND t.max_attempts BETWEEN 1 AND 1000000)\n    AND (typeof(t.infra_retries) = 'integer' AND t.infra_retries BETWEEN 0 AND 20)\n    AND t.attempts < t.max_attempts\n    AND runs.attempt = t.attempts + t.infra_retries + 1)\n                 AND NOT EXISTS (\n    SELECT 1 FROM runs higher\n    WHERE higher.task_id = runs.task_id\n      AND (NOT (typeof(higher.attempt) = 'integer' AND higher.attempt BETWEEN 1 AND 1000020)\n        OR higher.attempt > runs.attempt)\n  )\n                 ))\n         ))",
+        "bindArity": 9
+      },
+      {
+        "sql": "UPDATE tasks SET attempts = (SELECT f.attempt - tasks.infra_retries FROM runs f\n    WHERE f.run_id = ? AND f.fence_stamp = ?),\n         state = 'failed',\n         failure_reason = ?,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 8
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.fence_stamp = ?))",
+        "bindArity": 2
+      }
+    ]
+  },
+  "retry-task": {
+    "revived": [
+      {
+        "sql": "update \"tasks\" set \"state\" = ?, \"attempts\" = (((SELECT MAX(r.attempt) FROM runs r WHERE tasks.task_id = r.task_id AND tasks.queue = r.queue) - infra_retries)), \"max_attempts\" = \"max_attempts\" + ?, \"failure_reason\" = ?, \"last_attempt_run\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"task_id\" = ? and \"queue\" = ? and (state = 'failed'\n         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n         AND NOT EXISTS (\n    SELECT 1 FROM runs ownership_run\n    WHERE ownership_run.task_id = tasks.task_id\n      AND ownership_run.queue <> tasks.queue\n  )\n         AND EXISTS (SELECT 1 FROM runs r WHERE tasks.task_id = r.task_id AND tasks.queue = r.queue)\n         AND NOT EXISTS (SELECT 1 FROM runs r\n                   WHERE tasks.task_id = r.task_id AND tasks.queue = r.queue AND r.state IN ('pending','running','sleeping'))\n         AND (typeof(tasks.attempts) = 'integer' AND tasks.attempts BETWEEN 0 AND 1000000)\n         AND (typeof(tasks.infra_retries) = 'integer' AND tasks.infra_retries BETWEEN 0 AND 20)\n         AND NOT EXISTS (SELECT 1 FROM runs r\n                         WHERE tasks.task_id = r.task_id AND tasks.queue = r.queue\n                           AND NOT (typeof(r.attempt) = 'integer' AND r.attempt BETWEEN 1 AND 1000020))\n         AND (typeof(tasks.max_attempts) = 'integer' AND tasks.max_attempts BETWEEN 1 AND 999999)\n         AND ((SELECT MAX(r.attempt) FROM runs r WHERE tasks.task_id = r.task_id AND tasks.queue = r.queue) - infra_retries) - attempts IN (0, 1)\n         AND ((SELECT MAX(r.attempt) FROM runs r WHERE tasks.task_id = r.task_id AND tasks.queue = r.queue) - infra_retries) <= max_attempts)",
+        "bindArity": 7
+      },
+      {
+        "sql": "INSERT INTO runs (run_id, queue, task_id, attempt, state,\n         available_at_ms, created_at_ms, wake_event, event_payload, wake_step, run_db, fence_stamp, fence_at_ms)\n       SELECT ?, f.queue, f.task_id, p.attempt + 1, 'pending', f.fence_at_ms, f.fence_at_ms,\n         p.wake_event, p.event_payload, p.wake_step, p.run_db, ?, f.fence_at_ms\n       FROM tasks f JOIN runs p ON f.task_id = p.task_id AND f.queue = p.queue\n       WHERE f.task_id = ? AND f.fence_stamp = ? AND p.attempt = (SELECT MAX(r.attempt) FROM runs r WHERE f.task_id = r.task_id AND f.queue = r.queue)\n         AND NOT EXISTS (SELECT 1 FROM runs r\n                   WHERE f.task_id = r.task_id AND f.queue = r.queue AND r.state IN ('pending','running','sleeping'))",
+        "bindArity": 4
+      },
+      {
+        "sql": "SELECT attempt FROM runs WHERE run_id = ? AND fence_stamp = ?",
+        "bindArity": 2
+      }
+    ]
+  },
+  "cancel-task": {
+    "cancelled": [
+      {
+        "sql": "update \"tasks\" set \"state\" = ?, \"cancelled_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n), \"cancel_at_ms\" = ?, \"failure_reason\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"task_id\" = ? and \"queue\" = ? and \"state\" in (?, ?, ?) and (NOT EXISTS (\n    SELECT 1 FROM runs ownership_run\n    WHERE ownership_run.task_id = tasks.task_id\n      AND ownership_run.queue <> tasks.queue\n  ))",
+        "bindArity": 9
+      },
+      {
+        "sql": "UPDATE runs SET state = 'cancelled',\n         claimed_by = NULL,\n         claim_expires_at_ms = NULL,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM tasks f\n                        WHERE (f.task_id = ?) AND f.queue = runs.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM tasks f\n                       WHERE (f.task_id = ?) AND f.queue = runs.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 5
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.task_id = ? AND f.state = 'cancelled') AND f.fence_stamp = ?))",
+        "bindArity": 2
+      }
+    ]
+  },
+  "sweep:cancel": {
+    "cancelled": [
+      {
+        "sql": "update \"tasks\" set \"state\" = ?, \"cancelled_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n), \"cancel_at_ms\" = ?, \"failure_reason\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"task_id\" = ? and \"queue\" = ? and \"state\" in (?, ?, ?) and (((typeof(tasks.cancel_at_ms) = 'integer' AND tasks.cancel_at_ms BETWEEN 0 AND 253402300799000)\n    AND tasks.cancel_at_ms <= COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n)) AND NOT EXISTS (\n    SELECT 1 FROM runs ownership_run\n    WHERE ownership_run.task_id = tasks.task_id\n      AND ownership_run.queue <> tasks.queue\n  ))",
+        "bindArity": 9
+      },
+      {
+        "sql": "UPDATE runs SET state = 'cancelled',\n         claimed_by = NULL,\n         claim_expires_at_ms = NULL,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM tasks f\n                        WHERE (f.task_id = ?) AND f.queue = runs.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM tasks f\n                       WHERE (f.task_id = ?) AND f.queue = runs.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 5
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.task_id = ? AND f.state = 'cancelled') AND f.fence_stamp = ?))",
+        "bindArity": 2
+      }
+    ]
   }
 }
