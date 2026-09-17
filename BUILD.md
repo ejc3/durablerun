@@ -911,25 +911,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
     guards behind its state condition. The conformance cases pin each guard
     today.
 
-- **PR3.11 lifecycle residual** (in progress). PR3.2's rounds left three items
-  that no other entry owned. PR3.11a (PR #32) made a refused heartbeat name the
-  cancellation, so a cancelled handler ends as cancelled at its next context
-  call. PR3.11b (PR #35) generated the launch payload case, crossing older and
-  newer drivers with the current worker, and the driver loop clock-shape surface.
-  Those surfaces found a wake's floor wait stretched by a backwards clock step and
-  launches with malformed identity acknowledged, and PR3.11b fixed both: the loop
-  measures its waits with `Clock.elapsedMs`, and `launchIdentity` validates a
-  launch's identity once. One item remains for PR3.11c.
-  - Deferred from `postmortems/pr3.11a-cancelled-heartbeat-review.md`: a
-    cross-version answer case generated from the `SchedulerStore` port's result
-    types, crossing an older store with a newer worker and the reverse. Its first
-    version found that a worker runs handlers on activation answers missing
-    required fields. Refusing such an answer after the activation compare-and-swap
-    latches the first start and spends infrastructure retries, so PR3.11c must
-    decide where the refusal belongs and pin the recovery.
-  - Deferred from `postmortems/pr3.11b-generated-surfaces-review.md`: a
-    clock-shape axis with a due wake, so a clock step that delays a due wake is
-    observable.
+- **PR3.11 lifecycle residual**: DONE. PR3.2's rounds left three items that no
+  other entry owned.
+  - PR3.11a (PR #32) made a refused heartbeat name the cancellation, so a
+    cancelled handler ends as cancelled at its next context call.
+  - PR3.11b (PR #35) generated the launch payload case and the driver loop
+    clock-shape surface, which found a wake's floor wait stretched by a clock step
+    and malformed launch identity acknowledged. The loop measures its waits with
+    `Clock.elapsedMs`, and `launchIdentity` validates a launch's identity once.
+  - PR3.11c (PR #36) generated the store answer case, which found handlers running
+    on activation answers missing or malforming required fields. The worker
+    checks the answer with `claimedRunAnswerProblem` before any user code runs,
+    ends the pass as `incompatible-store` naming the field, and the run recovers
+    through the sweep for a compatible build. It also added a due-wake axis to the
+    clock-shape surface.
 
 - **PR3.2 lifecycle polish**: DONE. Merged green as two stacked PRs. PR3.2a
   (PR #28) parks a claim that a build without the task's handler cannot run
