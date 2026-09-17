@@ -20,13 +20,17 @@ const CLOCK_STEPS_MS = [0, 400, 3_600_000, -400, -3_600_000]
 interface ClockShape {
   registryIntervalMs: number
   stepMs: number
+  /** Whether the step lands as the park starts or halfway through it. */
+  stepAt: 'start' | 'middle'
   wake: boolean
 }
 
 function clockShapes(): ClockShape[] {
   return REGISTRY_INTERVALS_MS.flatMap((registryIntervalMs) =>
     CLOCK_STEPS_MS.flatMap((stepMs) =>
-      [false, true].map((wake) => ({ registryIntervalMs, stepMs, wake })),
+      (stepMs === 0 ? (['start'] as const) : (['start', 'middle'] as const)).flatMap((stepAt) =>
+        [false, true].map((wake) => ({ registryIntervalMs, stepMs, stepAt, wake })),
+      ),
     ),
   )
 }
@@ -34,15 +38,18 @@ function clockShapes(): ClockShape[] {
 /**
  * Drive an idle loop through one clock shape and report every broken promise: a
  * park or floor wait that outlasts the registry interval or the idle ceiling, a
- * registry beat that falls behind its cadence, or ticks that spin without parking.
+ * floor wait that ends after the look its interrupted park planned, a registry beat
+ * that falls behind its cadence, or ticks that spin without parking.
  */
 async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
-  const label = `interval ${shape.registryIntervalMs}ms, step ${shape.stepMs}ms${shape.wake ? ', wake' : ''}`
+  const label = `interval ${shape.registryIntervalMs}ms, step ${shape.stepMs}ms at ${shape.stepAt}${shape.wake ? ', wake' : ''}`
   const { raw, admin } = await openTestDb()
   const ids = seededIdSource(new Rng(label))
   const store = new LibsqlSchedulerStore(raw, ids)
   const clock = new FakeClock()
   let databaseNowMs = clock.now
+  // Real elapsed time, which a host clock step does not move.
+  let elapsedMs = 0
   await admin.setFakeNowEpochMs(databaseNowMs)
   let beats = 0
   const counted = new Proxy(store, {
@@ -88,30 +95,44 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
     }
     return sleep
   }
+  const advance = async (ms: number) => {
+    elapsedMs += ms
+    clock.now += ms
+    databaseNowMs += ms
+    await admin.setFakeNowEpochMs(databaseNowMs)
+    clock.fire()
+  }
   try {
     let sleep = await nextSleep(undefined, 'the first park')
+    const park = sleep
+    const parkStartedAtElapsedMs = elapsedMs
+    if (shape.stepAt === 'middle') await advance(Math.floor(park.ms / 2))
     // A host clock step moves wall time, not a pending timer: real timers measure
     // elapsed time, so each pending sleep keeps its remaining duration.
     clock.now += shape.stepMs
     for (const pending of clock.sleeps) pending.deadline += shape.stepMs
     if (shape.wake) {
+      const ticksBeforeWake = loop.stats.ticks
       loop.wake()
-      sleep = await nextSleep(sleep, 'the wait after a wake')
+      sleep = await nextSleep(park, 'the wait after a wake')
+      const overshootMs = elapsedMs + sleep.ms - (parkStartedAtElapsedMs + park.ms)
+      if (loop.stats.ticks === ticksBeforeWake && overshootMs > 0) {
+        problems.push(
+          `${label}: the wait after a wake ends ${overshootMs}ms past the look the park planned`,
+        )
+      }
     }
     const beatsAtStep = beats
-    let elapsedMs = 0
+    let roundsElapsedMs = 0
     for (let round = 0; round < ROUNDS; round++) {
-      elapsedMs += sleep.ms
-      clock.now += sleep.ms
-      databaseNowMs += sleep.ms
-      await admin.setFakeNowEpochMs(databaseNowMs)
-      clock.fire()
+      roundsElapsedMs += sleep.ms
+      await advance(sleep.ms)
       sleep = await nextSleep(sleep, `park ${round + 1}`)
     }
-    const floorBeats = Math.floor(elapsedMs / shape.registryIntervalMs) - 1
+    const floorBeats = Math.floor(roundsElapsedMs / shape.registryIntervalMs) - 1
     if (beats - beatsAtStep < floorBeats) {
       problems.push(
-        `${label}: ${beats - beatsAtStep} registry beats in ${elapsedMs}ms, fewer than ${floorBeats}`,
+        `${label}: ${beats - beatsAtStep} registry beats in ${roundsElapsedMs}ms, fewer than ${floorBeats}`,
       )
     }
     if (loop.stats.ticks > 3 * ROUNDS) {
@@ -130,5 +151,5 @@ describe('driver loop clock shapes', () => {
     const problems: string[] = []
     for (const shape of clockShapes()) problems.push(...(await clockShapeProblems(shape)))
     expect(problems).toEqual([])
-  }, 120_000)
+  }, 240_000)
 })

@@ -100,6 +100,28 @@ interface Variant {
   accepted: boolean
 }
 
+/** Wrong types and values for each identity field, which no driver build sends. */
+const INVALID_IDENTITY_VALUES: Record<string, readonly (readonly [string, unknown])[]> = {
+  queue: [
+    ['a number', 7],
+    ['empty', ''],
+  ],
+  runId: [
+    ['a number', 7],
+    ['empty', ''],
+  ],
+  claimToken: [
+    ['null', null],
+    ['empty', ''],
+  ],
+  claimGen: [
+    ['1.5', 1.5],
+    ['zero', 0],
+    ['negative', -1],
+    ['a string', '1'],
+  ],
+}
+
 /** Every older and newer driver payload the classification implies. */
 function variants(): Variant[] {
   const generated: Variant[] = [
@@ -122,6 +144,14 @@ function variants(): Variant[] {
         change: (payload) => ({ ...payload, [field]: String(payload[field]) }),
         accepted: true,
       })
+    } else {
+      for (const [description, value] of INVALID_IDENTITY_VALUES[field] ?? []) {
+        generated.push({
+          name: `a payload whose ${field} is ${description}`,
+          change: (payload) => ({ ...payload, [field]: value }),
+          accepted: false,
+        })
+      }
     }
   }
   return generated
@@ -161,5 +191,5 @@ describe('launch payload across driver and worker versions', () => {
       await f.close()
     }
     expect(observed).toEqual(expected)
-  })
+  }, 120_000)
 })
