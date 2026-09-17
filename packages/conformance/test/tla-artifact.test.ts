@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -60,7 +60,7 @@ fi
 if [[ "$meta" == */mutants/* ]]; then
   case "\${STUB_MUTANTS:-}" in
     caught)
-      grep -oE '"caughtBy": "[A-Za-z]+"' "$STUB_MUTANTS_JSON" | sort -u |
+      grep -ohE '"caughtBy": "[A-Za-z]+"' "$STUB_MUTANTS_DIR"/*.mutants.json | sort -u |
         sed -E 's/.*: "(.*)"/Error: Invariant \\1 is violated./'
       exit 12
       ;;
@@ -131,8 +131,8 @@ describe('TLA tool artifact', () => {
     expect(await readIfPresent(commands.javaLog)).toContain('SchedulerLiveness1.cfg')
   })
 
-  describe('the child-task mutant check', () => {
-    const mutantsJson = join(repoRoot, 'specs', 'ChildTasks.mutants.json')
+  describe('the side-model mutant check', () => {
+    const specs = join(repoRoot, 'specs')
 
     async function runGate(mutants: 'survive' | 'caught' | 'wrong') {
       const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-mutants-'))
@@ -143,34 +143,50 @@ describe('TLA tool artifact', () => {
         TLA_ONLY: 'safety',
         STUB_PROBES_WITNESSED: '1',
         STUB_MUTANTS: mutants,
-        STUB_MUTANTS_JSON: mutantsJson,
+        STUB_MUTANTS_DIR: specs,
       })
-      const names = (
-        JSON.parse(await readFile(mutantsJson, 'utf8')) as readonly { readonly name: string }[]
-      ).map(({ name }) => name)
-      expect(names.length).toBeGreaterThan(0)
-      return { names, output: `${result.stdout}\n${result.stderr}`, status: result.status }
+      const lists = (await readdir(specs)).filter((file) => file.endsWith('.mutants.json'))
+      expect(lists.length).toBeGreaterThan(0)
+      const models = await Promise.all(
+        lists.map(async (list) => {
+          const entries = JSON.parse(await readFile(join(specs, list), 'utf8')) as readonly {
+            readonly name: string
+          }[]
+          expect(entries.length).toBeGreaterThan(0)
+          return {
+            model: list.slice(0, -'.mutants.json'.length),
+            names: entries.map(({ name }) => name),
+          }
+        }),
+      )
+      return { models, output: `${result.stdout}\n${result.stderr}`, status: result.status }
     }
 
     it('passes when every mutant violates the property its entry names', async () => {
-      const { names, output, status } = await runGate('caught')
+      const { models, output, status } = await runGate('caught')
       expect(status, output).toBe(0)
-      expect(output).toContain(`child-task mutants: ${names.length} of ${names.length} caught`)
+      for (const { model, names } of models) {
+        expect(output).toContain(`${model} mutants: ${names.length} of ${names.length} caught`)
+      }
     })
 
     it('fails when the mutants survive', async () => {
-      const { names, output, status } = await runGate('survive')
+      const { models, output, status } = await runGate('survive')
       expect(status, output).not.toBe(0)
       expect(output).not.toContain('VACUOUS')
-      for (const name of names) expect(output).toContain(`SURVIVED: ${name}`)
-      expect(output).toContain(`child-task mutants: 0 of ${names.length} caught`)
+      for (const { model, names } of models) {
+        for (const name of names) expect(output).toContain(`SURVIVED: ${model}/${name}`)
+        expect(output).toContain(`${model} mutants: 0 of ${names.length} caught`)
+      }
     })
 
     it('fails when a mutant violates only some other property', async () => {
-      const { names, output, status } = await runGate('wrong')
+      const { models, output, status } = await runGate('wrong')
       expect(status, output).not.toBe(0)
       expect(output).not.toContain('VACUOUS')
-      for (const name of names) expect(output).toContain(`WRONG-PROPERTY: ${name}`)
+      for (const { model, names } of models) {
+        for (const name of names) expect(output).toContain(`WRONG-PROPERTY: ${model}/${name}`)
+      }
     })
   })
 

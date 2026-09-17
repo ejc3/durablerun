@@ -5,8 +5,8 @@
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #
 # Layout is maximum-concurrency: phase 1 runs every vacuity probe at once, the
-# Probe*.cfg family against Probes.tla and the ChildTasksProbe*.cfg family
-# against ChildTasksProbes.tla; phase 2 runs the exhaustive-safety scope AND the five liveness
+# Probe*.cfg family against Probes.tla and each side model's <Model>Probe*.cfg
+# family against <Model>Probes.tla; phase 2 runs the exhaustive-safety scope AND the five liveness
 # property groups (SchedulerLiveness1-5.cfg, listed explicitly in the loops
 # below, so a new group must be added there) as concurrent TLC processes with
 # explicit worker and heap budgets. Liveness is split into groups because the
@@ -123,19 +123,25 @@ run_small() { # run_small <name> <cfg> <module>: a side model, on every scope
 }
 run_small "hosted wake delivery" WakeDelivery.cfg WakeDelivery.tla || exit 1
 
-# The child-task completion event (specs/ChildTasks.tla), also small and on
-# every scope. Two configurations cover both answers to the same-queue rule.
-# Its vacuity probes run with the others in phase 1, which a TLA_ONLY liveness
+# The side models, also small and on every scope: the child-task completion
+# event (specs/ChildTasks.tla) and sagas (specs/Sagas.tla). A side model is
+# enrolled by its mutant list, and every cfg of it that is not a probe must pass.
+# Their mutants and vacuity probes run with the others in phase 1, which a TLA_ONLY liveness
 # job skips.
-# The two configurations must check the same invariants and properties, so
-# they may differ in the rule's constant and their leading comment only.
+# The two child-task configurations must check the same invariants and
+# properties, so they may differ in the rule's constant and their leading
+# comment only.
 if ! diff <(grep -v 'AwaitAllowed =' ChildTasks.cfg | tail -n +3) \
   <(grep -v 'AwaitAllowed =' ChildTasksRefuse.cfg | tail -n +3) >/dev/null; then
   echo "tla.sh: ChildTasks.cfg and ChildTasksRefuse.cfg differ in more than AwaitAllowed" >&2
   exit 1
 fi
-for cfg in ChildTasks ChildTasksRefuse; do
-  run_small "child tasks ($cfg)" "$cfg.cfg" ChildTasks.tla || exit 1
+for list in *.mutants.json; do
+  model="${list%.mutants.json}"
+  for cfg in "$model".cfg "$model"[A-Z]*.cfg; do
+    [[ "$cfg" == "$model"Probe* ]] && continue
+    run_small "$model ($cfg)" "$cfg" "$model.tla" || exit 1
+  done
 done
 
 # TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
@@ -154,44 +160,43 @@ if [[ -n "${TLA_ONLY:-}" && "${TLA_ONLY}" != "safety" ]]; then
   exit $?
 fi
 
-# Mutants of the child-task model. Each entry of ChildTasks.mutants.json bends
-# or deletes one guard of the protocol, and some pass configuration must then
-# FAIL. A probe shows an invariant can fail. Only a mutant shows that a guard is
-# held by anything: a model can stay green with a guard deleted when no
-# invariant speaks for it. A mutant is caught only when the property its entry
-# names is the one violated, so a catch by accident does not count. A mutant
-# whose text is not found exactly once, or whose run ends in anything but a
-# verdict, is an error and not a catch.
-echo "== phase 1: child-task model mutants (each MUST be caught)"
+# Mutants of the side models. A side model is enrolled by its mutant list:
+# each entry of <Model>.mutants.json bends or deletes one guard of <Model>.tla,
+# and some pass configuration of that model must then FAIL. A probe shows an
+# invariant can fail. Only a mutant shows that a guard is held by anything: a
+# model can stay green with a guard deleted when no invariant speaks for it. A
+# mutant is caught only when the property its entry names is the one violated,
+# so a catch by accident does not count. A mutant whose text is not found
+# exactly once, or whose run ends in anything but a verdict, is an error and
+# not a catch.
+echo "== phase 1: side-model mutants (each MUST be caught)"
 command -v python3 >/dev/null || {
   echo "tla.sh: INFRA ERROR: the mutant check needs python3" >&2
   exit 1
 }
 mutant_code=0
 python3 - "$JAVA_BIN" "$JAR" "$STATES/mutants" <<'PY' || mutant_code=$?
-import json, os, shutil, subprocess, sys
+import glob, json, os, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 java, jar, out = sys.argv[1:4]
-spec = open("ChildTasks.tla").read()
-mutants = json.load(open("ChildTasks.mutants.json"))
-configs = ("ChildTasks.cfg", "ChildTasksRefuse.cfg")
 
 
-def check(mutant):
+def check(job):
+    model, spec, configs, mutant = job
     name, find, expect = mutant["name"], mutant["find"], mutant["caughtBy"]
     if spec.count(find) != 1:
-        return name, "ERROR", f"its text occurs {spec.count(find)} times in ChildTasks.tla, not once"
-    scratch = os.path.join(out, name)
+        return name, "ERROR", f"its text occurs {spec.count(find)} times in {model}.tla, not once"
+    scratch = os.path.join(out, model, name)
     os.makedirs(scratch)
-    with open(os.path.join(scratch, "ChildTasks.tla"), "w") as handle:
+    with open(os.path.join(scratch, model + ".tla"), "w") as handle:
         handle.write(spec.replace(find, mutant["replace"]))
     others = []
     for config in configs:
         shutil.copy(config, scratch)
         run = subprocess.run(
             [java, "-Xmx512m", "-cp", jar, "tlc2.TLC", "-workers", "1", "-deadlock",
-             "-metadir", os.path.join(scratch, "meta-" + config), "-config", config, "ChildTasks.tla"],
+             "-metadir", os.path.join(scratch, "meta-" + config), "-config", config, model + ".tla"],
             cwd=scratch, capture_output=True, text=True,
         )
         if run.returncode == 0:
@@ -209,16 +214,27 @@ def check(mutant):
     return name, "SURVIVED", f"every configuration still passes, so nothing holds: {mutant['guard']}"
 
 
-names = [mutant["name"] for mutant in mutants]
-if not names or len(set(names)) != len(names):
-    sys.exit("ChildTasks.mutants.json must list mutants under distinct names")
-with ThreadPoolExecutor(4) as pool:
-    verdicts = list(pool.map(check, mutants))
-for name, verdict, detail in verdicts:
-    print(f"{verdict}: {name} ({detail})")
-caught = sum(verdict == "caught" for _, verdict, _ in verdicts)
-print(f"child-task mutants: {caught} of {len(verdicts)} caught")
-sys.exit(0 if caught == len(verdicts) else 3)
+lists = sorted(glob.glob("*.mutants.json"))
+if not lists:
+    sys.exit("no <Model>.mutants.json found beside the specs")
+failed = False
+for path in lists:
+    model = path[: -len(".mutants.json")]
+    spec = open(model + ".tla").read()
+    # A model's pass configurations are its cfg files that are not probes.
+    configs = sorted(c for c in glob.glob(model + "*.cfg") if not c.startswith(model + "Probe"))
+    mutants = json.load(open(path))
+    names = [mutant["name"] for mutant in mutants]
+    if not configs or not names or len(set(names)) != len(names):
+        sys.exit(f"{path} needs a pass configuration and mutants under distinct names")
+    with ThreadPoolExecutor(4) as pool:
+        verdicts = list(pool.map(check, [(model, spec, configs, mutant) for mutant in mutants]))
+    for name, verdict, detail in verdicts:
+        print(f"{verdict}: {model}/{name} ({detail})")
+    caught = sum(verdict == "caught" for _, verdict, _ in verdicts)
+    print(f"{model} mutants: {caught} of {len(verdicts)} caught")
+    failed = failed or caught != len(verdicts)
+sys.exit(3 if failed else 0)
 PY
 # Exit 3 is the check's verdict. Any other failure is the check itself failing,
 # which says nothing about the model.
@@ -250,7 +266,10 @@ probe_family() { # probe_family <module> <workers> <cfg...>
   done
 }
 probe_family Probes.tla 4 Probe*.cfg
-probe_family ChildTasksProbes.tla 2 ChildTasksProbe*.cfg
+for list in *.mutants.json; do
+  model="${list%.mutants.json}"
+  probe_family "${model}Probes.tla" 2 "$model"Probe*.cfg
+done
 probe_fail=0
 for i in "${!probe_pids[@]}"; do
   probe="${probe_names[$i]}"
