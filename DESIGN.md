@@ -743,6 +743,23 @@ are load-bearing):
      guard. The failed state and the well-formed failure a revival requires
      are part of the store's predicate, because registered mutations own that
      text.
+   - Spawn's task insert and the lease sweeps' compare-and-sets are shared
+     statements too. The insert is an INSERT … SELECT whose columns and values
+     come from one record. Its conflict clause names the idempotency columns
+     and narrows them with the partial index's predicate, built from nodes, so
+     a taken key loses there. The grammar admits that index predicate on a
+     named conflict target and no other kind of target. A taken task id loses
+     through the store's identity predicate. The enqueue and cancellation
+     deadlines and their guards are the store's. Every lease sweep acts on the
+     claim its scan read: this run, this queue, still running, under that
+     generation, as nodes. The lost-launch sweep's reopen raises the relaunch
+     count in nodes, which a compare-and-set may do because its guard consumes
+     the state it matched, and its cap fails a run at the relaunch cap. The
+     claim-timeout sweep's fail is its own statement and not a variant of
+     `fail`, because no worker presents a token and it keeps the expired
+     deadline on the failed run. A store passes the generation order with the
+     expired claim, what it requires of the owner, and the relaunch backoff
+     with its guard, where PostgreSQL says LEAST.
    - Only a compare-and-set may hold the clock token. Raw fragment text is the
      one thing a tree cannot read, so it is scanned for the batch clock's text
      and for the clock spellings `scripts/clock-lint.py` lists. That scan is a
