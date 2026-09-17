@@ -779,7 +779,15 @@ are load-bearing):
      bind, another column, and the instant of a joined row the fence does not
      gate are all refused, and so is an unqualified instant among two sources.
      It carries no conflict clause there, so a collision with a foreign row
-     fails loudly. Its SELECT list holds no aggregate and no function call, and
+     fails loudly. Its SELECT reads the fenced row alone: one FROM item, the
+     source whose `fence_stamp` it compares, with any join explicit and
+     carrying its ON. A second FROM item would insert a row for every row of
+     it, and a FROM item that is not the fenced source would do the same with
+     the fenced row merely joined. The `'one'` row bound does not protect
+     against this. A bound is audited after the batch returns, so it turns a
+     wrong write into a thrown error, and on PostgreSQL the rows have
+     committed by then. It is a detector of a broken statement and never the
+     thing that keeps a statement narrow. Its SELECT list holds no aggregate and no function call, and
      the SELECT has no HAVING, because each can return a row the fence did not
      match. That is asked of the statement's own SELECT and does not lean on
      what the gating rule decides about aggregates. An aggregate spelled inside

@@ -835,6 +835,11 @@ export class FencedBatch {
           `${at} must select plain columns and values: an aggregate, a function call, or a HAVING can return a row the fence did not match, and the insert would write it`,
         )
       }
+      if (!following.alone) {
+        throw new Error(
+          `${at} must select from the fenced row alone: one FROM item, the source whose fence_stamp the SELECT compares, with any join explicit and carrying its ON. A second FROM item inserts a row for every row of it, and a row bound is audited only after the batch has run`,
+        )
+      }
       if (stamped !== null && (!following.stamp || !following.fencedInstant)) {
         throw new Error(
           `${at} must insert fence_stamp as the stamp and fence_at_ms as the fenced row's own fence_at_ms into ${stamped}, once each (§3.4 rule 8)`,

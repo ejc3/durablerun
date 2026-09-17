@@ -1201,11 +1201,15 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
  * compares with a fence. `plain` is false when the SELECT could return a row its WHERE
  * did not match, which an insert would then write with no gate: an aggregate or a
  * function call in its list, or a HAVING. This is asked here, of the statement's own
- * SELECT, and does not lean on what `gatingFences` decides about aggregates.
+ * SELECT, and does not lean on what `gatingFences` decides about aggregates. `alone` is
+ * false when the SELECT could return more rows than the fenced ones: a second FROM item,
+ * a FROM item that is not the source the fence is compared on, or a join with no ON. A
+ * join that carries its ON stays, because a revival reads the task's top run that way.
  */
 export function followOnInsertProvenance(tree: OperationNode): {
   selects: boolean
   plain: boolean
+  alone: boolean
   stamp: boolean
   fencedInstant: boolean
   conflict: boolean
@@ -1222,6 +1226,14 @@ export function followOnInsertProvenance(tree: OperationNode): {
           const fence = fenceEquality(conjunct, scope)
           return fence === null ? [] : [fence.source]
         })
+  const froms = select?.from?.froms ?? []
+  const [from] = froms
+  const fromName =
+    from === undefined
+      ? null
+      : AliasNode.is(from) && IdentifierNode.is(from.alias)
+        ? from.alias.name
+        : tableName(from)
   const instant = insertedValue(tree, 'fence_at_ms')
   const reference = instant !== undefined && ReferenceNode.is(instant) ? instant : null
   const qualifier =
@@ -1234,6 +1246,12 @@ export function followOnInsertProvenance(tree: OperationNode): {
       !(select.selections ?? []).some((selection) =>
         someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),
       ),
+    // With no fence compared at all, the gate rule and the instant rule speak for it.
+    alone:
+      select !== null &&
+      froms.length === 1 &&
+      (fenced.length === 0 || (fromName !== null && fenced.includes(fromName))) &&
+      (select.joins ?? []).every((join) => join.on !== undefined),
     stamp: tokenOf(insertedValue(tree, 'fence_stamp'))?.kind === 'stamp',
     fencedInstant:
       reference !== null &&
