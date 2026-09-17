@@ -840,17 +840,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
     descriptor against every dialect's catalog, and `complete`'s compare-and-set
     moves to a tree.
   - PR3.9b: claim, activation, and `deferLaunch`, with the one admission
-    fragment deferred below.
+    fragment below. A dialect's predicates reach a shared statement as SQL
+    fragments with their binds, which core turns into nodes. The claim's
+    candidate subquery stays store-owned, because the dialects select
+    candidates differently. Raw fragments are declared by position.
   - PR3.9c: suspend, reschedule, await-event, and emit-event.
   - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
     and spawn.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
-  - Deferred to PR3.9b and PR3.9c: `wake-witness-surface.test.ts` and
-    `query-plans.test.ts` match `UPDATE runs` in upper case, so they fail loudly
-    when emit-event and claim compile from trees and must follow the compiled
-    spelling then.
+  - Deferred to PR3.9c: `wake-witness-surface.test.ts` matches `UPDATE runs` in
+    upper case, so it fails loudly when emit-event compiles from a tree and must
+    follow the compiled spelling then. `query-plans.test.ts` followed the
+    claim's in PR3.9b.
+  - Deferred to PR3.9c: `prepareWake` returns its headroom guard with a leading
+    AND for its text call sites, and the launch deferral strips it. When suspend
+    and reschedule move to trees, it returns fragments and the strip goes.
   - Deferred to PR3.9e, from `postmortems/pr3.9a-statement-trees-review.md`: a
     tree's gating rule decides position, not correlation, so a follow-on gated by
     an uncorrelated subquery may write a row the fenced run does not own. The
@@ -904,11 +910,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   explicitly, so a hand-maintained example is never the completeness claim.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
-  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: one admission
-    fragment for the claim receipt, used by both activation and `deferLaunch`,
-    so a guard added to one reaches the other. Deferred because seven
-    registered mutations own find texts inside activation's SQL, and a shared
-    fragment rewrites every one of those texts and their verdicts.
+  - Delivered in PR3.9b, from `postmortems/pr3.2a-lifecycle-review.md`: one
+    admission fragment for the claim receipt, used by both activation and
+    `deferLaunch`, so a guard added to one reaches the other. Six registered
+    mutations that owned find texts inside activation's SQL now own the
+    fragment's.
   - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a successor-carry
     case generated from every batch that inserts a run, in place of one
     hand-listed family per path. The model property covers the protocol today,

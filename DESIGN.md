@@ -701,9 +701,21 @@ are load-bearing):
    - A follow-on may not assign a column a value that combines that column
      with an arithmetic or concatenation operator, or that hides it in a raw
      fragment.
-   - A statement declares its raw boolean fragments, and the count is checked
+   - A dialect's predicates stay store-owned SQL text and reach a shared
+     statement as data: a fragment's text plus its binds. Core turns each `?`
+     into a value node and each clock token into the clock node, so compiled
+     placeholders equal bound arguments by construction and the clock rules
+     see a fragment's clock. A fragment may not hold a stamp or a fence, which
+     the rules need as nodes. The claim's candidate subquery is such a
+     fragment, because libSQL bounds each state's leg before merging them and
+     PostgreSQL locks candidates with SKIP LOCKED.
+   - A statement declares its raw fragments by position, those standing where
+     a boolean decides rows and all others, and both counts are checked
      against the tree. Compiled placeholders must equal bound arguments, so a
      raw fragment cannot add a `?`.
+   - Activation and the launch deferral act on a claim receipt. They share
+     the receipt's identity conjuncts in core and one store-owned admission
+     fragment, so a guard added for one reaches the other.
    - A tree statement compiles once, when it is added, so what was checked is
      what runs.
 
