@@ -8,13 +8,17 @@ import {
   type SqlResult,
   type SqlStatement,
   TreeDialect,
+  aliasedAs,
   treeBuilder as db,
   defineStatement,
+  emitEventCas,
   fenceValue,
   nowValue,
   rawSql,
+  registerWaitCas,
   sqlFragment,
   stampValue,
+  suspendCas,
 } from '../src/index.js'
 
 /**
@@ -567,6 +571,150 @@ describe('FencedBatch tree statements', () => {
       expect(outcomes.placed).toBe('accepted')
       expect(outcomes.half).toMatch(/bind 'second' is a fragment the statement never places/)
     })
+  })
+
+  const eventInsert = () =>
+    db.insertInto('events').values({
+      queue: 'q',
+      event_name: 'e',
+      payload: 'p',
+      emitted_at_ms: nowValue,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    })
+
+  it('stamps an inserting compare-and-set by position, and keeps a preserved instant on conflict', async () => {
+    const upsert = eventInsert().onConflict((conflict) =>
+      conflict
+        .columns(['queue', 'event_name'])
+        .doUpdateSet((eb) => ({
+          fence_stamp: stampValue,
+          fence_at_ms: eb.ref('events.emitted_at_ms'),
+        }))
+        .where((eb) => eb('events.fence_stamp', 'is not', stampValue)),
+    )
+    const { captured, executor } = capturingExecutor(1)
+    await batch().casTree('event', statement(upsert)).run(executor)
+    expect(captured).toEqual([
+      {
+        sql: `insert into "events" ("queue", "event_name", "payload", "emitted_at_ms", "fence_stamp", "fence_at_ms") values (?, ?, ?, ${CLOCK}, ?, ${CLOCK}) on conflict ("queue", "event_name") do update set "fence_stamp" = ?, "fence_at_ms" = "events"."emitted_at_ms" where "events"."fence_stamp" is not ?`,
+        args: ['q', 'e', 'p', 'seed:event', 'seed:event', 'seed:event'],
+      },
+    ])
+  })
+
+  it('refuses an insert that does not stamp its row, or an upsert that does not re-stamp as its table requires', () => {
+    const unstamped = db
+      .insertInto('events')
+      .values({ queue: 'q', event_name: 'e', payload: 'p', emitted_at_ms: nowValue })
+    expect(() => batch().casTree('event', statement(unstamped))).toThrow(
+      /must insert fence_stamp as the stamp and fence_at_ms as the clock/,
+    )
+    const misplaced = db
+      .insertInto('events')
+      .columns(['queue', 'event_name', 'fence_stamp', 'fence_at_ms'])
+      .expression(
+        db.selectNoFrom((eb) => [
+          eb.val('q').as('queue'),
+          aliasedAs(stampValue, 'event_name'),
+          eb.val('e').as('fence_stamp'),
+          aliasedAs(nowValue, 'fence_at_ms'),
+        ]),
+      )
+    expect(() => batch().casTree('event', statement(misplaced))).toThrow(
+      /must insert fence_stamp as the stamp/,
+    )
+    const conflict = (set: 'clock' | 'none') =>
+      eventInsert().onConflict((oc) =>
+        oc
+          .columns(['queue', 'event_name'])
+          .doUpdateSet(
+            set === 'clock' ? { fence_stamp: stampValue, fence_at_ms: nowValue } : { payload: 'x' },
+          ),
+      )
+    // An event's first instant is a preserved fact: a re-emit keeps it and takes the stamp.
+    expect(() => batch().casTree('event', statement(conflict('clock')))).toThrow(
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    expect(() => batch().casTree('event', statement(conflict('none')))).toThrow(
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    const waitInsert = () =>
+      db.insertInto('waits').values({
+        run_id: 'r1',
+        step_name: 's',
+        queue: 'q',
+        task_id: 't1',
+        event_name: 'e',
+        status: 'waiting',
+        created_at_ms: nowValue,
+        fence_stamp: stampValue,
+        fence_at_ms: nowValue,
+      })
+    const silentUpsert = waitInsert().onConflict((oc) =>
+      oc.columns(['run_id', 'step_name']).doUpdateSet({ status: 'waiting' }),
+    )
+    expect(() => batch().casTree('register', statement(silentUpsert))).toThrow(
+      /does not re-stamp the row and its instant/,
+    )
+    const leaveAlone = waitInsert().onConflict((oc) =>
+      oc.columns(['run_id', 'step_name']).doNothing(),
+    )
+    expect(() => batch().casTree('register', statement(leaveAlone))).not.toThrow()
+  })
+
+  it('refuses an insert as a follow-on', () => {
+    expect(() => followOn(eventInsert())).toThrow(/must be an UPDATE or a DELETE/)
+  })
+
+  it('passes the shared suspend and event statements through a batch', async () => {
+    const wakeAt = sqlFragment('(CASE WHEN ? = 1 THEN $NOW$ + ? ELSE ? END)', [1, 5_000, 0])
+    const suspend = suspendCas({
+      queue: 'q',
+      runId: 'r1',
+      claimToken: 'tok',
+      wakeAt,
+      wakeFits: sqlFragment('(CASE WHEN ? = 1 THEN 1 ELSE 1 END)', [1]),
+      admission: sqlFragment('EXISTS (SELECT 1 FROM tasks t WHERE t.task_id = runs.task_id)'),
+    })
+    const register = registerWaitCas({
+      queue: 'q',
+      runId: 'r1',
+      taskId: 't1',
+      stepName: 's',
+      eventName: 'e',
+      timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
+      timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
+      claimHolds: sqlFragment('EXISTS (SELECT 1 FROM runs r WHERE r.run_id = ?)', ['r1']),
+    })
+    const emit = emitEventCas({
+      queue: 'q',
+      eventName: 'e',
+      payloadJson: '{}',
+      stampDiffers: 'is distinct from',
+      existingEventAdmits: sqlFragment('events.payload IS NOT NULL'),
+    })
+    const sent: string[] = []
+    for (const [name, cas] of [
+      ['suspend', suspend],
+      ['register', register],
+      ['event', emit],
+    ] as const) {
+      const { captured, executor } = capturingExecutor(1)
+      await batch().casTree(name, cas).run(executor)
+      sent.push(captured[0]?.sql ?? '')
+    }
+    expect(sent[0]).toContain('"wake_event" = ?, "event_payload" = ?, "wake_step" = ?')
+    expect(sent[0]).toContain(
+      `case when ((CASE WHEN ? = 1 THEN ${CLOCK} + ? ELSE ? END)) <= ${CLOCK}`,
+    )
+    expect(sent[1]).toContain('on conflict ("run_id", "step_name") do nothing')
+    expect(sent[1]).toContain(
+      `(CASE WHEN ? IS NOT NULL THEN ${CLOCK} + ? ELSE NULL END) as "timeout_at_ms"`,
+    )
+    expect(sent[2]).toContain(
+      'do update set "fence_stamp" = ?, "fence_at_ms" = "events"."emitted_at_ms" where "events"."fence_stamp" is distinct from ? and (events.payload IS NOT NULL)',
+    )
   })
 
   it('refuses a tree statement in a batch without a tree dialect', () => {

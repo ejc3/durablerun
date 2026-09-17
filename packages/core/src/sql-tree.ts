@@ -1,5 +1,6 @@
 import {
   AliasNode,
+  type AliasedExpression,
   AndNode,
   BinaryOperationNode,
   ColumnNode,
@@ -32,7 +33,9 @@ import {
   TableNode,
   UnaryOperationNode,
   UpdateQueryNode,
+  ValueListNode,
   ValueNode,
+  ValuesNode,
   WhenNode,
   WhereNode,
   createQueryId,
@@ -813,7 +816,7 @@ export function clockFunctionCalls(tree: OperationNode): string[] {
   return calls
 }
 
-const QUERY_FIELDS: Readonly<Record<string, readonly string[]>> = {
+const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
   UpdateQueryNode: ['kind', 'table', 'where', 'updates'],
   DeleteQueryNode: ['kind', 'from', 'where'],
   SelectQueryNode: [
@@ -827,10 +830,12 @@ const QUERY_FIELDS: Readonly<Record<string, readonly string[]>> = {
     'orderBy',
     'limit',
   ],
+  InsertQueryNode: ['kind', 'into', 'columns', 'values', 'onConflict'],
+  OnConflictNode: ['kind', 'columns', 'doNothing', 'updates', 'updateWhere'],
 }
 
 const GRAMMAR_NODES = [
-  ...Object.keys(QUERY_FIELDS),
+  ...Object.keys(NODE_FIELDS),
   'AggregateFunctionNode',
   'AliasNode',
   'AndNode',
@@ -848,6 +853,7 @@ const GRAMMAR_NODES = [
   'IdentifierNode',
   'JoinNode',
   'LimitNode',
+  'OnConflictNode',
   'OnNode',
   'OperatorNode',
   'OrNode',
@@ -865,6 +871,7 @@ const GRAMMAR_NODES = [
   'UnaryOperationNode',
   'ValueListNode',
   'ValueNode',
+  'ValuesNode',
   'WhenNode',
   'WhereNode',
 ]
@@ -876,16 +883,20 @@ const GRAMMAR_NODES = [
  * that needs a new kind adds it here, with the check that reads it.
  *
  * It lists no common table expression, RETURNING, or `UPDATE … FROM`, no write below
- * the root, and no schema-qualified table. It binds what is built from nodes. A store
+ * the root, and no schema-qualified table. An INSERT takes one row of values or one
+ * SELECT, with a conflict clause that names its columns. It binds what is built from nodes. A store
  * fragment is opaque text, reviewed through the generated corpus.
  */
 export function statementGrammarProblem(tree: OperationNode): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
     if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`
-    if (!isRoot && (UpdateQueryNode.is(node) || DeleteQueryNode.is(node))) {
+    if (
+      !isRoot &&
+      (UpdateQueryNode.is(node) || DeleteQueryNode.is(node) || InsertQueryNode.is(node))
+    ) {
       return `${node.kind} below the root`
     }
-    const fields = QUERY_FIELDS[node.kind]
+    const fields = NODE_FIELDS[node.kind]
     if (fields !== undefined) {
       const extra = Object.entries(node).find(
         ([field, value]) => value !== undefined && !fields.includes(field),
@@ -932,5 +943,74 @@ export function writesStampAssignments(tree: OperationNode): {
     stamp: tokenOf(only(stamps)?.value)?.kind === 'stamp',
     instant: instants.length === 1,
     clockInstant: tokenOf(only(instants)?.value)?.kind === 'now',
+  }
+}
+
+/** The provenance an assignment list writes, read structurally. */
+function assignedProvenance(updates: readonly ColumnUpdateNode[]) {
+  const assigned = (column: string) => updates.filter((update) => assignedColumn(update) === column)
+  const only = (list: readonly ColumnUpdateNode[]) => (list.length === 1 ? list[0] : undefined)
+  const instant = only(assigned('fence_at_ms'))?.value
+  const reference = instant !== undefined && ReferenceNode.is(instant) ? instant : undefined
+  const column = reference === undefined ? null : columnName(reference.column)
+  return {
+    stamp: tokenOf(only(assigned('fence_stamp'))?.value)?.kind === 'stamp',
+    clockInstant: tokenOf(instant)?.kind === 'now',
+    /** The stored column the instant is copied from, when it is a plain reference. */
+    copiedInstant:
+      column === null ? null : { table: reference?.table?.table.identifier.name ?? null, column },
+  }
+}
+
+/**
+ * The provenance an INSERT writes, or null for any other statement. The inserted value
+ * of a column is read by position, from one row of values or from the SELECT's list. A
+ * conflict update is read like any other assignment list.
+ */
+export function insertProvenance(tree: OperationNode): {
+  stamp: boolean
+  clockInstant: boolean
+  conflict: ReturnType<typeof assignedProvenance> | null
+} | null {
+  if (!InsertQueryNode.is(tree)) return null
+  const columns = (tree.columns ?? []).map((column) => column.column.name)
+  const inserted = (name: string): OperationNode | undefined => {
+    const index = columns.indexOf(name)
+    if (index < 0 || columns.lastIndexOf(name) !== index) return undefined
+    const values = tree.values
+    if (values !== undefined && ValuesNode.is(values)) {
+      const [row, ...others] = values.values
+      return others.length === 0 && row !== undefined && ValueListNode.is(row)
+        ? row.values[index]
+        : undefined
+    }
+    if (values !== undefined && SelectQueryNode.is(values)) {
+      const selection = values.selections?.[index]?.selection
+      return selection !== undefined && AliasNode.is(selection) ? selection.node : selection
+    }
+    return undefined
+  }
+  const updates = tree.onConflict?.updates
+  return {
+    stamp: tokenOf(inserted('fence_stamp'))?.kind === 'stamp',
+    clockInstant: tokenOf(inserted('fence_at_ms'))?.kind === 'now',
+    conflict: updates === undefined ? null : assignedProvenance(updates),
+  }
+}
+
+/** An expression under an alias, for a SELECT list. Token and fragment expressions have no `as`. */
+export function aliasedAs<T, A extends string>(
+  expression: Expression<T>,
+  alias: A,
+): AliasedExpression<T, A> {
+  return {
+    get expression(): Expression<T> {
+      return expression
+    },
+    get alias(): A {
+      return alias
+    },
+    toOperationNode: () =>
+      AliasNode.create(expression.toOperationNode(), IdentifierNode.create(alias)),
   }
 }

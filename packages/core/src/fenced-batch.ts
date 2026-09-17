@@ -28,6 +28,7 @@ import {
   type TreeDialect,
   clockFunctionCalls,
   gatingFences,
+  insertProvenance,
   isDefinedStatement,
   rawFragmentProblem,
   rawFragmentTexts,
@@ -742,8 +743,11 @@ export class FencedBatch {
     const isCas = kind === 'cas' || kind === 'casMany'
     if (kind === 'tail') {
       if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)
-    } else if (tree.kind !== 'UpdateQueryNode' && (isCas || tree.kind !== 'DeleteQueryNode')) {
-      throw new Error(`${at} must be an UPDATE${isCas ? '' : ' or a DELETE'}`)
+    } else if (
+      tree.kind !== 'UpdateQueryNode' &&
+      tree.kind !== (isCas ? 'InsertQueryNode' : 'DeleteQueryNode')
+    ) {
+      throw new Error(`${at} must be an UPDATE or ${isCas ? 'an INSERT' : 'a DELETE'}`)
     }
 
     const written = statementTable(tree)
@@ -751,8 +755,35 @@ export class FencedBatch {
     if (isCas && stamped === null) {
       throw new Error(`${at} must update a provenance-carrying table`)
     }
-    const stamps = stamped !== null && tree.kind === 'UpdateQueryNode'
-    if (stamps) {
+    const inserted = insertProvenance(tree)
+    if (stamped !== null && inserted !== null) {
+      if (!inserted.stamp || !inserted.clockInstant) {
+        throw new Error(
+          `${at} must insert fence_stamp as the stamp and fence_at_ms as the clock into ${stamped}, once each (§3.4 rule 8)`,
+        )
+      }
+      // An upsert that leaves the conflicting row's provenance alone would let a later
+      // statement fence on a stamp this batch never wrote there. A fact with a preserved
+      // instant keeps it while taking the new stamp.
+      if (inserted.conflict !== null) {
+        const preserved: Partial<Record<FenceTable, string>> = PRESERVED_FENCE_INSTANTS
+        const column = preserved[stamped]
+        const copied = inserted.conflict.copiedInstant
+        const instant =
+          column === undefined
+            ? inserted.conflict.clockInstant
+            : copied?.table === stamped && copied.column === column
+        if (!inserted.conflict.stamp || !instant) {
+          throw new Error(
+            column === undefined
+              ? `${at} does not re-stamp the row and its instant`
+              : `${at} must preserve ${stamped}.${column} while re-stamping`,
+          )
+        }
+      }
+    }
+    const stamps = stamped !== null && (tree.kind === 'UpdateQueryNode' || inserted !== null)
+    if (stamps && inserted === null) {
       const stamp = writesStampAssignments(tree)
       if (!stamp.stamp || (isCas ? !stamp.clockInstant : !stamp.instant)) {
         throw new Error(

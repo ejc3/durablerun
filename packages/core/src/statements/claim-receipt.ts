@@ -1,6 +1,7 @@
 import type { UpdateQueryBuilder, UpdateResult } from 'kysely'
 import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
+import { parkAssignments } from './park.js'
 
 /** The claim a launch names: a run still running under this token and generation, not yet activated. */
 type ClaimReceipt = {
@@ -30,13 +31,6 @@ const whereClaimReceipt =
       .where('claim_gen', '=', binds.claimGen)
       .where('activated_gen', '<', binds.claimGen)
       .where(rawSql<boolean>(binds.admission, 'predicate'))
-
-/** The claim columns a parked run clears, so it carries no live token, lease deadline, or heartbeat. */
-export const PARKED_CLAIM_COLUMNS = {
-  claimed_by: null,
-  claim_expires_at_ms: null,
-  heartbeat_at_ms: null,
-} as const
 
 /**
  * `claim`'s compare-and-set. The candidate subquery is the store's, because libSQL
@@ -120,18 +114,7 @@ export const deferLaunchCas = defineStatement(
   (binds: ClaimReceipt & { wakeAt: SqlFragment; wakeFits: SqlFragment }) =>
     treeBuilder
       .updateTable('runs')
-      .set((eb) => ({
-        state: eb
-          .case()
-          .when(rawSql<number>(binds.wakeAt, 'value'), '<=', nowValue)
-          .then('pending')
-          .else('sleeping')
-          .end(),
-        available_at_ms: rawSql<number>(binds.wakeAt, 'value'),
-        ...PARKED_CLAIM_COLUMNS,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
-      }))
+      .set((eb) => parkAssignments(eb, binds.wakeAt))
       .$call(whereClaimReceipt(binds))
       .where(rawSql<boolean>(binds.wakeFits, 'predicate')),
 )

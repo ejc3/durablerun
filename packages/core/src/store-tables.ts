@@ -18,8 +18,8 @@ const nullableInteger = { kind: 'integer', nullable: true } as const
  * it with every dialect's catalog, so it cannot drift from the schema.
  *
  * The task outcome columns stay out until a tree statement writes them, because the
- * outcome lint confines them to the stores and `decodeTaskResult`. Later PRs add waits,
- * events, and checkpoints.
+ * outcome lint confines them to the stores and `decodeTaskResult`. A later PR adds
+ * checkpoints.
  */
 export const STORE_TABLE_COLUMNS = {
   runs: {
@@ -67,6 +67,26 @@ export const STORE_TABLE_COLUMNS = {
     cancel_at_ms: nullableInteger,
     cancelled_at_ms: nullableInteger,
     created_at_ms: integer,
+    fence_stamp: nullableText,
+    fence_at_ms: nullableInteger,
+  },
+  waits: {
+    run_id: text,
+    step_name: text,
+    queue: text,
+    task_id: text,
+    event_name: text,
+    status: text,
+    timeout_at_ms: nullableInteger,
+    created_at_ms: integer,
+    fence_stamp: nullableText,
+    fence_at_ms: nullableInteger,
+  },
+  events: {
+    queue: text,
+    event_name: text,
+    payload: nullableText,
+    emitted_at_ms: nullableInteger,
     fence_stamp: nullableText,
     fence_at_ms: nullableInteger,
   },
