@@ -131,6 +131,22 @@ describe('FencedBatch tree statements', () => {
     )
   })
 
+  it('refuses a follow-on that updates a fenced table without stamping it', () => {
+    const unstamped = db
+      .updateTable('tasks')
+      .set({ state: 'completed' })
+      .where('task_id', '=', 't1')
+      .where('fence_stamp', '=', fence('win'))
+    expect(() => withCas().followOnTree('task', null, unstamped, 'one')).toThrow(
+      /does not stamp it/,
+    )
+  })
+
+  it('refuses a raw fragment that adds a placeholder no argument binds', () => {
+    const unbound = taskFollowOn().where(sql<boolean>`${sql.raw('task_name = ?')}`)
+    expect(() => withCas().followOnTree('task', 'tasks', unbound, 'one')).toThrow(/placeholders/)
+  })
+
   it('refuses a tree statement in a batch without a tree dialect', () => {
     const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
     expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)
