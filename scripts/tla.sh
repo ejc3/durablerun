@@ -4,7 +4,8 @@
 # sim harness proves the implementation refines it (labeled batch ≙ TLA
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #
-# Layout is maximum-concurrency: phase 1 runs every vacuity probe at once, the
+# Layout is maximum-concurrency: phase 1 runs the vacuity probes in waves the
+# heap budget can hold, the
 # Probe*.cfg family against Probes.tla and each side model's <Model>Probe*.cfg
 # family against <Model>Probes.tla; phase 2 runs the exhaustive-safety scope AND the five liveness
 # property groups (SchedulerLiveness1-5.cfg, listed explicitly in the loops
@@ -246,23 +247,26 @@ elif [[ "$mutant_code" -ne 0 ]]; then
   exit 1
 fi
 
-echo "== phase 1: vacuity probes, concurrent (each MUST find its witness trace)"
-probe_pids=()
-probe_names=()
+echo "== phase 1: vacuity probes, in waves (each MUST find its witness trace)"
+probe_modules=()
+probe_workers=()
+probe_cfgs=()
+# Each probe holds an eighth of the heap budget, and TLC takes its off-heap
+# share up front, so the probes run in waves the budget can hold. All at once,
+# twenty-six of them were killed inside the confined scope for memory.
 probe_heap=$((TLA_HEAP_MB / 8)); [[ "$probe_heap" -lt 512 ]] && probe_heap=512
+probe_slots=$((TLA_HEAP_MB / probe_heap)); [[ "$probe_slots" -lt 1 ]] && probe_slots=1
 # A probe is a cfg named after the one invariant or property it must violate,
 # defined in the family's module. A new cfg is enrolled by existing. A probe
 # fails by design, so it writes no counterexample trace beside the specs, and a
 # real violation's trace is never cleaned away with the probes'.
 probe_family() { # probe_family <module> <workers> <cfg...>
-  local module="$1" workers="$2" cfg probe
+  local module="$1" workers="$2" cfg
   shift 2
   for cfg in "$@"; do
-    probe="${cfg%.cfg}"
-    tlc "$probe_heap" "$workers" -noGenerateSpecTE -metadir "$STATES/$probe" -config "$cfg" "$module" \
-      >"$STATES/$probe.log" 2>&1 &
-    probe_pids+=($!)
-    probe_names+=("$probe")
+    probe_modules+=("$module")
+    probe_workers+=("$workers")
+    probe_cfgs+=("$cfg")
   done
 }
 probe_family Probes.tla 4 Probe*.cfg
@@ -271,19 +275,28 @@ for list in *.mutants.json; do
   probe_family "${model}Probes.tla" 2 "$model"Probe*.cfg
 done
 probe_fail=0
-for i in "${!probe_pids[@]}"; do
-  probe="${probe_names[$i]}"
-  log="$STATES/$probe.log"
-  if wait "${probe_pids[$i]}"; then
-    echo "VACUOUS: $probe found no witness — the feature it probes is unreachable"
-    probe_fail=1
-  elif grep -qE "(Invariant $probe is|Temporal property $probe was) violated" "$log"; then
-    echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
-  else
-    echo "ERROR: $probe failed for the wrong reason:"
-    tail -20 "$log"
-    probe_fail=1
-  fi
+for ((wave = 0; wave < ${#probe_cfgs[@]}; wave += probe_slots)); do
+  probe_pids=()
+  for ((i = wave; i < wave + probe_slots && i < ${#probe_cfgs[@]}; i++)); do
+    probe="${probe_cfgs[$i]%.cfg}"
+    tlc "$probe_heap" "${probe_workers[$i]}" -noGenerateSpecTE -metadir "$STATES/$probe" \
+      -config "${probe_cfgs[$i]}" "${probe_modules[$i]}" >"$STATES/$probe.log" 2>&1 &
+    probe_pids+=($!)
+  done
+  for ((i = 0; i < ${#probe_pids[@]}; i++)); do
+    probe="${probe_cfgs[$((wave + i))]%.cfg}"
+    log="$STATES/$probe.log"
+    if wait "${probe_pids[$i]}"; then
+      echo "VACUOUS: $probe found no witness — the feature it probes is unreachable"
+      probe_fail=1
+    elif grep -qE "(Invariant $probe is|Temporal property $probe was) violated" "$log"; then
+      echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
+    else
+      echo "ERROR: $probe failed for the wrong reason:"
+      tail -20 "$log"
+      probe_fail=1
+    fi
+  done
 done
 [[ "$probe_fail" -eq 0 && "$mutant_fail" -eq 0 ]] || exit 1
 
