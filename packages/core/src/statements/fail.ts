@@ -32,18 +32,15 @@ export const failCas = defineStatement(
 /**
  * `fail`'s retry run, placed while the task has user budget left. It is due at once
  * when the retry carries no delay, and asleep until the delay has run otherwise. The
- * cast tells PostgreSQL the type of a bind that is compared with nothing but a bind.
+ * delay is a number the caller holds, so the state is decided before the statement is
+ * built and bound as a value. No dialect then has to type a bind that is compared with
+ * nothing but a bind.
  */
 export const userRetrySuccessorInsert = defineStatement(
   'fail successor',
-  (binds: FailureSuccessor & { retryDelayMs: number }) => {
-    const eb = expressionBuilder<StoreTables, never>()
-    const state = eb
-      .case()
-      .when(eb.cast<number>(eb.val(binds.retryDelayMs), 'bigint'), '<=', 0)
-      .then('pending')
-      .else('sleeping')
-      .end()
-    return failureSuccessor(binds, state)
-  },
+  (binds: FailureSuccessor & { retryDelayMs: number }) =>
+    failureSuccessor(
+      binds,
+      expressionBuilder<StoreTables, never>().val(binds.retryDelayMs <= 0 ? 'pending' : 'sleeping'),
+    ),
 )

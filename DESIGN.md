@@ -812,8 +812,10 @@ are load-bearing):
      new run takes its queue, its task, and both its instants from the fenced
      row, and its carried columns from `SUCCESSOR_CARRIED_RUN_COLUMNS`. The two
      successor deadlines and the successor ownership guard stay store text,
-     because registered mutations own them. The retry state is a CASE built
-     from nodes with a cast every dialect takes. Both checkpoint placements
+     because registered mutations own them. The retry state is decided from
+     the delay before the statement is built, pending with no delay and
+     sleeping otherwise, and bound as a value, so the statement holds no cast
+     and no dialect's spelling of one. Both checkpoint placements
      write through one statement, `checkpointWrite`, whose last-writer-wins arm
      is nodes, so the inline write and the suspension marker cannot drift.
    - Suspend and reschedule are one shared statement and differ only in the
