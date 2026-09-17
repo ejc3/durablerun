@@ -189,6 +189,23 @@ describe('store answers across store and worker versions', () => {
           }),
         expected: refused('attempt'),
       },
+      ...(['event', 'step', 'payloadJson', 'timedOut'] as const).map((nested) => ({
+        variant: `a store whose wake ${nested} getter throws`,
+        run: (answer: Answer) => ({
+          ...answer,
+          wake: Object.defineProperty(
+            { event: 'go', step: '$await:go', payloadJson: '{}' },
+            nested,
+            {
+              enumerable: true,
+              get() {
+                throw new Error(`unreadable wake ${nested}`)
+              },
+            },
+          ),
+        }),
+        expected: refused('wake'),
+      })),
     ]
     const expected = cases.map(({ variant, expected }) => ({ variant, ...expected }))
     const observed: Observation[] = []
