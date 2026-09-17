@@ -94,5 +94,11 @@
     "guard": "an emit wakes only a parent with a wait row, and a cancelled parent has none",
     "find": "       /\\ IF wait\n",
     "replace": "       /\\ IF wait \\/ (AwaitAllowed /\\ parent = \"cancelled\")\n"
+  },
+  {
+    "name": "refuse-ignores-rule",
+    "guard": "an await the rule allows is never refused",
+    "find": "AwaitRefused ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ ~AwaitAllowed",
+    "replace": "AwaitRefused ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\""
   }
 ]
