@@ -852,7 +852,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     launch deferral. Wake arithmetic, the event timeout, and their headroom
     guards stay store-owned fragments, as the lease deadline did in PR3.9b.
     The stores' text copy of the parked claim columns and the wake guard's AND
-    form are deleted.
+    form are deleted. Its review round is
+    `postmortems/pr3.9c-insert-rules-review.md`.
   - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
     and spawn.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
@@ -863,6 +864,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the wake follow-on the test mutates is still text. The test fails loudly
     when that follow-on compiles from a tree and must follow the compiled
     spelling then.
+  - Deferred to PR3.9e: a tree statement is rebuilt and re-checked on every
+    call, and the checks walk the tree once each. PR3.9c's review measured the
+    four moved methods on libSQL with a stub executor: reschedule 78.5 µs to
+    about 167 µs, suspend 121 µs to about 201 µs, await-event 141 µs to about
+    270 µs, and emit-event 276 µs to about 334 µs. A local `file:` round trip
+    is about 100 µs and a remote one is milliseconds. Collect node kinds, raw
+    nodes, and function nodes in one pass when the text checks are deleted.
+  - Deferred to PR3.9e: the insert rules get registered tree-path mutations
+    with the other tree checks. Until then each condition is held by its own
+    refusal in `fenced-batch-tree.test.ts`, and PR3.9c witnessed thirteen
+    condition deletions each failing a test.
+  - Deferred to PR4.3: the shared await-event and emit-event statements use
+    `ON CONFLICT` and `IS DISTINCT FROM`. MySQL 8 has neither spelling, so
+    `store-mysql` needs a dialect compile for upserts and the null-safe
+    comparison before it can pass the identical suite.
   - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
     since emit-event's conflict arm became nodes. It stays while the text path
     and its checks stay, and goes with them.
