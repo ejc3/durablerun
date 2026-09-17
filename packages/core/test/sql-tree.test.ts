@@ -64,9 +64,10 @@ describe('SQL tree checks', () => {
       gates: true,
     },
     {
-      shape: 'a fence inside a required EXISTS subquery',
+      // It proves the batch won, and says nothing about which wait is deleted.
+      shape: 'a fence inside a required EXISTS subquery that is not tied to the outer row',
       query: db.deleteFrom('waits').where((eb) => eb.exists(fencedRuns(eb))),
-      gates: true,
+      gates: false,
     },
     {
       shape: 'a fence inside a required IN subquery',
@@ -89,6 +90,62 @@ describe('SQL tree checks', () => {
       ),
       gates: false,
     },
+    {
+      shape: 'a fence inside a required EXISTS subquery tied to the outer row by a column',
+      query: db
+        .deleteFrom('waits')
+        .where((eb) => eb.exists(fencedRuns(eb).whereRef('f.run_id', '=', 'waits.run_id'))),
+      gates: true,
+    },
+    {
+      shape: 'a fence inside an EXISTS tied to itself and not to the outer row',
+      query: db
+        .deleteFrom('waits')
+        .where((eb) => eb.exists(fencedRuns(eb).whereRef('f.run_id', '=', 'f.task_id'))),
+      gates: false,
+    },
+    {
+      shape: 'a fence inside an EXISTS that compares the outer row without equating it',
+      query: db
+        .deleteFrom('waits')
+        .where((eb) => eb.exists(fencedRuns(eb).whereRef('f.run_id', '<>', 'waits.run_id'))),
+      gates: false,
+    },
+    {
+      shape: 'a fence inside an EXISTS tied to the outer row only under OR',
+      query: db.deleteFrom('waits').where((eb) =>
+        eb.exists(
+          // biome-ignore lint/suspicious/noExplicitAny: an expression builder over untyped tables
+          fencedRuns(eb).where((inner: any) =>
+            inner.or([
+              inner('f.run_id', '=', inner.ref('waits.run_id')),
+              inner('f.queue', '=', 'q'),
+            ]),
+          ),
+        ),
+      ),
+      gates: false,
+    },
+    {
+      shape: 'a value, not a column, on the left of a required IN subquery',
+      query: update().where((eb) => eb(eb.val('t'), 'in', fencedRuns(eb))),
+      gates: false,
+    },
+    {
+      shape: 'an INSERT … SELECT whose SELECT the fence gates',
+      query: db
+        .insertInto('runs')
+        .columns(['run_id'])
+        .expression(
+          db.selectFrom('runs as f').select('f.run_id').where('f.fence_stamp', '=', fence()),
+        ),
+      gates: true,
+    },
+    {
+      shape: 'an INSERT of VALUES, which nothing can gate',
+      query: db.insertInto('runs').values({ run_id: fence() }),
+      gates: false,
+    },
   ]
 
   it('decides whether a fence gates every row, for every shape', () => {
@@ -108,16 +165,22 @@ describe('SQL tree checks', () => {
       'a fence under NOT EXISTS',
       'a fence under NOT (EXISTS (…))',
       'a conjunct that contains a fence but is not one',
+      'a fence inside a required EXISTS subquery that is not tied to the outer row',
       'a fence joined by OR inside a required subquery',
+      'a fence inside an EXISTS tied to itself and not to the outer row',
+      'a fence inside an EXISTS that compares the outer row without equating it',
+      'a fence inside an EXISTS tied to the outer row only under OR',
+      'a value, not a column, on the left of a required IN subquery',
+      'an INSERT … SELECT whose SELECT the fence gates',
     ])
   })
 
   it('names the table whose stamp a gating fence is compared with', () => {
     expect(gatingFences(shapes[0]?.query.toOperationNode() as OperationNode)).toEqual([
-      { fence: 'complete', table: 'tasks' },
+      { fence: 'complete', table: 'tasks', source: 'tasks' },
     ])
     expect(gatingFences(shapes[7]?.query.toOperationNode() as OperationNode)).toEqual([
-      { fence: 'complete', table: 'runs' },
+      { fence: 'complete', table: 'runs', source: 'f' },
     ])
     const ambiguous = db
       .selectFrom('runs as r')
