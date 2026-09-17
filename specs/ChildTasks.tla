@@ -249,6 +249,11 @@ DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 DoneAuthority ==
   [][doneEvent' # doneEvent => (child = "live" /\ child' \in Outcomes)]_vars
 
+\* A woken parent gets its outcome.  The emit consumed the wait row, so no
+\* timeout can take the wake back, and only a cancellation can come first.
+WakeIsDelivered ==
+  [][parent = "woken" => parent' \in {"woken", "resolved", "cancelled"}]_vars
+
 \* A timeout is this await's answer.  The wait row went with it, so a later emit
 \* wakes nobody, and only a cancellation moves the parent again.
 TimeoutIsFinal ==
