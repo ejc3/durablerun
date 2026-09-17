@@ -301,6 +301,36 @@ describe('FencedBatch tree statements', () => {
     expect(() => rawSql(sqlFragment('queue = ?', ['q', 'extra']))).toThrow(/binds 1 of its 2/)
   })
 
+  it('parenthesizes a fragment, so an OR inside it cannot void the conjuncts before it', async () => {
+    const ored = winCas().where(
+      rawSql<boolean>(sqlFragment('lease_ms < ? OR lease_ms IS NULL', [5])),
+    )
+    let captured: readonly SqlStatement[] = []
+    const executor: SqlExecutor = {
+      async batch(_label, statements) {
+        captured = statements
+        return statements.map(() => ({ rows: [], rowsAffected: 1 }) as SqlResult)
+      },
+    }
+    await batch().casTree('win', statement(ored, 1)).run(executor)
+    expect(captured[0]?.sql).toContain('and (lease_ms < ? OR lease_ms IS NULL)')
+  })
+
+  it('refuses a fragment whose string literal holds a bind or the clock token', () => {
+    expect(() => rawSql(sqlFragment("failure_reason <> 'at $NOW$'"))).toThrow(/string literal/)
+    expect(() => rawSql(sqlFragment("task_name = 'why?'"))).toThrow(/string literal/)
+    expect(() => rawSql(sqlFragment("task_name = 'it''s' AND queue = ?", ['q']))).not.toThrow()
+  })
+
+  it('does not count the raw nodes the builder makes for itself', () => {
+    const ordered = db
+      .selectFrom('runs')
+      .select('run_id')
+      .where('fence_stamp', '=', fenceValue('win'))
+      .orderBy('run_id', 'desc')
+    expect(() => withCas().tailTree('payload', statement(ordered))).not.toThrow()
+  })
+
   it('refuses a tree statement in a batch without a tree dialect', () => {
     const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
     expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)
