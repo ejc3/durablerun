@@ -122,35 +122,14 @@ report "hosted wake delivery" "$wake_code" "$STATES/wake-delivery.log" || exit 1
 
 # The child-task completion event (specs/ChildTasks.tla), also small and on
 # every scope. Three configurations cover both answers to the same-queue rule
-# and a child in another queue. Each probe names the invariant it must violate:
-# two show an invariant is not vacuous, three that the behaviour is reachable.
+# and a child in another queue. Its vacuity probes run with the others in
+# phase 1, which a TLA_ONLY liveness job skips.
 for cfg in ChildTasks ChildTasksRefuse ChildTasksCrossQueue; do
   child_code=0
   tlc "$wake_heap" 2 -metadir "$STATES/$cfg" -config "$cfg.cfg" \
     ChildTasks.tla >"$STATES/$cfg.log" 2>&1 || child_code=$?
   report "child tasks ($cfg)" "$child_code" "$STATES/$cfg.log" || exit 1
 done
-child_probe_fail=0
-for pair in NonAtomicEmit:TerminalImpliesDone ForgedEmit:DoneIsFirstOutcome \
-  WokenParent:ProbeNoWokenParent SecondOutcome:ProbeNoSecondOutcome \
-  RefusedAwait:ProbeNoRefusedAwait; do
-  probe="ChildTasksProbe${pair%%:*}"
-  invariant="${pair##*:}"
-  log="$STATES/$probe.log"
-  if tlc "$wake_heap" 2 -metadir "$STATES/$probe" -config "$probe.cfg" \
-    ChildTasks.tla >"$log" 2>&1; then
-    echo "VACUOUS: $probe found no witness against $invariant"
-    child_probe_fail=1
-  elif grep -q "Invariant $invariant is violated" "$log"; then
-    echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
-  else
-    echo "ERROR: $probe failed for the wrong reason:"
-    tail -20 "$log"
-    child_probe_fail=1
-  fi
-done
-[[ "$child_probe_fail" -eq 0 ]] || exit 1
-rm -f ./*_TTrace_*.tla ./*_TTrace_*.bin
 
 # TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
 # FULL budget — for CI matrix jobs where each runner hosts one TLC process.
@@ -187,6 +166,26 @@ for i in "${!probe_pids[@]}"; do
     echo "VACUOUS: $probe found no witness — the feature it probes is unreachable"
     probe_fail=1
   elif grep -q "Invariant $probe is violated" "$log"; then
+    echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
+  else
+    echo "ERROR: $probe failed for the wrong reason:"
+    tail -20 "$log"
+    probe_fail=1
+  fi
+done
+# The child-task model's probes. Each names the invariant it must violate: two
+# show an invariant is not vacuous, three that a behaviour is reachable.
+for pair in NonAtomicEmit:TerminalImpliesDone ForgedEmit:DoneIsFirstOutcome \
+  WokenParent:ProbeNoWokenParent SecondOutcome:ProbeNoSecondOutcome \
+  RefusedAwait:ProbeNoRefusedAwait; do
+  probe="ChildTasksProbe${pair%%:*}"
+  invariant="${pair##*:}"
+  log="$STATES/$probe.log"
+  if tlc "$probe_heap" 2 -metadir "$STATES/$probe" -config "$probe.cfg" \
+    ChildTasks.tla >"$log" 2>&1; then
+    echo "VACUOUS: $probe found no witness against $invariant"
+    probe_fail=1
+  elif grep -q "Invariant $invariant is violated" "$log"; then
     echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
   else
     echo "ERROR: $probe failed for the wrong reason:"
