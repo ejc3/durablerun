@@ -249,6 +249,11 @@ DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 DoneAuthority ==
   [][doneEvent' # doneEvent => (child = "live" /\ child' \in Outcomes)]_vars
 
+\* A timeout is this await's answer.  The wait row went with it, so a later emit
+\* wakes nobody, and only a cancellation moves the parent again.
+TimeoutIsFinal ==
+  [][parent = "timedout" => parent' \in {"timedout", "cancelled"}]_vars
+
 \* A registered wait is resolved, times out, or dies with a cancelled parent.
 EveryWaitResolves ==
   (parent = "waiting") ~> (parent \in {"resolved", "timedout", "cancelled"})
