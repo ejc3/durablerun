@@ -1,3 +1,4 @@
+import { SqliteQueryCompiler } from 'kysely'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
   FENCE_COLS,
@@ -13,6 +14,7 @@ import {
   type SqlResult,
   type SqlStatement,
   type SqlTransactionLock,
+  TreeDialect,
   fenceSetAt,
   sqlBatchMode,
   sqlTransactionLock,
@@ -29,8 +31,11 @@ import {
 
 const CLOCK = `CAST(unixepoch('subsec') * 1000 AS INTEGER)`
 
+/** Generated follow-ons are trees, so every batch here carries a dialect to compile them. */
+const TREE = new TreeDialect(new SqliteQueryCompiler())
+
 function batch(label = 'b'): FencedBatch {
-  return new FencedBatch(label, 'seed', { now: CLOCK })
+  return new FencedBatch(label, 'seed', { now: CLOCK, tree: TREE })
 }
 
 /** A CAS that satisfies every check, so tests can isolate one at a time. */
@@ -514,7 +519,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     const db = new FakeDb()
     await b.run(db)
     const sealed = db.calls[0]?.statements[1]
-    expect(sealed?.sql).toContain('fence_stamp = ?')
+    expect(sealed?.sql).toContain('"run_id" = "run_id", "fence_stamp" = ?')
     expect(sealed?.args).toEqual(['seed:finished', 'r', 'seed:win', 'r', 'seed:win'])
   })
 
@@ -565,7 +570,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     const b = withCas()
     missingConstructionGuard(
       'mutation-verdict:construction:derived-source-table',
-      /reads 'waits', but fence 'win' stamps 'runs'/,
+      /fence 'win' stamps 'runs', but the statement compares waits\.fence_stamp/,
       () =>
         b.derived('wrong-source', {
           relation: 'waits-to-runs',
@@ -587,7 +592,7 @@ describe('fence() names a statement, and the primitive supplies the value', () =
         fence: 'mirror',
         rows: 'one',
       }),
-    ).toThrow(/reads 'runs', but fence 'mirror' stamps 'tasks'/)
+    ).toThrow(/fence 'mirror' stamps 'tasks', but the statement compares runs\.fence_stamp/)
   })
 
   it('restricts sealing to relations that preserve both source table and key', () => {
@@ -639,13 +644,13 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     await b.run(db)
     const update = db.calls[0]?.statements[1]?.sql ?? ''
     expect(update, 'mutation-verdict:construction:self-source-selection').toMatch(
-      /IN \(SELECT source_key FROM \(\s*SELECT DISTINCT f\.run_id AS source_key FROM runs f/,
+      /in \(select "source_key" from \(select distinct "f"\."run_id" as "source_key" from "runs" as "f"/,
     )
     expect(update, 'mutation-verdict:construction:self-source-instant').toMatch(
-      /SELECT MIN\(source_fence_at_ms\) FROM \(\s*SELECT DISTINCT f\.fence_at_ms AS source_fence_at_ms FROM runs f/,
+      /select min\("source_fence_at_ms"\) as "source_instant" from \(select distinct "f"\."fence_at_ms" as "source_fence_at_ms" from "runs" as "f"/,
     )
-    expect(update).toContain(') AS fenced_source')
-    expect(update).toContain(') AS fenced_source_instant')
+    expect(update).toContain(') as "fenced_source"')
+    expect(update).toContain(') as "fenced_source_instant"')
   })
 
   it('reduces a many-row provenance source to one portable scalar', async () => {
@@ -660,9 +665,9 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     const db = new FakeDb([1, 2])
     await b.run(db)
     const update = db.calls[0]?.statements.find((statement) =>
-      statement.sql.startsWith('UPDATE tasks'),
+      statement.sql.startsWith('update "tasks"'),
     )
-    expect(update?.sql).toContain('SELECT MIN(f.fence_at_ms)')
+    expect(update?.sql).toContain('select min("f"."fence_at_ms")')
   })
 })
 

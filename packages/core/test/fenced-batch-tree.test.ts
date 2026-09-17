@@ -1,4 +1,11 @@
-import { type ExpressionBuilder, type OperationNode, SqliteQueryCompiler, sql } from 'kysely'
+import {
+  type ExpressionBuilder,
+  type OperationNode,
+  SelectModifierNode,
+  SelectQueryNode,
+  SqliteQueryCompiler,
+  sql,
+} from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
   FENCE_SET,
@@ -11,6 +18,7 @@ import {
   TreeDialect,
   aliasedAs,
   capLostLaunchCas,
+  coalesced,
   treeBuilder as db,
   defineStatement,
   emitEventCas,
@@ -296,10 +304,183 @@ describe('FencedBatch tree statements', () => {
     )
   })
 
-  it('refuses a fragment that holds a stamp or fence token, or binds the wrong count', () => {
-    expect(() => predicate('fence_stamp = $STAMP$')).toThrow(/stamp or fence token/)
-    expect(() => predicate('fence_stamp = $FENCE:win$')).toThrow(/stamp or fence token/)
+  it('refuses a fragment that holds the stamp token, or binds the wrong count', () => {
+    expect(() => predicate('fence_stamp = $STAMP$')).toThrow(/may not hold the stamp token/)
     expect(() => predicate('queue = ?', ['q', 'extra'])).toThrow(/binds 1 of its 2/)
+  })
+
+  it('carries a fence token in a fragment as a node that is bound and gates nothing', async () => {
+    // Bound, in order with the binds around it.
+    const correlated = db
+      .updateTable('tasks')
+      .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+      .where('task_id', 'in', (eb) =>
+        eb
+          .selectFrom('runs')
+          .select('runs.task_id')
+          .where('runs.fence_stamp', '=', fenceValue('win')),
+      )
+      .where(
+        predicate(
+          'queue = ? AND EXISTS (SELECT 1 FROM runs r WHERE r.fence_stamp = $FENCE:win$ AND r.run_id = ?)',
+          ['q', 'r1'],
+        ),
+      )
+    const { captured, executor } = capturingExecutor(1)
+    await batch()
+      .casTree('win', statement(winCas()))
+      .followOnTree('t', statement(correlated), 'one')
+      .run(executor)
+    expect(captured[1]?.args.slice(-3)).toEqual(['q', 'seed:win', 'r1'])
+    // It must name a fence of the batch, like a fence built from nodes.
+    const stranger = db
+      .updateTable('tasks')
+      .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+      .where('task_id', 'in', (eb) =>
+        eb
+          .selectFrom('runs')
+          .select('runs.task_id')
+          .where('runs.fence_stamp', '=', fenceValue('win')),
+      )
+      .where(predicate('EXISTS (SELECT 1 FROM runs r WHERE r.fence_stamp = $FENCE:nobody$)'))
+    expect(() => followOn(stranger)).toThrow(/nobody/)
+    // It gates nothing: the gating rule reads a comparison built from nodes.
+    const ungated = db
+      .updateTable('runs')
+      .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+      .where(predicate('fence_stamp = $FENCE:win$'))
+    expect(() => followOn(ungated)).toThrow(/has no fence gating/)
+    // A token the splitter cannot see as one is refused.
+    expect(() => predicate(`reason <> 'at $FENCE:win$'`)).toThrow(/inside a string literal/)
+    expect(() => predicate('fence_stamp = $FENCE:not a name$')).toThrow(/malformed fence token/)
+  })
+
+  describe('generated follow-ons are trees', () => {
+    const generated = () =>
+      batch().cas('win', 'runs', `UPDATE runs SET state = 'x', ${FENCE_SET} WHERE run_id = ?`, [
+        'r',
+      ])
+    const mirror = (set: Record<string, unknown>, setArgs: SqlStatement['args'] = []) =>
+      generated().derived('mirror', {
+        relation: 'runs-to-tasks',
+        fence: 'win',
+        where: 'f.run_id = ?',
+        whereArgs: ['r'],
+        set: set as never,
+        setArgs,
+        rows: 'one',
+      })
+
+    it('gives each text value the arguments it binds, and refuses a count that does not add up', () => {
+      expect(() => mirror({ state: `'failed'`, failure_reason: '?' }, ['why'])).not.toThrow()
+      // A missing argument is refused where the value is minted, and a stray one here.
+      expect(() => mirror({ state: `'failed'`, failure_reason: '?' }, [])).toThrow(
+        /a SQL fragment binds 1 of its 0 arguments/,
+      )
+      expect(() => mirror({ state: `'failed'` }, ['stray'])).toThrow(
+        /set binds 0 of its 1 arguments/,
+      )
+    })
+
+    it('refuses an UPDATE with nothing to assign, and a value that is neither text nor an expression', () => {
+      expect(() => mirror({})).toThrow(/UPDATE set cannot be empty/)
+      expect(() => mirror({ state: 5 })).toThrow(/neither SQL text nor an expression/)
+      expect(() => mirror({ state: { sql: `'failed'` } })).toThrow(
+        /neither SQL text nor an expression/,
+      )
+    })
+
+    it('holds a generated statement to the follow-on rules a hand-built tree meets', () => {
+      // The clock, as the token and as a spelling.
+      expect(() => mirror({ first_started_at_ms: '$NOW$' })).toThrow(/reads the clock/)
+      expect(() => mirror({ first_started_at_ms: `unixepoch('subsec')` })).toThrow(
+        /reads the clock/,
+      )
+      // A value that reads the column it is assigned to counts twice on a replay, and a
+      // fragment hides what is done with it.
+      expect(() => mirror({ attempts: 'attempts + 1' })).toThrow(
+        /assigns 'attempts' from a raw fragment that mentions 'attempts'/,
+      )
+      expect(() => mirror({ first_started_at_ms: 'COALESCE(first_started_at_ms, 5)' })).toThrow(
+        /raw fragment that mentions 'first_started_at_ms'/,
+      )
+      // The same read built from nodes is visible, and allowed.
+      expect(() =>
+        mirror({
+          first_started_at_ms: coalesced('first_started_at_ms', value<number>('?', [5])),
+        }),
+      ).not.toThrow()
+      // A fence inside a value must name a fence of this batch.
+      expect(() =>
+        mirror({
+          state: '(SELECT f.state FROM runs f WHERE f.fence_stamp = $FENCE:nobody$)',
+        }),
+      ).toThrow(/nobody/)
+      expect(() =>
+        mirror({ state: '(SELECT f.state FROM runs f WHERE f.fence_stamp = $FENCE:win$)' }),
+      ).not.toThrow()
+    })
+
+    it('gates through one derived table, and through nothing that could add a row', () => {
+      const gatedKeys = () =>
+        db
+          .selectFrom('runs as f')
+          .select('f.run_id as source_key')
+          .distinct()
+          .where('f.fence_stamp', '=', fenceValue('win'))
+          .as('fenced_source')
+      const sealed = (keys: Builder) =>
+        db
+          .updateTable('runs')
+          .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+          .where('run_id', 'in', keys as never)
+      expect(() => followOn(sealed(db.selectFrom(gatedKeys()).select('source_key')))).not.toThrow()
+      // A join or a second source can add rows the fence never saw.
+      expect(() =>
+        followOn(
+          sealed(
+            db
+              .selectFrom(gatedKeys())
+              .innerJoin('runs as other', (join) => join.onRef('other.queue', '=', 'other.queue'))
+              .select('other.run_id'),
+          ),
+        ),
+      ).toThrow(/has no fence gating/)
+      expect(() =>
+        followOn(
+          sealed(
+            db.selectFrom([gatedKeys(), 'runs as other'] as never).select('other.run_id' as never),
+          ),
+        ),
+      ).toThrow(/has no fence gating/)
+      // An aggregate with no GROUP BY returns a row whether or not the fence matched.
+      const counted = db
+        .updateTable('runs')
+        .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+        .where((eb) =>
+          eb.exists(
+            eb
+              .selectFrom('runs as f')
+              .select((inner) => inner.fn.countAll().as('n'))
+              .where('f.fence_stamp', '=', fenceValue('win')),
+          ),
+        )
+      expect(() => followOn(counted)).toThrow(/has no fence gating/)
+    })
+
+    it('admits DISTINCT and no other SELECT modifier', () => {
+      const tail = (select: Builder) => withCas().tailTree('read', statement(select))
+      const fenced = () =>
+        db.selectFrom('runs').select('run_id').where('fence_stamp', '=', fenceValue('win'))
+      expect(() => tail(fenced().distinct())).not.toThrow()
+      expect(() => tail(fenced().forUpdate())).toThrow(/outside the statement grammar/)
+      const node = fenced().toOperationNode()
+      const forged = {
+        toOperationNode: () =>
+          SelectQueryNode.cloneWithFrontModifier(node, SelectModifierNode.create('SkipLocked')),
+      }
+      expect(() => tail(forged)).toThrow(/a SELECT modifier other than DISTINCT/)
+    })
   })
 
   it('refuses shapes outside the statement grammar', () => {

@@ -8,3 +8,4 @@ export {
 } from './store.js'
 export { CURRENT_SCHEMA_VERSION, MIGRATIONS } from './schema.js'
 export { NOW_MS } from './time.js'
+export { TREE_DIALECT } from './tree.js'
