@@ -34,8 +34,12 @@ export async function claimAndRun(
   )
 }
 
-export async function claimInvocation(f: Awaited<ReturnType<typeof fx>>, token: string) {
-  const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
+export async function claimInvocation(
+  f: Awaited<ReturnType<typeof fx>>,
+  token: string,
+  leaseSeconds = 60,
+) {
+  const [run] = await f.store.claim(Q, token, { leaseSeconds, limit: 1 })
   if (!run) throw new Error('expected a claimable run')
   return invocationOf(run)
 }

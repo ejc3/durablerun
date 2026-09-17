@@ -33,17 +33,21 @@ const MALFORMED_ANSWER_VALUES = {
   claimToken: [null, ''],
   taskId: [7, ''],
   taskName: [7, ''],
-  attempt: ['1', 0, 1.5],
-  infraRetries: [-1, 1.5],
-  claimGen: [0, -1, 1.5],
+  attempt: ['1', 0, 1.5, 1n],
+  infraRetries: [-1, 1.5, 0n],
+  claimGen: [0, -1, 1.5, 1n],
   leaseSeconds: [0, -5, 0.000001, '60'],
   paramsJson: [7],
   retryStrategy: [null, {}],
-  maxAttempts: [0, '3'],
+  maxAttempts: [0, '3', 3n],
   wake: [{ event: 'e' }, 'wake'],
 } satisfies Partial<Record<keyof ClaimedRun, readonly unknown[]>>
 
 type Answer = Record<string, unknown>
+
+function describeValue(value: unknown): string {
+  return typeof value === 'bigint' ? `${value}n` : JSON.stringify(value)
+}
 
 interface Observation {
   variant: string
@@ -70,6 +74,7 @@ async function observe(
     run?: (answer: Answer) => Answer
     lease?: (answer: Answer) => Answer
     activate?: SchedulerStore['activate']
+    leaseSeconds?: number
   },
 ): Promise<Observation> {
   const f = await fx(`store-answer-${variant}`)
@@ -112,7 +117,7 @@ async function observe(
     try {
       const result = await runClaimedRun(
         { store, clock: f.clock, registry: reg },
-        await claimInvocation(f, 'w1'),
+        await claimInvocation(f, 'w1', overrides.leaseSeconds),
       )
       outcome = result.kind
       field = 'field' in result ? String(result.field) : undefined
@@ -170,17 +175,75 @@ describe('store answers across store and worker versions', () => {
       })),
       ...Object.entries(MALFORMED_ANSWER_VALUES).flatMap(([field, values]) =>
         values.map((value) => ({
-          variant: `a store answering ${field} as ${JSON.stringify(value)}`,
+          variant: `a store answering ${field} as ${describeValue(value)}`,
           run: (answer: Answer) => ({ ...answer, [field]: value }),
           expected: refused(field),
         })),
       ),
+      {
+        variant: 'a store answering infraRetries at or past attempt',
+        run: (answer) => ({ ...answer, infraRetries: answer.attempt }),
+        expected: refused('infraRetries'),
+      },
+      {
+        variant: 'a store whose attempt getter throws',
+        run: (answer) =>
+          Object.defineProperty({ ...answer }, 'attempt', {
+            enumerable: true,
+            get() {
+              throw new Error('unreadable attempt')
+            },
+          }),
+        expected: refused('attempt'),
+      },
     ]
     const expected = cases.map(({ variant, expected }) => ({ variant, ...expected }))
     const observed: Observation[] = []
     for (const { variant, run } of cases) observed.push(await observe(variant, { run }))
     expect(observed).toEqual(expected)
   }, 180_000)
+
+  it('a worker runs the current store answer for every lease the driver can claim with', async () => {
+    const leases = [0.001, 1.001, 2.002, 60]
+    const observed: Observation[] = []
+    for (const leaseSeconds of leases) {
+      observed.push(await observe(`a ${leaseSeconds}s lease`, { leaseSeconds }))
+    }
+    expect(observed).toEqual(
+      leases.map((leaseSeconds) => ({ variant: `a ${leaseSeconds}s lease`, ...COMPLETED })),
+    )
+  })
+
+  it('a worker runs a delivered wake that also says it did not time out', async () => {
+    const f = await fx('store-answer-wake-not-timed-out')
+    try {
+      const { taskId } = await f.store.spawn(Q, 'job', '{}')
+      const reg = registry({
+        job: async (ctx) => {
+          await ctx.awaitEvent('go', { timeoutSeconds: 30 })
+          return 'done'
+        },
+      })
+      expect((await claimAndRun(f, reg, 'w1')).kind).toBe('suspended')
+      await f.store.emitEvent(Q, 'go', '{"n":1}')
+      const store = withStoreOverrides<SchedulerStore>(f.store, {
+        activate: async (...args) => {
+          const run = await f.store.activate(...args)
+          return run?.wake === undefined
+            ? run
+            : ({ ...run, wake: { ...run.wake, timedOut: false } } as unknown as ClaimedRun)
+        },
+      })
+      const result = await runClaimedRun(
+        { store, clock: f.clock, registry: reg },
+        await claimInvocation(f, 'w2'),
+      )
+      expect(result.kind).toBe('completed')
+      expect((await f.store.getTaskResult(Q, taskId))?.state).toBe('completed')
+    } finally {
+      f.close()
+    }
+  })
 
   it('a store outage at activation ends the pass as aborted, and the run recovers', async () => {
     const observation = await observe('an outage at activation', {
