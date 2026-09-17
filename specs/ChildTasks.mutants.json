@@ -82,5 +82,11 @@
     "guard": "the first outcome is recorded once",
     "find": "firstOutcome' = IF firstOutcome = None THEN o ELSE firstOutcome",
     "replace": "firstOutcome' = o"
+  },
+  {
+    "name": "timeout-takes-a-woken-parent",
+    "guard": "a timeout takes only a parent that is still waiting",
+    "find": "AwaitTimeout ==\n  /\\ parent = \"waiting\"",
+    "replace": "AwaitTimeout ==\n  /\\ parent \\in {\"waiting\", \"woken\"}"
   }
 ]
