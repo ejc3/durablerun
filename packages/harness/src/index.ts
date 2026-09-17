@@ -1,5 +1,5 @@
 export { seededBuggify } from './buggify.js'
-export { FakeClock, withStoreOverrides } from './fake-clock.js'
+export { FakeClock } from './fake-clock.js'
 export { seededIdSource } from './ids.js'
 export { Rng } from './rng.js'
 export {
@@ -11,3 +11,4 @@ export {
   type SimWorldOptions,
   type TraceEntry,
 } from './sim.js'
+export { withStoreOverrides } from './store-overrides.js'

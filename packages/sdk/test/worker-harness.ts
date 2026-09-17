@@ -3,7 +3,7 @@ import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { type TaskHandler, type TaskRegistry, runClaimedRun } from '../src/index.js'
 
-const Q = 'q'
+export const Q = 'q'
 
 export async function fx(seed: string) {
   const { raw, admin } = await openTestDb()

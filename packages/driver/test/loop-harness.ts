@@ -1,7 +1,5 @@
 import { type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
 
-export { FakeClock } from '@durablerun/harness'
-
 export class FakeLauncher implements Launcher {
   invocations: LaunchInvocation[] = []
   constructor(

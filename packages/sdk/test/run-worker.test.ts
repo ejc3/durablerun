@@ -7,6 +7,7 @@ import {
   SuspendSignal,
   snapshotTaskThrowable,
 } from '@durablerun/core'
+import { withStoreOverrides } from '@durablerun/harness'
 import type { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import {
@@ -24,9 +25,7 @@ import {
   taskMapSet,
   trustedPromiseRace,
 } from '../src/intrinsics.js'
-import { claimAndRun, claimInvocation, fx, invocationOf, registry } from './worker-harness.js'
-
-const Q = 'q'
+import { Q, claimAndRun, claimInvocation, fx, invocationOf, registry } from './worker-harness.js'
 
 const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
   ['function', () => () => undefined],
@@ -858,17 +857,11 @@ describe('runClaimedRun', () => {
     try {
       await f.store.spawn(Q, 'job', '{}')
       const invocation = await claimInvocation(f, 'w1')
-      const store = new Proxy(f.store, {
-        get(target, property, receiver) {
-          if (property === 'complete') return () => Promise.reject(rejection)
-          if (property === 'fail') {
-            return () => {
-              failCalls++
-              return Promise.resolve()
-            }
-          }
-          const value = Reflect.get(target, property, receiver)
-          return typeof value === 'function' ? (value as CallableFunction).bind(target) : value
+      const store = withStoreOverrides<SchedulerStore>(f.store, {
+        complete: () => Promise.reject(rejection),
+        fail: () => {
+          failCalls++
+          return Promise.resolve()
         },
       })
       const observed = await runClaimedRun(
@@ -898,16 +891,12 @@ describe('runClaimedRun', () => {
     try {
       await f.store.spawn(Q, 'job', '{}')
       const invocation = await claimInvocation(f, 'w1')
-      const store = new Proxy(f.store, {
-        get(target, property, receiver) {
-          if (property === 'awaitEvent') {
-            return (...args: unknown[]) => {
-              storedTimeout = args[6]
-              return Promise.resolve({ emitted: true, payloadJson: '{"ok":true}' })
-            }
-          }
-          const value = Reflect.get(target, property, receiver)
-          return typeof value === 'function' ? (value as CallableFunction).bind(target) : value
+      const store = withStoreOverrides<SchedulerStore>(f.store, {
+        awaitEvent: (...args: Parameters<SchedulerStore['awaitEvent']>) => {
+          storedTimeout = args[6]
+          return Promise.resolve({ emitted: true, payloadJson: '{"ok":true}' } as Awaited<
+            ReturnType<SchedulerStore['awaitEvent']>
+          >)
         },
       })
       const opts = {
@@ -1413,16 +1402,10 @@ describe('runClaimedRun', () => {
       const firstBeat = new Promise<void>((resolve) => {
         beatSettled = resolve
       })
-      const other = new Proxy(f.store, {
-        get(target, prop, receiver) {
-          if (prop === 'heartbeat') {
-            return async () => {
-              beatSettled()
-              return answer as unknown as Awaited<ReturnType<SchedulerStore['heartbeat']>>
-            }
-          }
-          const value = Reflect.get(target, prop, receiver)
-          return typeof value === 'function' ? value.bind(target) : value
+      const other = withStoreOverrides<SchedulerStore>(f.store, {
+        heartbeat: async () => {
+          beatSettled()
+          return answer as unknown as Awaited<ReturnType<SchedulerStore['heartbeat']>>
         },
       })
       let stepRan = false
@@ -1459,20 +1442,14 @@ describe('runClaimedRun', () => {
     const firstBeat = new Promise<void>((resolve) => {
       beatSettled = resolve
     })
-    const counting = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        if (prop === 'heartbeat') {
-          return async (...args: Parameters<SchedulerStore['heartbeat']>) => {
-            beats++
-            try {
-              return await target.heartbeat(...args)
-            } finally {
-              beatSettled()
-            }
-          }
+    const counting = withStoreOverrides<SchedulerStore>(f.store, {
+      heartbeat: async (...args: Parameters<SchedulerStore['heartbeat']>) => {
+        beats++
+        try {
+          return await f.store.heartbeat(...args)
+        } finally {
+          beatSettled()
         }
-        const value = Reflect.get(target, prop, receiver)
-        return typeof value === 'function' ? value.bind(target) : value
       },
     })
     let stepRan = false
@@ -1609,14 +1586,8 @@ describe('runClaimedRun', () => {
     // and rethrow raw, so a store blip during a user-failure write surfaced
     // as an unexpected crash instead of a clean abort.
     const f = await fx('sdk-fail-outage')
-    const failing = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        if (prop === 'fail') {
-          return () => Promise.reject(new StoreUnavailableError('outage during fail'))
-        }
-        const value = Reflect.get(target, prop, receiver)
-        return typeof value === 'function' ? value.bind(target) : value
-      },
+    const failing = withStoreOverrides<SchedulerStore>(f.store, {
+      fail: () => Promise.reject(new StoreUnavailableError('outage during fail')),
     })
     const reg = registry({
       job: () => {
@@ -1696,18 +1667,12 @@ describe('runClaimedRun', () => {
           args: [spawned.taskId, Q, run.runId, run.attempt, f.clock.now],
         },
       ])
-      const counting = new Proxy(f.store, {
-        get(target, prop, receiver) {
-          if (prop === 'heartbeat') {
-            return async (..._args: Parameters<SchedulerStore['heartbeat']>) => {
-              beats++
-              // End the leaked pump after observing the one call, so the red
-              // test itself leaves no live upkeep loop behind.
-              return { held: false, remainingMs: 0, reason: 'lease-lost' as const }
-            }
-          }
-          const value = Reflect.get(target, prop, receiver)
-          return typeof value === 'function' ? value.bind(target) : value
+      const counting = withStoreOverrides<SchedulerStore>(f.store, {
+        heartbeat: async (..._args: Parameters<SchedulerStore['heartbeat']>) => {
+          beats++
+          // End the leaked pump after observing the one call, so the red
+          // test itself leaves no live upkeep loop behind.
+          return { held: false, remainingMs: 0, reason: 'lease-lost' as const }
         },
       })
 

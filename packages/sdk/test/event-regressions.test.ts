@@ -1,41 +1,8 @@
 import { EventTimeoutError, LeaseLostError } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
-import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { type TaskRegistry, runClaimedRun } from '../src/index.js'
+import { Q, fx } from './worker-harness.js'
 
-const Q = 'q'
-class InstantClock {
-  now = 1_000_000
-  nowEpochMs() {
-    return this.now
-  }
-  elapsedMs(): number {
-    return this.nowEpochMs()
-  }
-  yieldTurn(): Promise<void> {
-    return new Promise((r) => setImmediate(r))
-  }
-  sleep(_ms: number, interrupt?: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-      if (interrupt?.aborted) return resolve()
-      interrupt?.addEventListener('abort', () => resolve(), { once: true })
-    })
-  }
-}
-async function fx(seed: string) {
-  const { raw, admin } = await openTestDb()
-  const ids = seededIdSource(new Rng(seed))
-  const store = new LibsqlSchedulerStore(raw, ids)
-  const clock = new InstantClock()
-  await admin.setFakeNowEpochMs(clock.now)
-  const advance = async (ms: number) => {
-    clock.now += ms
-    await admin.setFakeNowEpochMs(clock.now)
-  }
-  return { raw, admin, ids, store, clock, advance, close: () => raw.close() }
-}
 async function pass(f: Awaited<ReturnType<typeof fx>>, reg: TaskRegistry, token: string) {
   const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
   if (!run) throw new Error('claim')

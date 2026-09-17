@@ -55,14 +55,3 @@ export class FakeClock implements Clock {
     for (const sleep of due) sleep.resolve()
   }
 }
-
-/** A store whose named members are replaced, with every other member bound to the original. */
-export function withStoreOverrides<S extends object>(store: S, overrides: Partial<S>): S {
-  return new Proxy(store, {
-    get(target, prop, receiver) {
-      if (Object.hasOwn(overrides, prop)) return (overrides as Record<PropertyKey, unknown>)[prop]
-      const value = Reflect.get(target, prop, receiver)
-      return typeof value === 'function' ? value.bind(target) : value
-    },
-  })
-}
