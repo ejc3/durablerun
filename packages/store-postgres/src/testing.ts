@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { IdSource, SqlStatement } from '@durablerun/core'
 import { PostgresStoreAdmin } from './admin.js'
-import { createOwnedPostgresPool, PgExecutor } from './executor.js'
+import { PgExecutor, createOwnedPostgresPool } from './executor.js'
 
 let fixtureSerial = 0
 

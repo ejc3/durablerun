@@ -425,6 +425,22 @@ jobs:
               if previous[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
                   raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
               repaired = previous[:start] + candidate[new_start:new_end] + previous[end:]
+          elif digest == '04cf2ece351df1592ed2710c7b12027b63a1f86aaccd500e913cddb95937c083':
+              # Building store batches as statement trees re-aimed these finds.
+              def spec_block(text, key):
+                  if text.count(key) != 1:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
+                  start = text.rindex('    (\n', 0, text.index(key))
+                  end = text.index('    ),\n', start) + len('    ),\n')
+                  return start, end
+              repaired = previous
+              for name in ('complete-terminalization-requires-sole-live-run',):
+                  key = f'        "{name}",\n'
+                  start, end = spec_block(repaired, key)
+                  new_start, new_end = spec_block(candidate, key)
+                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
+                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

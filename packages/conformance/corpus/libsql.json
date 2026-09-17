@@ -1,0 +1,18 @@
+{
+  "complete": {
+    "completed": [
+      {
+        "sql": "update \"runs\" set \"state\" = ?, \"completed_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n), \"result\" = ?, \"wake_event\" = ?, \"event_payload\" = ?, \"wake_step\" = ?, \"claimed_by\" = ?, \"claim_expires_at_ms\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) where \"run_id\" = ? and \"queue\" = ? and \"claimed_by\" = ? and \"state\" = ? and EXISTS (\n           SELECT 1 FROM tasks t\n           WHERE t.task_id = runs.task_id AND t.queue = runs.queue\n             AND (t.state NOT IN ('pending','running','sleeping')\n               OR (t.state IN ('pending','running','sleeping') AND NOT EXISTS (SELECT 1 FROM runs sibling\n               WHERE sibling.task_id = runs.task_id\n                 AND sibling.state IN ('pending','running','sleeping')\n                 AND sibling.run_id <> runs.run_id)))\n         )",
+        "bindArity": 12
+      },
+      {
+        "sql": "UPDATE tasks SET state = 'completed',\n         completed_payload = ?,\n         cancel_at_ms = NULL,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 6
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.fence_stamp = ?))",
+        "bindArity": 2
+      }
+    ]
+  }
+}

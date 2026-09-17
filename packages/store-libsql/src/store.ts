@@ -44,6 +44,7 @@ import {
   mapLimit,
   neverBuggify,
   normalizeRetryStrategy,
+  nowValue,
   parseTaskValueJson,
   refusedLease,
   refusedWriteError,
@@ -55,10 +56,12 @@ import {
   requireRunOrdinal,
   serializeTaskHeaders,
   serializeTaskValue,
+  stampValue,
   storageValueKind,
   successorCarriedValues,
   successorParentValues,
 } from '@durablerun/core'
+import { sql } from 'kysely'
 import {
   LIVE,
   PARKED_CLAIM,
@@ -89,6 +92,7 @@ import {
 } from './fragments.js'
 import { DRIVER_HEARTBEAT_INGRESS } from './schema.js'
 import { NOW_MS } from './time.js'
+import { TREE_DIALECT, tree } from './tree.js'
 
 const DEFAULT_RETRY = normalizeRetryStrategy({
   kind: 'exponential',
@@ -1566,22 +1570,35 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     resultJson: string,
   ): Promise<void> {
-    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS })
-    b.cas(
-      'complete',
-      'runs',
-      `UPDATE runs SET
-         state = 'completed', completed_at_ms = ${NOW}, result = ?,
-         wake_event = NULL, event_payload = NULL, wake_step = NULL,
-         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND EXISTS (
+    const taskAdmitsCompletion = `EXISTS (
            SELECT 1 FROM tasks t
            WHERE ${runOwnedByTask('runs', 't')}
              AND (t.state NOT IN ${LIVE}
                OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
-         )`,
-      [resultJson, runId, queue, claimToken],
+         )`
+    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.casTree(
+      'complete',
+      'runs',
+      tree
+        .updateTable('runs')
+        .set({
+          state: 'completed',
+          completed_at_ms: nowValue,
+          result: resultJson,
+          wake_event: null,
+          event_payload: null,
+          wake_step: null,
+          claimed_by: null,
+          claim_expires_at_ms: null,
+          fence_stamp: stampValue,
+          fence_at_ms: nowValue,
+        })
+        .where('run_id', '=', runId)
+        .where('queue', '=', queue)
+        .where('claimed_by', '=', claimToken)
+        .where('state', '=', 'running')
+        .where(sql<boolean>`${sql.raw(taskAdmitsCompletion)}`),
     )
     b.derived('task', {
       relation: 'runs-to-tasks',
