@@ -98,6 +98,25 @@ describe('TLA tool artifact', () => {
     expect(await readIfPresent(commands.javaLog)).toContain('SchedulerLiveness1.cfg')
   })
 
+  it('fails the gate when a mutant of the child-task model survives', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-mutants-'))
+    scratch.push(root)
+    const commands = await fakeCommands(root)
+    // The stub checker passes every model it is given, so every mutant survives.
+    const result = runTla(repoRoot, commands, { TLA_ONLY: 'safety' })
+    const output = `${result.stdout}\n${result.stderr}`
+
+    expect(result.status, output).not.toBe(0)
+    const mutants = JSON.parse(
+      await readFile(join(repoRoot, 'specs', 'ChildTasks.mutants.json'), 'utf8'),
+    ) as readonly { readonly name: string }[]
+    expect(mutants.length).toBeGreaterThan(0)
+    for (const { name } of mutants) {
+      expect(output).toContain(`SURVIVED: ${name}`)
+    }
+    expect(output).toContain(`child-task mutants: 0 of ${mutants.length} caught`)
+  })
+
   it('rejects a corrupted repository checker before Java starts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-corrupt-'))
     scratch.push(root)

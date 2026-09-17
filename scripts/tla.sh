@@ -148,6 +148,59 @@ if [[ -n "${TLA_ONLY:-}" && "${TLA_ONLY}" != "safety" ]]; then
 fi
 
 echo "== phase 1: vacuity probes, concurrent (each MUST find its witness trace)"
+# Mutants of the child-task model. Each entry of ChildTasks.mutants.json bends
+# or deletes one guard of the protocol, and some pass configuration must then
+# FAIL. A probe shows an invariant can fail. Only a mutant shows that a guard is
+# held by anything: a model can stay green with a guard deleted when no
+# invariant speaks for it. A mutant whose text is not found exactly once, or
+# whose run ends in anything but a verdict, is an error and not a catch.
+echo "== phase 1: child-task model mutants (each MUST be caught)"
+mutant_fail=0
+python3 - "$JAVA_BIN" "$JAR" "$STATES/mutants" <<'PY' || mutant_fail=1
+import json, os, shutil, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+
+java, jar, out = sys.argv[1:4]
+spec = open("ChildTasks.tla").read()
+mutants = json.load(open("ChildTasks.mutants.json"))
+configs = ("ChildTasks.cfg", "ChildTasksRefuse.cfg")
+
+
+def check(mutant):
+    name, find = mutant["name"], mutant["find"]
+    if spec.count(find) != 1:
+        return name, "ERROR", f"its text occurs {spec.count(find)} times in ChildTasks.tla, not once"
+    scratch = os.path.join(out, name)
+    os.makedirs(scratch)
+    with open(os.path.join(scratch, "ChildTasks.tla"), "w") as handle:
+        handle.write(spec.replace(find, mutant["replace"]))
+    for config in configs:
+        shutil.copy(config, scratch)
+        run = subprocess.run(
+            [java, "-Xmx512m", "-cp", jar, "tlc2.TLC", "-workers", "1", "-deadlock",
+             "-metadir", os.path.join(scratch, "meta-" + config), "-config", config, "ChildTasks.tla"],
+            cwd=scratch, capture_output=True, text=True,
+        )
+        if run.returncode in (12, 13):
+            line = next((l.strip() for l in run.stdout.splitlines() if "violated" in l), "a violation")
+            return name, "caught", f"{config}: {line}"
+        if run.returncode != 0:
+            return name, "ERROR", f"TLC exit {run.returncode} under {config}: the checker failed, not the model"
+    return name, "SURVIVED", f"every configuration still passes, so nothing holds: {mutant['guard']}"
+
+
+names = [mutant["name"] for mutant in mutants]
+if not names or len(set(names)) != len(names):
+    sys.exit("ChildTasks.mutants.json must list mutants under distinct names")
+with ThreadPoolExecutor(4) as pool:
+    verdicts = list(pool.map(check, mutants))
+for name, verdict, detail in verdicts:
+    print(f"{verdict}: {name} ({detail})")
+caught = sum(verdict == "caught" for _, verdict, _ in verdicts)
+print(f"child-task mutants: {caught} of {len(verdicts)} caught")
+sys.exit(0 if caught == len(verdicts) else 1)
+PY
+
 probe_pids=()
 probe_names=()
 probe_heap=$((TLA_HEAP_MB / 8)); [[ "$probe_heap" -lt 512 ]] && probe_heap=512
@@ -193,7 +246,7 @@ for pair in NonAtomicEmit:TerminalImpliesDone ForgedEmit:DoneIsFirstOutcome \
     probe_fail=1
   fi
 done
-[[ "$probe_fail" -eq 0 ]] || exit 1
+[[ "$probe_fail" -eq 0 && "$mutant_fail" -eq 0 ]] || exit 1
 # Probes fail BY DESIGN; TLC drops counterexample trace files next to the
 # spec when they do — throwaway artifacts, removed here.
 rm -f ./*_TTrace_*.tla ./*_TTrace_*.bin

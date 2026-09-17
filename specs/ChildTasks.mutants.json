@@ -1,0 +1,74 @@
+[
+  {
+    "name": "hit-returns-current-state",
+    "guard": "an await that hits returns the event, not the task's current state",
+    "find": "/\\ parent' = \"resolved\" /\\ seen' = doneEvent",
+    "replace": "/\\ parent' = \"resolved\" /\\ seen' = child"
+  },
+  {
+    "name": "emit-overwrites",
+    "guard": "the completion event is first-write-wins",
+    "find": "  IF doneEvent = None\n  THEN /\\ doneEvent' = o",
+    "replace": "  IF TRUE\n  THEN /\\ doneEvent' = o"
+  },
+  {
+    "name": "emit-leaves-wait-row",
+    "guard": "the emit that wakes a waiter consumes its wait row",
+    "find": "THEN parent' = \"woken\" /\\ parked' = o /\\ wait' = FALSE",
+    "replace": "THEN parent' = \"woken\" /\\ parked' = o /\\ wait' = TRUE"
+  },
+  {
+    "name": "emit-parks-another-outcome",
+    "guard": "the woken parent is handed the outcome the event carries",
+    "find": "THEN parent' = \"woken\" /\\ parked' = o /\\ wait' = FALSE",
+    "replace": "THEN parent' = \"woken\" /\\ parked' = (CHOOSE x \\in Outcomes : x # o) /\\ wait' = FALSE"
+  },
+  {
+    "name": "miss-ignores-existing-event",
+    "guard": "a wait registers only while the event is absent",
+    "find": "  /\\ doneEvent = None\n  /\\ parent' = \"waiting\" /\\ wait' = TRUE",
+    "replace": "  /\\ parent' = \"waiting\" /\\ wait' = TRUE"
+  },
+  {
+    "name": "cancel-keeps-wait-row",
+    "guard": "cancelling the parent deletes its wait row",
+    "find": "parent' = \"cancelled\" /\\ wait' = FALSE",
+    "replace": "parent' = \"cancelled\" /\\ wait' = wait"
+  },
+  {
+    "name": "miss-ignores-rule",
+    "guard": "a refused await registers no wait",
+    "find": "AwaitMiss ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ AwaitAllowed",
+    "replace": "AwaitMiss ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\""
+  },
+  {
+    "name": "hit-ignores-rule",
+    "guard": "a refused await returns no outcome",
+    "find": "AwaitHit ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ AwaitAllowed",
+    "replace": "AwaitHit ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\""
+  },
+  {
+    "name": "revive-clears-event",
+    "guard": "retry-task leaves the completion event alone",
+    "find": "  /\\ child' = \"live\" /\\ retries' = retries + 1\n  /\\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen, owed>>",
+    "replace": "  /\\ child' = \"live\" /\\ retries' = retries + 1 /\\ doneEvent' = None\n  /\\ UNCHANGED <<firstOutcome, parent, wait, parked, seen, owed>>"
+  },
+  {
+    "name": "claim-woken-returns-nothing",
+    "guard": "the woken parent's await returns the parked outcome",
+    "find": "/\\ parent' = \"resolved\" /\\ seen' = parked",
+    "replace": "/\\ parent' = \"resolved\" /\\ seen' = None"
+  },
+  {
+    "name": "refused-registers-a-wait",
+    "guard": "a refusal registers nothing",
+    "find": "  /\\ parent' = \"refused\"\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, seen, retries, owed>>",
+    "replace": "  /\\ parent' = \"refused\" /\\ wait' = TRUE\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries, owed>>"
+  },
+  {
+    "name": "first-outcome-ghost-rewritten",
+    "guard": "the first outcome is recorded once",
+    "find": "firstOutcome' = IF firstOutcome = None THEN o ELSE firstOutcome",
+    "replace": "firstOutcome' = o"
+  }
+]
