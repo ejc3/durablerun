@@ -43,9 +43,14 @@ import type { SqlStatement } from './primitives.js'
 
 // Task code shares this process and may replace a global such as `Map` while a pass
 // runs. What these checks keep across calls lives in collections captured at module
-// load, and nothing here constructs an ambient collection at call time.
+// load, and nothing here constructs an ambient collection at call time. The checks on
+// a statement's binds go further: they call captured operations and read own properties
+// only, because they decide whether a store's admission reaches the statement.
 const {
+  ArrayBufferIsView: arrayBufferIsView,
   ObjectCreate: objectCreate,
+  ObjectKeys: objectKeys,
+  ReflectGet: reflectGet,
   WeakSet: TrustedWeakSet,
   WeakSetAdd: weakSetAdd,
   WeakSetHas: weakSetHas,
@@ -125,20 +130,41 @@ export function compileOnlyBuilder<DB>(): Kysely<DB> {
 export type StatementTree = RootOperationNode
 
 /**
+ * Visit a bind and everything below it. `visit` returns true to stop the descent into a
+ * value. Bytes are one value, never a list of indexes.
+ */
+function walkBinds(
+  value: unknown,
+  path: string,
+  visit: (value: unknown, path: string) => boolean,
+): void {
+  if (visit(value, path)) return
+  if (typeof value !== 'object' || value === null || arrayBufferIsView(value)) return
+  const names = objectKeys(value)
+  for (let at = 0; at < names.length; at += 1) {
+    const name = names[at] as string
+    walkBinds(
+      reflectGet(value, name),
+      path === 'bind' ? `bind '${name}'` : `${path}.${name}`,
+      visit,
+    )
+  }
+}
+
+/**
  * Refuse an undefined bind, at any depth, before a statement is built. The builder
  * silently drops an undefined assignment, which would send a valid statement that skips
  * a column.
  */
 export function requireDefinedBinds(statement: string, binds: unknown, path = 'bind'): void {
-  if (binds === undefined) {
-    throw new TypeError(
-      `${statement}: ${path} is undefined, so bind null explicitly if that is what you mean`,
-    )
-  }
-  if (typeof binds !== 'object' || binds === null || binds instanceof Uint8Array) return
-  for (const [name, value] of Object.entries(binds)) {
-    requireDefinedBinds(statement, value, path === 'bind' ? `bind '${name}'` : `${path}.${name}`)
-  }
+  walkBinds(binds, path, (value, at) => {
+    if (value === undefined) {
+      throw new TypeError(
+        `${statement}: ${at} is undefined, so bind null explicitly if that is what you mean`,
+      )
+    }
+    return false
+  })
 }
 
 /** A statement minted by `defineStatement`. */
@@ -160,7 +186,7 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
   return (binds) => {
     requireDefinedBinds(name, binds)
     const outer = placements
-    const placed: object[] = []
+    const placed: Placements = { head: null }
     placements = placed
     let tree: StatementTree
     try {
@@ -195,9 +221,12 @@ const knownFragments = new TrustedWeakSet<object>()
 /**
  * The fragments `rawSql` has placed during the statement build in progress, one entry
  * for each placement, or null outside a build. Placement is scoped to one build, so a
- * fragment another statement placed does not count here.
+ * fragment another statement placed does not count here. The entries are a linked list
+ * of own properties, which no replaced array method can reach.
  */
-let placements: object[] | null = null
+type Placement = { fragment: object | null; next: Placement | null }
+type Placements = { head: Placement | null }
+let placements: Placements | null = null
 
 export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFragment {
   const fragment = Object.freeze({ sql, args: Object.freeze([...args]) })
@@ -210,27 +239,19 @@ export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFra
  * that holds a fragment consumes one placement of it, so one object passed as two binds
  * needs two placements, and a bind placed twice is fine.
  */
-function requirePlacedFragments(
-  statement: string,
-  binds: unknown,
-  placed: object[],
-  path = 'bind',
-): void {
-  if (typeof binds !== 'object' || binds === null || binds instanceof Uint8Array) return
-  if (weakSetHas(knownFragments, binds)) {
-    const at = placed.indexOf(binds)
-    if (at < 0) throw new Error(`${statement}: ${path} is a fragment the statement never places`)
-    placed.splice(at, 1)
-    return
-  }
-  for (const [name, value] of Object.entries(binds)) {
-    requirePlacedFragments(
-      statement,
-      value,
-      placed,
-      path === 'bind' ? `bind '${name}'` : `${path}.${name}`,
-    )
-  }
+function requirePlacedFragments(statement: string, binds: unknown, placed: Placements): void {
+  walkBinds(binds, 'bind', (value, at) => {
+    if (typeof value !== 'object' || value === null || !weakSetHas(knownFragments, value)) {
+      return false
+    }
+    let placement = placed.head
+    while (placement !== null && placement.fragment !== value) placement = placement.next
+    if (placement === null) {
+      throw new Error(`${statement}: ${at} is a fragment the statement never places`)
+    }
+    placement.fragment = null
+    return true
+  })
 }
 
 /**
@@ -378,7 +399,7 @@ export function rawSql<T>(fragment: SqlFragment, role: RawRole): Expression<T> {
   }
   const raw = RawNode.create(pieces, parameters)
   weakSetAdd(mintedRaws[role], raw)
-  placements?.push(fragment)
+  if (placements !== null) placements.head = { fragment, next: placements.head }
   return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))
 }
 
