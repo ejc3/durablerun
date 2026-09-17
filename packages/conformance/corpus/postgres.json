@@ -66,5 +66,89 @@
         "bindArity": 2
       }
     ]
+  },
+  "reschedule": {
+    "rescheduled": [
+      {
+        "sql": "update \"runs\" set \"state\" = case when ((CASE WHEN ? = 1 THEN COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) + ? ELSE ? END)) <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) then ? else ? end, \"available_at_ms\" = ((CASE WHEN ? = 1 THEN COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) + ? ELSE ? END)), \"claimed_by\" = ?, \"claim_expires_at_ms\" = ?, \"heartbeat_at_ms\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n), \"wake_event\" = ?, \"event_payload\" = ?, \"wake_step\" = ? where \"run_id\" = ? and \"queue\" = ? and \"claimed_by\" = ? and \"state\" = ? and ((runs.attempt) IS NOT NULL\n         AND EXISTS (SELECT 1 FROM tasks t\n                     WHERE t.task_id = runs.task_id AND t.queue = runs.queue AND t.state IN ('pending','running','sleeping') AND (t.cancel_at_ms IS NULL\n    OR (((t.cancel_at_ms) IS NOT NULL AND t.cancel_at_ms BETWEEN 0 AND 253402300799000)\n      AND t.cancel_at_ms > COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n))))) and ((CASE WHEN ? = 1 THEN ((COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) IS NOT NULL\n    AND (COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) BETWEEN 0 AND 253402300799000\n    AND (COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) <= 253402300799000 - (CAST((?) AS BIGINT))) ELSE TRUE END))",
+        "bindArity": 21
+      },
+      {
+        "sql": "UPDATE tasks SET state = (SELECT f.state FROM runs f\n               WHERE f.run_id = ? AND f.fence_stamp = ?),\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 7
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.fence_stamp = ?))",
+        "bindArity": 2
+      }
+    ]
+  },
+  "suspend": {
+    "suspended": [
+      {
+        "sql": "update \"runs\" set \"state\" = case when ((CASE WHEN ? = 1 THEN COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) + ? ELSE ? END)) <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) then ? else ? end, \"available_at_ms\" = ((CASE WHEN ? = 1 THEN COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) + ? ELSE ? END)), \"claimed_by\" = ?, \"claim_expires_at_ms\" = ?, \"heartbeat_at_ms\" = ?, \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n), \"wake_event\" = ?, \"event_payload\" = ?, \"wake_step\" = ? where \"run_id\" = ? and \"queue\" = ? and \"claimed_by\" = ? and \"state\" = ? and (EXISTS (SELECT 1 FROM tasks t\n                     WHERE t.task_id = runs.task_id AND t.queue = runs.queue AND t.state IN ('pending','running','sleeping') AND (t.cancel_at_ms IS NULL\n    OR (((t.cancel_at_ms) IS NOT NULL AND t.cancel_at_ms BETWEEN 0 AND 253402300799000)\n      AND t.cancel_at_ms > COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n))))\n         AND ((runs.attempt) IS NOT NULL AND runs.attempt BETWEEN 1 AND 1000020)\n         AND NOT EXISTS (\n    SELECT 1 FROM checkpoints c\n    WHERE c.task_id = runs.task_id\n      AND c.checkpoint_name = ?\n      AND NOT (\n        c.queue = runs.queue\n        AND EXISTS (\n          SELECT 1 FROM runs owner\n          WHERE ((c.owner_attempt) IS NOT NULL AND c.owner_attempt BETWEEN 1 AND 1000020)\n   AND owner.run_id = c.owner_run_id\n   AND owner.task_id = c.task_id\n   AND owner.queue = c.queue\n   AND owner.attempt = c.owner_attempt\n        )\n      )\n  )) and ((CASE WHEN ? = 1 THEN ((COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) IS NOT NULL\n    AND (COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) BETWEEN 0 AND 253402300799000\n    AND (COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) <= 253402300799000 - (CAST((?) AS BIGINT))) ELSE TRUE END))",
+        "bindArity": 22
+      },
+      {
+        "sql": "INSERT INTO checkpoints\n         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)\n       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms\n       FROM runs f WHERE f.run_id = ?\n         AND ((f.attempt) IS NOT NULL AND f.attempt BETWEEN 1 AND 1000020)\n         AND f.fence_stamp = ?\n       ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET\n    state = excluded.state,\n    owner_run_id = excluded.owner_run_id,\n    owner_attempt = excluded.owner_attempt,\n    updated_at_ms = excluded.updated_at_ms\n  WHERE excluded.owner_attempt >= checkpoints.owner_attempt",
+        "bindArity": 4
+      },
+      {
+        "sql": "UPDATE tasks SET state = (SELECT f.state FROM runs f\n               WHERE f.run_id = ? AND f.fence_stamp = ?),\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 7
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.run_id = ?) AND f.fence_stamp = ?))",
+        "bindArity": 2
+      }
+    ]
+  },
+  "await-event": {
+    "registered": [
+      {
+        "sql": "insert into \"waits\" (\"run_id\", \"step_name\", \"queue\", \"task_id\", \"event_name\", \"status\", \"timeout_at_ms\", \"created_at_ms\", \"fence_stamp\", \"fence_at_ms\") select ? as \"run_id\", ? as \"step_name\", ? as \"queue\", ? as \"task_id\", ? as \"event_name\", ? as \"status\", (CASE WHEN CAST(? AS BIGINT) IS NOT NULL THEN COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) + ? ELSE NULL END) as \"timeout_at_ms\", COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) as \"created_at_ms\", ? as \"fence_stamp\", COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) as \"fence_at_ms\" where not exists (select \"events\".\"queue\" from \"events\" where \"events\".\"queue\" = ? and \"events\".\"event_name\" = ?) and exists (select \"r\".\"run_id\" from \"runs\" as \"r\" inner join \"tasks\" as \"t\" on (t.task_id = r.task_id AND t.queue = r.queue) where \"r\".\"run_id\" = ? and \"r\".\"queue\" = ? and \"r\".\"task_id\" = ? and \"r\".\"claimed_by\" = ? and \"r\".\"state\" = ? and (t.state IN ('pending','running','sleeping') AND (t.cancel_at_ms IS NULL\n    OR (((t.cancel_at_ms) IS NOT NULL AND t.cancel_at_ms BETWEEN 0 AND 253402300799000)\n      AND t.cancel_at_ms > COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n))))) and (CAST(? AS BIGINT) IS NULL OR ((COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) IS NOT NULL\n    AND (COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) BETWEEN 0 AND 253402300799000\n    AND (COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) <= 253402300799000 - (CAST((?) AS BIGINT)))) on conflict (\"run_id\", \"step_name\") do nothing",
+        "bindArity": 18
+      },
+      {
+        "sql": "UPDATE runs SET state = 'sleeping',\n         available_at_ms = (SELECT f.timeout_at_ms FROM waits f\n                           WHERE f.run_id = ? AND f.step_name = ? AND f.fence_stamp = ?),\n         wake_event = ?,\n         event_payload = NULL,\n         wake_step = ?,\n         claimed_by = NULL,\n         claim_expires_at_ms = NULL,\n         heartbeat_at_ms = NULL,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM waits f\n                        WHERE (f.run_id = ? AND f.step_name = ? AND f.status = 'waiting') AND f.queue = runs.queue AND f.fence_stamp = ?)\n       WHERE (run_id IN (SELECT f.run_id FROM waits f\n                       WHERE (f.run_id = ? AND f.step_name = ? AND f.status = 'waiting') AND f.queue = runs.queue AND f.fence_stamp = ?)\n         AND (queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'\n            AND EXISTS (SELECT 1 FROM tasks t\n                        WHERE t.task_id = runs.task_id AND t.queue = runs.queue AND t.state IN ('pending','running','sleeping'))))",
+        "bindArity": 15
+      },
+      {
+        "sql": "UPDATE tasks SET state = 'sleeping',\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.run_id = ? AND f.state = 'sleeping') AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.run_id = ? AND f.state = 'sleeping') AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 5
+      },
+      {
+        "sql": "SELECT payload, CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END AS payload_type FROM events\n       WHERE queue = ? AND event_name = ?\n         AND EXISTS (SELECT 1 FROM runs r\n                     JOIN tasks t ON t.task_id = r.task_id AND t.queue = r.queue\n                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?\n                       AND r.claimed_by = ? AND r.state = 'running'\n                       AND t.state IN ('pending','running','sleeping'))",
+        "bindArity": 6
+      }
+    ]
+  },
+  "emit-event": {
+    "emitted": [
+      {
+        "sql": "insert into \"events\" (\"queue\", \"event_name\", \"payload\", \"emitted_at_ms\", \"fence_stamp\", \"fence_at_ms\") values (?, ?, ?, COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n), ?, COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n)) on conflict (\"queue\", \"event_name\") do update set \"fence_stamp\" = ?, \"fence_at_ms\" = \"events\".\"emitted_at_ms\" where \"events\".\"fence_stamp\" is distinct from ? and (events.payload IS NOT NULL\n         AND ((events.emitted_at_ms) IS NOT NULL AND events.emitted_at_ms BETWEEN 0 AND 253402300799000))",
+        "bindArity": 6
+      },
+      {
+        "sql": "UPDATE runs SET\n         state = 'pending',\n         available_at_ms = (SELECT f.fence_at_ms FROM events f WHERE f.queue = runs.queue AND f.event_name = ? AND f.fence_stamp = ?),\n         wake_step = COALESCE(wake_step, (SELECT MIN(w.step_name)\n           FROM waits w\n           WHERE w.run_id = runs.run_id\n      AND w.queue = runs.queue\n      AND w.task_id = runs.task_id\n      AND w.event_name = runs.wake_event\n      AND w.status = 'waiting'\n      AND w.timeout_at_ms IS NOT DISTINCT FROM runs.available_at_ms\n      AND (runs.available_at_ms IS NULL\n        OR ((runs.available_at_ms) IS NOT NULL AND runs.available_at_ms BETWEEN 0 AND 253402300799000))\n      AND (w.timeout_at_ms IS NULL\n        OR ((w.timeout_at_ms) IS NOT NULL AND w.timeout_at_ms BETWEEN 0 AND 253402300799000))\n           GROUP BY w.run_id\n            HAVING COUNT(*) = 1)),\n         wake_event = ?,\n         event_payload = (SELECT f.payload FROM events f\n                          WHERE f.queue = runs.queue AND f.event_name = ?),\n         fence_stamp = ?, fence_at_ms = (SELECT f.fence_at_ms FROM events f WHERE f.queue = runs.queue AND f.event_name = ? AND f.fence_stamp = ?)\n       WHERE state = 'sleeping'\n         AND wake_event = ?\n         AND run_id IN (SELECT w.run_id FROM waits w\n                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')\n         AND ((runs.wake_step IS NOT NULL AND EXISTS (SELECT 1 FROM waits w\n                      WHERE w.run_id = runs.run_id\n      AND w.queue = runs.queue\n      AND w.task_id = runs.task_id\n      AND w.event_name = runs.wake_event\n      AND w.status = 'waiting'\n      AND w.timeout_at_ms IS NOT DISTINCT FROM runs.available_at_ms\n      AND (runs.available_at_ms IS NULL\n        OR ((runs.available_at_ms) IS NOT NULL AND runs.available_at_ms BETWEEN 0 AND 253402300799000))\n      AND (w.timeout_at_ms IS NULL\n        OR ((w.timeout_at_ms) IS NOT NULL AND w.timeout_at_ms BETWEEN 0 AND 253402300799000))\n                        AND w.step_name = runs.wake_step))\n              OR (runs.wake_step IS NULL AND (SELECT MIN(w.step_name)\n           FROM waits w\n           WHERE w.run_id = runs.run_id\n      AND w.queue = runs.queue\n      AND w.task_id = runs.task_id\n      AND w.event_name = runs.wake_event\n      AND w.status = 'waiting'\n      AND w.timeout_at_ms IS NOT DISTINCT FROM runs.available_at_ms\n      AND (runs.available_at_ms IS NULL\n        OR ((runs.available_at_ms) IS NOT NULL AND runs.available_at_ms BETWEEN 0 AND 253402300799000))\n      AND (w.timeout_at_ms IS NULL\n        OR ((w.timeout_at_ms) IS NOT NULL AND w.timeout_at_ms BETWEEN 0 AND 253402300799000))\n           GROUP BY w.run_id\n            HAVING COUNT(*) = 1) IS NOT NULL))\n         AND EXISTS (SELECT 1 FROM events f WHERE f.queue = runs.queue AND f.event_name = ? AND f.fence_stamp = ?)\n         AND EXISTS (SELECT 1 FROM tasks t\n                     WHERE t.task_id = runs.task_id AND t.queue = runs.queue AND t.state IN ('pending','running','sleeping'))",
+        "bindArity": 12
+      },
+      {
+        "sql": "UPDATE tasks SET state = 'pending',\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(f.fence_at_ms) FROM runs f\n                        WHERE (f.queue = ? AND f.state = 'pending') AND f.queue = tasks.queue AND f.fence_stamp = ?)\n       WHERE (task_id IN (SELECT f.task_id FROM runs f\n                       WHERE (f.queue = ? AND f.state = 'pending') AND f.queue = tasks.queue AND f.fence_stamp = ?)\n         AND (state IN ('pending','running','sleeping')))",
+        "bindArity": 5
+      },
+      {
+        "sql": "DELETE FROM waits\n       WHERE (run_id IN (SELECT f.run_id FROM runs f\n                       WHERE (f.queue = ? AND f.state = 'pending') AND f.fence_stamp = ?)\n         AND (event_name = ? AND status = 'waiting'))",
+        "bindArity": 3
+      },
+      {
+        "sql": "UPDATE runs SET run_id = run_id,\n         fence_stamp = ?,\n         fence_at_ms = (SELECT MIN(source_fence_at_ms) FROM (\n                          SELECT DISTINCT f.fence_at_ms AS source_fence_at_ms FROM runs f\n                           WHERE (f.queue = ? AND f.state = 'pending') AND f.fence_stamp = ?\n                        ) AS fenced_source_instant)\n       WHERE (run_id IN (SELECT source_key FROM (\n                         SELECT DISTINCT f.run_id AS source_key FROM runs f\n                          WHERE (f.queue = ? AND f.state = 'pending') AND f.fence_stamp = ?\n                       ) AS fenced_source))",
+        "bindArity": 5
+      },
+      {
+        "sql": "SELECT CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END AS payload_type\n       FROM events WHERE queue = ? AND event_name = ?",
+        "bindArity": 2
+      }
+    ]
   }
 }

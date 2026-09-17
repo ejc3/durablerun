@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { claimActivated, claimOne, withFixture } from '../src/scenario.js'
+import { awaitOwned, claimActivated, claimOne, withFixture } from '../src/scenario.js'
 import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /**
@@ -18,6 +18,10 @@ const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
   activate: ['activated'],
   complete: ['completed'],
   'defer-launch': ['deferred'],
+  reschedule: ['rescheduled'],
+  suspend: ['suspended'],
+  'await-event': ['registered'],
+  'emit-event': ['emitted'],
 }
 
 type Signature = readonly { sql: string; bindArity: number }[]
@@ -56,6 +60,22 @@ describe('generated SQL corpus', () => {
           unlaunched.claimGen,
           5,
         )
+        await store.spawn('q', 'job', '{}')
+        const rescheduled = await claimActivated(store, 'q', 'w3')
+        await store.reschedule('q', rescheduled.runId, rescheduled.claimToken, { inSeconds: 5 })
+        await store.spawn('q', 'job', '{}')
+        const suspended = await claimActivated(store, 'q', 'w4')
+        await store.suspendRun(
+          'q',
+          suspended.runId,
+          suspended.claimToken,
+          { inSeconds: 5 },
+          { key: 'marker', stateJson: '{}' },
+        )
+        await store.spawn('q', 'job', '{}')
+        const waiting = await claimActivated(store, 'q', 'w5')
+        await awaitOwned(store, 'q', waiting, 'step', 'ready', 5)
+        await store.emitEvent('q', 'ready', '{}')
       })
       const corpus = Object.fromEntries(
         Object.entries(TREE_LABELS).map(([label, variants]) => {

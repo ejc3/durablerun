@@ -845,23 +845,49 @@ these three things; nothing else in the system does I/O, time, or randomness.
     candidate subquery stays store-owned, because the dialects select
     candidates differently. A fragment's role is declared where it is placed
     and checked against its position in the tree.
-  - PR3.9c: suspend, reschedule, await-event, and emit-event.
+  - PR3.9c: suspend, reschedule, await-event, and emit-event. The statement
+    grammar gains INSERT and ON CONFLICT for compare-and-sets, with an insert
+    stamp rule and a conflict rule that keeps a preserved instant. Suspend and
+    reschedule share one statement and one set of park assignments with the
+    launch deferral. Wake arithmetic, the event timeout, and their headroom
+    guards stay store-owned fragments, as the lease deadline did in PR3.9b.
+    The stores' text copy of the parked claim columns and the wake guard's AND
+    form are deleted. Its review round is
+    `postmortems/pr3.9c-insert-rules-review.md`.
   - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
     and spawn.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
-  - Deferred to PR3.9c: `wake-witness-surface.test.ts` matches `UPDATE runs` in
-    upper case, so it fails loudly when emit-event compiles from a tree and must
-    follow the compiled spelling then. `query-plans.test.ts` followed the
-    claim's in PR3.9b.
-  - Deferred to PR3.9c: `prepareWake` returns its headroom guard twice, as a
-    bare conjunct for the launch deferral's tree and with a leading AND for its
-    text call sites. When suspend and reschedule move to trees, the AND form
-    goes.
-  - Deferred to PR3.9c: the stores' text `PARKED_CLAIM` and core's
-    `PARKED_CLAIM_COLUMNS` are two forms of one column list, held together by a
-    store test. When suspend and reschedule move to trees, the text form goes.
+  - Deferred to PR3.9e: `wake-witness-surface.test.ts` matches `UPDATE runs` in
+    upper case. PR3.9c moved only emit-event's compare-and-set to a tree, and
+    the wake follow-on the test mutates is still text. The test fails loudly
+    when that follow-on compiles from a tree and must follow the compiled
+    spelling then.
+  - Deferred to PR3.9e: a tree statement is rebuilt and re-checked on every
+    call, and the checks walk the tree once each. PR3.9c's review measured the
+    four moved methods on libSQL with a stub executor: reschedule 78.5 µs to
+    about 167 µs, suspend 121 µs to about 201 µs, await-event 141 µs to about
+    270 µs, and emit-event 276 µs to about 334 µs. A local `file:` round trip
+    is about 100 µs and a remote one is milliseconds. Collect node kinds, raw
+    nodes, and function nodes in one pass when the text checks are deleted.
+  - Deferred to PR3.9e: the insert rules get registered tree-path mutations
+    with the other tree checks. Until then each condition is held by its own
+    refusal in `fenced-batch-tree.test.ts`, and PR3.9c witnessed thirteen
+    condition deletions each failing a test.
+  - Deferred to PR4.3: the shared await-event and emit-event statements are
+    built with the builder's conflict clause and `IS DISTINCT FROM`, and MySQL 8
+    has neither spelling. A statement is a tree and the dialect's compiler
+    spells it, and `packages/core/test/statement-dialects.test.ts` shows a
+    compiler turning the same two trees into `ON DUPLICATE KEY UPDATE` and
+    `<=>`. That test checks spelling only. `store-mysql` still owns the
+    behaviour against a real server: MySQL assigns left to right, so a column
+    the condition reads is assigned last; a SELECT with a WHERE and no FROM
+    needs `FROM DUAL`; and its clause fires on any unique key, so a table these
+    statements upsert may have no unique key besides the conflict target.
+  - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
+    since emit-event's conflict arm became nodes. It stays while the text path
+    and its checks stay, and goes with them.
   - Deferred to PR3.9e: the tree path has no registered mutations of its own.
     The thirty mutations that own the text scanners in `fenced-batch.ts` get
     tree-path successors when the scanners are deleted, covering the statement

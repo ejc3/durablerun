@@ -1,5 +1,6 @@
 import {
   AliasNode,
+  type AliasedExpression,
   AndNode,
   BinaryOperationNode,
   ColumnNode,
@@ -25,6 +26,7 @@ import {
   RawNode,
   ReferenceNode,
   type RootOperationNode,
+  SelectAllNode,
   SelectQueryNode,
   SqliteAdapter,
   SqliteIntrospector,
@@ -32,7 +34,9 @@ import {
   TableNode,
   UnaryOperationNode,
   UpdateQueryNode,
+  ValueListNode,
   ValueNode,
+  ValuesNode,
   WhenNode,
   WhereNode,
   createQueryId,
@@ -813,7 +817,7 @@ export function clockFunctionCalls(tree: OperationNode): string[] {
   return calls
 }
 
-const QUERY_FIELDS: Readonly<Record<string, readonly string[]>> = {
+const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
   UpdateQueryNode: ['kind', 'table', 'where', 'updates'],
   DeleteQueryNode: ['kind', 'from', 'where'],
   SelectQueryNode: [
@@ -827,10 +831,12 @@ const QUERY_FIELDS: Readonly<Record<string, readonly string[]>> = {
     'orderBy',
     'limit',
   ],
+  InsertQueryNode: ['kind', 'into', 'columns', 'values', 'onConflict'],
+  OnConflictNode: ['kind', 'columns', 'doNothing', 'updates', 'updateWhere'],
 }
 
 const GRAMMAR_NODES = [
-  ...Object.keys(QUERY_FIELDS),
+  ...Object.keys(NODE_FIELDS),
   'AggregateFunctionNode',
   'AliasNode',
   'AndNode',
@@ -865,9 +871,40 @@ const GRAMMAR_NODES = [
   'UnaryOperationNode',
   'ValueListNode',
   'ValueNode',
+  'ValuesNode',
   'WhenNode',
   'WhereNode',
 ]
+
+/**
+ * What the grammar requires of an INSERT beyond its node kinds. The checks that read an
+ * insert's provenance go by column position, so a SELECT lists one plain selection for
+ * each column: a star is one selection and many columns. A conflict clause names its
+ * columns, or it would swallow a violation of any unique index. SQLite reads the ON of a
+ * conflict clause as a join constraint when the SELECT before it has no WHERE.
+ */
+function insertShapeProblem(insert: InsertQueryNode): string | null {
+  const values = insert.values
+  if (values !== undefined && SelectQueryNode.is(values)) {
+    const selections = values.selections ?? []
+    // `select *` is a bare star, and `select t.*` is a reference whose column is one.
+    const isStar = (node: OperationNode) =>
+      SelectAllNode.is(node) || (ReferenceNode.is(node) && SelectAllNode.is(node.column))
+    const plain = selections.every((selection) => !isStar(selection.selection))
+    if (!plain || selections.length !== (insert.columns?.length ?? 0)) {
+      return 'an INSERT … SELECT without one plain selection for each column'
+    }
+    if (insert.onConflict !== undefined && values.where === undefined) {
+      return 'an INSERT … SELECT with ON CONFLICT and no WHERE, and it needs a WHERE for SQLite to parse it'
+    }
+  } else if (values === undefined || !ValuesNode.is(values) || values.values.length !== 1) {
+    return 'an INSERT without exactly one row of values or one SELECT'
+  }
+  if (insert.onConflict !== undefined && (insert.onConflict.columns?.length ?? 0) === 0) {
+    return 'an ON CONFLICT that names no columns'
+  }
+  return null
+}
 
 /**
  * Why a tree is outside the statement grammar, or null when it is inside. The grammar
@@ -876,16 +913,21 @@ const GRAMMAR_NODES = [
  * that needs a new kind adds it here, with the check that reads it.
  *
  * It lists no common table expression, RETURNING, or `UPDATE … FROM`, no write below
- * the root, and no schema-qualified table. It binds what is built from nodes. A store
- * fragment is opaque text, reviewed through the generated corpus.
+ * the root, and no schema-qualified table. An INSERT takes one row of values or one
+ * SELECT, with a conflict clause that names its columns (`insertShapeProblem`). It binds
+ * what is built from nodes. A store fragment is opaque text, reviewed through the
+ * generated corpus.
  */
 export function statementGrammarProblem(tree: OperationNode): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
     if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`
-    if (!isRoot && (UpdateQueryNode.is(node) || DeleteQueryNode.is(node))) {
+    if (
+      !isRoot &&
+      (UpdateQueryNode.is(node) || DeleteQueryNode.is(node) || InsertQueryNode.is(node))
+    ) {
       return `${node.kind} below the root`
     }
-    const fields = QUERY_FIELDS[node.kind]
+    const fields = NODE_FIELDS[node.kind]
     if (fields !== undefined) {
       const extra = Object.entries(node).find(
         ([field, value]) => value !== undefined && !fields.includes(field),
@@ -893,6 +935,10 @@ export function statementGrammarProblem(tree: OperationNode): string | null {
       if (extra !== undefined) return `${node.kind}.${extra[0]}`
     }
     if (TableNode.is(node) && node.table.schema !== undefined) return 'a schema-qualified table'
+    if (InsertQueryNode.is(node)) {
+      const shape = insertShapeProblem(node)
+      if (shape !== null) return shape
+    }
     if (ColumnUpdateNode.is(node) && assignedColumn(node) === null) {
       return 'an assignment to something other than a column'
     }
@@ -914,23 +960,88 @@ export function statementTable(tree: OperationNode): string | null {
 }
 
 /**
- * Which provenance assignments an UPDATE makes: `fence_stamp` to the stamp token, and
- * `fence_at_ms` to anything or, for a compare-and-set, to the clock token. Each counts
- * only when the column is assigned exactly once.
+ * The provenance an assignment list writes, read structurally: `fence_stamp` as the
+ * stamp token, and `fence_at_ms` as anything, as the clock token, or as a copy of a
+ * stored column. Each counts only when the column is assigned exactly once.
  */
+function assignedProvenance(updates: readonly ColumnUpdateNode[]) {
+  const assigned = (column: string) => updates.filter((update) => assignedColumn(update) === column)
+  const only = (list: readonly ColumnUpdateNode[]) => (list.length === 1 ? list[0] : undefined)
+  const instants = assigned('fence_at_ms')
+  const instant = only(instants)?.value
+  const reference = instant !== undefined && ReferenceNode.is(instant) ? instant : undefined
+  const column = reference === undefined ? null : columnName(reference.column)
+  return {
+    stamp: tokenOf(only(assigned('fence_stamp'))?.value)?.kind === 'stamp',
+    instant: instants.length === 1,
+    clockInstant: tokenOf(instant)?.kind === 'now',
+    /** The stored column the instant is copied from, when it is a plain reference. */
+    copiedInstant: column === null ? null : { table: tableName(reference?.table), column },
+    /** Every column the list assigns. */
+    columns: updates.map(assignedColumn),
+  }
+}
+
+/** The provenance an UPDATE's own assignments write. */
 export function writesStampAssignments(tree: OperationNode): {
   stamp: boolean
   instant: boolean
   clockInstant: boolean
 } {
-  const assigned = (column: string) =>
-    assignments(tree).filter((update) => assignedColumn(update) === column)
-  const stamps = assigned('fence_stamp')
-  const instants = assigned('fence_at_ms')
-  const only = (list: readonly ColumnUpdateNode[]) => (list.length === 1 ? list[0] : undefined)
+  return assignedProvenance(assignments(tree))
+}
+
+/**
+ * The provenance an INSERT writes, or null for any other statement. The inserted value
+ * of a column is read by position, from one row of values or from the SELECT's list. A
+ * conflict update is read like any other assignment list.
+ */
+export function insertProvenance(tree: OperationNode): {
+  stamp: boolean
+  clockInstant: boolean
+  /** The columns whose inserted value is the clock token. */
+  clockColumns: string[]
+  conflict: ReturnType<typeof assignedProvenance> | null
+} | null {
+  if (!InsertQueryNode.is(tree)) return null
+  const columns = (tree.columns ?? []).map((column) => column.column.name)
+  const inserted = (name: string): OperationNode | undefined => {
+    const index = columns.indexOf(name)
+    if (index < 0 || columns.lastIndexOf(name) !== index) return undefined
+    const values = tree.values
+    if (values !== undefined && ValuesNode.is(values)) {
+      // The grammar admits exactly one row.
+      const row = values.values[0]
+      return row !== undefined && ValueListNode.is(row) ? row.values[index] : undefined
+    }
+    if (values !== undefined && SelectQueryNode.is(values)) {
+      const selection = values.selections?.[index]?.selection
+      return selection !== undefined && AliasNode.is(selection) ? selection.node : selection
+    }
+    return undefined
+  }
+  const updates = tree.onConflict?.updates
   return {
-    stamp: tokenOf(only(stamps)?.value)?.kind === 'stamp',
-    instant: instants.length === 1,
-    clockInstant: tokenOf(only(instants)?.value)?.kind === 'now',
+    stamp: tokenOf(inserted('fence_stamp'))?.kind === 'stamp',
+    clockInstant: tokenOf(inserted('fence_at_ms'))?.kind === 'now',
+    clockColumns: columns.filter((name) => tokenOf(inserted(name))?.kind === 'now'),
+    conflict: updates === undefined ? null : assignedProvenance(updates),
+  }
+}
+
+/** An expression under an alias, for a SELECT list. Token and fragment expressions have no `as`. */
+export function aliasedAs<T, A extends string>(
+  expression: Expression<T>,
+  alias: A,
+): AliasedExpression<T, A> {
+  return {
+    get expression(): Expression<T> {
+      return expression
+    },
+    get alias(): A {
+      return alias
+    },
+    toOperationNode: () =>
+      AliasNode.create(expression.toOperationNode(), IdentifierNode.create(alias)),
   }
 }

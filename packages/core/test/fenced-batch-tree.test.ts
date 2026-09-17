@@ -1,4 +1,4 @@
-import { type OperationNode, SqliteQueryCompiler, sql } from 'kysely'
+import { type ExpressionBuilder, type OperationNode, SqliteQueryCompiler, sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
   FENCE_SET,
@@ -7,14 +7,19 @@ import {
   type SqlFragment,
   type SqlResult,
   type SqlStatement,
+  type StoreTables,
   TreeDialect,
+  aliasedAs,
   treeBuilder as db,
   defineStatement,
+  emitEventCas,
   fenceValue,
   nowValue,
   rawSql,
+  registerWaitCas,
   sqlFragment,
   stampValue,
+  suspendCas,
 } from '../src/index.js'
 
 /**
@@ -567,6 +572,339 @@ describe('FencedBatch tree statements', () => {
       expect(outcomes.placed).toBe('accepted')
       expect(outcomes.half).toMatch(/bind 'second' is a fragment the statement never places/)
     })
+  })
+
+  const eventInsert = () =>
+    db.insertInto('events').values({
+      queue: 'q',
+      event_name: 'e',
+      payload: 'p',
+      emitted_at_ms: nowValue,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    })
+
+  it('stamps an inserting compare-and-set by position, and keeps a preserved instant on conflict', async () => {
+    const upsert = eventInsert().onConflict((conflict) =>
+      conflict
+        .columns(['queue', 'event_name'])
+        .doUpdateSet((eb) => ({
+          fence_stamp: stampValue,
+          fence_at_ms: eb.ref('events.emitted_at_ms'),
+        }))
+        .where((eb) => eb('events.fence_stamp', 'is not', stampValue)),
+    )
+    const { captured, executor } = capturingExecutor(1)
+    await batch().casTree('event', statement(upsert)).run(executor)
+    expect(captured).toEqual([
+      {
+        sql: `insert into "events" ("queue", "event_name", "payload", "emitted_at_ms", "fence_stamp", "fence_at_ms") values (?, ?, ?, ${CLOCK}, ?, ${CLOCK}) on conflict ("queue", "event_name") do update set "fence_stamp" = ?, "fence_at_ms" = "events"."emitted_at_ms" where "events"."fence_stamp" is not ?`,
+        args: ['q', 'e', 'p', 'seed:event', 'seed:event', 'seed:event'],
+      },
+    ])
+  })
+
+  it('refuses an insert that does not stamp its row, or an upsert that does not re-stamp as its table requires', () => {
+    const unstamped = db
+      .insertInto('events')
+      .values({ queue: 'q', event_name: 'e', payload: 'p', emitted_at_ms: nowValue })
+    expect(() => batch().casTree('event', statement(unstamped))).toThrow(
+      /must insert fence_stamp as the stamp and fence_at_ms as the clock/,
+    )
+    const misplaced = db
+      .insertInto('events')
+      .columns(['queue', 'event_name', 'fence_stamp', 'fence_at_ms'])
+      .expression(
+        db.selectNoFrom((eb) => [
+          eb.val('q').as('queue'),
+          aliasedAs(stampValue, 'event_name'),
+          eb.val('e').as('fence_stamp'),
+          aliasedAs(nowValue, 'fence_at_ms'),
+        ]),
+      )
+    expect(() => batch().casTree('event', statement(misplaced))).toThrow(
+      /must insert fence_stamp as the stamp/,
+    )
+    const conflict = (set: 'clock' | 'none') =>
+      eventInsert().onConflict((oc) =>
+        oc
+          .columns(['queue', 'event_name'])
+          .doUpdateSet(
+            set === 'clock' ? { fence_stamp: stampValue, fence_at_ms: nowValue } : { payload: 'x' },
+          ),
+      )
+    // An event's first instant is a preserved fact: a re-emit keeps it and takes the stamp.
+    expect(() => batch().casTree('event', statement(conflict('clock')))).toThrow(
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    expect(() => batch().casTree('event', statement(conflict('none')))).toThrow(
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    const waitInsert = () =>
+      db.insertInto('waits').values({
+        run_id: 'r1',
+        step_name: 's',
+        queue: 'q',
+        task_id: 't1',
+        event_name: 'e',
+        status: 'waiting',
+        created_at_ms: nowValue,
+        fence_stamp: stampValue,
+        fence_at_ms: nowValue,
+      })
+    const silentUpsert = waitInsert().onConflict((oc) =>
+      oc.columns(['run_id', 'step_name']).doUpdateSet({ status: 'waiting' }),
+    )
+    expect(() => batch().casTree('register', statement(silentUpsert))).toThrow(
+      /does not re-stamp the row and its instant/,
+    )
+    const leaveAlone = waitInsert().onConflict((oc) =>
+      oc.columns(['run_id', 'step_name']).doNothing(),
+    )
+    expect(() => batch().casTree('register', statement(leaveAlone))).not.toThrow()
+  })
+
+  const WAIT_COLUMNS = [
+    'run_id',
+    'step_name',
+    'queue',
+    'task_id',
+    'event_name',
+    'status',
+    'created_at_ms',
+    'fence_stamp',
+    'fence_at_ms',
+  ] as const
+
+  it('refuses an INSERT … SELECT whose star selection shifts the provenance positions', () => {
+    // The star is one selection and many columns, so the stamp read at selection 1
+    // lands in whatever column the expanded star pushes it to. Three columns for three
+    // selections, so only the star is wrong.
+    const shifted = db
+      .insertInto('waits')
+      .columns(['run_id', 'fence_stamp', 'fence_at_ms'])
+      .expression(
+        db
+          .selectFrom('events')
+          .selectAll('events')
+          .select(() => [aliasedAs(stampValue, 'fence_stamp'), aliasedAs(nowValue, 'fence_at_ms')])
+          .where('events.queue', '=', 'q') as never,
+      )
+    expect(() => batch().casTree('register', statement(shifted))).toThrow(
+      /one plain selection for each column/,
+    )
+    const bareStar = db
+      .insertInto('waits')
+      .columns(['run_id', 'fence_stamp', 'fence_at_ms'])
+      .expression(
+        db
+          .selectFrom('events')
+          .selectAll()
+          .select(() => [aliasedAs(stampValue, 'fence_stamp'), aliasedAs(nowValue, 'fence_at_ms')])
+          .where('events.queue', '=', 'q') as never,
+      )
+    expect(() => batch().casTree('register', statement(bareStar))).toThrow(
+      /one plain selection for each column/,
+    )
+  })
+
+  it('refuses a conflict arm that overwrites the preserved fact it re-stamps', () => {
+    const overwriting = eventInsert().onConflict((conflict) =>
+      conflict.columns(['queue', 'event_name']).doUpdateSet((eb) => ({
+        fence_stamp: stampValue,
+        fence_at_ms: eb.ref('events.emitted_at_ms'),
+        emitted_at_ms: nowValue,
+        payload: 'second',
+      })),
+    )
+    expect(() => batch().casTree('event', statement(overwriting))).toThrow(
+      /may assign only fence_stamp and fence_at_ms/,
+    )
+  })
+
+  it('refuses an insert that binds the preserved first instant instead of reading the clock', () => {
+    const clientInstant = db.insertInto('events').values({
+      queue: 'q',
+      event_name: 'e',
+      payload: 'p',
+      emitted_at_ms: 12345,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    })
+    expect(() => batch().casTree('event', statement(clientInstant))).toThrow(
+      /must insert events.emitted_at_ms as the clock/,
+    )
+  })
+
+  it('holds every condition of the insert rules, one refusal each', () => {
+    const refused = (name: string, builder: Builder, why: RegExp) =>
+      expect(() => batch().casTree(name, statement(builder))).toThrow(why)
+    const conflict = (set: (eb: ExpressionBuilder<StoreTables, 'events'>) => object) =>
+      eventInsert().onConflict((oc) =>
+        oc.columns(['queue', 'event_name']).doUpdateSet((eb) => set(eb as never) as never),
+      )
+    // The clock, where the existing case covers only the stamp.
+    refused(
+      'event',
+      db.insertInto('events').values({
+        queue: 'q',
+        event_name: 'e',
+        payload: 'p',
+        emitted_at_ms: nowValue,
+        fence_stamp: stampValue,
+        fence_at_ms: 5,
+      }),
+      /must insert fence_stamp as the stamp and fence_at_ms as the clock/,
+    )
+    // A conflict arm that copies the right instant and takes no stamp.
+    refused(
+      'event',
+      conflict((eb) => ({ fence_at_ms: eb.ref('events.emitted_at_ms') })),
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    // The right column of the wrong row: the proposed row's instant is this emit's clock.
+    refused(
+      'event',
+      conflict((eb) => ({
+        fence_stamp: stampValue,
+        fence_at_ms: eb.ref('excluded.emitted_at_ms' as never),
+      })),
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    // The right row and the wrong column.
+    refused(
+      'event',
+      conflict((eb) => ({ fence_stamp: stampValue, fence_at_ms: eb.ref('events.fence_at_ms') })),
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    // A column listed twice has no one position to read.
+    refused(
+      'register',
+      db
+        .insertInto('waits')
+        .columns(['fence_stamp', 'fence_stamp', 'fence_at_ms'] as never)
+        .expression(
+          db
+            .selectNoFrom(() => [
+              aliasedAs(stampValue, 'fence_stamp'),
+              aliasedAs(stampValue, 'again'),
+              aliasedAs(nowValue, 'fence_at_ms'),
+            ])
+            .where(predicate('1 = 1')) as never,
+        ),
+      /must insert fence_stamp as the stamp/,
+    )
+    // Two rows, and a SELECT with fewer selections than columns.
+    const row = {
+      queue: 'q',
+      event_name: 'e',
+      payload: 'p',
+      emitted_at_ms: nowValue,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    }
+    refused('event', db.insertInto('events').values([row, row]), /exactly one row of values/)
+    refused(
+      'register',
+      db
+        .insertInto('waits')
+        .columns(['run_id', 'fence_stamp', 'fence_at_ms'])
+        .expression(
+          db.selectNoFrom(() => [
+            aliasedAs(stampValue, 'fence_stamp'),
+            aliasedAs(nowValue, 'fence_at_ms'),
+          ]) as never,
+        ),
+      /one plain selection for each column/,
+    )
+  })
+
+  it('refuses an ON CONFLICT that names no columns', () => {
+    const anyIndex = eventInsert().onConflict((conflict) => conflict.doNothing())
+    expect(() => batch().casTree('event', statement(anyIndex))).toThrow(/names no columns/)
+  })
+
+  it('refuses an INSERT … SELECT with ON CONFLICT and no WHERE', () => {
+    // SQLite reads the ON of an unguarded SELECT's conflict clause as a join constraint.
+    const unguarded = db
+      .insertInto('waits')
+      .columns([...WAIT_COLUMNS])
+      .expression(
+        db
+          .selectFrom('runs')
+          .select((eb) => [
+            eb.ref('runs.run_id').as('run_id'),
+            eb.val('s').as('step_name'),
+            eb.ref('runs.queue').as('queue'),
+            eb.ref('runs.task_id').as('task_id'),
+            eb.val('e').as('event_name'),
+            eb.val('waiting').as('status'),
+            aliasedAs(nowValue, 'created_at_ms'),
+            aliasedAs(stampValue, 'fence_stamp'),
+            aliasedAs(nowValue, 'fence_at_ms'),
+          ]),
+      )
+      .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
+    expect(() => batch().casTree('register', statement(unguarded))).toThrow(/needs a WHERE/)
+  })
+
+  it('refuses an insert as a follow-on', () => {
+    expect(() => followOn(eventInsert())).toThrow(/must be an UPDATE or a DELETE/)
+  })
+
+  it('passes the shared suspend and event statements through a batch', async () => {
+    const wakeAt = sqlFragment('(CASE WHEN ? = 1 THEN $NOW$ + ? ELSE ? END)', [1, 5_000, 0])
+    const suspend = suspendCas({
+      queue: 'q',
+      runId: 'r1',
+      claimToken: 'tok',
+      wakeAt,
+      wakeFits: sqlFragment('(CASE WHEN ? = 1 THEN 1 ELSE 1 END)', [1]),
+      admission: sqlFragment('EXISTS (SELECT 1 FROM tasks t WHERE t.task_id = runs.task_id)'),
+    })
+    const register = registerWaitCas({
+      queue: 'q',
+      runId: 'r1',
+      taskId: 't1',
+      stepName: 's',
+      eventName: 'e',
+      timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
+      timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
+      claimToken: 'tok',
+      taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),
+      taskEligible: sqlFragment('t.cancel_at_ms IS NULL'),
+    })
+    const emit = emitEventCas({
+      queue: 'q',
+      eventName: 'e',
+      payloadJson: '{}',
+      existingEventAdmits: sqlFragment('events.payload IS NOT NULL'),
+    })
+    const sent: string[] = []
+    for (const [name, cas] of [
+      ['suspend', suspend],
+      ['register', register],
+      ['event', emit],
+    ] as const) {
+      const { captured, executor } = capturingExecutor(1)
+      await batch().casTree(name, cas).run(executor)
+      sent.push(captured[0]?.sql ?? '')
+    }
+    expect(sent[0]).toContain('"wake_event" = ?, "event_payload" = ?, "wake_step" = ?')
+    expect(sent[0]).toContain(
+      `case when ((CASE WHEN ? = 1 THEN ${CLOCK} + ? ELSE ? END)) <= ${CLOCK}`,
+    )
+    expect(sent[1]).toContain('on conflict ("run_id", "step_name") do nothing')
+    // The claim's identity is nodes, whatever fragments a store passes.
+    expect(sent[1]).toContain(
+      'inner join "tasks" as "t" on (t.task_id = r.task_id AND t.queue = r.queue) where "r"."run_id" = ? and "r"."queue" = ? and "r"."task_id" = ? and "r"."claimed_by" = ? and "r"."state" = ? and (t.cancel_at_ms IS NULL)',
+    )
+    expect(sent[1]).toContain(
+      `(CASE WHEN ? IS NOT NULL THEN ${CLOCK} + ? ELSE NULL END) as "timeout_at_ms"`,
+    )
+    expect(sent[2]).toContain(
+      'do update set "fence_stamp" = ?, "fence_at_ms" = "events"."emitted_at_ms" where "events"."fence_stamp" is distinct from ? and (events.payload IS NOT NULL)',
+    )
   })
 
   it('refuses a tree statement in a batch without a tree dialect', () => {

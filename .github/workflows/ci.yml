@@ -490,6 +490,36 @@ jobs:
               repaired = exempt(repaired, candidate, (
                   'mutation-verdict:behavior:defer-launch-requires-claim-receipt-admission',
               ))
+          elif digest == '6d861a88e117b1be686c0e123562a2a76946c75404a688425eb1e289a6d51a58':
+              # Moving reschedule, suspend, the await registration, and the event emit
+              # onto statement trees re-aimed these finds. Suspend's statement now ends
+              # at its checkpoint bind, so the tail anchor its generated checkpoint
+              # conflict mutations share moved with it.
+              repaired = reaim(previous, candidate, (
+                  'suspend-preserves-valid-higher-lww',
+                  'null-event-payload-never-becomes-timeout',
+                  'suspend-rejects-noninteger-attempt',
+                  'reschedule-requires-run-task-queue-ownership',
+                  'suspend-requires-run-task-queue-ownership',
+                  'await-event-register-requires-run-task-queue-ownership',
+                  'reschedule-wake',
+                  'suspend-wake',
+                  'event-timeout',
+              ))
+              table = 'CHECKPOINT_CONFLICT_CONSUMERS = (\n'
+              pair = '        "suspend",\n'
+              anchors = []
+              for text in (repaired, candidate):
+                  if text.count(table) != 1:
+                      raise SystemExit('checkpoint conflict consumers: the bridge requires one table.')
+                  opened = text.index(table)
+                  closed = text.index('\n)\n', opened)
+                  if text.count(pair, opened, closed) != 1:
+                      raise SystemExit('suspend: the bridge requires exactly one consumer pair.')
+                  start = text.index(pair, opened, closed) + len(pair)
+                  anchors.append((start, text.index('    ),\n', start)))
+              (start, end), (new_start, new_end) = anchors
+              repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

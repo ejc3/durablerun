@@ -696,6 +696,42 @@ are load-bearing):
    - An update of a provenance-carrying table assigns the stamp and the
      instant once each, and a compare-and-set takes its instant from the clock
      token. The rule reads the table the tree writes, not a declaration.
+   - A compare-and-set may be an INSERT, with or without ON CONFLICT. A
+     follow-on or tail may not. An insert into a provenance-carrying table
+     supplies `fence_stamp` as the stamp and `fence_at_ms` as the clock token,
+     once each, read by column position from its VALUES row or its SELECT
+     list. An upsert's conflict arm must leave the row carrying this
+     statement's stamp, or a later statement could fence on a stamp the batch
+     never wrote there. For a table whose first instant is a preserved fact,
+     today `events.emitted_at_ms`, the arm assigns the stamp and copies that
+     column into `fence_at_ms`. For any other table it assigns the stamp and
+     the clock token. DO NOTHING is allowed, because it writes no row and the
+     compare-and-set then loses. A fact with a preserved first instant also
+     takes that instant from the clock token when it is inserted, and its
+     conflict arm assigns the two provenance columns and nothing else, so a
+     re-emit cannot overwrite the instant or the payload beside it. The
+     grammar fixes an insert's shape, because these checks read by position:
+     exactly one row of values, or a SELECT with one plain selection for each
+     column and no star. A conflict clause names its columns, or it would
+     swallow a violation of any unique index. An INSERT … SELECT with a
+     conflict clause has a WHERE, which SQLite needs to parse it. The
+     await-event registration and the event emit are such statements, shared
+     by every dialect. The emit compares stamps with IS DISTINCT FROM, which
+     SQLite and PostgreSQL both take, and a dialect passes what it requires of
+     an existing event. A shared statement is a tree, and each dialect's
+     compiler spells it, so a dialect without those spellings compiles the same
+     conflict clause and comparison into its own. A core test shows that for
+     MySQL. The registration builds the claim it depends on from
+     nodes: this run, this queue and task, this claim token, still running. A
+     store passes only its join of the run to its task and what it requires of
+     the task.
+   - Suspend and reschedule are one shared statement and differ only in the
+     admission fragment each store passes. Every compare-and-set that parks a
+     claimed run, the launch deferral included, takes its assignments from one
+     core helper, so the state, the wake instant, the cleared claim, and the
+     stamp cannot drift between them. The await-event registration parks its
+     run through a follow-on, which is text until PR3.9e. It takes the cleared
+     claim columns from the same list, held to it by a type.
    - Only a compare-and-set may hold the clock token. Raw fragment text is the
      one thing a tree cannot read, so it is scanned for the batch clock's text
      and for the clock spellings `scripts/clock-lint.py` lists. That scan is a

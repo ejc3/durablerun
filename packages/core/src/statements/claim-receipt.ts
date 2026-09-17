@@ -1,6 +1,7 @@
-import type { UpdateQueryBuilder, UpdateResult } from 'kysely'
 import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
-import { type StoreTables, treeBuilder } from '../store-tables.js'
+import { treeBuilder } from '../store-tables.js'
+import { type RunsUpdate, whereClaimedRun } from './claimed-run.js'
+import { parkAssignments } from './park.js'
 
 /** The claim a launch names: a run still running under this token and generation, not yet activated. */
 type ClaimReceipt = {
@@ -12,8 +13,6 @@ type ClaimReceipt = {
   admission: SqlFragment
 }
 
-type RunsUpdate = UpdateQueryBuilder<StoreTables, 'runs', 'runs', UpdateResult>
-
 /**
  * What every transition acting on a claim receipt requires of it: the receipt's
  * identity, the generation latch, and the store's admission predicate. Activation and
@@ -22,21 +21,10 @@ type RunsUpdate = UpdateQueryBuilder<StoreTables, 'runs', 'runs', UpdateResult>
 const whereClaimReceipt =
   (binds: ClaimReceipt) =>
   (update: RunsUpdate): RunsUpdate =>
-    update
-      .where('run_id', '=', binds.runId)
-      .where('queue', '=', binds.queue)
-      .where('claimed_by', '=', binds.claimToken)
-      .where('state', '=', 'running')
+    whereClaimedRun(binds)(update)
       .where('claim_gen', '=', binds.claimGen)
       .where('activated_gen', '<', binds.claimGen)
       .where(rawSql<boolean>(binds.admission, 'predicate'))
-
-/** The claim columns a parked run clears, so it carries no live token, lease deadline, or heartbeat. */
-export const PARKED_CLAIM_COLUMNS = {
-  claimed_by: null,
-  claim_expires_at_ms: null,
-  heartbeat_at_ms: null,
-} as const
 
 /**
  * `claim`'s compare-and-set. The candidate subquery is the store's, because libSQL
@@ -120,18 +108,7 @@ export const deferLaunchCas = defineStatement(
   (binds: ClaimReceipt & { wakeAt: SqlFragment; wakeFits: SqlFragment }) =>
     treeBuilder
       .updateTable('runs')
-      .set((eb) => ({
-        state: eb
-          .case()
-          .when(rawSql<number>(binds.wakeAt, 'value'), '<=', nowValue)
-          .then('pending')
-          .else('sleeping')
-          .end(),
-        available_at_ms: rawSql<number>(binds.wakeAt, 'value'),
-        ...PARKED_CLAIM_COLUMNS,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
-      }))
+      .set((eb) => parkAssignments(eb, binds.wakeAt))
       .$call(whereClaimReceipt(binds))
       .where(rawSql<boolean>(binds.wakeFits, 'predicate')),
 )
