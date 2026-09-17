@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { type Server, createServer } from 'node:http'
 import type { Clock, Launcher, SchedulerStore } from '@durablerun/core'
-import { LaunchOutcome } from '@durablerun/core'
+import { LaunchOutcome, launchIdentity } from '@durablerun/core'
 import { type RunInvocation, type TaskRegistry, runClaimedRun } from '@durablerun/sdk'
 import type { DriverLoop } from './loop.js'
 
@@ -129,22 +129,12 @@ export function createWorkerServer(deps: {
       }
       let invocation: RunInvocation
       try {
-        const parsed = JSON.parse(body) as Record<string, unknown>
-        if (
-          typeof parsed.queue !== 'string' ||
-          typeof parsed.runId !== 'string' ||
-          typeof parsed.claimToken !== 'string' ||
-          typeof parsed.claimGen !== 'number'
-        ) {
+        const identity = launchIdentity(JSON.parse(body))
+        if (identity === undefined) {
           res.writeHead(400).end()
           return
         }
-        invocation = {
-          queue: parsed.queue,
-          runId: parsed.runId,
-          claimToken: parsed.claimToken,
-          claimGen: parsed.claimGen,
-        }
+        invocation = identity
       } catch {
         res.writeHead(400).end()
         return

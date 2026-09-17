@@ -912,20 +912,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     today.
 
 - **PR3.11 lifecycle residual** (in progress). PR3.2's rounds left three items
-  that no other entry owns. The first landed in PR3.11a: a refused heartbeat
-  names the cancellation, and a cancelled handler ends as cancelled at its next
-  context call. Two remain for PR3.11b.
-  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a launch payload
-    case generated from `LaunchInvocation`'s fields that crosses an older
-    driver with a newer worker and the reverse.
-  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: a generated
-    clock-shape surface for the driver loop: forward and backward steps, and
-    registry intervals shorter than the ceilings.
+  that no other entry owned. PR3.11a (PR #32) made a refused heartbeat name the
+  cancellation, so a cancelled handler ends as cancelled at its next context
+  call. PR3.11b (PR #35) generated the launch payload case, crossing older and
+  newer drivers with the current worker, and the driver loop clock-shape surface.
+  Those surfaces found a wake's floor wait stretched by a backwards clock step and
+  launches with malformed identity acknowledged, and PR3.11b fixed both: the loop
+  measures its waits with `Clock.elapsedMs`, and `launchIdentity` validates a
+  launch's identity once. One item remains for PR3.11c.
   - Deferred from `postmortems/pr3.11a-cancelled-heartbeat-review.md`: a
     cross-version answer case generated from the `SchedulerStore` port's result
-    types, crossing an older store with a newer worker and the reverse. It
-    belongs with the launch payload case above, which crosses the same
-    boundary from the driver's side.
+    types, crossing an older store with a newer worker and the reverse. Its first
+    version found that a worker runs handlers on activation answers missing
+    required fields. Refusing such an answer after the activation compare-and-swap
+    latches the first start and spends infrastructure retries, so PR3.11c must
+    decide where the refusal belongs and pin the recovery.
+  - Deferred from `postmortems/pr3.11b-generated-surfaces-review.md`: a
+    clock-shape axis with a due wake, so a clock step that delays a due wake is
+    observable.
 
 - **PR3.2 lifecycle polish**: DONE. Merged green as two stacked PRs. PR3.2a
   (PR #28) parks a claim that a build without the task's handler cannot run

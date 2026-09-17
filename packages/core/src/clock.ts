@@ -13,6 +13,11 @@ export interface Clock {
   /** Local wall-clock ms — for DURATION math only, never engine decisions. */
   nowEpochMs(): number
   /**
+   * Monotonic elapsed ms from an arbitrary origin. A host wall-clock step never
+   * moves it, so it is the reading for how long something has waited.
+   */
+  elapsedMs(): number
+  /**
    * Resolve after `ms`, or EARLIER when `interrupt` fires (wake pings,
    * shutdown). Never rejects.
    */

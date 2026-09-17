@@ -1,63 +1,12 @@
-import { type Clock, type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
+import { LaunchOutcome } from '@durablerun/core'
 import { Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { DriverLoop } from '../src/index.js'
+import { FakeClock, FakeLauncher, until } from './loop-harness.js'
 
 const Q = 'q'
-
-/**
- * Hand-cranked clock: sleeps park until advance() moves time past their
- * deadline (or their interrupt fires). Tests keep it aligned with the
- * store's fake time so duration math behaves like production.
- */
-class FakeClock implements Clock {
-  now = 1_000_000
-  sleeps: { deadline: number; ms: number; resolve: () => void }[] = []
-  nowEpochMs(): number {
-    return this.now
-  }
-  yieldTurn(): Promise<void> {
-    return new Promise((resolve) => setImmediate(resolve))
-  }
-  sleep(ms: number, interrupt?: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-      if (interrupt?.aborted || ms <= 0) {
-        resolve()
-        return
-      }
-      const entry = { deadline: this.now + ms, ms, resolve }
-      this.sleeps.push(entry)
-      interrupt?.addEventListener(
-        'abort',
-        () => {
-          this.sleeps = this.sleeps.filter((s) => s !== entry)
-          resolve()
-        },
-        { once: true },
-      )
-    })
-  }
-  fire(): void {
-    const due = this.sleeps.filter((s) => s.deadline <= this.now)
-    this.sleeps = this.sleeps.filter((s) => s.deadline > this.now)
-    for (const s of due) s.resolve()
-  }
-}
-
-class FakeLauncher implements Launcher {
-  invocations: LaunchInvocation[] = []
-  constructor(
-    private readonly script: (
-      inv: LaunchInvocation,
-    ) => Promise<LaunchOutcome> | LaunchOutcome = () => LaunchOutcome.accepted(),
-  ) {}
-  async launch(inv: LaunchInvocation): Promise<LaunchOutcome> {
-    this.invocations.push(inv)
-    return this.script(inv)
-  }
-}
 
 async function fx(seed: string) {
   const { raw, admin } = await openTestDb()
@@ -66,20 +15,11 @@ async function fx(seed: string) {
   const clock = new FakeClock()
   await admin.setFakeNowEpochMs(clock.now)
   const advance = async (ms: number) => {
-    clock.now += ms
+    clock.advance(ms)
     await admin.setFakeNowEpochMs(clock.now)
     clock.fire()
   }
   return { raw, admin, ids, store, clock, advance, close: () => raw.close() }
-}
-
-/** Poll (real timers — tests own their nondeterminism) until cond holds. */
-async function until(cond: () => boolean, what: string): Promise<void> {
-  for (let i = 0; i < 400; i++) {
-    if (cond()) return
-    await new Promise((r) => setTimeout(r, 5))
-  }
-  throw new Error(`timed out waiting for: ${what}`)
 }
 
 const OPTS = { queue: Q, claimLimit: 3, sweepLimit: 5, leaseSeconds: 60 }
@@ -148,11 +88,11 @@ describe('DriverLoop', () => {
     const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, opts)
     const done = loop.run()
     await until(() => f.clock.sleeps.length === 1, 'idle park')
-    const parked = f.clock.sleeps[0]?.ms
+    const parked = f.clock.sleeps[0]
     // A backwards clock step of an hour: the last tick now seems to start in the future.
     f.clock.now -= 3_600_000
     loop.wake()
-    await until(() => f.clock.sleeps.length === 1 && f.clock.sleeps[0]?.ms !== parked, 'floor wait')
+    await until(() => f.clock.sleeps.length === 1 && f.clock.sleeps[0] !== parked, 'floor wait')
     expect(f.clock.sleeps[0]?.ms).toBeLessThanOrEqual(1_000)
     await loop.stop()
     await done

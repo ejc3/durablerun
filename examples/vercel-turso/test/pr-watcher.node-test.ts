@@ -229,6 +229,7 @@ async function replay(fault?: { boundary: number; timing: 'before' | 'after' }) 
     }) as SchedulerStore
     const clock = {
       nowEpochMs: () => now,
+      elapsedMs: () => now,
       yieldTurn: async () => {},
       sleep: async (_ms: number, signal?: AbortSignal) =>
         new Promise<void>((resolve) => {

@@ -1,5 +1,7 @@
 import type { Ending, SchedulerStore } from './ports.js'
 import type { LaunchIdentity } from './types.js'
+import type { LaunchInvocation } from './ports.js'
+import { requirePositiveClaimGeneration } from './validate.js'
 
 type LaunchPayload =
   | { readonly kind: 'accepted' }
@@ -25,6 +27,39 @@ const AUTHENTIC_LAUNCH_OUTCOMES = new WeakMap<object, LaunchPayload>()
  *
  * Launcher implementations construct outcomes via the static factories.
  */
+/**
+ * The launch fields every driver build sends and a worker needs to find its claim
+ * (DESIGN.md §3.2). The rest of `LaunchInvocation` is advisory: a worker ignores
+ * it, so an older driver may omit it and a newer driver may change it.
+ */
+export const LAUNCH_IDENTITY_FIELDS = [
+  'queue',
+  'runId',
+  'claimToken',
+  'claimGen',
+] as const satisfies readonly (keyof LaunchInvocation)[]
+
+export type LaunchIdentityFields = Pick<LaunchInvocation, (typeof LAUNCH_IDENTITY_FIELDS)[number]>
+
+/** A launch payload's identity, or undefined when an identity field is missing or malformed. */
+export function launchIdentity(payload: unknown): LaunchIdentityFields | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined
+  const { queue, runId, claimToken, claimGen } = payload as Record<string, unknown>
+  for (const text of [queue, runId, claimToken]) {
+    if (typeof text !== 'string' || text.length === 0) return undefined
+  }
+  try {
+    return {
+      queue: queue as string,
+      runId: runId as string,
+      claimToken: claimToken as string,
+      claimGen: requirePositiveClaimGeneration('claimGen', claimGen),
+    }
+  } catch {
+    return undefined
+  }
+}
+
 export class LaunchOutcome {
   /**
    * Authentication lives outside the instance shape. `instanceof` alone is

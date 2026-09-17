@@ -2,6 +2,7 @@ import type { Clock } from './clock.js'
 
 const TrustedPromise = Promise
 const nowEpochMs = Date.now
+const monotonicNow = performance.now.bind(performance)
 const nonNegative = Math.max
 const scheduleImmediate = setImmediate
 const scheduleTimeout = setTimeout
@@ -21,6 +22,9 @@ export function systemClock(): Clock {
   return {
     nowEpochMs(): number {
       return nowEpochMs()
+    },
+    elapsedMs(): number {
+      return monotonicNow()
     },
     yieldTurn(): Promise<void> {
       return new TrustedPromise((resolve) => scheduleImmediate(resolve))

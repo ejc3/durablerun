@@ -411,7 +411,11 @@ One invocation executes one claimed run to its next suspension point:
   is legitimately re-claimed many times (every sleep wake, every lost-launch
   relaunch, every chain hop), so a one-shot flag can never work. Each claim
   increments the run row's `claim_gen` (§3.1 step 2) and the launch payload
-  carries it. The worker first reads the claimed task's name for this unactivated
+  carries it. The payload's identity is `LAUNCH_IDENTITY_FIELDS`: the queue, run id,
+  and claim token as non-empty strings and the claim generation as a positive
+  integer. A worker refuses a launch whose identity is missing or malformed, and
+  ignores every other field, so drivers and workers of different versions still
+  interoperate. The worker first reads the claimed task's name for this unactivated
   claim (`claimedTaskName`); a build with no handler for that name defers the
   claim before this CAS (`deferLaunch`, fenced on the same claim receipt with
   `activated_gen < :claim_gen`), so an undispatchable launch never latches the
@@ -609,9 +613,11 @@ A ping is a fire-and-forget POST — to the resident driver's `/wake` endpoint
 (which cuts its current sleep short, at most once per wake floor: a wake sooner
 than `wakeFloorMs` after the last tick started waits out the rest of that
 interval, so a flood of pings looks once; the floor defaults to the busy
-ceiling). That wait never exceeds the floor, so a backwards clock step cannot
-stretch it, and never passes the look the interrupted park planned, so
-coalescing delays neither a due wake nor the registry beat. In serverless mode
+ceiling). That wait never exceeds the floor and never passes the look the
+interrupted park planned, so coalescing delays neither a due wake nor the
+registry beat. The floor, the planned look, and the registry beat cadence are
+measured in elapsed time (`Clock.elapsedMs`), so a host clock step cannot stretch
+any of them. In serverless mode
 the ping goes to `/api/tick` instead.
 Its loss is tolerable because the poll ceiling / cron sweep exists; with a
 resident driver at a sub-second poll ceiling, pings are optional entirely. Writers
