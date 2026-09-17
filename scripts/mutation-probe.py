@@ -2481,9 +2481,9 @@ MUTATION_SPECS = [
     ),
     (
         "retry-task-requires-failed-task",
-        "packages/store-libsql/src/store.ts",
-        "          `state = 'failed'\n",
-        "          `state IN ('failed', 'cancelled')\n",
+        "packages/core/src/statements/retry-task.ts",
+        "      .where('state', '=', 'failed')\n",
+        "      .where('state', 'in', ['failed', 'cancelled'])\n",
         "retryTask revives a cancelled task",
     ),
     (

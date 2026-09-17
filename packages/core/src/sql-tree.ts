@@ -1029,6 +1029,15 @@ export function insertProvenance(tree: OperationNode): {
   }
 }
 
+/**
+ * The provenance every statement that stamps a row assigns: this statement's stamp, and
+ * the batch's one clock.
+ */
+export const FENCE_ASSIGNMENTS = Object.freeze({
+  fence_stamp: stampValue,
+  fence_at_ms: nowValue,
+})
+
 /** An expression under an alias, for a SELECT list. Token and fragment expressions have no `as`. */
 export function aliasedAs<T, A extends string>(
   expression: Expression<T>,

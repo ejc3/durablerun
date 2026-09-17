@@ -22,3 +22,11 @@ export const CLEARED_WAKE_COLUMNS = {
   event_payload: null,
   wake_step: null,
 } as const
+
+export type TasksUpdate = UpdateQueryBuilder<StoreTables, 'tasks', 'tasks', UpdateResult>
+
+/** What every write to one task requires: this task, in this queue. */
+export const whereTaskInQueue =
+  (binds: { taskId: string; queue: string }) =>
+  (update: TasksUpdate): TasksUpdate =>
+    update.where('task_id', '=', binds.taskId).where('queue', '=', binds.queue)

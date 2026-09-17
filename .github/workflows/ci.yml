@@ -237,48 +237,25 @@ jobs:
           print('Added two read labels to the base batch lint; all other base bytes are unchanged.')
           PY
       - name: Bridge the shared statements past the older base outcome lint
-        # This tree lets core's shared statements and their column descriptor name
-        # the task outcome columns, because fail and the cancel transition assign
-        # failure_reason. The base lint predates that allowance and rejects them.
-        # The arm is pinned to one base lint hash. It applies exactly three edits,
-        # the docstring, two path constants, and the allowance line, and only when
-        # the result is this tree's lint byte for byte. Any other base skips.
+        # This tree lets core's shared statements and their column descriptor name a
+        # task outcome column as an object key, because fail and the cancel transition
+        # assign failure_reason. The base lint predates that and rejects them. The arm
+        # is pinned to one base lint and one head lint, both by hash, and installs
+        # that head lint. Any other base skips, and any other head refuses, so a later
+        # edit to the lint must re-pin it here in the same reviewed change.
         run: |
           python3 - <<'PY'
           import hashlib
           from pathlib import Path
           base = Path('/tmp/base/scripts/outcome-lint.py')
-          previous = base.read_text()
-          if hashlib.sha256(previous.encode()).hexdigest() != '67b32d020579c27abf73fed876b699efaa35fcbf93fc0ff5913963d04d49dde5':
+          if hashlib.sha256(base.read_bytes()).hexdigest() != '67b32d020579c27abf73fed876b699efaa35fcbf93fc0ff5913963d04d49dde5':
               print('Base outcome lint does not need the shared-statement bridge.')
               raise SystemExit(0)
-          candidate = Path('scripts/outcome-lint.py').read_text()
-          def between(text, opening, closing):
-              if text.count(opening) != 1 or text.count(closing) != 1:
-                  raise SystemExit('outcome lint bridge requires unique docstring boundaries.')
-              return text.index(opening), text.index(closing)
-          opening, closing = "the stores, core's `task-result.ts`", 'Read an outcome'
-          start, end = between(previous, opening, closing)
-          new_start, new_end = between(candidate, opening, closing)
-          repaired = previous[:start] + candidate[new_start:new_end] + previous[end:]
-          constants = 'DECODER = Path("packages/core/src/task-result.ts")\n'
-          allowance = '    if relative == DECODER:\n'
-          if repaired.count(constants) != 1 or repaired.count(allowance) != 1:
-              raise SystemExit('outcome lint bridge requires one decoder constant and one allowance line.')
-          repaired = repaired.replace(
-              constants,
-              constants
-              + "# The stores' shared compare-and-sets and the column descriptor they are typed by.\n"
-              + 'STATEMENTS = Path("packages/core/src/statements")\n'
-              + 'STORE_TABLES = Path("packages/core/src/store-tables.ts")\n',
-          ).replace(
-              allowance,
-              '    if relative in (DECODER, STORE_TABLES) or relative.parent == STATEMENTS:\n',
-          )
-          if repaired != candidate:
-              raise SystemExit('outcome lint bridge may only widen the allowance to the shared statements.')
-          base.write_text(repaired)
-          print('Widened the base outcome lint to the shared statements; all other base bytes are unchanged.')
+          candidate = Path('scripts/outcome-lint.py').read_bytes()
+          if hashlib.sha256(candidate).hexdigest() != '9f84cabbe6f121cda60eda8a7dcc7cfec1478c387ce005a21b9b0bea6a17b4d6':
+              raise SystemExit('outcome lint bridge is pinned to one head lint; re-pin it with the lint change.')
+          base.write_bytes(candidate)
+          print('Installed the pinned head outcome lint over the pinned base lint.')
           PY
       - name: Bridge re-aimed mutation targets in the older base registry
         # A base registry's find strings must occur in this tree, and every verdict
@@ -330,6 +307,23 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
+          def reaim_moved(repaired, candidate, names):
+              # Replace each named top-level entry with this tree's, which may also change
+              # the file it mutates: the condition moved from store text into a shared
+              # statement. The name line must still match.
+              for name in names:
+                  key = f'        "{name}",\n'
+                  blocks = []
+                  for text in (repaired, candidate):
+                      if text.count(key) != 1:
+                          raise SystemExit(f'{name}: the re-aim bridge requires exactly one entry.')
+                      start = text.rindex('    (\n', 0, text.index(key))
+                      blocks.append((start, text.index('    ),\n', start) + len('    ),\n')))
+                  (start, end), (new_start, new_end) = blocks
+                  if repaired[start:end].splitlines()[:2] != candidate[new_start:new_end].splitlines()[:2]:
+                      raise SystemExit(f'{name}: the re-aim bridge may not rename an entry.')
+                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+              return repaired
           def reaim_consumer(repaired, candidate, name):
               # Replace the tail anchor of one checkpoint conflict consumer pair, which the
               # generated checkpoint conflict mutations of that consumer share.
@@ -567,20 +561,7 @@ jobs:
                   'suspend-wake',
                   'event-timeout',
               ))
-              table = 'CHECKPOINT_CONFLICT_CONSUMERS = (\n'
-              pair = '        "suspend",\n'
-              anchors = []
-              for text in (repaired, candidate):
-                  if text.count(table) != 1:
-                      raise SystemExit('checkpoint conflict consumers: the bridge requires one table.')
-                  opened = text.index(table)
-                  closed = text.index('\n)\n', opened)
-                  if text.count(pair, opened, closed) != 1:
-                      raise SystemExit('suspend: the bridge requires exactly one consumer pair.')
-                  start = text.index(pair, opened, closed) + len(pair)
-                  anchors.append((start, text.index('    ),\n', start)))
-              (start, end), (new_start, new_end) = anchors
-              repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+              repaired = reaim_consumer(repaired, candidate, 'suspend')
           elif digest == 'a89e9e9259e1ae1cab337fb6edf7e063f441e7f93b2e3ca6eba0ec76beb0e242':
               # Moving fail, cancel, retry-task, and set-checkpoint's lease onto statement
               # trees re-aimed these finds. The lease statement now ends at its checkpoint
@@ -591,13 +572,15 @@ jobs:
                   'provenance-fail-progress',
                   'cancel-task-requires-run-task-queue-ownership',
                   'timestamp-cancel-rechecks-deadline-bound',
-                  'retry-task-requires-failed-task',
                   'retry-task-charges-unaccounted-top-run',
                   'set-checkpoint-requires-run-task-queue-ownership',
                   'checkpoint-write-rejects-fractional-owner-attempt',
                   'checkpoint-write-rejects-owner-attempt-overflow',
                   'checkpoint-lease',
               ))
+              # The failed-state check retry-task requires is now a node in the shared
+              # statement, so its mutation moved from the store to core with it.
+              repaired = reaim_moved(repaired, candidate, ('retry-task-requires-failed-task',))
               repaired = reaim_consumer(repaired, candidate, 'checkpoint-write')
           else:
               print('Base registry does not need the re-aim bridge.')

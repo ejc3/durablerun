@@ -6,12 +6,12 @@ columns, and core's `decodeTaskResult` is the one decode that refuses a row whos
 outcome contradicts its state. A second decoder is where divergence lives: the
 hosted inspector once dropped a cancelled task's reason, and the dogfood status
 command once reported rows the stores refuse. So no production source outside
-the stores, core's `task-result.ts`, core's shared statements, and the
-conformance harness may spell `completed_payload` or `failure_reason`, in SQL
-or in code. The shared statements are the stores' own compare-and-sets, defined
-once in `packages/core/src/statements/` over the column descriptor
-`packages/core/src/store-tables.ts`, and they write or guard the columns and
-never decode them. Read an outcome
+the stores, core's `task-result.ts`, and the conformance harness may spell
+`completed_payload` or `failure_reason`, in SQL or in code. Core's shared
+statements, `packages/core/src/statements/`, and their column descriptor,
+`packages/core/src/store-tables.ts`, may name one only as an object key: the
+column a statement assigns, or the column the descriptor lists. A property read,
+a selected column, and SQL text are refused there as everywhere. Read an outcome
 through `getTaskResult`, or select `TASK_RESULT_COLUMNS` and decode the row
 with `decodeTaskResult`. The stores own the columns, `task-result.ts` defines
 the decoder, and the conformance harness reads raw state as its oracle. Every
@@ -47,6 +47,8 @@ STATEMENTS = Path("packages/core/src/statements")
 STORE_TABLES = Path("packages/core/src/store-tables.ts")
 SOURCE_SUFFIXES = frozenset({".ts", ".tsx", ".mts", ".cts"})
 COLUMNS = re.compile(r"\b(?:completed_payload|failure_reason)\b", re.IGNORECASE)
+# What follows an object key, in code with strings and comments blanked.
+OBJECT_KEY = re.compile(r"\s*:")
 
 source_paths = tuple(
     path
@@ -69,8 +71,9 @@ for path in source_paths:
         package.startswith("store-") or package == "conformance"
     ):
         continue
-    if relative in (DECODER, STORE_TABLES) or relative.parent == STATEMENTS:
+    if relative == DECODER:
         continue
+    assigns_only = relative == STORE_TABLES or relative.parent == STATEMENTS
     source = path.read_text()
     if path.suffix == ".tsx":
         # The lexer does not parse JSX text, and JSX text can look like a comment
@@ -90,6 +93,13 @@ for path in source_paths:
             if match.start() in seen:
                 continue
             seen.add(match.start())
+            if (
+                assigns_only
+                and visible is views[0]
+                and OBJECT_KEY.match(visible, match.end())
+                and visible[max(match.start() - 1, 0)] != "."
+            ):
+                continue
             lineno = source.count("\n", 0, match.start()) + 1
             print(
                 f"{relative}:{lineno}: task outcome column {match.group(0)} outside "
@@ -99,4 +109,7 @@ for path in source_paths:
             violations += 1
 if violations:
     sys.exit(1)
-print("outcome-lint: task outcome columns confined to the stores and decodeTaskResult")
+print(
+    "outcome-lint: task outcome columns confined to the stores, decodeTaskResult, "
+    "and the columns core's shared statements assign"
+)

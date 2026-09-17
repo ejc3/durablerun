@@ -1,13 +1,14 @@
-import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
+import { FENCE_ASSIGNMENTS, type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
+import { whereTaskInQueue } from './claimed-run.js'
 
 /**
  * `retry-task`'s compare-and-set: a task returns to pending, charged for its top run,
- * with one more attempt in its budget and its reason cleared. The store's admission
- * predicate requires the failed state and a well-formed failure, which registered
- * mutations own as store text, and says what the task's runs and counters must look
- * like. It consumes the failed state, so a replay matches nothing and cannot raise the
- * budget twice. The store computes the charge.
+ * with one more attempt in its budget and its reason cleared. It requires the failed
+ * state itself and consumes it, so a replay matches nothing and cannot raise the budget
+ * twice. The store's admission predicate requires a well-formed failure, which a
+ * registered mutation owns as store text, and says what the task's runs and counters
+ * must look like. The store computes the charge.
  */
 export const reviveCas = defineStatement(
   'retry-task',
@@ -28,10 +29,9 @@ export const reviveCas = defineStatement(
         max_attempts: eb('max_attempts', '+', 1),
         failure_reason: null,
         last_attempt_run: binds.runId,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
+        ...FENCE_ASSIGNMENTS,
       }))
-      .where('task_id', '=', binds.taskId)
-      .where('queue', '=', binds.queue)
+      .$call(whereTaskInQueue(binds))
+      .where('state', '=', 'failed')
       .where(rawSql<boolean>(binds.admission, 'predicate')),
 )

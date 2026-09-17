@@ -19,7 +19,6 @@ import {
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
-  REASON_CANCELLED,
   REASON_CLAIM_TIMEOUT,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
@@ -1250,9 +1249,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
         runId,
         charged: sqlFragment(charged),
         admission: sqlFragment(
-          `state = 'failed'
+          `${taskOwnsEveryRun('tasks')}
          AND failure_reason IS NOT NULL AND completed_payload IS NULL
-         AND ${taskOwnsEveryRun('tasks')}
          AND EXISTS (SELECT 1 FROM runs r WHERE ${runOwnedByTask('r', 'tasks')})
          AND ${noLiveRun('tasks')}
          AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')}
@@ -1324,7 +1322,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
       cancelCas({
         queue,
         taskId,
-        reason: REASON_CANCELLED,
         admission: sqlFragment(`${deadlineGuard}${taskOwnsEveryRun('tasks')}`),
       }),
     )

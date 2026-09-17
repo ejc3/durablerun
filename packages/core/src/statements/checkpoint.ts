@@ -1,4 +1,10 @@
-import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
+import {
+  FENCE_ASSIGNMENTS,
+  type SqlFragment,
+  defineStatement,
+  nowValue,
+  rawSql,
+} from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 import { whereClaimedRun } from './claimed-run.js'
 
@@ -23,8 +29,7 @@ export const checkpointLeaseCas = defineStatement(
       .set({
         claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt, 'value'),
         heartbeat_at_ms: nowValue,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
+        ...FENCE_ASSIGNMENTS,
       })
       .$call(whereClaimedRun(binds))
       .where('task_id', '=', binds.taskId)
