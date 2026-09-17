@@ -634,6 +634,29 @@ jobs:
                   'generated-narrow-widens',
               ))
               repaired = reaim_table(repaired, candidate, 'QUESTION_TOKEN_DELTA_REASONS')
+          elif digest == '4aee0d865f9f2dbe525815b726b5d7315ce586f5dec52d48f5281a792d9173dd':
+              # The hand-written follow-ons and tails became statement trees. Ten finds
+              # were re-aimed in place, where the store now passes the same expression as
+              # a fragment of a shared statement. Two timestamp addition cases were
+              # re-aimed the same way: their tuples have the shape of a registry entry
+              # and their names occur once, so the plain re-aim addresses them. One find
+              # moved from contract.ts to statements/successor.ts with the list of
+              # carried columns it mutates.
+              repaired = reaim(previous, candidate, (
+                  'emit-wake-event-correlation',
+                  'successor-ownership',
+                  'claim-receipt-requires-sole-live-run',
+                  'claim-receipt-requires-user-attempt-budget',
+                  'claim-receipt-requires-highest-owned-ordinal',
+                  'claim-receipt-retry-admissible',
+                  'spawn-receipt-idempotency-priority-is-queue-scoped',
+                  'spawn-receipt-task-id-collision-is-queue-scoped',
+                  'await-event-register-requires-run-task-queue-ownership',
+                  'emit-event-requires-run-task-queue-ownership',
+                  'claim-timeout-successor',
+                  'user-retry-successor',
+              ))
+              repaired = reaim_moved(repaired, candidate, ('successor-carries-every-column',))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
