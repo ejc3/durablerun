@@ -877,29 +877,44 @@ const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']
  * column it writes with an arithmetic or concatenation operator, however the operands
  * are ordered, qualified, or parenthesized, and `raw` names that column inside a
  * fragment, where the tree cannot see what is done with it. A self-reference built from
- * nodes, such as `COALESCE(column, …)`, is visible and allowed.
+ * nodes, such as `COALESCE(column, …)`, is visible and allowed. In an INSERT's conflict
+ * arm, `excluded` names the incoming row and never the row being written, so a read of
+ * `excluded.column` is not a self-reference: a replay computes the same value again.
  */
 export function selfCountingAssignments(
   query: OperationNode,
 ): { column: string; how: 'arithmetic' | 'raw' }[] {
   const table = statementTable(query)
+  const incoming = InsertQueryNode.is(query) ? 'excluded' : null
+  /** The column a node reads from the row being written, or null. */
+  const writtenColumn = (node: OperationNode): string | null =>
+    incoming !== null && referenceQualifier(node) === incoming ? null : referencedColumn(node)
   return assignments(query).flatMap((update): { column: string; how: 'arithmetic' | 'raw' }[] => {
     const column = assignedColumn(update)
     if (column === null) return []
+    // A fragment's reads of the incoming row are taken out before its text is read for
+    // the written row, so `excluded.x + 1` passes and `excluded.x + x` does not.
+    const written = (text: string): string =>
+      incoming === null
+        ? text
+        : text.replace(
+            new RegExp(String.raw`(?<![\w."])"?${incoming}"?\."?${column}"?(?!\w)`, 'gi'),
+            ' 0 ',
+          )
     const arithmetic = someNode(update.value, (candidate) => {
       if (!BinaryOperationNode.is(candidate)) return false
       const operator = operatorName(candidate.operator)
       if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false
       return (
-        referencedColumn(candidate.leftOperand) === column ||
-        referencedColumn(candidate.rightOperand) === column
+        writtenColumn(candidate.leftOperand) === column ||
+        writtenColumn(candidate.rightOperand) === column
       )
     })
     if (arithmetic) return [{ column, how: 'arithmetic' }]
     const raw = someNode(
       update.value,
       (candidate) =>
-        RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column, table),
+        RawNode.is(candidate) && mentions(written(candidate.sqlFragments.join(' ')), column, table),
     )
     return raw ? [{ column, how: 'raw' }] : []
   })

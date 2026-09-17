@@ -803,7 +803,10 @@ are load-bearing):
      fenced one is still outside what the rule can read, and that exhibit runs
      in `fenced-batch-tree.test.ts`. A table without provenance
      columns, today `checkpoints`, takes the gate and may carry a conflict arm,
-     which the counting rule reads like a SET list.
+     which the counting rule reads like a SET list. In that arm `excluded` is
+     the incoming row and never the row being written, so arithmetic on
+     `excluded.column` counts nothing twice and is allowed, in nodes and in a
+     fragment, while the written row's own column stays refused.
    - Every insert of a run is built from one record, `insertedRun`: spawn's
      first run, the claim-timeout and user-retry successors, and a revival. The
      new run takes its queue, its task, and both its instants from the fenced
