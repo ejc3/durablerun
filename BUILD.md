@@ -948,6 +948,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the condition reads is assigned last; a SELECT with a WHERE and no FROM
     needs `FROM DUAL`; and its clause fires on any unique key, so a table these
     statements upsert may have no unique key besides the conflict target.
+    PR3.9e part 2 added a third such statement, `checkpointWrite`, whose
+    conflict arm carries a WHERE, `excluded.owner_attempt >=
+    checkpoints.owner_attempt`, so a lower attempt loses to the row already
+    there. `ON DUPLICATE KEY UPDATE` has no WHERE, so `store-mysql` must spell
+    that tiebreak inside each assignment, and prove it with the checkpoint
+    conformance cases.
   - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
     since emit-event's conflict arm became nodes. It stays while the text path
     and its checks stay, and goes with them. The stores' `fenced` and
