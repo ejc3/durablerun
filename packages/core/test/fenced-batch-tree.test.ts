@@ -1698,6 +1698,21 @@ describe('FencedBatch tree statements', () => {
     )
   })
 
+  it('skips the gate of an open tail and nothing else: a fence it compares must be on the table that fence stamps', () => {
+    // The compare-and-set named `win` stamps runs, so comparing it with a task's stamp
+    // never matches. A gated tail is refused for that, and an open one must be too.
+    const misplaced = () =>
+      db.selectFrom('tasks').select('state').where('fence_stamp', '=', fenceValue('win'))
+    const never =
+      /stamps 'runs', but the statement compares tasks\.fence_stamp, which never matches/
+    expect(() => withCas().tailTree('read', statement(misplaced()))).toThrow(never)
+    expect(() => withCas().openTailTree('read', 'a reason', statement(misplaced()))).toThrow(never)
+    // An open tail may still compare a fence on the table it stamps.
+    const placed = () =>
+      db.selectFrom('runs').select('state').where('fence_stamp', '=', fenceValue('win'))
+    expect(() => withCas().openTailTree('read', 'a reason', statement(placed()))).not.toThrow()
+  })
+
   it('passes the shared spawn and sweep statements through a batch', async () => {
     const spawn = spawnTaskCas({
       taskId: 't1',
