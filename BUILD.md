@@ -875,10 +875,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     with the other tree checks. Until then each condition is held by its own
     refusal in `fenced-batch-tree.test.ts`, and PR3.9c witnessed thirteen
     condition deletions each failing a test.
-  - Deferred to PR4.3: the shared await-event and emit-event statements use
-    `ON CONFLICT` and `IS DISTINCT FROM`. MySQL 8 has neither spelling, so
-    `store-mysql` needs a dialect compile for upserts and the null-safe
-    comparison before it can pass the identical suite.
+  - Deferred to PR4.3: the shared await-event and emit-event statements are
+    built with the builder's conflict clause and `IS DISTINCT FROM`, and MySQL 8
+    has neither spelling. A statement is a tree and the dialect's compiler
+    spells it, and `packages/core/test/statement-dialects.test.ts` shows a
+    compiler turning the same two trees into `ON DUPLICATE KEY UPDATE` and
+    `<=>`. That test checks spelling only. `store-mysql` still owns the
+    behaviour against a real server: MySQL assigns left to right, so a column
+    the condition reads is assigned last; a SELECT with a WHERE and no FROM
+    needs `FROM DUAL`; and its clause fires on any unique key, so a table these
+    statements upsert may have no unique key besides the conflict target.
   - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
     since emit-event's conflict arm became nodes. It stays while the text path
     and its checks stay, and goes with them.

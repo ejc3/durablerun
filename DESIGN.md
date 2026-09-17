@@ -718,7 +718,10 @@ are load-bearing):
      await-event registration and the event emit are such statements, shared
      by every dialect. The emit compares stamps with IS DISTINCT FROM, which
      SQLite and PostgreSQL both take, and a dialect passes what it requires of
-     an existing event. The registration builds the claim it depends on from
+     an existing event. A shared statement is a tree, and each dialect's
+     compiler spells it, so a dialect without those spellings compiles the same
+     conflict clause and comparison into its own. A core test shows that for
+     MySQL. The registration builds the claim it depends on from
      nodes: this run, this queue and task, this claim token, still running. A
      store passes only its join of the run to its task and what it requires of
      the task.
