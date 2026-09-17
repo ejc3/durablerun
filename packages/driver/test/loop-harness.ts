@@ -13,11 +13,11 @@ export class FakeLauncher implements Launcher {
   }
 }
 
-/** Poll (real timers — tests own their nondeterminism) until cond holds. */
+/** Poll, yielding a real event-loop turn each time, until cond holds or two seconds pass. */
 export async function until(cond: () => boolean, what: string): Promise<void> {
-  for (let i = 0; i < 400; i++) {
-    if (cond()) return
-    await new Promise((r) => setTimeout(r, 5))
+  const deadline = performance.now() + 2_000
+  while (!cond()) {
+    if (performance.now() > deadline) throw new Error(`timed out waiting for: ${what}`)
+    await new Promise((r) => setImmediate(r))
   }
-  throw new Error(`timed out waiting for: ${what}`)
 }

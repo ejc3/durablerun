@@ -29,16 +29,20 @@ export class FakeClock implements Clock {
         resolve()
         return
       }
-      const entry = { deadline: this.elapsed + ms, ms, resolve }
-      this.sleeps.push(entry)
-      interrupt?.addEventListener(
-        'abort',
-        () => {
-          this.sleeps = this.sleeps.filter((sleep) => sleep !== entry)
+      const onAbort = () => {
+        this.sleeps = this.sleeps.filter((sleep) => sleep !== entry)
+        resolve()
+      }
+      const entry = {
+        deadline: this.elapsed + ms,
+        ms,
+        resolve: () => {
+          interrupt?.removeEventListener('abort', onAbort)
           resolve()
         },
-        { once: true },
-      )
+      }
+      this.sleeps.push(entry)
+      interrupt?.addEventListener('abort', onAbort, { once: true })
     })
   }
 

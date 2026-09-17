@@ -1,10 +1,10 @@
 import type { SchedulerStore } from '@durablerun/core'
-import { Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
+import { FakeClock, Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { DriverLoop } from '../src/index.js'
-import { FakeClock, FakeLauncher, until } from './loop-harness.js'
+import { FakeLauncher, until } from './loop-harness.js'
 
 const Q = 'q'
 const BUSY_CEILING_MS = 250
@@ -13,8 +13,8 @@ const WAKE_FLOOR_MS = 250
 const ROUNDS = 25
 /** How far ahead, in database time, a due-wake shape's task becomes due. */
 const DUE_WAKE_DELAY_MS = 2_000
-/** The most parks a due-wake shape may take to reach its due time. */
-const MAX_DUE_WAKE_ROUNDS = 400
+/** Shapes run in batches, each with its own database and clock. */
+const SHAPE_BATCH = 8
 
 /** Registry intervals below the busy ceiling, between the ceilings, and above both. */
 const REGISTRY_INTERVALS_MS = [100, 1_000, 15_000]
@@ -104,12 +104,13 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
     return sleep
   }
   const advance = async (ms: number) => {
+    if (shape.dueWake && dueAtElapsedMs === null && databaseNowMs + ms >= dueAtDatabaseMs) {
+      // Elapsed and database time move together here, so this is the due instant.
+      dueAtElapsedMs = clock.elapsed + (dueAtDatabaseMs - databaseNowMs)
+    }
     clock.advance(ms)
     databaseNowMs += ms
     await admin.setFakeNowEpochMs(databaseNowMs)
-    if (shape.dueWake && dueAtElapsedMs === null && databaseNowMs >= dueAtDatabaseMs) {
-      dueAtElapsedMs = clock.elapsed
-    }
     clock.fire()
   }
   try {
@@ -136,15 +137,12 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
     // A due-wake shape keeps parking until its task launches or database time is well
     // past the due time; short registry intervals need many more parks to get there.
     let round = 0
-    for (
-      ;
+    const keepParking = () =>
       round < ROUNDS ||
       (shape.dueWake &&
         launchLatencyMs === null &&
-        databaseNowMs < dueAtDatabaseMs + 2 * IDLE_CEILING_MS &&
-        round < MAX_DUE_WAKE_ROUNDS);
-      round++
-    ) {
+        databaseNowMs < dueAtDatabaseMs + 2 * IDLE_CEILING_MS)
+    for (; keepParking(); round++) {
       roundsElapsedMs += sleep.ms
       await advance(sleep.ms)
       sleep = await nextSleep(sleep, `park ${round + 1}`)
@@ -183,8 +181,14 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
 
 describe('driver loop clock shapes', () => {
   it('every generated clock shape keeps parks within the registry interval and beats on cadence', async () => {
+    const shapes = clockShapes()
     const problems: string[] = []
-    for (const shape of clockShapes()) problems.push(...(await clockShapeProblems(shape)))
+    for (let start = 0; start < shapes.length; start += SHAPE_BATCH) {
+      const batch = await Promise.all(
+        shapes.slice(start, start + SHAPE_BATCH).map(clockShapeProblems),
+      )
+      problems.push(...batch.flat())
+    }
     expect(problems).toEqual([])
-  }, 480_000)
+  }, 240_000)
 })
