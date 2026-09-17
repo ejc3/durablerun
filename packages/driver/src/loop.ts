@@ -230,8 +230,9 @@ export class DriverLoop {
           }
         }
         sleepMs = Math.min(sleepMs, this.msUntilBeatDue())
-        // The look this park plans. A wake may coalesce pings, but never delays it.
-        const plannedLookAtMs = this.clock.nowEpochMs() + sleepMs
+        // The look this park plans, as a duration from when the park starts. A wake
+        // may coalesce pings, but never delays it.
+        const parkStartedAtMs = this.clock.nowEpochMs()
         if (!this.wakeRequested) {
           this.chainedTicks = 0
           this.sleepInterrupt = new AbortController()
@@ -245,11 +246,13 @@ export class DriverLoop {
           // cannot stretch it, and never passes the look this park planned, so
           // coalescing delays neither a due wake nor the registry beat. Only
           // stop() interrupts this wait.
+          // Both remainders are measured as elapsed durations floored at zero, so a
+          // backwards clock step cannot stretch the floor or the planned look past
+          // their own lengths, and the planned look is already capped at the beat.
           const nowMs = this.clock.nowEpochMs()
           const remaining = Math.min(
-            lastTickStartedAtMs + this.wakeFloorMs - nowMs,
-            this.wakeFloorMs,
-            plannedLookAtMs - nowMs,
+            this.wakeFloorMs - Math.max(0, nowMs - lastTickStartedAtMs),
+            sleepMs - Math.max(0, nowMs - parkStartedAtMs),
           )
           if (remaining > 0) {
             this.chainedTicks = 0

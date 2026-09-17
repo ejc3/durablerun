@@ -88,11 +88,11 @@ describe('DriverLoop', () => {
     const loop = new DriverLoop({ store: f.store, launcher, ids: f.ids, clock: f.clock }, opts)
     const done = loop.run()
     await until(() => f.clock.sleeps.length === 1, 'idle park')
-    const parked = f.clock.sleeps[0]?.ms
+    const parked = f.clock.sleeps[0]
     // A backwards clock step of an hour: the last tick now seems to start in the future.
     f.clock.now -= 3_600_000
     loop.wake()
-    await until(() => f.clock.sleeps.length === 1 && f.clock.sleeps[0]?.ms !== parked, 'floor wait')
+    await until(() => f.clock.sleeps.length === 1 && f.clock.sleeps[0] !== parked, 'floor wait')
     expect(f.clock.sleeps[0]?.ms).toBeLessThanOrEqual(1_000)
     await loop.stop()
     await done
