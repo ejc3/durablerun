@@ -1,9 +1,9 @@
+import { EventEmitter } from 'node:events'
 import {
   SchemaMismatchError,
   SchemaNotInitializedError,
   StoreUnavailableError,
 } from '@durablerun/core'
-import { EventEmitter } from 'node:events'
 import { DatabaseError, type FieldDef, type Pool, type QueryResult } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { PgExecutor } from '../src/executor.js'

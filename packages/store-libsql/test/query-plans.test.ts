@@ -82,7 +82,7 @@ describe('claim candidate legs', () => {
   async function shippedClaimStatement(): Promise<{ sql: string; args: unknown[] }> {
     const seen = await shippedClaimStatements()
     const updates = seen.filter(
-      (st) => /^\s*UPDATE runs\b/.test(st.sql) && st.sql.includes('claim_gen = claim_gen + 1'),
+      (st) => /^\s*update "runs"/.test(st.sql) && st.sql.includes('"claim_gen" = "claim_gen" + ?'),
     )
     expect(updates).toHaveLength(1)
     const only = updates[0]

@@ -36,10 +36,13 @@ import {
   TASK_RESULT_COLUMNS,
   type TaskResult,
   type WakeSpec,
+  activateCas,
+  claimCas,
   clampLimit,
   completeCas,
   decodeBoundedInteger,
   decodeTaskResult,
+  deferLaunchCas,
   durationToMs,
   fenceSetAt,
   mapLimit,
@@ -56,6 +59,7 @@ import {
   requireRunOrdinal,
   serializeTaskHeaders,
   serializeTaskValue,
+  sqlFragment,
   storageValueKind,
   successorCarriedValues,
   successorParentValues,
@@ -122,6 +126,8 @@ function prepareWake(
 ): {
   expression: string
   expressionArgs: [mode: number, relativeMs: number, absoluteMs: number]
+  /** The headroom guard as one conjunct. `fits` is the same guard with the AND its text call sites need. */
+  fitsConjunct: string
   fits: string
   fitArgs: [mode: number, relativeMs: number]
 } {
@@ -134,6 +140,7 @@ function prepareWake(
   const mode = relative ? 1 : 0
   const relativeMs = relative ? argument : 0
   const absoluteMs = relative ? 0 : argument
+  const fitsConjunct = `(CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE TRUE END)`
   return {
     // A batch label is the tracing and crash-injection address, so both wake
     // variants must compile to one statement inventory and bind shape. The
@@ -142,9 +149,36 @@ function prepareWake(
     // stored verbatim after requireEpochMs validates them above.
     expression: `(CASE WHEN ? = 1 THEN ${NOW_MS} + ? ELSE ? END)`,
     expressionArgs: [mode, relativeMs, absoluteMs],
-    fits: `AND (CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE TRUE END)`,
+    fitsConjunct,
+    fits: `AND ${fitsConjunct}`,
     fitArgs: [mode, relativeMs],
   }
+}
+
+/**
+ * What a claim receipt must still satisfy before a transition acts on it: in-range
+ * stored counters, no competing live run, and an eligible task whose stored retry
+ * strategy, headers, accounting, and ordinal are sound. Activation and the launch
+ * deferral take this one fragment, so within this dialect a guard added for one reaches
+ * the other. The generated corpus holds both dialects' copies to the same shape.
+ * `taskConjuncts` adds a transition's own task-side conjuncts.
+ */
+function claimReceiptAdmission(taskConjuncts: readonly string[] = []): string {
+  const receipt = 'runs'
+  const ownTaskConjuncts = taskConjuncts.map((conjunct) => `\n        AND ${conjunct}`).join('')
+  return `(${storedPositiveClaimGeneration(receipt)}
+    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, receipt)}
+    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, receipt)}
+    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}
+    AND ${soleLiveRun(receipt)}
+    AND EXISTS (
+      SELECT 1 FROM tasks t
+      WHERE ${runOwnedByTask(receipt, 't')} AND ${eligibleTask('t', NOW)}
+        AND ${durableTaskRetryAdmissible('t')}
+        AND ${durableTaskHeadersAdmissible('t')}
+        AND ${storedCurrentRunAccounting(receipt, 't')}
+        AND ${storedHighestOwnedOrdinal(receipt)}${ownTaskConjuncts}
+    ))`
 }
 
 /**
@@ -600,7 +634,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
                AND ${storedHighestOwnedOrdinal(run)}`
     }
     const candidateEligibility = claimEligibility('r', 't')
-    const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS })
+    const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.lockClaim({ queue, claimToken })
     // Due runs of live tasks → running, holding the caller's lease token AND
     // this batch's provenance. The two are now different things, which is the
@@ -609,20 +643,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // The materialized candidate CTE takes PostgreSQL row locks before the
     // update. SKIP LOCKED makes concurrent claimers select disjoint queue
     // slices instead of re-evaluating and overwriting one another.
-    b.casMany(
-      'claim',
-      'runs',
-      effectiveLimit,
-      `UPDATE runs SET
-         state = 'running',
-         claimed_by = ?,
-         claim_gen = claim_gen + 1,
-         lease_ms = ?,
-         claim_expires_at_ms = ${NOW} + ?,
-         heartbeat_at_ms = ${NOW},
-         wake_step = COALESCE(wake_step, ${claimedWait.step}),
-         ${FENCE_SET}
-       WHERE run_id IN (
+    const candidateRunIds = sqlFragment(
+      `(
          WITH candidates AS MATERIALIZED (
            SELECT r.run_id
            FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
@@ -634,13 +656,21 @@ export class PostgresSchedulerStore implements SchedulerStore {
            FOR UPDATE OF r SKIP LOCKED
          )
          SELECT run_id FROM candidates
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM runs held
-         WHERE held.queue = ? AND held.state = 'running' AND held.claimed_by = ?
-       )
-       AND ${epochAdditionFits(NOW, '?')}`,
-      [claimToken, leaseMs, leaseMs, queue, effectiveLimit, queue, claimToken, leaseMs],
+       )`,
+      [queue, effectiveLimit],
+    )
+    b.casManyTree(
+      'claim',
+      claimCas({
+        queue,
+        claimToken,
+        leaseMs,
+        candidateRunIds,
+        legacyWaitStep: sqlFragment(claimedWait.step),
+        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [leaseMs]),
+        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [leaseMs]),
+      }),
+      effectiveLimit,
     )
     // attempts is deliberately NOT touched: per the accounting model it moves
     // only on user-failure transitions, never at claim.
@@ -724,40 +754,24 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // Buggify: a lost activation is always legal — the launch channel may
     // drop any delivery; the sweep classifies and relaunches without cost.
     if (this.buggify('activate:lost')) return null
-    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS })
+    const b = new FencedBatch('activate', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     // Per-claim latch: only this claim's first delivery passes; re-extends
     // the lease so channel-delayed launches don't start life nearly expired.
     // A launch whose task is already past its cancellation deadline must not
     // start: the sweep will cancel it. claimed_by is deliberately left alone —
     // the worker keeps its lease — which is exactly the freedom the batch
     // needed and did not have while claimed_by was also the stamp.
-    b.cas(
+    b.casTree(
       'activate',
-      'runs',
-      `UPDATE runs SET
-         activated_gen = ?,
-         started_at_ms = COALESCE(started_at_ms, ${NOW}),
-         claim_expires_at_ms = ${NOW} + lease_ms,
-         heartbeat_at_ms = ${NOW},
-         ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND claim_gen = ? AND activated_gen < ?
-         AND ${storedPositiveClaimGeneration('runs')}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}
-         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}
-         AND ${soleLiveRun('runs')}
-         AND EXISTS (
-           SELECT 1 FROM tasks t
-           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}
-             AND ${durableTaskRetryAdmissible('t')}
-             AND ${durableTaskHeadersAdmissible('t')}
-             AND ${storedCurrentRunAccounting('runs', 't')}
-             AND ${storedHighestOwnedOrdinal('runs')}
-             AND ${activationDurationAdmissible('t', NOW)}
-         )`,
-      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],
+      activateCas({
+        queue,
+        runId,
+        claimToken,
+        claimGen: validClaimGen,
+        admission: sqlFragment(claimReceiptAdmission([activationDurationAdmissible('t', NOW)])),
+        leaseExpiresAt: sqlFragment(`${NOW} + lease_ms`),
+        leaseFits: sqlFragment(epochAdditionFits(NOW, 'runs.lease_ms')),
+      }),
     )
     // First-ever start stamps the task and REPLACES the deadline: max_delay is
     // disarmed by starting (its whole meaning is "cancel if never started");
@@ -1395,41 +1409,21 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // shapes activation refuses: another live run, drifted accounting, an
     // obsolete ordinal, an out-of-range lease or relaunch counter, or an
     // inadmissible stored retry strategy or header set.
-    const b = new FencedBatch('defer-launch', this.ids.token(), { now: NOW_MS })
-    b.cas(
+    const b = new FencedBatch('defer-launch', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    b.casTree(
       'suspend',
-      'runs',
-      `UPDATE runs SET
-         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
-         available_at_ms = ${wakePlan.expression},
-         ${PARKED_CLAIM},
-         ${FENCE_SET}
-       WHERE claim_gen = ? AND activated_gen < ?
-         AND run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND ${storedPositiveClaimGeneration('runs')}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, 'runs')}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')} AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}
-         AND ${soleLiveRun('runs')}
-         AND EXISTS (
-           SELECT 1 FROM tasks t
-           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}
-             AND ${storedCurrentRunAccounting('runs', 't')}
-             AND ${storedHighestOwnedOrdinal('runs')}
-             AND ${durableTaskRetryAdmissible('t')}
-             AND ${durableTaskHeadersAdmissible('t')}
-         )
-         ${wakePlan.fits}`,
-      [
-        ...wakePlan.expressionArgs,
-        ...wakePlan.expressionArgs,
-        validClaimGen,
-        validClaimGen,
-        runId,
+      deferLaunchCas({
         queue,
+        runId,
         claimToken,
-        ...wakePlan.fitArgs,
-      ],
+        claimGen: validClaimGen,
+        admission: sqlFragment(claimReceiptAdmission()),
+        wakeAt: sqlFragment(wakePlan.expression, wakePlan.expressionArgs),
+        wakeFits: sqlFragment(wakePlan.fitsConjunct, wakePlan.fitArgs),
+      }),
     )
     finishSuspension(b, runId)
     const { won } = await b.run(this.db)
@@ -1567,7 +1561,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         queue,
         claimToken,
         resultJson,
-        taskAdmitsCompletionSql: TASK_ADMITS_COMPLETION,
+        taskAdmitsCompletion: sqlFragment(TASK_ADMITS_COMPLETION),
       }),
     )
     b.derived('task', {

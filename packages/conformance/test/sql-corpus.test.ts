@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { claimActivated, withFixture } from '../src/scenario.js'
+import { claimActivated, claimOne, withFixture } from '../src/scenario.js'
 import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /**
@@ -14,7 +14,10 @@ import { DIALECT_FIXTURES } from './dialect-fixtures.js'
  * signatures than it declares, fails: a new branch must be declared, not discovered.
  */
 const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
+  claim: ['claimed'],
+  activate: ['activated'],
   complete: ['completed'],
+  'defer-launch': ['deferred'],
 }
 
 type Signature = readonly { sql: string; bindArity: number }[]
@@ -44,6 +47,15 @@ describe('generated SQL corpus', () => {
         await store.spawn('q', 'job', '{}')
         const run = await claimActivated(store, 'q', 'w1')
         await store.complete('q', run.runId, run.claimToken, '"done"')
+        await store.spawn('q', 'job', '{}')
+        const unlaunched = await claimOne(store, 'q', 'w2')
+        await store.deferLaunch(
+          'q',
+          unlaunched.runId,
+          unlaunched.claimToken,
+          unlaunched.claimGen,
+          5,
+        )
       })
       const corpus = Object.fromEntries(
         Object.entries(TREE_LABELS).map(([label, variants]) => {

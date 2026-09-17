@@ -48,6 +48,7 @@ const weakSetHas = WeakSet.prototype.has.call.bind(WeakSet.prototype.has) as <T 
 ) => boolean
 
 export const TASK_INTRINSICS = freeze({
+  ArrayBufferIsView: ArrayBuffer.isView,
   ArrayIsArray: Array.isArray,
   BigIntFrom: BigInt,
   DateGetTime: dateGetTime,
@@ -70,6 +71,7 @@ export const TASK_INTRINSICS = freeze({
   RangeError,
   ReflectGet: Reflect.get,
   RegExpExec: regexpExec,
+  Set,
   StringFrom: String,
   StringIncludes: stringIncludes,
   StringStartsWith: stringStartsWith,

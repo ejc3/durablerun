@@ -6,8 +6,10 @@ import {
   fenceValue,
   gatingFences,
   nowValue,
-  rawBooleanFragments,
+  rawFragmentProblem,
+  rawSql,
   selfCountingAssignments,
+  sqlFragment,
   stampValue,
 } from '../src/index.js'
 
@@ -134,7 +136,6 @@ describe('SQL tree checks', () => {
       update().set((eb) => ({ attempts: eb('attempts', '*', 2) })),
       update().set((eb) => ({ attempts: eb(eb.val(5), '-', eb.ref('attempts')) })),
       update().set({ attempts: sql<number>`attempts + 1` }),
-      update().set({ attempts: sql<number>`${sql.ref('attempts')} + 1` }),
       update().set((eb) => ({ attempts: eb('infra_retries', '+', 1) })),
       update().set((eb) => ({ attempts: eb.selectFrom('runs as f').select('f.attempt') })),
       update().set((eb) => ({ attempts: eb.fn.coalesce('attempts', eb.val(0)) })),
@@ -147,31 +148,46 @@ describe('SQL tree checks', () => {
       ['arithmetic'],
       ['arithmetic'],
       ['raw'],
-      ['raw'],
       [],
       [],
       [],
     ])
   })
 
-  it('counts raw fragments that decide which rows are read or written', () => {
-    const query = db
+  it('places every raw fragment by its declared role, and refuses one rawSql did not mint', () => {
+    const predicate = (text: string) => rawSql<boolean>(sqlFragment(text), 'predicate')
+    const placed = db
       .updateTable('runs')
-      .set({ state: 'completed', result: sql`json(${'x'})` })
+      .set({ state: 'completed', result: rawSql<string>(sqlFragment(`json('x')`), 'value') })
       .where('run_id', '=', 'r')
-      .where(sql<boolean>`typeof(lease_ms) = 'integer'`)
+      .where(predicate(`typeof(lease_ms) = 'integer'`))
       .where((eb) =>
         eb.or([
           eb('state', '=', 'running'),
-          eb.not(sql<boolean>`w.timeout_at_ms IS runs.available_at_ms`),
+          eb.not(predicate('w.timeout_at_ms IS runs.available_at_ms')),
         ]),
       )
       .where((eb) =>
         eb.exists(
-          eb.selectFrom('tasks as t').select('t.task_id').where(sql<boolean>`t.state = 'x'`),
+          eb.selectFrom('tasks as t').select('t.task_id').where(predicate(`t.state = 'x'`)),
         ),
       )
-    expect(rawBooleanFragments(query.toOperationNode())).toBe(3)
+      .where((eb) => eb('run_id', 'in', rawSql<string>(sqlFragment(`(SELECT 'r')`), 'subquery')))
+    expect(rawFragmentProblem(placed.toOperationNode())).toBeNull()
+
+    const unminted = db.updateTable('runs').set({ state: 'x' }).where(sql<boolean>`1 = 1`)
+    expect(rawFragmentProblem(unminted.toOperationNode())).toBe(
+      'a raw fragment that rawSql did not mint',
+    )
+    const misplaced = db
+      .updateTable('runs')
+      .set({ state: 'x' })
+      .where(rawSql<boolean>(sqlFragment('1 = 1'), 'value'))
+    expect(rawFragmentProblem(misplaced.toOperationNode())).toBe(
+      "a 'value' fragment standing as a predicate",
+    )
+    const ordered = db.selectFrom('runs').select('run_id').orderBy('run_id', 'desc')
+    expect(rawFragmentProblem(ordered.toOperationNode())).toBeNull()
   })
 
   it('binds stamps and fences, splices the clock, and reports what the walk saw', () => {

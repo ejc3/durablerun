@@ -768,8 +768,8 @@ MUTATION_SPECS = [
     (
         "legacy-wait-step-backfill",
         "packages/store-libsql/src/store.ts",
-        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
-        "         wake_step = wake_step,",
+        "        legacyWaitStep: sqlFragment(claimedWait.step),",
+        "        legacyWaitStep: sqlFragment('wake_step'),",
         "a claimed pre-v3 timed wait loses the only copy of its exact step",
     ),
     (
@@ -817,12 +817,8 @@ MUTATION_SPECS = [
     (
         "activate-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
-        "         AND ${soleLiveRun('runs')}\n"
-        "         AND EXISTS (\n",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
-        "         AND 1 = 1\n"
-        "         AND EXISTS (\n",
+        "    AND ${soleLiveRun(receipt)}\n",
+        "    AND 1 = 1\n",
         "activation launches a claimed run after its task acquires a competing live run",
     ),
     (
@@ -843,42 +839,22 @@ MUTATION_SPECS = [
     (
         "activate-rejects-zero-lease",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n",
-        "         AND 1 = 1\n",
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, receipt)}\n",
+        "    AND 1 = 1\n",
         "activation derives a new expiry from a non-positive stored lease",
     ),
     (
         "activate-requires-relaunch-bound",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
-        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}\n"
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
-        "         AND ${soleLiveRun('runs')}\n",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
-        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}\n"
-        "         AND 1 = 1\n"
-        "         AND ${soleLiveRun('runs')}\n",
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n",
+        "    AND 1 = 1\n",
         "activation accepts a claim whose relaunch counter is out of range",
     ),
     (
         "activate-requires-current-run-accounting",
         "packages/store-libsql/src/store.ts",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n"
-        "             AND ${storedCurrentRunAccounting('runs', 't')}\n"
-        "             AND ${storedHighestOwnedOrdinal('runs')}\n"
-        "             AND ${activationDurationAdmissible('t', NOW)}\n"
-        "         )`,\n"
-        "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n"
-        "             AND 1 = 1\n"
-        "             AND ${storedHighestOwnedOrdinal('runs')}\n"
-        "             AND ${activationDurationAdmissible('t', NOW)}\n"
-        "         )`,\n"
-        "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
+        "        AND ${storedCurrentRunAccounting(receipt, 't')}\n",
+        "        AND 1 = 1\n",
         "activation stops rechecking current-run accounting at its winning CAS",
     ),
     (
@@ -2115,24 +2091,31 @@ MUTATION_SPECS = [
     (
         "activate-payload-validation-atomic",
         "packages/store-libsql/src/store.ts",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND 1 = 1\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n",
+        "      WHERE ${runOwnedByTask(receipt, 't')} AND ${eligibleTask('t', NOW)}\n"
+        "        AND ${durableTaskRetryAdmissible('t')}\n"
+        "        AND ${durableTaskHeadersAdmissible('t')}\n",
+        "      WHERE ${runOwnedByTask(receipt, 't')} AND ${eligibleTask('t', NOW)}\n"
+        "        AND 1 = 1\n"
+        "        AND ${durableTaskHeadersAdmissible('t')}\n",
         "activation latches a generation before discovering an undecodable retry strategy",
     ),
     (
         "activate-headers-admissible",
         "packages/store-libsql/src/store.ts",
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n"
-        "             AND ${storedCurrentRunAccounting('runs', 't')}\n",
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND 1 = 1\n"
-        "             AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "        AND ${durableTaskRetryAdmissible('t')}\n"
+        "        AND ${durableTaskHeadersAdmissible('t')}\n"
+        "        AND ${storedCurrentRunAccounting(receipt, 't')}\n",
+        "        AND ${durableTaskRetryAdmissible('t')}\n"
+        "        AND 1 = 1\n"
+        "        AND ${storedCurrentRunAccounting(receipt, 't')}\n",
         "activation exposes inadmissible durable headers after latching its generation",
+    ),
+    (
+        "defer-launch-requires-claim-receipt-admission",
+        "packages/store-libsql/src/store.ts",
+        "        admission: sqlFragment(claimReceiptAdmission()),",
+        "        admission: sqlFragment('1 = 1'),",
+        "the launch deferral parks a claim whose receipt activation would refuse",
     ),
     (
         "expire-lease-requires-future-expiry",
@@ -2841,23 +2824,17 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "claim-lease",
         "claim lease deadline",
-        "       AND ${epochAdditionFits(NOW, '?')}`,\n"
-        "      [\n"
-        "        claimToken,",
+        "        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [leaseMs]),",
         "epochAdditionFits(NOW, '?')",
-        "         claim_expires_at_ms = ${NOW} + ?,\n"
-        "         heartbeat_at_ms = ${NOW},\n"
-        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
+        "        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [leaseMs]),",
         "${NOW} + ?",
     ),
     (
         "activation-lease",
         "activation lease deadline",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
-        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}",
+        "        leaseFits: sqlFragment(epochAdditionFits(NOW, 'runs.lease_ms')),",
         "epochAdditionFits(NOW, 'runs.lease_ms')",
-        "         claim_expires_at_ms = ${NOW} + lease_ms,\n"
-        "         heartbeat_at_ms = ${NOW},",
+        "        leaseExpiresAt: sqlFragment(`${NOW} + lease_ms`),",
         "${NOW} + lease_ms",
     ),
     (
@@ -5009,6 +4986,13 @@ VERDICTS = {
         "packages/conformance/test/libsql.test.ts",
         "scheduler conformance [libsql] activate leaves a claimed run unchanged when its stored lease is zero",
         "mutation-verdict:behavior:activate-rejects-zero-lease-atomically",
+        "packages/conformance/src/suite.ts",
+    ),
+    "defer-launch-requires-claim-receipt-admission": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "scheduler conformance [libsql] rolling-deploy launch deferral a launch deferral refuses a corrupt claim and writes nothing",
+        "mutation-verdict:behavior:defer-launch-requires-claim-receipt-admission",
         "packages/conformance/src/suite.ts",
     ),
     "activate-requires-relaunch-bound": ExpectedVerdict(
@@ -9955,7 +9939,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 438:
+        if len(MUTATIONS) != 439:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

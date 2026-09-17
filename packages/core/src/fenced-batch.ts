@@ -11,6 +11,7 @@ import {
   type SelfFenceRelation,
   isFenceStatementName,
 } from './contract.js'
+import { NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type {
   SqlBatchMode,
@@ -28,7 +29,7 @@ import {
   clockFunctionCalls,
   gatingFences,
   isDefinedStatement,
-  rawBooleanFragments,
+  rawFragmentProblem,
   rawFragmentTexts,
   selfCountingAssignments,
   statementGrammarProblem,
@@ -73,18 +74,13 @@ import {
  * its own reviewed hazard.
  */
 
-/** This statement's own provenance value: `<seed>:<statement name>`. */
-export const STAMP = '$STAMP$'
-
-/** The batch's clock expression, spliced as SQL. Legal only in a CAS. */
-export const NOW = '$NOW$'
-
 /** The single definition of the provenance write. Shared by every dialect. */
 export const FENCE_SET = `fence_stamp = ${STAMP}, fence_at_ms = ${NOW}`
 export const FENCE_COLS = `fence_stamp, fence_at_ms`
 export const FENCE_VALS = `${STAMP}, ${NOW}`
 
 const {
+  Set: TrustedSet,
   TypeError: TrustedTypeError,
   WeakSet: TrustedWeakSet,
   WeakSetAdd: weakSetAdd,
@@ -356,9 +352,7 @@ export class FencedBatch {
     sql: string,
     args: SqlStatement['args'] = [],
   ): this {
-    if (!Number.isSafeInteger(max) || max < 1) {
-      throw new Error(`FencedBatch[${this.label}] casMany '${name}' max must be a positive integer`)
-    }
+    this.requireCasManyMax(name, max)
     return this.add({ name, sql, args, kind: 'casMany', target, rows: { many: 'CAS' }, max })
   }
 
@@ -491,7 +485,7 @@ export class FencedBatch {
     }
     const assignments =
       spec.set === undefined ? [] : (Object.entries(spec.set) as Array<[string, string]>)
-    const allowedColumns = new Set<string>(DERIVED_WRITABLE_COLUMNS[target])
+    const allowedColumns = new TrustedSet<string>(DERIVED_WRITABLE_COLUMNS[target])
     if (sealedSelfKey !== null) allowedColumns.add(sealedSelfKey)
     for (const [column, expression] of assignments) {
       const isProvenanceColumn = /fence_(?:stamp|at_ms)/i.test(column)
@@ -664,7 +658,19 @@ export class FencedBatch {
 
   /** `cas`, built as a tree. It must update a provenance-carrying table and stamp it from the clock. */
   casTree(name: string, statement: DefinedStatement): this {
-    return this.addTree('cas', name, statement, 'one')
+    return this.addTree('cas', name, statement, 'one', 1)
+  }
+
+  /** `casMany`, built as a tree: a compare-and-set that may win up to `max` rows. */
+  casManyTree(name: string, statement: DefinedStatement, max: number): this {
+    this.requireCasManyMax(name, max)
+    return this.addTree('casMany', name, statement, { many: 'CAS' }, max)
+  }
+
+  private requireCasManyMax(name: string, max: number): void {
+    if (!Number.isSafeInteger(max) || max < 1) {
+      throw new Error(`FencedBatch[${this.label}] casMany '${name}' max must be a positive integer`)
+    }
   }
 
   /**
@@ -672,12 +678,12 @@ export class FencedBatch {
    * provenance-carrying table must stamp the rows it writes.
    */
   followOnTree(name: string, statement: DefinedStatement, rows: RowBound): this {
-    return this.addTree('followOn', name, statement, rows)
+    return this.addTree('followOn', name, statement, rows, null)
   }
 
   /** `tail`, built as a tree: a SELECT that a fence gates. */
   tailTree(name: string, statement: DefinedStatement): this {
-    return this.addTree('tail', name, statement, null)
+    return this.addTree('tail', name, statement, null, null)
   }
 
   /** The batch-shape rules every statement passes, text or tree. Returns the error prefix. */
@@ -704,19 +710,21 @@ export class FencedBatch {
 
   /**
    * Add a tree statement. Every rule reads the tree, inside a closed statement grammar:
-   * the table it writes and whether it stamps that table, the raw boolean fragments it
-   * declares, the fences that gate it and the table each one stamps, the clock, and
+   * the table it writes and whether it stamps that table, where each raw fragment
+   * stands, the fences that gate it and the table each one stamps, the clock, and
    * assignments that count. It compiles once, here, so what was checked is what runs.
    *
-   * Raw fragment text is the one thing a tree cannot read. It is scanned for the batch
-   * clock's exact text and for clock spellings, as `scripts/clock-lint.py` scans store
-   * sources, and a `?` it adds shows up as a placeholder no argument binds.
+   * Raw fragment text is the one thing a tree cannot read. Every raw node must come
+   * from `rawSql`, which turns its binds and clock into nodes, and its text is scanned
+   * for the batch clock's exact text and for clock spellings, as `scripts/clock-lint.py`
+   * scans store sources.
    */
   private addTree(
-    kind: 'cas' | 'followOn' | 'tail',
+    kind: 'cas' | 'casMany' | 'followOn' | 'tail',
     name: string,
     statement: DefinedStatement,
     rows: RowBound | null,
+    max: number | null,
   ): this {
     const at = this.admit(kind, name)
     const dialect = this.tree
@@ -731,7 +739,7 @@ export class FencedBatch {
     if (grammar !== null) {
       throw new Error(`${at} is outside the statement grammar: it holds ${grammar}`)
     }
-    const isCas = kind === 'cas'
+    const isCas = kind === 'cas' || kind === 'casMany'
     if (kind === 'tail') {
       if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)
     } else if (tree.kind !== 'UpdateQueryNode' && (isCas || tree.kind !== 'DeleteQueryNode')) {
@@ -755,12 +763,8 @@ export class FencedBatch {
       }
     }
 
-    const rawBooleans = rawBooleanFragments(tree)
-    if (rawBooleans !== statement.rawBooleans) {
-      throw new Error(
-        `${at} holds ${rawBooleans} raw boolean fragments but '${statement.name}' declares ${statement.rawBooleans}`,
-      )
-    }
+    const rawProblem = rawFragmentProblem(tree)
+    if (rawProblem !== null) throw new Error(`${at} holds ${rawProblem}`)
 
     const compiled = dialect.compile(tree, {
       now: this.now,
@@ -788,11 +792,6 @@ export class FencedBatch {
     }
 
     const rawTexts = rawFragmentTexts(tree)
-    if (rawTexts.some((text) => /\$STAMP\$|\$NOW\$|\$FENCE:/.test(text))) {
-      throw new Error(
-        `${at} holds a text token in a raw fragment: a tree substitutes token nodes only, so use stampValue, nowValue, or fenceValue`,
-      )
-    }
     // A compare-and-set may carry the batch clock's own text inside a fragment. Any
     // other spelling is a second clock.
     const spelledClock =
@@ -806,9 +805,11 @@ export class FencedBatch {
         `${at} spells out a database clock: the only clock a statement may hold is the clock token, so a batch reads one clock expression`,
       )
     }
+    // A fragment's binds equal its placeholders by construction. An operator or an
+    // identifier built from nodes can still add a `?` that no argument binds.
     if (compiled.placeholders !== compiled.parameters.length) {
       throw bindCompilationError(
-        `${at} compiles to ${compiled.placeholders} placeholders for ${compiled.parameters.length} arguments: a raw fragment may not add a '?'`,
+        `${at} compiles to ${compiled.placeholders} placeholders for ${compiled.parameters.length} arguments: an operator or identifier added a '?' that no argument binds`,
       )
     }
     if (kind === 'followOn') {
@@ -839,7 +840,7 @@ export class FencedBatch {
       kind,
       fence: stamps ? { target: stamped, sealedBy: null } : null,
       rows,
-      max: isCas ? 1 : null,
+      max,
       form: 'tree',
       compiled: { sql: compiled.sql, args },
     })

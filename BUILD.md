@@ -840,17 +840,40 @@ these three things; nothing else in the system does I/O, time, or randomness.
     descriptor against every dialect's catalog, and `complete`'s compare-and-set
     moves to a tree.
   - PR3.9b: claim, activation, and `deferLaunch`, with the one admission
-    fragment deferred below.
+    fragment below. A dialect's predicates reach a shared statement as SQL
+    fragments with their binds, which core turns into nodes. The claim's
+    candidate subquery stays store-owned, because the dialects select
+    candidates differently. A fragment's role is declared where it is placed
+    and checked against its position in the tree.
   - PR3.9c: suspend, reschedule, await-event, and emit-event.
   - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
     and spawn.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
-  - Deferred to PR3.9b and PR3.9c: `wake-witness-surface.test.ts` and
-    `query-plans.test.ts` match `UPDATE runs` in upper case, so they fail loudly
-    when emit-event and claim compile from trees and must follow the compiled
-    spelling then.
+  - Deferred to PR3.9c: `wake-witness-surface.test.ts` matches `UPDATE runs` in
+    upper case, so it fails loudly when emit-event compiles from a tree and must
+    follow the compiled spelling then. `query-plans.test.ts` followed the
+    claim's in PR3.9b.
+  - Deferred to PR3.9c: `prepareWake` returns its headroom guard twice, as a
+    bare conjunct for the launch deferral's tree and with a leading AND for its
+    text call sites. When suspend and reschedule move to trees, the AND form
+    goes.
+  - Deferred to PR3.9c: the stores' text `PARKED_CLAIM` and core's
+    `PARKED_CLAIM_COLUMNS` are two forms of one column list, held together by a
+    store test. When suspend and reschedule move to trees, the text form goes.
+  - Deferred to PR3.9e: the tree path has no registered mutations of its own.
+    The thirty mutations that own the text scanners in `fenced-batch.ts` get
+    tree-path successors when the scanners are deleted, covering the statement
+    grammar, fragment roles, gating, stamping, the clock, and counting
+    assignments.
+  - Deferred to PR3.9e: `sql-tree.ts` and `fenced-batch.ts` each scan string
+    literals and parentheses. The text path's scanners are owned by its
+    mutations and go when the text path goes, leaving the tree module's as the
+    only copies.
+  - Deferred to PR3.9e: base-gate's re-aim bridge has one arm per historical
+    registry hash. Arms pinned to a registry no open PR is based on are deleted
+    then, leaving the helpers and the live arm.
   - Deferred to PR3.9e, from `postmortems/pr3.9a-statement-trees-review.md`: a
     tree's gating rule decides position, not correlation, so a follow-on gated by
     an uncorrelated subquery may write a row the fenced run does not own. The
@@ -904,11 +927,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   explicitly, so a hand-maintained example is never the completeness claim.
   Its own PR: it rewrites the SQL of thirteen operations, and the provenance
   branches have repeatedly produced fix-induced defects.
-  - Deferred from `postmortems/pr3.2a-lifecycle-review.md`: one admission
-    fragment for the claim receipt, used by both activation and `deferLaunch`,
-    so a guard added to one reaches the other. Deferred because seven
-    registered mutations own find texts inside activation's SQL, and a shared
-    fragment rewrites every one of those texts and their verdicts.
+  - Delivered in PR3.9b, from `postmortems/pr3.2a-lifecycle-review.md`: one
+    admission fragment for the claim receipt, used by both activation and
+    `deferLaunch`, so a guard added to one reaches the other. Six registered
+    mutations that owned find texts inside activation's SQL now own the
+    fragment's.
   - Deferred from `postmortems/pr3.2b-retry-task-review.md`: a successor-carry
     case generated from every batch that inserts a run, in place of one
     hand-listed family per path. The model property covers the protocol today,

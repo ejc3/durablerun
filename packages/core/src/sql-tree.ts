@@ -9,13 +9,16 @@ import {
   DummyDriver,
   type Expression,
   FunctionNode,
+  HavingNode,
   IdentifierNode,
   InsertQueryNode,
   Kysely,
+  OnNode,
   type OperationNode,
   OperationNodeTransformer,
   OperatorNode,
   OrNode,
+  OrderByItemNode,
   ParensNode,
   type QueryCompiler,
   type QueryId,
@@ -30,8 +33,28 @@ import {
   UnaryOperationNode,
   UpdateQueryNode,
   ValueNode,
+  WhenNode,
+  WhereNode,
   createQueryId,
 } from 'kysely'
+import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
+import { TASK_INTRINSICS } from './intrinsics.js'
+import type { SqlStatement } from './primitives.js'
+
+// Task code shares this process and may replace a global such as `Map` while a pass
+// runs. What these checks keep across calls lives in collections captured at module
+// load, and nothing here constructs an ambient collection at call time. The checks on
+// a statement's binds go further: they call captured operations and read own properties
+// only, because they decide whether a store's admission reaches the statement.
+const {
+  ArrayBufferIsView: arrayBufferIsView,
+  ObjectCreate: objectCreate,
+  ObjectKeys: objectKeys,
+  ReflectGet: reflectGet,
+  WeakSet: TrustedWeakSet,
+  WeakSetAdd: weakSetAdd,
+  WeakSetHas: weakSetHas,
+} = TASK_INTRINSICS
 
 /**
  * Engine tokens carried as value nodes whose values are these sentinel objects. A
@@ -54,12 +77,11 @@ class EngineToken {
 }
 
 /**
- * An engine token as a builder expression. The builder treats an object as an
- * expression only when it carries `expressionType`, so a bare node source would be
- * bound as an ordinary value.
+ * A node as a builder expression. The builder treats an object as an expression only
+ * when it carries `expressionType`, so a bare node source would be bound as an ordinary
+ * value.
  */
-function tokenExpression<T>(token: EngineToken): Expression<T> {
-  const node = ValueNode.create(token)
+function nodeExpression<T>(node: OperationNode): Expression<T> {
   return {
     get expressionType(): T | undefined {
       return undefined
@@ -69,12 +91,12 @@ function tokenExpression<T>(token: EngineToken): Expression<T> {
 }
 
 /** This statement's own provenance value. */
-export const stampValue = tokenExpression<string>(EngineToken.stamp)
+export const stampValue = nodeExpression<string>(ValueNode.create(EngineToken.stamp))
 /** The batch's clock. Legal only in a compare-and-set. */
-export const nowValue = tokenExpression<number>(EngineToken.now)
+export const nowValue = nodeExpression<number>(ValueNode.create(EngineToken.now))
 /** The provenance value an earlier statement of the batch wrote. */
 export function fenceValue(name: string): Expression<string> {
-  return tokenExpression<string>(EngineToken.fence(name))
+  return nodeExpression<string>(ValueNode.create(EngineToken.fence(name)))
 }
 
 function tokenOf(node: OperationNode | undefined): EngineToken | null {
@@ -108,56 +130,277 @@ export function compileOnlyBuilder<DB>(): Kysely<DB> {
 export type StatementTree = RootOperationNode
 
 /**
+ * Visit a bind and everything below it. `visit` returns true to stop the descent into a
+ * value. Bytes are one value, never a list of indexes.
+ */
+function walkBinds(
+  value: unknown,
+  path: string,
+  visit: (value: unknown, path: string) => boolean,
+): void {
+  if (visit(value, path)) return
+  if (typeof value !== 'object' || value === null || arrayBufferIsView(value)) return
+  const names = objectKeys(value)
+  for (let at = 0; at < names.length; at += 1) {
+    const name = names[at] as string
+    walkBinds(
+      reflectGet(value, name),
+      path === 'bind' ? `bind '${name}'` : `${path}.${name}`,
+      visit,
+    )
+  }
+}
+
+/**
  * Refuse an undefined bind, at any depth, before a statement is built. The builder
  * silently drops an undefined assignment, which would send a valid statement that skips
  * a column.
  */
 export function requireDefinedBinds(statement: string, binds: unknown, path = 'bind'): void {
-  if (binds === undefined) {
-    throw new TypeError(
-      `${statement}: ${path} is undefined, so bind null explicitly if that is what you mean`,
-    )
-  }
-  if (typeof binds !== 'object' || binds === null || binds instanceof Uint8Array) return
-  for (const [name, value] of Object.entries(binds)) {
-    requireDefinedBinds(statement, value, path === 'bind' ? `bind '${name}'` : `${path}.${name}`)
-  }
+  walkBinds(binds, path, (value, at) => {
+    if (value === undefined) {
+      throw new TypeError(
+        `${statement}: ${at} is undefined, so bind null explicitly if that is what you mean`,
+      )
+    }
+    return false
+  })
 }
 
-/** A statement minted by `defineStatement`: its tree, and the raw booleans it declares. */
+/** A statement minted by `defineStatement`. */
 export interface DefinedStatement {
   readonly name: string
   readonly tree: StatementTree
-  readonly rawBooleans: number
 }
 
-const definedStatements = new WeakSet<object>()
+const definedStatements = new TrustedWeakSet<object>()
 
 /**
  * Define a statement once for every dialect. A batch accepts only statements minted
- * here, so every tree statement's binds passed `requireDefinedBinds`, and the raw
- * boolean fragments it carries are declared beside it.
+ * here, so every tree statement's binds passed `requireDefinedBinds`.
  */
 export function defineStatement<Binds extends Readonly<Record<string, unknown>>>(
   name: string,
-  shape: { readonly rawBooleans?: number },
   build: (binds: Binds) => { toOperationNode(): StatementTree },
 ): (binds: Binds) => DefinedStatement {
   return (binds) => {
     requireDefinedBinds(name, binds)
-    const statement = Object.freeze({
-      name,
-      tree: build(binds).toOperationNode(),
-      rawBooleans: shape.rawBooleans ?? 0,
-    })
-    definedStatements.add(statement)
+    const outer = placements
+    const placed: Placements = { head: null }
+    placements = placed
+    let tree: StatementTree
+    try {
+      tree = build(binds).toOperationNode()
+    } finally {
+      placements = outer
+    }
+    requirePlacedFragments(name, binds, placed)
+    const statement = Object.freeze({ name, tree })
+    weakSetAdd(definedStatements, statement)
     return statement
   }
 }
 
 /** True only for a statement `defineStatement` minted. */
 export function isDefinedStatement(value: unknown): value is DefinedStatement {
-  return typeof value === 'object' && value !== null && definedStatements.has(value)
+  return typeof value === 'object' && value !== null && weakSetHas(definedStatements, value)
+}
+
+/**
+ * Store-owned SQL text with its binds. In the text, `?` binds the next argument and
+ * `$NOW$` is the batch clock. A dialect's fragments stay text, so one statement tree
+ * serves every dialect and carries the dialect's predicates as data.
+ */
+export interface SqlFragment {
+  readonly sql: string
+  readonly args: SqlStatement['args']
+}
+
+const knownFragments = new TrustedWeakSet<object>()
+
+/**
+ * The fragments `rawSql` has placed during the statement build in progress, one entry
+ * for each placement, or null outside a build. Placement is scoped to one build, so a
+ * fragment another statement placed does not count here. The entries are a linked list
+ * of own properties, which no replaced array method can reach.
+ */
+type Placement = { fragment: object | null; next: Placement | null }
+type Placements = { head: Placement | null }
+let placements: Placements | null = null
+
+export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFragment {
+  const fragment = Object.freeze({ sql, args: Object.freeze([...args]) })
+  weakSetAdd(knownFragments, fragment)
+  return fragment
+}
+
+/**
+ * Refuse a fragment bind the statement took and never placed, at any depth. Each bind
+ * that holds a fragment consumes one placement of it, so one object passed as two binds
+ * needs two placements, and a bind placed twice is fine.
+ */
+function requirePlacedFragments(statement: string, binds: unknown, placed: Placements): void {
+  walkBinds(binds, 'bind', (value, at) => {
+    if (typeof value !== 'object' || value === null || !weakSetHas(knownFragments, value)) {
+      return false
+    }
+    let placement = placed.head
+    while (placement !== null && placement.fragment !== value) placement = placement.next
+    if (placement === null) {
+      throw new Error(`${statement}: ${at} is a fragment the statement never places`)
+    }
+    placement.fragment = null
+    return true
+  })
+}
+
+/**
+ * Where a fragment stands, declared where it is placed and checked against the tree:
+ * a `predicate` is a boolean that decides which rows are read or written, a `subquery`
+ * is the operand a row must be IN, and a `value` is anything else, such as an assigned
+ * value or an operand of an expression.
+ */
+export type RawRole = 'predicate' | 'subquery' | 'value'
+
+const RAW_ROLES = ['predicate', 'subquery', 'value'] as const satisfies readonly RawRole[]
+const mintedRaws: Readonly<Record<RawRole, WeakSet<object>>> = {
+  predicate: new TrustedWeakSet<object>(),
+  subquery: new TrustedWeakSet<object>(),
+  value: new TrustedWeakSet<object>(),
+}
+
+function mintedRole(node: object): RawRole | undefined {
+  return RAW_ROLES.find((role) => weakSetHas(mintedRaws[role], node))
+}
+
+/** A fragment's text read once: its literals' contents, and everything outside them. */
+function readFragment(sql: string): { literals: string[]; outside: string; prefixed: boolean } {
+  const literals: string[] = []
+  let outside = ''
+  let prefixed = false
+  for (let i = 0; i < sql.length; i++) {
+    if (sql[i] !== "'") {
+      outside += sql[i]
+      continue
+    }
+    // `E'…'`, `N'…'`, `X'…'`, and `U&'…'` are string forms with their own escape rules.
+    if (/[A-Za-z&]/.test(sql[i - 1] ?? '')) prefixed = true
+    let literal = ''
+    for (i++; i < sql.length; i++) {
+      if (sql[i] !== "'") literal += sql[i]
+      else if (sql[i + 1] === "'") literal += sql[++i]
+      else break
+    }
+    literals.push(literal)
+    outside += "''"
+  }
+  return { literals, outside, prefixed }
+}
+
+/** Whether the text outside literals is one parenthesized group: its first `(` closes at its end. */
+function isOneGroup(outside: string): boolean {
+  const text = outside.trim()
+  if (!text.startsWith('(')) return false
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '(') depth++
+    else if (text[i] === ')') {
+      depth--
+      if (depth === 0) return i === text.length - 1
+    }
+  }
+  return false
+}
+
+interface ParsedFragment {
+  readonly pieces: readonly string[]
+  readonly tokens: readonly ('bind' | 'now')[]
+}
+
+const FRAGMENT_TOKEN = new RegExp(String.raw`\?|${NOW.replaceAll('$', String.raw`\$`)}`, 'g')
+
+/**
+ * Validate a fragment's text for its role and split it at its binds and clock tokens.
+ * The text is split without reading SQL beyond plain single-quoted literals, so anything
+ * that would hide a token from that reading is refused: a comment, a dollar-quoted or
+ * prefixed string, and a token inside a literal.
+ */
+function parseFragment(sql: string, role: RawRole): ParsedFragment {
+  if (sql.includes(STAMP) || sql.includes(FENCE_PREFIX)) {
+    throw new Error(
+      'a SQL fragment may not hold a stamp or fence token: a tree carries those as nodes',
+    )
+  }
+  const { literals, outside, prefixed } = readFragment(sql)
+  if (outside.includes('--') || outside.includes('/*')) {
+    throw new Error('a SQL fragment may not hold a comment: its text is split without reading SQL')
+  }
+  if (prefixed || /\$\w*\$/.test(outside.replaceAll(NOW, ''))) {
+    throw new Error(
+      'a SQL fragment may use only plain single-quoted literals: its text is split without reading SQL',
+    )
+  }
+  if (literals.some((literal) => literal.includes('?') || literal.includes(NOW))) {
+    throw new Error(
+      'a SQL fragment may not hold a bind or the clock token inside a string literal: its text is split without reading SQL',
+    )
+  }
+  if (role === 'subquery' && !isOneGroup(outside)) {
+    throw new Error('a subquery fragment must be one parenthesized group')
+  }
+  const pieces: string[] = []
+  const tokens: ('bind' | 'now')[] = []
+  let last = 0
+  for (const match of sql.matchAll(FRAGMENT_TOKEN)) {
+    pieces.push(sql.slice(last, match.index))
+    last = match.index + match[0].length
+    tokens.push(match[0] === NOW ? 'now' : 'bind')
+  }
+  pieces.push(sql.slice(last))
+  return { pieces, tokens }
+}
+
+// Store fragments are static text built on every call, so a fragment is validated and
+// split once per role and text. The cap bounds the cache if a caller ever builds text
+// from run-time values.
+const PARSED_FRAGMENT_CAP = 512
+const parsedFragments: Record<string, ParsedFragment> = objectCreate(null)
+let parsedFragmentCount = 0
+
+function parsedFragment(sql: string, role: RawRole): ParsedFragment {
+  const key = `${role}:${sql}`
+  const cached = parsedFragments[key]
+  if (cached !== undefined) return cached
+  const parsed = parseFragment(sql, role)
+  if (parsedFragmentCount < PARSED_FRAGMENT_CAP) {
+    parsedFragments[key] = parsed
+    parsedFragmentCount++
+  }
+  return parsed
+}
+
+/**
+ * A fragment as a raw node whose binds and clock are nodes, not text. Each `?` becomes
+ * a value node and each `$NOW$` becomes the clock token, so the clock rules see it.
+ *
+ * A stamp or a fence never rides in a fragment: the rules that read them need them as
+ * nodes of the tree. A predicate or value compiles inside parentheses, so an OR inside
+ * it cannot void the conjuncts around it. A subquery must bring its own, because a
+ * second pair would make it one scalar value.
+ */
+export function rawSql<T>(fragment: SqlFragment, role: RawRole): Expression<T> {
+  const { pieces, tokens } = parsedFragment(fragment.sql, role)
+  let bound = 0
+  const parameters = tokens.map((token) =>
+    ValueNode.create(token === 'now' ? EngineToken.now : fragment.args[bound++]),
+  )
+  if (bound !== fragment.args.length) {
+    throw new TypeError(`a SQL fragment binds ${bound} of its ${fragment.args.length} arguments`)
+  }
+  const raw = RawNode.create(pieces, parameters)
+  weakSetAdd(mintedRaws[role], raw)
+  if (placements !== null) placements.head = { fragment, next: placements.head }
+  return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))
 }
 
 /** The values a statement's tokens take in one batch invocation. */
@@ -172,7 +415,7 @@ export interface TokenBindings {
 export interface CompiledTree {
   readonly sql: string
   readonly parameters: readonly unknown[]
-  /** `?` placeholders in the compiled SQL. More than `parameters` means a raw fragment added one. */
+  /** `?` placeholders in the compiled SQL. More than `parameters` means a node added one. */
   readonly placeholders: number
   /** Every fence the statement names, wherever it appears. */
   readonly fences: readonly string[]
@@ -298,23 +541,20 @@ function tableName(node: OperationNode | undefined): string | null {
   return TableNode.is(inner) ? inner.table.identifier.name : null
 }
 
-/** The names a query's own tables answer to: each alias or bare table name, to its table. */
-function tableScope(query: OperationNode): Map<string, string> {
+/** The names a query's own tables answer to: each alias or bare table name, with its table. */
+function tableScope(query: OperationNode): { name: string; table: string }[] {
   const sources: OperationNode[] = []
   if (UpdateQueryNode.is(query) && query.table !== undefined) sources.push(query.table)
   if (DeleteQueryNode.is(query)) sources.push(...query.from.froms)
   if (SelectQueryNode.is(query)) {
     sources.push(...(query.from?.froms ?? []), ...(query.joins ?? []).map((join) => join.table))
   }
-  const scope = new Map<string, string>()
-  for (const source of sources) {
+  return sources.flatMap((source) => {
     const table = tableName(source)
-    if (table === null) continue
-    const alias =
-      AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : table
-    scope.set(alias, table)
-  }
-  return scope
+    if (table === null) return []
+    const name = AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : table
+    return [{ name, table }]
+  })
 }
 
 /** A fence that gates, and the table whose `fence_stamp` it is compared with. */
@@ -324,7 +564,10 @@ export interface GatingFence {
 }
 
 /** A conjunct that IS `fence_stamp = <fence token>`, in either orientation. */
-function fenceEquality(node: OperationNode, scope: Map<string, string>): GatingFence | null {
+function fenceEquality(
+  node: OperationNode,
+  scope: readonly { name: string; table: string }[],
+): GatingFence | null {
   if (!BinaryOperationNode.is(node) || operatorName(node.operator) !== '=') return null
   for (const [column, value] of [
     [node.leftOperand, node.rightOperand],
@@ -339,9 +582,9 @@ function fenceEquality(node: OperationNode, scope: Map<string, string>): GatingF
     const qualifier = reference.table?.table.identifier.name
     const table =
       qualifier !== undefined
-        ? scope.get(qualifier)
-        : scope.size === 1
-          ? [...scope.values()][0]
+        ? scope.find((source) => source.name === qualifier)?.table
+        : scope.length === 1
+          ? scope[0]?.table
           : undefined
     if (table !== undefined) return { fence: token.fence, table }
   }
@@ -393,14 +636,14 @@ function mentions(text: string, column: string): boolean {
   return new RegExp(String.raw`(?<![\w.])"?${column}"?(?!\w)`, 'i').test(text)
 }
 
-const COUNTING_OPERATORS = new Set(['+', '-', '*', '/', '%', '||'])
+const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']
 
 /**
  * Assignments that may count twice when a follow-on replays: `arithmetic` combines the
  * column it writes with an arithmetic or concatenation operator, however the operands
- * are ordered, qualified, or parenthesized, and `raw` hides that column inside a raw fragment, where the tree
- * cannot see what is done with it. A self-reference built from nodes, such as
- * `COALESCE(column, …)`, is visible and allowed.
+ * are ordered, qualified, or parenthesized, and `raw` names that column inside a
+ * fragment, where the tree cannot see what is done with it. A self-reference built from
+ * nodes, such as `COALESCE(column, …)`, is visible and allowed.
  */
 export function selfCountingAssignments(
   query: OperationNode,
@@ -411,24 +654,106 @@ export function selfCountingAssignments(
     const arithmetic = someNode(update.value, (candidate) => {
       if (!BinaryOperationNode.is(candidate)) return false
       const operator = operatorName(candidate.operator)
-      if (operator === null || !COUNTING_OPERATORS.has(operator)) return false
+      if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false
       return (
         referencedColumn(candidate.leftOperand) === column ||
         referencedColumn(candidate.rightOperand) === column
       )
     })
     if (arithmetic) return [{ column, how: 'arithmetic' }]
-    const raw = someNode(update.value, (candidate) => {
-      if (!RawNode.is(candidate)) return false
-      return (
-        mentions(candidate.sqlFragments.join(' '), column) ||
-        candidate.parameters.some((parameter) =>
-          someNode(parameter, (inner) => referencedColumn(inner) === column),
-        )
-      )
-    })
+    const raw = someNode(
+      update.value,
+      (candidate) => RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column),
+    )
     return raw ? [{ column, how: 'raw' }] : []
   })
+}
+
+/** The raw node the builder makes for itself: an ORDER BY direction. */
+function isBuilderRaw(parent: OperationNode, node: OperationNode): boolean {
+  return (
+    OrderByItemNode.is(parent) &&
+    parent.direction === node &&
+    RawNode.is(node) &&
+    node.parameters.length === 0 &&
+    /^(?:asc|desc)$/i.test(node.sqlFragments.join('').trim())
+  )
+}
+
+/** The operand a row must, or must not, be IN or EXIST in: a subquery position. */
+function subqueryOperand(node: OperationNode): OperationNode | null {
+  if (UnaryOperationNode.is(node) && operatorName(node.operator) === 'exists') {
+    return unwrapParens(node.operand)
+  }
+  const operator = BinaryOperationNode.is(node) ? operatorName(node.operator) : null
+  return BinaryOperationNode.is(node) && (operator === 'in' || operator === 'not in')
+    ? unwrapParens(node.rightOperand)
+    : null
+}
+
+/** The boolean a clause node holds: a WHERE, a HAVING, a JOIN's ON, or a CASE condition. */
+function clauseBoolean(node: OperationNode): OperationNode | null {
+  if (WhereNode.is(node)) return node.where
+  if (HavingNode.is(node)) return node.having
+  if (OnNode.is(node)) return node.on
+  return WhenNode.is(node) ? node.condition : null
+}
+
+/**
+ * Why a statement's raw fragments are not in order, or null when they are. Every raw
+ * node must come from `rawSql`, stand in one place, and stand where its role says, so a
+ * fragment declared a value cannot stand as a whole boolean. Position is read from the
+ * tree: a predicate is a boolean of a WHERE, HAVING, ON, or CASE condition, through
+ * AND, OR, NOT, and parentheses, at any depth. A subquery is the operand of IN, NOT IN,
+ * or EXISTS there. Anything else is a value. The builder's own ORDER BY direction is the
+ * one raw node `rawSql` does not mint.
+ */
+export function rawFragmentProblem(tree: OperationNode): string | null {
+  const predicates: OperationNode[] = []
+  const subqueries: OperationNode[] = []
+  const markBoolean = (node: OperationNode): void => {
+    const inner = unwrapParens(node)
+    const operand = subqueryOperand(inner)
+    if (RawNode.is(inner)) {
+      predicates.push(inner)
+    } else if (AndNode.is(inner) || OrNode.is(inner)) {
+      markBoolean(inner.left)
+      markBoolean(inner.right)
+    } else if (operand !== null) {
+      if (RawNode.is(operand)) subqueries.push(operand)
+    } else if (UnaryOperationNode.is(inner)) {
+      markBoolean(inner.operand)
+    }
+  }
+  someNode(tree, (node) => {
+    const boolean = clauseBoolean(node)
+    if (boolean !== null) markBoolean(boolean)
+    return false
+  })
+
+  const placed: OperationNode[] = []
+  let problem: string | null = null
+  const visit = (node: OperationNode): void => {
+    for (const child of children(node)) {
+      if (problem !== null) return
+      if (RawNode.is(child) && !isBuilderRaw(node, child)) {
+        const role = mintedRole(child)
+        const position = predicates.includes(child)
+          ? 'predicate'
+          : subqueries.includes(child)
+            ? 'subquery'
+            : 'value'
+        if (role === undefined) problem = 'a raw fragment that rawSql did not mint'
+        else if (placed.includes(child))
+          problem = 'a fragment placed twice: call rawSql once for each place'
+        else if (role !== position) problem = `a '${role}' fragment standing as a ${position}`
+        placed.push(child)
+      }
+      visit(child)
+    }
+  }
+  visit(tree)
+  return problem
 }
 
 /** Every raw fragment's text, wherever it stands. */
@@ -504,7 +829,7 @@ const QUERY_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ],
 }
 
-const GRAMMAR_NODES = new Set([
+const GRAMMAR_NODES = [
   ...Object.keys(QUERY_FIELDS),
   'AggregateFunctionNode',
   'AliasNode',
@@ -542,7 +867,7 @@ const GRAMMAR_NODES = new Set([
   'ValueNode',
   'WhenNode',
   'WhereNode',
-])
+]
 
 /**
  * Why a tree is outside the statement grammar, or null when it is inside. The grammar
@@ -551,11 +876,12 @@ const GRAMMAR_NODES = new Set([
  * that needs a new kind adds it here, with the check that reads it.
  *
  * It lists no common table expression, RETURNING, or `UPDATE … FROM`, no write below
- * the root, and no schema-qualified table.
+ * the root, and no schema-qualified table. It binds what is built from nodes. A store
+ * fragment is opaque text, reviewed through the generated corpus.
  */
 export function statementGrammarProblem(tree: OperationNode): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
-    if (!GRAMMAR_NODES.has(node.kind)) return `node kind ${node.kind}`
+    if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`
     if (!isRoot && (UpdateQueryNode.is(node) || DeleteQueryNode.is(node))) {
       return `${node.kind} below the root`
     }
@@ -577,24 +903,6 @@ export function statementGrammarProblem(tree: OperationNode): string | null {
     return null
   }
   return visit(tree, true)
-}
-
-/**
- * Raw SQL fragments standing where a boolean decides which rows are read or written: a
- * WHERE conjunct, an operand of AND, OR, or NOT beneath one, or the same inside a
- * required subquery. The escape hatch stays countable rather than invisible.
- */
-export function rawBooleanFragments(query: OperationNode): number {
-  const count = (node: OperationNode): number => {
-    const inner = unwrapParens(node)
-    if (RawNode.is(inner)) return 1
-    if (AndNode.is(inner) || OrNode.is(inner)) return count(inner.left) + count(inner.right)
-    const subquery = requiredSubquery(inner)
-    if (subquery !== null) return SelectQueryNode.is(subquery) ? rawBooleanFragments(subquery) : 0
-    return UnaryOperationNode.is(inner) ? count(inner.operand) : 0
-  }
-  const where = whereOf(query)
-  return where === null ? 0 : count(where)
 }
 
 /** The table a statement writes: an UPDATE's table, a DELETE's first FROM, an INSERT's target. */
