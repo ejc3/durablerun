@@ -4,7 +4,6 @@ import {
   type CheckpointWrite,
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
-  FENCE_COLS,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -21,9 +20,6 @@ import {
   REASON_RELAUNCH_CAP,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
-  STAMP,
-  SUCCESSOR_CARRIED_COLUMNS_SQL,
-  SUCCESSOR_PARENT_COLUMNS,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
@@ -38,6 +34,7 @@ import {
   capLostLaunchCas,
   checkpointLeaseCas,
   claimCas,
+  claimTimeoutSuccessorInsert,
   clampLimit,
   coalesced,
   completeCas,
@@ -63,15 +60,16 @@ import {
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
+  revivalRunInsert,
   reviveCas,
   serializeTaskHeaders,
   serializeTaskValue,
+  spawnRunInsert,
   spawnTaskCas,
   sqlFragment,
   storageValueKind,
-  successorCarriedValues,
-  successorParentValues,
   suspendCas,
+  userRetrySuccessorInsert,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -548,17 +546,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // a spawn that had fully succeeded, and a retry without an idempotency
     // key made duplicate work. Asking whether the task already has a run is a
     // question about ownership, which does not decay.
-    b.followOn(
+    b.followOnTree(
       'run',
-      'runs',
-      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
-         available_at_ms, created_at_ms, ${FENCE_COLS})
-       SELECT ?, f.queue, f.task_id, 1, 'pending', f.enqueue_at_ms, f.fence_at_ms,
-         ${STAMP}, f.fence_at_ms
-       FROM tasks f WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('task')}
-         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.enqueue_at_ms, 'f')}
-         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = f.task_id)`,
-      [runId, taskId],
+      spawnRunInsert({
+        runId,
+        taskId,
+        enqueueStored: sqlFragment(storedIntegerWithin(TASK_INTEGER_BOUNDS.enqueue_at_ms, 'f')),
+      }),
       'one',
     )
     // Only reached when the insert lost, so by definition it reads a task some
@@ -1092,24 +1086,23 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // collision with a FOREIGN row still fails loudly. Its instant is the
     // failed run's, so the backoff is measured from the moment of death and
     // not from a second clock read.
-    b.followOn(
+    b.followOnTree(
       'successor',
-      'runs',
-      `INSERT INTO runs
-         (run_id, queue, task_id, attempt, state, available_at_ms,
-          ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
-       SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
-              f.fence_at_ms + ${infraDelayMs},
-              ${successorParentValues('f')},
-              ${STAMP}, f.fence_at_ms
-       FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
-       WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
-         AND t.state IN ${LIVE}
+      claimTimeoutSuccessorInsert({
+        successorId,
+        runId: item.runId,
+        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),
+        taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
+        admission: sqlFragment(
+          `t.state IN ${LIVE}
          AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 't')}
          AND t.infra_retries < ${TASK_INTEGER_BOUNDS.infra_retries.max}
-         AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
-         AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
-      [successorId, item.runId, successorId],
+         AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}`,
+        ),
+        successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [
+          successorId,
+        ]),
+      }),
       'one',
     )
     // At the cap (pre-increment): terminal. Terminal ONLY when this batch
@@ -1271,17 +1264,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // The revival run, keyed on the revive stamp, carries the top run's parked
     // wake as every successor does. The live-run check is ownership, so an exact
     // replay that still sees the first pass's stamp inserts nothing.
-    b.followOn(
+    b.followOnTree(
       'run',
-      'runs',
-      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
-         available_at_ms, created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS_SQL}, ${FENCE_COLS})
-       SELECT ?, f.queue, f.task_id, p.attempt + 1, 'pending', f.fence_at_ms, f.fence_at_ms,
-         ${successorCarriedValues('p')}, ${STAMP}, f.fence_at_ms
-       FROM tasks f JOIN runs p ON ${runOwnedByTask('p', 'f')}
-       WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('revive')} AND p.attempt = ${top('f')}
-         AND ${noLiveRun('f')}`,
-      [runId, taskId],
+      revivalRunInsert({
+        runId,
+        taskId,
+        taskOwnsRun: sqlFragment(runOwnedByTask('p', 'f')),
+        isTopRun: sqlFragment(`p.attempt = ${top('f')}`),
+        noLiveRun: sqlFragment(noLiveRun('f')),
+      }),
       'one',
     )
     b.tail(
@@ -1619,7 +1610,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ),
       }),
     )
-    if (retry && successorId) {
+    if (retry && successorId && retryDelayMs !== null) {
       // Only a LIVE task with user budget remaining gets a retry run. The cap
       // is expressed with the SAME user-ordinal definition the counter uses
       // (`run.attempt - infra_retries`) rather than `attempts + 1`: two
@@ -1627,23 +1618,22 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // one ahead — from the historical blind-increment bug — refuses the
       // last configured attempt while the accounting band still calls the
       // state legal. The delay runs from the failure's own instant.
-      b.followOn(
+      b.followOnTree(
         'successor',
-        'runs',
-        `INSERT INTO runs
-           (run_id, queue, task_id, attempt, state, available_at_ms,
-            ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
-         SELECT ?, f.queue, f.task_id, f.attempt + 1,
-                CASE WHEN ? <= 0 THEN 'pending' ELSE 'sleeping' END,
-                f.fence_at_ms + ?,
-                ${successorParentValues('f')},
-                ${STAMP}, f.fence_at_ms
-         FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
-         WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
-           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
-           AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
-           AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
-        [successorId, retryDelayMs, retryDelayMs, runId, successorId],
+        userRetrySuccessorInsert({
+          successorId,
+          runId,
+          retryDelayMs,
+          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),
+          taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
+          admission: sqlFragment(
+            `t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
+           AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}`,
+          ),
+          successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [
+            successorId,
+          ]),
+        }),
         'one',
       )
       // attempts DERIVES from the failing run's own ordinal (the documented

@@ -1,6 +1,14 @@
-import { FENCE_ASSIGNMENTS, type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
-import { treeBuilder } from '../store-tables.js'
+import { expressionBuilder } from 'kysely'
+import {
+  FENCE_ASSIGNMENTS,
+  type SqlFragment,
+  defineStatement,
+  fenceValue,
+  rawSql,
+} from '../sql-tree.js'
+import { type StoreTables, treeBuilder } from '../store-tables.js'
 import { whereTaskInQueue } from './claimed-run.js'
+import { insertedRun } from './successor.js'
 
 /**
  * `retry-task`'s compare-and-set: a task returns to pending, charged for its top run,
@@ -34,4 +42,47 @@ export const reviveCas = defineStatement(
       .$call(whereTaskInQueue(binds))
       .where('state', '=', 'failed')
       .where(rawSql<boolean>(binds.admission, 'predicate')),
+)
+
+/**
+ * `retry-task`'s revival run, for the task this batch revived under the compare-and-set
+ * named `revive`: one attempt past the task's top run `p`, carrying what that run
+ * carried, and due at the revival's own instant.
+ */
+export const revivalRunInsert = defineStatement(
+  'retry-task run',
+  (binds: {
+    runId: string
+    taskId: string
+    /** The store's join of a run `p` to the revived task `f` that owns it. */
+    taskOwnsRun: SqlFragment
+    /** The run `p` is the task's top attempt. */
+    isTopRun: SqlFragment
+    /** The task has no live run, which an exact replay of the revival would find. */
+    noLiveRun: SqlFragment
+  }) => {
+    const eb = expressionBuilder<{ f: StoreTables['tasks']; p: StoreTables['runs'] }, 'f' | 'p'>()
+    const { columns, selections } = insertedRun({
+      runId: binds.runId,
+      attempt: eb('p.attempt', '+', 1),
+      state: eb.val('pending'),
+      availableAt: eb.ref('f.fence_at_ms'),
+      carriedFrom: 'p',
+    })
+    return treeBuilder
+      .insertInto('runs')
+      .columns(columns)
+      .expression(
+        treeBuilder
+          .selectFrom('tasks as f')
+          .innerJoin('runs as p', (join) =>
+            join.on(rawSql<boolean>(binds.taskOwnsRun, 'predicate')),
+          )
+          .select(selections)
+          .where('f.task_id', '=', binds.taskId)
+          .where('f.fence_stamp', '=', fenceValue('revive'))
+          .where(rawSql<boolean>(binds.isTopRun, 'predicate'))
+          .where(rawSql<boolean>(binds.noLiveRun, 'predicate')),
+      )
+  },
 )

@@ -49,7 +49,7 @@ type Signature = readonly { sql: string; bindArity: number }[]
 const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
   // Only a retrying failure inserts a successor run.
   fail: (signature) =>
-    signature.some(({ sql }) => /insert into runs/i.test(sql)) ? 'retrying' : 'final',
+    signature.some(({ sql }) => /insert into "runs"/.test(sql)) ? 'retrying' : 'final',
 }
 
 function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>): SqlExecutor {

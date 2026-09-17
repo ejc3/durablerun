@@ -683,17 +683,19 @@ MUTATION_SPECS = [
     (
         "successor-ownership",
         "packages/store-libsql/src/store.ts",
-        "           AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
-        "           AND ? IS NOT NULL`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
+        "          successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [\n"
+        "            successorId,\n"
+        "          ]),",
+        "          successorFree: sqlFragment(`? IS NOT NULL`, [\n"
+        "            successorId,\n"
+        "          ]),",
         "a replayed failure re-inserts a successor that has since been claimed",
     ),
     (
         "successor-carries-every-column",
-        "packages/core/src/contract.ts",
-        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)",
-        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`.replace(`${alias}.wake_step`, 'NULL')) // MUTATION",
+        "packages/core/src/statements/successor.ts",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => [c, eb.ref(`${alias}.${c}`)] as const)",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => [c, (c === 'wake_step' && eb.val(null)) || eb.ref(`${alias}.${c}`)] as const) // MUTATION",
         "successor runs stop inheriting the parked wake step",
     ),
     (
@@ -2834,7 +2836,7 @@ TIMESTAMP_ADDITION_CASES = (
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
         "epochAdditionFits(NOW, infraDelayMs)",
-        "              f.fence_at_ms + ${infraDelayMs},\n",
+        "        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),\n",
         "f.fence_at_ms + ${infraDelayMs}",
     ),
     (
@@ -2876,7 +2878,7 @@ TIMESTAMP_ADDITION_CASES = (
         "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\n"
         "          OR ${epochAdditionFits(NOW, '?')})`",
         "epochAdditionFits(NOW, '?')",
-        "                f.fence_at_ms + ?,\n",
+        "          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),\n",
         "f.fence_at_ms + ?",
     ),
     (

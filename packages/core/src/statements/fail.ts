@@ -1,6 +1,8 @@
+import { expressionBuilder } from 'kysely'
 import { FENCE_ASSIGNMENTS, type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
-import { treeBuilder } from '../store-tables.js'
+import { type StoreTables, treeBuilder } from '../store-tables.js'
 import { failedRunColumns, whereClaimedRun } from './claimed-run.js'
+import { type FailureSuccessor, failureSuccessor } from './successor.js'
 
 /**
  * `fail`'s compare-and-set: a run still running under its claim fails with its reason
@@ -25,4 +27,23 @@ export const failCas = defineStatement(
       })
       .$call(whereClaimedRun(binds))
       .where(rawSql<boolean>(binds.admission, 'predicate')),
+)
+
+/**
+ * `fail`'s retry run, placed while the task has user budget left. It is due at once
+ * when the retry carries no delay, and asleep until the delay has run otherwise. The
+ * cast tells PostgreSQL the type of a bind that is compared with nothing but a bind.
+ */
+export const userRetrySuccessorInsert = defineStatement(
+  'fail successor',
+  (binds: FailureSuccessor & { retryDelayMs: number }) => {
+    const eb = expressionBuilder<StoreTables, never>()
+    const state = eb
+      .case()
+      .when(eb.cast<number>(eb.val(binds.retryDelayMs), 'bigint'), '<=', 0)
+      .then('pending')
+      .else('sleeping')
+      .end()
+    return failureSuccessor(binds, state)
+  },
 )

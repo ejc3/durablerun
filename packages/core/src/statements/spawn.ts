@@ -3,11 +3,13 @@ import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
   defineStatement,
+  fenceValue,
   insertedFrom,
   nowValue,
   rawSql,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
+import { insertedRun } from './successor.js'
 
 /**
  * `spawn`'s compare-and-set: insert the task, unless its identity is taken. A taken
@@ -70,6 +72,52 @@ export const spawnTaskCas = defineStatement(
           .columns(['queue', 'idempotency_key'])
           .where('idempotency_key', 'is not', null)
           .doNothing(),
+      )
+  },
+)
+
+/**
+ * `spawn`'s first run, for the task this batch inserted under the compare-and-set named
+ * `task`. The task's stamp does not tell this execution from an exact replay of it, so
+ * the insert also requires that the task has no run yet. That is a question about
+ * ownership, which does not decay.
+ */
+export const spawnRunInsert = defineStatement(
+  'spawn run',
+  (binds: {
+    runId: string
+    taskId: string
+    /** The task's stored enqueue instant is one the run can take. */
+    enqueueStored: SqlFragment
+  }) => {
+    const eb = expressionBuilder<{ f: StoreTables['tasks'] }, 'f'>()
+    const { columns, selections } = insertedRun({
+      runId: binds.runId,
+      attempt: eb.val(1),
+      state: eb.val('pending'),
+      availableAt: eb.ref('f.enqueue_at_ms'),
+      carriedFrom: null,
+    })
+    return treeBuilder
+      .insertInto('runs')
+      .columns(columns)
+      .expression(
+        treeBuilder
+          .selectFrom('tasks as f')
+          .select(selections)
+          .where('f.task_id', '=', binds.taskId)
+          .where('f.fence_stamp', '=', fenceValue('task'))
+          .where(rawSql<boolean>(binds.enqueueStored, 'predicate'))
+          .where((where) =>
+            where.not(
+              where.exists(
+                where
+                  .selectFrom('runs as r')
+                  .select('r.run_id')
+                  .whereRef('r.task_id', '=', 'f.task_id'),
+              ),
+            ),
+          ),
       )
   },
 )

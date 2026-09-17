@@ -45,9 +45,10 @@ export const REASON_CANCELLED = '{"name":"$Cancelled"}'
 
 /**
  * The run columns a successor run copies unchanged from the run it replaces: the
- * parked wake and the run database. Both dialects splice this list into both
- * successor inserts (a user retry in `fail`, an infrastructure successor in the
- * claim-timeout sweep), and the conformance suite seeds and compares every entry.
+ * parked wake and the run database. The one record every run insert is built from
+ * reads this list (`insertedRun`), so a user retry in `fail`, an infrastructure
+ * successor in the claim-timeout sweep, and a revival carry every entry. The
+ * conformance suite seeds and compares every entry.
  */
 export const SUCCESSOR_CARRIED_RUN_COLUMNS = [
   'wake_event',
@@ -55,30 +56,6 @@ export const SUCCESSOR_CARRIED_RUN_COLUMNS = [
   'wake_step',
   'run_db',
 ] as const
-
-/** The carried runs columns, in insert order. */
-export const SUCCESSOR_CARRIED_COLUMNS_SQL = SUCCESSOR_CARRIED_RUN_COLUMNS.join(', ')
-
-/** The values for `SUCCESSOR_CARRIED_COLUMNS_SQL`, copied unchanged from the parent row `alias`. */
-export function successorCarriedValues(alias: string): string {
-  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)
-  return carried.join(', ')
-}
-
-/**
- * The runs columns a failure successor's insert reads from its fenced parent row, in
- * insert order: the carried columns, and `created_at_ms`, which the successor sets to
- * the parent's fence instant, the failure. The user-retry and claim-timeout inserts
- * splice these with `successorParentValues`. A revival carries the same columns from
- * the task's top run through `successorCarriedValues`, and is created at its own
- * instant.
- */
-export const SUCCESSOR_PARENT_COLUMNS = `created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS_SQL}`
-
-/** The values for `SUCCESSOR_PARENT_COLUMNS` over the fenced parent row `alias`. */
-export function successorParentValues(alias: string): string {
-  return `${alias}.fence_at_ms, ${successorCarriedValues(alias)}`
-}
 
 /**
  * The tables that carry write provenance (§3.4 rule 8): every one of them is
