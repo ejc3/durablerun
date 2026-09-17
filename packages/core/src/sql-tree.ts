@@ -1198,7 +1198,8 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
  * The provenance a follow-on INSERT … SELECT writes, or null for any other statement. A
  * follow-on may not read the clock, so its instant is the fenced row's own: a reference
  * to `fence_at_ms` of a source whose `fence_stamp` a top-level conjunct of the SELECT
- * compares with a fence. `plain` is false when the SELECT could return a row its WHERE
+ * compares with a fence. `fencedInstants` names every inserted column that takes exactly
+ * that, so a preserved first instant can be held to it as well. `plain` is false when the SELECT could return a row its WHERE
  * did not match, which an insert would then write with no gate: an aggregate or a
  * function call in its list, or a HAVING. This is asked here, of the statement's own
  * SELECT, and does not lean on what `gatingFences` decides about aggregates. `alone` is
@@ -1211,7 +1212,8 @@ export function followOnInsertProvenance(tree: OperationNode): {
   plain: boolean
   alone: boolean
   stamp: boolean
-  fencedInstant: boolean
+  /** The inserted columns whose value is the fenced row's own `fence_at_ms`. */
+  fencedInstants: string[]
   conflict: boolean
 } | null {
   if (!InsertQueryNode.is(tree)) return null
@@ -1234,10 +1236,18 @@ export function followOnInsertProvenance(tree: OperationNode): {
       : AliasNode.is(from) && IdentifierNode.is(from.alias)
         ? from.alias.name
         : tableName(from)
-  const instant = insertedValue(tree, 'fence_at_ms')
-  const reference = instant !== undefined && ReferenceNode.is(instant) ? instant : null
-  const qualifier =
-    reference?.table?.table.identifier.name ?? (scope.length === 1 ? scope[0]?.name : undefined)
+  // An unqualified instant belongs to the only source, and to neither of two.
+  const isFencedInstant = (name: string): boolean => {
+    const instant = insertedValue(tree, name)
+    if (instant === undefined || !ReferenceNode.is(instant)) return false
+    const qualifier =
+      instant.table?.table.identifier.name ?? (scope.length === 1 ? scope[0]?.name : undefined)
+    return (
+      columnName(instant.column) === 'fence_at_ms' &&
+      qualifier !== undefined &&
+      fenced.includes(qualifier)
+    )
+  }
   return {
     selects: select !== null,
     plain:
@@ -1253,11 +1263,9 @@ export function followOnInsertProvenance(tree: OperationNode): {
       (fenced.length === 0 || (fromName !== null && fenced.includes(fromName))) &&
       (select.joins ?? []).every((join) => join.on !== undefined),
     stamp: tokenOf(insertedValue(tree, 'fence_stamp'))?.kind === 'stamp',
-    fencedInstant:
-      reference !== null &&
-      columnName(reference.column) === 'fence_at_ms' &&
-      qualifier !== undefined &&
-      fenced.includes(qualifier),
+    fencedInstants: (tree.columns ?? [])
+      .map((column) => column.column.name)
+      .filter(isFencedInstant),
     conflict: tree.onConflict !== undefined,
   }
 }

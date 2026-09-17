@@ -778,6 +778,10 @@ are load-bearing):
      conjunct compares with a fence, both read by column position. The clock, a
      bind, another column, and the instant of a joined row the fence does not
      gate are all refused, and so is an unqualified instant among two sources.
+     A preserved first instant, today `events.emitted_at_ms`, is held the same
+     way: a compare-and-set takes it from the clock token, and a follow-on,
+     which reads no clock, takes it from the fenced row's `fence_at_ms` and
+     from nothing else, so it cannot be bound or left to a default.
      It carries no conflict clause there, so a collision with a foreign row
      fails loudly. Its SELECT reads the fenced row alone: one FROM item, the
      source whose `fence_stamp` it compares, with any join explicit and

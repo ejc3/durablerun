@@ -840,9 +840,22 @@ export class FencedBatch {
           `${at} must select from the fenced row alone: one FROM item, the source whose fence_stamp the SELECT compares, with any join explicit and carrying its ON. A second FROM item inserts a row for every row of it, and a row bound is audited only after the batch has run`,
         )
       }
-      if (stamped !== null && (!following.stamp || !following.fencedInstant)) {
+      if (
+        stamped !== null &&
+        (!following.stamp || !following.fencedInstants.includes('fence_at_ms'))
+      ) {
         throw new Error(
           `${at} must insert fence_stamp as the stamp and fence_at_ms as the fenced row's own fence_at_ms into ${stamped}, once each (§3.4 rule 8)`,
+        )
+      }
+      // A preserved first instant is engine time. A compare-and-set takes it from the
+      // clock. A follow-on reads no clock, so it takes the fenced row's own instant, and
+      // never a bind, another column, or a default.
+      const preservedInstants: Partial<Record<FenceTable, string>> = PRESERVED_FENCE_INSTANTS
+      const preservedInstant = stamped === null ? undefined : preservedInstants[stamped]
+      if (preservedInstant !== undefined && !following.fencedInstants.includes(preservedInstant)) {
+        throw new Error(
+          `${at} must insert ${stamped}.${preservedInstant} as the fenced row's own fence_at_ms (§3.4 rule 3)`,
         )
       }
       // A conflict clause would let a collision with a foreign row pass in silence,
