@@ -37,6 +37,7 @@ import {
   type TaskResult,
   type WakeSpec,
   clampLimit,
+  completeCas,
   decodeBoundedInteger,
   decodeTaskResult,
   durationToMs,
@@ -44,7 +45,6 @@ import {
   mapLimit,
   neverBuggify,
   normalizeRetryStrategy,
-  nowValue,
   parseTaskValueJson,
   refusedLease,
   refusedWriteError,
@@ -56,12 +56,10 @@ import {
   requireRunOrdinal,
   serializeTaskHeaders,
   serializeTaskValue,
-  stampValue,
   storageValueKind,
   successorCarriedValues,
   successorParentValues,
 } from '@durablerun/core'
-import { sql } from 'kysely'
 import {
   LIVE,
   PARKED_CLAIM,
@@ -93,7 +91,7 @@ import {
   taskOwnsEveryRun,
 } from './fragments.js'
 import { NOW_MS } from './time.js'
-import { TREE_DIALECT, tree } from './tree.js'
+import { TREE_DIALECT } from './tree.js'
 
 const DEFAULT_RETRY = normalizeRetryStrategy({
   kind: 'exponential',
@@ -387,6 +385,14 @@ LIMIT ?`
  * sequential issuance.
  */
 const SWEEP_PIPELINE_WIDTH = 8
+
+/** The task still admits this run's completion: it is already terminal, or this is its only live run. */
+const TASK_ADMITS_COMPLETION = `EXISTS (
+  SELECT 1 FROM tasks t
+  WHERE ${runOwnedByTask('runs', 't')}
+    AND (t.state NOT IN ${LIVE}
+      OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
+)`
 
 /**
  * SchedulerStore on PostgreSQL (DESIGN.md §3.4). Every method is ONE
@@ -1553,35 +1559,16 @@ export class PostgresSchedulerStore implements SchedulerStore {
     claimToken: string,
     resultJson: string,
   ): Promise<void> {
-    const taskAdmitsCompletion = `EXISTS (
-           SELECT 1 FROM tasks t
-           WHERE ${runOwnedByTask('runs', 't')}
-             AND (t.state NOT IN ${LIVE}
-               OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
-         )`
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     b.casTree(
       'complete',
-      'runs',
-      tree
-        .updateTable('runs')
-        .set({
-          state: 'completed',
-          completed_at_ms: nowValue,
-          result: resultJson,
-          wake_event: null,
-          event_payload: null,
-          wake_step: null,
-          claimed_by: null,
-          claim_expires_at_ms: null,
-          fence_stamp: stampValue,
-          fence_at_ms: nowValue,
-        })
-        .where('run_id', '=', runId)
-        .where('queue', '=', queue)
-        .where('claimed_by', '=', claimToken)
-        .where('state', '=', 'running')
-        .where(sql<boolean>`${sql.raw(taskAdmitsCompletion)}`),
+      completeCas({
+        runId,
+        queue,
+        claimToken,
+        resultJson,
+        taskAdmitsCompletionSql: TASK_ADMITS_COMPLETION,
+      }),
     )
     b.derived('task', {
       relation: 'runs-to-tasks',

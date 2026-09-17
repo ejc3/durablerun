@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
+import { claimActivated, withFixture } from '../src/scenario.js'
 import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /**
@@ -37,19 +38,13 @@ function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>)
 describe('generated SQL corpus', () => {
   for (const { dialect, makeFixture } of DIALECT_FIXTURES) {
     it(`${dialect}: every tree-built label compiles to its declared corpus`, async () => {
-      const fixture = await makeFixture(`sql-corpus-${dialect}`)
       const recorded = new Map<string, Signature[]>()
-      try {
+      await withFixture(makeFixture, `sql-corpus-${dialect}`, async (fixture) => {
         const store = fixture.storeOver(recordingExecutor(fixture.raw, recorded))
         await store.spawn('q', 'job', '{}')
-        const [run] = await store.claim('q', 'w1', { leaseSeconds: 60, limit: 1 })
-        if (run === undefined) throw new Error('expected a claimable run')
-        const activated = await store.activate('q', run.runId, run.claimToken, run.claimGen)
-        if (activated === null) throw new Error('expected activation')
+        const run = await claimActivated(store, 'q', 'w1')
         await store.complete('q', run.runId, run.claimToken, '"done"')
-      } finally {
-        await fixture.close()
-      }
+      })
       const corpus = Object.fromEntries(
         Object.entries(TREE_LABELS).map(([label, variants]) => {
           const signatures = recorded.get(label) ?? []
