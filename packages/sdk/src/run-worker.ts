@@ -1,12 +1,13 @@
 import {
+  type ClaimedRunAnswerReadField,
   type Clock,
   type LaunchInvocation,
   type SchedulerStore,
   decideRetry,
+  decodeClaimedRunAnswer,
   parseTaskValueJson,
   serializeTaskValue,
   snapshotTaskThrowable,
-  claimedRunAnswerProblem,
 } from '@durablerun/core'
 import { type LeaseEndLatch, ReplayContext, type TaskContext } from './context.js'
 import {
@@ -49,9 +50,10 @@ export type WorkerOutcome =
   //   proof that nothing changed.
   | { kind: 'deferred' } // unknown task name: parked untouched for a
   //                        worker build that knows it (rolling deploys)
-  | { kind: 'incompatible-store'; field: string } // the activation answer lacks or
-//   malforms a field this worker reads: no user code ran and nothing was written, so
-//   the lease story recovers the run for a compatible build, charged as infrastructure
+  | { kind: 'incompatible-store'; field: ClaimedRunAnswerReadField | 'answer' }
+//   the activation answer lacks or malforms a field this worker reads: no user code
+//   ran and nothing was written, so the lease story recovers the run for a compatible
+//   build, charged as infrastructure
 
 /** The launch fields a worker needs: the ids of one claim. */
 export type RunInvocation = Pick<LaunchInvocation, 'queue' | 'runId' | 'claimToken' | 'claimGen'>
@@ -150,20 +152,20 @@ export async function runClaimedRun(
     return { kind: 'deferred' }
   }
 
-  let run: Awaited<ReturnType<SchedulerStore['activate']>>
+  let answer: Awaited<ReturnType<SchedulerStore['activate']>>
   try {
-    run = await store.activate(queue, runId, claimToken, claimGen)
+    answer = await store.activate(queue, runId, claimToken, claimGen)
   } catch (error) {
     return trustedStoreOutcome(error)
   }
-  if (run === null) return { kind: 'superseded' }
+  if (answer === null) return { kind: 'superseded' }
   // A store built from another commit may answer without a field this worker reads,
-  // or with a malformed one. Refuse before any user code runs, naming the field.
-  const incompatibleField = claimedRunAnswerProblem(run)
-  if (incompatibleField !== undefined)
-    return { kind: 'incompatible-store', field: incompatibleField }
-  const claimedRun = run
-  const userAttempt = claimedRun.attempt - claimedRun.infraRetries
+  // or with a malformed one. Refuse before any user code runs, naming the field, and
+  // run on the decoded answer rather than the store's object.
+  const decoded = decodeClaimedRunAnswer(answer)
+  if (!decoded.ok) return { kind: 'incompatible-store', field: decoded.field }
+  const run = decoded.run
+  const userAttempt = run.attempt - run.infraRetries
 
   // Heartbeat pump FIRST (before any further unfenced reads): extend at
   // half-lease cadence until the pass ends. A refused heartbeat names why:
@@ -213,7 +215,7 @@ export async function runClaimedRun(
       const thrown = snapshotTaskThrowable(error)
       const decision = thrown.fatal
         ? ({ retry: false } as const)
-        : decideRetry(claimedRun.retryStrategy, userAttempt, claimedRun.maxAttempts)
+        : decideRetry(run.retryStrategy, userAttempt, run.maxAttempts)
       try {
         await store.fail(
           queue,

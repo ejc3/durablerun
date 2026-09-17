@@ -434,9 +434,10 @@ One invocation executes one claimed run to its next suspension point:
   launch (§3.1 step 1).
 - **An activation answer this worker cannot read is refused before user code
   runs.** A store built from another commit may answer without a field the worker
-  reads, or with a malformed one. `claimedRunAnswerProblem` checks every read field
-  with the stores' own bounds, and the pass ends as `incompatible-store` naming the
-  first such field, writing nothing. Activation has already latched the first start,
+  reads, or with a malformed one. `decodeClaimedRunAnswer` decodes every read field
+  with the stores' own bounds and their `attempt > infra_retries` relation, and the
+  worker runs on the decoded run. Otherwise the pass ends as `incompatible-store`
+  naming the first such field, writing nothing. Activation has already latched the first start,
   so the lease expires, the sweep charges an infrastructure retry, and a compatible
   worker completes the successor; a mismatch that persists ends at the
   infrastructure cap.

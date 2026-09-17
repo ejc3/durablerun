@@ -1,5 +1,6 @@
+import { TASK_INTRINSICS } from './intrinsics.js'
 import { normalizeRetryStrategy } from './retry.js'
-import type { ClaimedRun } from './types.js'
+import type { ClaimedRun, EventWake } from './types.js'
 import {
   type IntegerBounds,
   PERSISTED_INTEGER_BOUNDS,
@@ -7,85 +8,132 @@ import {
   decodeBoundedInteger,
 } from './validate.js'
 
-/**
- * How a worker treats each field of an activation answer. A worker can run against a
- * store built from another commit, so every field it reads is checked before any user
- * code runs, and `satisfies` makes a new `ClaimedRun` field a type error until it is
- * classified. A `checked` field must be present and well formed, an `optional` field
- * may be absent but is checked when present, and an `unread` field is never read.
- */
-export const CLAIMED_RUN_ANSWER_FIELDS = {
-  runId: 'checked',
-  claimToken: 'checked',
-  taskId: 'checked',
-  taskName: 'checked',
-  attempt: 'checked',
-  infraRetries: 'checked',
-  claimGen: 'checked',
-  claimExpiresAtEpochMs: 'unread',
-  leaseSeconds: 'checked',
-  paramsJson: 'checked',
-  retryStrategy: 'checked',
-  maxAttempts: 'checked',
-  headers: 'unread',
-  wake: 'optional',
-} as const satisfies Record<keyof ClaimedRun, 'checked' | 'optional' | 'unread'>
+/** How an answer surface treats a field: must be well formed, may be absent, or never read. */
+export type AnswerFieldRole = 'checked' | 'optional' | 'unread'
 
-type ReadField = {
-  [Field in keyof typeof CLAIMED_RUN_ANSWER_FIELDS]: (typeof CLAIMED_RUN_ANSWER_FIELDS)[Field] extends 'unread'
-    ? never
-    : Field
-}[keyof typeof CLAIMED_RUN_ANSWER_FIELDS]
+type Decoded<T> = { ok: true; value: T } | { ok: false }
+type Decoder<T> = (value: unknown) => Decoded<T>
+type FieldRule<T> = { role: 'checked' | 'optional'; decode: Decoder<T> }
 
-type AnswerCheck = (value: unknown) => boolean
+const REFUSED = { ok: false } as const
+const accept = <T>(value: T): Decoded<T> => ({ ok: true, value })
 
-const nonEmptyText: AnswerCheck = (value) => typeof value === 'string' && value.length > 0
+const nonEmptyText: Decoder<string> = (value) =>
+  typeof value === 'string' && value.length > 0 ? accept(value) : REFUSED
 const bounded =
-  (bounds: IntegerBounds): AnswerCheck =>
+  (bounds: IntegerBounds): Decoder<number> =>
   (value) =>
-    decodeBoundedInteger(value, bounds).ok
+    typeof value === 'number' && decodeBoundedInteger(value, bounds).ok ? accept(value) : REFUSED
+const checked = <T>(decode: Decoder<T>): FieldRule<T> => ({ role: 'checked', decode })
+const optional = <T>(decode: Decoder<T>): FieldRule<T> => ({ role: 'optional', decode })
 
-/** The stores' own bounds for each read field, so the check is not a weaker second copy. */
-const CLAIMED_RUN_ANSWER_CHECKS = {
-  runId: nonEmptyText,
-  claimToken: nonEmptyText,
-  taskId: nonEmptyText,
-  taskName: nonEmptyText,
-  attempt: bounded(PERSISTED_INTEGER_BOUNDS.runs.attempt),
-  infraRetries: bounded(PERSISTED_INTEGER_BOUNDS.tasks.infra_retries),
-  claimGen: bounded(POSITIVE_CLAIM_GENERATION_BOUNDS),
-  leaseSeconds: (value) =>
-    typeof value === 'number' &&
-    decodeBoundedInteger(value * 1000, PERSISTED_INTEGER_BOUNDS.runs.lease_ms).ok,
-  paramsJson: (value) => typeof value === 'string',
-  retryStrategy: (value) => {
-    try {
-      normalizeRetryStrategy(value)
-      return true
-    } catch {
-      return false
-    }
-  },
-  maxAttempts: bounded(PERSISTED_INTEGER_BOUNDS.tasks.max_attempts),
-  wake: (value) => {
-    if (value === undefined) return true
-    if (typeof value !== 'object' || value === null) return false
-    const wake = value as Record<string, unknown>
-    if (!nonEmptyText(wake.event) || !nonEmptyText(wake.step)) return false
-    return wake.timedOut === true
-      ? wake.payloadJson === undefined
-      : typeof wake.payloadJson === 'string' && wake.timedOut === undefined
-  },
-} satisfies Record<ReadField, AnswerCheck>
+/** The stores answer `lease_ms / 1000`, so decode through whole milliseconds, as they do. */
+const leaseSeconds: Decoder<number> = (value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return REFUSED
+  const leaseMs = Math.round(value * 1000)
+  if (Math.abs(value * 1000 - leaseMs) > 1e-6 * Math.max(1, leaseMs)) return REFUSED
+  return decodeBoundedInteger(leaseMs, PERSISTED_INTEGER_BOUNDS.runs.lease_ms).ok
+    ? accept(leaseMs / 1000)
+    : REFUSED
+}
 
-const CLAIMED_RUN_ANSWER_CHECK_ENTRIES = Object.entries(CLAIMED_RUN_ANSWER_CHECKS)
-
-/** The first field this worker reads that an activation answer lacks or has malformed. */
-export function claimedRunAnswerProblem(answer: unknown): string | undefined {
-  if (typeof answer !== 'object' || answer === null) return 'answer'
-  const fields = answer as Record<string, unknown>
-  for (const [field, check] of CLAIMED_RUN_ANSWER_CHECK_ENTRIES) {
-    if (!check(fields[field])) return field
+const eventWake: Decoder<EventWake> = (value) => {
+  if (typeof value !== 'object' || value === null) return REFUSED
+  const wake = value as Record<string, unknown>
+  const own = (key: string) => TASK_INTRINSICS.ObjectHasOwn(wake, key)
+  const event = nonEmptyText(wake.event)
+  const step = nonEmptyText(wake.step)
+  if (!event.ok || !step.ok) return REFUSED
+  if (own('timedOut') && wake.timedOut === true) {
+    return own('payloadJson')
+      ? REFUSED
+      : accept({ event: event.value, step: step.value, timedOut: true })
   }
-  return undefined
+  if (own('timedOut') && wake.timedOut !== false) return REFUSED
+  return own('payloadJson') && typeof wake.payloadJson === 'string'
+    ? accept({ event: event.value, step: step.value, payloadJson: wake.payloadJson })
+    : REFUSED
+}
+
+/**
+ * How a worker decodes each field of an activation answer. A worker can run against a
+ * store built from another commit, so every field it reads is decoded with the stores'
+ * own bounds before any user code runs, and `satisfies` makes a new `ClaimedRun` field a
+ * type error until it is classified.
+ */
+const CLAIMED_RUN_ANSWER_RULES = {
+  runId: checked(nonEmptyText),
+  claimToken: checked(nonEmptyText),
+  taskId: checked(nonEmptyText),
+  taskName: checked(nonEmptyText),
+  attempt: checked(bounded(PERSISTED_INTEGER_BOUNDS.runs.attempt)),
+  infraRetries: checked(bounded(PERSISTED_INTEGER_BOUNDS.tasks.infra_retries)),
+  claimGen: checked(bounded(POSITIVE_CLAIM_GENERATION_BOUNDS)),
+  claimExpiresAtEpochMs: 'unread',
+  leaseSeconds: checked(leaseSeconds),
+  paramsJson: checked((value) => (typeof value === 'string' ? accept(value) : REFUSED)),
+  retryStrategy: checked((value) => {
+    try {
+      return accept(normalizeRetryStrategy(value))
+    } catch {
+      return REFUSED
+    }
+  }),
+  maxAttempts: checked(bounded(PERSISTED_INTEGER_BOUNDS.tasks.max_attempts)),
+  headers: 'unread',
+  wake: optional(eventWake),
+} satisfies { [Field in keyof ClaimedRun]-?: FieldRule<ClaimedRun[Field]> | 'unread' }
+
+type Rules = typeof CLAIMED_RUN_ANSWER_RULES
+
+/** The activation answer fields a worker reads. */
+export type ClaimedRunAnswerReadField = {
+  [Field in keyof Rules]: Rules[Field] extends 'unread' ? never : Field
+}[keyof Rules]
+
+/** The run a worker executes: the fields it reads, decoded from the store's answer. */
+export type WorkerClaimedRun = Pick<ClaimedRun, ClaimedRunAnswerReadField>
+
+/** Each activation answer field's role, for surfaces that generate answers. */
+export const CLAIMED_RUN_ANSWER_FIELDS = Object.fromEntries(
+  Object.entries(CLAIMED_RUN_ANSWER_RULES).map(([field, rule]) => [
+    field,
+    rule === 'unread' ? 'unread' : rule.role,
+  ]),
+) as Record<keyof ClaimedRun, AnswerFieldRole>
+
+const READ_RULES = Object.entries(CLAIMED_RUN_ANSWER_RULES).flatMap(([field, rule]) =>
+  rule === 'unread' ? [] : [[field, rule as FieldRule<unknown>] as const],
+)
+
+export type ClaimedRunAnswerDecode =
+  | { ok: true; run: WorkerClaimedRun }
+  | { ok: false; field: ClaimedRunAnswerReadField | 'answer' }
+
+/**
+ * Decode an activation answer into the run this worker executes, or name the first
+ * field it reads that is absent, malformed, or unreadable. The worker runs on the
+ * decoded run, never on the answer itself.
+ */
+export function decodeClaimedRunAnswer(answer: unknown): ClaimedRunAnswerDecode {
+  if (typeof answer !== 'object' || answer === null) return { ok: false, field: 'answer' }
+  const fields = answer as Record<string, unknown>
+  const run: Record<string, unknown> = {}
+  for (const [field, rule] of READ_RULES) {
+    const refused = { ok: false, field: field as ClaimedRunAnswerReadField } as const
+    let value: unknown
+    try {
+      value = fields[field]
+    } catch {
+      return refused
+    }
+    if (value === undefined && rule.role === 'optional') continue
+    const decoded = rule.decode(value)
+    if (!decoded.ok) return refused
+    run[field] = decoded.value
+  }
+  const decoded = run as WorkerClaimedRun
+  // The stores claim `attempt = attempts + infra_retries + 1`, so a user attempt is positive.
+  if (decoded.infraRetries >= decoded.attempt) return { ok: false, field: 'infraRetries' }
+  return { ok: true, run: decoded }
 }

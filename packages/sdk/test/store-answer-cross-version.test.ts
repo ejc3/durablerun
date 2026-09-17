@@ -1,6 +1,8 @@
 import {
+  type AnswerFieldRole,
   CLAIMED_RUN_ANSWER_FIELDS,
   type ClaimedRun,
+  type ClaimedRunAnswerReadField,
   type LeaseState,
   type SchedulerStore,
   StoreUnavailableError,
@@ -22,10 +24,10 @@ type LeaseStateField =
   | keyof Extract<LeaseState, { held: false }>
 
 const LEASE_STATE_FIELD_ROLES = {
-  held: 'required',
+  held: 'checked',
   remainingMs: 'unread',
   reason: 'optional',
-} as const satisfies Record<LeaseStateField, 'required' | 'optional' | 'unread'>
+} as const satisfies Record<LeaseStateField, AnswerFieldRole>
 
 /** Present but malformed values for every activation answer field the worker checks. */
 const MALFORMED_ANSWER_VALUES = {
@@ -41,7 +43,7 @@ const MALFORMED_ANSWER_VALUES = {
   retryStrategy: [null, {}],
   maxAttempts: [0, '3', 3n],
   wake: [{ event: 'e' }, 'wake'],
-} satisfies Partial<Record<keyof ClaimedRun, readonly unknown[]>>
+} satisfies Record<ClaimedRunAnswerReadField, readonly unknown[]>
 
 type Answer = Record<string, unknown>
 
@@ -120,7 +122,7 @@ async function observe(
         await claimInvocation(f, 'w1', overrides.leaseSeconds),
       )
       outcome = result.kind
-      field = 'field' in result ? String(result.field) : undefined
+      field = 'field' in result ? result.field : undefined
     } catch (error) {
       outcome = `threw ${(error as Error).name}`
     }
@@ -151,15 +153,6 @@ async function observe(
 }
 
 describe('store answers across store and worker versions', () => {
-  it('every checked activation field has malformed values generated', () => {
-    expect(Object.keys(MALFORMED_ANSWER_VALUES).sort()).toEqual(
-      Object.entries(CLAIMED_RUN_ANSWER_FIELDS)
-        .filter(([, shape]) => shape !== 'unread')
-        .map(([field]) => field)
-        .sort(),
-    )
-  })
-
   it('a worker runs every well-formed activation answer and refuses, recoverably, every other', async () => {
     const cases: { variant: string; run: (answer: Answer) => Answer; expected: object }[] = [
       { variant: 'the current store', run: (answer) => answer, expected: COMPLETED },
@@ -270,7 +263,7 @@ describe('store answers across store and worker versions', () => {
       ...Object.entries(LEASE_STATE_FIELD_ROLES).map(([field, role]) => ({
         variant: `a heartbeat answer from an older store without ${field}`,
         lease: ({ [field]: _omitted, ...rest }: Answer) => rest,
-        continues: role !== 'required',
+        continues: role !== 'checked',
       })),
     ]
     const expected = cases.map(({ variant, continues }) => ({
