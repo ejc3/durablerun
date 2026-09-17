@@ -1,33 +1,15 @@
 import type { ClaimedRun, LeaseState, SchedulerStore } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { type WorkerOutcome, runClaimedRun } from '../src/index.js'
+import { CLAIMED_RUN_ANSWER_FIELDS } from '../src/store-answers.js'
 import { fx, registry } from './worker-harness.js'
 
 const Q = 'q'
 
 /**
- * A worker can run against a store built from another commit, so every field of
- * the answers it reads is classified here, and `satisfies` makes a new field a type
- * error until it is. A required field is one the worker reads to run the task. An
- * optional field may be absent. An unread field is one this worker never reads.
+ * Heartbeat answer fields, classified like `CLAIMED_RUN_ANSWER_FIELDS`, which the
+ * worker itself checks activation answers against.
  */
-const CLAIMED_RUN_FIELD_ROLES = {
-  runId: 'required',
-  claimToken: 'required',
-  taskId: 'required',
-  taskName: 'required',
-  attempt: 'required',
-  infraRetries: 'required',
-  claimGen: 'required',
-  claimExpiresAtEpochMs: 'unread',
-  leaseSeconds: 'required',
-  paramsJson: 'required',
-  retryStrategy: 'required',
-  maxAttempts: 'required',
-  headers: 'unread',
-  wake: 'optional',
-} as const satisfies Record<keyof ClaimedRun, 'required' | 'optional' | 'unread'>
-
 type LeaseStateField =
   | keyof Extract<LeaseState, { held: true }>
   | keyof Extract<LeaseState, { held: false }>
@@ -118,10 +100,10 @@ describe('store answers across store and worker versions', () => {
         change: (answer) => ({ ...answer, laterField: { nested: true } }),
         runs: true,
       },
-      ...Object.entries(CLAIMED_RUN_FIELD_ROLES).map(([field, role]) => ({
+      ...Object.entries(CLAIMED_RUN_ANSWER_FIELDS).map(([field, shape]) => ({
         variant: `an older store without ${field}`,
         change: ({ [field]: _omitted, ...rest }: Answer) => rest,
-        runs: role !== 'required',
+        runs: shape === 'optional' || shape === 'unread',
       })),
     ]
     for (const { variant, change, runs } of cases) {

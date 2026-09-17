@@ -22,6 +22,7 @@ import {
   createTaskControlScope,
   trustedStoreControl,
 } from './task-control.js'
+import { claimedRunAnswerProblem } from './store-answers.js'
 
 /** A registered durable task function. Params arrive parsed from JSON. */
 export type TaskHandler = (ctx: TaskContext, params: unknown) => Promise<unknown>
@@ -148,6 +149,9 @@ export async function runClaimedRun(
 
   const run = await store.activate(queue, runId, claimToken, claimGen)
   if (run === null) return { kind: 'superseded' }
+  // A store built from another commit may answer without a field this worker needs.
+  // Refuse before any user code runs: the lease story recovers the run.
+  if (claimedRunAnswerProblem(run) !== undefined) return { kind: 'aborted' }
   const claimedRun = run
   const userAttempt = claimedRun.attempt - claimedRun.infraRetries
 
