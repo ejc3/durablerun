@@ -2287,7 +2287,7 @@ MUTATION_SPECS = [
         "      const thrown = snapshotTaskThrowable(error)\n"
         "      const decision = thrown.fatal\n"
         "        ? ({ retry: false } as const)\n"
-        "        : decideRetry(claimedRun.retryStrategy, userAttempt, claimedRun.maxAttempts)\n",
+        "        : decideRetry(run.retryStrategy, userAttempt, run.maxAttempts)\n",
         "    const taskControls = createTaskControlScope()\n"
         "    const ctx = new ReplayContext(\n"
         "      store,\n"
@@ -2304,7 +2304,7 @@ MUTATION_SPECS = [
         "      const thrown = snapshotTaskThrowable(error)\n"
         "      const decision = thrown.fatal\n"
         "        ? ({ retry: false } as const)\n"
-        "        : decideRetry(claimedRun.retryStrategy, ctx.attempt, claimedRun.maxAttempts)\n",
+        "        : decideRetry(run.retryStrategy, ctx.attempt, run.maxAttempts)\n",
         "the retry decision trusts a user-mutable public context field",
     ),
     (
