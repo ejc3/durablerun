@@ -832,7 +832,7 @@ const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
     'limit',
   ],
   InsertQueryNode: ['kind', 'into', 'columns', 'values', 'onConflict'],
-  OnConflictNode: ['kind', 'columns', 'doNothing', 'updates', 'updateWhere'],
+  OnConflictNode: ['kind', 'columns', 'indexWhere', 'doNothing', 'updates', 'updateWhere'],
 }
 
 const GRAMMAR_NODES = [
@@ -881,7 +881,9 @@ const GRAMMAR_NODES = [
  * insert's provenance go by column position, so a SELECT lists one plain selection for
  * each column: a star is one selection and many columns. A conflict clause names its
  * columns, or it would swallow a violation of any unique index. SQLite reads the ON of a
- * conflict clause as a join constraint when the SELECT before it has no WHERE.
+ * conflict clause as a join constraint when the SELECT before it has no WHERE. A
+ * partial-index predicate on the conflict target holds column references, operators,
+ * and inline values only.
  */
 function insertShapeProblem(insert: InsertQueryNode): string | null {
   const values = insert.values
@@ -902,6 +904,18 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
   }
   if (insert.onConflict !== undefined && (insert.onConflict.columns?.length ?? 0) === 0) {
     return 'an ON CONFLICT that names no columns'
+  }
+  // A partial index is matched by its predicate's text. SQLite refuses a predicate
+  // with a parameter in it and PostgreSQL accepts one, so a bound value would run on one
+  // dialect and fail on the other. Inline values such as NULL are part of the text.
+  const indexWhere = insert.onConflict?.indexWhere
+  if (indexWhere !== undefined) {
+    if (someNode(indexWhere, (node) => RawNode.is(node))) {
+      return 'an index predicate that holds a fragment'
+    }
+    if (someNode(indexWhere, (node) => ValueNode.is(node) && node.immediate !== true)) {
+      return 'an index predicate that holds a bound value or a token'
+    }
   }
   return null
 }
@@ -1026,6 +1040,23 @@ export function insertProvenance(tree: OperationNode): {
     clockInstant: tokenOf(inserted('fence_at_ms'))?.kind === 'now',
     clockColumns: columns.filter((name) => tokenOf(inserted(name))?.kind === 'now'),
     conflict: updates === undefined ? null : assignedProvenance(updates),
+  }
+}
+
+/**
+ * The columns and the SELECT list of an INSERT … SELECT, from one record, so a column and
+ * its value cannot fall out of step. The insert stamp rule reads the list by position.
+ */
+export function insertedFrom<R extends Record<string, Expression<unknown>>>(record: R) {
+  const columns = Object.keys(record) as (keyof R & string)[]
+  return {
+    columns,
+    selections: () =>
+      columns.map((column) => {
+        const value = record[column]
+        if (value === undefined) throw new Error(`insertedFrom: column '${column}' has no value`)
+        return aliasedAs<unknown, typeof column>(value, column)
+      }),
   }
 }
 

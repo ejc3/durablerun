@@ -3,7 +3,7 @@ import { FENCE_ASSIGNMENTS, type SqlFragment, nowValue, rawSql } from '../sql-tr
 import type { StoreTables } from '../store-tables.js'
 
 /** The claim columns a parked run clears, so it carries no live token, lease deadline, or heartbeat. */
-const PARKED_CLAIM_COLUMNS = {
+export const PARKED_CLAIM_COLUMNS = {
   claimed_by: null,
   claim_expires_at_ms: null,
   heartbeat_at_ms: null,

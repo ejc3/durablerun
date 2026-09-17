@@ -2,8 +2,8 @@ import { expressionBuilder } from 'kysely'
 import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
-  aliasedAs,
   defineStatement,
+  insertedFrom,
   nowValue,
   rawSql,
   stampValue,
@@ -34,8 +34,6 @@ export const registerWaitCas = defineStatement(
     taskEligible: SqlFragment
   }) => {
     const eb = expressionBuilder<StoreTables, never>()
-    // One record, so a column and its value cannot fall out of step: the insert stamp
-    // rule reads the SELECT list by column position.
     const wait = {
       run_id: eb.val(binds.runId),
       step_name: eb.val(binds.stepName),
@@ -47,15 +45,13 @@ export const registerWaitCas = defineStatement(
       created_at_ms: nowValue,
       ...FENCE_ASSIGNMENTS,
     }
-    const columns = Object.keys(wait) as (keyof typeof wait)[]
+    const { columns, selections } = insertedFrom(wait)
     return treeBuilder
       .insertInto('waits')
       .columns(columns)
       .expression(
         treeBuilder
-          .selectNoFrom(() =>
-            columns.map((column) => aliasedAs<unknown, typeof column>(wait[column], column)),
-          )
+          .selectNoFrom(selections)
           .where((where) =>
             where.not(
               where.exists(

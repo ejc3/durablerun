@@ -1,12 +1,6 @@
-import {
-  FENCE_ASSIGNMENTS,
-  type SqlFragment,
-  defineStatement,
-  nowValue,
-  rawSql,
-} from '../sql-tree.js'
+import { FENCE_ASSIGNMENTS, type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
-import { whereClaimedRun } from './claimed-run.js'
+import { failedRunColumns, whereClaimedRun } from './claimed-run.js'
 
 /**
  * `fail`'s compare-and-set: a run still running under its claim fails with its reason
@@ -25,10 +19,7 @@ export const failCas = defineStatement(
     treeBuilder
       .updateTable('runs')
       .set({
-        state: 'failed',
-        failed_at_ms: nowValue,
-        failure_reason: binds.failureJson,
-        claimed_by: null,
+        ...failedRunColumns(binds.failureJson),
         claim_expires_at_ms: null,
         ...FENCE_ASSIGNMENTS,
       })

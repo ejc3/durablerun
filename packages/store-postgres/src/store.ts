@@ -5,8 +5,6 @@ import {
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
   FENCE_COLS,
-  FENCE_SET,
-  FENCE_VALS,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -19,7 +17,6 @@ import {
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
-  REASON_CLAIM_TIMEOUT,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_BACKOFF_BASE_SECONDS,
@@ -38,6 +35,7 @@ import {
   type WakeSpec,
   activateCas,
   cancelCas,
+  capLostLaunchCas,
   checkpointLeaseCas,
   claimCas,
   clampLimit,
@@ -48,6 +46,7 @@ import {
   durationToMs,
   emitEventCas,
   failCas,
+  failClaimTimeoutCas,
   mapLimit,
   neverBuggify,
   normalizeRetryStrategy,
@@ -55,6 +54,7 @@ import {
   refusedLease,
   refusedWriteError,
   registerWaitCas,
+  reopenLostLaunchCas,
   requireDerivedInteger,
   requireDurableString,
   requireEpochMs,
@@ -64,6 +64,7 @@ import {
   reviveCas,
   serializeTaskHeaders,
   serializeTaskValue,
+  spawnTaskCas,
   sqlFragment,
   storageValueKind,
   successorCarriedValues,
@@ -490,54 +491,45 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const headersInput = opts.headers
     const headersJson =
       headersInput === undefined ? null : serializeTaskHeaders('task headers', headersInput)
-    const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS })
+    const b = new FencedBatch('spawn', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     // Idempotent task insert: loses silently when the key already exists.
     // enqueue/cancel deadlines are computed in SQL (rule 3); cancel_at_ms
     // materializes max_delay so sweeps and nextWakeAt are indexed reads, never
     // JSON scans. A task without max_delay binds NULL, and NULL propagates
     // through the addition, so its cancel_at_ms is NULL.
     //
-    // The NOT EXISTS on the primary key is what makes this a compare-and-set
-    // rather than a crash: the targeted ON CONFLICT covers the idempotency
-    // index only, so a colliding task_id raised a constraint error out of
-    // spawn instead of losing. Losing is the right answer — some other task
-    // already occupies that identity — and it is one the batch can reason
-    // about.
-    b.cas(
+    // The identity check is what makes a colliding task_id lose instead of
+    // raising: the statement's conflict clause covers the idempotency index
+    // only. Losing is the right answer, because some other task already
+    // occupies that identity, and it is one the batch can reason about.
+    b.casTree(
       'task',
-      'tasks',
-      `INSERT INTO tasks (task_id, queue, task_name, params, headers, retry_strategy,
-         max_attempts, cancellation, idempotency_key, state, enqueue_at_ms,
-         cancel_at_ms, created_at_ms, ${FENCE_COLS})
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,
-         ${NOW} + CAST(? AS BIGINT) + CAST(? AS BIGINT),
-         ${NOW}, ${FENCE_VALS}
-       WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
-         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)
-         AND ${epochAdditionFits(NOW, '?')}
-         AND (CAST(? AS BIGINT) IS NULL OR ${epochAdditionFits(NOW, '?', '?')})
-       ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL
-       DO NOTHING`,
-      [
+      spawnTaskCas({
         taskId,
         queue,
-        durableTaskName,
+        taskName: durableTaskName,
         paramsJson,
         headersJson,
-        retry,
+        retryStrategyJson: retry,
         maxAttempts,
         cancellationJson,
-        key,
-        delayMs,
-        delayMs,
-        maxDelayMs,
-        taskId,
-        taskId,
-        delayMs,
-        maxDelayMs,
-        delayMs,
-        maxDelayMs,
-      ],
+        idempotencyKey: key,
+        enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
+        cancelAt: sqlFragment(`${NOW} + CAST(? AS BIGINT) + CAST(? AS BIGINT)`, [
+          delayMs,
+          maxDelayMs,
+        ]),
+        identityFree: sqlFragment(
+          `NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)
+         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = ?)`,
+          [taskId, taskId],
+        ),
+        enqueueFits: sqlFragment(epochAdditionFits(NOW, '?'), [delayMs]),
+        cancelFits: sqlFragment(
+          `CAST(? AS BIGINT) IS NULL OR ${epochAdditionFits(NOW, '?', '?')}`,
+          [maxDelayMs, delayMs, maxDelayMs],
+        ),
+      }),
     )
     // The initial run, for the task THIS batch just created. One guard the
     // old version needed has deleted itself: the task cannot be terminal, we
@@ -959,9 +951,13 @@ export class PostgresSchedulerStore implements SchedulerStore {
     queue: string,
     item: { runId: string; taskId: string; claimGen: number; relaunchCount: number },
   ): Promise<SweptRun | null> {
-    const b = new FencedBatch('sweep:lost-launch', this.ids.token(), { now: NOW_MS })
-    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
-                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
+    const b = new FencedBatch('sweep:lost-launch', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    const swept = { queue, runId: item.runId, claimGen: item.claimGen }
+    const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
+    const launchLost = sqlFragment(guard)
     const relaunchDelayMs = `LEAST(
       (relaunch_count + 1) * ${RELAUNCH_BACKOFF_BASE_SECONDS},
       ${RELAUNCH_BACKOFF_MAX_SECONDS}
@@ -980,30 +976,25 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // attempt consumed — with linear backoff on the relaunch counter. The
     // counter bump is safe in a CAS: its guard consumes the 'running' state,
     // so a replay matches nothing and cannot bump twice.
-    b.cas(
+    b.casTree(
       'reopen',
-      'runs',
-      `UPDATE runs SET
-         state = 'pending', claimed_by = NULL, claim_expires_at_ms = NULL,
-         heartbeat_at_ms = NULL, relaunch_count = relaunch_count + 1,
-         available_at_ms = ${NOW} + ${relaunchDelayMs},
-         ${FENCE_SET}
-       WHERE ${guard} AND relaunch_count < ${RUN_INTEGER_BOUNDS.relaunch_count.max}
-         AND ${liveOwner}
-         AND ${epochAdditionFits(NOW, relaunchDelayMs)}`,
-      [item.runId, queue, item.claimGen],
+      reopenLostLaunchCas({
+        ...swept,
+        launchLost,
+        availableAt: sqlFragment(`${NOW} + ${relaunchDelayMs}`),
+        liveOwner: sqlFragment(liveOwner),
+        backoffFits: sqlFragment(epochAdditionFits(NOW, relaunchDelayMs)),
+      }),
     )
     // Past the cap: a broken launcher must surface as failed work — the
     // task fails with the run (TLA-pinned), never an infinite launch loop.
-    b.cas(
+    b.casTree(
       'cap',
-      'runs',
-      `UPDATE runs SET
-         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,
-         claim_expires_at_ms = NULL, failure_reason = ?, ${FENCE_SET}
-       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}
-         AND (${liveOwner} OR ${terminalOwner})`,
-      [REASON_RELAUNCH_CAP, item.runId, queue, item.claimGen],
+      capLostLaunchCas({
+        ...swept,
+        launchLost,
+        owner: sqlFragment(`${liveOwner} OR ${terminalOwner}`),
+      }),
     )
     // The task mirrors the run (the reviewed phantom-'running' divergence
     // from the TLA SweepLostLaunch action). Each arm names the CAS it
@@ -1049,19 +1040,21 @@ export class PostgresSchedulerStore implements SchedulerStore {
   ): Promise<SweptRun | null> {
     const successorId = this.ids.uuidv7()
     const infraDelayMs = `${INFRA_BACKOFF_SECONDS} * 1000`
-    const b = new FencedBatch('sweep:claim-timeout', this.ids.token(), { now: NOW_MS })
+    const b = new FencedBatch('sweep:claim-timeout', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     // Ownership CAS: the activated worker died (or was partitioned). Clearing
     // claimed_by kills the dead worker's token, so its zombie writes are
     // doubly fenced from here on.
-    b.cas(
+    b.casTree(
       'fail',
-      'runs',
-      `UPDATE runs SET
-         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,
-         failure_reason = ?, ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?
-         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}
-         AND EXISTS (
+      failClaimTimeoutCas({
+        ...swept,
+        timedOut: sqlFragment(`activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}`),
+        admission: sqlFragment(
+          `EXISTS (
            SELECT 1 FROM tasks t
            WHERE ${runOwnedByTask('runs', 't')}
              AND ((t.state NOT IN ${LIVE}
@@ -1071,7 +1064,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
                  AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}
                    OR ${epochAdditionFits(NOW, infraDelayMs)})))
          )`,
-      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],
+        ),
+      }),
     )
     // Successor under the infra cap, carrying the run-DB pointer and any
     // parked event wake (§3.8.2). Plain INSERT (not OR IGNORE — reviewed: OR

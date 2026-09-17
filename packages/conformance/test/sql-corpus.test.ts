@@ -20,6 +20,7 @@ import { DIALECT_FIXTURES } from './dialect-fixtures.js'
  * signatures than it declares, fails: a new branch must be declared, not discovered.
  */
 const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
+  spawn: ['spawned'],
   claim: ['claimed'],
   activate: ['activated'],
   complete: ['completed'],
@@ -34,6 +35,9 @@ const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
   'retry-task': ['revived'],
   'cancel-task': ['cancelled'],
   'sweep:cancel': ['cancelled'],
+  // One batch carries both compare-and-sets, the reopen and the cap.
+  'sweep:lost-launch': ['swept'],
+  'sweep:claim-timeout': ['swept'],
 }
 
 type Signature = readonly { sql: string; bindArity: number }[]
@@ -119,11 +123,24 @@ describe('generated SQL corpus', () => {
         // A compare-and-set that matches nothing still compiles, so each step says it won.
         expect(await store.retryTask('q', retried.taskId)).not.toBeNull()
         expect(await store.cancelTask('q', retried.taskId)).toBe(true)
-        // Last, because it moves the clock: a task never started by its deadline.
+        // Last, because it moves the clock. Under the early fake clock only these three
+        // tasks are due: a launch that never activates, a worker that dies after
+        // activating, and a task never started by its deadline.
         await fixture.admin.setFakeNowEpochMs(1_000_000)
+        const unlaunchedTask = await store.spawn('q', 'job', '{}')
+        expect((await claimOne(store, 'q', 'w8')).taskId).toBe(unlaunchedTask.taskId)
+        const abandoned = await store.spawn('q', 'job', '{}')
+        expect((await claimActivated(store, 'q', 'w9')).taskId).toBe(abandoned.taskId)
         const late = await store.spawn('q', 'job', '{}', { cancellation: { maxDelaySeconds: 30 } })
-        await fixture.admin.setFakeNowEpochMs(1_031_000)
-        expect(await store.sweep('q', 10)).toContainEqual(
+        await fixture.admin.setFakeNowEpochMs(1_061_000)
+        const swept = await store.sweep('q', 10)
+        expect(swept).toContainEqual(
+          expect.objectContaining({ kind: 'lost-launch', taskId: unlaunchedTask.taskId }),
+        )
+        expect(swept).toContainEqual(
+          expect.objectContaining({ kind: 'claim-timeout', taskId: abandoned.taskId }),
+        )
+        expect(swept).toContainEqual(
           expect.objectContaining({ kind: 'cancelled', taskId: late.taskId }),
         )
       })

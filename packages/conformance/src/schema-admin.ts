@@ -9,6 +9,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { PersistedNumericTable, StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { describeFailure } from './scenario.js'
 
 type PersistedIntegerObservation = Readonly<{
   table: PersistedNumericTable
@@ -175,9 +176,13 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
           Array.from({ length: 8 }, () => fixture.admin.migrate()),
         )
 
-        expect(migrations.map(({ status }) => status)).toEqual(
-          Array.from({ length: 8 }, () => 'fulfilled'),
-        )
+        // Say why a migrator was rejected, not only that one was: this race is rare, and
+        // a bare status leaves nothing to diagnose it from.
+        expect(
+          migrations.flatMap((migration) =>
+            migration.status === 'rejected' ? [describeFailure(migration.reason)] : [],
+          ),
+        ).toEqual([])
         expect(await fixture.admin.schemaVersion()).toBeGreaterThan(0)
       } finally {
         await fixture.close()
