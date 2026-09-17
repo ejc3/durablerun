@@ -1090,8 +1090,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `specs/ChildTasks.tla` models the completion event and lands before its SQL,
   for an await whose event and wait row live in one queue. TLC checks it with
   the await allowed and with it refused, and seven probes each exhibit one
-  violation or one reachable behaviour. Sixteen mutants, each one guard of
-  the model bent or deleted, must each fail some configuration
+  violation or one reachable behaviour. Seventeen mutants, each one guard of
+  the model bent or deleted, must each violate the property its entry names
   (`specs/ChildTasks.mutants.json`, run by `scripts/tla.sh`), because a probe
   shows that an invariant can fail and cannot show that a guard is held. The
   implementation then maps every terminal batch onto the model's ChildTerminal, takes the dialect's event

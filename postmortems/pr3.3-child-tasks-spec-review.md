@@ -1,6 +1,6 @@
-# Postmortem: PR3.3 child-task spec, review round 1 (PR #42)
+# Postmortem: PR3.3 child-task spec, review rounds 1 and 2 (PR #42)
 
-PR3.3 is child tasks, and this PR is its TLA+ model and nothing else: `specs/ChildTasks.tla`, its configurations and probes, its place in the TLA gate, and the DESIGN.md text it proves. No SQL exists yet, so nothing shipped wrong. Two Fable review runs over the first version found seven defects in what the model and the text claimed. Four more were ours: one caught by CI on the first push, one by the mutant check this round built, and two by writing and running this document's false-negative exhibits. All eleven are fixed or recorded as obligations on the implementation.
+PR3.3 is child tasks, and this PR is its TLA+ model and nothing else: `specs/ChildTasks.tla`, its configurations and probes, its place in the TLA gate, and the DESIGN.md text it proves. No SQL exists yet, so nothing shipped wrong. Two Fable review runs over the first version found seven defects in what the model and the text claimed. Four more were ours: one caught by CI on the first push, one by the mutant check this round built, and two by writing and running this document's false-negative exhibits. A second review, of the rework, found four more, and every one of them was a defect of the first round's fixes. All fifteen are fixed or recorded as obligations on the implementation.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -27,6 +27,10 @@ No SQL is built on the model yet. The cost of each defect is what the implementa
 | 9 | In the rework's timed await, an emit that wakes a parent whose wait already timed out passed every invariant | The model would accept SQL that wakes a run after its await timed out | The invariants over the new action | They speak of outcomes, and the woken parent resolves with the right outcome | First `TimeoutIsFinal`, then `AnswerIsFinal` (finding 11), held by a mutant (rung 2) |
 | 10 | A timeout that takes a parent the emit already woke passed every invariant: the wake is lost and the parked outcome is never returned | The model would accept a claim that times out a run the emit already woke | The mutant list | The guard had no entry, and no invariant spoke for it | `WakeIsDelivered`, held by a mutant (rung 2) |
 | 11 | An emit that wakes a cancelled parent passed the allowed configuration. The refusing configuration caught it only by accident | The model would accept a wake of a cancelled run | `TimeoutIsFinal`, which spoke for one of an await's four answers | It was written for the instance that had just been found | `AnswerIsFinal` replaces it: an outcome, a timeout, a refusal, and a cancellation are each final. The mutant is confined to the allowed configuration so the accident cannot hide it (rung 2) |
+| 12 | Nothing held the rule's other direction, that an allowed await is never refused. Deleting the rule from the refusing action left both configurations green | SQL that refuses every child await satisfies the model | The mutant list | The refusing action's guard had no entry. The first version held this direction as `RefusalIsTheRule`, and the rework dropped it on a simplify suggestion, before the mutant check existed to say what the drop cost | `RefusalIsTheRule` returns, held by a mutant (rung 2) |
+| 13 | The mutant check's own test passed with the check disconnected from the gate | The instrument's control could not fail, and this document said it could | The test | Under the stub checker every probe read as vacuous, so the script exited nonzero for that reason whatever the mutants did. The test asserted a failure and never asked what caused it | The stub can witness the probes, so the mutants' verdict alone decides the exit. Three cases: all caught passes, survivors fail, wrong property fails. With the gate's conjunct deleted, exactly the two failing cases fail (rung 2) |
+| 14 | A mutant counted as caught whichever property fired. One was caught by `TypeOK`, and finding 11's mutant only by accident | A guard can lose the property that holds it while its mutant still reads as caught | The mutant check | It matched TLC's exit code and not what was violated. Finding 11 had shown the class, and that fix bent one mutant's text and left the runner alone | Each entry names the property that must be the one violated. Anything else is `WRONG-PROPERTY` and fails. The bent mutant is its natural self again (rung 2) |
+| 15 | The exit trap deleted every counterexample trace beside the specs, on every exit path | A real phase 2 violation loses its trace, and `pnpm test`, which runs the script against the real repository, deletes a developer's kept traces | Review of the trap | The trap was written to clean up after probes and globbed the whole directory | Probes write no trace (`-noGenerateSpecTE`), so there is nothing to clean and the trap no longer touches the specs (rung 1: the throwaway file no longer exists) |
 
 ## Detection ledger
 
@@ -36,14 +40,17 @@ No SQL is built on the model yet. The cost of each defect is what the implementa
 | CI's verify job, `tla-artifact.test.ts` under the stub checker | 1 | yes |
 | The mutant check, run on the rework before it was pushed | 1 | yes |
 | Writing and running this document's false-negative exhibits | 2 | yes |
+| A second Fable `/code-review` and `/simplify` run, over the rework `1b4d5d7...6942c42` | 4 | no |
 
-Self-catch rate: 4 of 11. The rounds before were 4 of 10, 0 of 1, 2 of 6, 1 of 7, and 2 of 13. The number that matters more is what kind of defect each side found. Review found every defect in what the model CLAIMED: a configuration that proved nothing, a missing invariant, an unstated lock, a wrong description of today's code. Our machinery found defects only after review had shown it how, by deleting guards. Both reviewers ran mutants by hand, 20 and 30 of them, and that practice is now a gate for this model. Nothing we own checks the text against the code, and four of review's seven findings were there.
+Self-catch rate: 4 of 15. The rounds before were 4 of 10, 0 of 1, 2 of 6, 1 of 7, and 2 of 13. The number that matters more is what kind of defect each side found. Review found every defect in what the model CLAIMED: a configuration that proved nothing, a missing invariant, an unstated lock, a wrong description of today's code. Our machinery found defects only after review had shown it how, by deleting guards. Both reviewers ran mutants by hand, 20 and 30 of them, and that practice is now a gate for this model. Nothing we own checks the text against the code, and four of review's seven findings were there.
 
 ## Recurrence
 
 Finding 2 is a recurrence, and AGENTS.md already names the class: a mechanism with one failing case was treated as proven, where the property is that it fails for every condition it claims. The wake surface once kept two deletable conditions under 1728 green cases. The mechanism since then has been a practice, witnessed deletions run by hand in each PR, and the last four PRs ran them over TypeScript rules. This PR's author ran none over the model, because the practice lives in the habit of writing TypeScript tests and the model was checked with probes, which are single failing cases. A practice does not transfer to a new kind of artifact. For this model it is now a gate. PR3.10 still owns the general form.
 
 Findings 9, 10, and 11 are the same class one level down: each property was written for the instance just found. `TimeoutIsFinal` held the timeout and not the other three answers, and it took an exhibit to show that. The mutant list has the same shape, and the audit below says so.
+
+Findings 13 and 14 are recurrences inside this one PR. Finding 14 is finding 11 again: the first round saw a mutant caught by accident and repaired that mutant, where the defect was a runner that could not tell which property fired. Finding 13 is the oldest class in this repository's history, a control that reads as a pass for a reason other than the one it names. The first round's test did assert that the gate fails. It never separated the mutants' failure from the probes', and under the stub the probes always fail. A control proves something only when the thing it controls is the single reason the outcome can change.
 
 Finding 1 belongs to the class the vacuity probes exist for, a green signal that checked nothing. The probes guard invariants and behaviours. Nothing guards a configuration.
 
@@ -54,11 +61,13 @@ Finding 1 belongs to the class the vacuity probes exist for, a green signal that
 | The mutant check over `ChildTasks.mutants.json` | 2 | A guard with no entry. Run: deleting `parent = "running"` from `SpawnChild`, so that a cancelled or resolved parent can spawn, passes both configurations, and the mutant check passes because the list does not name that guard. The list is hand-kept. Two more unlisted guards pass when widened, a terminal child ending again and a completed child being revived, and both belong to Scheduler.tla, which proves the task's own lifecycle |
 | `RefusedNeverWaits` | 2 | A refusal with a side effect the invariant does not name. Run: a refused await that also consumes one of the child's revivals passes both configurations. The invariant speaks of the wait row, the parent's state, and the outcome, which is what "registers nothing" means for the event protocol, and not of every variable |
 | `AnswerIsFinal` and `WakeIsDelivered` | 2 | A stray write that leaves the parent's state alone. Run: an emit that parks its outcome on a cancelled parent's run passes both configurations, because the properties speak of `parent` and `ParkedMatchesEvent` is satisfied by a parked value that matches the event. The model has no invariant over `parked` for a parent that is not woken |
+| `caughtBy`, the property each mutant names | 2 | An entry that records whatever fired. Run: the old type-breaking mutant, listed with `caughtBy` set to `TypeOK`, reads as caught, 1 of 1. The field makes the catching property explicit and reviewable. It cannot say whether that property is the one that ought to hold the guard |
+| `RefusalIsTheRule` beside `RefusedNeverWaits` | 2 | An await that is silently ignored, neither answered nor refused. Run: with the hit and register actions removed, both configurations pass, because every invariant about an await is about one that happened. The reachability probe then finds no woken parent and reads as vacuous, which fails the gate. So the pair is held by a probe and not by an invariant |
 | The probe families, each probe named after its cfg | 2 | A probe witnessed by a different cause than the one it is named for. Run: `ChildTasksProbeStrandedWaiter.cfg` with the emit made ATOMIC, against a model whose register action ignores an existing event, still exits 13 and reads as witnessed. A probe shows that its property can fail under its configuration, and not why |
 
 ## Fix-induced defects
 
-Two of eleven. Findings 9 and 10 are defects of the timed await, which the rework added to answer finding 6. Both were caught before the rework was pushed, one by the mutant check the same rework added and one by an exhibit for this document. Finding 11 was in the first version too.
+Six of fifteen, and the split matters. Findings 9 and 10 are defects of the timed await, which the rework added to answer finding 6. Both were caught before the rework was pushed, one by the mutant check the same rework added and one by an exhibit for this document. Finding 11 was in the first version too. Findings 12 to 15 are all defects of the first round's fixes, and all four reached a push and were found by the second review: an invariant dropped on a simplify suggestion, the new check's test, the new check's verdict, and the new trap. The machinery built in round one caught the defects in the MODEL that round one introduced. It caught none of the defects in ITSELF.
 
 One more in the process. The commit that introduced `AnswerIsFinal` did not parse: after `[`, the parser reads `parent \in S` as the start of a function constructor. The mutant check reported every mutant as a checker error, exit 150, and refused to count any as caught, which is what it is for. The inline shell guard around the commit did not stop on that, the commit was made, and it was amended before anything was pushed. Verify-then-commit sequences now run as `bash` scripts with `set -euo pipefail`.
 
@@ -73,8 +82,11 @@ One more in the process. The commit that introduced `AnswerIsFinal` did not pars
 - Finding 11. Red: commit `3d3436c`, 15 of 16. Green: commit `ab50e00`, 16 of 16.
 - Finding 5: `ChildTasksProbeStrandedWaiter` exits 13 on `EveryWaitResolves`, 118 states. A probe is its own red, because the gate requires it to fail.
 - Finding 1: both configurations reported 47 distinct states in the first version's own evidence.
-- The instrument's control: `tla-artifact.test.ts` runs the gate under a stub checker that passes every model, and requires every mutant to be reported as a survivor and the gate to fail.
-- Final state: both configurations are clean at 55 and 26 states, seven probes are witnessed, and sixteen mutants are caught.
+- Second review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `1b4d5d7...6942c42`, time-boxed to 30 minutes, with about 40 TLC runs of its own. `/simplify` finished all four lenses. `/code-review` ran degraded: it stopped on the time box before its finder and verifier agents launched, and one reviewer scanned the diff alone. Its verdict: "The mutant check in `scripts/tla.sh` fails closed on every path I tried, but the test written to prove the gate does not isolate it. The model also accepts an implementation that refuses every await."
+- Quoted: "I removed `&& \"$mutant_fail\" -eq 0` from line 239. The exit was still 1, with 16 SURVIVED lines", "Deleting `~AwaitAllowed` from AwaitRefused survives both configurations", and "A real phase-2 MODEL VIOLATION now loses its `Scheduler_TTrace_*.tla`."
+- Finding 12. Red: commit `d3471bf`, 16 of 17 caught, with `refuse-ignores-rule` surviving. Green: commit `26745a0`, 17 of 17.
+- Findings 13, 14, and 15: commit `c63423c`. Witnessed: with the gate's conjunct on the mutants' verdict deleted, exactly the two failing-gate tests fail, 2 of 9, and all 9 pass on the real script. `-noGenerateSpecTE` was run on a safety probe and the liveness probe: exits 12 and 13 with the violated line, and no trace file, against two trace files without the flag. The control for the configuration check: a property deleted from one configuration fails the gate.
+- Final state: both configurations are clean at 55 and 26 states, seven probes are witnessed, and seventeen mutants are each caught by the property they name.
 
 ## Root cause
 
@@ -83,8 +95,10 @@ The model was checked the way its author checks a model, with invariants and a p
 ## Mechanisms
 
 - **Built now**
-  - A mutant check for this model in `scripts/tla.sh`, fed by `specs/ChildTasks.mutants.json`, with a test that proves it fails when mutants survive.
-  - `RefusedNeverWaits`, `AnswerIsFinal`, and `WakeIsDelivered`, each held by a mutant.
+  - A mutant check for this model in `scripts/tla.sh`, fed by `specs/ChildTasks.mutants.json`. Each entry names the property that must catch it. Three tests under a stub checker hold the gate, with the probes witnessed so the mutants' verdict alone decides.
+  - `RefusedNeverWaits`, `RefusalIsTheRule`, `AnswerIsFinal`, and `WakeIsDelivered`, each held by a mutant.
+  - Probes that write no trace, and an exit trap that leaves the specs alone.
+  - A check that the two configurations differ in the rule's constant only.
   - One constant for the rule in place of two, and the configuration that proved nothing deleted.
   - A liveness probe, and one probe loop for both families that enrolls a cfg by its existing.
   - The header's obligations on the SQL and its list of what is not modeled.
@@ -94,6 +108,7 @@ The model was checked the way its author checks a model, with invariants and a p
 
 ## What this round still would not catch
 
+- A `caughtBy` that names whatever fired when the entry was written. The field is reviewable, and nothing checks that it is the right property.
 - A guard of the model with no entry in the mutant list. The list is hand-kept, and PR3.10 owns generating it.
 - A configuration or a constant that nothing reads. Nothing compares the state graphs of two configurations.
 - Any statement DESIGN.md makes about today's code. Four of review's seven findings were of this kind, and the only check is a reader who opens the file.
