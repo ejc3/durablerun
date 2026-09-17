@@ -1,6 +1,5 @@
 import { engineInvariantViolations } from '@durablerun/conformance'
 import {
-  type Clock,
   FatalTaskError,
   LeaseLostError,
   type SchedulerStore,
@@ -8,9 +7,7 @@ import {
   SuspendSignal,
   snapshotTaskThrowable,
 } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
-import { openTestDb } from '@durablerun/store-libsql/testing'
+import type { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import {
   type TaskContext,
@@ -27,66 +24,9 @@ import {
   taskMapSet,
   trustedPromiseRace,
 } from '../src/intrinsics.js'
+import { fx, registry } from './worker-harness.js'
 
 const Q = 'q'
-
-/** Instant clock: the pump parks on sleeps we never fire — fine for passes
- * that finish fast; the heartbeat test drives it manually. */
-class FakeClock implements Clock {
-  now = 1_000_000
-  fired: { deadline: number; resolve: () => void }[] = []
-  nowEpochMs(): number {
-    return this.now
-  }
-  elapsedMs(): number {
-    return this.nowEpochMs()
-  }
-  yieldTurn(): Promise<void> {
-    return new Promise((resolve) => setImmediate(resolve))
-  }
-  sleep(ms: number, interrupt?: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-      if (interrupt?.aborted || ms <= 0) {
-        resolve()
-        return
-      }
-      const entry = { deadline: this.now + ms, resolve }
-      this.fired.push(entry)
-      interrupt?.addEventListener(
-        'abort',
-        () => {
-          this.fired = this.fired.filter((s) => s !== entry)
-          resolve()
-        },
-        { once: true },
-      )
-    })
-  }
-  advance(ms: number): void {
-    this.now += ms
-    const due = this.fired.filter((s) => s.deadline <= this.now)
-    this.fired = this.fired.filter((s) => s.deadline > this.now)
-    for (const s of due) s.resolve()
-  }
-}
-
-async function fx(seed: string) {
-  const { raw, admin } = await openTestDb()
-  const ids = seededIdSource(new Rng(seed))
-  const store = new LibsqlSchedulerStore(raw, ids)
-  const clock = new FakeClock()
-  await admin.setFakeNowEpochMs(clock.now)
-  const advance = async (ms: number) => {
-    clock.now += ms
-    await admin.setFakeNowEpochMs(clock.now)
-    clock.advance(0)
-  }
-  return { raw, admin, ids, store, clock, advance, close: () => raw.close() }
-}
-
-function registry(entries: Record<string, TaskHandler>): TaskRegistry {
-  return new Map(Object.entries(entries))
-}
 
 const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
   ['function', () => () => undefined],
