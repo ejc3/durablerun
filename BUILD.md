@@ -867,6 +867,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     tree-path successors when the scanners are deleted, covering the statement
     grammar, fragment roles, gating, stamping, the clock, and counting
     assignments.
+  - Deferred to PR3.9e: `sql-tree.ts` and `fenced-batch.ts` each scan string
+    literals and parentheses. The text path's scanners are owned by its
+    mutations and go when the text path goes, leaving the tree module's as the
+    only copies.
   - Deferred to PR3.9e: base-gate's re-aim bridge has one arm per historical
     registry hash. Arms pinned to a registry no open PR is based on are deleted
     then, leaving the helpers and the live arm.

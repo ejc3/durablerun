@@ -705,17 +705,24 @@ are load-bearing):
      fragment.
    - A dialect's predicates stay store-owned SQL text and reach a shared
      statement as data: a fragment's text plus its binds. Core turns each `?`
-     into a value node and each clock token into the clock node, so compiled
-     placeholders equal bound arguments by construction and the clock rules
-     see a fragment's clock token. A fragment may not hold a stamp or a fence,
-     which the rules need as nodes, nor a bind or clock token inside a string
-     literal, because its text is split without reading SQL. The claim's
+     into a value node and each clock token into the clock node, so a
+     fragment's placeholders equal its bound arguments by construction and the
+     clock rules see a fragment's clock token. The batch still checks the
+     compiled counts, because an operator or identifier built from nodes can
+     add a `?`. A fragment may not hold a stamp or a fence, which the rules
+     need as nodes. Its text is split without reading SQL beyond plain
+     single-quoted literals, so a comment, a dollar-quoted or prefixed string,
+     and a bind or clock token inside a literal are refused. The claim's
      candidate subquery is such a fragment, because libSQL bounds each state's
      leg before merging them and PostgreSQL locks candidates with SKIP LOCKED.
    - A fragment's role is declared where it is placed: a predicate that decides
      rows, the subquery a row must be IN, or a value. `FencedBatch` reads each
      raw node's position from the tree and refuses one that is not where it was
-     declared, or that `rawSql` did not mint. A predicate or value compiles
+     declared, that stands in two places, or that `rawSql` did not mint, the
+     builder's own ORDER BY direction aside. A predicate is a boolean of a
+     WHERE, HAVING, ON, or CASE condition at any depth, and a subquery is the
+     operand of IN, NOT IN, or EXISTS. A statement must place every fragment it
+     takes. A predicate or value compiles
      inside parentheses, so an OR inside it cannot void the conjuncts around
      it, and a subquery must be one parenthesized group of its own.
    - Arithmetic on database time stays a store fragment beside the headroom
