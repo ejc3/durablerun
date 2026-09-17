@@ -88,5 +88,11 @@
     "guard": "a timeout takes only a parent that is still waiting",
     "find": "AwaitTimeout ==\n  /\\ parent = \"waiting\"",
     "replace": "AwaitTimeout ==\n  /\\ parent \\in {\"waiting\", \"woken\"}"
+  },
+  {
+    "name": "emit-wakes-a-cancelled-parent",
+    "guard": "an emit wakes only a parent with a wait row, and a cancelled parent has none",
+    "find": "       /\\ IF wait\n",
+    "replace": "       /\\ IF wait \\/ (AwaitAllowed /\\ parent = \"cancelled\")\n"
   }
 ]
