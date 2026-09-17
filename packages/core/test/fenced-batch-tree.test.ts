@@ -204,6 +204,19 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('win', 'runs', otherSchema)).toThrow(/statement grammar/)
   })
 
+  it('refuses a follow-on that respells the clock or calls it as a function', () => {
+    const respelled = taskFollowOn().set({
+      first_started_at_ms: sql<number>`${sql.raw("unixepoch('subsec')*1000")}`,
+    })
+    const called = taskFollowOn().set((eb) => ({
+      first_started_at_ms: eb.fn<number>('unixepoch', []),
+    }))
+    expect(() => withCas().followOnTree('task', 'tasks', respelled, 'one')).toThrow(
+      /reads the clock/,
+    )
+    expect(() => withCas().followOnTree('task', 'tasks', called, 'one')).toThrow(/reads the clock/)
+  })
+
   it('refuses a tree statement in a batch without a tree dialect', () => {
     const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
     expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)
