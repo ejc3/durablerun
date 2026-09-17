@@ -1,4 +1,5 @@
 export { seededBuggify } from './buggify.js'
+export { FakeClock, withStoreOverrides } from './fake-clock.js'
 export { seededIdSource } from './ids.js'
 export { Rng } from './rng.js'
 export {

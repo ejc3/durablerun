@@ -24,7 +24,7 @@ import {
   taskMapSet,
   trustedPromiseRace,
 } from '../src/intrinsics.js'
-import { fx, registry } from './worker-harness.js'
+import { claimAndRun, claimInvocation, fx, invocationOf, registry } from './worker-harness.js'
 
 const Q = 'q'
 
@@ -205,28 +205,6 @@ const TASK_THROWABLE_CASES = {
   },
 } satisfies Record<TaskThrowableCaseId, TaskThrowableCase>
 
-async function claimAndRun(
-  f: Awaited<ReturnType<typeof fx>>,
-  reg: TaskRegistry,
-  token: string,
-): Promise<ReturnType<typeof runClaimedRun>> {
-  return runClaimedRun(
-    { store: f.store, clock: f.clock, registry: reg },
-    await claimInvocation(f, token),
-  )
-}
-
-async function claimInvocation(f: Awaited<ReturnType<typeof fx>>, token: string) {
-  const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
-  if (!run) throw new Error('expected a claimable run')
-  return invocationOf(run)
-}
-
-/** The launch a driver builds from a claimed run. */
-function invocationOf(run: { runId: string; claimToken: string; claimGen: number }) {
-  return { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen }
-}
-
 async function replacePropertyAsync<T>(
   target: object,
   key: PropertyKey,
@@ -257,7 +235,7 @@ describe('runClaimedRun', () => {
     expect(await claimAndRun(f, registry({ job: async () => 'done' }), 'w1')).toEqual({
       kind: 'completed',
     })
-    expect(f.clock.fired.map(({ deadline }) => deadline - f.clock.now)).toEqual([])
+    expect(f.clock.sleeps.map(({ deadline }) => deadline - f.clock.elapsed)).toEqual([])
     f.close()
   })
 
@@ -1685,7 +1663,7 @@ describe('runClaimedRun', () => {
     )
     // Let the pass reach its awaits (pump sleep + the job's long call)
     // before moving time — advancing earlier would shift the deadlines.
-    while (f.clock.fired.length < 2) {
+    while (f.clock.sleeps.length < 2) {
       await new Promise((r) => setTimeout(r, 2))
     }
     // Cross the original lease horizon in pump-cadence hops, sweeping en
@@ -1780,11 +1758,11 @@ describe('runClaimedRun', () => {
         invocationOf(run),
       )
 
-      while (f.clock.fired.length < 1) {
+      while (f.clock.sleeps.length < 1) {
         await f.clock.yieldTurn()
       }
       const firstUpkeepDelay =
-        (f.clock.fired[0]?.deadline ?? Number.POSITIVE_INFINITY) - f.clock.now
+        (f.clock.sleeps[0]?.deadline ?? Number.POSITIVE_INFINITY) - f.clock.elapsed
       releaseHandler?.()
       expect(await pass).toEqual({ kind: 'completed' })
       expect(

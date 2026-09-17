@@ -1,5 +1,5 @@
 import type { SchedulerStore } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
+import { Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
@@ -50,16 +50,10 @@ async function clockShapeProblems(shape: ClockShape): Promise<string[]> {
   let databaseNowMs = clock.now
   await admin.setFakeNowEpochMs(databaseNowMs)
   let beats = 0
-  const counted = new Proxy(store, {
-    get(target, prop, receiver) {
-      if (prop === 'driverHeartbeat') {
-        return async (...args: Parameters<SchedulerStore['driverHeartbeat']>) => {
-          await target.driverHeartbeat(...args)
-          beats++
-        }
-      }
-      const value = Reflect.get(target, prop, receiver)
-      return typeof value === 'function' ? value.bind(target) : value
+  const counted = withStoreOverrides(store, {
+    driverHeartbeat: async (...args: Parameters<SchedulerStore['driverHeartbeat']>) => {
+      await store.driverHeartbeat(...args)
+      beats++
     },
   })
   const loop = new DriverLoop(
