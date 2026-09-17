@@ -24,11 +24,42 @@
 \*  - The event's name is reserved.  No user emit can write it, or a caller
 \*    could win first-write-wins and forge a child's result.
 \*
-\* THE OPEN QUESTION, isolated as one guard.  DESIGN.md keeps Absurd's rule that
-\* awaiting a same-queue child is refused.  Absurd refuses it because its await
-\* polls and holds a worker slot, and ours suspends.  AwaitAllowed is that rule
-\* and nothing else reads SameQueue, so both answers are model-checked and the
-\* protocol is sound under either.
+\* SCOPE: ONE QUEUE.  Events are keyed by queue and are shard-local (S3.7), so
+\* the child's terminal batch can write the event and wake the waiter in one
+\* atomic step only when the event, the wait row, and the parent's run live in
+\* one queue.  That is the await this model covers.  An await across queues
+\* needs a delivery protocol that does not exist, and nothing here speaks for it.
+\*
+\* THE RULE IN QUESTION, isolated as one constant.  DESIGN.md keeps Absurd's rule
+\* that awaiting a same-queue child is refused.  Absurd refuses it because its
+\* await polls and holds a worker slot, and ours suspends.  AwaitAllowed is that
+\* rule and nothing else reads it, so the protocol is checked with the await
+\* allowed and with it refused.  With it refused, the only await left is the one
+\* across queues, which this model does not cover.
+\*
+\* WHAT THE SQL OWES THIS MODEL, beyond its actions:
+\*  - Every terminal batch takes the dialect's event lock, as emit-event and
+\*    await-event do (S3.4 rule 2).  Actions here are atomic and mutually
+\*    exclusive.  Without the lock on PostgreSQL, a parent reads no event, the
+\*    child inserts the event and sees no wait row, and the parent sleeps forever.
+\*  - The completion event outlives every await of it.  No action here removes an
+\*    event, so event cleanup must not take one while its task can be awaited.
+\*  - The child await reaches the store by an internal path: the SDK's awaitEvent
+\*    refuses a name that starts with $, and the store's emitEvent port must.
+\*
+\* NOT MODELED, and why that is sound or what bounds it:
+\*  - The parent's own retry successor.  Scheduler.tla's SuccessorCarriesWake and
+\*    EventImmutable cover it: a successor awaits again and hits the same event.
+\*  - Several parents or children.  Each child has its own event and each wait
+\*    is its own row, which Scheduler.tla's event protocol covers.  The one wait
+\*    here cannot show that an emit wakes EVERY waiter.
+\*  - Await cycles.  A parent that awaits a child that awaits the parent waits
+\*    forever in any queue.  Nothing detects it, and only a cancellation
+\*    deadline bounds it, as it bounds any untimed await.
+\*  - A timed await.  Its timeout branch is not modeled here.
+\*  - The fairness below borrows Scheduler.tla's EventuallyTerminal, which holds
+\*    under that model's own restrictions: an untimed await only under an armed
+\*    cancellation deadline.
 \*
 \* Ledger, modeled ahead of implementation (spec-first):
 \*   every terminal batch ('complete', 'fail', 'cancel-task', 'sweep:cancel',
@@ -37,19 +68,18 @@
 \*     wake are follow-ons of the terminal compare-and-set, so a replay finds
 \*     the task already terminal and writes nothing)
 \*   'retry-task' -> ReviveChild  [cas-fenced]  (leaves the event alone)
-\*   'await-event' -> AwaitHit / AwaitMiss  [cas-fenced]  (unchanged)
+\*   'await-event' -> AwaitHit / AwaitMiss  [cas-fenced]  (the same batch,
+\*     reached by an internal path that builds the reserved name)
 EXTENDS Naturals
 
 CONSTANTS
   MaxRetries,     \* retry-task revivals of the child.  ARTIFICIAL bound.
-  SameQueue,      \* the parent and the child share a queue
-  SameQueueRule,  \* "refuse" (DESIGN.md today) or "allow"
+  AwaitAllowed,   \* FALSE is DESIGN.md's rule today: a same-queue await is refused
   AtomicEmit,     \* TRUE in the protocol.  FALSE only in a vacuity probe.
   UserMayForge    \* FALSE in the protocol.  TRUE only in a vacuity probe.
 
 ASSUME /\ MaxRetries \in Nat
-       /\ SameQueue \in BOOLEAN
-       /\ SameQueueRule \in {"refuse", "allow"}
+       /\ AwaitAllowed \in BOOLEAN
        /\ AtomicEmit \in BOOLEAN
        /\ UserMayForge \in BOOLEAN
 
@@ -62,6 +92,9 @@ VARIABLES
   doneEvent,     \* the completion event's payload, or None (unset)
   parent,        \* "running", "waiting", "woken", "resolved", "refused",
                  \* "cancelled"
+  \* wait and parked could be derived from parent and doneEvent.  They are kept
+  \* because they are the two stored representations, the wait row and the run's
+  \* parked payload, whose agreement WaitIntegrity and ParkedMatchesEvent check.
   wait,          \* a wait row for the completion event exists
   parked,        \* the outcome parked on the parent's run by the emit
   seen,          \* the outcome the parent's await returned, or None
@@ -74,8 +107,6 @@ Init ==
   /\ child = "unspawned" /\ firstOutcome = None /\ doneEvent = None
   /\ parent = "running" /\ wait = FALSE /\ parked = None /\ seen = None
   /\ retries = 0 /\ owed = FALSE
-
-AwaitAllowed == ~SameQueue \/ SameQueueRule = "allow"
 
 SpawnChild ==
   /\ parent = "running" /\ child = "unspawned"
@@ -189,32 +220,22 @@ WaitIntegrity == wait => (parent = "waiting" /\ doneEvent = None)
 
 ParkedMatchesEvent == parked # None => parked = doneEvent
 
-\* Whatever an await returned is the child's first outcome.
-ResolvedSawFirstOutcome ==
-  /\ (parent = "resolved") => (seen # None /\ seen = firstOutcome)
-  /\ (parent # "resolved") => seen = None
+\* Whatever an await returned is the child's first outcome, and only a resolved
+\* await returned one.
+SeenIsFirstOutcome ==
+  /\ seen # None => seen = firstOutcome
+  /\ (parent = "resolved") <=> (seen # None)
 
-\* A refused await registers nothing.
-RefusedRegistersNothing == parent = "refused" => (~wait /\ seen = None)
-
-\* The refusal is exactly the same-queue rule.
-RefusalIsTheRule == parent = "refused" => (SameQueue /\ SameQueueRule = "refuse")
+\* The refusing rule refuses: with the await not allowed, the parent never
+\* waits, is never woken, and never gets an outcome from an await.
+RefusedNeverWaits ==
+  ~AwaitAllowed => (~wait /\ parent \notin {"waiting", "woken", "resolved"})
 
 DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 
 \* The event is written only in the step that ends a live child.
 DoneAuthority ==
   [][doneEvent' # doneEvent => (child = "live" /\ child' \in Outcomes)]_vars
-
-\* Vacuity probes, each EXPECTED TO FAIL: its counterexample is a witness that
-\* the behaviour the protocol exists for is reachable.
-\* Witness: a parent that registered a wait and was woken by the child's end.
-ProbeNoWokenParent == parent # "woken"
-\* Witness: a revived child that ends a second time with another outcome, while
-\* the event still carries the first.
-ProbeNoSecondOutcome == ~(retries > 0 /\ child \in Outcomes /\ child # doneEvent)
-\* Witness: an await that the same-queue rule refused.
-ProbeNoRefusedAwait == parent # "refused"
 
 \* A registered wait is resolved, unless the parent is cancelled first.
 EveryWaitResolves == (parent = "waiting") ~> (parent \in {"resolved", "cancelled"})

@@ -4,8 +4,9 @@
 # sim harness proves the implementation refines it (labeled batch ≙ TLA
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #
-# Layout is maximum-concurrency: phase 1 runs every Probe*.cfg vacuity probe
-# at once; phase 2 runs the exhaustive-safety scope AND the five liveness
+# Layout is maximum-concurrency: phase 1 runs every vacuity probe at once, the
+# Probe*.cfg family against Probes.tla and the ChildTasksProbe*.cfg family
+# against ChildTasksProbes.tla; phase 2 runs the exhaustive-safety scope AND the five liveness
 # property groups (SchedulerLiveness1-5.cfg, listed explicitly in the loops
 # below, so a new group must be added there) as concurrent TLC processes with
 # explicit worker and heap budgets. Liveness is split into groups because the
@@ -27,7 +28,9 @@ TLA_SHA256="eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAR="$REPO_ROOT/tools/tla/tla2tools.jar"
 STATES="$(mktemp -d "${TMPDIR:-/tmp}/tla-states.XXXXXX")"
-trap 'rm -rf "$STATES"' EXIT
+# Probes fail BY DESIGN, and TLC drops a counterexample trace next to the spec
+# when they do. They are throwaway, and removed on every exit, a failing one too.
+trap 'rm -rf "$STATES"; rm -f "$REPO_ROOT"/specs/*_TTrace_*.tla "$REPO_ROOT"/specs/*_TTrace_*.bin' EXIT
 
 if [[ ! -f "$JAR" ]]; then
   echo "tla.sh: INFRA ERROR: vendored TLA checker is missing: $JAR" >&2
@@ -121,10 +124,10 @@ tlc "$wake_heap" 2 -metadir "$STATES/wake-delivery" -config WakeDelivery.cfg \
 report "hosted wake delivery" "$wake_code" "$STATES/wake-delivery.log" || exit 1
 
 # The child-task completion event (specs/ChildTasks.tla), also small and on
-# every scope. Three configurations cover both answers to the same-queue rule
-# and a child in another queue. Its vacuity probes run with the others in
-# phase 1, which a TLA_ONLY liveness job skips.
-for cfg in ChildTasks ChildTasksRefuse ChildTasksCrossQueue; do
+# every scope. Two configurations cover both answers to the same-queue rule.
+# Its vacuity probes run with the others in phase 1, which a TLA_ONLY liveness
+# job skips.
+for cfg in ChildTasks ChildTasksRefuse; do
   child_code=0
   tlc "$wake_heap" 2 -metadir "$STATES/$cfg" -config "$cfg.cfg" \
     ChildTasks.tla >"$STATES/$cfg.log" 2>&1 || child_code=$?
@@ -204,13 +207,21 @@ PY
 probe_pids=()
 probe_names=()
 probe_heap=$((TLA_HEAP_MB / 8)); [[ "$probe_heap" -lt 512 ]] && probe_heap=512
-for cfg in Probe*.cfg; do
-  probe="${cfg%.cfg}"
-  tlc "$probe_heap" 4 -metadir "$STATES/$probe" -config "$cfg" Probes.tla \
-    >"$STATES/$probe.log" 2>&1 &
-  probe_pids+=($!)
-  probe_names+=("$probe")
-done
+# A probe is a cfg named after the one invariant or property it must violate,
+# defined in the family's module. A new cfg is enrolled by existing.
+probe_family() { # probe_family <module> <workers> <cfg...>
+  local module="$1" workers="$2" cfg probe
+  shift 2
+  for cfg in "$@"; do
+    probe="${cfg%.cfg}"
+    tlc "$probe_heap" "$workers" -metadir "$STATES/$probe" -config "$cfg" "$module" \
+      >"$STATES/$probe.log" 2>&1 &
+    probe_pids+=($!)
+    probe_names+=("$probe")
+  done
+}
+probe_family Probes.tla 4 Probe*.cfg
+probe_family ChildTasksProbes.tla 2 ChildTasksProbe*.cfg
 probe_fail=0
 for i in "${!probe_pids[@]}"; do
   probe="${probe_names[$i]}"
@@ -218,27 +229,7 @@ for i in "${!probe_pids[@]}"; do
   if wait "${probe_pids[$i]}"; then
     echo "VACUOUS: $probe found no witness — the feature it probes is unreachable"
     probe_fail=1
-  elif grep -q "Invariant $probe is violated" "$log"; then
-    echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
-  else
-    echo "ERROR: $probe failed for the wrong reason:"
-    tail -20 "$log"
-    probe_fail=1
-  fi
-done
-# The child-task model's probes. Each names the invariant it must violate: two
-# show an invariant is not vacuous, three that a behaviour is reachable.
-for pair in NonAtomicEmit:TerminalImpliesDone ForgedEmit:DoneIsFirstOutcome \
-  WokenParent:ProbeNoWokenParent SecondOutcome:ProbeNoSecondOutcome \
-  RefusedAwait:ProbeNoRefusedAwait; do
-  probe="ChildTasksProbe${pair%%:*}"
-  invariant="${pair##*:}"
-  log="$STATES/$probe.log"
-  if tlc "$probe_heap" 2 -metadir "$STATES/$probe" -config "$probe.cfg" \
-    ChildTasks.tla >"$log" 2>&1; then
-    echo "VACUOUS: $probe found no witness against $invariant"
-    probe_fail=1
-  elif grep -q "Invariant $invariant is violated" "$log"; then
+  elif grep -qE "(Invariant $probe is|Temporal property $probe was) violated" "$log"; then
     echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
   else
     echo "ERROR: $probe failed for the wrong reason:"
@@ -247,9 +238,6 @@ for pair in NonAtomicEmit:TerminalImpliesDone ForgedEmit:DoneIsFirstOutcome \
   fi
 done
 [[ "$probe_fail" -eq 0 && "$mutant_fail" -eq 0 ]] || exit 1
-# Probes fail BY DESIGN; TLC drops counterexample trace files next to the
-# spec when they do — throwaway artifacts, removed here.
-rm -f ./*_TTrace_*.tla ./*_TTrace_*.bin
 
 if [[ "${TLA_ONLY:-}" == "safety" ]]; then
   echo "== safety only (TLA_ONLY), full budget"
