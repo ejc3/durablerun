@@ -691,8 +691,24 @@ are load-bearing):
    - A follow-on or tail needs a top-level WHERE conjunct that is itself
      `fence_stamp = <fence>`, or that requires a row from a subquery gated the
      same way, and the fence must stamp the table whose `fence_stamp` it is
-     compared with. This decides position, not correlation: an uncorrelated
-     gated subquery proves only that the batch won.
+     compared with. A subquery whose only source is one derived table is gated
+     by whatever gates that table, because it reads a subset of its rows. A
+     join or a second source gates nothing, and neither does an aggregate with
+     no GROUP BY, which returns a row whether or not the fence matched. This
+     decides position, not correlation: an uncorrelated gated subquery proves
+     only that the batch won.
+   - The generated follow-ons, `derived()` and `seal()`, are trees built from
+     the closed relation contract, so they take every rule above like any tree
+     statement. Their selections are correlated by construction: the written
+     key is IN the fenced source's paired key, with queue equality where the
+     relation is queue-scoped, so a generated follow-on cannot write a row the
+     fenced rows do not own. The caller's `where`, `narrow`, and text values
+     enter as fragments. A value that reads the column it is assigned to must
+     be built from nodes, because the counting rule cannot read a fragment. A
+     fragment may hold a fence token, which becomes a fence node: it is bound
+     and must name a fence of the batch, and it gates nothing. The stamp never
+     rides in a fragment. What correlation still does not cover is a
+     hand-written follow-on, which stays text until the next part of PR3.9e.
    - An update of a provenance-carrying table assigns the stamp and the
      instant once each, and a compare-and-set takes its instant from the clock
      token. The rule reads the table the tree writes, not a declaration.

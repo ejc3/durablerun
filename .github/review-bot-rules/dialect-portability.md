@@ -201,12 +201,13 @@ Allowed cases (do NOT flag these):
   NULLs first"* (`packages/store-libsql/src/store.ts`). Those are the fix, not
   the shape. `ORDER BY attempt` on a NOT NULL column is likewise fine.
 
-- **Portable SQL skeletons in `core`.** `FencedBatch.derived()` composes
+- **Portable statement shapes in `core`.** `FencedBatch.derived()` builds
   `UPDATE <target> SET … WHERE <key> IN (SELECT f.<column> FROM <from> f WHERE …
-  AND f.fence_stamp = …)` and `DELETE FROM <target> WHERE …`. That is SQL inside
-  `packages/core/src` and it is the mechanism, not a leak: the shape is identical
-  in all three dialects, and everything dialect-specific it touches arrives as a
-  token (`$NOW$`, `$STAMP$`, `$FENCE:x$`) or a store-supplied string.
+  AND f.fence_stamp = …)` and `DELETE FROM <target> WHERE …` as operation-node
+  trees, and each store's compiler spells them. That is a statement shape inside
+  `packages/core/src` and it is the mechanism, not a leak: the tree is identical
+  in all three dialects, and everything dialect-specific it touches arrives as an
+  engine token node or a store-supplied fragment.
 
 - **Shared-schema SQL in the conformance suite.**
   `packages/conformance/src/suite.ts` asserts with statements like `SELECT state,
