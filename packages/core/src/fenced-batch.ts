@@ -80,6 +80,7 @@ export const FENCE_COLS = `fence_stamp, fence_at_ms`
 export const FENCE_VALS = `${STAMP}, ${NOW}`
 
 const {
+  Set: TrustedSet,
   TypeError: TrustedTypeError,
   WeakSet: TrustedWeakSet,
   WeakSetAdd: weakSetAdd,
@@ -484,7 +485,7 @@ export class FencedBatch {
     }
     const assignments =
       spec.set === undefined ? [] : (Object.entries(spec.set) as Array<[string, string]>)
-    const allowedColumns = new Set<string>(DERIVED_WRITABLE_COLUMNS[target])
+    const allowedColumns = new TrustedSet<string>(DERIVED_WRITABLE_COLUMNS[target])
     if (sealedSelfKey !== null) allowedColumns.add(sealedSelfKey)
     for (const [column, expression] of assignments) {
       const isProvenanceColumn = /fence_(?:stamp|at_ms)/i.test(column)
@@ -709,8 +710,8 @@ export class FencedBatch {
 
   /**
    * Add a tree statement. Every rule reads the tree, inside a closed statement grammar:
-   * the table it writes and whether it stamps that table, the raw boolean fragments it
-   * declares, the fences that gate it and the table each one stamps, the clock, and
+   * the table it writes and whether it stamps that table, where each raw fragment
+   * stands, the fences that gate it and the table each one stamps, the clock, and
    * assignments that count. It compiles once, here, so what was checked is what runs.
    *
    * Raw fragment text is the one thing a tree cannot read. Every raw node must come
@@ -791,11 +792,6 @@ export class FencedBatch {
     }
 
     const rawTexts = rawFragmentTexts(tree)
-    if (rawTexts.some((text) => /\$STAMP\$|\$NOW\$|\$FENCE:/.test(text))) {
-      throw new Error(
-        `${at} holds a text token in a raw fragment: a tree substitutes token nodes only, so use stampValue, nowValue, or fenceValue`,
-      )
-    }
     // A compare-and-set may carry the batch clock's own text inside a fragment. Any
     // other spelling is a second clock.
     const spelledClock =
@@ -807,6 +803,13 @@ export class FencedBatch {
     if (spelledClock) {
       throw new Error(
         `${at} spells out a database clock: the only clock a statement may hold is the clock token, so a batch reads one clock expression`,
+      )
+    }
+    // A fragment's binds equal its placeholders by construction. An operator or an
+    // identifier built from nodes can still add a `?` that no argument binds.
+    if (compiled.placeholders !== compiled.parameters.length) {
+      throw bindCompilationError(
+        `${at} compiles to ${compiled.placeholders} placeholders for ${compiled.parameters.length} arguments: an operator or identifier added a '?' that no argument binds`,
       )
     }
     if (kind === 'followOn') {

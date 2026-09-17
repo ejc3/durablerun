@@ -70,6 +70,7 @@ export const TASK_INTRINSICS = freeze({
   RangeError,
   ReflectGet: Reflect.get,
   RegExpExec: regexpExec,
+  Set,
   StringFrom: String,
   StringIncludes: stringIncludes,
   StringStartsWith: stringStartsWith,

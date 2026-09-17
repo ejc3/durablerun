@@ -205,6 +205,7 @@ describe('SQL tree checks', () => {
     expect(compiled).toEqual({
       sql: 'update "runs" set "state" = ?, "completed_at_ms" = (SELECT 7), "fence_stamp" = ? where "run_id" = ? and "fence_stamp" = ?',
       parameters: ['completed', 'seed:complete', 'r1', 'seed:claim'],
+      placeholders: 4,
       fences: ['claim'],
       readsClock: true,
     })

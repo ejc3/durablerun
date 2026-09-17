@@ -9,9 +9,11 @@ import {
   DummyDriver,
   type Expression,
   FunctionNode,
+  HavingNode,
   IdentifierNode,
   InsertQueryNode,
   Kysely,
+  OnNode,
   type OperationNode,
   OperationNodeTransformer,
   OperatorNode,
@@ -31,6 +33,8 @@ import {
   UnaryOperationNode,
   UpdateQueryNode,
   ValueNode,
+  WhenNode,
+  WhereNode,
   createQueryId,
 } from 'kysely'
 import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
@@ -40,7 +44,12 @@ import type { SqlStatement } from './primitives.js'
 // Task code shares this process and may replace a global such as `Map` while a pass
 // runs. What these checks keep across calls lives in collections captured at module
 // load, and nothing here constructs an ambient collection at call time.
-const { WeakSet: TrustedWeakSet, WeakSetAdd: weakSetAdd, WeakSetHas: weakSetHas } = TASK_INTRINSICS
+const {
+  ObjectCreate: objectCreate,
+  WeakSet: TrustedWeakSet,
+  WeakSetAdd: weakSetAdd,
+  WeakSetHas: weakSetHas,
+} = TASK_INTRINSICS
 
 /**
  * Engine tokens carried as value nodes whose values are these sentinel objects. A
@@ -151,6 +160,7 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
   return (binds) => {
     requireDefinedBinds(name, binds)
     const statement = Object.freeze({ name, tree: build(binds).toOperationNode() })
+    requirePlacedFragments(name, binds)
     weakSetAdd(definedStatements, statement)
     return statement
   }
@@ -171,8 +181,27 @@ export interface SqlFragment {
   readonly args: SqlStatement['args']
 }
 
+const knownFragments = new TrustedWeakSet<object>()
+const placedFragments = new TrustedWeakSet<object>()
+
 export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFragment {
-  return Object.freeze({ sql, args: Object.freeze([...args]) })
+  const fragment = Object.freeze({ sql, args: Object.freeze([...args]) })
+  weakSetAdd(knownFragments, fragment)
+  return fragment
+}
+
+/** Refuse a fragment bind the statement took and never placed, at any depth. */
+function requirePlacedFragments(statement: string, binds: unknown, path = 'bind'): void {
+  if (typeof binds !== 'object' || binds === null || binds instanceof Uint8Array) return
+  if (weakSetHas(knownFragments, binds)) {
+    if (!weakSetHas(placedFragments, binds)) {
+      throw new Error(`${statement}: ${path} is a fragment the statement never places`)
+    }
+    return
+  }
+  for (const [name, value] of Object.entries(binds)) {
+    requirePlacedFragments(statement, value, path === 'bind' ? `bind '${name}'` : `${path}.${name}`)
+  }
 }
 
 /**
@@ -194,11 +223,18 @@ function mintedRole(node: object): RawRole | undefined {
   return RAW_ROLES.find((role) => weakSetHas(mintedRaws[role], node))
 }
 
-/** The contents of a fragment's single-quoted string literals. */
-function stringLiterals(sql: string): string[] {
+/** A fragment's text read once: its literals' contents, and everything outside them. */
+function readFragment(sql: string): { literals: string[]; outside: string; prefixed: boolean } {
   const literals: string[] = []
+  let outside = ''
+  let prefixed = false
   for (let i = 0; i < sql.length; i++) {
-    if (sql[i] !== "'") continue
+    if (sql[i] !== "'") {
+      outside += sql[i]
+      continue
+    }
+    // `E'…'`, `N'…'`, `X'…'`, and `U&'…'` are string forms with their own escape rules.
+    if (/[A-Za-z&]/.test(sql[i - 1] ?? '')) prefixed = true
     let literal = ''
     for (i++; i < sql.length; i++) {
       if (sql[i] !== "'") literal += sql[i]
@@ -206,22 +242,19 @@ function stringLiterals(sql: string): string[] {
       else break
     }
     literals.push(literal)
+    outside += "''"
   }
-  return literals
+  return { literals, outside, prefixed }
 }
 
-/** Whether the text is one parenthesized group: its first `(` closes at its last character. */
-function isOneGroup(text: string): boolean {
+/** Whether the text outside literals is one parenthesized group: its first `(` closes at its end. */
+function isOneGroup(outside: string): boolean {
+  const text = outside.trim()
   if (!text.startsWith('(')) return false
   let depth = 0
   for (let i = 0; i < text.length; i++) {
-    if (text[i] === "'") {
-      for (i++; i < text.length && (text[i] !== "'" || text[i + 1] === "'"); i++) {
-        if (text[i] === "'") i++
-      }
-    } else if (text[i] === '(') {
-      depth++
-    } else if (text[i] === ')') {
+    if (text[i] === '(') depth++
+    else if (text[i] === ')') {
       depth--
       if (depth === 0) return i === text.length - 1
     }
@@ -229,56 +262,94 @@ function isOneGroup(text: string): boolean {
   return false
 }
 
+interface ParsedFragment {
+  readonly pieces: readonly string[]
+  readonly tokens: readonly ('bind' | 'now')[]
+}
+
 const FRAGMENT_TOKEN = new RegExp(String.raw`\?|${NOW.replaceAll('$', String.raw`\$`)}`, 'g')
 
 /**
+ * Validate a fragment's text for its role and split it at its binds and clock tokens.
+ * The text is split without reading SQL beyond plain single-quoted literals, so anything
+ * that would hide a token from that reading is refused: a comment, a dollar-quoted or
+ * prefixed string, and a token inside a literal.
+ */
+function parseFragment(sql: string, role: RawRole): ParsedFragment {
+  if (sql.includes(STAMP) || sql.includes(FENCE_PREFIX)) {
+    throw new Error(
+      'a SQL fragment may not hold a stamp or fence token: a tree carries those as nodes',
+    )
+  }
+  const { literals, outside, prefixed } = readFragment(sql)
+  if (outside.includes('--') || outside.includes('/*')) {
+    throw new Error('a SQL fragment may not hold a comment: its text is split without reading SQL')
+  }
+  if (prefixed || /\$\w*\$/.test(outside.replaceAll(NOW, ''))) {
+    throw new Error(
+      'a SQL fragment may use only plain single-quoted literals: its text is split without reading SQL',
+    )
+  }
+  if (literals.some((literal) => literal.includes('?') || literal.includes(NOW))) {
+    throw new Error(
+      'a SQL fragment may not hold a bind or the clock token inside a string literal: its text is split without reading SQL',
+    )
+  }
+  if (role === 'subquery' && !isOneGroup(outside)) {
+    throw new Error('a subquery fragment must be one parenthesized group')
+  }
+  const pieces: string[] = []
+  const tokens: ('bind' | 'now')[] = []
+  let last = 0
+  for (const match of sql.matchAll(FRAGMENT_TOKEN)) {
+    pieces.push(sql.slice(last, match.index))
+    last = match.index + match[0].length
+    tokens.push(match[0] === NOW ? 'now' : 'bind')
+  }
+  pieces.push(sql.slice(last))
+  return { pieces, tokens }
+}
+
+// Store fragments are static text built on every call, so a fragment is validated and
+// split once per role and text. The cap bounds the cache if a caller ever builds text
+// from run-time values.
+const PARSED_FRAGMENT_CAP = 512
+const parsedFragments: Record<string, ParsedFragment> = objectCreate(null)
+let parsedFragmentCount = 0
+
+function parsedFragment(sql: string, role: RawRole): ParsedFragment {
+  const key = `${role}:${sql}`
+  const cached = parsedFragments[key]
+  if (cached !== undefined) return cached
+  const parsed = parseFragment(sql, role)
+  if (parsedFragmentCount < PARSED_FRAGMENT_CAP) {
+    parsedFragments[key] = parsed
+    parsedFragmentCount++
+  }
+  return parsed
+}
+
+/**
  * A fragment as a raw node whose binds and clock are nodes, not text. Each `?` becomes
- * a value node, so compiled placeholders equal bound arguments by construction, and
- * each `$NOW$` becomes the clock token, so the clock rules see it.
+ * a value node and each `$NOW$` becomes the clock token, so the clock rules see it.
  *
- * The text is split without reading SQL, so a token inside a string literal is refused.
  * A stamp or a fence never rides in a fragment: the rules that read them need them as
  * nodes of the tree. A predicate or value compiles inside parentheses, so an OR inside
  * it cannot void the conjuncts around it. A subquery must bring its own, because a
  * second pair would make it one scalar value.
  */
 export function rawSql<T>(fragment: SqlFragment, role: RawRole): Expression<T> {
-  if (fragment.sql.includes(STAMP) || fragment.sql.includes(FENCE_PREFIX)) {
-    throw new Error(
-      'a SQL fragment may not hold a stamp or fence token: a tree carries those as nodes',
-    )
-  }
-  if (
-    stringLiterals(fragment.sql).some((literal) => literal.includes('?') || literal.includes(NOW))
-  ) {
-    throw new Error(
-      'a SQL fragment may not hold a bind or the clock token inside a string literal: its text is split without reading SQL',
-    )
-  }
-  const text = fragment.sql.trim()
-  if (role === 'subquery' && !isOneGroup(text)) {
-    throw new Error('a subquery fragment must be one parenthesized group')
-  }
-  const pieces: string[] = []
-  const parameters: OperationNode[] = []
-  let last = 0
+  const { pieces, tokens } = parsedFragment(fragment.sql, role)
   let bound = 0
-  for (const match of fragment.sql.matchAll(FRAGMENT_TOKEN)) {
-    pieces.push(fragment.sql.slice(last, match.index))
-    last = match.index + match[0].length
-    if (match[0] === NOW) {
-      parameters.push(ValueNode.create(EngineToken.now))
-    } else {
-      parameters.push(ValueNode.create(fragment.args[bound]))
-      bound++
-    }
-  }
-  pieces.push(fragment.sql.slice(last))
+  const parameters = tokens.map((token) =>
+    ValueNode.create(token === 'now' ? EngineToken.now : fragment.args[bound++]),
+  )
   if (bound !== fragment.args.length) {
     throw new TypeError(`a SQL fragment binds ${bound} of its ${fragment.args.length} arguments`)
   }
   const raw = RawNode.create(pieces, parameters)
   weakSetAdd(mintedRaws[role], raw)
+  weakSetAdd(placedFragments, fragment)
   return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))
 }
 
@@ -294,6 +365,8 @@ export interface TokenBindings {
 export interface CompiledTree {
   readonly sql: string
   readonly parameters: readonly unknown[]
+  /** `?` placeholders in the compiled SQL. More than `parameters` means a node added one. */
+  readonly placeholders: number
   /** Every fence the statement names, wherever it appears. */
   readonly fences: readonly string[]
   /** Whether the clock token appears anywhere in the statement. */
@@ -344,7 +417,13 @@ export class TreeDialect {
   compile(tree: StatementTree, bindings: TokenBindings): CompiledTree {
     const { bound, fences, readsClock } = this.#binder.bind(tree, bindings)
     const compiled = this.compiler.compileQuery(bound, createQueryId())
-    return { sql: compiled.sql, parameters: compiled.parameters, fences, readsClock }
+    return {
+      sql: compiled.sql,
+      parameters: compiled.parameters,
+      placeholders: compiled.sql.split('?').length - 1,
+      fences,
+      readsClock,
+    }
   }
 }
 
@@ -551,35 +630,58 @@ function isBuilderRaw(parent: OperationNode, node: OperationNode): boolean {
   )
 }
 
+/** The operand a row must, or must not, be IN or EXIST in: a subquery position. */
+function subqueryOperand(node: OperationNode): OperationNode | null {
+  if (UnaryOperationNode.is(node) && operatorName(node.operator) === 'exists') {
+    return unwrapParens(node.operand)
+  }
+  const operator = BinaryOperationNode.is(node) ? operatorName(node.operator) : null
+  return BinaryOperationNode.is(node) && (operator === 'in' || operator === 'not in')
+    ? unwrapParens(node.rightOperand)
+    : null
+}
+
+/** The boolean a clause node holds: a WHERE, a HAVING, a JOIN's ON, or a CASE condition. */
+function clauseBoolean(node: OperationNode): OperationNode | null {
+  if (WhereNode.is(node)) return node.where
+  if (HavingNode.is(node)) return node.having
+  if (OnNode.is(node)) return node.on
+  return WhenNode.is(node) ? node.condition : null
+}
+
 /**
  * Why a statement's raw fragments are not in order, or null when they are. Every raw
- * node must come from `rawSql`, and the role declared there must be where the node
- * stands, so a fragment meant as a value cannot decide rows unnoticed. Position is read
- * from the tree: a boolean position under the WHERE clause, the operand of a required
- * IN or EXISTS there, or anywhere else.
+ * node must come from `rawSql`, stand in one place, and stand where its role says, so a
+ * fragment declared a value cannot stand as a whole boolean. Position is read from the
+ * tree: a predicate is a boolean of a WHERE, HAVING, ON, or CASE condition, through
+ * AND, OR, NOT, and parentheses, at any depth. A subquery is the operand of IN, NOT IN,
+ * or EXISTS there. Anything else is a value. The builder's own ORDER BY direction is the
+ * one raw node `rawSql` does not mint.
  */
 export function rawFragmentProblem(tree: OperationNode): string | null {
   const predicates: OperationNode[] = []
   const subqueries: OperationNode[] = []
-  const markWhere = (node: OperationNode): void => {
+  const markBoolean = (node: OperationNode): void => {
     const inner = unwrapParens(node)
+    const operand = subqueryOperand(inner)
     if (RawNode.is(inner)) {
       predicates.push(inner)
     } else if (AndNode.is(inner) || OrNode.is(inner)) {
-      markWhere(inner.left)
-      markWhere(inner.right)
-    } else if (requiredSubquery(inner) !== null) {
-      const subquery = requiredSubquery(inner) as OperationNode
-      const where = whereOf(subquery)
-      if (RawNode.is(subquery)) subqueries.push(subquery)
-      else if (where !== null) markWhere(where)
+      markBoolean(inner.left)
+      markBoolean(inner.right)
+    } else if (operand !== null) {
+      if (RawNode.is(operand)) subqueries.push(operand)
     } else if (UnaryOperationNode.is(inner)) {
-      markWhere(inner.operand)
+      markBoolean(inner.operand)
     }
   }
-  const where = whereOf(tree)
-  if (where !== null) markWhere(where)
+  someNode(tree, (node) => {
+    const boolean = clauseBoolean(node)
+    if (boolean !== null) markBoolean(boolean)
+    return false
+  })
 
+  const placed: OperationNode[] = []
   let problem: string | null = null
   const visit = (node: OperationNode): void => {
     for (const child of children(node)) {
@@ -592,7 +694,10 @@ export function rawFragmentProblem(tree: OperationNode): string | null {
             ? 'subquery'
             : 'value'
         if (role === undefined) problem = 'a raw fragment that rawSql did not mint'
+        else if (placed.includes(child))
+          problem = 'a fragment placed twice: call rawSql once for each place'
         else if (role !== position) problem = `a '${role}' fragment standing as a ${position}`
+        placed.push(child)
       }
       visit(child)
     }
