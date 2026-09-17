@@ -878,7 +878,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads its own column and so is built from nodes. A fragment may carry a
     fence token as a node. The grammar gains DISTINCT, and gating reads
     through one derived table and never through an aggregate with no GROUP BY.
-    Part 2: the hand-written follow-ons and tails as trees. Part 3 opens with
+    Part 2, done: the hand-written follow-ons and tails are trees, so no
+    `FencedBatch` statement in a store is text. A follow-on may be an
+    INSERT … SELECT, gated through its SELECT, stamped, and taking its instant
+    from the fenced row. A subquery gate counts only when it is tied to the
+    outer row. `openTailTree` takes an open read with its reason. Every run
+    insert is built from one record, both checkpoint placements write through
+    one statement, the emit's wake reads the recorded event through nodes, and
+    both reads of a claimed run select one list. `checkpoints` joins
+    `STORE_TABLE_COLUMNS`. Spawn's receipt became one read of `tasks` with an
+    OR predicate, because the grammar has no UNION. Part 3 opens with
     registered mutations for the tree checks, as its own PR, before the text
     path is deleted. Part 1's review round,
     `postmortems/pr3.9e-part1-review.md`, is the third running whose findings
@@ -888,7 +897,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Each text-path mutation that holds a rule gets a tree-path successor that
     removes the same condition, and the successor is caught before its
     original is retired. The rest of part 3 follows: the text path and its
-    scanners deleted, one pass over the tree for all checks, the corpus
+    scanners deleted, with `cas`, `casMany`, `followOn`, `tail`, `openTail`,
+    and `fenceSetAt`, one pass over the tree for all checks, the corpus
     enrolled from label and variant descriptors, and the bridge as one table
     of pinned file pairs.
   - Deferred to PR3.9e part 3, with the tree-path mutations: the line that
@@ -905,11 +915,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     about 28 µs and compiling it about 19 µs, so most of the rest is the tree
     checks, which walk the tree once each. A batch holds up to five generated
     statements. The one-pass item above owns this.
-  - Deferred to PR3.9e: `wake-witness-surface.test.ts` matches `UPDATE runs` in
-    upper case. PR3.9c moved only emit-event's compare-and-set to a tree, and
-    the wake follow-on the test mutates is still text. The test fails loudly
-    when that follow-on compiles from a tree and must follow the compiled
-    spelling then.
+  - Deferred to PR3.9e part 3: a hand-written follow-on costs more as a tree by
+    the same cause. The revival's run insert takes about 247 µs to build, check,
+    and compile where its text took about 59 µs, and the `revived` tail about
+    32 µs where its text took about 1 µs, measured on libSQL's compiler with a
+    stub executor, beside a batch that costs about 66 µs with its
+    compare-and-set alone. The one-pass item above owns this too.
   - Deferred to PR3.9e: a tree statement is rebuilt and re-checked on every
     call, and the checks walk the tree once each. PR3.9c's review measured the
     four moved methods on libSQL with a stub executor: reschedule 78.5 µs to
@@ -922,7 +933,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Deferred to PR3.9e: the insert rules get registered tree-path mutations
     with the other tree checks. Until then each condition is held by its own
     refusal in `fenced-batch-tree.test.ts`, and PR3.9c witnessed thirteen
-    condition deletions each failing a test.
+    condition deletions each failing a test. PR3.9e part 2 witnessed nineteen
+    more, for the follow-on insert rule, the subquery tie, and the open tail.
+    Two of them guard a clearer message over a rule that refuses the same shape
+    next: a VALUES follow-on, which the gate rule refuses, and an aggregate
+    node, which the gating rule's aggregate check refuses.
   - Deferred to PR4.3: the shared await-event and emit-event statements are
     built with the builder's conflict clause and `IS DISTINCT FROM`, and MySQL 8
     has neither spelling. A statement is a tree and the dialect's compiler
@@ -935,7 +950,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     statements upsert may have no unique key besides the conflict target.
   - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
     since emit-event's conflict arm became nodes. It stays while the text path
-    and its checks stay, and goes with them.
+    and its checks stay, and goes with them. The stores' `fenced` and
+    `fenceFrom` fragment helpers have no caller since part 2 moved the emit's
+    wake, and go the same way.
   - Deferred to PR3.9e: the tree path has no registered mutations of its own.
     The thirty mutations that own the text scanners in `fenced-batch.ts` get
     tree-path successors when the scanners are deleted, covering the statement
@@ -959,17 +976,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
     way: the batch lint bridge is pinned to a lint main no longer has, and the
     outcome lint bridge dies when PR3.9d's first half merges. What remains
     becomes one table of pinned file pairs.
-  - Deferred to PR3.9e part 2, from
-    `postmortems/pr3.9a-statement-trees-review.md`: a tree's gating rule decides
-    position, not correlation, so a hand-written follow-on gated by an
-    uncorrelated subquery may write a row the fenced run does not own. Part 1
-    closed this for the generated follow-ons, which are trees whose selections
-    are correlated by construction. The hand-written follow-ons are still text
-    and have the same residual.
+  - Option, not scheduled, from
+    `postmortems/pr3.9a-statement-trees-review.md`: PR3.9e part 2 made the
+    gating rule check that a gated subquery is tied to the outer row, which
+    refuses that postmortem's exhibit. What the tie does not check is recorded
+    beside three run exhibits in `fenced-batch-tree.test.ts`. A tie on a column
+    that is not a key passes, because the emit's wake is tied by queue on
+    purpose, and the rows are then bounded by store text. A follow-on insert may
+    read a value from a joined row that only store text ties to the fenced one.
+    An aggregate spelled inside a value fragment passes the plain-selection
+    rule. All three have one cause: a store fragment is opaque to the tree.
+    Closing them means building those predicates from nodes, which the
+    registered mutations that own their text do not allow today.
   - Deferred until a tree statement names it: `tasks.completed_payload` stays
     out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
     which its statements assign. Completion's task mirror is a generated
-    `derived()` statement, which PR3.9e moves.
+    `derived()` statement, which PR3.9e moves. `checkpoints.status` stays out
+    the same way: every checkpoint write leaves it to its default.
   - Option, not scheduled: load compiled statements from the generated corpus at
     run time, so Kysely becomes a build-time dependency. Importing Kysely
     unbundled measured about 65 ms per cold start, beside about 72 ms for
