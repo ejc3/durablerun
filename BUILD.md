@@ -845,23 +845,27 @@ these three things; nothing else in the system does I/O, time, or randomness.
     candidate subquery stays store-owned, because the dialects select
     candidates differently. A fragment's role is declared where it is placed
     and checked against its position in the tree.
-  - PR3.9c: suspend, reschedule, await-event, and emit-event.
+  - PR3.9c: suspend, reschedule, await-event, and emit-event. The statement
+    grammar gains INSERT and ON CONFLICT for compare-and-sets, with an insert
+    stamp rule and a conflict rule that keeps a preserved instant. Suspend and
+    reschedule share one statement and one set of park assignments with the
+    launch deferral. Wake arithmetic, the event timeout, and their headroom
+    guards stay store-owned fragments, as the lease deadline did in PR3.9b.
+    The stores' text copy of the parked claim columns and the wake guard's AND
+    form are deleted.
   - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
     and spawn.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
-  - Deferred to PR3.9c: `wake-witness-surface.test.ts` matches `UPDATE runs` in
-    upper case, so it fails loudly when emit-event compiles from a tree and must
-    follow the compiled spelling then. `query-plans.test.ts` followed the
-    claim's in PR3.9b.
-  - Deferred to PR3.9c: `prepareWake` returns its headroom guard twice, as a
-    bare conjunct for the launch deferral's tree and with a leading AND for its
-    text call sites. When suspend and reschedule move to trees, the AND form
-    goes.
-  - Deferred to PR3.9c: the stores' text `PARKED_CLAIM` and core's
-    `PARKED_CLAIM_COLUMNS` are two forms of one column list, held together by a
-    store test. When suspend and reschedule move to trees, the text form goes.
+  - Deferred to PR3.9e: `wake-witness-surface.test.ts` matches `UPDATE runs` in
+    upper case. PR3.9c moved only emit-event's compare-and-set to a tree, and
+    the wake follow-on the test mutates is still text. The test fails loudly
+    when that follow-on compiles from a tree and must follow the compiled
+    spelling then.
+  - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
+    since emit-event's conflict arm became nodes. It stays while the text path
+    and its checks stay, and goes with them.
   - Deferred to PR3.9e: the tree path has no registered mutations of its own.
     The thirty mutations that own the text scanners in `fenced-batch.ts` get
     tree-path successors when the scanners are deleted, covering the statement

@@ -696,6 +696,24 @@ are load-bearing):
    - An update of a provenance-carrying table assigns the stamp and the
      instant once each, and a compare-and-set takes its instant from the clock
      token. The rule reads the table the tree writes, not a declaration.
+   - A compare-and-set may be an INSERT, with or without ON CONFLICT. A
+     follow-on or tail may not. An insert into a provenance-carrying table
+     supplies `fence_stamp` as the stamp and `fence_at_ms` as the clock token,
+     once each, read by column position from its VALUES row or its SELECT
+     list. An upsert's conflict arm must leave the row carrying this
+     statement's stamp, or a later statement could fence on a stamp the batch
+     never wrote there. For a table whose first instant is a preserved fact,
+     today `events.emitted_at_ms`, the arm assigns the stamp and copies that
+     column into `fence_at_ms`. For any other table it assigns the stamp and
+     the clock token. DO NOTHING is allowed, because it writes no row and the
+     compare-and-set then loses. The await-event registration and the event
+     emit are such statements, shared by every dialect. A dialect passes what
+     it requires of an existing event and its null-safe inequality.
+   - Suspend and reschedule are one shared statement and differ only in the
+     admission fragment each store passes. Every transition that parks a
+     claimed run, the launch deferral included, takes its assignments from one
+     core helper, so the state, the wake instant, the cleared claim, and the
+     stamp cannot drift between them.
    - Only a compare-and-set may hold the clock token. Raw fragment text is the
      one thing a tree cannot read, so it is scanned for the batch clock's text
      and for the clock spellings `scripts/clock-lint.py` lists. That scan is a
