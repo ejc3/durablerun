@@ -341,5 +341,12 @@
     "caughtBy": "RollbackOnlyEligible",
     "find": "          /\\ rbTries' = [s \\in Steps |-> 0]\n",
     "replace": "          /\\ rbTries' = rbTries\n"
+  },
+  {
+    "name": "halt-recorded-as-done",
+    "guard": "a rollback that failed for good is not recorded as done",
+    "caughtBy": "DoneMeansCompensated",
+    "find": "  /\\ rb' = [rb EXCEPT ![s] = \"failed\"]\n",
+    "replace": "  /\\ rb' = [rb EXCEPT ![s] = \"done\"]\n"
   }
 ]
