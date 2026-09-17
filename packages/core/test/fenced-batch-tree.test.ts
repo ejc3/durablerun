@@ -485,6 +485,24 @@ describe('FencedBatch tree statements', () => {
       expect(() => followOn(gatedBy(() => aliasedAs(value<number>('COUNT(*)'), 'n')))).toThrow(
         /fence/,
       )
+      // The same through a derived table: one row always, so IN over it gates nothing.
+      const keysFrom = (grouped: boolean) => {
+        const inner = db
+          .selectFrom('runs as f')
+          .select((eb) => eb.fn.count<number>('f.run_id').as('source_key'))
+          .where('f.fence_stamp', '=', fenceValue('win'))
+        return db
+          .selectFrom((grouped ? inner.groupBy('f.task_id') : inner).as('fenced_source'))
+          .select('source_key')
+      }
+      const sealedBy = (keys: Builder) =>
+        db
+          .updateTable('runs')
+          .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+          .where('run_id', 'in', keys as never)
+      expect(() => followOn(sealedBy(keysFrom(false)))).toThrow(/fence/)
+      // A grouped aggregate returns no row when nothing matched, so it still gates.
+      expect(() => followOn(sealedBy(keysFrom(true)))).not.toThrow()
     })
 
     it('still lets a tail count the rows this batch stamped', () => {

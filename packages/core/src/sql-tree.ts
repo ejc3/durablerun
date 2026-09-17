@@ -360,6 +360,12 @@ function parseFragment(sql: string, role: RawRole): ParsedFragment {
       'a SQL fragment may use only plain single-quoted literals: its text is split without reading SQL',
     )
   }
+  // A well-formed token leaves nothing behind. Text left over beside one, such as a
+  // second token run into the first, would compile into SQL the database rejects. This
+  // runs after the dollar-quote check, so a dollar-quoted string keeps its own refusal.
+  if (fenceless.replaceAll(NOW, '').includes('$')) {
+    throw new Error('a SQL fragment holds a malformed fence token or a stray $')
+  }
   if (
     literals.some(
       (literal) => literal.includes('?') || literal.includes(NOW) || literal.includes(FENCE_PREFIX),
@@ -647,7 +653,6 @@ function requiredSubquery(node: OperationNode): OperationNode | null {
  * the written row proves only that the batch won.
  */
 export function gatingFences(query: OperationNode): GatingFence[] {
-  if (SelectQueryNode.is(query) && alwaysReturnsARow(query)) return []
   const where = whereOf(query)
   const scope = tableScope(query)
   const gated =
@@ -657,21 +662,30 @@ export function gatingFences(query: OperationNode): GatingFence[] {
           const fence = fenceEquality(conjunct, scope)
           if (fence !== null) return [fence]
           const subquery = requiredSubquery(conjunct)
-          return subquery !== null && SelectQueryNode.is(subquery) ? gatingFences(subquery) : []
+          return subquery !== null && SelectQueryNode.is(subquery) && mayReturnNoRow(subquery)
+            ? gatingFences(subquery)
+            : []
         })
   return [...gated, ...derivedTableGates(query)]
 }
 
 /**
- * An aggregate with no GROUP BY returns one row whether or not any row matched, so a
- * row required from it proves nothing about its WHERE.
+ * Whether a SELECT returns no row when its WHERE matches none, so that a row required
+ * from it proves its WHERE. An aggregate with no GROUP BY returns one row always. The
+ * builder spells an aggregate more than one way and a fragment hides one, so an
+ * ungrouped SELECT qualifies only when every selection is built from nodes and holds no
+ * function of any kind. This is asked of a subquery a row is required from, and of a
+ * derived table, never of the statement's own root: a tail may count the rows its own
+ * WHERE gates, and a losing batch then counts none.
  */
-function alwaysReturnsARow(select: SelectQueryNode): boolean {
-  return (
-    select.groupBy === undefined &&
-    (select.selections ?? []).some((selection) =>
-      someNode(selection, (node) => AggregateFunctionNode.is(node)),
-    )
+function mayReturnNoRow(select: SelectQueryNode): boolean {
+  if (select.groupBy !== undefined) return true
+  return (select.selections ?? []).every(
+    (selection) =>
+      !someNode(
+        selection,
+        (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node) || RawNode.is(node),
+      ),
   )
 }
 
@@ -686,7 +700,7 @@ function derivedTableGates(query: OperationNode): GatingFence[] {
   const [only] = froms
   if (froms.length !== 1 || only === undefined) return []
   const inner = AliasNode.is(only) ? only.node : only
-  return SelectQueryNode.is(inner) ? gatingFences(inner) : []
+  return SelectQueryNode.is(inner) && mayReturnNoRow(inner) ? gatingFences(inner) : []
 }
 
 /** The column an assignment writes. The object and two-argument `set` forms differ in shape. */
@@ -698,8 +712,22 @@ function assignments(query: OperationNode): readonly ColumnUpdateNode[] {
   return UpdateQueryNode.is(query) ? (query.updates ?? []) : []
 }
 
+/**
+ * Whether a fragment's text may count on `column`. An unqualified mention is the
+ * assigned row's own column, so any such mention counts: the tree cannot see what the
+ * text does with it. A qualified mention may be another row, read through a subquery,
+ * so it counts only beside an arithmetic or concatenation operator, under any qualifier:
+ * `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are the same write as `x + 1`.
+ */
 function mentions(text: string, column: string): boolean {
-  return new RegExp(String.raw`(?<![\w.])"?${column}"?(?!\w)`, 'i').test(text)
+  const name = String.raw`"?${column}"?(?!\w)`
+  const qualified = String.raw`\w+"?\."?${column}"?(?!\w)`
+  const operator = String.raw`(?:[-+*/%]|\|\|)`
+  return (
+    new RegExp(String.raw`(?<![\w."])${name}`, 'i').test(text) ||
+    new RegExp(String.raw`${qualified}\s*\)*\s*${operator}`, 'i').test(text) ||
+    new RegExp(String.raw`${operator}\s*\(*\s*"?${qualified}`, 'i').test(text)
+  )
 }
 
 const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']

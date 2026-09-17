@@ -1,4 +1,4 @@
-import type { Expression, Kysely } from 'kysely'
+import { type Expression, type Kysely, isExpression } from 'kysely'
 import {
   DERIVED_WRITABLE_COLUMNS,
   type DerivedWritableColumn,
@@ -208,15 +208,6 @@ type Named = NamedBase &
     | { form: 'text'; sql: string; args: SqlStatement['args'] }
     | { form: 'tree'; compiled: SqlStatement }
   )
-
-/** Whether a caller's set value is an expression built from nodes. */
-function isTreeExpression(value: unknown): value is Expression<unknown> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { toOperationNode?: unknown }).toOperationNode === 'function'
-  )
-}
 
 /**
  * The builder generated follow-ons are built with. A relation names its tables and
@@ -513,7 +504,7 @@ export class FencedBatch {
       }
       if (typeof expression === 'string') {
         assertSetExpression(`FencedBatch[${this.label}] derived('${name}')`, column, expression)
-      } else if (!isTreeExpression(expression)) {
+      } else if (!isExpression(expression)) {
         throw new Error(
           `FencedBatch[${this.label}] derived('${name}') set value for '${column}' is neither SQL text nor an expression`,
         )
@@ -532,6 +523,23 @@ export class FencedBatch {
     // Live output never branches on the batch label. The mutation probe may inject a
     // label-scoped defect here, so one generated transition can be broken for its own
     // verdict without poisoning every other one.
+    // A computed correlation that comes out empty must not widen the write to every row
+    // under the fence, so empty text is refused, and so are arguments with no text.
+    for (const [text, args] of [
+      ['where', 'whereArgs'],
+      ['narrow', 'narrowArgs'],
+    ] as const) {
+      if (spec[text] === '') {
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') ${text} is empty: omit it to correlate nothing`,
+        )
+      }
+      if (spec[text] === undefined && (spec[args]?.length ?? 0) > 0) {
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') has ${args} and no ${text} to bind them`,
+        )
+      }
+    }
     const whereArgs = spec.whereArgs ?? []
     const fencedSource = () => {
       let rows = generatedBuilder.selectFrom(`${from} as f`)
