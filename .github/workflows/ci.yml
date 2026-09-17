@@ -441,6 +441,32 @@ jobs:
                   if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
                       raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
                   repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+          elif digest == '2900a1485022ce92ccb9cadee41cc68b8fe292a916dea232f57c2ca38d0282c9':
+              # Moving claim, activation, and the launch deferral onto statement trees
+              # re-aimed these finds: activation's guards now live in the admission
+              # fragment it shares with the deferral.
+              def spec_block(text, key):
+                  if text.count(key) != 1:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
+                  start = text.rindex('    (\n', 0, text.index(key))
+                  end = text.index('    ),\n', start) + len('    ),\n')
+                  return start, end
+              repaired = previous
+              for name in (
+                  'legacy-wait-step-backfill',
+                  'activate-requires-sole-live-run',
+                  'activate-rejects-zero-lease',
+                  'activate-requires-relaunch-bound',
+                  'activate-requires-current-run-accounting',
+                  'activate-payload-validation-atomic',
+                  'activate-headers-admissible',
+              ):
+                  key = f'        "{name}",\n'
+                  start, end = spec_block(repaired, key)
+                  new_start, new_end = spec_block(candidate, key)
+                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
+                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

@@ -1,11 +1,9 @@
-import { sql } from 'kysely'
-import { defineStatement, nowValue, stampValue } from '../sql-tree.js'
+import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 
 /**
  * `complete`'s compare-and-set, defined once for every dialect. A store supplies its
- * task admission predicate as SQL built from its own fragments, the statement's one raw
- * boolean.
+ * task admission predicate, built from its own fragments.
  */
 export const completeCas = defineStatement(
   'complete',
@@ -15,7 +13,7 @@ export const completeCas = defineStatement(
     queue: string
     claimToken: string
     resultJson: string
-    taskAdmitsCompletionSql: string
+    taskAdmitsCompletion: SqlFragment
   }) =>
     treeBuilder
       .updateTable('runs')
@@ -35,5 +33,5 @@ export const completeCas = defineStatement(
       .where('queue', '=', binds.queue)
       .where('claimed_by', '=', binds.claimToken)
       .where('state', '=', 'running')
-      .where(sql.raw<boolean>(binds.taskAdmitsCompletionSql)),
+      .where(rawSql<boolean>(binds.taskAdmitsCompletion)),
 )

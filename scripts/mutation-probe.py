@@ -768,8 +768,8 @@ MUTATION_SPECS = [
     (
         "legacy-wait-step-backfill",
         "packages/store-libsql/src/store.ts",
-        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
-        "         wake_step = wake_step,",
+        "        legacyWaitStep: sqlFragment(claimedWait.step),",
+        "        legacyWaitStep: sqlFragment('wake_step'),",
         "a claimed pre-v3 timed wait loses the only copy of its exact step",
     ),
     (
@@ -817,12 +817,12 @@ MUTATION_SPECS = [
     (
         "activate-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
-        "         AND ${soleLiveRun('runs')}\n"
-        "         AND EXISTS (\n",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
-        "         AND 1 = 1\n"
-        "         AND EXISTS (\n",
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n"
+        "    AND ${soleLiveRun(receipt)}\n"
+        "    AND EXISTS (\n",
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n"
+        "    AND 1 = 1\n"
+        "    AND EXISTS (\n",
         "activation launches a claimed run after its task acquires a competing live run",
     ),
     (
@@ -843,42 +843,30 @@ MUTATION_SPECS = [
     (
         "activate-rejects-zero-lease",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n",
-        "         AND 1 = 1\n",
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, receipt)}\n",
+        "    AND 1 = 1\n",
         "activation derives a new expiry from a non-positive stored lease",
     ),
     (
         "activate-requires-relaunch-bound",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
-        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}\n"
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, 'runs')}\n"
-        "         AND ${soleLiveRun('runs')}\n",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
-        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}\n"
-        "         AND 1 = 1\n"
-        "         AND ${soleLiveRun('runs')}\n",
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, receipt)}\n"
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, receipt)}\n"
+        "    AND ${soleLiveRun(receipt)}\n",
+        "    AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, receipt)}\n"
+        "    AND 1 = 1\n"
+        "    AND ${soleLiveRun(receipt)}\n",
         "activation accepts a claim whose relaunch counter is out of range",
     ),
     (
         "activate-requires-current-run-accounting",
         "packages/store-libsql/src/store.ts",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n"
-        "             AND ${storedCurrentRunAccounting('runs', 't')}\n"
-        "             AND ${storedHighestOwnedOrdinal('runs')}\n"
-        "             AND ${activationDurationAdmissible('t', NOW)}\n"
-        "         )`,\n"
-        "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n"
-        "             AND 1 = 1\n"
-        "             AND ${storedHighestOwnedOrdinal('runs')}\n"
-        "             AND ${activationDurationAdmissible('t', NOW)}\n"
-        "         )`,\n"
-        "      [validClaimGen, runId, queue, claimToken, validClaimGen, validClaimGen],",
+        "        AND ${durableTaskHeadersAdmissible('t')}\n"
+        "        AND ${storedCurrentRunAccounting(receipt, 't')}\n"
+        "        AND ${storedHighestOwnedOrdinal(receipt)}${taskAdmission}\n",
+        "        AND ${durableTaskHeadersAdmissible('t')}\n"
+        "        AND 1 = 1\n"
+        "        AND ${storedHighestOwnedOrdinal(receipt)}${taskAdmission}\n",
         "activation stops rechecking current-run accounting at its winning CAS",
     ),
     (
@@ -2115,23 +2103,23 @@ MUTATION_SPECS = [
     (
         "activate-payload-validation-atomic",
         "packages/store-libsql/src/store.ts",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n",
-        "           WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)}\n"
-        "             AND 1 = 1\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n",
+        "      WHERE ${runOwnedByTask(receipt, 't')} AND ${eligibleTask('t', NOW)}\n"
+        "        AND ${durableTaskRetryAdmissible('t')}\n"
+        "        AND ${durableTaskHeadersAdmissible('t')}\n",
+        "      WHERE ${runOwnedByTask(receipt, 't')} AND ${eligibleTask('t', NOW)}\n"
+        "        AND 1 = 1\n"
+        "        AND ${durableTaskHeadersAdmissible('t')}\n",
         "activation latches a generation before discovering an undecodable retry strategy",
     ),
     (
         "activate-headers-admissible",
         "packages/store-libsql/src/store.ts",
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND ${durableTaskHeadersAdmissible('t')}\n"
-        "             AND ${storedCurrentRunAccounting('runs', 't')}\n",
-        "             AND ${durableTaskRetryAdmissible('t')}\n"
-        "             AND 1 = 1\n"
-        "             AND ${storedCurrentRunAccounting('runs', 't')}\n",
+        "        AND ${durableTaskRetryAdmissible('t')}\n"
+        "        AND ${durableTaskHeadersAdmissible('t')}\n"
+        "        AND ${storedCurrentRunAccounting(receipt, 't')}\n",
+        "        AND ${durableTaskRetryAdmissible('t')}\n"
+        "        AND 1 = 1\n"
+        "        AND ${storedCurrentRunAccounting(receipt, 't')}\n",
         "activation exposes inadmissible durable headers after latching its generation",
     ),
     (
