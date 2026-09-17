@@ -843,7 +843,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     fragment below. A dialect's predicates reach a shared statement as SQL
     fragments with their binds, which core turns into nodes. The claim's
     candidate subquery stays store-owned, because the dialects select
-    candidates differently. Raw fragments are declared by position.
+    candidates differently. A fragment's role is declared where it is placed
+    and checked against its position in the tree.
   - PR3.9c: suspend, reschedule, await-event, and emit-event.
   - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
     and spawn.
@@ -854,9 +855,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     upper case, so it fails loudly when emit-event compiles from a tree and must
     follow the compiled spelling then. `query-plans.test.ts` followed the
     claim's in PR3.9b.
-  - Deferred to PR3.9c: `prepareWake` returns its headroom guard with a leading
-    AND for its text call sites, and the launch deferral strips it. When suspend
-    and reschedule move to trees, it returns fragments and the strip goes.
+  - Deferred to PR3.9c: `prepareWake` returns its headroom guard twice, as a
+    bare conjunct for the launch deferral's tree and with a leading AND for its
+    text call sites. When suspend and reschedule move to trees, the AND form
+    goes.
+  - Deferred to PR3.9c: the stores' text `PARKED_CLAIM` and core's
+    `PARKED_CLAIM_COLUMNS` are two forms of one column list, held together by a
+    store test. When suspend and reschedule move to trees, the text form goes.
+  - Deferred to PR3.9e: the tree path has no registered mutations of its own.
+    The thirty mutations that own the text scanners in `fenced-batch.ts` get
+    tree-path successors when the scanners are deleted, covering the statement
+    grammar, fragment roles, gating, stamping, the clock, and counting
+    assignments.
+  - Deferred to PR3.9e: base-gate's re-aim bridge has one arm per historical
+    registry hash. Arms pinned to a registry no open PR is based on are deleted
+    then, leaving the helpers and the live arm.
   - Deferred to PR3.9e, from `postmortems/pr3.9a-statement-trees-review.md`: a
     tree's gating rule decides position, not correlation, so a follow-on gated by
     an uncorrelated subquery may write a row the fenced run does not own. The
