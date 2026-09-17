@@ -126,9 +126,8 @@ function prepareWake(
 ): {
   expression: string
   expressionArgs: [mode: number, relativeMs: number, absoluteMs: number]
-  /** The headroom guard as one conjunct. `fits` is the same guard with the AND its text call sites need. */
+  /** The headroom guard, as one conjunct. */
   fitsConjunct: string
-  fits: string
   fitArgs: [mode: number, relativeMs: number]
 } {
   const value = relative
@@ -150,7 +149,6 @@ function prepareWake(
     expression: `(CASE WHEN ? = 1 THEN ${NOW_MS} + ? ELSE ? END)`,
     expressionArgs: [mode, relativeMs, absoluteMs],
     fitsConjunct,
-    fits: `AND ${fitsConjunct}`,
     fitArgs: [mode, relativeMs],
   }
 }
