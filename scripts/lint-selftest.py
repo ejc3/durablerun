@@ -1816,6 +1816,36 @@ export class S {
     (
         "outcome-lint.py",
         {
+            "packages/core/src/statements/read-outcome.ts": (
+                "export const read = (row: { reason: unknown }) => JSON.parse(String(row.failure_reason))\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a shared statement may assign or guard an outcome column, never read it off a row",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/statements/select-outcome.ts": (
+                "export const pick = (db: { select(column: string): unknown }) => db.select('failure_reason')\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a shared statement may not select an outcome column",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/statements/sql-outcome.ts": (
+                "export const SQL = `SELECT failure_reason, completed_payload FROM tasks`\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a shared statement holds no SQL text that reads an outcome",
+    ),
+    (
+        "outcome-lint.py",
+        {
             "packages/core/src/statements/nested/read.ts": (
                 "export const read = (row: { failure_reason: unknown }) => row.failure_reason\n"
             ),
