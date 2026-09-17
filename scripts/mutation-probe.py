@@ -1397,7 +1397,7 @@ MUTATION_SPECS = [
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
-        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "        ),",
         "             AND ((t.state NOT IN ${LIVE}\n"
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
         "               OR (t.state IN ${LIVE}\n"
@@ -1408,7 +1408,7 @@ MUTATION_SPECS = [
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
-        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "        ),",
         "the claim-timeout CAS trusts its advisory scan instead of rechecking accounting",
     ),
     (
@@ -1432,7 +1432,7 @@ MUTATION_SPECS = [
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
-        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "        ),",
         "             AND ((1 = 0\n"
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
         "               OR (t.state IN ${LIVE}\n"
@@ -1440,7 +1440,7 @@ MUTATION_SPECS = [
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))\n"
         "         )`,\n"
-        "      [REASON_CLAIM_TIMEOUT, item.runId, queue, item.claimGen],",
+        "        ),",
         "the timeout CAS strands an activated run after its task became terminal",
     ),
     (
@@ -1474,10 +1474,8 @@ MUTATION_SPECS = [
     (
         "terminal-relaunch-cap-cas-admits-terminal-owner",
         "packages/store-libsql/src/store.ts",
-        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
-        "         AND (${liveOwner} OR ${terminalOwner})`,",
-        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
-        "         AND ${liveOwner}`,",
+        "        owner: sqlFragment(`${liveOwner} OR ${terminalOwner}`),",
+        "        owner: sqlFragment(liveOwner),",
         "the relaunch-cap CAS strands a run after its task became terminal",
     ),
     (
@@ -1687,52 +1685,48 @@ MUTATION_SPECS = [
     (
         "matrix-lost-launch-edge-progress",
         "packages/store-libsql/src/store.ts",
-        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
-        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "    const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
+        "    const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "                   AND run_id <> 'edge-run'`",
         "the generated fault cell fires its label while the seeded lost-launch edge never crosses",
     ),
     (
         "sweep-lost-launch-generation",
         "packages/store-libsql/src/store.ts",
-        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
-        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "    const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
+        "    const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "                   AND (run_id <> 'edge-run' OR claim_gen = 1)`",
         "the lost-launch edge only works at generation one",
     ),
     (
         "matrix-claim-timeout-edge-progress",
         "packages/store-libsql/src/store.ts",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
-        "         AND run_id <> 'edge-run'\n",
+        "        timedOut: sqlFragment(`activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}`),\n",
+        "        timedOut: sqlFragment(\n"
+        "          `activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "         AND run_id <> 'edge-run'`,\n"
+        "        ),\n",
         "the generated fault cell fires its label while the seeded claim-timeout edge never crosses",
     ),
     (
         "sweep-claim-timeout-generation",
         "packages/store-libsql/src/store.ts",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
-        "         AND (run_id <> 'edge-run' OR claim_gen = 1)\n",
+        "        timedOut: sqlFragment(`activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}`),\n",
+        "        timedOut: sqlFragment(\n"
+        "          `activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "         AND (run_id <> 'edge-run' OR claim_gen = 1)`,\n"
+        "        ),\n",
         "the claim-timeout edge only works at generation one",
     ),
     (
         "provenance-sweep-progress",
         "packages/store-libsql/src/store.ts",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n",
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
+        "        timedOut: sqlFragment(`activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}`),\n",
+        "        timedOut: sqlFragment(\n"
+        "          `activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
         "         AND (run_id <> 'prov-sweep-run'\n"
-        "           OR attempt <> ${TASK_INTEGER_BOUNDS.infra_retries.max})\n",
+        "           OR attempt <> ${TASK_INTEGER_BOUNDS.infra_retries.max})`,\n"
+        "        ),\n",
         "the selected at-cap replay makes no progress while its below-cap control remains safe",
     ),
     (
@@ -1921,8 +1915,8 @@ MUTATION_SPECS = [
     (
         "spawn-primary-key-guard",
         "packages/store-libsql/src/store.ts",
-        "       WHERE NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)",
-        "       WHERE ? IS NOT NULL",
+        "          `NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)",
+        "          `? IS NOT NULL",
         "a task-id collision crashes spawn instead of losing",
     ),
     (
@@ -2346,25 +2340,14 @@ MUTATION_SPECS = [
     (
         "sweep-rejects-noninteger-attempt",
         "packages/store-libsql/src/store.ts",
-        "      `UPDATE runs SET\n"
-        "         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,\n"
-        "         failure_reason = ?, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
-        "         AND EXISTS (\n"
+        "          `EXISTS (\n"
         "           SELECT 1 FROM tasks t\n"
         "           WHERE ${runOwnedByTask('runs', 't')}\n"
         "             AND ((t.state NOT IN ${LIVE}\n"
         "                 AND ${sweepTerminalOwnerAdmissible('runs')})\n"
         "               OR (t.state IN ${LIVE}\n"
         "                 AND ${sweepLiveOwnerAdmissible('runs', 't')}\n",
-        "      `UPDATE runs SET\n"
-        "         state = 'failed', failed_at_ms = ${NOW}, claimed_by = NULL,\n"
-        "         attempt = CAST(attempt AS INTEGER),\n"
-        "         failure_reason = ?, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
-        "         AND EXISTS (\n"
+        "          `EXISTS (\n"
         "           SELECT 1 FROM tasks t\n"
         "           WHERE ${runOwnedByTask('runs', 't')}\n"
         "             AND ((t.state NOT IN ${LIVE}\n"
@@ -2388,7 +2371,7 @@ MUTATION_SPECS = [
         "           AND runs.attempt = t.attempts + t.infra_retries + 1)\n"
         "           OR typeof(runs.attempt) = 'text')`,\n"
         "                   )}\n",
-        "the claim-timeout CAS launders a text attempt after bypassing all three independent attempt proofs",
+        "the claim-timeout CAS accepts a text attempt after bypassing all three independent attempt proofs",
     ),
     (
         "heartbeat-requires-run-task-queue-ownership",
@@ -2778,19 +2761,17 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "spawn-enqueue",
         "spawn enqueue deadline",
-        "         AND ${epochAdditionFits(NOW, '?')}\n"
-        "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
+        "        enqueueFits: sqlFragment(epochAdditionFits(NOW, '?'), [delayMs]),",
         "epochAdditionFits(NOW, '?')",
-        "       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${NOW} + ?,\n",
+        "        enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),",
         "${NOW} + ?",
     ),
     (
         "spawn-cancellation",
         "spawn cancellation deadline",
-        "         AND ${epochAdditionFits(NOW, '?')}\n"
-        "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?', '?')})",
+        "        cancelFits: sqlFragment(`? IS NULL OR ${epochAdditionFits(NOW, '?', '?')}`, [\n",
         "epochAdditionFits(NOW, '?', '?')",
-        "         ${NOW} + ? + ?,\n",
+        "        cancelAt: sqlFragment(`${NOW} + ? + ?`, [delayMs, maxDelayMs]),",
         "${NOW} + ? + ?",
     ),
     (
@@ -2830,10 +2811,9 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "lost-launch-relaunch",
         "lost-launch relaunch deadline",
-        "         AND ${liveOwner}\n"
-        "         AND ${epochAdditionFits(NOW, relaunchDelayMs)}`",
+        "        backoffFits: sqlFragment(epochAdditionFits(NOW, relaunchDelayMs)),",
         "epochAdditionFits(NOW, relaunchDelayMs)",
-        "         available_at_ms = ${NOW} + ${relaunchDelayMs},\n",
+        "        availableAt: sqlFragment(`${NOW} + ${relaunchDelayMs}`),",
         "${NOW} + ${relaunchDelayMs}",
     ),
     (
@@ -3021,11 +3001,11 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-terminal-relaunch-cap-at-max",
         "packages/store-libsql/src/store.ts",
-        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
-        "         AND (${liveOwner} OR ${terminalOwner})",
-        "       WHERE ${guard} AND relaunch_count = ${RUN_INTEGER_BOUNDS.relaunch_count.max}\n"
-        "         AND (${liveOwner} OR ${terminalOwner})\n"
-        "         AND ${epochAdditionFits(NOW, relaunchDelayMs)}",
+        "        owner: sqlFragment(`${liveOwner} OR ${terminalOwner}`),",
+        "        owner: sqlFragment(\n"
+        "          `(${liveOwner} OR ${terminalOwner})\n"
+        "         AND ${epochAdditionFits(NOW, relaunchDelayMs)}`,\n"
+        "        ),",
         "allows the relaunch-cap terminal arm at the epoch ceiling",
         "the terminal relaunch-cap arm is incorrectly gated by unused deadline headroom",
     ),
@@ -3117,20 +3097,18 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-sweep-lost-launch-rechecks-expiry-bound",
         "packages/store-libsql/src/store.ts",
-        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        "                   AND activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
-        "    const guard = `run_id = ? AND queue = ? AND state = 'running' AND claim_gen = ?\n"
-        '                   AND activated_gen < claim_gen AND ${runClaimExpired(\'runs\', NOW).replace(" BETWEEN 0 AND ", " <= ")}`',
+        "    const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`",
+        '    const guard = `activated_gen < claim_gen AND ${runClaimExpired(\'runs\', NOW).replace(" BETWEEN 0 AND ", " <= ")}`',
         "lost-launch sweep rechecks the claim expiry bound after discovery",
         "the lost-launch CAS accepts a negative expiry after its advisory scan",
     ),
     (
         "timestamp-sweep-timeout-rechecks-expiry-bound",
         "packages/store-libsql/src/store.ts",
-        "         AND activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}\n"
-        "         AND EXISTS (",
-        '         AND activated_gen = claim_gen AND ${runClaimExpired(\'runs\', NOW).replace(" BETWEEN 0 AND ", " <= ")}\n'
-        "         AND EXISTS (",
+        "        timedOut: sqlFragment(`activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}`),",
+        "        timedOut: sqlFragment(\n"
+        '          `activated_gen = claim_gen AND ${runClaimExpired(\'runs\', NOW).replace(" BETWEEN 0 AND ", " <= ")}`,\n'
+        "        ),",
         "claim-timeout sweep rechecks the claim expiry bound after discovery",
         "the claim-timeout CAS accepts a negative expiry after its advisory scan",
     ),

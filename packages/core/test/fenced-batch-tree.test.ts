@@ -10,13 +10,17 @@ import {
   type StoreTables,
   TreeDialect,
   aliasedAs,
+  capLostLaunchCas,
   treeBuilder as db,
   defineStatement,
   emitEventCas,
+  failClaimTimeoutCas,
   fenceValue,
   nowValue,
   rawSql,
   registerWaitCas,
+  reopenLostLaunchCas,
+  spawnTaskCas,
   sqlFragment,
   stampValue,
   suspendCas,
@@ -824,6 +828,46 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('event', statement(anyIndex))).toThrow(/names no columns/)
   })
 
+  it('allows a conflict target narrowed by a partial-index predicate, and no other kind of target', async () => {
+    const taskInsert = () =>
+      db.insertInto('tasks').values({
+        task_id: 't1',
+        queue: 'q',
+        task_name: 'job',
+        params: '{}',
+        retry_strategy: '{}',
+        max_attempts: 1,
+        state: 'pending',
+        attempts: 0,
+        infra_retries: 0,
+        enqueue_at_ms: nowValue,
+        created_at_ms: nowValue,
+        fence_stamp: stampValue,
+        fence_at_ms: nowValue,
+      })
+    const partial = taskInsert().onConflict((conflict) =>
+      conflict
+        .columns(['queue', 'idempotency_key'])
+        .where('idempotency_key', 'is not', null)
+        .doNothing(),
+    )
+    const { captured, executor } = capturingExecutor(1)
+    await batch().casTree('task', statement(partial)).run(executor)
+    expect(captured[0]?.sql).toContain(
+      'on conflict ("queue", "idempotency_key") where "idempotency_key" is not null do nothing',
+    )
+    // A constraint name or an index expression names no columns, so the statement
+    // cannot say which unique index it may lose on.
+    const byConstraint = taskInsert().onConflict((conflict) =>
+      conflict.constraint('tasks_idem').doNothing(),
+    )
+    expect(() => batch().casTree('task', statement(byConstraint))).toThrow(/names no columns/)
+    const byExpression = taskInsert().onConflict((conflict) =>
+      conflict.expression(sql`lower(queue)`).doNothing(),
+    )
+    expect(() => batch().casTree('task', statement(byExpression))).toThrow(/names no columns/)
+  })
+
   it('refuses an INSERT … SELECT with ON CONFLICT and no WHERE', () => {
     // SQLite reads the ON of an unguarded SELECT's conflict clause as a join constraint.
     const unguarded = db
@@ -850,6 +894,75 @@ describe('FencedBatch tree statements', () => {
 
   it('refuses an insert as a follow-on', () => {
     expect(() => followOn(eventInsert())).toThrow(/must be an UPDATE or a DELETE/)
+  })
+
+  it('passes the shared spawn and sweep statements through a batch', async () => {
+    const spawn = spawnTaskCas({
+      taskId: 't1',
+      queue: 'q',
+      taskName: 'job',
+      paramsJson: '{}',
+      headersJson: null,
+      retryStrategyJson: '{}',
+      maxAttempts: 3,
+      cancellationJson: null,
+      idempotencyKey: null,
+      enqueueAt: sqlFragment('$NOW$ + ?', [0]),
+      cancelAt: sqlFragment('$NOW$ + ? + ?', [0, null]),
+      identityFree: sqlFragment('NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)', ['t1']),
+      enqueueFits: sqlFragment('? >= 0', [0]),
+      cancelFits: sqlFragment('? IS NULL OR ? >= 0', [null, 0]),
+    })
+    const swept = { queue: 'q', runId: 'r1', claimGen: 2 }
+    const owner = 'EXISTS (SELECT 1 FROM tasks t WHERE t.task_id = runs.task_id)'
+    const reopen = reopenLostLaunchCas({
+      ...swept,
+      launchLost: sqlFragment('activated_gen < claim_gen'),
+      availableAt: sqlFragment('$NOW$ + MIN((relaunch_count + 1) * 5, 60) * 1000'),
+      liveOwner: sqlFragment(owner),
+      backoffFits: sqlFragment('1 = 1'),
+    })
+    const cap = capLostLaunchCas({
+      ...swept,
+      launchLost: sqlFragment('activated_gen < claim_gen'),
+      owner: sqlFragment(`${owner} OR 1 = 0`),
+    })
+    const timeout = failClaimTimeoutCas({
+      ...swept,
+      timedOut: sqlFragment('activated_gen = claim_gen'),
+      admission: sqlFragment(owner),
+    })
+    const sent: string[] = []
+    for (const [name, cas] of [
+      ['task', spawn],
+      ['reopen', reopen],
+      ['cap', cap],
+      ['fail', timeout],
+    ] as const) {
+      const { captured, executor } = capturingExecutor(1)
+      await batch().casTree(name, cas).run(executor)
+      sent.push(captured[0]?.sql ?? '')
+    }
+    expect(sent[0]).toContain(
+      'insert into "tasks" ("task_id", "queue", "task_name", "params", "headers", "retry_strategy", "max_attempts", "cancellation", "idempotency_key", "state", "enqueue_at_ms", "cancel_at_ms", "created_at_ms", "fence_stamp", "fence_at_ms") select ',
+    )
+    expect(sent[0]).toContain(
+      'on conflict ("queue", "idempotency_key") where "idempotency_key" is not null do nothing',
+    )
+    // Every sweep keys on the generation its scan read, as nodes.
+    const sweptClaim = 'where "run_id" = ? and "queue" = ? and "state" = ? and "claim_gen" = ?'
+    expect(sent[1]).toContain('"relaunch_count" = "relaunch_count" + ?')
+    expect(sent[1]).toContain(
+      `${sweptClaim} and (activated_gen < claim_gen) and "relaunch_count" < ?`,
+    )
+    expect(sent[2]).toContain(
+      `${sweptClaim} and (activated_gen < claim_gen) and "relaunch_count" = ?`,
+    )
+    // The owner alternatives stay inside their parentheses.
+    expect(sent[2]).toContain(`and (${owner} OR 1 = 0)`)
+    expect(sent[3]).toContain(`${sweptClaim} and (activated_gen = claim_gen) and (${owner})`)
+    // A claim timeout keeps the expired deadline on the failed run, as its text did.
+    expect(sent[3]).not.toContain('"claim_expires_at_ms"')
   })
 
   it('passes the shared suspend and event statements through a batch', async () => {

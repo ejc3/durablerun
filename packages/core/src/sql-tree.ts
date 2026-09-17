@@ -832,7 +832,7 @@ const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
     'limit',
   ],
   InsertQueryNode: ['kind', 'into', 'columns', 'values', 'onConflict'],
-  OnConflictNode: ['kind', 'columns', 'doNothing', 'updates', 'updateWhere'],
+  OnConflictNode: ['kind', 'columns', 'indexWhere', 'doNothing', 'updates', 'updateWhere'],
 }
 
 const GRAMMAR_NODES = [
