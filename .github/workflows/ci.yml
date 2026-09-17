@@ -324,6 +324,18 @@ jobs:
                       raise SystemExit(f'{name}: the re-aim bridge may not rename an entry.')
                   repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
               return repaired
+          def reaim_table(repaired, candidate, name):
+              # Replace one named top-level dict of the registry with this tree's, for
+              # a table keyed by mutation name whose keys moved with their mutations.
+              opening = f'{name} = {{\n'
+              spans = []
+              for text in (repaired, candidate):
+                  if text.count(opening) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one table.')
+                  start = text.index(opening)
+                  spans.append((start, text.index('\n}\n', start) + len('\n}\n')))
+              (start, end), (new_start, new_end) = spans
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def reaim_consumer(repaired, candidate, name):
               # Replace the tail anchor of one checkpoint conflict consumer pair, which the
               # generated checkpoint conflict mutations of that consumer share.
@@ -604,6 +616,24 @@ jobs:
                   'timestamp-sweep-lost-launch-rechecks-expiry-bound',
                   'timestamp-sweep-timeout-rechecks-expiry-bound',
               ))
+          elif digest == '84f0fedf2ef24704c573d06008f3d35c4670d2e185a3ca2ac34738d679600b7e':
+              # The generated follow-ons, derived() and seal(), became statement trees.
+              # Five finds were re-aimed in place. Two moved from fenced-batch.ts to
+              # sql-tree.ts with the conditions they remove, and the table of reasons a
+              # mutant may change a statement's placeholder count is keyed by mutation
+              # name, so one key moved with them.
+              repaired = reaim(previous, candidate, (
+                  'generated-selection-fence',
+                  'generated-narrow-drops-all',
+                  'generated-update-provenance-assignment',
+                  'generated-relation-queue-ownership',
+                  'derived-source-table',
+              ))
+              repaired = reaim_moved(repaired, candidate, (
+                  'generated-where-parens',
+                  'generated-narrow-widens',
+              ))
+              repaired = reaim_table(repaired, candidate, 'QUESTION_TOKEN_DELTA_REASONS')
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

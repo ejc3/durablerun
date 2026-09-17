@@ -691,8 +691,38 @@ are load-bearing):
    - A follow-on or tail needs a top-level WHERE conjunct that is itself
      `fence_stamp = <fence>`, or that requires a row from a subquery gated the
      same way, and the fence must stamp the table whose `fence_stamp` it is
-     compared with. This decides position, not correlation: an uncorrelated
-     gated subquery proves only that the batch won.
+     compared with. A subquery whose only source is one derived table is gated
+     by whatever gates that table, because it reads a subset of its rows. A
+     join or a second source gates nothing. A row required from a subquery, or
+     read through a derived table, proves that SELECT's WHERE only if the
+     SELECT can return no row. An ungrouped aggregate returns one row whether
+     or not the fence matched, the builder spells an aggregate more than one
+     way, and a fragment hides one. So such a SELECT gates only when it is
+     grouped, or when it has no HAVING and every selection is built from nodes
+     with no function and no fragment. The rule is not asked of a statement's
+     own root: a tail may count the rows its own WHERE gates, and a losing
+     batch then counts none. This decides position, not correlation: an
+     uncorrelated gated subquery proves only that the batch won.
+   - The generated follow-ons, `derived()` and `seal()`, are trees built from
+     the closed relation contract, so they take every rule above like any tree
+     statement. Their selections are correlated by construction: the written
+     key is IN the fenced source's paired key, with queue equality where the
+     relation is queue-scoped, so a generated follow-on cannot write a row the
+     fenced rows do not own. The caller's `where`, `narrow`, and text values
+     enter as fragments, and arguments need their text: `whereArgs` with no
+     `where`, `narrowArgs` with no `narrow`, and empty text for either are
+     refused, so a computed correlation that comes out empty fails and never
+     widens the write to every row under the fence. A value that reads the
+     column it is assigned to must be built from nodes, because the counting
+     rule cannot read a fragment. In a fragment it refuses any mention of that
+     column that is unqualified or qualified by the table being written,
+     whatever wraps it, and arithmetic on that column under any other
+     qualifier, as the text path refused `x = t.x + 1` by name. A copy of
+     another row's column stays allowed. A fragment may hold a fence token,
+     which becomes a fence node: it is bound and must name a fence of the
+     batch, and it gates nothing. Nothing may be left over beside a token. The
+     stamp never rides in a fragment. What correlation still does not cover is a
+     hand-written follow-on, which stays text until the next part of PR3.9e.
    - An update of a provenance-carrying table assigns the stamp and the
      instant once each, and a compare-and-set takes its instant from the clock
      token. The rule reads the table the tree writes, not a declaration.

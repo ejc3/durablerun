@@ -9,7 +9,12 @@ import {
   type SqlExecutor,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
-import { type LibsqlExecutor, LibsqlSchedulerStore, NOW_MS } from '@durablerun/store-libsql'
+import {
+  type LibsqlExecutor,
+  LibsqlSchedulerStore,
+  NOW_MS,
+  TREE_DIALECT,
+} from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
@@ -1207,6 +1212,7 @@ describe('fence provenance', () => {
       })
       const runsToTasks = new FencedBatch('relation:runs-to-tasks', 'relation-seed', {
         now: NOW_MS,
+        tree: TREE_DIALECT,
       })
       runsToTasks.cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
         'runs-to-tasks-source',
@@ -1228,6 +1234,7 @@ describe('fence provenance', () => {
       })
       const tasksToRuns = new FencedBatch('relation:tasks-to-runs', 'relation-seed', {
         now: NOW_MS,
+        tree: TREE_DIALECT,
       })
       tasksToRuns.cas('source', 'tasks', `UPDATE tasks SET ${FENCE_SET} WHERE task_id = ?`, [
         'tasks-to-runs',
@@ -1256,6 +1263,7 @@ describe('fence provenance', () => {
       )
       const waitsToRuns = new FencedBatch('relation:waits-to-runs', 'relation-seed', {
         now: NOW_MS,
+        tree: TREE_DIALECT,
       })
       waitsToRuns.cas(
         'source',
@@ -1310,6 +1318,7 @@ describe('fence provenance', () => {
       )
       const runsToWaits = new FencedBatch('relation:runs-to-waits', 'relation-seed', {
         now: NOW_MS,
+        tree: TREE_DIALECT,
       })
       runsToWaits.cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
         'runs-to-waits-source',

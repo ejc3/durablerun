@@ -505,28 +505,45 @@ MUTATION_SPECS = [
         # is the probe reporting the refactor accurately.
         "generated-selection-fence",
         "packages/core/src/fenced-batch.ts",
-        "  return `${prefix}f.fence_stamp = ${fence}`",
-        "  return `${prefix}${\n"
-        "    _batchLabel === 'mutation:generated-selection-fence'\n"
-        "      ? `CASE WHEN f.fence_stamp = ${fence} THEN 1 ELSE 1 END = 1`\n"
-        "      : `f.fence_stamp = ${fence}`\n"
-        "  }`",
+        "      return rows.where((eb) => eb(eb.ref('f.fence_stamp'), '=', fenceValue(spec.fence)))",
+        "      return rows.where((eb) =>\n"
+        "        this.label === 'mutation:generated-selection-fence'\n"
+        "          ? eb(\n"
+        "              eb\n"
+        "                .case()\n"
+        "                .when(eb.ref('f.fence_stamp'), '=', fenceValue(spec.fence))\n"
+        "                .then(1)\n"
+        "                .else(1)\n"
+        "                .end(),\n"
+        "              '=',\n"
+        "              1,\n"
+        "            )\n"
+        "          : eb(eb.ref('f.fence_stamp'), '=', fenceValue(spec.fence)),\n"
+        "      )",
         "every generated follow-on acts on rows this batch never wrote",
     ),
     (
         "generated-narrow-widens",
-        "packages/core/src/fenced-batch.ts",
-        "    const narrow = spec.narrow ? `\\n         AND (${spec.narrow})` : ''",
-        "    const narrow = spec.narrow ? `\\n         AND ${spec.narrow}` : ''",
+        "packages/core/src/sql-tree.ts",
+        "  return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))",
+        "  return nodeExpression<T>(role === 'value' ? ParensNode.create(raw) : raw)",
         "a narrowing clause that WIDENS the set instead of shrinking it",
     ),
     (
         "generated-narrow-drops-all",
         "packages/core/src/fenced-batch.ts",
-        "    const narrow = spec.narrow ? `\\n         AND (${spec.narrow})` : ''",
         "    const narrow = spec.narrow\n"
-        "      ? `\\n         AND (${spec.narrow})${spec.narrow === 'task_id = ?' ? ' AND 0 = 1' : ''}`\n"
-        "      : ''",
+        "      ? rawSql<boolean>(sqlFragment(spec.narrow, spec.narrowArgs ?? []), 'predicate')\n"
+        "      : null",
+        "    const narrow = spec.narrow\n"
+        "      ? rawSql<boolean>(\n"
+        "          sqlFragment(\n"
+        "            spec.narrow === 'task_id = ?' ? 'task_id = ? AND 0 = 1' : spec.narrow,\n"
+        "            spec.narrowArgs ?? [],\n"
+        "          ),\n"
+        "          'predicate',\n"
+        "        )\n"
+        "      : null",
         "a generated narrowing clause can silently turn every intended match into a no-op",
     ),
     (
@@ -535,23 +552,20 @@ MUTATION_SPECS = [
         # every row matching `a` enters the selection unstamped -- the class
         # the generator exists to prevent, inside the generator.
         "generated-where-parens",
-        "packages/core/src/fenced-batch.ts",
-        "    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`",
-        "    const src = `${spec.where ? `${spec.where} AND ` : ''}${queueOwnership}`",
+        "packages/core/src/sql-tree.ts",
+        "  return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))",
+        "  return nodeExpression<T>(raw)",
         "a disjunctive correlation lets unstamped rows into a generated selection",
     ),
     (
         "generated-update-provenance-assignment",
         "packages/core/src/fenced-batch.ts",
-        "  const provenance = `,\\n         fence_stamp = ${STAMP},\n"
-        "         fence_at_ms = (${update.sourceInstant})`",
-        "  const provenance =\n"
-        "    _batchLabel === 'mutation:generated-update-provenance-assignment'\n"
-        "      ? `,\\n         fence_stamp = ${STAMP},\n"
-        "         fence_stamp = fence_stamp,\n"
-        "         fence_at_ms = (${update.sourceInstant})`\n"
-        "      : `,\\n         fence_stamp = ${STAMP},\n"
-        "         fence_at_ms = (${update.sourceInstant})`",
+        "      .set({ ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant })",
+        "      .set(\n"
+        "        this.label === 'mutation:generated-update-provenance-assignment'\n"
+        "          ? { ...values, fence_at_ms: sourceInstant }\n"
+        "          : { ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant },\n"
+        "      )",
         "a generated UPDATE can leave stale provenance on every row it writes",
     ),
     (
@@ -578,8 +592,8 @@ MUTATION_SPECS = [
     (
         "derived-source-table",
         "packages/core/src/fenced-batch.ts",
-        "    if (source.target !== from) {",
-        "    if (false && source.target !== from) {",
+        "        if (source.target !== gate.table) {",
+        "        if (false && source.target !== gate.table) {",
         "a relation can read its fence stamp from a table the source statement never stamped",
     ),
     (
@@ -2525,10 +2539,8 @@ MUTATION_SPECS = [
     (
         "generated-relation-queue-ownership",
         "packages/core/src/fenced-batch.ts",
-        "    const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''\n"
-        "    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`\n",
-        "    const queueOwnership = ''\n"
-        "    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`\n",
+        "      if (relation.queueScoped) rows = rows.whereRef('f.queue', '=', `${target}.queue`)",
+        "      if (false && relation.queueScoped) rows = rows.whereRef('f.queue', '=', `${target}.queue`)",
         "generated cross-table relations can cross the immutable queue boundary in every direction",
     ),
     (
@@ -7028,8 +7040,8 @@ QUESTION_TOKEN_DELTA_REASONS = {
     "timestamp-driver-cleanup-requires-expiry-bound": (
         "replacement adds a mutation-only statement with five balanced SQL binds and one TypeScript conditional"
     ),
-    "generated-relation-queue-ownership": (
-        "replacement removes the TypeScript conditional that distinguishes self and cross-table relations"
+    "generated-where-parens": (
+        "replacement removes the TypeScript conditional that chooses a fragment's parentheses, not a SQL bind"
     ),
     "generated-narrow-drops-all": (
         "replacement adds TypeScript conditional tokens and compares against SQL text; "

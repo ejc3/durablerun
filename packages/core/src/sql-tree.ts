@@ -1,4 +1,5 @@
 import {
+  AggregateFunctionNode,
   AliasNode,
   type AliasedExpression,
   AndNode,
@@ -27,6 +28,7 @@ import {
   ReferenceNode,
   type RootOperationNode,
   SelectAllNode,
+  SelectModifierNode,
   SelectQueryNode,
   SqliteAdapter,
   SqliteIntrospector,
@@ -41,6 +43,7 @@ import {
   WhereNode,
   createQueryId,
 } from 'kysely'
+import { FENCE_STATEMENT_NAME_SOURCE } from './contract.js'
 import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlStatement } from './primitives.js'
@@ -318,10 +321,19 @@ function isOneGroup(outside: string): boolean {
 
 interface ParsedFragment {
   readonly pieces: readonly string[]
-  readonly tokens: readonly ('bind' | 'now')[]
+  readonly tokens: readonly ('bind' | 'now' | { readonly fence: string })[]
 }
 
-const FRAGMENT_TOKEN = new RegExp(String.raw`\?|${NOW.replaceAll('$', String.raw`\$`)}`, 'g')
+const FENCE_TOKEN = String.raw`\$FENCE:(${FENCE_STATEMENT_NAME_SOURCE})\$`
+const FRAGMENT_TOKEN = new RegExp(
+  String.raw`\?|${NOW.replaceAll('$', String.raw`\$`)}|${FENCE_TOKEN}`,
+  'g',
+)
+
+/** How many arguments a fragment's text binds: its `?` outside string literals. */
+export function fragmentBinds(sql: string): number {
+  return readFragment(sql).outside.split('?').length - 1
+}
 
 /**
  * Validate a fragment's text for its role and split it at its binds and clock tokens.
@@ -330,35 +342,51 @@ const FRAGMENT_TOKEN = new RegExp(String.raw`\?|${NOW.replaceAll('$', String.raw
  * prefixed string, and a token inside a literal.
  */
 function parseFragment(sql: string, role: RawRole): ParsedFragment {
-  if (sql.includes(STAMP) || sql.includes(FENCE_PREFIX)) {
+  if (sql.includes(STAMP)) {
     throw new Error(
-      'a SQL fragment may not hold a stamp or fence token: a tree carries those as nodes',
+      'a SQL fragment may not hold the stamp token: a tree assigns the stamp as a node',
     )
   }
   const { literals, outside, prefixed } = readFragment(sql)
+  const fenceless = outside.replace(new RegExp(FENCE_TOKEN, 'g'), '')
+  if (fenceless.includes(FENCE_PREFIX)) {
+    throw new Error('a SQL fragment holds a malformed fence token')
+  }
   if (outside.includes('--') || outside.includes('/*')) {
     throw new Error('a SQL fragment may not hold a comment: its text is split without reading SQL')
   }
-  if (prefixed || /\$\w*\$/.test(outside.replaceAll(NOW, ''))) {
+  if (prefixed || /\$\w*\$/.test(fenceless.replaceAll(NOW, ''))) {
     throw new Error(
       'a SQL fragment may use only plain single-quoted literals: its text is split without reading SQL',
     )
   }
-  if (literals.some((literal) => literal.includes('?') || literal.includes(NOW))) {
+  // A well-formed token leaves nothing behind. Text left over beside one, such as a
+  // second token run into the first, would compile into SQL the database rejects. This
+  // runs after the dollar-quote check, so a dollar-quoted string keeps its own refusal.
+  if (fenceless.replaceAll(NOW, '').includes('$')) {
+    throw new Error('a SQL fragment holds a malformed fence token or a stray $')
+  }
+  if (
+    literals.some(
+      (literal) => literal.includes('?') || literal.includes(NOW) || literal.includes(FENCE_PREFIX),
+    )
+  ) {
     throw new Error(
-      'a SQL fragment may not hold a bind or the clock token inside a string literal: its text is split without reading SQL',
+      'a SQL fragment may not hold a bind, the clock token, or a fence token inside a string literal: its text is split without reading SQL',
     )
   }
   if (role === 'subquery' && !isOneGroup(outside)) {
     throw new Error('a subquery fragment must be one parenthesized group')
   }
   const pieces: string[] = []
-  const tokens: ('bind' | 'now')[] = []
+  const tokens: ('bind' | 'now' | { readonly fence: string })[] = []
   let last = 0
   for (const match of sql.matchAll(FRAGMENT_TOKEN)) {
     pieces.push(sql.slice(last, match.index))
     last = match.index + match[0].length
-    tokens.push(match[0] === NOW ? 'now' : 'bind')
+    tokens.push(
+      match[0] === '?' ? 'bind' : match[0] === NOW ? 'now' : { fence: match[1] as string },
+    )
   }
   pieces.push(sql.slice(last))
   return { pieces, tokens }
@@ -387,8 +415,11 @@ function parsedFragment(sql: string, role: RawRole): ParsedFragment {
  * A fragment as a raw node whose binds and clock are nodes, not text. Each `?` becomes
  * a value node and each `$NOW$` becomes the clock token, so the clock rules see it.
  *
- * A stamp or a fence never rides in a fragment: the rules that read them need them as
- * nodes of the tree. A predicate or value compiles inside parentheses, so an OR inside
+ * The stamp never rides in a fragment: the stamping rule reads it as an assigned node. A
+ * fence token may, because generated and correlated subqueries carry one in store text.
+ * It becomes a fence node, so it is bound and must name a fence of the batch, and it
+ * gates nothing: the gating rule reads only a comparison built from nodes. A predicate
+ * or value compiles inside parentheses, so an OR inside
  * it cannot void the conjuncts around it. A subquery must bring its own, because a
  * second pair would make it one scalar value.
  */
@@ -396,7 +427,13 @@ export function rawSql<T>(fragment: SqlFragment, role: RawRole): Expression<T> {
   const { pieces, tokens } = parsedFragment(fragment.sql, role)
   let bound = 0
   const parameters = tokens.map((token) =>
-    ValueNode.create(token === 'now' ? EngineToken.now : fragment.args[bound++]),
+    ValueNode.create(
+      token === 'bind'
+        ? fragment.args[bound++]
+        : token === 'now'
+          ? EngineToken.now
+          : EngineToken.fence(token.fence),
+    ),
   )
   if (bound !== fragment.args.length) {
     throw new TypeError(`a SQL fragment binds ${bound} of its ${fragment.args.length} arguments`)
@@ -617,14 +654,55 @@ function requiredSubquery(node: OperationNode): OperationNode | null {
  */
 export function gatingFences(query: OperationNode): GatingFence[] {
   const where = whereOf(query)
-  if (where === null) return []
   const scope = tableScope(query)
-  return conjuncts(where).flatMap((conjunct) => {
-    const fence = fenceEquality(conjunct, scope)
-    if (fence !== null) return [fence]
-    const subquery = requiredSubquery(conjunct)
-    return subquery !== null && SelectQueryNode.is(subquery) ? gatingFences(subquery) : []
-  })
+  const gated =
+    where === null
+      ? []
+      : conjuncts(where).flatMap((conjunct) => {
+          const fence = fenceEquality(conjunct, scope)
+          if (fence !== null) return [fence]
+          const subquery = requiredSubquery(conjunct)
+          return subquery !== null && SelectQueryNode.is(subquery) && mayReturnNoRow(subquery)
+            ? gatingFences(subquery)
+            : []
+        })
+  return [...gated, ...derivedTableGates(query)]
+}
+
+/**
+ * Whether a SELECT returns no row when its WHERE matches none, so that a row required
+ * from it proves its WHERE. An aggregate with no GROUP BY returns one row always. The
+ * builder spells an aggregate more than one way and a fragment hides one, so an
+ * ungrouped SELECT qualifies only when every selection is built from nodes and holds no
+ * function of any kind. This is asked of a subquery a row is required from, and of a
+ * derived table, never of the statement's own root: a tail may count the rows its own
+ * WHERE gates, and a losing batch then counts none.
+ */
+function mayReturnNoRow(select: SelectQueryNode): boolean {
+  if (select.groupBy !== undefined) return true
+  // An ungrouped HAVING makes the SELECT one group, which returns a row regardless.
+  if (select.having !== undefined) return false
+  return (select.selections ?? []).every(
+    (selection) =>
+      !someNode(
+        selection,
+        (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node) || RawNode.is(node),
+      ),
+  )
+}
+
+/**
+ * A SELECT whose only source is one derived table reads a subset of that table's rows,
+ * so whatever gates the derived table gates it. A join or a second source could add
+ * rows, so either one gates nothing.
+ */
+function derivedTableGates(query: OperationNode): GatingFence[] {
+  if (!SelectQueryNode.is(query) || (query.joins?.length ?? 0) !== 0) return []
+  const froms = query.from?.froms ?? []
+  const [only] = froms
+  if (froms.length !== 1 || only === undefined) return []
+  const inner = AliasNode.is(only) ? only.node : only
+  return SelectQueryNode.is(inner) && mayReturnNoRow(inner) ? gatingFences(inner) : []
 }
 
 /** The column an assignment writes. The object and two-argument `set` forms differ in shape. */
@@ -636,8 +714,24 @@ function assignments(query: OperationNode): readonly ColumnUpdateNode[] {
   return UpdateQueryNode.is(query) ? (query.updates ?? []) : []
 }
 
-function mentions(text: string, column: string): boolean {
-  return new RegExp(String.raw`(?<![\w.])"?${column}"?(?!\w)`, 'i').test(text)
+/**
+ * Whether a fragment's text may count on `column` of the row being written. The tree
+ * cannot see what text does with a value, so any read of the assigned row counts: an
+ * unqualified mention, or one qualified by the table being written, whatever wraps it.
+ * A mention under another qualifier is another row, read through a subquery, and a copy
+ * of it is fine. Arithmetic on it is refused all the same, as the text path refused
+ * `x = t.x + 1` by name: `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are one write.
+ */
+function mentions(text: string, column: string, table: string | null): boolean {
+  const name = String.raw`"?${column}"?(?!\w)`
+  const qualified = String.raw`\w+"?\."?${column}"?(?!\w)`
+  const operator = String.raw`(?:[-+*/%]|\|\|)`
+  return (
+    new RegExp(String.raw`(?<![\w."])${name}`, 'i').test(text) ||
+    (table !== null && new RegExp(String.raw`(?<!\w)"?${table}"?\.${name}`, 'i').test(text)) ||
+    new RegExp(String.raw`${qualified}\s*\)*\s*${operator}`, 'i').test(text) ||
+    new RegExp(String.raw`${operator}\s*\(*\s*"?${qualified}`, 'i').test(text)
+  )
 }
 
 const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']
@@ -652,6 +746,7 @@ const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']
 export function selfCountingAssignments(
   query: OperationNode,
 ): { column: string; how: 'arithmetic' | 'raw' }[] {
+  const table = statementTable(query)
   return assignments(query).flatMap((update): { column: string; how: 'arithmetic' | 'raw' }[] => {
     const column = assignedColumn(update)
     if (column === null) return []
@@ -667,7 +762,8 @@ export function selfCountingAssignments(
     if (arithmetic) return [{ column, how: 'arithmetic' }]
     const raw = someNode(
       update.value,
-      (candidate) => RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column),
+      (candidate) =>
+        RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column, table),
     )
     return raw ? [{ column, how: 'raw' }] : []
   })
@@ -822,6 +918,7 @@ const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
   DeleteQueryNode: ['kind', 'from', 'where'],
   SelectQueryNode: [
     'kind',
+    'frontModifiers',
     'from',
     'selections',
     'where',
@@ -831,6 +928,7 @@ const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
     'orderBy',
     'limit',
   ],
+  SelectModifierNode: ['kind', 'modifier'],
   InsertQueryNode: ['kind', 'into', 'columns', 'values', 'onConflict'],
   OnConflictNode: ['kind', 'columns', 'indexWhere', 'doNothing', 'updates', 'updateWhere'],
 }
@@ -949,6 +1047,9 @@ export function statementGrammarProblem(tree: OperationNode): string | null {
       if (extra !== undefined) return `${node.kind}.${extra[0]}`
     }
     if (TableNode.is(node) && node.table.schema !== undefined) return 'a schema-qualified table'
+    if (SelectModifierNode.is(node) && node.modifier !== 'Distinct') {
+      return 'a SELECT modifier other than DISTINCT'
+    }
     if (InsertQueryNode.is(node)) {
       const shape = insertShapeProblem(node)
       if (shape !== null) return shape
@@ -1068,6 +1169,25 @@ export const FENCE_ASSIGNMENTS = Object.freeze({
   fence_stamp: stampValue,
   fence_at_ms: nowValue,
 })
+
+/** A column of the written row, as a value. */
+export function columnValue<T>(column: string): Expression<T> {
+  return nodeExpression<T>(ReferenceNode.create(ColumnNode.create(column)))
+}
+
+/**
+ * `COALESCE(column, value)`: keep a column's value once it is set. Built from nodes, so
+ * the counting rule sees the column's reference to itself, which it cannot inside a
+ * fragment.
+ */
+export function coalesced<T>(column: string, value: Expression<T>): Expression<T> {
+  return nodeExpression<T>(
+    FunctionNode.create('coalesce', [
+      columnValue(column).toOperationNode(),
+      value.toOperationNode(),
+    ]),
+  )
+}
 
 /** An expression under an alias, for a SELECT list. Token and fragment expressions have no `as`. */
 export function aliasedAs<T, A extends string>(

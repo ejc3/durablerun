@@ -12,3 +12,4 @@ export {
   SWEEP_SCAN_EXPIRED_SQL,
 } from './store.js'
 export { NOW_MS } from './time.js'
+export { TREE_DIALECT } from './tree.js'

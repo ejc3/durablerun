@@ -39,6 +39,7 @@ import {
   checkpointLeaseCas,
   claimCas,
   clampLimit,
+  coalesced,
   completeCas,
   decodeBoundedInteger,
   decodeTaskResult,
@@ -51,6 +52,7 @@ import {
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
+  rawSql,
   refusedLease,
   refusedWriteError,
   registerWaitCas,
@@ -787,7 +789,12 @@ export class PostgresSchedulerStore implements SchedulerStore {
       where: 'f.run_id = ?',
       whereArgs: [runId],
       set: {
-        first_started_at_ms: `COALESCE(first_started_at_ms, ${activated})`,
+        // Built from nodes, because the value reads the column it is assigned to and the
+        // counting rule cannot read that inside a fragment.
+        first_started_at_ms: coalesced(
+          'first_started_at_ms',
+          rawSql<number>(sqlFragment(activated, [runId]), 'value'),
+        ),
         // The leading CAS validated both this stored JSON value and the exact
         // headroom of the addition. Keep conversion in one shared expression
         // so the guard and write cannot disagree below a millisecond.
@@ -797,7 +804,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
           ELSE NULL
         END`,
       },
-      setArgs: [runId, runId],
+      setArgs: [runId],
       narrow: `state IN ${LIVE}`,
       rows: 'one',
     })

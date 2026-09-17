@@ -1,3 +1,4 @@
+import { type Expression, type Kysely, isExpression } from 'kysely'
 import {
   DERIVED_WRITABLE_COLUMNS,
   type DerivedWritableColumn,
@@ -25,18 +26,27 @@ import type {
 import {
   CLOCK_SPELLING,
   type DefinedStatement,
+  type StatementTree,
   type TreeDialect,
   clockFunctionCalls,
+  columnValue,
+  defineStatement,
+  fenceValue,
+  fragmentBinds,
   gatingFences,
   insertProvenance,
   isDefinedStatement,
   rawFragmentProblem,
   rawFragmentTexts,
+  rawSql,
   selfCountingAssignments,
+  sqlFragment,
+  stampValue,
   statementGrammarProblem,
   statementTable,
   writesStampAssignments,
 } from './sql-tree.js'
+import { treeBuilder } from './store-tables.js'
 
 /**
  * Structural enforcement of DESIGN.md §3.4 rules 1, 2 and 8.
@@ -142,16 +152,23 @@ interface DerivedSelection<R extends FenceRelation = FenceRelation> {
 type RelationTarget<R extends FenceRelation> = (typeof FENCE_RELATIONS)[R]['target']
 
 /**
- * The non-null target carried by the generated-UPDATE construction path.
+ * The table a generated statement writes: a relation's target, never null.
  *
- * Raw follow-ons and generated DELETEs may deliberately carry no stamped
- * target. Keeping the generated UPDATE's target in its own type prevents
- * that broader representation from making `null` an expressible UPDATE.
+ * A hand-written follow-on may deliberately carry no stamped target. Keeping the
+ * generated statement's target in its own type prevents that broader
+ * representation from making `null` an expressible generated UPDATE.
  */
 export type GeneratedUpdateTarget = RelationTarget<FenceRelation>
 
+/**
+ * What a generated UPDATE assigns a column: SQL text with `?` binds, or an expression
+ * built from nodes. A value that reads the column it is assigned to must be nodes, such
+ * as `coalesced(column, …)`, because the counting rule cannot read a fragment.
+ */
+export type DerivedValue = string | Expression<unknown>
+
 type DerivedSet<R extends FenceRelation> = Partial<
-  Record<DerivedWritableColumn<RelationTarget<R>>, string>
+  Record<DerivedWritableColumn<RelationTarget<R>>, DerivedValue>
 >
 
 type DerivedSpec<R extends FenceRelation = FenceRelation> =
@@ -170,7 +187,7 @@ type InternalDerivedSpec<R extends FenceRelation> =
       setArgs?: never
     })
   | (DerivedSelection<R> & {
-      set: Readonly<Partial<Record<string, string>>>
+      set: Readonly<Partial<Record<string, DerivedValue>>>
       setArgs?: SqlStatement['args']
     })
 
@@ -192,31 +209,12 @@ type Named = NamedBase &
     | { form: 'tree'; compiled: SqlStatement }
   )
 
-interface GeneratedUpdate {
-  name: string
-  target: GeneratedUpdateTarget
-  setSql: string
-  sourceInstant: string
-  selection: string
-  narrow: string
-  args: SqlStatement['args']
-  rows: RowBound
-}
-
 /**
- * Closed builders receive the batch label as their stable executable mutation
- * address. Live output never branches on it; the mutation probe may inject a
- * label-scoped semantic defect without poisoning every generated transition.
+ * The builder generated follow-ons are built with. A relation names its tables and
+ * columns at run time, from the closed `FENCE_RELATIONS` contract, so the builder's
+ * static table types do not apply here.
  */
-function generatedFencePredicate(prefix: string, fence: string, _batchLabel: string): string {
-  return `${prefix}f.fence_stamp = ${fence}`
-}
-
-function generatedUpdateSql(update: GeneratedUpdate, _batchLabel: string): string {
-  const provenance = `,\n         fence_stamp = ${STAMP},
-         fence_at_ms = (${update.sourceInstant})`
-  return `UPDATE ${update.target} SET ${update.setSql}${provenance}\n       WHERE (${update.selection}${update.narrow})`
-}
+const generatedBuilder = treeBuilder as unknown as Kysely<Record<string, Record<string, unknown>>>
 
 /**
  * A blind counter bump (`attempts = attempts + 1`) is not idempotent: an
@@ -438,15 +436,19 @@ export class FencedBatch {
    *
    * This is the shape every UPDATE and DELETE follow-on should have, and the
    * reason is not tidiness. When the caller writes the WHERE clause, the
-   * primitive can only inspect the resulting text, and 126 lines of hand-rolled
-   * SQL scanning here try to decide whether the fence actually reaches the rows
-   * being written. Every false negative this primitive has ever had was in that
-   * scanning: a fence joined by OR, a fence under `NOT (…)`, a WHERE inside a
-   * comment. Generating the selection removes the thing being inspected.
+   * primitive can only inspect what the caller wrote. Every false negative this
+   * primitive has ever had was in that inspection: a fence joined by OR, a fence
+   * under `NOT (…)`, a WHERE inside a comment. Generating the selection removes
+   * the thing being inspected.
    *
    *   UPDATE <target> SET <set>, <provenance>
    *   WHERE <key> IN (SELECT f.<column> FROM <from> f WHERE <where> AND f.fence_stamp = …)
    *     AND (<narrow>)
+   *
+   * The statement is built as a tree from the closed relation contract, and it
+   * takes the tree path like any other tree statement, so the gating, stamping,
+   * clock, and counting rules read what was generated. The caller's `where`,
+   * `narrow`, and text values enter as fragments: bound, bracketed, and opaque.
    *
    * `narrow` is ANDed and parenthesised, so it can only ever SHRINK the set —
    * there is no way to write an alternative that widens it.
@@ -464,8 +466,9 @@ export class FencedBatch {
    *
    * The presence of `set` selects UPDATE rather than DELETE. Assignment
    * targets come from the closed per-table contract; callers supply only
-   * scalar right-hand sides. Every UPDATE target is a FenceTable and the
-   * primitive always generates its provenance.
+   * scalar right-hand sides, as text or as an expression built from nodes. A
+   * value that reads the column it is assigned to must be nodes. Every UPDATE
+   * target is a FenceTable and the primitive always generates its provenance.
    */
   derived<R extends FenceRelation>(name: string, spec: DerivedSpec<R>): this {
     return this.derivedInternal(name, spec, null)
@@ -477,15 +480,14 @@ export class FencedBatch {
     sealedSelfKey: string | null,
   ): this {
     const relation = this.relation(spec.relation, `derived('${name}')`)
-    const { target, key, from, column } = relation
-    const source = this.requireFenceSource(spec.fence, `derived('${name}')`)
-    if (source.target !== from) {
-      throw new Error(
-        `FencedBatch[${this.label}] derived('${name}') relation '${spec.relation}' reads '${from}', but fence '${spec.fence}' stamps '${source.target}'`,
-      )
-    }
+    const { key, from, column } = relation
+    const target: GeneratedUpdateTarget = relation.target
+    // The fence must exist and be unsealed. That it stamps the table this relation reads
+    // is the tree path's gating rule, which compares the fence's table with the table
+    // whose fence_stamp the generated selection reads.
+    this.requireFenceSource(spec.fence, `derived('${name}')`)
     const assignments =
-      spec.set === undefined ? [] : (Object.entries(spec.set) as Array<[string, string]>)
+      spec.set === undefined ? [] : (Object.entries(spec.set) as Array<[string, DerivedValue]>)
     const allowedColumns = new TrustedSet<string>(DERIVED_WRITABLE_COLUMNS[target])
     if (sealedSelfKey !== null) allowedColumns.add(sealedSelfKey)
     for (const [column, expression] of assignments) {
@@ -500,86 +502,133 @@ export class FencedBatch {
           `FencedBatch[${this.label}] derived('${name}') column '${column}' is not writable for ${target}`,
         )
       }
-      assertSetExpression(`FencedBatch[${this.label}] derived('${name}')`, column, expression)
+      if (typeof expression === 'string') {
+        assertSetExpression(`FencedBatch[${this.label}] derived('${name}')`, column, expression)
+      } else if (!isExpression(expression)) {
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') set value for '${column}' is neither SQL text nor an expression`,
+        )
+      }
     }
-    // Parenthesised for the same reason `narrow` is: AND binds tighter than
-    // OR, so an unbracketed `a OR b` would compile to `a OR (b AND fence)`
-    // and let every row matching `a` into the selection unstamped. The
-    // caller's text lands in a boolean position, so the primitive brackets
-    // it rather than trusting it to be conjunctive.
+    // The source rows this statement follows: the rows of `from` that carry the fence,
+    // narrowed by the caller's correlation. `rawSql` compiles a predicate inside
+    // parentheses, for the same reason `narrow` is bracketed: AND binds tighter than OR,
+    // so an unbracketed `a OR b` would compile to `a OR (b AND fence)` and let every row
+    // matching `a` into the selection unstamped.
     // The closed relation contract owns queue correlation. Task/run ownership
     // is queue-scoped, while runs-to-waits deliberately follows authoritative
     // run_id through a corrupt denormalized wait queue so terminal cleanup can
     // remove the bad witness rather than strand it.
-    const queueOwnership = relation.queueScoped ? `f.queue = ${target}.queue AND ` : ''
-    const src = `${spec.where ? `(${spec.where}) AND ` : ''}${queueOwnership}`
-    const fence = `$FENCE:${spec.fence}$`
-    const fencedSource = generatedFencePredicate(src, fence, this.label)
+    // Each call builds fresh nodes, because a fragment stands in one place.
+    // Live output never branches on the batch label. The mutation probe may inject a
+    // label-scoped defect here, so one generated transition can be broken for its own
+    // verdict without poisoning every other one.
+    // A computed correlation that comes out empty must not widen the write to every row
+    // under the fence, so empty text is refused, and so are arguments with no text.
+    for (const [text, args] of [
+      ['where', 'whereArgs'],
+      ['narrow', 'narrowArgs'],
+    ] as const) {
+      if (spec[text] === '') {
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') ${text} is empty: omit it to correlate nothing`,
+        )
+      }
+      if (spec[text] === undefined && (spec[args]?.length ?? 0) > 0) {
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') has ${args} and no ${text} to bind them`,
+        )
+      }
+    }
+    const whereArgs = spec.whereArgs ?? []
+    const fencedSource = () => {
+      let rows = generatedBuilder.selectFrom(`${from} as f`)
+      if (spec.where) {
+        rows = rows.where(rawSql<boolean>(sqlFragment(spec.where, whereArgs), 'predicate'))
+      }
+      if (relation.queueScoped) rows = rows.whereRef('f.queue', '=', `${target}.queue`)
+      return rows.where((eb) => eb(eb.ref('f.fence_stamp'), '=', fenceValue(spec.fence)))
+    }
+    // A self relation reads its own target. MySQL refuses that directly, so the keys go
+    // through a derived table, which every dialect accepts.
     const sourceKeys =
       target === from
-        ? `SELECT source_key FROM (
-                         SELECT DISTINCT f.${column} AS source_key FROM ${from} f
-                          WHERE ${fencedSource}
-                       ) AS fenced_source`
-        : `SELECT f.${column} FROM ${from} f
-                       WHERE ${fencedSource}`
-    const selection = `${key} IN (${sourceKeys})`
-    const narrow = spec.narrow ? `\n         AND (${spec.narrow})` : ''
-    const w = spec.whereArgs ?? []
+        ? generatedBuilder
+            .selectFrom(
+              fencedSource()
+                .select((eb) => eb.ref(`f.${column}`).as('source_key'))
+                .distinct()
+                .as('fenced_source'),
+            )
+            .select('source_key')
+        : fencedSource().select(`f.${column}`)
+    const rows: RowBound = spec.rows === 'one' ? 'one' : { many: 'generated source-key bound' }
+    const narrow = spec.narrow
+      ? rawSql<boolean>(sqlFragment(spec.narrow, spec.narrowArgs ?? []), 'predicate')
+      : null
 
     if (spec.set === undefined) {
-      return this.add({
-        name,
-        kind: 'followOn',
-        target: null,
-        sql: `DELETE FROM ${target}\n       WHERE (${selection}${narrow})`,
-        args: [...w, ...(spec.narrowArgs ?? [])],
-        rows: spec.rows === 'one' ? 'one' : { many: 'generated source-key bound' },
-        max: null,
-      })
+      const selected = generatedBuilder
+        .deleteFrom(target)
+        .where((eb) => eb(eb.ref(key), 'in', sourceKeys))
+      return this.addGenerated(name, narrow === null ? selected : selected.where(narrow), rows)
     }
     if (assignments.length === 0) {
       throw new Error(`FencedBatch[${this.label}] derived('${name}') UPDATE set cannot be empty`)
     }
-    const setSql = assignments
-      .map(([column, expression]) => `${column} = ${expression}`)
-      .join(',\n         ')
+    // Text values bind the caller's arguments in order, each taking as many as it holds.
+    const setArgs = spec.setArgs ?? []
+    const values: Record<string, Expression<unknown>> = {}
+    let bound = 0
+    for (const [assigned, expression] of assignments) {
+      if (typeof expression !== 'string') {
+        values[assigned] = expression
+        continue
+      }
+      const binds = fragmentBinds(expression)
+      values[assigned] = rawSql(
+        sqlFragment(expression, setArgs.slice(bound, bound + binds)),
+        'value',
+      )
+      bound += binds
+    }
+    if (bound !== setArgs.length) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') set binds ${bound} of its ${setArgs.length} arguments`,
+      )
+    }
     // A many-row source still carries one statement instant. Reduce it to one
     // SQL scalar explicitly: SQLite otherwise picks an arbitrary row while
     // PostgreSQL and MySQL reject the same subquery for returning several.
     const sourceInstant =
       target === from
-        ? `SELECT MIN(source_fence_at_ms) FROM (
-                          SELECT DISTINCT f.fence_at_ms AS source_fence_at_ms FROM ${from} f
-                           WHERE ${fencedSource}
-                        ) AS fenced_source_instant`
-        : `SELECT MIN(f.fence_at_ms) FROM ${from} f
-                        WHERE ${fencedSource}`
-    return this.addGeneratedUpdate({
-      name,
-      target,
-      setSql,
-      sourceInstant,
-      selection,
-      narrow,
-      // UPDATE always emits provenance, so the correlation occurs once in its
-      // instant subquery and once in its row selection. DELETE has no stamp to
-      // write and returned through the branch above.
-      args: [...(spec.setArgs ?? []), ...w, ...w, ...(spec.narrowArgs ?? [])],
-      rows: spec.rows === 'one' ? 'one' : { many: 'generated source-key bound' },
-    })
+        ? generatedBuilder
+            .selectFrom(
+              fencedSource()
+                .select((eb) => eb.ref('f.fence_at_ms').as('source_fence_at_ms'))
+                .distinct()
+                .as('fenced_source_instant'),
+            )
+            .select((eb) => eb.fn.min('source_fence_at_ms').as('source_instant'))
+        : fencedSource().select((eb) => eb.fn.min('f.fence_at_ms').as('source_instant'))
+    // UPDATE always emits provenance: this statement's stamp, at the instant of the rows
+    // it follows. The correlation therefore occurs once in the instant subquery and once
+    // in the row selection, and the caller supplies its arguments once.
+    const updated = generatedBuilder
+      .updateTable(target)
+      .set({ ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant })
+      .where((eb) => eb(eb.ref(key), 'in', sourceKeys))
+    return this.addGenerated(name, narrow === null ? updated : updated.where(narrow), rows)
   }
 
-  private addGeneratedUpdate(update: GeneratedUpdate): this {
-    return this.add({
-      name: update.name,
-      target: update.target,
-      sql: generatedUpdateSql(update, this.label),
-      args: update.args,
-      rows: update.rows,
-      kind: 'followOn',
-      max: null,
-    })
+  /** A generated statement takes the tree path, so every tree rule reads what was generated. */
+  private addGenerated(
+    name: string,
+    query: { toOperationNode(): StatementTree },
+    rows: RowBound,
+  ): this {
+    const statement = defineStatement(`${this.label} ${name}`, () => query)({})
+    return this.addTree('followOn', name, statement, rows, null)
   }
 
   private relation(name: FenceRelation, at: string): (typeof FENCE_RELATIONS)[FenceRelation] {
@@ -614,7 +663,7 @@ export class FencedBatch {
       name,
       {
         ...spec,
-        set: { [relation.key]: relation.key },
+        set: { [relation.key]: columnValue(relation.key) },
       },
       relation.key,
     )

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { LibsqlExecutor } from '../src/index.js'
 import { openTestDb } from '../src/testing.js'
 import { NOW_MS } from '../src/time.js'
+import { TREE_DIALECT } from '../src/tree.js'
 
 const NOW = 1_000_000
 
@@ -59,7 +60,7 @@ async function stateOf(raw: LibsqlExecutor, taskId: string): Promise<string> {
  * `a OR (b AND fence)`.
  */
 async function spread(raw: LibsqlExecutor, label = 'probe'): Promise<void> {
-  const b = new FencedBatch(label, 'seed', { now: NOW_MS })
+  const b = new FencedBatch(label, 'seed', { now: NOW_MS, tree: TREE_DIALECT })
   b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
     'run-stamped',
   ])
@@ -97,7 +98,13 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
     await insert(f.raw, 'untouched', 'run-untouched', 'a')
 
-    await spread(f.raw, 'mutation:generated-selection-fence')
+    // The generated statement is a tree, and the batch reads its gate from the tree. A
+    // generator whose fence did not gate would be refused here, before it could run.
+    const refusal = await spread(f.raw, 'mutation:generated-selection-fence').then(
+      () => null,
+      (error: Error) => error.message,
+    )
+    expect(refusal, 'mutation-verdict:behavior:generated-selection-scope').toBeNull()
 
     expect(await stateOf(f.raw, 'stamped')).toBe('cancelled')
     expect(
@@ -112,7 +119,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
     await insert(f.raw, 'untouched', 'run-untouched', 'a')
 
-    const b = new FencedBatch('narrow', 'narrow-seed', { now: NOW_MS })
+    const b = new FencedBatch('narrow', 'narrow-seed', { now: NOW_MS, tree: TREE_DIALECT })
     b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
       'run-stamped',
     ])
@@ -141,7 +148,10 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     const f = await fixture()
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
 
-    const matching = new FencedBatch('narrow-positive', 'narrow-positive-seed', { now: NOW_MS })
+    const matching = new FencedBatch('narrow-positive', 'narrow-positive-seed', {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
     matching.cas(
       'win',
       'runs',
@@ -172,7 +182,12 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     const f = await fixture()
     await insert(f.raw, 'stamped', 'run-stamped', 'b')
 
-    await spread(f.raw, 'mutation:generated-update-provenance-assignment')
+    // A generated UPDATE that left the stamp out is refused by the stamping rule, so the
+    // row below would carry no stamp of this statement either way.
+    const refusal = await spread(f.raw, 'mutation:generated-update-provenance-assignment').then(
+      () => null,
+      (error: Error) => error.message,
+    )
 
     const [row] = (
       await f.raw.batch(
@@ -194,6 +209,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     // One instant for the whole batch: the follow-on copies the CAS's, it
     // does not read the clock again (§3.4 rule 3).
     expect({ followOn: row?.a, cas: row?.ra }).toEqual({ followOn: NOW, cas: NOW })
+    expect(refusal).toBeNull()
     f.close()
   })
 
@@ -219,7 +235,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
       'write',
     )
 
-    const b = new FencedBatch('delete-waits', 'bound', { now: NOW_MS })
+    const b = new FencedBatch('delete-waits', 'bound', { now: NOW_MS, tree: TREE_DIALECT })
     b.cas('win', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, ['run'])
     b.derived('waits', {
       relation: 'runs-to-waits',
@@ -249,7 +265,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
       },
     }
 
-    const b = new FencedBatch('replayed', 'same-seed', { now: NOW_MS })
+    const b = new FencedBatch('replayed', 'same-seed', { now: NOW_MS, tree: TREE_DIALECT })
     b.cas(
       'win',
       'runs',
