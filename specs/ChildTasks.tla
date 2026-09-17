@@ -33,9 +33,10 @@
 \* THE QUEUE RULE, isolated as one constant.  A child is awaited only within its
 \* parent's queue.  An await across queues is refused, as a permanent error that
 \* registers nothing.  AwaitAllowed is that rule: TRUE is a child in the parent's
-\* queue, FALSE a child in another.  The three await actions read it and
-\* RefusedNeverWaits holds it, so the protocol is checked with the await allowed
-\* and with it refused.  Absurd refuses the SAME-queue await instead, because its
+\* queue, FALSE a child in another.  The three await actions read it.
+\* RefusedNeverWaits holds one direction, a refused await never waits, and
+\* RefusalIsTheRule the other, an allowed await is never refused.  The protocol
+\* is checked with the await allowed and with it refused.  Absurd refuses the SAME-queue await instead, because its
 \* await polls and holds a worker slot.  Ours suspends and holds nothing.
 \*
 \* WHAT THE SQL OWES THIS MODEL, beyond its actions:
@@ -249,6 +250,10 @@ SeenIsFirstOutcome ==
 \* waits, is never woken, and never gets an outcome or a timeout from an await.
 RefusedNeverWaits ==
   ~AwaitAllowed => (~wait /\ parent \notin {"waiting", "woken", "resolved", "timedout"})
+
+\* The rule's other direction: only an await the rule does not allow is
+\* refused.  Without it, SQL that refuses every child await satisfies the model.
+RefusalIsTheRule == parent = "refused" => ~AwaitAllowed
 
 DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 
