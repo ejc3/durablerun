@@ -109,20 +109,19 @@ VARIABLES
   wait,          \* a wait row for the completion event exists
   parked,        \* the outcome parked on the parent's run by the emit
   seen,          \* the outcome the parent's await returned, or None
-  retries,       \* revivals consumed
-  owed           \* probe only: a terminal committed and its emit has not
+  retries        \* revivals consumed
 
-vars == <<child, firstOutcome, doneEvent, parent, wait, parked, seen, retries, owed>>
+vars == <<child, firstOutcome, doneEvent, parent, wait, parked, seen, retries>>
 
 Init ==
   /\ child = "unspawned" /\ firstOutcome = None /\ doneEvent = None
   /\ parent = "running" /\ wait = FALSE /\ parked = None /\ seen = None
-  /\ retries = 0 /\ owed = FALSE
+  /\ retries = 0
 
 SpawnChild ==
   /\ parent = "running" /\ child = "unspawned"
   /\ child' = "live"
-  /\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen, retries, owed>>
+  /\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen, retries>>
 
 \* The emit and the waiter's wake, as the terminal batch's follow-ons.  First
 \* write wins: an event that exists is left alone, and so is the parent.
@@ -139,46 +138,46 @@ ChildTerminal(o) ==
   /\ child' = o
   /\ firstOutcome' = IF firstOutcome = None THEN o ELSE firstOutcome
   /\ IF AtomicEmit
-     THEN Emit(o) /\ UNCHANGED owed
-     ELSE owed' = TRUE /\ UNCHANGED <<doneEvent, parent, parked, wait>>
+     THEN Emit(o)
+     ELSE UNCHANGED <<doneEvent, parent, parked, wait>>
   /\ UNCHANGED <<seen, retries>>
 
 \* Probe only: the emit as its own later step, which a crash can separate
 \* from the terminal transition.
 LateEmit ==
-  /\ ~AtomicEmit /\ owed /\ child \in Outcomes
-  /\ Emit(child) /\ owed' = FALSE
+  /\ ~AtomicEmit /\ child \in Outcomes /\ doneEvent = None
+  /\ Emit(child)
   /\ UNCHANGED <<child, firstOutcome, seen, retries>>
 
 \* retry-task: a failed child returns to live.  The event is untouched.
 ReviveChild ==
   /\ child = "failed" /\ retries < MaxRetries
   /\ child' = "live" /\ retries' = retries + 1
-  /\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen, owed>>
+  /\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen>>
 
 AwaitHit ==
   /\ parent = "running" /\ child # "unspawned" /\ AwaitAllowed
   /\ doneEvent # None
   /\ parent' = "resolved" /\ seen' = doneEvent
-  /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, retries, owed>>
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, retries>>
 
 \* Register and sleep in one step, guarded on the event being absent.
 AwaitMiss ==
   /\ parent = "running" /\ child # "unspawned" /\ AwaitAllowed
   /\ doneEvent = None
   /\ parent' = "waiting" /\ wait' = TRUE
-  /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries, owed>>
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries>>
 
 AwaitRefused ==
   /\ parent = "running" /\ child # "unspawned" /\ ~AwaitAllowed
   /\ parent' = "refused"
-  /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, seen, retries, owed>>
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, seen, retries>>
 
 \* The woken run is claimed and its await returns the parked outcome.
 ParentClaimWoken ==
   /\ parent = "woken"
   /\ parent' = "resolved" /\ seen' = parked
-  /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, retries, owed>>
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, retries>>
 
 \* A timed wait comes due and the claim that finds it consumes the wait row
 \* (Scheduler.tla's Claim).  The await returns no outcome, and a later emit finds
@@ -186,19 +185,19 @@ ParentClaimWoken ==
 AwaitTimeout ==
   /\ parent = "waiting"
   /\ parent' = "timedout" /\ wait' = FALSE
-  /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries, owed>>
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries>>
 
 \* Cancelling the parent deletes its wait rows, as CancelCore does.
 CancelParent ==
   /\ parent \in {"running", "waiting", "woken"}
   /\ parent' = "cancelled" /\ wait' = FALSE
-  /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries, owed>>
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries>>
 
 \* Probe only: a user emit under the completion event's name.
 ForgedEmit(o) ==
   /\ UserMayForge /\ doneEvent = None
   /\ Emit(o)
-  /\ UNCHANGED <<child, firstOutcome, seen, retries, owed>>
+  /\ UNCHANGED <<child, firstOutcome, seen, retries>>
 
 Next ==
   \/ SpawnChild
@@ -224,7 +223,7 @@ TypeOK ==
   /\ doneEvent \in Outcomes \cup {None}
   /\ parent \in {"running", "waiting", "woken", "resolved", "timedout", "refused",
                 "cancelled"}
-  /\ wait \in BOOLEAN /\ owed \in BOOLEAN
+  /\ wait \in BOOLEAN
   /\ parked \in Outcomes \cup {None} /\ seen \in Outcomes \cup {None}
   /\ retries \in 0..MaxRetries
 
@@ -249,7 +248,7 @@ SeenIsFirstOutcome ==
 \* The refusing rule refuses: with the await not allowed, the parent never
 \* waits, is never woken, and never gets an outcome or a timeout from an await.
 RefusedNeverWaits ==
-  ~AwaitAllowed => (~wait /\ parent \notin {"waiting", "woken", "resolved", "timedout"})
+  ~AwaitAllowed => parent \notin {"waiting", "woken", "resolved", "timedout"}
 
 \* The rule's other direction: only an await the rule does not allow is
 \* refused.  Without it, SQL that refuses every child await satisfies the model.

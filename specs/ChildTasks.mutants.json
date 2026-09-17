@@ -56,8 +56,8 @@
   {
     "name": "revive-clears-event",
     "guard": "retry-task leaves the completion event alone",
-    "find": "  /\\ child' = \"live\" /\\ retries' = retries + 1\n  /\\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen, owed>>",
-    "replace": "  /\\ child' = \"live\" /\\ retries' = retries + 1 /\\ doneEvent' = None\n  /\\ UNCHANGED <<firstOutcome, parent, wait, parked, seen, owed>>"
+    "find": "  /\\ child' = \"live\" /\\ retries' = retries + 1\n  /\\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen>>",
+    "replace": "  /\\ child' = \"live\" /\\ retries' = retries + 1 /\\ doneEvent' = None\n  /\\ UNCHANGED <<firstOutcome, parent, wait, parked, seen>>"
   },
   {
     "name": "emit-wakes-a-timed-out-parent",
@@ -74,8 +74,8 @@
   {
     "name": "refused-registers-a-wait",
     "guard": "a refusal registers nothing",
-    "find": "  /\\ parent' = \"refused\"\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, seen, retries, owed>>",
-    "replace": "  /\\ parent' = \"refused\" /\\ wait' = TRUE\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries, owed>>"
+    "find": "  /\\ parent' = \"refused\"\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, seen, retries>>",
+    "replace": "  /\\ parent' = \"refused\" /\\ wait' = TRUE\n  /\\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries>>"
   },
   {
     "name": "first-outcome-ghost-rewritten",
