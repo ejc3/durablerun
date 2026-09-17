@@ -257,6 +257,35 @@ jobs:
               start = text.rindex('        (\n', 0, text.index(key))
               end = text.index('        ),\n', start) + len('        ),\n')
               return start, end
+          def reaim(repaired, candidate, names):
+              # Replace each named top-level entry with this tree's, which may change
+              # only its find, replacement, and description.
+              for name in names:
+                  key = f'        "{name}",\n'
+                  blocks = []
+                  for text in (repaired, candidate):
+                      if text.count(key) != 1:
+                          raise SystemExit(f'{name}: the re-aim bridge requires exactly one entry.')
+                      start = text.rindex('    (\n', 0, text.index(key))
+                      blocks.append((start, text.index('    ),\n', start) + len('    ),\n')))
+                  (start, end), (new_start, new_end) = blocks
+                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
+                      raise SystemExit(f'{name}: the re-aim bridge may change only find, replacement, and description.')
+                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+              return repaired
+          def exempt(repaired, candidate, markers):
+              # Exempt verdict markers this tree registers and the base registry predates.
+              table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
+              if repaired.count(table) != 1:
+                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
+              for marker in markers:
+                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
+                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
+              entries = ''.join(
+                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
+                  for marker in markers
+              )
+              return repaired.replace(table, table + entries)
           if digest == '0ee074470a4315d43f41d6e6947b72a43512dd0b1a423951487d28ffbf0d0dd8':
               # Three SDK guard specs were re-aimed against this registry.
               repaired = previous
@@ -443,16 +472,11 @@ jobs:
                   repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           elif digest == '2900a1485022ce92ccb9cadee41cc68b8fe292a916dea232f57c2ca38d0282c9':
               # Moving claim, activation, and the launch deferral onto statement trees
-              # re-aimed these finds: activation's guards now live in the admission
-              # fragment it shares with the deferral.
-              def spec_block(text, key):
-                  if text.count(key) != 1:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
-                  start = text.rindex('    (\n', 0, text.index(key))
-                  end = text.index('    ),\n', start) + len('    ),\n')
-                  return start, end
-              repaired = previous
-              for name in (
+              # re-aimed these finds. Activation's guards now live in the admission
+              # fragment it shares with the deferral, and two timestamp-addition cases
+              # generate four mutations. The deferral's use of that fragment gains a
+              # mutation, whose verdict marker this registry predates.
+              repaired = reaim(previous, candidate, (
                   'legacy-wait-step-backfill',
                   'activate-requires-sole-live-run',
                   'activate-rejects-zero-lease',
@@ -460,16 +484,12 @@ jobs:
                   'activate-requires-current-run-accounting',
                   'activate-payload-validation-atomic',
                   'activate-headers-admissible',
-                  # Two timestamp-addition cases, which generate four mutations.
                   'claim-lease',
                   'activation-lease',
-              ):
-                  key = f'        "{name}",\n'
-                  start, end = spec_block(repaired, key)
-                  new_start, new_end = spec_block(candidate, key)
-                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
-                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+              ))
+              repaired = exempt(repaired, candidate, (
+                  'mutation-verdict:behavior:defer-launch-requires-claim-receipt-admission',
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

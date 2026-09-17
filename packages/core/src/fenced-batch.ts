@@ -29,8 +29,7 @@ import {
   clockFunctionCalls,
   gatingFences,
   isDefinedStatement,
-  rawBooleanFragments,
-  rawFragmentCount,
+  rawFragmentProblem,
   rawFragmentTexts,
   selfCountingAssignments,
   statementGrammarProblem,
@@ -74,8 +73,6 @@ import {
  * Results come back by NAME; positional destructuring of batch results was
  * its own reviewed hazard.
  */
-
-export { NOW, STAMP } from './engine-tokens.js'
 
 /** The single definition of the provenance write. Shared by every dialect. */
 export const FENCE_SET = `fence_stamp = ${STAMP}, fence_at_ms = ${NOW}`
@@ -354,9 +351,7 @@ export class FencedBatch {
     sql: string,
     args: SqlStatement['args'] = [],
   ): this {
-    if (!Number.isSafeInteger(max) || max < 1) {
-      throw new Error(`FencedBatch[${this.label}] casMany '${name}' max must be a positive integer`)
-    }
+    this.requireCasManyMax(name, max)
     return this.add({ name, sql, args, kind: 'casMany', target, rows: { many: 'CAS' }, max })
   }
 
@@ -667,10 +662,14 @@ export class FencedBatch {
 
   /** `casMany`, built as a tree: a compare-and-set that may win up to `max` rows. */
   casManyTree(name: string, statement: DefinedStatement, max: number): this {
+    this.requireCasManyMax(name, max)
+    return this.addTree('casMany', name, statement, { many: 'CAS' }, max)
+  }
+
+  private requireCasManyMax(name: string, max: number): void {
     if (!Number.isSafeInteger(max) || max < 1) {
       throw new Error(`FencedBatch[${this.label}] casMany '${name}' max must be a positive integer`)
     }
-    return this.addTree('casMany', name, statement, { many: 'CAS' }, max)
   }
 
   /**
@@ -714,9 +713,10 @@ export class FencedBatch {
    * declares, the fences that gate it and the table each one stamps, the clock, and
    * assignments that count. It compiles once, here, so what was checked is what runs.
    *
-   * Raw fragment text is the one thing a tree cannot read. It is scanned for the batch
-   * clock's exact text and for clock spellings, as `scripts/clock-lint.py` scans store
-   * sources, and a `?` it adds shows up as a placeholder no argument binds.
+   * Raw fragment text is the one thing a tree cannot read. Every raw node must come
+   * from `rawSql`, which turns its binds and clock into nodes, and its text is scanned
+   * for the batch clock's exact text and for clock spellings, as `scripts/clock-lint.py`
+   * scans store sources.
    */
   private addTree(
     kind: 'cas' | 'casMany' | 'followOn' | 'tail',
@@ -762,13 +762,8 @@ export class FencedBatch {
       }
     }
 
-    const rawBooleans = rawBooleanFragments(tree)
-    const rawValues = rawFragmentCount(tree) - rawBooleans
-    if (rawBooleans !== statement.rawBooleans || rawValues !== statement.rawValues) {
-      throw new Error(
-        `${at} holds ${rawBooleans} raw boolean fragments and ${rawValues} raw value fragments, but '${statement.name}' declares ${statement.rawBooleans} and ${statement.rawValues}`,
-      )
-    }
+    const rawProblem = rawFragmentProblem(tree)
+    if (rawProblem !== null) throw new Error(`${at} holds ${rawProblem}`)
 
     const compiled = dialect.compile(tree, {
       now: this.now,
@@ -812,11 +807,6 @@ export class FencedBatch {
     if (spelledClock) {
       throw new Error(
         `${at} spells out a database clock: the only clock a statement may hold is the clock token, so a batch reads one clock expression`,
-      )
-    }
-    if (compiled.placeholders !== compiled.parameters.length) {
-      throw bindCompilationError(
-        `${at} compiles to ${compiled.placeholders} placeholders for ${compiled.parameters.length} arguments: a raw fragment may not add a '?'`,
       )
     }
     if (kind === 'followOn') {

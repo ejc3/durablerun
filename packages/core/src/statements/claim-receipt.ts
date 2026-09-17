@@ -1,5 +1,6 @@
+import type { UpdateQueryBuilder, UpdateResult } from 'kysely'
 import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
-import { treeBuilder } from '../store-tables.js'
+import { type StoreTables, treeBuilder } from '../store-tables.js'
 
 /** The claim a launch names: a run still running under this token and generation, not yet activated. */
 type ClaimReceipt = {
@@ -7,12 +8,35 @@ type ClaimReceipt = {
   runId: string
   claimToken: string
   claimGen: number
-  /**
-   * The store's admission predicate for a claim receipt. Activation and the launch
-   * deferral take the same fragment, so a guard added for one reaches the other.
-   */
+  /** The store's admission predicate for a claim receipt, the same for every transition that acts on one. */
   admission: SqlFragment
 }
+
+type RunsUpdate = UpdateQueryBuilder<StoreTables, 'runs', 'runs', UpdateResult>
+
+/**
+ * What every transition acting on a claim receipt requires of it: the receipt's
+ * identity, the generation latch, and the store's admission predicate. Activation and
+ * the launch deferral both apply this, so a guard added here reaches both.
+ */
+const whereClaimReceipt =
+  (binds: ClaimReceipt) =>
+  (update: RunsUpdate): RunsUpdate =>
+    update
+      .where('run_id', '=', binds.runId)
+      .where('queue', '=', binds.queue)
+      .where('claimed_by', '=', binds.claimToken)
+      .where('state', '=', 'running')
+      .where('claim_gen', '=', binds.claimGen)
+      .where('activated_gen', '<', binds.claimGen)
+      .where(rawSql<boolean>(binds.admission, 'predicate'))
+
+/** The claim columns a parked run clears, so it carries no live token, lease deadline, or heartbeat. */
+export const PARKED_CLAIM_COLUMNS = {
+  claimed_by: null,
+  claim_expires_at_ms: null,
+  heartbeat_at_ms: null,
+} as const
 
 /**
  * `claim`'s compare-and-set. The candidate subquery is the store's, because libSQL
@@ -22,7 +46,6 @@ type ClaimReceipt = {
  */
 export const claimCas = defineStatement(
   'claim',
-  { rawBooleans: 1, rawValues: 3 },
   (binds: {
     queue: string
     claimToken: string
@@ -45,13 +68,13 @@ export const claimCas = defineStatement(
         claimed_by: binds.claimToken,
         claim_gen: eb('claim_gen', '+', 1),
         lease_ms: binds.leaseMs,
-        claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt),
+        claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt, 'value'),
         heartbeat_at_ms: nowValue,
-        wake_step: eb.fn.coalesce('wake_step', rawSql<string>(binds.legacyWaitStep)),
+        wake_step: eb.fn.coalesce('wake_step', rawSql<string>(binds.legacyWaitStep, 'value')),
         fence_stamp: stampValue,
         fence_at_ms: nowValue,
       }))
-      .where((eb) => eb('run_id', 'in', rawSql<string>(binds.candidateRunIds)))
+      .where((eb) => eb('run_id', 'in', rawSql<string>(binds.candidateRunIds, 'subquery')))
       .where((eb) =>
         eb.not(
           eb.exists(
@@ -64,7 +87,7 @@ export const claimCas = defineStatement(
           ),
         ),
       )
-      .where(rawSql<boolean>(binds.leaseFits)),
+      .where(rawSql<boolean>(binds.leaseFits, 'predicate')),
 )
 
 /**
@@ -73,26 +96,19 @@ export const claimCas = defineStatement(
  */
 export const activateCas = defineStatement(
   'activate',
-  { rawBooleans: 2, rawValues: 1 },
   (binds: ClaimReceipt & { leaseExpiresAt: SqlFragment; leaseFits: SqlFragment }) =>
     treeBuilder
       .updateTable('runs')
       .set((eb) => ({
         activated_gen: binds.claimGen,
         started_at_ms: eb.fn.coalesce('started_at_ms', nowValue),
-        claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt),
+        claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt, 'value'),
         heartbeat_at_ms: nowValue,
         fence_stamp: stampValue,
         fence_at_ms: nowValue,
       }))
-      .where('run_id', '=', binds.runId)
-      .where('queue', '=', binds.queue)
-      .where('claimed_by', '=', binds.claimToken)
-      .where('state', '=', 'running')
-      .where('claim_gen', '=', binds.claimGen)
-      .where('activated_gen', '<', binds.claimGen)
-      .where(rawSql<boolean>(binds.admission))
-      .where(rawSql<boolean>(binds.leaseFits)),
+      .$call(whereClaimReceipt(binds))
+      .where(rawSql<boolean>(binds.leaseFits, 'predicate')),
 )
 
 /**
@@ -101,30 +117,21 @@ export const activateCas = defineStatement(
  */
 export const deferLaunchCas = defineStatement(
   'defer-launch',
-  { rawBooleans: 2, rawValues: 2 },
   (binds: ClaimReceipt & { wakeAt: SqlFragment; wakeFits: SqlFragment }) =>
     treeBuilder
       .updateTable('runs')
       .set((eb) => ({
         state: eb
           .case()
-          .when(rawSql<number>(binds.wakeAt), '<=', nowValue)
+          .when(rawSql<number>(binds.wakeAt, 'value'), '<=', nowValue)
           .then('pending')
           .else('sleeping')
           .end(),
-        available_at_ms: rawSql<number>(binds.wakeAt),
-        claimed_by: null,
-        claim_expires_at_ms: null,
-        heartbeat_at_ms: null,
+        available_at_ms: rawSql<number>(binds.wakeAt, 'value'),
+        ...PARKED_CLAIM_COLUMNS,
         fence_stamp: stampValue,
         fence_at_ms: nowValue,
       }))
-      .where('run_id', '=', binds.runId)
-      .where('queue', '=', binds.queue)
-      .where('claimed_by', '=', binds.claimToken)
-      .where('state', '=', 'running')
-      .where('claim_gen', '=', binds.claimGen)
-      .where('activated_gen', '<', binds.claimGen)
-      .where(rawSql<boolean>(binds.admission))
-      .where(rawSql<boolean>(binds.wakeFits)),
+      .$call(whereClaimReceipt(binds))
+      .where(rawSql<boolean>(binds.wakeFits, 'predicate')),
 )

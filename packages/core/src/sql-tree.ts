@@ -16,6 +16,7 @@ import {
   OperationNodeTransformer,
   OperatorNode,
   OrNode,
+  OrderByItemNode,
   ParensNode,
   type QueryCompiler,
   type QueryId,
@@ -32,7 +33,8 @@ import {
   ValueNode,
   createQueryId,
 } from 'kysely'
-import { NOW, STAMP } from './engine-tokens.js'
+import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
+import type { SqlStatement } from './primitives.js'
 
 /**
  * Engine tokens carried as value nodes whose values are these sentinel objects. A
@@ -55,12 +57,11 @@ class EngineToken {
 }
 
 /**
- * An engine token as a builder expression. The builder treats an object as an
- * expression only when it carries `expressionType`, so a bare node source would be
- * bound as an ordinary value.
+ * A node as a builder expression. The builder treats an object as an expression only
+ * when it carries `expressionType`, so a bare node source would be bound as an ordinary
+ * value.
  */
-function tokenExpression<T>(token: EngineToken): Expression<T> {
-  const node = ValueNode.create(token)
+function nodeExpression<T>(node: OperationNode): Expression<T> {
   return {
     get expressionType(): T | undefined {
       return undefined
@@ -70,12 +71,12 @@ function tokenExpression<T>(token: EngineToken): Expression<T> {
 }
 
 /** This statement's own provenance value. */
-export const stampValue = tokenExpression<string>(EngineToken.stamp)
+export const stampValue = nodeExpression<string>(ValueNode.create(EngineToken.stamp))
 /** The batch's clock. Legal only in a compare-and-set. */
-export const nowValue = tokenExpression<number>(EngineToken.now)
+export const nowValue = nodeExpression<number>(ValueNode.create(EngineToken.now))
 /** The provenance value an earlier statement of the batch wrote. */
 export function fenceValue(name: string): Expression<string> {
-  return tokenExpression<string>(EngineToken.fence(name))
+  return nodeExpression<string>(ValueNode.create(EngineToken.fence(name)))
 }
 
 function tokenOf(node: OperationNode | undefined): EngineToken | null {
@@ -125,36 +126,25 @@ export function requireDefinedBinds(statement: string, binds: unknown, path = 'b
   }
 }
 
-/** A statement minted by `defineStatement`: its tree, and the raw booleans it declares. */
+/** A statement minted by `defineStatement`. */
 export interface DefinedStatement {
   readonly name: string
   readonly tree: StatementTree
-  /** Raw fragments standing where a boolean decides which rows are read or written. */
-  readonly rawBooleans: number
-  /** Every other raw fragment: an assigned value, a subquery operand, an expression. */
-  readonly rawValues: number
 }
 
 const definedStatements = new WeakSet<object>()
 
 /**
  * Define a statement once for every dialect. A batch accepts only statements minted
- * here, so every tree statement's binds passed `requireDefinedBinds`, and every raw
- * fragment it carries is declared beside it, by position.
+ * here, so every tree statement's binds passed `requireDefinedBinds`.
  */
-export function defineStatement<Binds extends object>(
+export function defineStatement<Binds extends Readonly<Record<string, unknown>>>(
   name: string,
-  shape: { readonly rawBooleans?: number; readonly rawValues?: number },
   build: (binds: Binds) => { toOperationNode(): StatementTree },
 ): (binds: Binds) => DefinedStatement {
   return (binds) => {
     requireDefinedBinds(name, binds)
-    const statement = Object.freeze({
-      name,
-      tree: build(binds).toOperationNode(),
-      rawBooleans: shape.rawBooleans ?? 0,
-      rawValues: shape.rawValues ?? 0,
-    })
+    const statement = Object.freeze({ name, tree: build(binds).toOperationNode() })
     definedStatements.add(statement)
     return statement
   }
@@ -172,7 +162,7 @@ export function isDefinedStatement(value: unknown): value is DefinedStatement {
  */
 export interface SqlFragment {
   readonly sql: string
-  readonly args: ReadonlyArray<string | number | bigint | Uint8Array | null>
+  readonly args: SqlStatement['args']
 }
 
 export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFragment {
@@ -180,22 +170,85 @@ export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFra
 }
 
 /**
+ * Where a fragment stands, declared where it is placed and checked against the tree:
+ * a `predicate` is a boolean that decides which rows are read or written, a `subquery`
+ * is the operand a row must be IN, and a `value` is anything else, such as an assigned
+ * value or an operand of an expression.
+ */
+export type RawRole = 'predicate' | 'subquery' | 'value'
+
+const mintedRaws = new WeakMap<object, RawRole>()
+
+/** The contents of a fragment's single-quoted string literals. */
+function stringLiterals(sql: string): string[] {
+  const literals: string[] = []
+  for (let i = 0; i < sql.length; i++) {
+    if (sql[i] !== "'") continue
+    let literal = ''
+    for (i++; i < sql.length; i++) {
+      if (sql[i] !== "'") literal += sql[i]
+      else if (sql[i + 1] === "'") literal += sql[++i]
+      else break
+    }
+    literals.push(literal)
+  }
+  return literals
+}
+
+/** Whether the text is one parenthesized group: its first `(` closes at its last character. */
+function isOneGroup(text: string): boolean {
+  if (!text.startsWith('(')) return false
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "'") {
+      for (i++; i < text.length && (text[i] !== "'" || text[i + 1] === "'"); i++) {
+        if (text[i] === "'") i++
+      }
+    } else if (text[i] === '(') {
+      depth++
+    } else if (text[i] === ')') {
+      depth--
+      if (depth === 0) return i === text.length - 1
+    }
+  }
+  return false
+}
+
+const FRAGMENT_TOKEN = new RegExp(String.raw`\?|${NOW.replaceAll('$', String.raw`\$`)}`, 'g')
+
+/**
  * A fragment as a raw node whose binds and clock are nodes, not text. Each `?` becomes
  * a value node, so compiled placeholders equal bound arguments by construction, and
- * each `$NOW$` becomes the clock token, so the clock rules see it. A stamp or a fence
- * never rides in a fragment: the rules that read them need them as nodes of the tree.
+ * each `$NOW$` becomes the clock token, so the clock rules see it.
+ *
+ * The text is split without reading SQL, so a token inside a string literal is refused.
+ * A stamp or a fence never rides in a fragment: the rules that read them need them as
+ * nodes of the tree. A predicate or value compiles inside parentheses, so an OR inside
+ * it cannot void the conjuncts around it. A subquery must bring its own, because a
+ * second pair would make it one scalar value.
  */
-export function rawSql<T>(fragment: SqlFragment): Expression<T> {
-  if (fragment.sql.includes(STAMP) || fragment.sql.includes('$FENCE:')) {
+export function rawSql<T>(fragment: SqlFragment, role: RawRole): Expression<T> {
+  if (fragment.sql.includes(STAMP) || fragment.sql.includes(FENCE_PREFIX)) {
     throw new Error(
       'a SQL fragment may not hold a stamp or fence token: a tree carries those as nodes',
     )
+  }
+  if (
+    stringLiterals(fragment.sql).some((literal) => literal.includes('?') || literal.includes(NOW))
+  ) {
+    throw new Error(
+      'a SQL fragment may not hold a bind or the clock token inside a string literal: its text is split without reading SQL',
+    )
+  }
+  const text = fragment.sql.trim()
+  if (role === 'subquery' && !isOneGroup(text)) {
+    throw new Error('a subquery fragment must be one parenthesized group')
   }
   const pieces: string[] = []
   const parameters: OperationNode[] = []
   let last = 0
   let bound = 0
-  for (const match of fragment.sql.matchAll(/\?|\$NOW\$/g)) {
+  for (const match of fragment.sql.matchAll(FRAGMENT_TOKEN)) {
     pieces.push(fragment.sql.slice(last, match.index))
     last = match.index + match[0].length
     if (match[0] === NOW) {
@@ -209,13 +262,9 @@ export function rawSql<T>(fragment: SqlFragment): Expression<T> {
   if (bound !== fragment.args.length) {
     throw new TypeError(`a SQL fragment binds ${bound} of its ${fragment.args.length} arguments`)
   }
-  const node = RawNode.create(pieces, parameters)
-  return {
-    get expressionType(): T | undefined {
-      return undefined
-    },
-    toOperationNode: () => node,
-  }
+  const raw = RawNode.create(pieces, parameters)
+  mintedRaws.set(raw, role)
+  return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))
 }
 
 /** The values a statement's tokens take in one batch invocation. */
@@ -230,8 +279,6 @@ export interface TokenBindings {
 export interface CompiledTree {
   readonly sql: string
   readonly parameters: readonly unknown[]
-  /** `?` placeholders in the compiled SQL. More than `parameters` means a raw fragment added one. */
-  readonly placeholders: number
   /** Every fence the statement names, wherever it appears. */
   readonly fences: readonly string[]
   /** Whether the clock token appears anywhere in the statement. */
@@ -282,13 +329,7 @@ export class TreeDialect {
   compile(tree: StatementTree, bindings: TokenBindings): CompiledTree {
     const { bound, fences, readsClock } = this.#binder.bind(tree, bindings)
     const compiled = this.compiler.compileQuery(bound, createQueryId())
-    return {
-      sql: compiled.sql,
-      parameters: compiled.parameters,
-      placeholders: compiled.sql.split('?').length - 1,
-      fences,
-      readsClock,
-    }
+    return { sql: compiled.sql, parameters: compiled.parameters, fences, readsClock }
   }
 }
 
@@ -456,9 +497,9 @@ const COUNTING_OPERATORS = new Set(['+', '-', '*', '/', '%', '||'])
 /**
  * Assignments that may count twice when a follow-on replays: `arithmetic` combines the
  * column it writes with an arithmetic or concatenation operator, however the operands
- * are ordered, qualified, or parenthesized, and `raw` hides that column inside a raw fragment, where the tree
- * cannot see what is done with it. A self-reference built from nodes, such as
- * `COALESCE(column, …)`, is visible and allowed.
+ * are ordered, qualified, or parenthesized, and `raw` names that column inside a
+ * fragment, where the tree cannot see what is done with it. A self-reference built from
+ * nodes, such as `COALESCE(column, …)`, is visible and allowed.
  */
 export function selfCountingAssignments(
   query: OperationNode,
@@ -476,27 +517,68 @@ export function selfCountingAssignments(
       )
     })
     if (arithmetic) return [{ column, how: 'arithmetic' }]
-    const raw = someNode(update.value, (candidate) => {
-      if (!RawNode.is(candidate)) return false
-      return (
-        mentions(candidate.sqlFragments.join(' '), column) ||
-        candidate.parameters.some((parameter) =>
-          someNode(parameter, (inner) => referencedColumn(inner) === column),
-        )
-      )
-    })
+    const raw = someNode(
+      update.value,
+      (candidate) => RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column),
+    )
     return raw ? [{ column, how: 'raw' }] : []
   })
 }
 
-/** How many raw fragments a statement holds, wherever they stand. */
-export function rawFragmentCount(tree: OperationNode): number {
-  let count = 0
-  someNode(tree, (candidate) => {
-    if (RawNode.is(candidate)) count++
-    return false
-  })
-  return count
+/** The raw node the builder makes for itself: an ORDER BY direction. */
+function isBuilderRaw(parent: OperationNode, node: OperationNode): boolean {
+  return (
+    OrderByItemNode.is(parent) &&
+    parent.direction === node &&
+    RawNode.is(node) &&
+    node.parameters.length === 0 &&
+    /^(?:asc|desc)$/i.test(node.sqlFragments.join('').trim())
+  )
+}
+
+/**
+ * Why a statement's raw fragments are not in order, or null when they are. Every raw
+ * node must come from `rawSql`, and the role declared there must be where the node
+ * stands, so a fragment meant as a value cannot decide rows unnoticed. Position is read
+ * from the tree: a boolean position under the WHERE clause, the operand of a required
+ * IN or EXISTS there, or anywhere else.
+ */
+export function rawFragmentProblem(tree: OperationNode): string | null {
+  const positions = new Map<OperationNode, RawRole>()
+  const markWhere = (node: OperationNode): void => {
+    const inner = unwrapParens(node)
+    if (RawNode.is(inner)) {
+      positions.set(inner, 'predicate')
+    } else if (AndNode.is(inner) || OrNode.is(inner)) {
+      markWhere(inner.left)
+      markWhere(inner.right)
+    } else if (requiredSubquery(inner) !== null) {
+      const subquery = requiredSubquery(inner) as OperationNode
+      const where = whereOf(subquery)
+      if (RawNode.is(subquery)) positions.set(subquery, 'subquery')
+      else if (where !== null) markWhere(where)
+    } else if (UnaryOperationNode.is(inner)) {
+      markWhere(inner.operand)
+    }
+  }
+  const where = whereOf(tree)
+  if (where !== null) markWhere(where)
+
+  let problem: string | null = null
+  const visit = (node: OperationNode): void => {
+    for (const child of children(node)) {
+      if (problem !== null) return
+      if (RawNode.is(child) && !isBuilderRaw(node, child)) {
+        const role = mintedRaws.get(child)
+        const position = positions.get(child) ?? 'value'
+        if (role === undefined) problem = 'a raw fragment that rawSql did not mint'
+        else if (role !== position) problem = `a '${role}' fragment standing as a ${position}`
+      }
+      visit(child)
+    }
+  }
+  visit(tree)
+  return problem
 }
 
 /** Every raw fragment's text, wherever it stands. */
@@ -619,7 +701,8 @@ const GRAMMAR_NODES = new Set([
  * that needs a new kind adds it here, with the check that reads it.
  *
  * It lists no common table expression, RETURNING, or `UPDATE … FROM`, no write below
- * the root, and no schema-qualified table.
+ * the root, and no schema-qualified table. It binds what is built from nodes. A store
+ * fragment is opaque text, reviewed through the generated corpus.
  */
 export function statementGrammarProblem(tree: OperationNode): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
@@ -645,24 +728,6 @@ export function statementGrammarProblem(tree: OperationNode): string | null {
     return null
   }
   return visit(tree, true)
-}
-
-/**
- * Raw SQL fragments standing where a boolean decides which rows are read or written: a
- * WHERE conjunct, an operand of AND, OR, or NOT beneath one, or the same inside a
- * required subquery. The escape hatch stays countable rather than invisible.
- */
-export function rawBooleanFragments(query: OperationNode): number {
-  const count = (node: OperationNode): number => {
-    const inner = unwrapParens(node)
-    if (RawNode.is(inner)) return 1
-    if (AndNode.is(inner) || OrNode.is(inner)) return count(inner.left) + count(inner.right)
-    const subquery = requiredSubquery(inner)
-    if (subquery !== null) return SelectQueryNode.is(subquery) ? rawBooleanFragments(subquery) : 0
-    return UnaryOperationNode.is(inner) ? count(inner.operand) : 0
-  }
-  const where = whereOf(query)
-  return where === null ? 0 : count(where)
 }
 
 /** The table a statement writes: an UPDATE's table, a DELETE's first FROM, an INSERT's target. */

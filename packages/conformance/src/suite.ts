@@ -1783,7 +1783,10 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         }
         const after = []
         for (const task of corruptTasks) after.push(await snapshot(f, task.taskId))
-        expect({ refusals, unchanged: after }).toEqual({
+        expect(
+          { refusals, unchanged: after },
+          'mutation-verdict:behavior:defer-launch-requires-claim-receipt-admission',
+        ).toEqual({
           refusals: Array(5).fill('LeaseLostError'),
           unchanged: before,
         })

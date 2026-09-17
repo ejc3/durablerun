@@ -126,6 +126,8 @@ function prepareWake(
 ): {
   expression: string
   expressionArgs: [mode: number, relativeMs: number, absoluteMs: number]
+  /** The headroom guard as one conjunct. `fits` is the same guard with the AND its text call sites need. */
+  fitsConjunct: string
   fits: string
   fitArgs: [mode: number, relativeMs: number]
 } {
@@ -138,6 +140,7 @@ function prepareWake(
   const mode = relative ? 1 : 0
   const relativeMs = relative ? argument : 0
   const absoluteMs = relative ? 0 : argument
+  const fitsConjunct = `(CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE TRUE END)`
   return {
     // A batch label is the tracing and crash-injection address, so both wake
     // variants must compile to one statement inventory and bind shape. The
@@ -146,19 +149,23 @@ function prepareWake(
     // stored verbatim after requireEpochMs validates them above.
     expression: `(CASE WHEN ? = 1 THEN ${NOW_MS} + ? ELSE ? END)`,
     expressionArgs: [mode, relativeMs, absoluteMs],
-    fits: `AND (CASE WHEN ? = 1 THEN ${epochAdditionFits(NOW_MS, '?')} ELSE TRUE END)`,
+    fitsConjunct,
+    fits: `AND ${fitsConjunct}`,
     fitArgs: [mode, relativeMs],
   }
 }
 
 /**
- * What a claim receipt must still satisfy before activation or the launch deferral acts
- * on it: in-range stored counters, no competing live run, and an eligible task whose
- * stored retry strategy, headers, accounting, and ordinal are sound. Both transitions
- * take this one fragment, so a guard added for one reaches the other. `taskAdmission`
- * adds a transition's own task-side conjunct.
+ * What a claim receipt must still satisfy before a transition acts on it: in-range
+ * stored counters, no competing live run, and an eligible task whose stored retry
+ * strategy, headers, accounting, and ordinal are sound. Activation and the launch
+ * deferral take this one fragment, so within this dialect a guard added for one reaches
+ * the other. The generated corpus holds both dialects' copies to the same shape.
+ * `taskConjuncts` adds a transition's own task-side conjuncts.
  */
-function claimReceiptAdmission(receipt: string, taskAdmission = ''): string {
+function claimReceiptAdmission(taskConjuncts: readonly string[] = []): string {
+  const receipt = 'runs'
+  const ownTaskConjuncts = taskConjuncts.map((conjunct) => `\n        AND ${conjunct}`).join('')
   return `(${storedPositiveClaimGeneration(receipt)}
     AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, receipt)}
     AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, receipt)}
@@ -170,14 +177,8 @@ function claimReceiptAdmission(receipt: string, taskAdmission = ''): string {
         AND ${durableTaskRetryAdmissible('t')}
         AND ${durableTaskHeadersAdmissible('t')}
         AND ${storedCurrentRunAccounting(receipt, 't')}
-        AND ${storedHighestOwnedOrdinal(receipt)}${taskAdmission}
+        AND ${storedHighestOwnedOrdinal(receipt)}${ownTaskConjuncts}
     ))`
-}
-
-/** `prepareWake`'s headroom guard as one conjunct, without the AND its text call sites need. */
-function wakeFitsConjunct(fits: string): string {
-  if (!fits.startsWith('AND ')) throw new Error('the wake headroom guard must start with AND')
-  return fits.slice('AND '.length)
 }
 
 /**
@@ -767,9 +768,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         runId,
         claimToken,
         claimGen: validClaimGen,
-        admission: sqlFragment(
-          claimReceiptAdmission('runs', `\n        AND ${activationDurationAdmissible('t', NOW)}`),
-        ),
+        admission: sqlFragment(claimReceiptAdmission([activationDurationAdmissible('t', NOW)])),
         leaseExpiresAt: sqlFragment(`${NOW} + lease_ms`),
         leaseFits: sqlFragment(epochAdditionFits(NOW, 'runs.lease_ms')),
       }),
@@ -1421,9 +1420,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
         runId,
         claimToken,
         claimGen: validClaimGen,
-        admission: sqlFragment(claimReceiptAdmission('runs')),
+        admission: sqlFragment(claimReceiptAdmission()),
         wakeAt: sqlFragment(wakePlan.expression, wakePlan.expressionArgs),
-        wakeFits: sqlFragment(wakeFitsConjunct(wakePlan.fits), wakePlan.fitArgs),
+        wakeFits: sqlFragment(wakePlan.fitsConjunct, wakePlan.fitArgs),
       }),
     )
     finishSuspension(b, runId)

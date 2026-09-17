@@ -7,7 +7,6 @@ import { treeBuilder } from '../store-tables.js'
  */
 export const completeCas = defineStatement(
   'complete',
-  { rawBooleans: 1 },
   (binds: {
     runId: string
     queue: string
@@ -33,5 +32,5 @@ export const completeCas = defineStatement(
       .where('queue', '=', binds.queue)
       .where('claimed_by', '=', binds.claimToken)
       .where('state', '=', 'running')
-      .where(rawSql<boolean>(binds.taskAdmitsCompletion)),
+      .where(rawSql<boolean>(binds.taskAdmitsCompletion, 'predicate')),
 )
