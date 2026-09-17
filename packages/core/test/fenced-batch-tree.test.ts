@@ -1476,6 +1476,98 @@ describe('FencedBatch tree statements', () => {
     expect(() => followOn(gatedBy(false))).toThrow(/not tied to the rows it reads or writes/)
   })
 
+  it('ties a subquery gate to the fenced source, and lets nothing widen it', () => {
+    // biome-ignore lint/suspicious/noExplicitAny: table types would not let a test write the shapes refused here
+    type Loose = any
+    const loose = compileOnlyBuilder<Loose>()
+    const gate = (eb: Loose) => eb('f.fence_stamp', '=', fenceValue('win'))
+    const tasks = (where: (eb: Loose) => Loose) =>
+      loose
+        .updateTable('tasks')
+        .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+        .where(where)
+    const keyIn = (keys: (eb: Loose) => Loose) => tasks((eb) => eb('task_id', 'in', keys(eb)))
+    const fenced = (eb: Loose) => eb.selectFrom('runs as f').where(gate)
+    const widened = (eb: Loose) => eb.selectFrom(['runs as f', 'tasks as t2']).where(gate)
+    const throughDerived = (inner: (eb: Loose) => Loose) =>
+      keyIn((eb) => eb.selectFrom(inner(eb).as('fenced_source')).select('source_key'))
+    const shapes: { shape: string; query: Builder; tied: boolean }[] = [
+      {
+        shape: 'IN selects a column of the fenced source',
+        query: keyIn((eb) => fenced(eb).select('f.task_id')),
+        tied: true,
+      },
+      {
+        shape: "IN selects a bound value, so the key is the caller's and not the fenced row's",
+        query: keyIn((eb) => fenced(eb).select(eb.val('t-victim').as('task_id'))),
+        tied: false,
+      },
+      {
+        shape: 'IN selects an expression over the fenced column',
+        query: keyIn((eb) => fenced(eb).select(eb('f.attempt', '+', 1).as('task_id'))),
+        tied: false,
+      },
+      {
+        shape: 'IN selects the key of a second FROM source',
+        query: keyIn((eb) => widened(eb).select('t2.task_id')),
+        tied: false,
+      },
+      {
+        shape: 'IN reads a second FROM source beside the fenced one',
+        query: keyIn((eb) => widened(eb).select('f.task_id')),
+        tied: false,
+      },
+      {
+        shape: 'IN selects the key of a joined source',
+        query: keyIn((eb) =>
+          fenced(eb).innerJoin('tasks as t2', 't2.queue', 'f.queue').select('t2.task_id'),
+        ),
+        tied: false,
+      },
+      {
+        shape: 'EXISTS equates the fenced source with the outer row',
+        query: tasks((eb) =>
+          eb.exists(fenced(eb).select('f.run_id').whereRef('f.task_id', '=', 'tasks.task_id')),
+        ),
+        tied: true,
+      },
+      {
+        shape: 'EXISTS equates a second inner source with the outer row',
+        query: tasks((eb) =>
+          eb.exists(widened(eb).select('f.run_id').whereRef('t2.task_id', '=', 'tasks.task_id')),
+        ),
+        tied: false,
+      },
+      {
+        shape: 'IN through a derived table that selects a column of the fenced source',
+        query: throughDerived((eb) => fenced(eb).select('f.task_id as source_key').distinct()),
+        tied: true,
+      },
+      {
+        shape: 'IN through a derived table that selects a bound value',
+        query: throughDerived((eb) =>
+          fenced(eb).select(eb.val('t-victim').as('source_key')).distinct(),
+        ),
+        tied: false,
+      },
+      {
+        shape: 'IN through a derived table over two FROM sources',
+        query: throughDerived((eb) => widened(eb).select('t2.task_id as source_key').distinct()),
+        tied: false,
+      },
+    ]
+    const decided = shapes.map(({ shape, query }) => {
+      try {
+        withCas().followOnTree('task', statement(query), { many: 'a test' })
+        return { shape, tied: true }
+      } catch (error) {
+        const untied = /not tied to the rows it reads or writes/.test(String(error))
+        return { shape, tied: untied ? false : String(error) }
+      }
+    })
+    expect(decided).toEqual(shapes.map(({ shape, tied }) => ({ shape, tied })))
+  })
+
   it('reads an open tail with every rule but the gate, and makes it say why', () => {
     const others = () => db.selectFrom('events').select('payload').where('queue', '=', 'q')
     expect(() => withCas().tailTree('read', statement(others()))).toThrow(/has no fence gating/)
