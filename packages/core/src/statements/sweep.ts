@@ -1,14 +1,8 @@
 import { REASON_CLAIM_TIMEOUT, REASON_RELAUNCH_CAP } from '../contract.js'
-import {
-  FENCE_ASSIGNMENTS,
-  type SqlFragment,
-  defineStatement,
-  nowValue,
-  rawSql,
-} from '../sql-tree.js'
+import { FENCE_ASSIGNMENTS, type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 import { PERSISTED_INTEGER_BOUNDS } from '../validate.js'
-import type { RunsUpdate } from './claimed-run.js'
+import { type RunsUpdate, failedRunColumns } from './claimed-run.js'
 import { PARKED_CLAIM_COLUMNS } from './park.js'
 
 /** The expired claim a sweep found: a run still running under the generation the scan read. */
@@ -74,11 +68,8 @@ export const capLostLaunchCas = defineStatement(
     treeBuilder
       .updateTable('runs')
       .set({
-        state: 'failed',
-        failed_at_ms: nowValue,
-        claimed_by: null,
+        ...failedRunColumns(REASON_RELAUNCH_CAP),
         claim_expires_at_ms: null,
-        failure_reason: REASON_RELAUNCH_CAP,
         ...FENCE_ASSIGNMENTS,
       })
       .$call(whereSweptClaim(binds))
@@ -99,10 +90,8 @@ export const failClaimTimeoutCas = defineStatement(
     treeBuilder
       .updateTable('runs')
       .set({
-        state: 'failed',
-        failed_at_ms: nowValue,
-        claimed_by: null,
-        failure_reason: REASON_CLAIM_TIMEOUT,
+        // No claim_expires_at_ms here: see failedRunColumns.
+        ...failedRunColumns(REASON_CLAIM_TIMEOUT),
         ...FENCE_ASSIGNMENTS,
       })
       .$call(whereSweptClaim(binds))

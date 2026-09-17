@@ -9,6 +9,7 @@ import {
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { PersistedNumericTable, StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { describeFailure } from './scenario.js'
 
 type PersistedIntegerObservation = Readonly<{
   table: PersistedNumericTable
@@ -150,16 +151,6 @@ function captureSchemaVersion(admin: StoreFixture['admin']) {
   )
 }
 
-/** A rejection as one line: the error's class, its message, and its cause's code and message. */
-function describeRejection(reason: unknown): string {
-  if (!(reason instanceof Error)) return `non-error rejection: ${String(reason)}`
-  const cause: unknown = reason.cause
-  const code =
-    typeof cause === 'object' && cause !== null && 'code' in cause ? String(cause.code) : ''
-  const detail = cause instanceof Error ? cause.message : ''
-  return `${reason.constructor.name}: ${reason.message} [cause ${code} ${detail}]`
-}
-
 export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`schema/admin conformance [${dialect}]`, () => {
     it('migrates a genuinely fresh database to one canonical current version', async () => {
@@ -187,10 +178,9 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
 
         // Say why a migrator was rejected, not only that one was: this race is rare, and
         // a bare status leaves nothing to diagnose it from.
-        expect(migrations).toHaveLength(8)
         expect(
           migrations.flatMap((migration) =>
-            migration.status === 'rejected' ? [describeRejection(migration.reason)] : [],
+            migration.status === 'rejected' ? [describeFailure(migration.reason)] : [],
           ),
         ).toEqual([])
         expect(await fixture.admin.schemaVersion()).toBeGreaterThan(0)

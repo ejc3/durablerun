@@ -2,8 +2,8 @@ import { expressionBuilder } from 'kysely'
 import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
-  aliasedAs,
   defineStatement,
+  insertedFrom,
   nowValue,
   rawSql,
 } from '../sql-tree.js'
@@ -38,8 +38,6 @@ export const spawnTaskCas = defineStatement(
     cancelFits: SqlFragment
   }) => {
     const eb = expressionBuilder<StoreTables, never>()
-    // One record, so a column and its value cannot fall out of step: the insert stamp
-    // rule reads the SELECT list by column position.
     const task = {
       task_id: eb.val(binds.taskId),
       queue: eb.val(binds.queue),
@@ -56,15 +54,13 @@ export const spawnTaskCas = defineStatement(
       created_at_ms: nowValue,
       ...FENCE_ASSIGNMENTS,
     }
-    const columns = Object.keys(task) as (keyof typeof task)[]
+    const { columns, selections } = insertedFrom(task)
     return treeBuilder
       .insertInto('tasks')
       .columns(columns)
       .expression(
         treeBuilder
-          .selectNoFrom(() =>
-            columns.map((column) => aliasedAs<unknown, typeof column>(task[column], column)),
-          )
+          .selectNoFrom(selections)
           .where(rawSql<boolean>(binds.identityFree, 'predicate'))
           .where(rawSql<boolean>(binds.enqueueFits, 'predicate'))
           .where(rawSql<boolean>(binds.cancelFits, 'predicate')),

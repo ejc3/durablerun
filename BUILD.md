@@ -910,6 +910,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     tree-path successors when the scanners are deleted, covering the statement
     grammar, fragment roles, gating, stamping, the clock, and counting
     assignments.
+  - Deferred to PR3.9e: `fragment-lint` and `clock-lint` scan store SQL text, and
+    a condition built from nodes in `packages/core/src/statements/` is outside
+    what a text lint can see. PR #41's review asked for the wider scope. Run
+    with core's statements in scope: a second definition of the live states
+    built from nodes passes `fragment-lint`, and the same list as SQL text in
+    that file is refused. So the wider scope would check nothing. The rules
+    that still matter, one definition of the live states among them, get a
+    tree-level form when the text path is deleted.
   - Deferred to PR3.9e: `sql-tree.ts` and `fenced-batch.ts` each scan string
     literals and parentheses. The text path's scanners are owned by its
     mutations and go when the text path goes, leaving the tree module's as the

@@ -584,8 +584,8 @@ jobs:
               repaired = reaim_consumer(repaired, candidate, 'checkpoint-write')
           elif digest == 'f0be18a687a12585b2ea36ab7aa3e23591f33a4ac1916c74be1f395a1aaef104':
               # Moving spawn's task insert and the two lease sweeps' compare-and-sets onto
-              # statement trees re-aimed these finds. Each keeps its name, its file, and
-              # the condition it removes.
+              # statement trees re-aimed these finds. The plain re-aim requires each
+              # entry's first three lines to be unchanged, which all sixteen satisfy.
               repaired = reaim(previous, candidate, (
                   'sweep-claim-timeout-rechecks-accounting',
                   'terminal-timeout-cas-admits-terminal-owner',

@@ -138,7 +138,11 @@ export function describeFailure(error: unknown): string {
   const lines: string[] = []
   let current: unknown = error
   for (let depth = 0; current !== undefined && depth < 8; depth++) {
-    lines.push(`${depth === 0 ? '' : 'caused by: '}${String(current)}`)
+    const code =
+      typeof current === 'object' && current !== null && 'code' in current
+        ? ` [${String(current.code)}]`
+        : ''
+    lines.push(`${depth === 0 ? '' : 'caused by: '}${String(current)}${code}`)
     current = current instanceof Error ? current.cause : undefined
   }
   return lines.join('\n')

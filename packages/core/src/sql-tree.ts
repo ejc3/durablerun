@@ -1044,6 +1044,23 @@ export function insertProvenance(tree: OperationNode): {
 }
 
 /**
+ * The columns and the SELECT list of an INSERT … SELECT, from one record, so a column and
+ * its value cannot fall out of step. The insert stamp rule reads the list by position.
+ */
+export function insertedFrom<R extends Record<string, Expression<unknown>>>(record: R) {
+  const columns = Object.keys(record) as (keyof R & string)[]
+  return {
+    columns,
+    selections: () =>
+      columns.map((column) => {
+        const value = record[column]
+        if (value === undefined) throw new Error(`insertedFrom: column '${column}' has no value`)
+        return aliasedAs<unknown, typeof column>(value, column)
+      }),
+  }
+}
+
+/**
  * The provenance every statement that stamps a row assigns: this statement's stamp, and
  * the batch's one clock.
  */

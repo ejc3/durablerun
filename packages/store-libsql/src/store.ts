@@ -502,12 +502,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // JSON scans. A task without max_delay binds NULL, and NULL propagates
     // through the addition, so its cancel_at_ms is NULL.
     //
-    // The NOT EXISTS on the primary key is what makes this a compare-and-set
-    // rather than a crash: the targeted ON CONFLICT covers the idempotency
-    // index only, so a colliding task_id raised a constraint error out of
-    // spawn instead of losing. Losing is the right answer — some other task
-    // already occupies that identity — and it is one the batch can reason
-    // about.
+    // The identity check is what makes a colliding task_id lose instead of
+    // raising: the statement's conflict clause covers the idempotency index
+    // only. Losing is the right answer, because some other task already
+    // occupies that identity, and it is one the batch can reason about.
     b.casTree(
       'task',
       spawnTaskCas({
@@ -971,6 +969,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
+    const launchLost = sqlFragment(guard)
     const relaunchDelayMs = `MIN(
       (relaunch_count + 1) * ${RELAUNCH_BACKOFF_BASE_SECONDS},
       ${RELAUNCH_BACKOFF_MAX_SECONDS}
@@ -993,7 +992,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'reopen',
       reopenLostLaunchCas({
         ...swept,
-        launchLost: sqlFragment(guard),
+        launchLost,
         availableAt: sqlFragment(`${NOW} + ${relaunchDelayMs}`),
         liveOwner: sqlFragment(liveOwner),
         backoffFits: sqlFragment(epochAdditionFits(NOW, relaunchDelayMs)),
@@ -1005,7 +1004,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       'cap',
       capLostLaunchCas({
         ...swept,
-        launchLost: sqlFragment(guard),
+        launchLost,
         owner: sqlFragment(`${liveOwner} OR ${terminalOwner}`),
       }),
     )
@@ -1057,15 +1056,14 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
+    const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     // Ownership CAS: the activated worker died (or was partitioned). Clearing
     // claimed_by kills the dead worker's token, so its zombie writes are
     // doubly fenced from here on.
     b.casTree(
       'fail',
       failClaimTimeoutCas({
-        queue,
-        runId: item.runId,
-        claimGen: item.claimGen,
+        ...swept,
         timedOut: sqlFragment(`activated_gen = claim_gen AND ${runClaimExpired('runs', NOW)}`),
         admission: sqlFragment(
           `EXISTS (
