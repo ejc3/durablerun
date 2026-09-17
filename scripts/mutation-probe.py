@@ -969,25 +969,25 @@ MUTATION_SPECS = [
     (
         "checkpoint-write-rejects-fractional-owner-attempt",
         "packages/store-libsql/src/store.ts",
-        "         AND state = 'running'\n"
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n",
-        "         AND state = 'running'\n"
-        "         AND runs.attempt BETWEEN ${RUN_INTEGER_BOUNDS.attempt.min}\n"
+        "          `${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n",
+        "          `runs.attempt BETWEEN ${RUN_INTEGER_BOUNDS.attempt.min}\n"
         "           AND ${RUN_INTEGER_BOUNDS.attempt.max}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n",
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n",
         "the checkpoint lease CAS accepts a fractional owner attempt before the follow-on refuses it",
     ),
     (
         "checkpoint-write-rejects-owner-attempt-overflow",
         "packages/store-libsql/src/store.ts",
-        "         AND state = 'running'\n"
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n",
-        "         AND state = 'running'\n"
-        "         AND ${storedInteger('runs.attempt')}\n"
+        "          `${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n",
+        "          `${storedInteger('runs.attempt')}\n"
         "         AND runs.attempt >= ${RUN_INTEGER_BOUNDS.attempt.min}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n",
+        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n",
         "the checkpoint lease CAS accepts an owner attempt above the protocol maximum",
     ),
     (
@@ -1738,16 +1738,13 @@ MUTATION_SPECS = [
     (
         "matrix-attempt-edge-progress",
         "packages/store-libsql/src/store.ts",
-        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND EXISTS (\n"
+        "        failureJson,\n"
+        "        admission: sqlFragment(\n"
+        "          `EXISTS (\n"
         "           SELECT 1 FROM tasks t\n",
-        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND run_id <> 'edge-run'\n"
-        "         AND EXISTS (\n"
+        "        failureJson,\n"
+        "        admission: sqlFragment(\n"
+        "          `run_id <> 'edge-run' AND EXISTS (\n"
         "           SELECT 1 FROM tasks t\n",
         "the generated fault cell fires its label while the seeded attempt-cap edge never crosses",
     ),
@@ -1837,16 +1834,13 @@ MUTATION_SPECS = [
     (
         "provenance-fail-progress",
         "packages/store-libsql/src/store.ts",
-        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND EXISTS (\n"
+        "        failureJson,\n"
+        "        admission: sqlFragment(\n"
+        "          `EXISTS (\n"
         "           SELECT 1 FROM tasks t\n",
-        "         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,\n"
-        "         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}\n"
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND run_id <> 'prov-fail-run'\n"
-        "         AND EXISTS (\n"
+        "        failureJson,\n"
+        "        admission: sqlFragment(\n"
+        "          `run_id <> 'prov-fail-run' AND EXISTS (\n"
         "           SELECT 1 FROM tasks t\n",
         "the replay regression accepts a failure delivery that never fails its run",
     ),
@@ -2439,14 +2433,14 @@ MUTATION_SPECS = [
     (
         "set-checkpoint-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
         "         AND EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})\n"
-        "         AND ${validCheckpointConflict('runs', '?')}\n",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "          [checkpointName],\n",
         "         AND EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})\n"
-        "         AND ${validCheckpointConflict('runs', '?')}\n",
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "          [checkpointName],\n",
         "setCheckpoint extends and writes through a run whose task crossed the immutable queue boundary",
     ),
     (
@@ -2470,10 +2464,8 @@ MUTATION_SPECS = [
     (
         "cancel-task-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}\n"
-        "         AND ${taskOwnsEveryRun('tasks')}`",
-        "       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}\n"
-        "         AND 1 = 1`",
+        "        admission: sqlFragment(`${deadlineGuard}${taskOwnsEveryRun('tasks')}`),\n",
+        "        admission: sqlFragment(`${deadlineGuard}1 = 1`),\n",
         "cancelTask terminalizes a task while one of its runs belongs to another queue",
     ),
     (
@@ -2490,8 +2482,8 @@ MUTATION_SPECS = [
     (
         "retry-task-requires-failed-task",
         "packages/store-libsql/src/store.ts",
-        "       WHERE task_id = ? AND queue = ? AND state = 'failed'\n",
-        "       WHERE task_id = ? AND queue = ? AND state IN ('failed', 'cancelled')\n",
+        "          `state = 'failed'\n",
+        "          `state IN ('failed', 'cancelled')\n",
         "retryTask revives a cancelled task",
     ),
     (
@@ -2504,8 +2496,8 @@ MUTATION_SPECS = [
     (
         "retry-task-charges-unaccounted-top-run",
         "packages/store-libsql/src/store.ts",
-        "         attempts = ${charged},\n",
-        "         attempts = attempts,\n",
+        "        charged: sqlFragment(charged),\n",
+        "        charged: sqlFragment('attempts'),\n",
         "retryTask leaves a relaunch-capped run uncharged, so the revival run is not the next accounted ordinal",
     ),
     (
@@ -2644,9 +2636,8 @@ MUTATION_SPECS = [
 CHECKPOINT_CONFLICT_CONSUMERS = (
     (
         "checkpoint-write",
-        "\n"
-        "         AND ${epochAdditionFits(NOW, '?')}`,\n"
-        "      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],",
+        "`,\n"
+        "          [checkpointName],",
     ),
     (
         "suspend",
@@ -2899,10 +2890,9 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "checkpoint-lease",
         "checkpoint lease deadline",
-        "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         AND ${epochAdditionFits(NOW, '?')}`",
+        "        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),",
         "epochAdditionFits(NOW, '?')",
-        "         claim_expires_at_ms = ${NOW} + ?, heartbeat_at_ms = ${NOW}, ${FENCE_SET}\n",
+        "        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [extendMs]),",
         "${NOW} + ?",
     ),
     (
@@ -3319,9 +3309,9 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-cancel-rechecks-deadline-bound",
         "packages/store-libsql/src/store.ts",
-        "    const deadlineGuard = deadlineOnly ? `AND ${cancelDue('tasks', NOW)}` : ''",
+        "    const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''",
         '    const deadlineGuard = deadlineOnly\n'
-        '      ? `AND ${cancelDue(\'tasks\', NOW).replace(" BETWEEN 0 AND ", " <= ")}`\n'
+        '      ? `${cancelDue(\'tasks\', NOW).replace(" BETWEEN 0 AND ", " <= ")} AND `\n'
         "      : ''",
         "deadline cancellation rechecks its bound after discovery",
         "the cancellation CAS accepts a negative deadline after its advisory scan",
