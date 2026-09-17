@@ -61,7 +61,11 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@26.1.1)(tsx@4.23.1)(yaml@2.9.0)
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      kysely:
+        specifier: 0.29.5
+        version: 0.29.5
 
   packages/driver:
     dependencies:
@@ -119,12 +123,18 @@ importers:
       '@libsql/client':
         specifier: ^0.15.0
         version: 0.15.15
+      kysely:
+        specifier: 0.29.5
+        version: 0.29.5
 
   packages/store-postgres:
     dependencies:
       '@durablerun/core':
         specifier: workspace:*
         version: link:../core
+      kysely:
+        specifier: 0.29.5
+        version: 0.29.5
       pg:
         specifier: ^8.23.0
         version: 8.23.0
@@ -682,6 +692,10 @@ packages:
 
   js-tokens@9.0.1:
     resolution: {integrity: sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==}
+
+  kysely@0.29.5:
+    resolution: {integrity: sha512-ooa+eSbBNPTo3MycPEuW5jdrxQdQwdtB3LC3h43FiXQbIry5tR0C5lDG7eealK0E4D7XjrnOP5DIUg/LyjRMYQ==}
+    engines: {node: '>=22.0.0'}
 
   libsql@0.5.29:
     resolution: {integrity: sha512-8lMP8iMgiBzzoNbAPQ59qdVcj6UaE/Vnm+fiwX4doX4Narook0a4GPKWBEv+CR8a1OwbfkgL18uBfBjWdF0Fzg==}
@@ -1354,6 +1368,8 @@ snapshots:
   js-base64@3.9.1: {}
 
   js-tokens@9.0.1: {}
+
+  kysely@0.29.5: {}
 
   libsql@0.5.29:
     dependencies:

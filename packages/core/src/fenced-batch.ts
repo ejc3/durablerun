@@ -20,6 +20,17 @@ import type {
   SqlStatement,
   SqlTransactionLock,
 } from './primitives.js'
+import {
+  type StatementTree,
+  type TreeDialect,
+  blindCounters,
+  compileTree,
+  gatingFences,
+  namedFences,
+  readsClock,
+  statementTable,
+  writesStampAssignments,
+} from './sql-tree.js'
 
 /**
  * Structural enforcement of DESIGN.md §3.4 rules 1, 2 and 8.
@@ -173,6 +184,13 @@ interface Named {
   fence: { target: FenceTable; sealedBy: string | null } | null
   rows: RowBound | null
   max: number | null
+  /** Present for a statement built as a tree; `sql` is then its compiled text. */
+  tree?: StatementTree
+}
+
+/** A query builder, or anything else that yields a statement tree. */
+export interface StatementBuilder {
+  toOperationNode(): StatementTree
 }
 
 interface GeneratedUpdate {
@@ -239,6 +257,7 @@ export class FencedBatch {
   private readonly statements: Named[] = []
   private readonly transactionLocks: SqlTransactionLock[] = []
   private readonly now: string
+  private readonly tree: TreeDialect | null
 
   /**
    * @param label the batch's tracing and fault-injection address
@@ -248,7 +267,7 @@ export class FencedBatch {
   constructor(
     readonly label: string,
     readonly seed: string,
-    opts: { now: string },
+    opts: { now: string; tree?: TreeDialect },
   ) {
     // $NOW$ is spliced as raw SQL, so a bind inside it would desynchronize
     // every arg list in the batch.
@@ -258,6 +277,7 @@ export class FencedBatch {
       )
     }
     this.now = opts.now
+    this.tree = opts.tree ?? null
     // The source audit proves that callers constructed this exact class, but
     // JavaScript reflection could otherwise replace run() after construction
     // and turn an already-authorized binding into an arbitrary executor door.
@@ -635,6 +655,120 @@ export class FencedBatch {
     })
   }
 
+  /** `cas`, built as a tree. The tree must assign the stamp and the clock to `target`. */
+  casTree(name: string, target: FenceTable, builder: StatementBuilder): this {
+    return this.addTree({ name, kind: 'cas', target, rows: 'one', max: 1 }, builder)
+  }
+
+  /** `followOn`, built as a tree. Pass `target` when it stamps the rows it writes. */
+  followOnTree(
+    name: string,
+    target: FenceTable | null,
+    builder: StatementBuilder,
+    rows: RowBound,
+  ): this {
+    return this.addTree({ name, kind: 'followOn', target, rows, max: null }, builder)
+  }
+
+  /** `tail`, built as a tree. */
+  tailTree(name: string, builder: StatementBuilder): this {
+    return this.addTree({ name, kind: 'tail', target: null, rows: null, max: null }, builder)
+  }
+
+  /**
+   * The tree twin of `add`. Every check reads the tree: which fences gate the written
+   * rows, whether the clock token appears, which assignments count blindly, and which
+   * table receives the stamp. The compiled text is checked once more for the dialect's
+   * clock expression, so a raw fragment cannot smuggle the clock into a follow-on.
+   */
+  private addTree(
+    s: {
+      name: string
+      kind: Kind
+      target: FenceTable | null
+      rows: RowBound | null
+      max: number | null
+    },
+    builder: StatementBuilder,
+  ): this {
+    const { name, kind, target } = s
+    const at = `FencedBatch[${this.label}] ${kind} '${name}'`
+    if (this.tree === null) {
+      throw new Error(`${at} is a tree statement, but the batch has no tree dialect`)
+    }
+    if (
+      this.transactionLocks.length !== 0 &&
+      this.statements.length === 0 &&
+      kind !== 'cas' &&
+      kind !== 'casMany'
+    ) {
+      throw new Error(
+        `FencedBatch[${this.label}] transaction lock must be followed immediately by a CAS`,
+      )
+    }
+    if (!isFenceStatementName(name)) {
+      throw new Error(`${at}: name must match ^${FENCE_STATEMENT_NAME_SOURCE}$`)
+    }
+    if (this.statements.some((x) => x.name === name)) {
+      throw new Error(`FencedBatch[${this.label}] duplicate statement name '${name}'`)
+    }
+    const tree = builder.toOperationNode()
+    for (const fence of namedFences(tree)) {
+      this.requireFenceSource(fence, `the fence token for '${fence}'`)
+    }
+    const isCas = kind === 'cas' || kind === 'casMany'
+    if (kind === 'tail') {
+      if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)
+    } else {
+      if (tree.kind === 'InsertQueryNode') {
+        throw new Error(`${at}: tree INSERT statements are not supported yet`)
+      }
+      if (target !== null) {
+        if (statementTable(tree) !== target) {
+          throw new Error(`${at} declares target '${target}' but does not write to it`)
+        }
+        const stamp = writesStampAssignments(tree)
+        if (!stamp.stamp || (isCas && !stamp.clockInstant) || (!isCas && !stamp.instant)) {
+          throw new Error(
+            isCas
+              ? `${at} must assign fence_stamp the stamp and fence_at_ms the clock on ${target} (§3.4 rule 8)`
+              : `${at} writes ${target} but does not stamp it — assign fence_stamp the stamp and derive fence_at_ms from the fenced row`,
+          )
+        }
+      }
+    }
+    if (!isCas && gatingFences(tree).length === 0) {
+      throw new Error(
+        `${at} has no fence gating every row it reads or writes — a top-level WHERE conjunct must be fence_stamp = fence('<a cas of this batch>') (§3.4 rule 1)`,
+      )
+    }
+    const probe = compileTree(this.tree, tree, { stamp: '', fence: () => '' })
+    if (
+      !isCas &&
+      (readsClock(tree) || probe.sql.includes(this.now) || probe.sql.includes(this.tree.now))
+    ) {
+      throw new Error(
+        `${at} reads the clock — only a CAS may, and every later statement derives its instants from the fence_at_ms the CAS recorded (§3.4 rule 8)`,
+      )
+    }
+    if (kind === 'followOn' && blindCounters(tree).length !== 0) {
+      throw new Error(
+        `${at} bumps a counter blindly (x = x + n) — an exact replay of this batch re-matches its own stamped rows and counts twice; derive the value from the winning row's post-state instead`,
+      )
+    }
+    this.statements.push({
+      name,
+      sql: probe.sql,
+      args: [],
+      kind,
+      fence: target === null ? null : { target, sealedBy: null },
+      rows: s.rows,
+      max: s.max,
+      tree,
+    })
+    return this
+  }
+
   private add(s: {
     name: string
     sql: string
@@ -814,6 +948,7 @@ export class FencedBatch {
    * and consumes no argument slot; the other three each bind one value.
    */
   private compile(s: Named): SqlStatement {
+    if (s.tree !== undefined) return this.compileTreeStatement(s, s.tree)
     const tokens = new RegExp(
       `\\?|\\$STAMP\\$|\\$NOW\\$|\\$FENCE:${FENCE_STATEMENT_NAME_SOURCE}\\$`,
       'g',
@@ -867,6 +1002,31 @@ export class FencedBatch {
       )
     }
     return { sql: out, args }
+  }
+
+  private compileTreeStatement(s: Named, tree: StatementTree): SqlStatement {
+    const dialect = this.tree as TreeDialect
+    const compiled = compileTree(dialect, tree, {
+      stamp: `${this.seed}:${s.name}`,
+      fence: (name) => `${this.seed}:${name}`,
+    })
+    const args: (string | number | bigint | Uint8Array | null)[] = []
+    compiled.parameters.forEach((value, index) => {
+      if (
+        value === null ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'bigint' ||
+        value instanceof Uint8Array
+      ) {
+        args.push(value)
+        return
+      }
+      throw bindCompilationError(
+        `FencedBatch[${this.label}] '${s.name}' argument ${index} is ${value === undefined ? 'undefined' : typeof value} — bind a string, number, bigint, bytes, or null`,
+      )
+    })
+    return { sql: compiled.sql, args }
   }
 }
 
