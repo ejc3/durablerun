@@ -401,6 +401,32 @@ describe('FencedBatch tree statements', () => {
       db.updateTable('runs').set({ state: 'completed' }).where('run_id', '=', 'r1'),
     )
     expect(() => unplaced({ admission: sqlFragment('1 = 1') })).toThrow(/never places/)
+
+    // Placement is per statement build. A fragment another statement placed, or one
+    // object passed as two binds with one placed, is still unplaced here.
+    const placing = defineStatement('placing', (binds: { admission: SqlFragment }) =>
+      db
+        .updateTable('runs')
+        .set({ state: 'completed' })
+        .where(rawSql<boolean>(binds.admission, 'predicate')),
+    )
+    const shared = sqlFragment('1 = 1')
+    placing({ admission: shared })
+    expect(() => unplaced({ admission: shared })).toThrow(/bind 'admission' is a fragment/)
+    const half = defineStatement('half', (binds: { first: SqlFragment; second: SqlFragment }) =>
+      db
+        .updateTable('runs')
+        .set({ state: 'completed' })
+        .where(rawSql<boolean>(binds.first, 'predicate')),
+    )
+    expect(() => half({ first: shared, second: shared })).toThrow(/bind 'second' is a fragment/)
+    const twice = defineStatement('twice', (binds: { wakeAt: SqlFragment }) =>
+      db
+        .updateTable('runs')
+        .set({ available_at_ms: rawSql<number>(binds.wakeAt, 'value') })
+        .where(rawSql<boolean>(binds.wakeAt, 'predicate')),
+    )
+    expect(() => twice({ wakeAt: sqlFragment('1') })).not.toThrow()
   })
 
   it('builds a generated follow-on while task code has replaced the global Set', () => {
