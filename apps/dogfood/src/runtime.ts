@@ -85,6 +85,7 @@ const DOGFOOD_WORKER_DISPOSITIONS = {
   'lease-lost': 'infrastructure',
   cancelled: 'task',
   aborted: 'infrastructure',
+  'incompatible-store': 'infrastructure',
   deferred: 'task',
 } as const satisfies Record<WorkerOutcome['kind'], DogfoodWorkerDisposition>
 

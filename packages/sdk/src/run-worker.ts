@@ -6,6 +6,7 @@ import {
   parseTaskValueJson,
   serializeTaskValue,
   snapshotTaskThrowable,
+  claimedRunAnswerProblem,
 } from '@durablerun/core'
 import { type LeaseEndLatch, ReplayContext, type TaskContext } from './context.js'
 import {
@@ -22,7 +23,6 @@ import {
   createTaskControlScope,
   trustedStoreControl,
 } from './task-control.js'
-import { claimedRunAnswerProblem } from './store-answers.js'
 
 /** A registered durable task function. Params arrive parsed from JSON. */
 export type TaskHandler = (ctx: TaskContext, params: unknown) => Promise<unknown>
@@ -48,7 +48,10 @@ export type WorkerOutcome =
   //   correct either way (fences + sweep), but do not read 'aborted' as
   //   proof that nothing changed.
   | { kind: 'deferred' } // unknown task name: parked untouched for a
-//                        worker build that knows it (rolling deploys)
+  //                        worker build that knows it (rolling deploys)
+  | { kind: 'incompatible-store'; field: string } // the activation answer lacks or
+//   malforms a field this worker reads: no user code ran and nothing was written, so
+//   the lease story recovers the run for a compatible build, charged as infrastructure
 
 /** The launch fields a worker needs: the ids of one claim. */
 export type RunInvocation = Pick<LaunchInvocation, 'queue' | 'runId' | 'claimToken' | 'claimGen'>
@@ -147,11 +150,18 @@ export async function runClaimedRun(
     return { kind: 'deferred' }
   }
 
-  const run = await store.activate(queue, runId, claimToken, claimGen)
+  let run: Awaited<ReturnType<SchedulerStore['activate']>>
+  try {
+    run = await store.activate(queue, runId, claimToken, claimGen)
+  } catch (error) {
+    return trustedStoreOutcome(error)
+  }
   if (run === null) return { kind: 'superseded' }
-  // A store built from another commit may answer without a field this worker needs.
-  // Refuse before any user code runs: the lease story recovers the run.
-  if (claimedRunAnswerProblem(run) !== undefined) return { kind: 'aborted' }
+  // A store built from another commit may answer without a field this worker reads,
+  // or with a malformed one. Refuse before any user code runs, naming the field.
+  const incompatibleField = claimedRunAnswerProblem(run)
+  if (incompatibleField !== undefined)
+    return { kind: 'incompatible-store', field: incompatibleField }
   const claimedRun = run
   const userAttempt = claimedRun.attempt - claimedRun.infraRetries
 

@@ -1,4 +1,5 @@
 import {
+  CLAIMED_RUN_ANSWER_FIELDS,
   type ClaimedRun,
   type LeaseState,
   type SchedulerStore,
@@ -7,7 +8,6 @@ import {
 import { withStoreOverrides } from '@durablerun/harness'
 import { describe, expect, it } from 'vitest'
 import { runClaimedRun } from '../src/index.js'
-import { CLAIMED_RUN_ANSWER_FIELDS } from '../src/store-answers.js'
 import { claimAndRun, claimInvocation, fx, registry } from './worker-harness.js'
 
 const Q = 'q'
@@ -128,8 +128,10 @@ async function observe(
     if (outcome === 'completed' || handlerRan) return observation
     let recovered = false
     try {
+      // Past the lease, then past the successor's or relaunch's backoff.
       await f.advance(61_000)
       await f.store.sweep(Q, 10)
+      await f.advance(300_000)
       const recovery = await claimAndRun(f, registry({ job: async () => 'done' }), 'w2')
       recovered =
         recovery.kind === 'completed' &&
