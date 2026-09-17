@@ -37,6 +37,7 @@ import {
   type TaskResult,
   type WakeSpec,
   clampLimit,
+  completeCas,
   decodeBoundedInteger,
   decodeTaskResult,
   durationToMs,
@@ -89,6 +90,7 @@ import {
 } from './fragments.js'
 import { DRIVER_HEARTBEAT_INGRESS } from './schema.js'
 import { NOW_MS } from './time.js'
+import { TREE_DIALECT } from './tree.js'
 
 const DEFAULT_RETRY = normalizeRetryStrategy({
   kind: 'exponential',
@@ -381,6 +383,14 @@ LIMIT ?`
  * sequential issuance.
  */
 const SWEEP_PIPELINE_WIDTH = 8
+
+/** The task still admits this run's completion: it is already terminal, or this is its only live run. */
+const TASK_ADMITS_COMPLETION = `EXISTS (
+  SELECT 1 FROM tasks t
+  WHERE ${runOwnedByTask('runs', 't')}
+    AND (t.state NOT IN ${LIVE}
+      OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
+)`
 
 /**
  * SchedulerStore on SQLite/libsql (DESIGN.md §3.4). Every method is ONE
@@ -1566,22 +1576,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     resultJson: string,
   ): Promise<void> {
-    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS })
-    b.cas(
+    const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.casTree(
       'complete',
-      'runs',
-      `UPDATE runs SET
-         state = 'completed', completed_at_ms = ${NOW}, result = ?,
-         wake_event = NULL, event_payload = NULL, wake_step = NULL,
-         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND EXISTS (
-           SELECT 1 FROM tasks t
-           WHERE ${runOwnedByTask('runs', 't')}
-             AND (t.state NOT IN ${LIVE}
-               OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
-         )`,
-      [resultJson, runId, queue, claimToken],
+      completeCas({
+        runId,
+        queue,
+        claimToken,
+        resultJson,
+        taskAdmitsCompletionSql: TASK_ADMITS_COMPLETION,
+      }),
     )
     b.derived('task', {
       relation: 'runs-to-tasks',

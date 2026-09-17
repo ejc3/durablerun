@@ -46,6 +46,7 @@
   },
   "dependencies": {
     "@durablerun/core": "workspace:*",
-    "@libsql/client": "^0.15.0"
+    "@libsql/client": "^0.15.0",
+    "kysely": "0.29.5"
   }
 }

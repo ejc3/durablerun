@@ -43,5 +43,8 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "prepack": "pnpm run build",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "kysely": "0.29.5"
   }
 }

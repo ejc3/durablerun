@@ -677,6 +677,40 @@ are load-bearing):
    and otherwise the idempotency leg may return only the same-queue winner. A
    foreign task-id collision with no same-queue winner is an unexplained loss
    and aborts rather than becoming a receipt.
+   **Statements as trees.** A batch statement may be a Kysely operation tree.
+   Core defines such a statement once for every dialect with `defineStatement`,
+   which refuses an undefined bind, and a store supplies only its compiler and
+   the SQL fragments it owns. Kysely compiles and never connects. The stamp,
+   the clock, and a fence are value nodes holding engine sentinel objects, so
+   `FencedBatch` decides by node identity and position inside a closed
+   statement grammar: a node kind or clause the grammar does not list is
+   refused, which excludes common table expressions, RETURNING,
+   `UPDATE … FROM`, writes below the root, and schema-qualified tables.
+   - A follow-on or tail needs a top-level WHERE conjunct that is itself
+     `fence_stamp = <fence>`, or that requires a row from a subquery gated the
+     same way, and the fence must stamp the table whose `fence_stamp` it is
+     compared with. This decides position, not correlation: an uncorrelated
+     gated subquery proves only that the batch won.
+   - An update of a provenance-carrying table assigns the stamp and the
+     instant once each, and a compare-and-set takes its instant from the clock
+     token. The rule reads the table the tree writes, not a declaration.
+   - Only a compare-and-set may hold the clock token. Raw fragment text is the
+     one thing a tree cannot read, so it is scanned for the batch clock's text
+     and for the clock spellings `scripts/clock-lint.py` lists. That scan is a
+     spelling proxy, confined to raw text.
+   - A follow-on may not assign a column a value that combines that column
+     with an arithmetic or concatenation operator, or that hides it in a raw
+     fragment.
+   - A statement declares its raw boolean fragments, and the count is checked
+     against the tree. Compiled placeholders must equal bound arguments, so a
+     raw fragment cannot add a `?`.
+   - A tree statement compiles once, when it is added, so what was checked is
+     what runs.
+
+   `packages/conformance/corpus` records every statement a tree-built label
+   compiles to, per dialect, and a conformance case compares the builder's
+   column descriptor with every dialect's catalog. Until PR3.9e, text
+   statements keep their textual scanners.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:

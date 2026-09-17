@@ -2198,14 +2198,10 @@ MUTATION_SPECS = [
     (
         "complete-terminalization-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
-        "             AND (t.state NOT IN ${LIVE}\n"
-        "               OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))\n"
-        "         )`,\n"
-        "      [resultJson, runId, queue, claimToken],",
-        "             AND (t.state NOT IN ${LIVE}\n"
-        "               OR (t.state IN ${LIVE} AND 1 = 1))\n"
-        "         )`,\n"
-        "      [resultJson, runId, queue, claimToken],",
+        "      OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))\n"
+        ")`\n",
+        "      OR (t.state IN ${LIVE} AND 1 = 1))\n"
+        ")`\n",
         "complete terminalizes a task while another live run still owns it",
     ),
     (

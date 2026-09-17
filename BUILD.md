@@ -826,7 +826,44 @@ these three things; nothing else in the system does I/O, time, or randomness.
   limit is written down: it can only find a wrong DECISION about rows it
   constructs, never a wrong payload, and never a row shape nobody thought of.
 
-- **PR3.9 compile the SQL instead of scanning it** (candidate, not started).
+- **PR3.9 compile the SQL instead of scanning it** (in progress, five PRs).
+  Thirteen operations across two dialects, plus about 170 registered mutations
+  whose finds quote store SQL, do not fit one reviewable PR, so it lands in five.
+  Until PR3.9e, a batch may hold both tree statements, checked as trees, and
+  text statements, still checked by the scanners.
+  - PR3.9a: the tree layer in core. Engine tokens are value nodes carrying
+    sentinel objects, and `FencedBatch` checks a tree statement by node identity
+    and position inside a closed statement grammar. Statements are defined once
+    in core for every dialect with `defineStatement`, and a store supplies only
+    its compiler, which keeps the executor's `?` binds, and its SQL fragments. A
+    generated corpus starts, a conformance case checks the builder's column
+    descriptor against every dialect's catalog, and `complete`'s compare-and-set
+    moves to a tree.
+  - PR3.9b: claim, activation, and `deferLaunch`, with the one admission
+    fragment deferred below.
+  - PR3.9c: suspend, reschedule, await-event, and emit-event.
+  - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
+    and spawn.
+  - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
+    corpus enrolled from label and variant descriptors, and the text scanners
+    and the lint rules they make redundant deleted.
+  - Deferred to PR3.9b and PR3.9c: `wake-witness-surface.test.ts` and
+    `query-plans.test.ts` match `UPDATE runs` in upper case, so they fail loudly
+    when emit-event and claim compile from trees and must follow the compiled
+    spelling then.
+  - Deferred to PR3.9e, from `postmortems/pr3.9a-statement-trees-review.md`: a
+    tree's gating rule decides position, not correlation, so a follow-on gated by
+    an uncorrelated subquery may write a row the fenced run does not own. The
+    generated `derived()` selections are correlated by construction, and the text
+    path has the same residual today.
+  - Deferred to PR3.9d: the task outcome columns join `STORE_TABLE_COLUMNS` when
+    a tree statement first writes them, with the outcome lint's allowance
+    extended to core's `statements/` directory.
+  - Option, not scheduled: load compiled statements from the generated corpus at
+    run time, so Kysely becomes a build-time dependency. Importing Kysely
+    unbundled measured about 65 ms per cold start, beside about 72 ms for
+    `@libsql/client`, and about 9 ms once bundled. Every engine process loads a
+    store, so moving the tree code to a core subpath would not avoid the import.
   Every recurring defect in this engine's history is the same shape: a checker
   that matches one way of WRITING a condition and misses an equivalent one.
   `NOT EXISTS (` was recognised and `NOT (EXISTS (` was not; `x = x + 1` was and

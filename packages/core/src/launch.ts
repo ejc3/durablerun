@@ -1,6 +1,6 @@
 import type { Ending, SchedulerStore } from './ports.js'
-import type { LaunchIdentity } from './types.js'
 import type { LaunchInvocation } from './ports.js'
+import type { LaunchIdentity } from './types.js'
 import { requirePositiveClaimGeneration } from './validate.js'
 
 type LaunchPayload =
