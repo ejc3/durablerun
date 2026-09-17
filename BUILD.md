@@ -951,8 +951,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
     since emit-event's conflict arm became nodes. It stays while the text path
     and its checks stay, and goes with them. The stores' `fenced` and
-    `fenceFrom` fragment helpers have no caller since part 2 moved the emit's
-    wake, and go the same way.
+    `fenceFrom` fragment helpers lost their last caller when part 2 moved the
+    emit's wake, and part 2's review deleted them.
   - Deferred to PR3.9e: the tree path has no registered mutations of its own.
     The thirty mutations that own the text scanners in `fenced-batch.ts` get
     tree-path successors when the scanners are deleted, covering the statement

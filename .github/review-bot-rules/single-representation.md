@@ -57,7 +57,7 @@ Report a failure when the changed code introduces or materially expands any of t
 - **A contract value or derived quantity respelled where a single definition is importable.**
   `RELAUNCH_CAP`, `INFRA_RETRY_CAP`, `INFRA_BACKOFF_SECONDS`, `RELAUNCH_BACKOFF_*`, `REASON_*`,
   `FENCED_TABLES` (`packages/core/src/contract.ts`); `LIVE`, `QUEUED`, `eligibleTask`, `cancelDue`,
-  `successorOwned` (the immutable run/task/attempt identity), `fenced`/`fencedAt`/`fenceFrom`
+  `successorOwned` (the immutable run/task/attempt identity), `fencedAt`
   (`packages/store-libsql/src/fragments.ts`);
   `USER_ATTEMPTS_FROM`, `INFRA_RETRIES_FROM` (`store.ts`); `checkpointWrite`, the one checkpoint upsert and its last-writer-wins arm, and
   `insertedRun`, the one record every run insert is built from, and `CLAIMED_RUN_SELECTION`,
