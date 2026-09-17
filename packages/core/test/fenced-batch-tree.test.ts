@@ -828,23 +828,24 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('event', statement(anyIndex))).toThrow(/names no columns/)
   })
 
+  const taskInsert = () =>
+    db.insertInto('tasks').values({
+      task_id: 't1',
+      queue: 'q',
+      task_name: 'job',
+      params: '{}',
+      retry_strategy: '{}',
+      max_attempts: 1,
+      state: 'pending',
+      attempts: 0,
+      infra_retries: 0,
+      enqueue_at_ms: nowValue,
+      created_at_ms: nowValue,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    })
+
   it('allows a conflict target narrowed by a partial-index predicate, and no other kind of target', async () => {
-    const taskInsert = () =>
-      db.insertInto('tasks').values({
-        task_id: 't1',
-        queue: 'q',
-        task_name: 'job',
-        params: '{}',
-        retry_strategy: '{}',
-        max_attempts: 1,
-        state: 'pending',
-        attempts: 0,
-        infra_retries: 0,
-        enqueue_at_ms: nowValue,
-        created_at_ms: nowValue,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
-      })
     const partial = taskInsert().onConflict((conflict) =>
       conflict
         .columns(['queue', 'idempotency_key'])
@@ -868,6 +869,22 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('task', statement(byExpression))).toThrow(/names no columns/)
   })
 
+  it('refuses an index predicate that holds a bind or a fragment', () => {
+    // A partial index is matched by its predicate's text. SQLite refuses a predicate
+    // with a parameter in it, and PostgreSQL accepts one, so a bound predicate is a
+    // statement that runs on one dialect and fails on the other.
+    const bound = taskInsert().onConflict((conflict) =>
+      conflict.columns(['queue', 'idempotency_key']).where('state', '=', 'pending').doNothing(),
+    )
+    expect(() => batch().casTree('task', statement(bound))).toThrow(/index predicate/)
+    const opaque = taskInsert().onConflict((conflict) =>
+      conflict
+        .columns(['queue', 'idempotency_key'])
+        .where(predicate('idempotency_key IS NOT NULL'))
+        .doNothing(),
+    )
+    expect(() => batch().casTree('task', statement(opaque))).toThrow(/index predicate/)
+  })
   it('refuses an INSERT … SELECT with ON CONFLICT and no WHERE', () => {
     // SQLite reads the ON of an unguarded SELECT's conflict clause as a join constraint.
     const unguarded = db
