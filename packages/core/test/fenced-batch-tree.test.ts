@@ -1547,6 +1547,19 @@ describe('FencedBatch tree statements', () => {
       expect(() =>
         followOn(checkpoint({ owner: (eb) => eb.ref('excluded.owner_attempt') })),
       ).not.toThrow()
+      // `excluded` is the incoming row, never the row being written, so arithmetic on it
+      // counts nothing twice, in nodes or in a fragment.
+      expect(() =>
+        followOn(checkpoint({ owner: (eb) => eb('excluded.owner_attempt', '+', 1) })),
+      ).not.toThrow()
+      expect(() =>
+        followOn(checkpoint({ owner: () => value<number>('excluded.owner_attempt + 1') })),
+      ).not.toThrow()
+      refused(checkpoint({ owner: (eb) => eb('owner_attempt', '+', 1) }), /bumps a counter blindly/)
+      refused(
+        checkpoint({ owner: () => value<number>('excluded.owner_attempt + owner_attempt') }),
+        /raw fragment that mentions 'owner_attempt'/,
+      )
       refused(
         checkpoint({ owner: (eb) => eb('checkpoints.owner_attempt', '+', 1) }),
         /bumps a counter blindly/,
