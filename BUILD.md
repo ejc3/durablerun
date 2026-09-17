@@ -878,10 +878,27 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads its own column and so is built from nodes. A fragment may carry a
     fence token as a node. The grammar gains DISTINCT, and gating reads
     through one derived table and never through an aggregate with no GROUP BY.
-    Part 2: the hand-written follow-ons and tails as trees. Part 3: the text
-    path and its scanners deleted, registered mutations for the tree checks,
-    one pass over the tree for all checks, the corpus enrolled from label and
-    variant descriptors, and the bridge as one table of pinned file pairs.
+    Part 2: the hand-written follow-ons and tails as trees. Part 3 opens with
+    registered mutations for the tree checks, as its own PR, before the text
+    path is deleted. Part 1's review round,
+    `postmortems/pr3.9e-part1-review.md`, is the third running whose findings
+    trace to one cause: the corpus proves statements, and nothing compares
+    what the tree rules refuse with what the text rules refused. The text
+    rules are held by thirty registered mutations and the tree rules by none.
+    Each text-path mutation that holds a rule gets a tree-path successor that
+    removes the same condition, and the successor is caught before its
+    original is retired. The rest of part 3 follows: the text path and its
+    scanners deleted, one pass over the tree for all checks, the corpus
+    enrolled from label and variant descriptors, and the bridge as one table
+    of pinned file pairs.
+  - Deferred to PR3.9e part 3, with the tree-path mutations: the line that
+    decides a fragment's parentheses is owned by two mutations, and neither
+    removes the parentheses from a value fragment alone. That condition gets
+    its own mutant.
+  - Deferred to PR3.9e part 3, with the text path's deletion: a batch's `tree`
+    option is optional while text-only batches exist, and `derived()` needs
+    one. It becomes required then, so a batch built without it fails to
+    compile instead of failing when it runs.
   - Deferred to PR3.9e part 3: a generated follow-on now costs about 159 µs to
     build, check, and compile, where the text generator cost about 44 µs,
     measured on libSQL's compiler with a stub executor. Building the tree is
