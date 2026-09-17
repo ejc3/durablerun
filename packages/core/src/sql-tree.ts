@@ -32,6 +32,7 @@ import {
   ValueNode,
   createQueryId,
 } from 'kysely'
+import { NOW, STAMP } from './engine-tokens.js'
 
 /**
  * Engine tokens carried as value nodes whose values are these sentinel objects. A
@@ -128,19 +129,22 @@ export function requireDefinedBinds(statement: string, binds: unknown, path = 'b
 export interface DefinedStatement {
   readonly name: string
   readonly tree: StatementTree
+  /** Raw fragments standing where a boolean decides which rows are read or written. */
   readonly rawBooleans: number
+  /** Every other raw fragment: an assigned value, a subquery operand, an expression. */
+  readonly rawValues: number
 }
 
 const definedStatements = new WeakSet<object>()
 
 /**
  * Define a statement once for every dialect. A batch accepts only statements minted
- * here, so every tree statement's binds passed `requireDefinedBinds`, and the raw
- * boolean fragments it carries are declared beside it.
+ * here, so every tree statement's binds passed `requireDefinedBinds`, and every raw
+ * fragment it carries is declared beside it, by position.
  */
-export function defineStatement<Binds extends Readonly<Record<string, unknown>>>(
+export function defineStatement<Binds extends object>(
   name: string,
-  shape: { readonly rawBooleans?: number },
+  shape: { readonly rawBooleans?: number; readonly rawValues?: number },
   build: (binds: Binds) => { toOperationNode(): StatementTree },
 ): (binds: Binds) => DefinedStatement {
   return (binds) => {
@@ -149,6 +153,7 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
       name,
       tree: build(binds).toOperationNode(),
       rawBooleans: shape.rawBooleans ?? 0,
+      rawValues: shape.rawValues ?? 0,
     })
     definedStatements.add(statement)
     return statement
@@ -158,6 +163,59 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
 /** True only for a statement `defineStatement` minted. */
 export function isDefinedStatement(value: unknown): value is DefinedStatement {
   return typeof value === 'object' && value !== null && definedStatements.has(value)
+}
+
+/**
+ * Store-owned SQL text with its binds. In the text, `?` binds the next argument and
+ * `$NOW$` is the batch clock. A dialect's fragments stay text, so one statement tree
+ * serves every dialect and carries the dialect's predicates as data.
+ */
+export interface SqlFragment {
+  readonly sql: string
+  readonly args: ReadonlyArray<string | number | bigint | Uint8Array | null>
+}
+
+export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFragment {
+  return Object.freeze({ sql, args: Object.freeze([...args]) })
+}
+
+/**
+ * A fragment as a raw node whose binds and clock are nodes, not text. Each `?` becomes
+ * a value node, so compiled placeholders equal bound arguments by construction, and
+ * each `$NOW$` becomes the clock token, so the clock rules see it. A stamp or a fence
+ * never rides in a fragment: the rules that read them need them as nodes of the tree.
+ */
+export function rawSql<T>(fragment: SqlFragment): Expression<T> {
+  if (fragment.sql.includes(STAMP) || fragment.sql.includes('$FENCE:')) {
+    throw new Error(
+      'a SQL fragment may not hold a stamp or fence token: a tree carries those as nodes',
+    )
+  }
+  const pieces: string[] = []
+  const parameters: OperationNode[] = []
+  let last = 0
+  let bound = 0
+  for (const match of fragment.sql.matchAll(/\?|\$NOW\$/g)) {
+    pieces.push(fragment.sql.slice(last, match.index))
+    last = match.index + match[0].length
+    if (match[0] === NOW) {
+      parameters.push(ValueNode.create(EngineToken.now))
+    } else {
+      parameters.push(ValueNode.create(fragment.args[bound]))
+      bound++
+    }
+  }
+  pieces.push(fragment.sql.slice(last))
+  if (bound !== fragment.args.length) {
+    throw new TypeError(`a SQL fragment binds ${bound} of its ${fragment.args.length} arguments`)
+  }
+  const node = RawNode.create(pieces, parameters)
+  return {
+    get expressionType(): T | undefined {
+      return undefined
+    },
+    toOperationNode: () => node,
+  }
 }
 
 /** The values a statement's tokens take in one batch invocation. */
@@ -429,6 +487,16 @@ export function selfCountingAssignments(
     })
     return raw ? [{ column, how: 'raw' }] : []
   })
+}
+
+/** How many raw fragments a statement holds, wherever they stand. */
+export function rawFragmentCount(tree: OperationNode): number {
+  let count = 0
+  someNode(tree, (candidate) => {
+    if (RawNode.is(candidate)) count++
+    return false
+  })
+  return count
 }
 
 /** Every raw fragment's text, wherever it stands. */

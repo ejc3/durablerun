@@ -10,6 +10,8 @@ import {
   defineStatement,
   fenceValue,
   nowValue,
+  rawSql,
+  sqlFragment,
   stampValue,
 } from '../src/index.js'
 
@@ -21,8 +23,8 @@ const CLOCK = `CAST(unixepoch('subsec') * 1000 AS INTEGER)`
 const dialect = new TreeDialect(new SqliteQueryCompiler())
 
 /** A statement minted the way stores mint them, with no binds of its own. */
-function statement(builder: { toOperationNode(): OperationNode }, rawBooleans = 0) {
-  return defineStatement('test', { rawBooleans }, () => builder as never)({})
+function statement(builder: { toOperationNode(): OperationNode }, rawBooleans = 0, rawValues = 0) {
+  return defineStatement('test', { rawBooleans, rawValues }, () => builder as never)({})
 }
 
 function batch(): FencedBatch {
@@ -62,8 +64,8 @@ const taskFollowOn = () =>
       ),
     )
 
-const followOn = (builder: { toOperationNode(): OperationNode }, rawBooleans = 0) =>
-  withCas().followOnTree('task', statement(builder, rawBooleans), 'one')
+const followOn = (builder: { toOperationNode(): OperationNode }, rawBooleans = 0, rawValues = 0) =>
+  withCas().followOnTree('task', statement(builder, rawBooleans, rawValues), 'one')
 
 describe('FencedBatch tree statements', () => {
   it('compiles a compare-and-set and a gated follow-on with every token bound', async () => {
@@ -89,7 +91,12 @@ describe('FencedBatch tree statements', () => {
   })
 
   it('refuses a statement that defineStatement did not mint, and an undefined bind', () => {
-    const forged = { name: 'forged', tree: winCas().toOperationNode(), rawBooleans: 0 }
+    const forged = {
+      name: 'forged',
+      tree: winCas().toOperationNode(),
+      rawBooleans: 0,
+      rawValues: 0,
+    }
     expect(() => batch().casTree('win', forged)).toThrow(/must come from defineStatement/)
     const define = defineStatement('keyed', {}, (binds: { runId: string }) =>
       db.updateTable('runs').set({ state: 'completed' }).where('run_id', '=', binds.runId),
@@ -165,12 +172,33 @@ describe('FencedBatch tree statements', () => {
 
   it('refuses a follow-on that reads the clock, however the clock is spelled', () => {
     const spellings = [
-      taskFollowOn().set({ first_started_at_ms: nowValue }),
-      taskFollowOn().set({ first_started_at_ms: sql.raw<number>(CLOCK) }),
-      taskFollowOn().set({ first_started_at_ms: sql.raw<number>(`unixepoch('subsec')*1000`) }),
-      taskFollowOn().set((eb) => ({ first_started_at_ms: eb.fn<number>('unixepoch', []) })),
+      { builder: taskFollowOn().set({ first_started_at_ms: nowValue }), rawValues: 0 },
+      {
+        builder: taskFollowOn().set({ first_started_at_ms: sql.raw<number>(CLOCK) }),
+        rawValues: 1,
+      },
+      {
+        builder: taskFollowOn().set({
+          first_started_at_ms: sql.raw<number>(`unixepoch('subsec')*1000`),
+        }),
+        rawValues: 1,
+      },
+      {
+        builder: taskFollowOn().set((eb) => ({
+          first_started_at_ms: eb.fn<number>('unixepoch', []),
+        })),
+        rawValues: 0,
+      },
+      {
+        builder: taskFollowOn().set({
+          first_started_at_ms: rawSql<number>(sqlFragment('$NOW$ + ?', [5])),
+        }),
+        rawValues: 1,
+      },
     ]
-    for (const spelling of spellings) expect(() => followOn(spelling)).toThrow(/reads the clock/)
+    for (const { builder, rawValues } of spellings) {
+      expect(() => followOn(builder, 0, rawValues)).toThrow(/reads the clock/)
+    }
   })
 
   it('lets a compare-and-set carry the batch clock in a fragment, and no other clock', () => {
@@ -187,15 +215,19 @@ describe('FencedBatch tree statements', () => {
       taskFollowOn().set((eb) => ({ attempts: eb('attempts', '+', 1) })),
       taskFollowOn().set('attempts', (eb) => eb('attempts', '+', 1)),
     ]
-    const raw = [
-      taskFollowOn().set({ attempts: sql<number>`attempts + 1` }),
-      taskFollowOn().set({ attempts: sql<number>`${sql.ref('attempts')} + 1` }),
-    ]
     for (const counting of arithmetic) {
       expect(() => followOn(counting)).toThrow(/bumps a counter blindly/)
     }
-    for (const counting of raw) {
-      expect(() => followOn(counting)).toThrow(/raw fragment that mentions 'attempts'/)
+    const raw = [
+      { builder: taskFollowOn().set({ attempts: sql<number>`attempts + 1` }), rawValues: 1 },
+      // A column reference inside a raw template is itself a raw fragment.
+      {
+        builder: taskFollowOn().set({ attempts: sql<number>`${sql.ref('attempts')} + 1` }),
+        rawValues: 2,
+      },
+    ]
+    for (const { builder, rawValues } of raw) {
+      expect(() => followOn(builder, 0, rawValues)).toThrow(/raw fragment that mentions 'attempts'/)
     }
   })
 
@@ -203,8 +235,11 @@ describe('FencedBatch tree statements', () => {
     const undeclared = taskFollowOn().where(sql.raw<boolean>(`task_name = 'job'`))
     const unbound = taskFollowOn().where(sql.raw<boolean>('task_name = ?'))
     expect(() => followOn(undeclared)).toThrow(
-      /holds 1 raw boolean fragments but 'test' declares 0/,
+      /holds 1 raw boolean fragments and 0 raw value fragments, but 'test' declares 0 and 0/,
     )
+    const undeclaredValue = taskFollowOn().set({ last_attempt_run: sql.raw<string>(`'r1'`) })
+    expect(() => followOn(undeclaredValue)).toThrow(/and 1 raw value fragments/)
+    expect(() => followOn(undeclaredValue, 0, 1)).not.toThrow()
     expect(() => followOn(undeclared, 1)).not.toThrow()
     expect(() => followOn(unbound, 1)).toThrow(/2 placeholders|placeholders for/)
   })
@@ -234,6 +269,36 @@ describe('FencedBatch tree statements', () => {
     )
     expect(() => batch().casTree('win', statement(otherSchema))).toThrow(/a schema-qualified table/)
     expect(() => batch().casTree('win', statement(returning))).toThrow(/UpdateQueryNode.returning/)
+  })
+
+  it('turns the binds and clock of a fragment into nodes, and compiles a many-row compare-and-set', async () => {
+    const claimMany = winCas().where(
+      rawSql<boolean>(sqlFragment('lease_ms < $NOW$ + ? AND queue = ?', [250, 'q'])),
+    )
+    let captured: readonly SqlStatement[] = []
+    const executor: SqlExecutor = {
+      async batch(_label, statements) {
+        captured = statements
+        return statements.map(() => ({ rows: [], rowsAffected: 2 }) as SqlResult)
+      },
+    }
+    const result = await batch().casManyTree('win', statement(claimMany, 1), 3).run(executor)
+    expect(result).toMatchObject({ won: 'win', count: 2 })
+    expect(captured).toEqual([
+      {
+        sql: `update "runs" set "state" = ?, "completed_at_ms" = ${CLOCK}, "fence_stamp" = ?, "fence_at_ms" = ${CLOCK} where "run_id" = ? and "state" = ? and lease_ms < ${CLOCK} + ? AND queue = ?`,
+        args: ['completed', 'seed:win', 'r1', 'running', 250, 'q'],
+      },
+    ])
+    expect(() => batch().casManyTree('win', statement(winCas()), 0)).toThrow(
+      /max must be a positive/,
+    )
+  })
+
+  it('refuses a fragment that holds a stamp or fence token, or binds the wrong count', () => {
+    expect(() => rawSql(sqlFragment('fence_stamp = $STAMP$'))).toThrow(/stamp or fence token/)
+    expect(() => rawSql(sqlFragment('fence_stamp = $FENCE:win$'))).toThrow(/stamp or fence token/)
+    expect(() => rawSql(sqlFragment('queue = ?', ['q', 'extra']))).toThrow(/binds 1 of its 2/)
   })
 
   it('refuses a tree statement in a batch without a tree dialect', () => {

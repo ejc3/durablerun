@@ -11,6 +11,7 @@ import {
   type SelfFenceRelation,
   isFenceStatementName,
 } from './contract.js'
+import { NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type {
   SqlBatchMode,
@@ -29,6 +30,7 @@ import {
   gatingFences,
   isDefinedStatement,
   rawBooleanFragments,
+  rawFragmentCount,
   rawFragmentTexts,
   selfCountingAssignments,
   statementGrammarProblem,
@@ -73,11 +75,7 @@ import {
  * its own reviewed hazard.
  */
 
-/** This statement's own provenance value: `<seed>:<statement name>`. */
-export const STAMP = '$STAMP$'
-
-/** The batch's clock expression, spliced as SQL. Legal only in a CAS. */
-export const NOW = '$NOW$'
+export { NOW, STAMP } from './engine-tokens.js'
 
 /** The single definition of the provenance write. Shared by every dialect. */
 export const FENCE_SET = `fence_stamp = ${STAMP}, fence_at_ms = ${NOW}`
@@ -664,7 +662,15 @@ export class FencedBatch {
 
   /** `cas`, built as a tree. It must update a provenance-carrying table and stamp it from the clock. */
   casTree(name: string, statement: DefinedStatement): this {
-    return this.addTree('cas', name, statement, 'one')
+    return this.addTree('cas', name, statement, 'one', 1)
+  }
+
+  /** `casMany`, built as a tree: a compare-and-set that may win up to `max` rows. */
+  casManyTree(name: string, statement: DefinedStatement, max: number): this {
+    if (!Number.isSafeInteger(max) || max < 1) {
+      throw new Error(`FencedBatch[${this.label}] casMany '${name}' max must be a positive integer`)
+    }
+    return this.addTree('casMany', name, statement, { many: 'CAS' }, max)
   }
 
   /**
@@ -672,12 +678,12 @@ export class FencedBatch {
    * provenance-carrying table must stamp the rows it writes.
    */
   followOnTree(name: string, statement: DefinedStatement, rows: RowBound): this {
-    return this.addTree('followOn', name, statement, rows)
+    return this.addTree('followOn', name, statement, rows, null)
   }
 
   /** `tail`, built as a tree: a SELECT that a fence gates. */
   tailTree(name: string, statement: DefinedStatement): this {
-    return this.addTree('tail', name, statement, null)
+    return this.addTree('tail', name, statement, null, null)
   }
 
   /** The batch-shape rules every statement passes, text or tree. Returns the error prefix. */
@@ -713,10 +719,11 @@ export class FencedBatch {
    * sources, and a `?` it adds shows up as a placeholder no argument binds.
    */
   private addTree(
-    kind: 'cas' | 'followOn' | 'tail',
+    kind: 'cas' | 'casMany' | 'followOn' | 'tail',
     name: string,
     statement: DefinedStatement,
     rows: RowBound | null,
+    max: number | null,
   ): this {
     const at = this.admit(kind, name)
     const dialect = this.tree
@@ -731,7 +738,7 @@ export class FencedBatch {
     if (grammar !== null) {
       throw new Error(`${at} is outside the statement grammar: it holds ${grammar}`)
     }
-    const isCas = kind === 'cas'
+    const isCas = kind === 'cas' || kind === 'casMany'
     if (kind === 'tail') {
       if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)
     } else if (tree.kind !== 'UpdateQueryNode' && (isCas || tree.kind !== 'DeleteQueryNode')) {
@@ -756,9 +763,10 @@ export class FencedBatch {
     }
 
     const rawBooleans = rawBooleanFragments(tree)
-    if (rawBooleans !== statement.rawBooleans) {
+    const rawValues = rawFragmentCount(tree) - rawBooleans
+    if (rawBooleans !== statement.rawBooleans || rawValues !== statement.rawValues) {
       throw new Error(
-        `${at} holds ${rawBooleans} raw boolean fragments but '${statement.name}' declares ${statement.rawBooleans}`,
+        `${at} holds ${rawBooleans} raw boolean fragments and ${rawValues} raw value fragments, but '${statement.name}' declares ${statement.rawBooleans} and ${statement.rawValues}`,
       )
     }
 
@@ -839,7 +847,7 @@ export class FencedBatch {
       kind,
       fence: stamps ? { target: stamped, sealedBy: null } : null,
       rows,
-      max: isCas ? 1 : null,
+      max,
       form: 'tree',
       compiled: { sql: compiled.sql, args },
     })
