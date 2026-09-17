@@ -115,6 +115,10 @@ export async function makeLibsqlFixture(
   seed: number | string,
   options: StoreFixtureOptions = {},
 ): Promise<StoreFixture> {
+  // Let the event loop reach its timers phase. Nothing else on the libSQL path does,
+  // and a worker whose loop does not turn for a minute fails its run with every test
+  // passing. fixture-libsql-yields.test.ts holds this line.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
   const encodedSeed = [...String(seed)]
     .map((character) => character.codePointAt(0)?.toString(16))
     .join('_')
