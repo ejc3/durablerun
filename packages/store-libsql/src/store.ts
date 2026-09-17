@@ -680,6 +680,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         leaseMs,
         candidateRunIds,
         legacyWaitStep: sqlFragment(claimedWait.step),
+        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [leaseMs]),
         leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [leaseMs]),
       }),
       effectiveLimit,
@@ -783,6 +784,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         admission: sqlFragment(
           claimReceiptAdmission('runs', `\n        AND ${activationDurationAdmissible('t', NOW)}`),
         ),
+        leaseExpiresAt: sqlFragment(`${NOW} + lease_ms`),
         leaseFits: sqlFragment(epochAdditionFits(NOW, 'runs.lease_ms')),
       }),
     )

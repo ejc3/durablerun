@@ -2829,23 +2829,17 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "claim-lease",
         "claim lease deadline",
-        "       AND ${epochAdditionFits(NOW, '?')}`,\n"
-        "      [\n"
-        "        claimToken,",
+        "        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [leaseMs]),",
         "epochAdditionFits(NOW, '?')",
-        "         claim_expires_at_ms = ${NOW} + ?,\n"
-        "         heartbeat_at_ms = ${NOW},\n"
-        "         wake_step = COALESCE(wake_step, ${claimedWait.step}),",
+        "        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [leaseMs]),",
         "${NOW} + ?",
     ),
     (
         "activation-lease",
         "activation lease deadline",
-        "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'runs')}\n"
-        "         AND ${epochAdditionFits(NOW, 'runs.lease_ms')}",
+        "        leaseFits: sqlFragment(epochAdditionFits(NOW, 'runs.lease_ms')),",
         "epochAdditionFits(NOW, 'runs.lease_ms')",
-        "         claim_expires_at_ms = ${NOW} + lease_ms,\n"
-        "         heartbeat_at_ms = ${NOW},",
+        "        leaseExpiresAt: sqlFragment(`${NOW} + lease_ms`),",
         "${NOW} + lease_ms",
     ),
     (

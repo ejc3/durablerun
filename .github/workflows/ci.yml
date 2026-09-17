@@ -460,6 +460,9 @@ jobs:
                   'activate-requires-current-run-accounting',
                   'activate-payload-validation-atomic',
                   'activate-headers-admissible',
+                  # Two timestamp-addition cases, which generate four mutations.
+                  'claim-lease',
+                  'activation-lease',
               ):
                   key = f'        "{name}",\n'
                   start, end = spec_block(repaired, key)

@@ -22,7 +22,7 @@ type ClaimReceipt = {
  */
 export const claimCas = defineStatement(
   'claim',
-  { rawBooleans: 1, rawValues: 2 },
+  { rawBooleans: 1, rawValues: 3 },
   (binds: {
     queue: string
     claimToken: string
@@ -31,6 +31,11 @@ export const claimCas = defineStatement(
     candidateRunIds: SqlFragment
     /** The step of a wait registered before runs carried `wake_step`. */
     legacyWaitStep: SqlFragment
+    /**
+     * The lease deadline: database time plus the lease. It stays store-owned, beside
+     * `leaseFits`, the headroom guard that protects it, so the two are read together.
+     */
+    leaseExpiresAt: SqlFragment
     leaseFits: SqlFragment
   }) =>
     treeBuilder
@@ -40,7 +45,7 @@ export const claimCas = defineStatement(
         claimed_by: binds.claimToken,
         claim_gen: eb('claim_gen', '+', 1),
         lease_ms: binds.leaseMs,
-        claim_expires_at_ms: eb(nowValue, '+', binds.leaseMs),
+        claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt),
         heartbeat_at_ms: nowValue,
         wake_step: eb.fn.coalesce('wake_step', rawSql<string>(binds.legacyWaitStep)),
         fence_stamp: stampValue,
@@ -68,14 +73,14 @@ export const claimCas = defineStatement(
  */
 export const activateCas = defineStatement(
   'activate',
-  { rawBooleans: 2 },
-  (binds: ClaimReceipt & { leaseFits: SqlFragment }) =>
+  { rawBooleans: 2, rawValues: 1 },
+  (binds: ClaimReceipt & { leaseExpiresAt: SqlFragment; leaseFits: SqlFragment }) =>
     treeBuilder
       .updateTable('runs')
       .set((eb) => ({
         activated_gen: binds.claimGen,
         started_at_ms: eb.fn.coalesce('started_at_ms', nowValue),
-        claim_expires_at_ms: eb(nowValue, '+', eb.ref('lease_ms').$castTo<number>()),
+        claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt),
         heartbeat_at_ms: nowValue,
         fence_stamp: stampValue,
         fence_at_ms: nowValue,
