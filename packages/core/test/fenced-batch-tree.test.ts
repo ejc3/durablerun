@@ -1706,6 +1706,11 @@ describe('FencedBatch tree statements', () => {
         tied: false,
       },
       {
+        shape: 'IN selects two things, the fenced column first',
+        query: keyIn((eb) => fenced(eb).select(['f.task_id', eb.val('t-victim').as('other')])),
+        tied: false,
+      },
+      {
         shape: 'IN selects an expression over the fenced column',
         query: keyIn((eb) => fenced(eb).select(eb('f.attempt', '+', 1).as('task_id'))),
         tied: false,
@@ -1799,6 +1804,21 @@ describe('FencedBatch tree statements', () => {
       /stamps 'runs', but the statement compares tasks\.fence_stamp, which never matches/
     expect(() => withCas().tailTree('read', statement(misplaced()))).toThrow(never)
     expect(() => withCas().openTailTree('read', 'a reason', statement(misplaced()))).toThrow(never)
+    // The same holds for a fence that stands in a gating position without being tied: an
+    // open tail needs no gate, and a comparison that never matches is still a mistake.
+    const untied = () =>
+      db
+        .selectFrom('events')
+        .select('payload')
+        .where((eb) =>
+          eb.exists(
+            eb
+              .selectFrom('tasks as t')
+              .select('t.task_id')
+              .where('t.fence_stamp', '=', fenceValue('win')),
+          ),
+        )
+    expect(() => withCas().openTailTree('read', 'a reason', statement(untied()))).toThrow(never)
     // An open tail may still compare a fence on the table it stamps.
     const placed = () =>
       db.selectFrom('runs').select('state').where('fence_stamp', '=', fenceValue('win'))
