@@ -421,6 +421,96 @@ describe('FencedBatch tree statements', () => {
       ).not.toThrow()
     })
 
+    it('refuses a self-count in a fragment under any qualifier', () => {
+      // The text path refused `x = t.x + 1` by name. A qualified read of the assigned
+      // column beside an arithmetic operator counts twice on a replay, whatever the
+      // qualifier, and whatever wraps the fragment.
+      for (const counting of ['tasks.attempts + 1', '1 + tasks.attempts', '(tasks.attempts + 1)']) {
+        expect(() => mirror({ attempts: counting }), counting).toThrow(/'attempts'/)
+      }
+      expect(() =>
+        mirror({ attempts: coalesced('attempts', value<number>('tasks.attempts + 1')) }),
+      ).toThrow(/'attempts'/)
+      // A qualified read of another row with no arithmetic is a copy, and stays allowed.
+      expect(() =>
+        mirror({ state: '(SELECT f.state FROM runs f WHERE f.fence_stamp = $FENCE:win$)' }),
+      ).not.toThrow()
+    })
+
+    it('refuses arguments whose text is missing or empty', () => {
+      // A computed correlation that comes out empty must not widen the write to every
+      // row under the fence, with its arguments dropped on the floor.
+      const derivedWith = (selection: Record<string, unknown>) =>
+        generated().derived('mirror', {
+          relation: 'runs-to-tasks',
+          fence: 'win',
+          set: { state: `'failed'` },
+          rows: 'one',
+          ...selection,
+        } as never)
+      expect(() => derivedWith({ whereArgs: ['r'] })).toThrow(/whereArgs/)
+      expect(() => derivedWith({ where: '', whereArgs: ['r'] })).toThrow(/where/)
+      expect(() => derivedWith({ where: '' })).toThrow(/where/)
+      expect(() =>
+        derivedWith({ where: 'f.run_id = ?', whereArgs: ['r'], narrowArgs: ['x'] }),
+      ).toThrow(/narrowArgs/)
+      expect(() =>
+        derivedWith({ where: 'f.run_id = ?', whereArgs: ['r'], narrow: '', narrowArgs: [] }),
+      ).toThrow(/narrow/)
+      expect(() => derivedWith({ where: 'f.run_id = ?', whereArgs: ['r'] })).not.toThrow()
+    })
+
+    it('reads no gate through a subquery that returns a row whether or not one matched', () => {
+      // An aggregate with no GROUP BY returns one row always, so EXISTS over it is always
+      // true. The builder has more than one way to spell an aggregate, and a fragment
+      // hides one, so a gating subquery selects plain columns and values only.
+      const gatedBy = (selection: (eb: ExpressionBuilder<StoreTables, 'runs'>) => unknown) =>
+        db
+          .updateTable('tasks')
+          .set({ state: 'failed', fence_stamp: stampValue, fence_at_ms: 5 })
+          .where((eb) =>
+            eb.exists(
+              eb
+                .selectFrom('runs as f')
+                .select((inner) => selection(inner as never) as never)
+                .where('f.fence_stamp', '=', fenceValue('win')),
+            ),
+          )
+      expect(() =>
+        followOn(gatedBy((eb) => eb.ref('f.run_id' as never).as('run_id'))),
+      ).not.toThrow()
+      expect(() =>
+        followOn(gatedBy((eb) => eb.fn('count', [eb.ref('f.run_id' as never)]).as('n'))),
+      ).toThrow(/fence/)
+      expect(() => followOn(gatedBy(() => aliasedAs(value<number>('COUNT(*)'), 'n')))).toThrow(
+        /fence/,
+      )
+    })
+
+    it('still lets a tail count the rows this batch stamped', () => {
+      // The aggregate rule is about a row REQUIRED from a subquery. A tail whose own
+      // WHERE is the fence counts stamped rows, and a losing batch reads zero.
+      const counted = db
+        .selectFrom('runs')
+        .select((eb) => eb.fn.countAll<number>().as('n'))
+        .where('fence_stamp', '=', fenceValue('win'))
+      expect(() => generated().tailTree('count', statement(counted))).not.toThrow()
+    })
+
+    it('refuses a fence token with anything left over', () => {
+      expect(() => predicate('x = $FENCE:a$FENCE:b$')).toThrow(/malformed fence token|stray/)
+      expect(() => predicate('x = $FENCE:win$$')).toThrow(/malformed fence token|stray/)
+      expect(() => predicate('x = $FENCE:win$')).not.toThrow()
+    })
+
+    it('refuses a set value that only looks like an expression', () => {
+      // An object with a toOperationNode and nothing else is not the builder's expression,
+      // and was bound as data.
+      expect(() =>
+        mirror({ state: { toOperationNode: () => ({ kind: 'ValueNode', value: 'x' }) } }),
+      ).toThrow(/neither SQL text nor an expression/)
+    })
+
     it('gates through one derived table, and through nothing that could add a row', () => {
       const gatedKeys = () =>
         db
