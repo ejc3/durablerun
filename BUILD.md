@@ -1156,7 +1156,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
   terminal state (rollback outcome is a separate result field). Conformance:
   crash mid-rollback resumes; reverse order exactly once each; caught errors
   never trigger rollback; `output === undefined` for started-not-persisted
-  steps; rollback-failure halts the chain and surfaces in the result.
+  steps; rollback-failure halts the chain and surfaces in the result. Spec
+  first: `specs/Sagas.tla` models the rolling-back phase and lands before its
+  SQL. TLC checks it under four configurations, the recommended answers to
+  three questions DESIGN.md §3.10 leaves to the maintainer and each
+  alternative, and the four explore different graphs. Eleven probes must each
+  fail, and fifty mutants, one for every guard of every protocol action and
+  one for an effect an exhibit showed unheld, must each be caught.
+  `scripts/tla.sh` serves every side model from its mutant list, so a model is
+  enrolled by existing. The implementation then writes the start marker before
+  a registered step's body, enters the phase in the same batch as the terminal
+  decision in `fail` and in both sweep caps, admits rollback passes past the
+  user attempt budget, and changes `retry-task`'s admission, because reviving
+  a task whose saga ran is unsound today. Nothing reads the model's ledger
+  block, because `scripts/spec-ledger.py` reads Scheduler.tla only, so the
+  conformance cases above are its executable form, on every dialect.
 
 - **PR3.12 concurrent PostgreSQL migrators**: a concurrent cold-start migrator
   can be rejected, and the cause is not known yet. `lets concurrent cold-start
