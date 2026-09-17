@@ -44,13 +44,14 @@ import {
   decodeTaskResult,
   deferLaunchCas,
   durationToMs,
-  fenceSetAt,
+  emitEventCas,
   mapLimit,
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
   refusedLease,
   refusedWriteError,
+  registerWaitCas,
   requireDerivedInteger,
   requireDurableString,
   requireEpochMs,
@@ -63,10 +64,10 @@ import {
   storageValueKind,
   successorCarriedValues,
   successorParentValues,
+  suspendCas,
 } from '@durablerun/core'
 import {
   LIVE,
-  PARKED_CLAIM,
   QUEUED,
   cancelDue,
   durableTaskHeadersAdmissible,
@@ -1452,29 +1453,24 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // due; letting the run re-park itself would put it straight back into the
     // queue that path is keeping it out of. Refusing surfaces AB002, so the
     // worker stops now instead of being cancelled a moment later.
-    const b = new FencedBatch('reschedule', this.ids.token(), { now: NOW_MS })
-    b.cas(
+    const b = new FencedBatch('reschedule', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    b.casTree(
       'suspend',
-      'runs',
-      `UPDATE runs SET
-         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
-         available_at_ms = ${wakePlan.expression},
-         wake_event = NULL, event_payload = NULL, wake_step = NULL,
-         ${PARKED_CLAIM},
-         ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND ${storedInteger('runs.attempt')}
-         AND EXISTS (SELECT 1 FROM tasks t
-                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
-         ${wakePlan.fits}`,
-      [
-        ...wakePlan.expressionArgs,
-        ...wakePlan.expressionArgs,
-        runId,
+      suspendCas({
         queue,
+        runId,
         claimToken,
-        ...wakePlan.fitArgs,
-      ],
+        wakeAt: sqlFragment(wakePlan.expression, wakePlan.expressionArgs),
+        wakeFits: sqlFragment(wakePlan.fitsConjunct, wakePlan.fitArgs),
+        admission: sqlFragment(
+          `${storedInteger('runs.attempt')}
+         AND EXISTS (SELECT 1 FROM tasks t
+                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})`,
+        ),
+      }),
     )
     // A timer/deferral replaces any event wait attached to this run. Drive the
     // mirror and cleanup from the run this CAS actually suspended: a corrupt
@@ -1499,31 +1495,23 @@ export class PostgresSchedulerStore implements SchedulerStore {
   ): Promise<void> {
     const relativeWake = wakeHasOwn(wake, 'inSeconds')
     const wakePlan = prepareWake(wake, relativeWake)
-    const b = new FencedBatch('suspend', this.ids.token(), { now: NOW_MS })
-    b.cas(
+    const b = new FencedBatch('suspend', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.casTree(
       'suspend',
-      'runs',
-      `UPDATE runs SET
-         state = CASE WHEN ${wakePlan.expression} <= ${NOW} THEN 'pending' ELSE 'sleeping' END,
-         available_at_ms = ${wakePlan.expression},
-         wake_event = NULL, event_payload = NULL, wake_step = NULL,
-         ${PARKED_CLAIM},
-         ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND EXISTS (SELECT 1 FROM tasks t
+      suspendCas({
+        queue,
+        runId,
+        claimToken,
+        wakeAt: sqlFragment(wakePlan.expression, wakePlan.expressionArgs),
+        wakeFits: sqlFragment(wakePlan.fitsConjunct, wakePlan.fitArgs),
+        admission: sqlFragment(
+          `EXISTS (SELECT 1 FROM tasks t
                      WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
-         AND ${validCheckpointConflict('runs', '?')}
-         ${wakePlan.fits}`,
-      [
-        ...wakePlan.expressionArgs,
-        ...wakePlan.expressionArgs,
-        runId,
-        queue,
-        claimToken,
-        checkpoint.key,
-        ...wakePlan.fitArgs,
-      ],
+         AND ${validCheckpointConflict('runs', '?')}`,
+          [checkpoint.key],
+        ),
+      }),
     )
     // The marker's timestamp is the park's instant, taken from the row the
     // CAS stamped. This was the one follow-on with a legitimate need for the
@@ -1846,7 +1834,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
     if (typeof payloadJson !== 'string') {
       throw new RangeError('emitEvent payloadJson must be a string')
     }
-    const b = new FencedBatch('emit-event', this.ids.token(), { now: NOW_MS })
+    const b = new FencedBatch('emit-event', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
     b.lockEvent({ queue, eventName })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
@@ -1854,16 +1845,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // same-token guard avoids an unnecessary write while that token is
     // current; the stored instant is what stays correct even after another
     // invocation overwrites the token and the older batch replays.
-    b.cas(
+    b.casTree(
       'event',
-      'events',
-      `INSERT INTO events (queue, event_name, payload, emitted_at_ms, ${FENCE_COLS})
-       VALUES (?, ?, ?, ${NOW}, ${FENCE_VALS})
-       ON CONFLICT (queue, event_name) DO UPDATE SET ${fenceSetAt('events')}
-       WHERE events.fence_stamp IS DISTINCT FROM ${STAMP}
-         AND events.payload IS NOT NULL
+      emitEventCas({
+        queue,
+        eventName,
+        payloadJson,
+        stampDiffers: 'is distinct from',
+        existingEventAdmits: sqlFragment(
+          `events.payload IS NOT NULL
          AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`,
-      [queue, eventName, payloadJson],
+        ),
+      }),
     )
     const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
     const emitted = fencedAt('events', thisEvent, b.fence('event'))
@@ -2038,7 +2031,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
       timeoutSeconds === null
         ? null
         : durationToMs('timeoutSeconds', timeoutSeconds, { positive: true })
-    const b = new FencedBatch('await-event', this.ids.token(), { now: NOW_MS })
+    const b = new FencedBatch('await-event', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
     b.lockEvent({ queue, eventName })
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
@@ -2053,39 +2049,31 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // for this event exists", so a stale untimed wait left by an earlier
     // attempt was borrowed along with ITS null timeout, and a fresh
     // 30-second await parked the run forever.
-    b.cas(
+    b.casTree(
       'register',
-      'waits',
-      `INSERT INTO waits
-         (run_id, step_name, queue, task_id, event_name, status, timeout_at_ms,
-          created_at_ms, ${FENCE_COLS})
-       SELECT ?, ?, ?, ?, ?, 'waiting',
-         CASE WHEN CAST(? AS BIGINT) IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}
-       WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)
-         AND EXISTS (SELECT 1 FROM runs r
+      registerWaitCas({
+        queue,
+        runId,
+        taskId,
+        stepName,
+        eventName,
+        timeoutAt: sqlFragment(
+          `CASE WHEN CAST(? AS BIGINT) IS NOT NULL THEN ${NOW} + ? ELSE NULL END`,
+          [timeoutMs, timeoutMs],
+        ),
+        timeoutFits: sqlFragment(`CAST(? AS BIGINT) IS NULL OR ${epochAdditionFits(NOW, '?')}`, [
+          timeoutMs,
+          timeoutMs,
+        ]),
+        claimHolds: sqlFragment(
+          `EXISTS (SELECT 1 FROM runs r
                      JOIN tasks t ON ${runOwnedByTask('r', 't')}
                      WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
                        AND r.claimed_by = ? AND r.state = 'running'
-                       AND ${eligibleTask('t', NOW)})
-         AND (CAST(? AS BIGINT) IS NULL OR ${epochAdditionFits(NOW, '?')})
-       ON CONFLICT (run_id, step_name) DO NOTHING`,
-      [
-        runId,
-        stepName,
-        queue,
-        taskId,
-        eventName,
-        timeoutMs,
-        timeoutMs,
-        queue,
-        eventName,
-        runId,
-        queue,
-        taskId,
-        claimToken,
-        timeoutMs,
-        timeoutMs,
-      ],
+                       AND ${eligibleTask('t', NOW)})`,
+          [runId, queue, taskId, claimToken],
+        ),
+      }),
     )
     // available_at_ms IS this wait's own timeout_at_ms — copied from the row
     // just inserted, so the two can never drift and the park physically
