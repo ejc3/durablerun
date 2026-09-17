@@ -1289,17 +1289,22 @@ describe('FencedBatch tree statements', () => {
 
     /** A checkpoint written from the fenced run. Checkpoints carry no provenance. */
     const checkpoint = (
-      shape: { where?: (eb: Loose) => Loose; owner?: (eb: Loose) => Loose } = {},
+      shape: {
+        where?: (eb: Loose) => Loose
+        owner?: (eb: Loose) => Loose
+        updatedAt?: (eb: Loose) => Loose
+      } = {},
     ) => {
       const insert = loose
         .insertInto('checkpoints')
-        .columns(['task_id', 'owner_attempt'])
+        .columns(['task_id', 'owner_attempt', 'updated_at_ms'])
         .expression(
           loose
             .selectFrom('runs as f')
             .select((eb: Loose) => [
               eb.ref('f.task_id').as('task_id'),
               eb.ref('f.attempt').as('owner_attempt'),
+              aliasedAs(shape.updatedAt?.(eb) ?? eb.ref('f.fence_at_ms'), 'updated_at_ms'),
             ])
             .where((eb: Loose) => shape.where?.(eb) ?? eb.and([key(eb), gate(eb)])),
         )
@@ -1312,6 +1317,32 @@ describe('FencedBatch tree statements', () => {
               .doUpdateSet((eb: Loose) => ({ owner_attempt: owner(eb) })),
           )
     }
+
+    /** An event recorded from the fenced run. `emitted` is null to leave the column out. */
+    const recorded = (emitted: ((eb: Loose) => Loose) | null) =>
+      loose
+        .insertInto('events')
+        .columns([
+          'queue',
+          'event_name',
+          'payload',
+          ...(emitted === null ? [] : ['emitted_at_ms']),
+          'fence_stamp',
+          'fence_at_ms',
+        ])
+        .expression(
+          loose
+            .selectFrom('runs as f')
+            .select((eb: Loose) => [
+              eb.ref('f.queue').as('queue'),
+              eb.val('e').as('event_name'),
+              eb.val('p').as('payload'),
+              ...(emitted === null ? [] : [aliasedAs(emitted(eb), 'emitted_at_ms')]),
+              aliasedAs(stampValue, 'fence_stamp'),
+              eb.ref('f.fence_at_ms').as('fence_at_ms'),
+            ])
+            .where((eb: Loose) => eb.and([key(eb), gate(eb)])),
+        )
 
     const refused = (builder: Builder, why: RegExp) => expect(() => followOn(builder)).toThrow(why)
 
@@ -1375,6 +1406,12 @@ describe('FencedBatch tree statements', () => {
       // A second FROM item inserts one stamped run for every task, whichever it selects.
       refused(successor({ from: beside, task: (eb) => eb.ref('t2.task_id') }), alone)
       refused(successor({ from: beside }), alone)
+      // A join with no ON is a second FROM item under another name.
+      refused(successor({ from: (select) => select.crossJoin('tasks as t2') }), alone)
+      refused(
+        successor({ from: (select) => select.innerJoin('tasks as t2', (join: Loose) => join) }),
+        alone,
+      )
       // The one FROM item is another table, and the fenced row only joins it.
       refused(
         successor({
@@ -1387,31 +1424,6 @@ describe('FencedBatch tree statements', () => {
 
     it('takes a preserved first instant from the fenced row too, as a compare-and-set takes it from the clock', () => {
       const preserved = /must insert events\.emitted_at_ms as the fenced row's own fence_at_ms/
-      /** An event recorded from the fenced run. `emitted` is null to leave the column out. */
-      const recorded = (emitted: ((eb: Loose) => Loose) | null) =>
-        loose
-          .insertInto('events')
-          .columns([
-            'queue',
-            'event_name',
-            'payload',
-            ...(emitted === null ? [] : ['emitted_at_ms']),
-            'fence_stamp',
-            'fence_at_ms',
-          ])
-          .expression(
-            loose
-              .selectFrom('runs as f')
-              .select((eb: Loose) => [
-                eb.ref('f.queue').as('queue'),
-                eb.val('e').as('event_name'),
-                eb.val('p').as('payload'),
-                ...(emitted === null ? [] : [aliasedAs(emitted(eb), 'emitted_at_ms')]),
-                aliasedAs(stampValue, 'fence_stamp'),
-                eb.ref('f.fence_at_ms').as('fence_at_ms'),
-              ])
-              .where((eb: Loose) => eb.and([key(eb), gate(eb)])),
-          )
       expect(() => followOn(recorded((eb) => eb.ref('f.fence_at_ms')))).not.toThrow()
       // Not a bind, not another column of the fenced row, and not left to a default.
       refused(
@@ -1454,6 +1466,8 @@ describe('FencedBatch tree statements', () => {
       refused(taskFrom('max(f.task_id)'), plain)
       refused(taskFrom('MAX (f.task_id)'), plain)
       refused(taskFrom('"max"(f.task_id)'), plain)
+      refused(taskFrom('`max`(f.task_id)'), plain)
+      refused(taskFrom('[max](f.task_id)'), plain)
       refused(taskFrom('coalesce(f.task_id, ?)', ['t']), plain)
       refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), plain)
       // Plain text stays: a column, arithmetic in parentheses, a keyword before a
@@ -1529,6 +1543,79 @@ describe('FencedBatch tree statements', () => {
           successor({ from: joined, instant: (eb) => eb.ref('t.fence_at_ms') }),
           /fence_at_ms as the fenced row's own fence_at_ms/,
         )
+      })
+
+      it('accepts an IN key that is a stored column of the fenced row and the wrong one', () => {
+        const keyedBy = (select: (eb: Loose) => Loose) =>
+          loose
+            .updateTable('tasks')
+            .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+            .where((eb: Loose) =>
+              eb('task_id', 'in', select(eb.selectFrom('runs as f').where(gate))),
+            )
+        // The rule reads that the key is a plain column of the fenced source. It cannot
+        // read that a run id is no task id: the columns' meaning is the schema's.
+        expect(() => followOn(keyedBy((rows) => rows.select('f.run_id')))).not.toThrow()
+        refused(
+          keyedBy((rows) => rows.select((eb: Loose) => eb.val('t-victim').as('task_id'))),
+          /not tied to the rows it reads or writes/,
+        )
+      })
+
+      it('accepts an explicit join whose ON is store text that matches every row', () => {
+        // One FROM item and a join that carries its ON, so the FROM bound passes, and the
+        // insert still writes a row for every task. The ON is text the tree cannot read.
+        const everyTask = successor({
+          from: (select) =>
+            select.innerJoin('tasks as t', (join: Loose) => join.on(predicate('1 = 1'))),
+        })
+        expect(() => followOn(everyTask)).not.toThrow()
+        refused(
+          successor({ from: () => loose.selectFrom(['runs as f', 'tasks as t']) }),
+          /must select from the fenced row alone/,
+        )
+      })
+
+      it('accepts a bound first instant on a table the preserved-instant map does not list', () => {
+        // The rule reads a hand-kept map, today `events.emitted_at_ms`. A checkpoint's
+        // update instant is engine time too, and nothing holds it to the fenced row.
+        expect(() => followOn(checkpoint({ updatedAt: (eb) => eb.val(123) }))).not.toThrow()
+        refused(
+          recorded((eb) => eb.val(123)),
+          /must insert events\.emitted_at_ms as the fenced row's own fence_at_ms/,
+        )
+      })
+
+      it('accepts a conflict arm that counts the written row through an aliased subquery', () => {
+        // The arithmetic stands outside the subquery and the alias hides the table, so
+        // the text reader sees no read of the written row. Knowing `c2` is that row
+        // needs the aliases resolved. A counting value belongs in nodes.
+        const counted = `(SELECT c2.owner_attempt FROM checkpoints c2 WHERE c2.task_id = excluded.task_id) + 1`
+        expect(() => followOn(checkpoint({ owner: () => value<number>(counted) }))).not.toThrow()
+        refused(
+          checkpoint({ owner: () => value<number>('checkpoints.owner_attempt + 1') }),
+          /raw fragment that mentions 'owner_attempt'/,
+        )
+      })
+
+      it('accepts an open tail whose misplaced fence stands under OR, where no rule reads it', () => {
+        // The table check is asked of a fence in a gating position. Under OR a fence
+        // stands in none, so comparing it with a table it never stamps goes unread.
+        const misplaced = (under: 'and' | 'or') =>
+          db
+            .selectFrom('tasks')
+            .select('state')
+            .where((eb) =>
+              under === 'and'
+                ? eb('fence_stamp', '=', fenceValue('win'))
+                : eb.or([eb('fence_stamp', '=', fenceValue('win')), eb('state', '=', 'x')]),
+            )
+        expect(() =>
+          withCas().openTailTree('read', 'a reason', statement(misplaced('or'))),
+        ).not.toThrow()
+        expect(() =>
+          withCas().openTailTree('read', 'a reason', statement(misplaced('and'))),
+        ).toThrow(/which never matches/)
       })
 
       it('refuses every call in a value fragment, a harmless scalar one included', () => {
@@ -1611,6 +1698,11 @@ describe('FencedBatch tree statements', () => {
       {
         shape: "IN selects a bound value, so the key is the caller's and not the fenced row's",
         query: keyIn((eb) => fenced(eb).select(eb.val('t-victim').as('task_id'))),
+        tied: false,
+      },
+      {
+        shape: 'IN selects a column of the outer row, which every row satisfies',
+        query: keyIn((eb) => fenced(eb).select('tasks.task_id')),
         tied: false,
       },
       {
