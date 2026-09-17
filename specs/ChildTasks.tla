@@ -56,6 +56,9 @@
 \*  - Await cycles.  A parent that awaits a child that awaits the parent waits
 \*    forever in any queue.  Nothing detects it, and only a cancellation
 \*    deadline bounds it, as it bounds any untimed await.
+\*  - A second await by the same parent.  After a timeout the parent's code may
+\*    await again, which is a new await: it hits the event or registers a new
+\*    wait.  One await is modeled, so its answer is final here.
 \*  - Whether a wait is timed.  Any registered wait may time out here, which
 \*    checks a superset of the behaviours.
 \*  - The fairness below borrows Scheduler.tla's EventuallyTerminal, which holds
@@ -254,10 +257,11 @@ DoneAuthority ==
 WakeIsDelivered ==
   [][parent = "woken" => parent' \in {"woken", "resolved", "cancelled"}]_vars
 
-\* A timeout is this await's answer.  The wait row went with it, so a later emit
-\* wakes nobody, and only a cancellation moves the parent again.
-TimeoutIsFinal ==
-  [][parent = "timedout" => parent' \in {"timedout", "cancelled"}]_vars
+\* An await ends in one answer: an outcome, a timeout, a refusal, or the
+\* parent's cancellation.  The wait row went with it, so a later emit wakes
+\* nobody and nothing moves the parent again.
+AnswerIsFinal ==
+  [][(parent \in {"resolved", "timedout", "refused", "cancelled"}) => parent' = parent]_vars
 
 \* A registered wait is resolved, times out, or dies with a cancelled parent.
 EveryWaitResolves ==
