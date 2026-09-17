@@ -1,6 +1,6 @@
 # Postmortem: PR3.9b SQL fragments in statement trees, review rounds 1 and 2 (PR #38)
 
-PR3.9b moves claim, activation, and the launch deferral onto shared statement trees. A dialect's predicates reach those trees as SQL fragments: store-owned text plus binds, which core turns into nodes. One Fable `/code-review` round and one Fable `/simplify` round found three defects in that fragment mechanism. A fragment compiled without parentheses, so an OR inside it could void every conjunct before it. A bind or clock token inside a string literal was split as if it were SQL. And a statement declared its fragments as two counts, which a fragment could move between unnoticed and which counted raw nodes the builder makes for itself. Our own gates caught two more defects before merge: four generated mutations whose text had moved, and a fragment check that built a `Map` task code can replace. A second `/code-review` round, over round one's fixes, then found six more: five in those fixes, and one older line on the worker path. The automated PR review then found one more, in a check round two had just added. No shipped fragment used any of these shapes. All twelve are fixed.
+PR3.9b moves claim, activation, and the launch deferral onto shared statement trees. A dialect's predicates reach those trees as SQL fragments: store-owned text plus binds, which core turns into nodes. One Fable `/code-review` round and one Fable `/simplify` round found three defects in that fragment mechanism. A fragment compiled without parentheses, so an OR inside it could void every conjunct before it. A bind or clock token inside a string literal was split as if it were SQL. And a statement declared its fragments as two counts, which a fragment could move between unnoticed and which counted raw nodes the builder makes for itself. Our own gates caught two more defects before merge: four generated mutations whose text had moved, and a fragment check that built a `Map` task code can replace. A second `/code-review` round, over round one's fixes, then found six more: five in those fixes, and one older line on the worker path. The automated PR review then found two more, one in a check round two had just added and one in that check's repair. No shipped fragment used any of these shapes. All thirteen are fixed.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -29,6 +29,7 @@ Nothing wrote a wrong row: every fragment the stores ship is parenthesized and h
 | 10 | One fragment node placed twice was judged once, by its first position (round 2) | A predicate node reused as an assigned value passes | The role check | It looked a node up, not an occurrence | A fragment node may stand in one place (rung 2) |
 | 11 | The generated follow-on constructs a `Set` on every call, on the path a worker pass reaches after task code. The line predates this PR (round 2) | A task that replaces the global `Set` makes `complete` throw instead of completing | The SDK's ambient-global tests | They replace `Map`, and nothing replaced `Set` | The column set is built with a `Set` captured at module load (rung 1 for that site), and a core test builds a generated follow-on while `Set` throws (rung 3) |
 | 12 | Fragment placement was recorded for the life of the process, not for one statement build (PR review) | A fragment another statement placed, or one object passed as two binds, passes as placed, so a statement can omit an admission fragment it took | The test for an unplaced fragment | It built a fresh fragment for each case, so no fragment was ever placed before it was reused | `defineStatement` collects placements during its own build, and each bind consumes one (rung 2) |
+| 13 | The placement check and the walk over a statement's binds called operations task code can replace: `indexOf`, `splice`, `push`, `Object.entries`, the array iterator, and `instanceof Uint8Array` (PR review) | Task code sharing the process can make an unplaced admission fragment pass, or a placed one fail | The ambient-collection test from finding 5 | It replaced only the global `Map`. No test replaced a prototype method or a static the bind checks call | One walk over the binds on captured `Object.keys`, `Reflect.get`, and `ArrayBuffer.isView`, and placements held as a linked list of own properties (rung 1 for these sites) |
 | 5 | The role check built a `Map` on every tree statement | After a task replaces the global `Map`, the next pass throws instead of completing | The SDK's ambient-global tests, which did catch it | Nothing nearer the tree checks ran them under a replaced global | The checks keep positions in arrays and minted nodes in weak sets captured at module load (rung 1 for those sites). A core test adds and compiles tree statements while `Map` throws (rung 3) |
 
 ## Detection ledger
@@ -40,9 +41,9 @@ Nothing wrote a wrong row: every fragment the stores ship is parenthesized and h
 | Fable `/code-review` round 1 over `65000b2...4e2e24d` and `b0b152c` | 3 | no |
 | Fable `/simplify` round 1 over `65000b2...4e2e24d` | 0 | no |
 | Fable `/code-review` round 2 over `b0b152c...e975c19` | 6 | no |
-| Greptile PR review over `054273a` | 1 | no |
+| Greptile PR review over `054273a` and `c70c3b2` | 2 | no |
 
-Self-catch rate: 2 of 12, or 17% (previous round: 0%, `pr3.9a-statement-trees-review.md`).
+Self-catch rate: 2 of 13, or 15% (previous round: 0%, `pr3.9a-statement-trees-review.md`).
 
 `/simplify` independently described finding 3's cause, that the second count is a residual with no position, so it is credited there in prose and counted once. Both self-catches were gates doing their job late: finding 4 cost a CI round that a local run of the same self-test would have saved, and finding 5 was caught before push.
 
@@ -70,11 +71,12 @@ Every exhibit below was run against the fixed code, beside a control the same ru
 | The restored placeholder count | 2 | None found. It compares the compiled SQL with the arguments, whatever produced them |
 | One place per fragment node | 2 | None found for a node. Two nodes minted from one fragment may still take different roles, which the deferral's wake instant does on purpose |
 | A statement must place every fragment it takes | 2 | A placement that reaches no tree. Run: a builder that calls `rawSql` on its fragment and drops the result is ACCEPTED |
+| Bind checks on captured operations | 1 for those sites | A replacement installed before the engine's modules load is captured as if genuine. Run: `Object.keys` replaced, then the engine imported fresh, and an unplaced fragment is ACCEPTED |
 | Collections captured at module load | 1 for those sites | A prototype method task code patches. The review ran it: with `Array.prototype.includes` patched to return true, a RETURNING statement passes the grammar. The checks guard the engine's own statements at construction, not against hostile task code |
 
 ## Fix-induced defects
 
-Five. Findings 8, 9, and 10 were introduced by round one's fixes in `ac0c9dc`, and round two found them by reviewing that fold as new code. Finding 12 was introduced by round two's own fix in `5792924`, and the automated PR review found it. Finding 6 was latent in round one's position logic. Finding 5 was introduced by the fix for finding 3: the position check kept its positions in a `Map`. The SDK's ambient-global tests caught it before push. Finding 3 was itself this PR's answer to a residual recorded in the previous postmortem.
+Six. Findings 8, 9, and 10 were introduced by round one's fixes in `ac0c9dc`, and round two found them by reviewing that fold as new code. Finding 12 was introduced by round two's own fix in `5792924`, and the automated PR review found it. Finding 13 makes six: its `indexOf` and `splice` came from finding 12's fix in `d67d571`. The rest of finding 13, the walk over the binds, dates from round one. Finding 6 was latent in round one's position logic. Finding 5 was introduced by the fix for finding 3: the position check kept its positions in a `Map`. The SDK's ambient-global tests caught it before push. Finding 3 was itself this PR's answer to a residual recorded in the previous postmortem.
 
 ## Evidence
 
@@ -86,6 +88,7 @@ Five. Findings 8, 9, and 10 were introduced by round one's fixes in `ac0c9dc`, a
 - Red tests: commit `98f03e6`, run and seen failing (7 of 29 tests) against `e975c19`: the NOT IN subquery, the predicate in HAVING, the JSON `?` operator, the comment and string forms, the node placed twice, the fragment never placed, and the generated follow-on under a throwing `Set`.
 - Fix: commit `5792924`.
 - Red test: commit `6006059`, run and seen failing (1 of 29 tests) against `054273a`: a fragment placed by one statement, then passed unplaced to another. Fix: commit `d67d571`, after which core, SDK, and corpus tests pass and CI runs the full suite.
+- Red test: commit `2f59733`, run and seen failing (6 of 36 tests) against `c70c3b2`: seven replaced operations, each asked whether an unplaced fragment is refused, a placed one accepted, and a half-placed pair refused. The `Object.keys` case passes there and guards the repair. Fix: commit `b6c3756`, after which core, SDK, and corpus tests pass (322) and CI runs the full suite.
 - Finding 4's red was CI at `4e2e24d`: `verify`, `mutations`, and `base-gate` all failed, and `pnpm lint:mutation-verdicts` reproduced it locally with "mutation pattern occurs 0 times" for the four names. Fix: commit `b0b152c`, after which the self-test and a local base-gate reproduction pass.
 - Finding 5's red was two SDK tests failing at `fbe223c`: "task initialization cannot replace replay map construction" and "uses stored Map entries under subclass and prototype pollution". Fix: commit `e975c19`.
 - Gate after `5792924`: typecheck, Biome lint and format, and the determinism, user boundary, ledger, fragment, batch, clock, outcome, deferral, gate, and review-bot lints pass. Core, SDK, driver, harness, and dogfood tests pass (46 files, 472 tests), and store and non-fuzz conformance tests pass on libSQL and PostgreSQL (38 files, 6,338 tests). The registry self-test passes with 439 live mutations, and a local reproduction of base-gate passes.
@@ -98,6 +101,7 @@ Five. Findings 8, 9, and 10 were introduced by round one's fixes in `ac0c9dc`, a
   - "`requiredSubquery` recognizes only `exists` and `in`. Under the `not in` operator a raw subquery is refused as `'subquery'` and accepted only as `'value'`";
   - "with the placeholder-count check removed, 'placeholders equal arguments by construction' is false for Kysely's `?`, `?|`, and `?&` operators";
   - Greptile: "`placedFragments` records placement for the lifetime of the process rather than for the current statement";
+  - Greptile: "The placement check calls both ambient methods, so a patch can reject a correctly placed fragment or make an unplaced admission fragment pass";
   - "`stringLiterals` and `isOneGroup` know only single-quoted literals. An apostrophe in a comment, a PostgreSQL `E'…'` string, or a dollar-quoted string flips their quote parity".
 - Measured, not assumed:
   - Building the admission fragment per call costs 11.2 µs, against 4.4 µs hoisted, so the hoisting finding was declined.
@@ -141,5 +145,6 @@ Deferred (recorded in BUILD.md):
 - A subquery fragment that selects rows no fence gates.
 - A `?` inside a double-quoted identifier or a dialect's other quoting, which fails at run time, not at construction.
 - A fragment passed to `rawSql` whose result never enters the tree.
+- An operation replaced before the engine's modules load. Capturing protects against task code, which runs after load, and not against the host's own preloaded modules.
 - A value fragment that is one operand of a WHERE comparison, which decides rows while declared a value.
 - Task code that patches a prototype method the checks call, such as `Array.prototype.includes`.
