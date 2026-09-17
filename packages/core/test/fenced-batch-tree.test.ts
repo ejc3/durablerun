@@ -147,6 +147,63 @@ describe('FencedBatch tree statements', () => {
     expect(() => withCas().followOnTree('task', 'tasks', unbound, 'one')).toThrow(/placeholders/)
   })
 
+  it('refuses a blind counter written with the two-argument set form', () => {
+    const counting = taskFollowOn().set('attempts', (eb) => eb('attempts', '+', 1))
+    expect(() => withCas().followOnTree('task', 'tasks', counting, 'one')).toThrow(
+      /bumps a counter blindly/,
+    )
+  })
+
+  it('refuses a second assignment to a provenance column', () => {
+    const forged = db
+      .updateTable('runs')
+      .set({ state: 'completed', fence_stamp: stamp, fence_at_ms: now })
+      .set('fence_stamp', 'forged')
+      .where('run_id', '=', 'r1')
+    expect(() => batch().casTree('win', 'runs', forged)).toThrow(
+      /must assign fence_stamp the stamp/,
+    )
+  })
+
+  it('refuses a counter hidden in a raw fragment', () => {
+    const rawText = taskFollowOn().set({ attempts: sql<number>`attempts + 1` })
+    const rawReference = taskFollowOn().set({ attempts: sql<number>`${sql.ref('attempts')} + 1` })
+    expect(() => withCas().followOnTree('task', 'tasks', rawText, 'one')).toThrow(/attempts/)
+    expect(() => withCas().followOnTree('task', 'tasks', rawReference, 'one')).toThrow(/attempts/)
+  })
+
+  it('refuses a data-modifying common table expression under a tail', () => {
+    const tail = db
+      .with('gone', (q) => q.deleteFrom('runs').returningAll())
+      .selectFrom('runs')
+      .select('run_id')
+      .where('fence_stamp', '=', fence('win'))
+    expect(() => withCas().tailTree('payload', tail)).toThrow(/statement grammar/)
+  })
+
+  it('refuses a fence compared on a table its statement did not stamp', () => {
+    expect(() => withCas().followOnTree('task', 'tasks', taskFollowOn(), 'one')).toThrow(
+      /stamps 'runs'/,
+    )
+  })
+
+  it('refuses UPDATE FROM and a schema-qualified table', () => {
+    const updateFrom = db
+      .updateTable('tasks')
+      .from('runs')
+      .set({ state: 'completed', fence_stamp: stamp, fence_at_ms: 5 })
+      .where('runs.fence_stamp', '=', fence('win'))
+    const otherSchema = db
+      .withSchema('other')
+      .updateTable('runs')
+      .set({ state: 'completed', fence_stamp: stamp, fence_at_ms: now })
+      .where('run_id', '=', 'r1')
+    expect(() => withCas().followOnTree('task', 'tasks', updateFrom, 'one')).toThrow(
+      /statement grammar/,
+    )
+    expect(() => batch().casTree('win', 'runs', otherSchema)).toThrow(/statement grammar/)
+  })
+
   it('refuses a tree statement in a batch without a tree dialect', () => {
     const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
     expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)
