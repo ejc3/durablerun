@@ -159,8 +159,17 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
 ): (binds: Binds) => DefinedStatement {
   return (binds) => {
     requireDefinedBinds(name, binds)
-    const statement = Object.freeze({ name, tree: build(binds).toOperationNode() })
-    requirePlacedFragments(name, binds)
+    const outer = placements
+    const placed: object[] = []
+    placements = placed
+    let tree: StatementTree
+    try {
+      tree = build(binds).toOperationNode()
+    } finally {
+      placements = outer
+    }
+    requirePlacedFragments(name, binds, placed)
+    const statement = Object.freeze({ name, tree })
     weakSetAdd(definedStatements, statement)
     return statement
   }
@@ -182,7 +191,13 @@ export interface SqlFragment {
 }
 
 const knownFragments = new TrustedWeakSet<object>()
-const placedFragments = new TrustedWeakSet<object>()
+
+/**
+ * The fragments `rawSql` has placed during the statement build in progress, one entry
+ * for each placement, or null outside a build. Placement is scoped to one build, so a
+ * fragment another statement placed does not count here.
+ */
+let placements: object[] | null = null
 
 export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFragment {
   const fragment = Object.freeze({ sql, args: Object.freeze([...args]) })
@@ -190,17 +205,31 @@ export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFra
   return fragment
 }
 
-/** Refuse a fragment bind the statement took and never placed, at any depth. */
-function requirePlacedFragments(statement: string, binds: unknown, path = 'bind'): void {
+/**
+ * Refuse a fragment bind the statement took and never placed, at any depth. Each bind
+ * that holds a fragment consumes one placement of it, so one object passed as two binds
+ * needs two placements, and a bind placed twice is fine.
+ */
+function requirePlacedFragments(
+  statement: string,
+  binds: unknown,
+  placed: object[],
+  path = 'bind',
+): void {
   if (typeof binds !== 'object' || binds === null || binds instanceof Uint8Array) return
   if (weakSetHas(knownFragments, binds)) {
-    if (!weakSetHas(placedFragments, binds)) {
-      throw new Error(`${statement}: ${path} is a fragment the statement never places`)
-    }
+    const at = placed.indexOf(binds)
+    if (at < 0) throw new Error(`${statement}: ${path} is a fragment the statement never places`)
+    placed.splice(at, 1)
     return
   }
   for (const [name, value] of Object.entries(binds)) {
-    requirePlacedFragments(statement, value, path === 'bind' ? `bind '${name}'` : `${path}.${name}`)
+    requirePlacedFragments(
+      statement,
+      value,
+      placed,
+      path === 'bind' ? `bind '${name}'` : `${path}.${name}`,
+    )
   }
 }
 
@@ -349,7 +378,7 @@ export function rawSql<T>(fragment: SqlFragment, role: RawRole): Expression<T> {
   }
   const raw = RawNode.create(pieces, parameters)
   weakSetAdd(mintedRaws[role], raw)
-  weakSetAdd(placedFragments, fragment)
+  placements?.push(fragment)
   return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))
 }
 
