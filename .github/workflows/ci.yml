@@ -582,6 +582,28 @@ jobs:
               # statement, so its mutation moved from the store to core with it.
               repaired = reaim_moved(repaired, candidate, ('retry-task-requires-failed-task',))
               repaired = reaim_consumer(repaired, candidate, 'checkpoint-write')
+          elif digest == 'f0be18a687a12585b2ea36ab7aa3e23591f33a4ac1916c74be1f395a1aaef104':
+              # Moving spawn's task insert and the two lease sweeps' compare-and-sets onto
+              # statement trees re-aimed these finds. Each keeps its name, its file, and
+              # the condition it removes.
+              repaired = reaim(previous, candidate, (
+                  'sweep-claim-timeout-rechecks-accounting',
+                  'terminal-timeout-cas-admits-terminal-owner',
+                  'terminal-relaunch-cap-cas-admits-terminal-owner',
+                  'matrix-lost-launch-edge-progress',
+                  'sweep-lost-launch-generation',
+                  'matrix-claim-timeout-edge-progress',
+                  'sweep-claim-timeout-generation',
+                  'provenance-sweep-progress',
+                  'spawn-primary-key-guard',
+                  'sweep-rejects-noninteger-attempt',
+                  'spawn-enqueue',
+                  'spawn-cancellation',
+                  'lost-launch-relaunch',
+                  'timestamp-terminal-relaunch-cap-at-max',
+                  'timestamp-sweep-lost-launch-rechecks-expiry-bound',
+                  'timestamp-sweep-timeout-rechecks-expiry-bound',
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
