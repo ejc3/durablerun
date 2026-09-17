@@ -72,7 +72,9 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    sweep required below also includes `gate-changes:` with the old and new
    gate, bounded closure, and property-preservation justification.
 
-   Run unfiltered `pnpm verify:mutations` when the PR changes the mutation
+   CI's `mutations` job runs unfiltered `pnpm verify:mutations` on every pull
+   request, and its green check is the full audit this step asks for. A full
+   audit applies when the PR changes the mutation
    runner; runner-wide registry schema, inventory generation, or selection
    machinery; the verdict classifier, orchestration, checkpoint/resume logic,
    confinement, or a shared verifier; when the affected closure cannot be
@@ -87,7 +89,9 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
    `caught-with-collateral` is a successful, separately counted attribution:
    the clean baseline passed, the failed report is coherent, and the exact
    registered owner file, full test title, and single verdict message fired
-   alongside other failed tests. The transcript retains every failed test's
+   alongside other failed targeted tests. Each mutation and each worker baseline
+   runs only the registered tests it checks, and a registered test that did not
+   pass or fail is a suite error. The transcript retains every failed test's
    file, full title, and complete messages. Collateral-only or wrong-owner
    failures, suite-level errors, missing collateral messages, and ambiguous
    multiple owner messages remain blocking. Report exact-only and
