@@ -364,6 +364,9 @@ FailedMovesOnlyByRevival ==
 RevivalOnlyOfFailed ==
   [][(revivals' # revivals) => task = "failed"]_vars
 
+\* A rollback recorded as done did compensate its step.
+DoneMeansCompensated == \A s \in Steps : rb[s] = "done" => effect[s] = "gone"
+
 \* Every decision settles: a saga that began reaches an outcome.
 DecisionSettles == (phase = "rolling_back" \/ owed) ~> (outcome # "none")
 =============================================================================
