@@ -861,7 +861,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `store-tables.ts` to name the outcome columns. The failed state and the
     well-formed failure that retry-task requires stay store text, because
     registered mutations own them. The second half moves spawn and the two
-    lease sweeps, lost-launch and claim-timeout.
+    lease sweeps, lost-launch and claim-timeout. The first half's review round is
+    `postmortems/pr3.9d-first-half-review.md`.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
