@@ -28,9 +28,7 @@ TLA_SHA256="eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAR="$REPO_ROOT/tools/tla/tla2tools.jar"
 STATES="$(mktemp -d "${TMPDIR:-/tmp}/tla-states.XXXXXX")"
-# Probes fail BY DESIGN, and TLC drops a counterexample trace next to the spec
-# when they do. They are throwaway, and removed on every exit, a failing one too.
-trap 'rm -rf "$STATES"; rm -f "$REPO_ROOT"/specs/*_TTrace_*.tla "$REPO_ROOT"/specs/*_TTrace_*.bin' EXIT
+trap 'rm -rf "$STATES"' EXIT
 
 if [[ ! -f "$JAR" ]]; then
   echo "tla.sh: INFRA ERROR: vendored TLA checker is missing: $JAR" >&2
@@ -117,10 +115,10 @@ run_one() { # run_one <name> <cfg> <mem_mb> <workers> <extra...>
 
 # The small hosted-delivery model supplies the fair tick invocations assumed
 # by Scheduler. Keep it on every existing scope without changing those scopes.
-small_heap=$((TLA_HEAP_MB < 1024 ? TLA_HEAP_MB : 1024))
+side_heap=$((TLA_HEAP_MB < 1024 ? TLA_HEAP_MB : 1024))
 run_small() { # run_small <name> <cfg> <module>: a side model, on every scope
   local code=0
-  tlc "$small_heap" 2 -metadir "$STATES/$2" -config "$2" "$3" >"$STATES/$2.log" 2>&1 || code=$?
+  tlc "$side_heap" 2 -metadir "$STATES/$2" -config "$2" "$3" >"$STATES/$2.log" 2>&1 || code=$?
   report "$1" "$code" "$STATES/$2.log"
 }
 run_small "hosted wake delivery" WakeDelivery.cfg WakeDelivery.tla || exit 1
@@ -129,6 +127,13 @@ run_small "hosted wake delivery" WakeDelivery.cfg WakeDelivery.tla || exit 1
 # every scope. Two configurations cover both answers to the same-queue rule.
 # Its vacuity probes run with the others in phase 1, which a TLA_ONLY liveness
 # job skips.
+# The two configurations must check the same invariants and properties, so
+# they may differ in the rule's constant and their leading comment only.
+if ! diff <(grep -v 'AwaitAllowed =' ChildTasks.cfg | tail -n +3) \
+  <(grep -v 'AwaitAllowed =' ChildTasksRefuse.cfg | tail -n +3) >/dev/null; then
+  echo "tla.sh: ChildTasks.cfg and ChildTasksRefuse.cfg differ in more than AwaitAllowed" >&2
+  exit 1
+fi
 for cfg in ChildTasks ChildTasksRefuse; do
   run_small "child tasks ($cfg)" "$cfg.cfg" ChildTasks.tla || exit 1
 done
@@ -149,16 +154,21 @@ if [[ -n "${TLA_ONLY:-}" && "${TLA_ONLY}" != "safety" ]]; then
   exit $?
 fi
 
-echo "== phase 1: vacuity probes, concurrent (each MUST find its witness trace)"
 # Mutants of the child-task model. Each entry of ChildTasks.mutants.json bends
 # or deletes one guard of the protocol, and some pass configuration must then
 # FAIL. A probe shows an invariant can fail. Only a mutant shows that a guard is
 # held by anything: a model can stay green with a guard deleted when no
-# invariant speaks for it. A mutant whose text is not found exactly once, or
-# whose run ends in anything but a verdict, is an error and not a catch.
+# invariant speaks for it. A mutant is caught only when the property its entry
+# names is the one violated, so a catch by accident does not count. A mutant
+# whose text is not found exactly once, or whose run ends in anything but a
+# verdict, is an error and not a catch.
 echo "== phase 1: child-task model mutants (each MUST be caught)"
-mutant_fail=0
-python3 - "$JAVA_BIN" "$JAR" "$STATES/mutants" <<'PY' || mutant_fail=1
+command -v python3 >/dev/null || {
+  echo "tla.sh: INFRA ERROR: the mutant check needs python3" >&2
+  exit 1
+}
+mutant_code=0
+python3 - "$JAVA_BIN" "$JAR" "$STATES/mutants" <<'PY' || mutant_code=$?
 import json, os, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
@@ -169,13 +179,14 @@ configs = ("ChildTasks.cfg", "ChildTasksRefuse.cfg")
 
 
 def check(mutant):
-    name, find = mutant["name"], mutant["find"]
+    name, find, expect = mutant["name"], mutant["find"], mutant["caughtBy"]
     if spec.count(find) != 1:
         return name, "ERROR", f"its text occurs {spec.count(find)} times in ChildTasks.tla, not once"
     scratch = os.path.join(out, name)
     os.makedirs(scratch)
     with open(os.path.join(scratch, "ChildTasks.tla"), "w") as handle:
         handle.write(spec.replace(find, mutant["replace"]))
+    others = []
     for config in configs:
         shutil.copy(config, scratch)
         run = subprocess.run(
@@ -183,11 +194,18 @@ def check(mutant):
              "-metadir", os.path.join(scratch, "meta-" + config), "-config", config, "ChildTasks.tla"],
             cwd=scratch, capture_output=True, text=True,
         )
-        if run.returncode in (12, 13):
-            line = next((l.strip() for l in run.stdout.splitlines() if "violated" in l), "a violation")
-            return name, "caught", f"{config}: {line}"
-        if run.returncode != 0:
+        if run.returncode == 0:
+            continue
+        # TLC's verdict exits are 10 to 13, as report() has them. Anything else
+        # is the checker failing.
+        if not 10 <= run.returncode <= 13:
             return name, "ERROR", f"TLC exit {run.returncode} under {config}: the checker failed, not the model"
+        violated = [line.strip() for line in run.stdout.splitlines() if "violated" in line]
+        if any(f" {expect} is violated" in line or f" {expect} was violated" in line for line in violated):
+            return name, "caught", f"{config}: {expect}"
+        others.append(f"{config}: {violated[0] if violated else f'TLC exit {run.returncode}'}")
+    if others:
+        return name, "WRONG-PROPERTY", f"expected {expect} and saw only {'; '.join(others)}"
     return name, "SURVIVED", f"every configuration still passes, so nothing holds: {mutant['guard']}"
 
 
@@ -200,20 +218,32 @@ for name, verdict, detail in verdicts:
     print(f"{verdict}: {name} ({detail})")
 caught = sum(verdict == "caught" for _, verdict, _ in verdicts)
 print(f"child-task mutants: {caught} of {len(verdicts)} caught")
-sys.exit(0 if caught == len(verdicts) else 1)
+sys.exit(0 if caught == len(verdicts) else 3)
 PY
+# Exit 3 is the check's verdict. Any other failure is the check itself failing,
+# which says nothing about the model.
+mutant_fail=0
+if [[ "$mutant_code" -eq 3 ]]; then
+  mutant_fail=1
+elif [[ "$mutant_code" -ne 0 ]]; then
+  echo "tla.sh: INFRA ERROR: the mutant check itself failed (exit $mutant_code)" >&2
+  exit 1
+fi
 
+echo "== phase 1: vacuity probes, concurrent (each MUST find its witness trace)"
 probe_pids=()
 probe_names=()
 probe_heap=$((TLA_HEAP_MB / 8)); [[ "$probe_heap" -lt 512 ]] && probe_heap=512
 # A probe is a cfg named after the one invariant or property it must violate,
-# defined in the family's module. A new cfg is enrolled by existing.
+# defined in the family's module. A new cfg is enrolled by existing. A probe
+# fails by design, so it writes no counterexample trace beside the specs, and a
+# real violation's trace is never cleaned away with the probes'.
 probe_family() { # probe_family <module> <workers> <cfg...>
   local module="$1" workers="$2" cfg probe
   shift 2
   for cfg in "$@"; do
     probe="${cfg%.cfg}"
-    tlc "$probe_heap" "$workers" -metadir "$STATES/$probe" -config "$cfg" "$module" \
+    tlc "$probe_heap" "$workers" -noGenerateSpecTE -metadir "$STATES/$probe" -config "$cfg" "$module" \
       >"$STATES/$probe.log" 2>&1 &
     probe_pids+=($!)
     probe_names+=("$probe")
