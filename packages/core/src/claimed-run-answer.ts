@@ -121,14 +121,15 @@ export function decodeClaimedRunAnswer(answer: unknown): ClaimedRunAnswerDecode 
   const run: Record<string, unknown> = {}
   for (const [field, rule] of READ_RULES) {
     const refused = { ok: false, field: field as ClaimedRunAnswerReadField } as const
-    let value: unknown
+    // Every read of the field, including nested accessors, happens inside the try.
+    let decoded: { ok: true; value: unknown } | { ok: false } | 'absent'
     try {
-      value = fields[field]
+      const value = fields[field]
+      decoded = value === undefined && rule.role === 'optional' ? 'absent' : rule.decode(value)
     } catch {
       return refused
     }
-    if (value === undefined && rule.role === 'optional') continue
-    const decoded = rule.decode(value)
+    if (decoded === 'absent') continue
     if (!decoded.ok) return refused
     run[field] = decoded.value
   }
