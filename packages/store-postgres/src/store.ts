@@ -19,7 +19,6 @@ import {
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
-  REASON_CANCELLED,
   REASON_CLAIM_TIMEOUT,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
@@ -38,6 +37,8 @@ import {
   type TaskResult,
   type WakeSpec,
   activateCas,
+  cancelCas,
+  checkpointLeaseCas,
   claimCas,
   clampLimit,
   completeCas,
@@ -46,6 +47,7 @@ import {
   deferLaunchCas,
   durationToMs,
   emitEventCas,
+  failCas,
   mapLimit,
   neverBuggify,
   normalizeRetryStrategy,
@@ -59,6 +61,7 @@ import {
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
+  reviveCas,
   serializeTaskHeaders,
   serializeTaskValue,
   sqlFragment,
@@ -936,7 +939,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
       SWEEP_PIPELINE_WIDTH,
       (item): Promise<SweptRun | null> => {
         if (item.kind === 'cancel') {
-          const batch = new FencedBatch('sweep:cancel', this.ids.token(), { now: NOW_MS })
+          const batch = new FencedBatch('sweep:cancel', this.ids.token(), {
+            now: NOW_MS,
+            tree: TREE_DIALECT,
+          })
           return this.cancelTransition(batch, queue, item.taskId, true).then((won) =>
             won ? { kind: 'cancelled', taskId: item.taskId, runId: item.runId } : null,
           )
@@ -1228,26 +1234,23 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // The charge never exceeds the budget (TLA FailedChargeWithinBudget), so the
     // budget grows by exactly one.
     const charged = `(${top('tasks')} - infra_retries)`
-    const b = new FencedBatch('retry-task', this.ids.token(), { now: NOW_MS })
+    const b = new FencedBatch('retry-task', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     // Only a well-formed failure revives. A failed row with no reason, or with a
     // completed payload, is a corrupt outcome, and clearing the reason would pass
     // that corruption on to a pending task. The same holds for the counters: each
     // must be an exact integer in range, every owned run's ordinal too, the budget
     // must take one more, and the charge must be the recorded attempts or one more
     // and within the budget.
-    b.cas(
+    b.casTree(
       'revive',
-      'tasks',
-      `UPDATE tasks SET
-         state = 'pending',
-         attempts = ${charged},
-         max_attempts = max_attempts + 1,
-         failure_reason = NULL,
-         last_attempt_run = ?,
-         ${FENCE_SET}
-       WHERE task_id = ? AND queue = ? AND state = 'failed'
+      reviveCas({
+        queue,
+        taskId,
+        runId,
+        charged: sqlFragment(charged),
+        admission: sqlFragment(
+          `${taskOwnsEveryRun('tasks')}
          AND failure_reason IS NOT NULL AND completed_payload IS NULL
-         AND ${taskOwnsEveryRun('tasks')}
          AND EXISTS (SELECT 1 FROM runs r WHERE ${runOwnedByTask('r', 'tasks')})
          AND ${noLiveRun('tasks')}
          AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')}
@@ -1258,7 +1261,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
          AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}
          AND ${charged} - attempts IN (0, 1)
          AND ${charged} <= max_attempts`,
-      [runId, taskId, queue],
+        ),
+      }),
     )
     // The revival run, keyed on the revive stamp, carries the top run's parked
     // wake as every successor does. The live-run check is ownership, so an exact
@@ -1289,7 +1293,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   async cancelTask(queue: string, taskId: string): Promise<boolean> {
-    const batch = new FencedBatch('cancel-task', this.ids.token(), { now: NOW_MS })
+    const batch = new FencedBatch('cancel-task', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
     return this.cancelTransition(batch, queue, taskId, false)
   }
 
@@ -1309,16 +1316,14 @@ export class PostgresSchedulerStore implements SchedulerStore {
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
-    const deadlineGuard = deadlineOnly ? `AND ${cancelDue('tasks', NOW)}` : ''
-    b.cas(
+    const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''
+    b.casTree(
       'cancel',
-      'tasks',
-      `UPDATE tasks SET
-         state = 'cancelled', cancelled_at_ms = ${NOW}, cancel_at_ms = NULL,
-         failure_reason = ?, ${FENCE_SET}
-       WHERE task_id = ? AND queue = ? AND state IN ${LIVE} ${deadlineGuard}
-         AND ${taskOwnsEveryRun('tasks')}`,
-      [REASON_CANCELLED, taskId, queue],
+      cancelCas({
+        queue,
+        taskId,
+        admission: sqlFragment(`${deadlineGuard}${taskOwnsEveryRun('tasks')}`),
+      }),
     )
     b.derived('runs', {
       relation: 'tasks-to-runs',
@@ -1587,15 +1592,16 @@ export class PostgresSchedulerStore implements SchedulerStore {
         ? ''
         : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts
           OR ${epochAdditionFits(NOW, '?')})`
-    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS })
-    b.cas(
+    const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.casTree(
       'fail',
-      'runs',
-      `UPDATE runs SET
-         state = 'failed', failed_at_ms = ${NOW}, failure_reason = ?,
-         claimed_by = NULL, claim_expires_at_ms = NULL, ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'
-         AND EXISTS (
+      failCas({
+        queue,
+        runId,
+        claimToken,
+        failureJson,
+        admission: sqlFragment(
+          `EXISTS (
            SELECT 1 FROM tasks t
            WHERE ${runOwnedByTask('runs', 't')}
              AND (t.state NOT IN ${LIVE}
@@ -1605,7 +1611,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
                  AND ${storedHighestOwnedOrdinal('runs')}
                  ${retryDeadlineGuard}))
          )`,
-      [failureJson, runId, queue, claimToken, ...(retryDelayMs === null ? [] : [retryDelayMs])],
+          retryDelayMs === null ? [] : [retryDelayMs],
+        ),
+      }),
     )
     if (retry && successorId) {
       // Only a LIVE task with user budget remaining gets a retry run. The cap
@@ -1756,20 +1764,27 @@ export class PostgresSchedulerStore implements SchedulerStore {
     extendLeaseSeconds: number,
   ): Promise<void> {
     const extendMs = durationToMs('extendLeaseSeconds', extendLeaseSeconds, { positive: true })
-    const b = new FencedBatch('set-checkpoint', this.ids.token(), { now: NOW_MS })
-    b.cas(
+    const b = new FencedBatch('set-checkpoint', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    b.casTree(
       'lease',
-      'runs',
-      `UPDATE runs SET
-         claim_expires_at_ms = ${NOW} + ?, heartbeat_at_ms = ${NOW}, ${FENCE_SET}
-       WHERE run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ?
-         AND state = 'running'
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
+      checkpointLeaseCas({
+        queue,
+        taskId,
+        runId,
+        claimToken,
+        leaseExpiresAt: sqlFragment(`${NOW} + ?`, [extendMs]),
+        admission: sqlFragment(
+          `${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}
          AND EXISTS (SELECT 1 FROM tasks t
                      WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})
-         AND ${validCheckpointConflict('runs', '?')}
-         AND ${epochAdditionFits(NOW, '?')}`,
-      [extendMs, runId, queue, taskId, claimToken, checkpointName, extendMs],
+         AND ${validCheckpointConflict('runs', '?')}`,
+          [checkpointName],
+        ),
+        leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),
+      }),
     )
     // The attempt comparison inside CHECKPOINT_LWW is the last-writer-wins
     // tiebreaker, never the fence: a lower-attempt writer under a still-valid

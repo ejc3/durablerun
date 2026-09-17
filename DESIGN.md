@@ -732,6 +732,17 @@ are load-bearing):
      stamp cannot drift between them. The await-event registration parks its
      run through a follow-on, which is text until PR3.9e. It takes the cleared
      claim columns from the same list, held to it by a type.
+   - A failing run, the cancel transition that `cancel-task` and the deadline
+     sweep share, a task's revival, and a checkpoint's lease extension are
+     shared statements too. Core holds what they assign and the identity they
+     act on: the claimed run, or the task in its queue and, for a
+     cancellation, in a live state. A store passes what it requires of the
+     owning task or of the task's runs and counters, the retry deadline's
+     headroom guard when a retry follows, the due deadline when the sweep
+     cancels, the charge a revival records, and the lease deadline with its
+     guard. The failed state and the well-formed failure a revival requires
+     are part of the store's predicate, because registered mutations own that
+     text.
    - Only a compare-and-set may hold the clock token. Raw fragment text is the
      one thing a tree cannot read, so it is scanned for the batch clock's text
      and for the clock spellings `scripts/clock-lint.py` lists. That scan is a
@@ -1124,7 +1135,10 @@ this, names an unknown state, or lacks an outcome column is refused with
 task outcome selects `TASK_RESULT_COLUMNS` and decodes the row through core's
 `decodeTaskResult`, so a second read path cannot report a row the store refuses.
 `scripts/outcome-lint.py` refuses any other spelling of those columns in a
-production TypeScript source. The conformance harness reads raw task state as
+production TypeScript source, with one exception: core's shared statements and
+their column descriptor may name one as an object key, the column a statement
+assigns or the descriptor lists. A property read, a selected column, and SQL
+text are refused there too. The conformance harness reads raw task state as
 its oracle, and the engine invariants report each rule a task row breaks as its
 own condition.
 

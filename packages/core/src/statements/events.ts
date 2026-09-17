@@ -1,5 +1,6 @@
 import { expressionBuilder } from 'kysely'
 import {
+  FENCE_ASSIGNMENTS,
   type SqlFragment,
   aliasedAs,
   defineStatement,
@@ -44,8 +45,7 @@ export const registerWaitCas = defineStatement(
       status: eb.val('waiting'),
       timeout_at_ms: rawSql<number | null>(binds.timeoutAt, 'value'),
       created_at_ms: nowValue,
-      fence_stamp: stampValue,
-      fence_at_ms: nowValue,
+      ...FENCE_ASSIGNMENTS,
     }
     const columns = Object.keys(wait) as (keyof typeof wait)[]
     return treeBuilder
@@ -113,8 +113,7 @@ export const emitEventCas = defineStatement(
         event_name: binds.eventName,
         payload: binds.payloadJson,
         emitted_at_ms: nowValue,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
+        ...FENCE_ASSIGNMENTS,
       })
       .onConflict((conflict) =>
         conflict

@@ -18,6 +18,7 @@ import {
   TreeDialect,
   emitEventCas,
   registerWaitCas,
+  reviveCas,
   sqlFragment,
 } from '../src/index.js'
 
@@ -131,6 +132,26 @@ async function sent(dialect: TreeDialect, clock: string, name: string, cas: Defi
   if (statement === undefined) throw new Error('the batch sent nothing')
   return statement
 }
+
+describe('guards a shared statement builds from nodes', () => {
+  it('revives only a failed task, whatever admission a store passes', async () => {
+    const revive = reviveCas({
+      queue: 'q',
+      taskId: 't1',
+      runId: 'r2',
+      charged: sqlFragment('1'),
+      admission: sqlFragment('1 = 1'),
+    })
+    const { sql, args } = await sent(
+      new TreeDialect(new SqliteQueryCompiler()),
+      `CAST(unixepoch('subsec') * 1000 AS INTEGER)`,
+      'revive',
+      revive,
+    )
+    expect(sql).toContain('"task_id" = ? and "queue" = ? and "state" = ? and (1 = 1)')
+    expect(args).toContain('failed')
+  })
+})
 
 describe('one statement tree, spelled by each dialect', () => {
   const mysql = new TreeDialect(new MysqlSpellingCompiler())

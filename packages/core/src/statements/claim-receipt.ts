@@ -1,4 +1,10 @@
-import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
+import {
+  FENCE_ASSIGNMENTS,
+  type SqlFragment,
+  defineStatement,
+  nowValue,
+  rawSql,
+} from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 import { type RunsUpdate, whereClaimedRun } from './claimed-run.js'
 import { parkAssignments } from './park.js'
@@ -59,8 +65,7 @@ export const claimCas = defineStatement(
         claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt, 'value'),
         heartbeat_at_ms: nowValue,
         wake_step: eb.fn.coalesce('wake_step', rawSql<string>(binds.legacyWaitStep, 'value')),
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
+        ...FENCE_ASSIGNMENTS,
       }))
       .where((eb) => eb('run_id', 'in', rawSql<string>(binds.candidateRunIds, 'subquery')))
       .where((eb) =>
@@ -92,8 +97,7 @@ export const activateCas = defineStatement(
         started_at_ms: eb.fn.coalesce('started_at_ms', nowValue),
         claim_expires_at_ms: rawSql<number>(binds.leaseExpiresAt, 'value'),
         heartbeat_at_ms: nowValue,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
+        ...FENCE_ASSIGNMENTS,
       }))
       .$call(whereClaimReceipt(binds))
       .where(rawSql<boolean>(binds.leaseFits, 'predicate')),

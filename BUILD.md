@@ -854,8 +854,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The stores' text copy of the parked claim columns and the wake guard's AND
     form are deleted. Its review round is
     `postmortems/pr3.9c-insert-rules-review.md`.
-  - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
-    and spawn.
+  - PR3.9d, in two halves. The first moves the compare-and-sets of fail,
+    retry-task, set-checkpoint, and the cancel transition that cancel-task and
+    the deadline sweep share. `failure_reason` joins `STORE_TABLE_COLUMNS`,
+    and the outcome lint allows core's `statements/` directory and
+    `store-tables.ts` to name the outcome columns. The failed state and the
+    well-formed failure that retry-task requires stay store text, because
+    registered mutations own them. The second half moves spawn and the two
+    lease sweeps, lost-launch and claim-timeout. The first half's review round is
+    `postmortems/pr3.9d-first-half-review.md`.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
@@ -869,8 +876,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     four moved methods on libSQL with a stub executor: reschedule 78.5 µs to
     about 167 µs, suspend 121 µs to about 201 µs, await-event 141 µs to about
     270 µs, and emit-event 276 µs to about 334 µs. A local `file:` round trip
-    is about 100 µs and a remote one is milliseconds. Collect node kinds, raw
-    nodes, and function nodes in one pass when the text checks are deleted.
+    is about 100 µs and a remote one is milliseconds. PR3.9d's review measured
+    about 68 to 153 µs more store CPU for each set-checkpoint and 68 to 136 µs
+    for each cancel, by the same cause. Collect node kinds, raw nodes, and
+    function nodes in one pass when the text checks are deleted.
   - Deferred to PR3.9e: the insert rules get registered tree-path mutations
     with the other tree checks. Until then each condition is held by its own
     refusal in `fenced-batch-tree.test.ts`, and PR3.9c witnessed thirteen
@@ -899,15 +908,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     only copies.
   - Deferred to PR3.9e: base-gate's re-aim bridge has one arm per historical
     registry hash. Arms pinned to a registry no open PR is based on are deleted
-    then, leaving the helpers and the live arm.
+    then, leaving the helpers and the live arm. The checker bridges go the same
+    way: the batch lint bridge is pinned to a lint main no longer has, and the
+    outcome lint bridge dies when PR3.9d's first half merges. What remains
+    becomes one table of pinned file pairs.
   - Deferred to PR3.9e, from `postmortems/pr3.9a-statement-trees-review.md`: a
     tree's gating rule decides position, not correlation, so a follow-on gated by
     an uncorrelated subquery may write a row the fenced run does not own. The
     generated `derived()` selections are correlated by construction, and the text
     path has the same residual today.
-  - Deferred to PR3.9d: the task outcome columns join `STORE_TABLE_COLUMNS` when
-    a tree statement first writes them, with the outcome lint's allowance
-    extended to core's `statements/` directory.
+  - Deferred until a tree statement names it: `tasks.completed_payload` stays
+    out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
+    which its statements assign. Completion's task mirror is a generated
+    `derived()` statement, which PR3.9e moves.
   - Option, not scheduled: load compiled statements from the generated corpus at
     run time, so Kysely becomes a build-time dependency. Importing Kysely
     unbundled measured about 65 ms per cold start, beside about 72 ms for
@@ -1034,6 +1047,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
   crash mid-rollback resumes; reverse order exactly once each; caught errors
   never trigger rollback; `output === undefined` for started-not-persisted
   steps; rollback-failure halts the chain and surfaces in the result.
+
+- **PR3.12 concurrent PostgreSQL migrators**: a cold-start migrator that loses
+  a race can be rejected. PR #40's first CI run failed `lets concurrent
+  cold-start migrators converge on the current schema` on PostgreSQL with two
+  of eight migrators rejected, on code that PR does not touch. PostgreSQL's log
+  for that run shows the race: three losers of `CREATE TABLE IF NOT EXISTS meta`
+  raised `pg_type_typname_nsp_index`, and three losers of the version sentinel
+  raised `meta_pkey` on `applied:v1`. `applyVersionedWrite` forgives a loser
+  only when the recorded version has already reached the write's version, and
+  a loser that reads before the winner commits sees the old version and
+  rethrows. The test passed in the eleven CI runs before it and five times in a
+  row locally, so the window is narrow. Fix it red first, with a seam that
+  holds the winner's commit while a loser reads. Until then a rerun clears it.
 
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding

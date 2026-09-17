@@ -17,9 +17,11 @@ const nullableInteger = { kind: 'integer', nullable: true } as const
  * types from it, so a misspelled column is a type error, and a conformance case compares
  * it with every dialect's catalog, so it cannot drift from the schema.
  *
- * The task outcome columns stay out until a tree statement writes them, because the
- * outcome lint confines them to the stores and `decodeTaskResult`. A later PR adds
- * checkpoints.
+ * `failure_reason` is here because `fail`, `cancel`, and `retry-task` assign it. The
+ * outcome lint still confines reading an outcome to the stores and `decodeTaskResult`,
+ * and allows this descriptor and the shared statements to name the column. No tree
+ * statement names `tasks.completed_payload` yet, so it stays out.
+ * A later PR adds checkpoints.
  */
 export const STORE_TABLE_COLUMNS = {
   runs: {
@@ -43,6 +45,7 @@ export const STORE_TABLE_COLUMNS = {
     started_at_ms: nullableInteger,
     completed_at_ms: nullableInteger,
     failed_at_ms: nullableInteger,
+    failure_reason: nullableText,
     result: nullableText,
     created_at_ms: integer,
     fence_stamp: nullableText,
@@ -66,6 +69,7 @@ export const STORE_TABLE_COLUMNS = {
     first_started_at_ms: nullableInteger,
     cancel_at_ms: nullableInteger,
     cancelled_at_ms: nullableInteger,
+    failure_reason: nullableText,
     created_at_ms: integer,
     fence_stamp: nullableText,
     fence_at_ms: nullableInteger,

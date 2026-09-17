@@ -1,7 +1,13 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { awaitOwned, claimActivated, claimOne, withFixture } from '../src/scenario.js'
+import {
+  awaitOwned,
+  checkpointOwned,
+  claimActivated,
+  claimOne,
+  withFixture,
+} from '../src/scenario.js'
 import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /**
@@ -22,9 +28,25 @@ const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
   suspend: ['suspended'],
   'await-event': ['registered'],
   'emit-event': ['emitted'],
+  'set-checkpoint': ['written'],
+  // A retrying failure carries the retry deadline's headroom guard, and a final one does not.
+  fail: ['retrying', 'final'],
+  'retry-task': ['revived'],
+  'cancel-task': ['cancelled'],
+  'sweep:cancel': ['cancelled'],
 }
 
 type Signature = readonly { sql: string; bindArity: number }[]
+
+/**
+ * A label with more than one variant names each signature by what it holds, never by
+ * the order the scenario happened to reach it in.
+ */
+const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
+  // Only a retrying failure inserts a successor run.
+  fail: (signature) =>
+    signature.some(({ sql }) => /insert into runs/i.test(sql)) ? 'retrying' : 'final',
+}
 
 function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>): SqlExecutor {
   return {
@@ -76,6 +98,34 @@ describe('generated SQL corpus', () => {
         const waiting = await claimActivated(store, 'q', 'w5')
         await awaitOwned(store, 'q', waiting, 'step', 'ready', 5)
         await store.emitEvent('q', 'ready', '{}')
+        // The emit made the waiter due. Finish it, or the next claim takes it instead
+        // of the task the scenario means to fail.
+        const woken = await claimActivated(store, 'q', 'w5b')
+        expect(woken.taskId).toBe(waiting.taskId)
+        await store.complete('q', woken.runId, woken.claimToken, '"woken"')
+        const flaky = await store.spawn('q', 'job', '{}', { maxAttempts: 2 })
+        const failing = await claimActivated(store, 'q', 'w6')
+        // The scenario means to fail this task twice. A claim that picked up another
+        // run would record the right labels for the wrong reasons.
+        expect(failing.taskId).toBe(flaky.taskId)
+        await checkpointOwned(store, 'q', failing, 'step', '{}', 30)
+        await store.fail('q', failing.runId, failing.claimToken, '{"name":"E"}', {
+          delaySeconds: 0,
+        })
+        const retried = await claimActivated(store, 'q', 'w7')
+        expect(retried.taskId).toBe(flaky.taskId)
+        expect(retried.attempt).toBe(failing.attempt + 1)
+        await store.fail('q', retried.runId, retried.claimToken, '{"name":"E"}', null)
+        // A compare-and-set that matches nothing still compiles, so each step says it won.
+        expect(await store.retryTask('q', retried.taskId)).not.toBeNull()
+        expect(await store.cancelTask('q', retried.taskId)).toBe(true)
+        // Last, because it moves the clock: a task never started by its deadline.
+        await fixture.admin.setFakeNowEpochMs(1_000_000)
+        const late = await store.spawn('q', 'job', '{}', { cancellation: { maxDelaySeconds: 30 } })
+        await fixture.admin.setFakeNowEpochMs(1_031_000)
+        expect(await store.sweep('q', 10)).toContainEqual(
+          expect.objectContaining({ kind: 'cancelled', taskId: late.taskId }),
+        )
       })
       const corpus = Object.fromEntries(
         Object.entries(TREE_LABELS).map(([label, variants]) => {
@@ -86,10 +136,19 @@ describe('generated SQL corpus', () => {
               `${dialect}: ${label} compiled to ${signatures.length} signatures but declares ${variants.length} variants`,
             )
           }
-          return [
-            label,
-            Object.fromEntries(signatures.map((signature, i) => [variants[i], signature])),
-          ]
+          const named = signatures.map((signature, i): [string, Signature] => {
+            const variant = VARIANT_OF[label]?.(signature) ?? variants[i]
+            if (variant === undefined || !variants.includes(variant)) {
+              throw new Error(`${dialect}: ${label} compiled to an undeclared variant '${variant}'`)
+            }
+            return [variant, signature]
+          })
+          if (new Set(named.map(([variant]) => variant)).size !== named.length) {
+            throw new Error(`${dialect}: two ${label} signatures claim one variant`)
+          }
+          // Declared order, so the corpus file does not depend on the scenario's order.
+          named.sort(([a], [b]) => variants.indexOf(a) - variants.indexOf(b))
+          return [label, Object.fromEntries(named)]
         }),
       )
       const path = new URL(`../corpus/${dialect}.json`, import.meta.url)

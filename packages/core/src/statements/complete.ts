@@ -1,4 +1,10 @@
-import { type SqlFragment, defineStatement, nowValue, rawSql, stampValue } from '../sql-tree.js'
+import {
+  FENCE_ASSIGNMENTS,
+  type SqlFragment,
+  defineStatement,
+  nowValue,
+  rawSql,
+} from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
 import { CLEARED_WAKE_COLUMNS, whereClaimedRun } from './claimed-run.js'
 
@@ -24,8 +30,7 @@ export const completeCas = defineStatement(
         ...CLEARED_WAKE_COLUMNS,
         claimed_by: null,
         claim_expires_at_ms: null,
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
+        ...FENCE_ASSIGNMENTS,
       })
       .$call(whereClaimedRun(binds))
       .where(rawSql<boolean>(binds.taskAdmitsCompletion, 'predicate')),

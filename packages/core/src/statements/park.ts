@@ -1,5 +1,5 @@
 import type { ExpressionBuilder } from 'kysely'
-import { type SqlFragment, nowValue, rawSql, stampValue } from '../sql-tree.js'
+import { FENCE_ASSIGNMENTS, type SqlFragment, nowValue, rawSql } from '../sql-tree.js'
 import type { StoreTables } from '../store-tables.js'
 
 /** The claim columns a parked run clears, so it carries no live token, lease deadline, or heartbeat. */
@@ -35,7 +35,6 @@ export function parkAssignments(eb: ExpressionBuilder<StoreTables, 'runs'>, wake
       .end(),
     available_at_ms: rawSql<number>(wakeAt, 'value'),
     ...PARKED_CLAIM_COLUMNS,
-    fence_stamp: stampValue,
-    fence_at_ms: nowValue,
+    ...FENCE_ASSIGNMENTS,
   }
 }

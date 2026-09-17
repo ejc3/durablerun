@@ -4,10 +4,9 @@ import type { PersistedNumericTable } from '../src/index.js'
 import { withFixture } from '../src/scenario.js'
 import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 
-/** Catalog columns the statement builder leaves out on purpose: the task outcome columns. */
+/** Catalog columns the statement builder leaves out on purpose: no tree statement names them yet. */
 const OMITTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
-  runs: ['failure_reason'],
-  tasks: ['completed_payload', 'failure_reason'],
+  tasks: ['completed_payload'],
 }
 
 function columnKind(nativeType: string): string {

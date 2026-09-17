@@ -1806,6 +1806,56 @@ export class S {
     (
         "outcome-lint.py",
         {
+            "packages/core/src/nested/store-tables.ts": (
+                "export const COLUMNS = { failure_reason: 'text' } as const\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "only core's exact top-level store-tables.ts is exempt",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/statements/read-outcome.ts": (
+                "export const read = (row: { reason: unknown }) => JSON.parse(String(row.failure_reason))\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a shared statement may assign or guard an outcome column, never read it off a row",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/statements/select-outcome.ts": (
+                "export const pick = (db: { select(column: string): unknown }) => db.select('failure_reason')\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a shared statement may not select an outcome column",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/statements/sql-outcome.ts": (
+                "export const SQL = `SELECT failure_reason, completed_payload FROM tasks`\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "a shared statement holds no SQL text that reads an outcome",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/statements/nested/read.ts": (
+                "export const read = (row: { failure_reason: unknown }) => row.failure_reason\n"
+            ),
+        },
+        "task outcome column failure_reason outside",
+        "only the shared statements' own directory is exempt, not a directory below it",
+    ),
+    (
+        "outcome-lint.py",
+        {
             "packages/core/src/index.ts": "export {}\n",
             "packages/driver/bin/host.ts": "const SQL = `SELECT completed_payload FROM tasks`\n",
         },
@@ -4002,6 +4052,18 @@ const pattern = /this\.db\.batch\(/
             ),
         },
         "core's decoder defines the outcome column list",
+    ),
+    (
+        "outcome-lint.py",
+        {
+            "packages/core/src/store-tables.ts": (
+                "export const COLUMNS = { failure_reason: 'text', completed_payload: 'text' } as const\n"
+            ),
+            "packages/core/src/statements/fail.ts": (
+                "export const assigned = { failure_reason: 'reason' }\n"
+            ),
+        },
+        "the shared statements and their column descriptor name the columns they write",
     ),
     (
         "outcome-lint.py",
