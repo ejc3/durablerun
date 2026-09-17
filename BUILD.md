@@ -870,7 +870,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a cast to the SET list, which is nodes in core, and still bypasses all
     three attempt proofs. After this half every compare-and-set is a tree, and
     what remains text is follow-ons, derived statements, tails, and reads. The first half's
-    review round is `postmortems/pr3.9d-first-half-review.md`.
+    review round is `postmortems/pr3.9d-first-half-review.md`. The second half's is
+    `postmortems/pr3.9d-second-half-review.md`.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
