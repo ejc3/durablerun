@@ -826,7 +826,25 @@ these three things; nothing else in the system does I/O, time, or randomness.
   limit is written down: it can only find a wrong DECISION about rows it
   constructs, never a wrong payload, and never a row shape nobody thought of.
 
-- **PR3.9 compile the SQL instead of scanning it** (candidate, not started).
+- **PR3.9 compile the SQL instead of scanning it** (in progress, five PRs).
+  Thirteen operations across two dialects, plus about 170 registered mutations
+  whose finds quote store SQL, do not fit one reviewable PR, so it lands in five.
+  Until PR3.9e, a batch may hold both tree statements, checked as trees, and
+  text statements, still checked by the scanners.
+  - PR3.9a: the tree layer in core. Engine tokens are value nodes carrying
+    sentinel objects, and the checks decide by node identity and position:
+    fences that gate every row, the clock token, blind counters, and raw
+    boolean fragments. Per-dialect compilers keep the executor's `?` binds.
+    `FencedBatch` accepts tree statements, a generated corpus starts, and
+    `complete`'s compare-and-set moves to a tree in both dialects.
+  - PR3.9b: claim, activation, and `deferLaunch`, with the one admission
+    fragment deferred below.
+  - PR3.9c: suspend, reschedule, await-event, and emit-event.
+  - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
+    and spawn.
+  - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
+    corpus enrolled from label and variant descriptors, and the text scanners
+    and the lint rules they make redundant deleted.
   Every recurring defect in this engine's history is the same shape: a checker
   that matches one way of WRITING a condition and misses an equivalent one.
   `NOT EXISTS (` was recognised and `NOT (EXISTS (` was not; `x = x + 1` was and
