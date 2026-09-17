@@ -2,7 +2,7 @@
 \* Vacuity probes for ChildTasks.tla, as Probes.tla is for Scheduler.tla.  Each is
 \* EXPECTED TO FAIL under the configuration that bears its name, and its
 \* counterexample is a witness.  Two show that an invariant can fail, one that the
-\* liveness property can, and three that a behaviour the protocol exists for is
+\* liveness property can, and four that a behaviour the protocol exists for is
 \* reachable.  Run one at a time.
 EXTENDS ChildTasks
 
@@ -20,4 +20,7 @@ ChildTasksProbeWokenParent == parent # "woken"
 ChildTasksProbeSecondOutcome == ~(retries > 0 /\ child \in Outcomes /\ child # doneEvent)
 \* Witness: an await the rule refused.
 ChildTasksProbeRefusedAwait == parent # "refused"
+\* Witness: a parent whose wait timed out, and whose child then ended.  The emit
+\* found no wait row and woke nobody.
+ChildTasksProbeTimedOutThenEmitted == ~(parent = "timedout" /\ doneEvent # None)
 =============================================================================

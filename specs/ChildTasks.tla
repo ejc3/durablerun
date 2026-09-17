@@ -56,7 +56,8 @@
 \*  - Await cycles.  A parent that awaits a child that awaits the parent waits
 \*    forever in any queue.  Nothing detects it, and only a cancellation
 \*    deadline bounds it, as it bounds any untimed await.
-\*  - A timed await.  Its timeout branch is not modeled here.
+\*  - Whether a wait is timed.  Any registered wait may time out here, which
+\*    checks a superset of the behaviours.
 \*  - The fairness below borrows Scheduler.tla's EventuallyTerminal, which holds
 \*    under that model's own restrictions: an untimed await only under an armed
 \*    cancellation deadline.
@@ -70,6 +71,8 @@
 \*   'retry-task' -> ReviveChild  [cas-fenced]  (leaves the event alone)
 \*   'await-event' -> AwaitHit / AwaitMiss  [cas-fenced]  (the same batch,
 \*     reached by an internal path that builds the reserved name)
+\*   'claim' of a run whose timed wait came due -> AwaitTimeout  [cas-fenced]
+\*     (unchanged: the claim consumes the wait row)
 EXTENDS Naturals
 
 CONSTANTS
@@ -90,8 +93,8 @@ VARIABLES
   child,         \* "unspawned", "live", or an outcome
   firstOutcome,  \* ghost: the first outcome the child reached, or None
   doneEvent,     \* the completion event's payload, or None (unset)
-  parent,        \* "running", "waiting", "woken", "resolved", "refused",
-                 \* "cancelled"
+  parent,        \* "running", "waiting", "woken", "resolved", "timedout",
+                 \* "refused", "cancelled"
   \* wait and parked could be derived from parent and doneEvent.  They are kept
   \* because they are the two stored representations, the wait row and the run's
   \* parked payload, whose agreement WaitIntegrity and ParkedMatchesEvent check.
@@ -169,6 +172,14 @@ ParentClaimWoken ==
   /\ parent' = "resolved" /\ seen' = parked
   /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, retries, owed>>
 
+\* A timed wait comes due and the claim that finds it consumes the wait row
+\* (Scheduler.tla's Claim).  The await returns no outcome, and a later emit finds
+\* no wait row, so it cannot wake this parent a second time.
+AwaitTimeout ==
+  /\ parent = "waiting"
+  /\ parent' = "timedout" /\ wait' = FALSE
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries, owed>>
+
 \* Cancelling the parent deletes its wait rows, as CancelCore does.
 CancelParent ==
   /\ parent \in {"running", "waiting", "woken"}
@@ -186,7 +197,7 @@ Next ==
   \/ \E o \in Outcomes : ChildTerminal(o) \/ ForgedEmit(o)
   \/ LateEmit \/ ReviveChild
   \/ AwaitHit \/ AwaitMiss \/ AwaitRefused
-  \/ ParentClaimWoken \/ CancelParent
+  \/ ParentClaimWoken \/ AwaitTimeout \/ CancelParent
 
 Spec == Init /\ [][Next]_vars
 
@@ -203,7 +214,8 @@ TypeOK ==
   /\ child \in {"unspawned", "live"} \cup Outcomes
   /\ firstOutcome \in Outcomes \cup {None}
   /\ doneEvent \in Outcomes \cup {None}
-  /\ parent \in {"running", "waiting", "woken", "resolved", "refused", "cancelled"}
+  /\ parent \in {"running", "waiting", "woken", "resolved", "timedout", "refused",
+                "cancelled"}
   /\ wait \in BOOLEAN /\ owed \in BOOLEAN
   /\ parked \in Outcomes \cup {None} /\ seen \in Outcomes \cup {None}
   /\ retries \in 0..MaxRetries
@@ -227,9 +239,9 @@ SeenIsFirstOutcome ==
   /\ (parent = "resolved") <=> (seen # None)
 
 \* The refusing rule refuses: with the await not allowed, the parent never
-\* waits, is never woken, and never gets an outcome from an await.
+\* waits, is never woken, and never gets an outcome or a timeout from an await.
 RefusedNeverWaits ==
-  ~AwaitAllowed => (~wait /\ parent \notin {"waiting", "woken", "resolved"})
+  ~AwaitAllowed => (~wait /\ parent \notin {"waiting", "woken", "resolved", "timedout"})
 
 DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 
@@ -237,6 +249,7 @@ DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 DoneAuthority ==
   [][doneEvent' # doneEvent => (child = "live" /\ child' \in Outcomes)]_vars
 
-\* A registered wait is resolved, unless the parent is cancelled first.
-EveryWaitResolves == (parent = "waiting") ~> (parent \in {"resolved", "cancelled"})
+\* A registered wait is resolved, times out, or dies with a cancelled parent.
+EveryWaitResolves ==
+  (parent = "waiting") ~> (parent \in {"resolved", "timedout", "cancelled"})
 =============================================================================
