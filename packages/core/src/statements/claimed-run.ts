@@ -1,6 +1,6 @@
 import type { UpdateQueryBuilder, UpdateResult } from 'kysely'
-import { nowValue } from '../sql-tree.js'
-import type { StoreTables } from '../store-tables.js'
+import { type SqlFragment, nowValue, rawSql } from '../sql-tree.js'
+import { type StoreTables, treeBuilder } from '../store-tables.js'
 
 export type RunsUpdate = UpdateQueryBuilder<StoreTables, 'runs', 'runs', UpdateResult>
 
@@ -40,3 +40,34 @@ export const whereTaskInQueue =
  */
 export const failedRunColumns = (reason: string) =>
   ({ state: 'failed', failed_at_ms: nowValue, failure_reason: reason, claimed_by: null }) as const
+
+/**
+ * What a claim hands its worker, read from the run `r` and the task `t` that owns it.
+ * Both reads of a claimed run select this one list, and every store's decoder reads
+ * these names, so the receipt a retry returns and the payload an activation returns
+ * cannot differ in shape.
+ */
+export const CLAIMED_RUN_SELECTION = [
+  'r.run_id',
+  'r.task_id',
+  'r.attempt',
+  'r.claim_gen',
+  'r.claim_expires_at_ms',
+  'r.lease_ms',
+  'r.wake_event',
+  'r.event_payload',
+  'r.wake_step',
+  't.task_name',
+  't.params',
+  't.retry_strategy',
+  't.max_attempts',
+  't.headers',
+  't.infra_retries',
+] as const
+
+/** Claimed runs: a run `r` joined to the task `t` that owns it, by the store's ownership predicate. */
+export const claimedRunRows = (taskOwnsRun: SqlFragment) =>
+  treeBuilder
+    .selectFrom('runs as r')
+    .innerJoin('tasks as t', (join) => join.on(rawSql<boolean>(taskOwnsRun, 'predicate')))
+    .select(CLAIMED_RUN_SELECTION)

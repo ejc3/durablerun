@@ -2,6 +2,7 @@ import { type ExpressionBuilder, expressionBuilder } from 'kysely'
 import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
+  aliasedAs,
   coalesced,
   defineStatement,
   fenceValue,
@@ -11,6 +12,33 @@ import {
   stampValue,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
+
+/** The claim an awaiting worker presents: its run, in this queue and task, under its token. */
+type AwaitingClaim = {
+  queue: string
+  runId: string
+  taskId: string
+  claimToken: string
+  /** The store's join of the run `r` to the task `t` that owns it. */
+  taskOwnsRun: SqlFragment
+}
+
+/**
+ * The run is still running under its claim, and the store's predicate holds of the task
+ * `t` that owns it. The claim's identity is nodes, so a store fragment cannot leave it
+ * out. Registering a wait and reading an emitted event both require this.
+ */
+const stillClaimed = (claim: AwaitingClaim, task: SqlFragment) =>
+  treeBuilder
+    .selectFrom('runs as r')
+    .innerJoin('tasks as t', (join) => join.on(rawSql<boolean>(claim.taskOwnsRun, 'predicate')))
+    .select('r.run_id')
+    .where('r.run_id', '=', claim.runId)
+    .where('r.queue', '=', claim.queue)
+    .where('r.task_id', '=', claim.taskId)
+    .where('r.claimed_by', '=', claim.claimToken)
+    .where('r.state', '=', 'running')
+    .where(rawSql<boolean>(task, 'predicate'))
 
 /**
  * `await-event`'s compare-and-set: register a wait, unless the event was already
@@ -65,24 +93,7 @@ export const registerWaitCas = defineStatement(
               ),
             ),
           )
-          // The run is still running under its claim, and its task is eligible. The
-          // claim's identity is nodes, so a store fragment cannot leave it out.
-          .where((where) =>
-            where.exists(
-              where
-                .selectFrom('runs as r')
-                .innerJoin('tasks as t', (join) =>
-                  join.on(rawSql<boolean>(binds.taskOwnsRun, 'predicate')),
-                )
-                .select('r.run_id')
-                .where('r.run_id', '=', binds.runId)
-                .where('r.queue', '=', binds.queue)
-                .where('r.task_id', '=', binds.taskId)
-                .where('r.claimed_by', '=', binds.claimToken)
-                .where('r.state', '=', 'running')
-                .where(rawSql<boolean>(binds.taskEligible, 'predicate')),
-            ),
-          )
+          .where((where) => where.exists(stillClaimed(binds, binds.taskEligible)))
           .where(rawSql<boolean>(binds.timeoutFits, 'predicate')),
       )
       .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
@@ -185,4 +196,38 @@ export const wakeRunsUpdate = defineStatement(
       .where(rawSql<boolean>(binds.witness, 'predicate'))
       .where((eb) => eb.exists(recordedEvent(eb, binds.eventName).select('f.queue')))
       .where(rawSql<boolean>(binds.taskIsLive, 'predicate')),
+)
+
+/** One event, by its key. */
+const eventRow = (binds: { queue: string; eventName: string }) =>
+  treeBuilder
+    .selectFrom('events')
+    .where('queue', '=', binds.queue)
+    .where('event_name', '=', binds.eventName)
+
+/**
+ * `emit-event`'s read of the stored event. It is an open read: on a replay the row may
+ * carry an earlier delivery's stamp, and its payload must be TEXT whoever stamped it.
+ * How a dialect names a stored value's type is the store's.
+ */
+export const storedEventRead = defineStatement(
+  'emit-event stored-event',
+  (binds: { queue: string; eventName: string; payloadType: SqlFragment }) =>
+    eventRow(binds).select(() => [
+      aliasedAs(rawSql<string>(binds.payloadType, 'value'), 'payload_type'),
+    ]),
+)
+
+/**
+ * `await-event`'s hit: the event, if it was already emitted, for a run still running
+ * under its claim. It is an open read, because the emitting batch wrote the event. The
+ * live claim token is what fences it.
+ */
+export const emittedEventRead = defineStatement(
+  'await-event hit',
+  (binds: AwaitingClaim & { eventName: string; payloadType: SqlFragment; liveTask: SqlFragment }) =>
+    eventRow(binds)
+      .select('payload')
+      .select(() => [aliasedAs(rawSql<string>(binds.payloadType, 'value'), 'payload_type')])
+      .where((where) => where.exists(stillClaimed(binds, binds.liveTask))),
 )

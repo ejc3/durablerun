@@ -30,11 +30,13 @@ import {
   type TaskResult,
   type WakeSpec,
   activateCas,
+  activatedRunRead,
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
   checkpointWrite,
   claimCas,
+  claimReceiptRead,
   claimTimeoutSuccessorInsert,
   clampLimit,
   coalesced,
@@ -44,6 +46,7 @@ import {
   deferLaunchCas,
   durationToMs,
   emitEventCas,
+  emittedEventRead,
   failCas,
   failClaimTimeoutCas,
   mapLimit,
@@ -63,12 +66,15 @@ import {
   requireRunOrdinal,
   revivalRunInsert,
   reviveCas,
+  revivedRunRead,
   serializeTaskHeaders,
   serializeTaskValue,
+  spawnReceiptRead,
   spawnRunInsert,
   spawnTaskCas,
   sqlFragment,
   storageValueKind,
+  storedEventRead,
   suspendCas,
   userRetrySuccessorInsert,
   wakeRunsUpdate,
@@ -234,6 +240,9 @@ const INFRA_RETRIES_FROM = (successorParam: string, fence: string): string =>
 /** A run's own row, by id — the correlation every fence in this file uses. */
 const BY_RUN = `f.run_id = ?`
 
+/** How this dialect names the type of an event's stored payload. Both reads of an event require 'text'. */
+const STORED_PAYLOAD_TYPE = `typeof(payload)`
+
 /*
  * The equality makes the two attempt values one semantic ordinal. Validate
  * the checkpoint's canonical representation and range once; any different
@@ -315,11 +324,6 @@ function finishSuspension(b: FencedBatch, runId: string): void {
   taskMirrorsRun(b, runId, 'suspend')
   waitsGone(b, runId, 'suspend')
 }
-
-/** Columns needed to decode a ClaimedRun (shared by claim and activate). */
-const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
-       r.wake_event, r.event_payload, r.wake_step,
-       t.task_name, t.params, t.retry_strategy, t.max_attempts, t.headers, t.infra_retries`
 
 /**
  * Sweep discovery scans, exported so the query-plan suite pins the EXACT
@@ -548,25 +552,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // winner over a bare id collision and breaks ties on task_id, so it is
     // deterministic on every dialect; an `ORDER BY (t.task_id = ?) DESC` would
     // not be, since Postgres sorts NULLs first.
-    b.openTail(
+    b.openTailTree(
       'receipt',
       'the winner is a task another caller created; the unique idempotency index is its fence, not this batch stamp',
-      `SELECT winner.task_id AS task_id,
-              (SELECT r.run_id FROM runs r
-                 WHERE ${runOwnedByTask('r', 'winner')}
-                 ORDER BY r.attempt DESC LIMIT 1) AS run_id
-       FROM (
-         SELECT t.task_id, t.queue, 1 AS priority
-         FROM tasks t WHERE t.task_id = ? AND t.queue = ?
-         UNION ALL
-         SELECT t.task_id, t.queue, 0 AS priority
-         FROM tasks t
-         WHERE ? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
-           AND t.task_id <> ?
-       ) winner
-       ORDER BY winner.priority, winner.task_id
-       LIMIT 1`,
-      [taskId, queue, key, queue, key, taskId],
+      spawnReceiptRead({
+        taskId,
+        winner: sqlFragment(
+          `(t.task_id = ? AND t.queue = ?)
+         OR (? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
+           AND t.task_id <> ?)`,
+          [taskId, queue, key, queue, key, taskId],
+        ),
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      }),
     )
     const { won, results } = await b.run(this.db)
     if (won === 'task') return { taskId, runId, created: true }
@@ -709,13 +707,15 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // ORIGINAL selection, so this read must see rows a PREVIOUS batch stamped.
     // Only LIVE tasks, so a terminal task's corrupt running run is never
     // launched.
-    b.openTail(
+    b.openTailTree(
       'picked',
       'rule 4: a same-token retry is a receipt and must return the original selection, which a previous batch stamped',
-      `SELECT ${CLAIMED_RUN_COLUMNS}
-       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
-       WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
-         AND t.state IN ${LIVE}
+      claimReceiptRead({
+        queue,
+        claimToken,
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+        admission: sqlFragment(
+          `t.state IN ${LIVE}
          AND ${durableTaskRetryAdmissible('t')}
          AND ${durableTaskHeadersAdmissible('t')}
          AND ${soleLiveRun('r')}
@@ -726,9 +726,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'r')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}
          AND ${storedCurrentRunAccounting('r', 't')}
-         AND ${storedHighestOwnedOrdinal('r')}
-       ORDER BY r.run_id`,
-      [queue, claimToken],
+         AND ${storedHighestOwnedOrdinal('r')}`,
+        ),
+      }),
     )
     const { results } = await b.run(this.db)
     return (results.picked?.rows ?? []).map((row) => decodeClaimedRun(row, claimToken))
@@ -805,12 +805,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // row THIS delivery activated — the post-state alone cannot tell "I won"
     // from "a previous delivery of the same claim won", since both leave
     // activated_gen equal to claim_gen.
-    b.tail(
+    b.tailTree(
       'payload',
-      `SELECT ${CLAIMED_RUN_COLUMNS}
-       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
-       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'`,
-      [runId],
+      activatedRunRead({ runId, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }),
     )
     const { won, results } = await b.run(this.db)
     if (won !== 'activate') return null
@@ -1262,11 +1259,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       }),
       'one',
     )
-    b.tail(
-      'revived',
-      `SELECT attempt FROM runs WHERE run_id = ? AND fence_stamp = ${b.fence('run')}`,
-      [runId],
-    )
+    b.tailTree('revived', revivedRunRead({ runId }))
     const { won, results } = await b.run(this.db)
     if (won !== 'revive') return null
     const row = results.revived?.rows[0]
@@ -1982,12 +1975,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       whereArgs: [queue],
       rows: 'source-keys',
     })
-    b.openTail(
+    b.openTailTree(
       'stored-event',
       'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
-      `SELECT typeof(payload) AS payload_type
-       FROM events WHERE queue = ? AND event_name = ?`,
-      [queue, eventName],
+      storedEventRead({ queue, eventName, payloadType: sqlFragment(STORED_PAYLOAD_TYPE) }),
     )
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
@@ -2095,17 +2086,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // The event row belongs to whichever batch emitted it, so this read is
     // fenced on the LIVE claim token instead: a zombie falls through to the
     // register discriminator and gets the lease error, never a success signal.
-    b.openTail(
+    b.openTailTree(
       'hit',
       'the event was written by the emitting batch, not this one; the live claim token is the fence here',
-      `SELECT payload, typeof(payload) AS payload_type FROM events
-       WHERE queue = ? AND event_name = ?
-         AND EXISTS (SELECT 1 FROM runs r
-                     JOIN tasks t ON ${runOwnedByTask('r', 't')}
-                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                       AND r.claimed_by = ? AND r.state = 'running'
-                       AND t.state IN ${LIVE})`,
-      [queue, eventName, runId, queue, taskId, claimToken],
+      emittedEventRead({
+        queue,
+        eventName,
+        runId,
+        taskId,
+        claimToken,
+        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+        liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      }),
     )
     const { won, results } = await b.run(this.db)
     const row = results.hit?.rows[0]

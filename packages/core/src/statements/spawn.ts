@@ -121,3 +121,42 @@ export const spawnRunInsert = defineStatement(
       )
   },
 )
+
+/**
+ * `spawn`'s receipt, read only when the insert lost: the task that holds the identity.
+ * It is an open read, because another caller created that task, and what fences it is
+ * the unique idempotency index and not this batch's stamp.
+ *
+ * The store's predicate admits two kinds of task in this queue, which cannot overlap:
+ * the one with this task id, and one with this idempotency key under another id. The
+ * key's winner sorts first, then the task id breaks ties, so the answer is the same on
+ * every dialect. The run reported is the winner's top attempt, or none.
+ */
+export const spawnReceiptRead = defineStatement(
+  'spawn receipt',
+  (binds: {
+    taskId: string
+    /** The task `t` holds this task id, or this idempotency key, in this queue. */
+    winner: SqlFragment
+    /** The store's join of a run `r` to the task `t` that owns it. */
+    taskOwnsRun: SqlFragment
+  }) =>
+    treeBuilder
+      .selectFrom('tasks as t')
+      .select((eb) => [
+        eb.ref('t.task_id').as('task_id'),
+        eb
+          .selectFrom('runs as r')
+          .select('r.run_id')
+          .where(rawSql<boolean>(binds.taskOwnsRun, 'predicate'))
+          .orderBy('r.attempt', 'desc')
+          .limit(1)
+          .as('run_id'),
+      ])
+      .where(rawSql<boolean>(binds.winner, 'predicate'))
+      .orderBy((eb) =>
+        eb.case().when('t.task_id', '=', binds.taskId).then(eb.lit(1)).else(eb.lit(0)).end(),
+      )
+      .orderBy('t.task_id')
+      .limit(1),
+)

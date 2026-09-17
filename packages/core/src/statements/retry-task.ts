@@ -86,3 +86,12 @@ export const revivalRunInsert = defineStatement(
       )
   },
 )
+
+/** `retry-task`'s read of the run this batch inserted, under the follow-on named `run`. */
+export const revivedRunRead = defineStatement('retry-task revived', (binds: { runId: string }) =>
+  treeBuilder
+    .selectFrom('runs')
+    .select('attempt')
+    .where('run_id', '=', binds.runId)
+    .where('fence_stamp', '=', fenceValue('run')),
+)
