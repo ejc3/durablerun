@@ -993,19 +993,13 @@ MUTATION_SPECS = [
     (
         "suspend-preserves-valid-higher-lww",
         "packages/store-libsql/src/store.ts",
-        "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         ${wakePlan.fits}`,\n"
-        "      [\n"
-        "        ...wakePlan.expressionArgs,\n"
-        "        ...wakePlan.expressionArgs,",
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "          [checkpoint.key],",
         "         AND ${validCheckpointConflict('runs', '?').replace(\n"
         "           'AND EXISTS (',\n"
         "           'AND c.owner_attempt <= runs.attempt AND EXISTS (',\n"
-        "         )}\n"
-        "         ${wakePlan.fits}`,\n"
-        "      [\n"
-        "        ...wakePlan.expressionArgs,\n"
-        "        ...wakePlan.expressionArgs,",
+        "         )}`,\n"
+        "          [checkpoint.key],",
         "suspendRun mistakes a valid higher LWW owner for corrupt ownership",
     ),
     (
@@ -2240,11 +2234,9 @@ MUTATION_SPECS = [
     (
         "null-event-payload-never-becomes-timeout",
         "packages/store-libsql/src/store.ts",
-        "       WHERE events.fence_stamp IS NOT ${STAMP}\n"
-        "         AND typeof(events.payload) = 'text'\n"
+        "          `typeof(events.payload) = 'text'\n"
         "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
-        "       WHERE events.fence_stamp IS NOT ${STAMP}\n"
-        "         AND 1 = 1\n"
+        "          `1 = 1\n"
         "         AND ${storedIntegerWithin(PERSISTED_INTEGER_BOUNDS.events.emitted_at_ms, 'events')}`",
         "emit launders a stored SQL NULL payload into an emitted timeout wake",
     ),
@@ -2350,11 +2342,11 @@ MUTATION_SPECS = [
         "suspend-rejects-noninteger-attempt",
         "packages/store-libsql/src/store.ts",
         "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n"
-        "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         ${wakePlan.fits}`",
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "          [checkpoint.key],",
         "         AND 1 = 1\n"
-        "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         ${wakePlan.fits}`",
+        "         AND ${validCheckpointConflict('runs', '?')}`,\n"
+        "          [checkpoint.key],",
         "suspend parks a run whose durable attempt is not an integer",
     ),
     (
@@ -2425,23 +2417,21 @@ MUTATION_SPECS = [
     (
         "reschedule-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedInteger('runs.attempt')}\n"
+        "          `${storedInteger('runs.attempt')}\n"
         "         AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})\n",
-        "         AND ${storedInteger('runs.attempt')}\n"
+        "                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})`,\n",
+        "          `${storedInteger('runs.attempt')}\n"
         "         AND EXISTS (SELECT 1 FROM tasks t\n"
-        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})\n",
+        "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})`,\n",
         "reschedule parks a run after its task crosses the immutable queue boundary",
     ),
     (
         "suspend-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})\n"
         "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n",
-        "       WHERE run_id = ? AND queue = ? AND claimed_by = ? AND state = 'running'\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE t.task_id = runs.task_id AND ${eligibleTask('t', NOW)})\n"
         "         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'runs')}\n",
         "suspend parks and checkpoints a run after its task crosses the immutable queue boundary",
@@ -2462,12 +2452,10 @@ MUTATION_SPECS = [
     (
         "await-event-register-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "       WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)\n"
-        "         AND EXISTS (SELECT 1 FROM runs r\n"
+        "          `EXISTS (SELECT 1 FROM runs r\n"
         "                     JOIN tasks t ON ${runOwnedByTask('r', 't')}\n"
         "                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?\n",
-        "       WHERE NOT EXISTS (SELECT 1 FROM events WHERE queue = ? AND event_name = ?)\n"
-        "         AND EXISTS (SELECT 1 FROM runs r\n"
+        "          `EXISTS (SELECT 1 FROM runs r\n"
         "                     JOIN tasks t ON t.task_id = r.task_id\n"
         "                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?\n",
         "awaitEvent registers and parks after its task crosses the immutable queue boundary",
@@ -2666,11 +2654,8 @@ CHECKPOINT_CONFLICT_CONSUMERS = (
     ),
     (
         "suspend",
-        "\n"
-        "         ${wakePlan.fits}`,\n"
-        "      [\n"
-        "        ...wakePlan.expressionArgs,\n"
-        "        ...wakePlan.expressionArgs,",
+        "`,\n"
+        "          [checkpoint.key],",
     ),
 )
 
@@ -2885,13 +2870,10 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "reschedule-wake",
         "reschedule wake deadline",
-        "                     WHERE ${runOwnedByTask('runs', 't')} AND ${eligibleTask('t', NOW)})\n"
-        "         ${wakePlan.fits}`,\n"
-        "      [\n"
-        "        ...wakePlan.expressionArgs,\n"
-        "        ...wakePlan.expressionArgs,\n"
-        "        runId,",
-        "wakePlan.fits",
+        "        wakeFits: sqlFragment(wakePlan.fitsConjunct, wakePlan.fitArgs),\n"
+        "        admission: sqlFragment(\n"
+        "          `${storedInteger('runs.attempt')}\n",
+        "wakePlan.fitsConjunct",
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
         "    const wakePlan = prepareWake(wake, relativeWake)\n"
         "    // The task must be ELIGIBLE",
@@ -2900,13 +2882,10 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "suspend-wake",
         "suspend wake deadline",
-        "         AND ${validCheckpointConflict('runs', '?')}\n"
-        "         ${wakePlan.fits}`,\n"
-        "      [\n"
-        "        ...wakePlan.expressionArgs,\n"
-        "        ...wakePlan.expressionArgs,\n"
-        "        runId,",
-        "wakePlan.fits",
+        "        wakeFits: sqlFragment(wakePlan.fitsConjunct, wakePlan.fitArgs),\n"
+        "        admission: sqlFragment(\n"
+        "          `EXISTS (SELECT 1 FROM tasks t\n",
+        "wakePlan.fitsConjunct",
         "    const relativeWake = wakeHasOwn(wake, 'inSeconds')\n"
         "    const wakePlan = prepareWake(wake, relativeWake)\n"
         "    const b = new FencedBatch('suspend'",
@@ -2933,10 +2912,9 @@ TIMESTAMP_ADDITION_CASES = (
     (
         "event-timeout",
         "event timeout deadline",
-        "         AND (? IS NULL OR ${epochAdditionFits(NOW, '?')})\n"
-        "       ON CONFLICT (run_id, step_name) DO NOTHING",
+        "        timeoutFits: sqlFragment(`? IS NULL OR ${epochAdditionFits(NOW, '?')}`, [\n",
         "epochAdditionFits(NOW, '?')",
-        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END, ${NOW}, ${FENCE_VALS}\n",
+        "        timeoutAt: sqlFragment(`CASE WHEN ? IS NOT NULL THEN ${NOW} + ? ELSE NULL END`, [\n",
         "${NOW} + ?",
     ),
 )
