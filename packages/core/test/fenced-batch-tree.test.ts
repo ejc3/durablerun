@@ -1385,6 +1385,46 @@ describe('FencedBatch tree statements', () => {
       )
     })
 
+    it('takes a preserved first instant from the fenced row too, as a compare-and-set takes it from the clock', () => {
+      const preserved = /must insert events\.emitted_at_ms as the fenced row's own fence_at_ms/
+      /** An event recorded from the fenced run. `emitted` is null to leave the column out. */
+      const recorded = (emitted: ((eb: Loose) => Loose) | null) =>
+        loose
+          .insertInto('events')
+          .columns([
+            'queue',
+            'event_name',
+            'payload',
+            ...(emitted === null ? [] : ['emitted_at_ms']),
+            'fence_stamp',
+            'fence_at_ms',
+          ])
+          .expression(
+            loose
+              .selectFrom('runs as f')
+              .select((eb: Loose) => [
+                eb.ref('f.queue').as('queue'),
+                eb.val('e').as('event_name'),
+                eb.val('p').as('payload'),
+                ...(emitted === null ? [] : [aliasedAs(emitted(eb), 'emitted_at_ms')]),
+                aliasedAs(stampValue, 'fence_stamp'),
+                eb.ref('f.fence_at_ms').as('fence_at_ms'),
+              ])
+              .where((eb: Loose) => eb.and([key(eb), gate(eb)])),
+          )
+      expect(() => followOn(recorded((eb) => eb.ref('f.fence_at_ms')))).not.toThrow()
+      // Not a bind, not another column of the fenced row, and not left to a default.
+      refused(
+        recorded((eb) => eb.val(123)),
+        preserved,
+      )
+      refused(
+        recorded((eb) => eb.ref('f.available_at_ms')),
+        preserved,
+      )
+      refused(recorded(null), preserved)
+    })
+
     it('never takes the clock for the instant', () => {
       // The instant rule speaks first, and the clock rule would refuse it next.
       refused(
