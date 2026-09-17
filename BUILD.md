@@ -979,15 +979,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Option, not scheduled, from
     `postmortems/pr3.9a-statement-trees-review.md`: PR3.9e part 2 made the
     gating rule check that a gated subquery is tied to the outer row, which
-    refuses that postmortem's exhibit. What the tie does not check is recorded
-    beside three run exhibits in `fenced-batch-tree.test.ts`. A tie on a column
-    that is not a key passes, because the emit's wake is tied by queue on
-    purpose, and the rows are then bounded by store text. A follow-on insert may
-    read a value from a joined row that only store text ties to the fenced one.
-    An aggregate spelled inside a value fragment passes the plain-selection
-    rule. All three have one cause: a store fragment is opaque to the tree.
-    Closing them means building those predicates from nodes, which the
-    registered mutations that own their text do not allow today.
+    refuses that postmortem's exhibit. Its review then tied the gate to the
+    fenced source itself: one source, no join, and a plain column of it as the
+    IN key. What the rules still do not check is recorded beside run exhibits
+    in `fenced-batch-tree.test.ts`. A tie on a column that is not a key passes,
+    because the emit's wake is tied by queue on purpose, and the rows are then
+    bounded by store text. A follow-on insert may read a value from a joined
+    row that only store text ties to the fenced one. Both have one cause: a
+    store fragment is opaque to the tree. Closing them means building those
+    predicates from nodes, which the registered mutations that own their text
+    do not allow today. The third residual of that round, an aggregate spelled
+    inside a value fragment, is closed: a follow-on insert's value fragments
+    are read for a call.
   - Deferred until a tree statement names it: `tasks.completed_payload` stays
     out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
     which its statements assign. Completion's task mirror is a generated
