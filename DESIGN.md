@@ -1135,7 +1135,10 @@ this, names an unknown state, or lacks an outcome column is refused with
 task outcome selects `TASK_RESULT_COLUMNS` and decodes the row through core's
 `decodeTaskResult`, so a second read path cannot report a row the store refuses.
 `scripts/outcome-lint.py` refuses any other spelling of those columns in a
-production TypeScript source. The conformance harness reads raw task state as
+production TypeScript source, with one exception: core's shared statements and
+their column descriptor may name one as an object key, the column a statement
+assigns or the descriptor lists. A property read, a selected column, and SQL
+text are refused there too. The conformance harness reads raw task state as
 its oracle, and the engine invariants report each rule a task row breaks as its
 own condition.
 
