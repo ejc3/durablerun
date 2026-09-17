@@ -71,6 +71,7 @@ import {
   storageValueKind,
   suspendCas,
   userRetrySuccessorInsert,
+  wakeRunsUpdate,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -80,8 +81,6 @@ import {
   durableTaskRetryAdmissible,
   eligibleTask,
   epochAdditionFits,
-  fenceFrom,
-  fenced,
   fencedAt,
   jsonbInputValid,
   registeredWait,
@@ -1848,19 +1847,16 @@ export class PostgresSchedulerStore implements SchedulerStore {
         ),
       }),
     )
-    const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
-    const emitted = fencedAt('events', thisEvent, b.fence('event'))
     const runWait = registeredWait('runs')
     // THE ONE FOLLOW-ON THAT CANNOT BE GENERATED, and the reason is worth
     // stating rather than hiding. Every other follow-on selects its rows from
     // a table THIS batch stamped, so the primitive can build the selection
     // from the fence and the caller cannot widen it. This one selects from
-    // `waits` — rows some earlier await registered, which this batch never
-    // touched — and uses the event's fence only as a gate. That is a genuine
-    // exception, not an oversight, so it keeps the hand-written WHERE and the
-    // text checks that guard it. One documented escape is a better shape than
-    // a scanner defending every statement, which is the trade `openTail`
-    // already makes for reads.
+    // `waits`, rows some earlier await registered and this batch never
+    // touched, and uses the event's fence only as a gate. That is a genuine
+    // exception, not an oversight. The shared statement `wakeRunsUpdate`
+    // builds the gate, the payload, and the provenance from nodes, and this
+    // site passes the predicates that stay store text.
     //
     // Waiters wake with the STORED payload, never the one this call carried:
     // on a re-emit they must agree with the event row. The waits index is the
@@ -1903,27 +1899,26 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // the run through the same full witness claim uses for timed wakes. That
     // keeps the decoder from fabricating a step when an event name appeared at
     // several call sites.
-    b.followOn(
+    b.followOnTree(
       'wake-runs',
-      'runs',
-      `UPDATE runs SET
-         state = 'pending',
-         available_at_ms = ${emitted},
-         wake_step = COALESCE(wake_step, ${runWait.step}),
-         wake_event = ?,
-         event_payload = (SELECT f.payload FROM events f
-                          WHERE ${thisEvent}),
-         ${fenceFrom('events', thisEvent, b.fence('event'))}
-       WHERE state = 'sleeping'
-         AND wake_event = ?
-         AND run_id IN (SELECT w.run_id FROM waits w
-                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')
-         AND ((runs.wake_step IS NOT NULL AND ${runWait.current})
-              OR (runs.wake_step IS NULL AND ${runWait.step} IS NOT NULL))
-         AND ${fenced('events', thisEvent, b.fence('event'))}
-         AND EXISTS (SELECT 1 FROM tasks t
+      wakeRunsUpdate({
+        eventName,
+        registeredStep: sqlFragment(runWait.step),
+        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),
+        waiterRunIds: sqlFragment(
+          `(SELECT w.run_id FROM waits w
+                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')`,
+          [queue, eventName],
+        ),
+        witness: sqlFragment(
+          `(runs.wake_step IS NOT NULL AND ${runWait.current})
+              OR (runs.wake_step IS NULL AND ${runWait.step} IS NOT NULL)`,
+        ),
+        taskIsLive: sqlFragment(
+          `EXISTS (SELECT 1 FROM tasks t
                      WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
-      [eventName, eventName, eventName, eventName, eventName, queue, eventName, eventName],
+        ),
+      }),
       { many: 'an emit wakes every registered waiter' },
     )
     // Driven by the runs this batch actually woke, and never by waits.task_id.

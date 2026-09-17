@@ -664,8 +664,8 @@ MUTATION_SPECS = [
     (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
-        "         AND wake_event = ?\n",
-        "         AND ? IS NOT NULL\n",
+        "        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),\n",
+        "        parkedOnEvent: sqlFragment(`? IS NOT NULL`, [eventName]),\n",
         "an emit wakes a run that is not parked on that event",
     ),
     (
@@ -2452,11 +2452,11 @@ MUTATION_SPECS = [
     (
         "emit-event-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "         AND ${fenced('events', thisEvent, b.fence('event'))}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "        taskIsLive: sqlFragment(\n"
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,\n",
-        "         AND ${fenced('events', thisEvent, b.fence('event'))}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "        taskIsLive: sqlFragment(\n"
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,\n",
         "emitEvent wakes a run after its task crosses the immutable queue boundary",
     ),

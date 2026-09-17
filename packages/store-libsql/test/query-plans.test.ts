@@ -219,7 +219,7 @@ describe('the emit fan-out, which is a WRITE', () => {
     // and still require exactly one so the pin cannot silently choose among
     // competing delivery representations.
     const updates = seen.filter(
-      (st) => /^\s*UPDATE runs\b/.test(st.sql) && st.sql.includes('event_payload ='),
+      (st) => /^\s*update "runs" set/.test(st.sql) && st.sql.includes('"event_payload" ='),
     )
     expect(updates).toHaveLength(1)
     const only = updates[0]
