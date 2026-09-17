@@ -286,6 +286,23 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
+          def reaim_consumer(repaired, candidate, name):
+              # Replace the tail anchor of one checkpoint conflict consumer pair, which the
+              # generated checkpoint conflict mutations of that consumer share.
+              table = 'CHECKPOINT_CONFLICT_CONSUMERS = (\n'
+              pair = f'        "{name}",\n'
+              anchors = []
+              for text in (repaired, candidate):
+                  if text.count(table) != 1:
+                      raise SystemExit('checkpoint conflict consumers: the bridge requires one table.')
+                  opened = text.index(table)
+                  closed = text.index('\n)\n', opened)
+                  if text.count(pair, opened, closed) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one consumer pair.')
+                  start = text.index(pair, opened, closed) + len(pair)
+                  anchors.append((start, text.index('    ),\n', start)))
+              (start, end), (new_start, new_end) = anchors
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           if digest == '0ee074470a4315d43f41d6e6947b72a43512dd0b1a423951487d28ffbf0d0dd8':
               # Three SDK guard specs were re-aimed against this registry.
               repaired = previous
@@ -520,6 +537,24 @@ jobs:
                   anchors.append((start, text.index('    ),\n', start)))
               (start, end), (new_start, new_end) = anchors
               repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
+          elif digest == 'a89e9e9259e1ae1cab337fb6edf7e063f441e7f93b2e3ca6eba0ec76beb0e242':
+              # Moving fail, cancel, retry-task, and set-checkpoint's lease onto statement
+              # trees re-aimed these finds. The lease statement now ends at its checkpoint
+              # name bind, so the tail anchor its generated checkpoint conflict mutations
+              # share moved with it.
+              repaired = reaim(previous, candidate, (
+                  'matrix-attempt-edge-progress',
+                  'provenance-fail-progress',
+                  'cancel-task-requires-run-task-queue-ownership',
+                  'timestamp-cancel-rechecks-deadline-bound',
+                  'retry-task-requires-failed-task',
+                  'retry-task-charges-unaccounted-top-run',
+                  'set-checkpoint-requires-run-task-queue-ownership',
+                  'checkpoint-write-rejects-fractional-owner-attempt',
+                  'checkpoint-write-rejects-owner-attempt-overflow',
+                  'checkpoint-lease',
+              ))
+              repaired = reaim_consumer(repaired, candidate, 'checkpoint-write')
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
