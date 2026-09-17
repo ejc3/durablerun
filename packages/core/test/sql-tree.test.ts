@@ -151,7 +151,7 @@ describe('SQL tree checks', () => {
   it('decides whether a fence gates every row, for every shape', () => {
     const decided = shapes.map(({ shape, query }) => ({
       shape,
-      gates: gatingFences(query.toOperationNode()).length > 0,
+      gates: gatingFences(query.toOperationNode()).some((gate) => gate.tied),
     }))
     expect(decided).toEqual(shapes.map(({ shape, gates }) => ({ shape, gates })))
   })
@@ -177,10 +177,10 @@ describe('SQL tree checks', () => {
 
   it('names the table whose stamp a gating fence is compared with', () => {
     expect(gatingFences(shapes[0]?.query.toOperationNode() as OperationNode)).toEqual([
-      { fence: 'complete', table: 'tasks', source: 'tasks' },
+      { fence: 'complete', table: 'tasks', source: 'tasks', tied: true },
     ])
     expect(gatingFences(shapes[7]?.query.toOperationNode() as OperationNode)).toEqual([
-      { fence: 'complete', table: 'runs', source: 'f' },
+      { fence: 'complete', table: 'runs', source: 'f', tied: true },
     ])
     const ambiguous = db
       .selectFrom('runs as r')

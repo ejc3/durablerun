@@ -702,10 +702,15 @@ are load-bearing):
      with no function and no fragment. The rule is not asked of a statement's
      own root: a tail may count the rows its own WHERE gates, and a losing
      batch then counts none.
-     A gated subquery counts only when it is tied to the row of the query that
-     requires it: IN with a column on its left, or EXISTS with a top-level
-     equality between a column of one of its own sources and a column of an
-     outer source. A subquery that is gated and not tied proves only that the
+     A gated subquery counts only when it reads one source, with no join, and
+     is tied through that source to the row of the query that requires it: IN
+     with a column on its left and one plain column of the source selected,
+     directly or through one derived table that selects such a column, or
+     EXISTS with a top-level equality between a column of the source and a
+     column of an outer source. A bound value or an expression in the IN
+     list, a second FROM source, and a join are each refused, because the key
+     or the match would then be the caller's or another table's and not the
+     fenced row's. A subquery that is gated and not tied proves only that the
      batch won, and is refused with its own message. The tie is on any column
      and need not be a key, because an event wakes every run in its queue
      through such a tie. So a tie on a column that is not a key still passes,

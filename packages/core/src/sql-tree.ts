@@ -598,12 +598,18 @@ function tableScope(query: OperationNode): { name: string; table: string }[] {
   })
 }
 
-/** A fence that gates, and the table whose `fence_stamp` it is compared with. */
+/** A fence in a gating position, and the table whose `fence_stamp` it is compared with. */
 export interface GatingFence {
   readonly fence: string
   readonly table: string
   /** The name that fenced table answers to in the query that compares it. */
   readonly source: string
+  /**
+   * Whether every subquery between the fence and the statement's own rows is tied to
+   * them (`isTied`). A fence that stands in a gating position and is not tied proves
+   * only that the batch won, so it gates nothing.
+   */
+  readonly tied: boolean
 }
 
 /** A conjunct that IS `fence_stamp = <fence token>`, in either orientation. */
@@ -630,7 +636,7 @@ function fenceEquality(
           ? scope[0]
           : undefined
     if (source !== undefined) {
-      return { fence: token.fence, table: source.table, source: source.name }
+      return { fence: token.fence, table: source.table, source: source.name, tied: true }
     }
   }
   return null
@@ -653,29 +659,74 @@ function referenceQualifier(node: OperationNode): string | null {
   return ReferenceNode.is(inner) ? (inner.table?.table.identifier.name ?? null) : null
 }
 
+/** The one source a SELECT reads, when it reads exactly one and joins nothing. */
+function onlySource(select: SelectQueryNode): OperationNode | null {
+  const froms = select.from?.froms ?? []
+  const [only] = froms
+  return froms.length === 1 && only !== undefined && (select.joins?.length ?? 0) === 0 ? only : null
+}
+
+/** The SELECT a derived table wraps, or null for a plain table. */
+function derivedSelect(source: OperationNode): SelectQueryNode | null {
+  const inner = AliasNode.is(source) ? source.node : source
+  return SelectQueryNode.is(inner) ? inner : null
+}
+
 /**
- * Whether a required subquery is tied to the row of the query that requires it. `IN`
- * ties it by the key it selects, when its left side is a column. `EXISTS` ties it when
- * a top-level conjunct of the subquery equates a column of one of its own sources with
- * a column of an outer source, each named by its qualifier. A gated subquery that is
- * not tied to the outer row proves only that the batch won, never that the row is one
+ * The name a SELECT gives its single selection, when that selection is one plain column
+ * of the SELECT's one source, or null. Through a derived table the column must be the
+ * one the derived table itself selects this way, so the key is a stored column of the
+ * fenced source all the way down: never a bind, an expression, or another table's key.
+ */
+function selectedSourceColumn(select: SelectQueryNode): string | null {
+  const source = onlySource(select)
+  const selections = select.selections ?? []
+  const [only] = selections
+  if (source === null || selections.length !== 1 || only === undefined) return null
+  const aliased = only.selection
+  const selection = AliasNode.is(aliased) ? aliased.node : aliased
+  if (!ReferenceNode.is(selection)) return null
+  const column = columnName(selection.column)
+  if (column === null) return null
+  const qualifier = selection.table?.table.identifier.name
+  const derived = derivedSelect(source)
+  const sourceName =
+    AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : tableName(source)
+  if (qualifier !== undefined && qualifier !== sourceName) return null
+  if (derived !== null && selectedSourceColumn(derived) !== column) return null
+  return AliasNode.is(aliased) && IdentifierNode.is(aliased.alias) ? aliased.alias.name : column
+}
+
+/**
+ * Whether a required subquery is tied to the row of the query that requires it. The
+ * subquery reads one source and joins nothing, so nothing beside the fenced rows can
+ * supply a key or a match. `IN` ties it when its left side is a column and the subquery
+ * selects one plain column of that source, directly or through one derived table.
+ * `EXISTS` ties it when a top-level conjunct of the subquery equates a column of that
+ * source with a column of an outer source, each named by its qualifier. A gated
+ * subquery that is not tied proves only that the batch won, never that the row is one
  * the batch stamped.
  */
-function isCorrelated(
+function isTied(
   conjunct: OperationNode,
   subquery: SelectQueryNode,
   outer: readonly { name: string }[],
 ): boolean {
+  const source = onlySource(subquery)
+  if (source === null) return false
   if (BinaryOperationNode.is(conjunct)) {
-    return ReferenceNode.is(unwrapParens(conjunct.leftOperand))
+    return (
+      ReferenceNode.is(unwrapParens(conjunct.leftOperand)) &&
+      selectedSourceColumn(subquery) !== null
+    )
   }
   const where = whereOf(subquery)
   if (where === null) return false
   const inner = tableScope(subquery)
   const isInner = (name: string | null) =>
-    name !== null && inner.some((source) => source.name === name)
+    name !== null && inner.some((candidate) => candidate.name === name)
   const isOuter = (name: string | null) =>
-    name !== null && !isInner(name) && outer.some((source) => source.name === name)
+    name !== null && !isInner(name) && outer.some((candidate) => candidate.name === name)
   return conjuncts(where).some((candidate) => {
     if (!BinaryOperationNode.is(candidate) || operatorName(candidate.operator) !== '=') {
       return false
@@ -687,19 +738,18 @@ function isCorrelated(
 }
 
 /**
- * The fences that gate every row a statement reads or writes. A fence gates when a
- * top-level WHERE conjunct is itself `fence_stamp = <fence>`, or requires a row from a
- * subquery whose own top-level WHERE is gated the same way and which, unless `tied` is
- * false, is tied to the outer row (`isCorrelated`). A fence joined by OR, under NOT, or
- * merely contained in a conjunct gates nothing, so it is not returned. An
+ * The fences that stand in a gating position, each marked `tied` or not. A fence stands
+ * there when a top-level WHERE conjunct is itself `fence_stamp = <fence>`, or requires a
+ * row from a subquery whose own top-level WHERE is gated the same way. It gates every
+ * row the statement reads or writes only when it is also `tied`: every such subquery on
+ * the way is tied to the row that requires it (`isTied`). A fence joined by OR, under
+ * NOT, or merely contained in a conjunct stands nowhere, so it is not returned. An
  * INSERT … SELECT is gated by what gates its SELECT, and a row of VALUES by nothing.
  */
-export function gatingFences(query: OperationNode, tied = true): GatingFence[] {
+export function gatingFences(query: OperationNode): GatingFence[] {
   if (InsertQueryNode.is(query)) {
     const selected = query.values
-    return selected !== undefined && SelectQueryNode.is(selected)
-      ? gatingFences(selected, tied)
-      : []
+    return selected !== undefined && SelectQueryNode.is(selected) ? gatingFences(selected) : []
   }
   const where = whereOf(query)
   const scope = tableScope(query)
@@ -712,15 +762,10 @@ export function gatingFences(query: OperationNode, tied = true): GatingFence[] {
           const subquery = requiredSubquery(conjunct)
           if (subquery === null || !SelectQueryNode.is(subquery)) return []
           if (!mayReturnNoRow(subquery)) return []
-          if (tied && !isCorrelated(conjunct, subquery, scope)) return []
-          return gatingFences(subquery, tied)
+          const tied = isTied(conjunct, subquery, scope)
+          return gatingFences(subquery).map((gate) => ({ ...gate, tied: gate.tied && tied }))
         })
-  return [...gated, ...derivedTableGates(query, tied)]
-}
-
-/** The fences that stand in a gating position, tied to the outer row or not. */
-export function positionalGatingFences(query: OperationNode): GatingFence[] {
-  return gatingFences(query, false)
+  return [...gated, ...derivedTableGates(query)]
 }
 
 /**
@@ -750,13 +795,11 @@ function mayReturnNoRow(select: SelectQueryNode): boolean {
  * so whatever gates the derived table gates it. A join or a second source could add
  * rows, so either one gates nothing.
  */
-function derivedTableGates(query: OperationNode, tied: boolean): GatingFence[] {
-  if (!SelectQueryNode.is(query) || (query.joins?.length ?? 0) !== 0) return []
-  const froms = query.from?.froms ?? []
-  const [only] = froms
-  if (froms.length !== 1 || only === undefined) return []
-  const inner = AliasNode.is(only) ? only.node : only
-  return SelectQueryNode.is(inner) && mayReturnNoRow(inner) ? gatingFences(inner, tied) : []
+function derivedTableGates(query: OperationNode): GatingFence[] {
+  if (!SelectQueryNode.is(query)) return []
+  const source = onlySource(query)
+  const inner = source === null ? null : derivedSelect(source)
+  return inner !== null && mayReturnNoRow(inner) ? gatingFences(inner) : []
 }
 
 /** The column an assignment writes. The object and two-argument `set` forms differ in shape. */

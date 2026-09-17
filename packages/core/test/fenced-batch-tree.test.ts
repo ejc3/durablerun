@@ -538,8 +538,24 @@ describe('FencedBatch tree statements', () => {
           .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
           .where('run_id', 'in', keys as never)
       expect(() => followOn(sealedBy(keysFrom(false)))).toThrow(/fence/)
-      // A grouped aggregate returns no row when nothing matched, so it still gates.
-      expect(() => followOn(sealedBy(keysFrom(true)))).not.toThrow()
+      // Grouped, the derived table returns no row when nothing matched, but a count is
+      // not a stored column of the fenced row, so it cannot be the key IN selects.
+      expect(() => followOn(sealedBy(keysFrom(true)))).toThrow(/not tied to the rows/)
+      // A grouped aggregate still gates where no key is asked of it: under EXISTS.
+      const countedBy = (grouped: boolean) =>
+        db
+          .updateTable('tasks')
+          .set({ state: 'failed', fence_stamp: stampValue, fence_at_ms: 5 })
+          .where((eb) => {
+            const inner = eb
+              .selectFrom('runs as f')
+              .select((counted) => counted.fn.count<number>('f.run_id').as('n'))
+              .where('f.fence_stamp', '=', fenceValue('win'))
+              .whereRef('f.task_id', '=', 'tasks.task_id')
+            return eb.exists(grouped ? inner.groupBy('f.task_id') : inner)
+          })
+      expect(() => followOn(countedBy(true))).not.toThrow()
+      expect(() => followOn(countedBy(false))).toThrow(/fence/)
     })
 
     it('still lets a tail count the rows this batch stamped', () => {
