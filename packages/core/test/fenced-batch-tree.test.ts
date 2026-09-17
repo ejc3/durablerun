@@ -663,6 +663,93 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('register', statement(leaveAlone))).not.toThrow()
   })
 
+  const WAIT_COLUMNS = [
+    'run_id',
+    'step_name',
+    'queue',
+    'task_id',
+    'event_name',
+    'status',
+    'created_at_ms',
+    'fence_stamp',
+    'fence_at_ms',
+  ] as const
+
+  it('refuses an INSERT … SELECT whose star selection shifts the provenance positions', () => {
+    // The star is one selection and many columns, so the stamp read at selection 1
+    // lands in whatever column the expanded star pushes it to.
+    const shifted = db
+      .insertInto('waits')
+      .columns(['run_id', 'fence_stamp', 'fence_at_ms', ...WAIT_COLUMNS.slice(1, 7)])
+      .expression(
+        db
+          .selectFrom('events')
+          .selectAll('events')
+          .select(() => [aliasedAs(stampValue, 'fence_stamp'), aliasedAs(nowValue, 'fence_at_ms')])
+          .where('events.queue', '=', 'q') as never,
+      )
+    expect(() => batch().casTree('register', statement(shifted))).toThrow(
+      /one plain selection for each column/,
+    )
+  })
+
+  it('refuses a conflict arm that overwrites the preserved fact it re-stamps', () => {
+    const overwriting = eventInsert().onConflict((conflict) =>
+      conflict.columns(['queue', 'event_name']).doUpdateSet((eb) => ({
+        fence_stamp: stampValue,
+        fence_at_ms: eb.ref('events.emitted_at_ms'),
+        emitted_at_ms: nowValue,
+        payload: 'second',
+      })),
+    )
+    expect(() => batch().casTree('event', statement(overwriting))).toThrow(
+      /may assign only fence_stamp and fence_at_ms/,
+    )
+  })
+
+  it('refuses an insert that binds the preserved first instant instead of reading the clock', () => {
+    const clientInstant = db.insertInto('events').values({
+      queue: 'q',
+      event_name: 'e',
+      payload: 'p',
+      emitted_at_ms: 12345,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    })
+    expect(() => batch().casTree('event', statement(clientInstant))).toThrow(
+      /must insert events.emitted_at_ms as the clock/,
+    )
+  })
+
+  it('refuses an ON CONFLICT that names no columns', () => {
+    const anyIndex = eventInsert().onConflict((conflict) => conflict.doNothing())
+    expect(() => batch().casTree('event', statement(anyIndex))).toThrow(/names no columns/)
+  })
+
+  it('refuses an INSERT … SELECT with ON CONFLICT and no WHERE', () => {
+    // SQLite reads the ON of an unguarded SELECT's conflict clause as a join constraint.
+    const unguarded = db
+      .insertInto('waits')
+      .columns([...WAIT_COLUMNS])
+      .expression(
+        db
+          .selectFrom('runs')
+          .select((eb) => [
+            eb.ref('runs.run_id').as('run_id'),
+            eb.val('s').as('step_name'),
+            eb.ref('runs.queue').as('queue'),
+            eb.ref('runs.task_id').as('task_id'),
+            eb.val('e').as('event_name'),
+            eb.val('waiting').as('status'),
+            aliasedAs(nowValue, 'created_at_ms'),
+            aliasedAs(stampValue, 'fence_stamp'),
+            aliasedAs(nowValue, 'fence_at_ms'),
+          ]),
+      )
+      .onConflict((conflict) => conflict.columns(['run_id', 'step_name']).doNothing())
+    expect(() => batch().casTree('register', statement(unguarded))).toThrow(/needs a WHERE/)
+  })
+
   it('refuses an insert as a follow-on', () => {
     expect(() => followOn(eventInsert())).toThrow(/must be an UPDATE or a DELETE/)
   })
