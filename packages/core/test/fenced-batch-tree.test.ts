@@ -457,6 +457,118 @@ describe('FencedBatch tree statements', () => {
     expect(thrown).toBeUndefined()
   })
 
+  describe('placement under operations task code has replaced', () => {
+    type Fn = (...args: unknown[]) => unknown
+    const fragment = sqlFragment('1 = 1')
+    const binds = { admission: fragment }
+    const update = () => db.updateTable('runs').set({ state: 'completed' })
+    const unplaced = defineStatement('unplaced', (_binds: { admission: SqlFragment }) =>
+      update().where('run_id', '=', 'r1'),
+    )
+    const placing = defineStatement('placing', (taken: { admission: SqlFragment }) =>
+      update().where(rawSql<boolean>(taken.admission, 'predicate')),
+    )
+    const half = defineStatement('half', (taken: { first: SqlFragment; second: SqlFragment }) =>
+      update().where(rawSql<boolean>(taken.first, 'predicate')),
+    )
+    const nothing = {
+      next: () => ({ done: true as const, value: undefined }),
+      [Symbol.iterator]() {
+        return this
+      },
+    }
+    // Each replacement misbehaves only for this test's objects, so the builder and the
+    // test runner keep working while it is installed.
+    const hostile: [string, object, PropertyKey, (original: Fn) => unknown][] = [
+      [
+        'Array.prototype.indexOf finds the fragment anywhere',
+        Array.prototype,
+        'indexOf',
+        (original) =>
+          function (this: unknown[], ...args: unknown[]) {
+            return args[0] === fragment ? 0 : Reflect.apply(original, this, args)
+          },
+      ],
+      [
+        'Array.prototype.splice removes nothing',
+        Array.prototype,
+        'splice',
+        (original) =>
+          function (this: unknown[], ...args: unknown[]) {
+            return this[0] === fragment ? [] : Reflect.apply(original, this, args)
+          },
+      ],
+      [
+        'Array.prototype.push drops the fragment',
+        Array.prototype,
+        'push',
+        (original) =>
+          function (this: unknown[], ...args: unknown[]) {
+            return args[0] === fragment ? this.length : Reflect.apply(original, this, args)
+          },
+      ],
+      [
+        'Object.entries hides the binds',
+        Object,
+        'entries',
+        (original) => (value: unknown) => (value === binds ? [] : original(value)),
+      ],
+      [
+        'Object.keys hides the binds',
+        Object,
+        'keys',
+        (original) => (value: unknown) => (value === binds ? [] : original(value)),
+      ],
+      [
+        'the array iterator yields nothing for the binds',
+        Array.prototype,
+        Symbol.iterator,
+        (original) =>
+          function (this: unknown[]) {
+            const first = this[0]
+            const ours = first === 'admission' || (Array.isArray(first) && first[0] === 'admission')
+            return ours ? nothing : Reflect.apply(original, this, [])
+          },
+      ],
+      [
+        'Uint8Array claims the binds as bytes',
+        Uint8Array,
+        Symbol.hasInstance,
+        (original) => (value: unknown) =>
+          value === binds || Reflect.apply(original, Uint8Array, [value]),
+      ],
+    ]
+
+    it.each(hostile)('%s', (_label, target, key, replacement) => {
+      const attempt = (run: () => unknown): string => {
+        try {
+          run()
+          return 'accepted'
+        } catch (error) {
+          return (error as Error).message
+        }
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(target, key)
+      const outcomes = { unplaced: '', placed: '', half: '' }
+      Object.defineProperty(target, key, {
+        configurable: true,
+        writable: true,
+        value: replacement(Reflect.get(target, key) as Fn),
+      })
+      try {
+        outcomes.unplaced = attempt(() => unplaced(binds))
+        outcomes.placed = attempt(() => placing(binds))
+        outcomes.half = attempt(() => half({ first: fragment, second: fragment }))
+      } finally {
+        if (descriptor === undefined) Reflect.deleteProperty(target, key)
+        else Object.defineProperty(target, key, descriptor)
+      }
+      expect(outcomes.unplaced).toMatch(/bind 'admission' is a fragment the statement never places/)
+      expect(outcomes.placed).toBe('accepted')
+      expect(outcomes.half).toMatch(/bind 'second' is a fragment the statement never places/)
+    })
+  })
+
   it('refuses a tree statement in a batch without a tree dialect', () => {
     const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
     expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)
