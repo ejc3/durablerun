@@ -1111,6 +1111,31 @@ these three things; nothing else in the system does I/O, time, or randomness.
   rejection. The test compared only fulfilled and rejected and threw the
   reason away. It reports the reason now, so the next failure names its cause.
   Fix it red first from that cause. Until then a rerun clears it.
+- **PR3.13 `verify` fails with every test passing**: three times on 2026-09-17
+  the `verify` job exited 1 after every test had passed, on vitest's unhandled
+  error `[vitest-worker]: Timeout calling "onTaskUpdate"`. Measured: a worker
+  whose event loop does not turn for 60 seconds produces exactly that error,
+  and the worker that runs `packages/conformance/test/libsql.test.ts` went
+  48.9 seconds without turning on a devserver, because the libSQL client
+  blocks and vitest does not reach the timers phase between tests that never
+  yield. `packages/conformance/test/yield-to-timers.ts`, which says why, now
+  yields after every test of that file, and the longest stretch is 17.6
+  seconds, the libSQL wake-witness test alone. Estimated, not measured: no
+  stall was timed on a CI runner. Vitest timed that one test at 16.2 to 22.3
+  seconds in five CI logs against 17.1 on the devserver, which puts the old
+  stretch between 46 and 64 seconds there, across the limit, though the run
+  with the slowest timing passed. Open: (1) A yield between tests cannot split
+  one test that never yields. The wake-witness test is one loop over every
+  generated case. If it grows, split it into several tests, which needs its
+  registered mutations re-aimed by name. (2) Each nightly fuzz shard is one
+  test with a 600 second budget
+  (`packages/conformance/test/fuzz-shard-runner.ts`), so this yield cannot
+  help it. Eleven of the last twelve nightly runs passed and the twelfth
+  failed in TLA, so the failure has not been seen there. If it appears, yield
+  between seeds inside the shard's loop. (3) Not explained: three of PR #42's
+  last four runs hit the error and none of eleven other runs did, on a branch
+  whose one executed change finishes in the first ten seconds. The review
+  round is `postmortems/verify-event-loop-yield-review.md`.
 
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
