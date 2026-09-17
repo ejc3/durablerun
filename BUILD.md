@@ -854,8 +854,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     The stores' text copy of the parked claim columns and the wake guard's AND
     form are deleted. Its review round is
     `postmortems/pr3.9c-insert-rules-review.md`.
-  - PR3.9d: fail, retry-task, cancel-task, the sweep batches, set-checkpoint,
-    and spawn.
+  - PR3.9d, in two halves. The first moves the compare-and-sets of fail,
+    retry-task, set-checkpoint, and the cancel transition that cancel-task and
+    the deadline sweep share. `failure_reason` joins `STORE_TABLE_COLUMNS`,
+    and the outcome lint allows core's `statements/` directory and
+    `store-tables.ts` to name the outcome columns. The failed state and the
+    well-formed failure that retry-task requires stay store text, because
+    registered mutations own them. The second half moves spawn and the two
+    lease sweeps, lost-launch and claim-timeout.
   - PR3.9e: the generated `derived()` and `seal()` statements as trees, the
     corpus enrolled from label and variant descriptors, and the text scanners
     and the lint rules they make redundant deleted.
@@ -905,9 +911,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     an uncorrelated subquery may write a row the fenced run does not own. The
     generated `derived()` selections are correlated by construction, and the text
     path has the same residual today.
-  - Deferred to PR3.9d: the task outcome columns join `STORE_TABLE_COLUMNS` when
-    a tree statement first writes them, with the outcome lint's allowance
-    extended to core's `statements/` directory.
+  - Deferred until a tree statement names it: `tasks.completed_payload` stays
+    out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
+    which its statements assign. Completion's task mirror is a generated
+    `derived()` statement, which PR3.9e moves.
   - Option, not scheduled: load compiled statements from the generated corpus at
     run time, so Kysely becomes a build-time dependency. Importing Kysely
     unbundled measured about 65 ms per cold start, beside about 72 ms for
