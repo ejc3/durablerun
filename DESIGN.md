@@ -677,6 +677,18 @@ are load-bearing):
    and otherwise the idempotency leg may return only the same-queue winner. A
    foreign task-id collision with no same-queue winner is an unexplained loss
    and aborts rather than becoming a receipt.
+   **Statements as trees.** A store may build a batch statement as a Kysely
+   operation tree, compiled per dialect by a builder that never connects. The
+   stamp, the clock, and a fence are value nodes holding engine sentinel
+   objects, so `FencedBatch` checks a tree by node identity and position. A
+   follow-on needs a top-level WHERE conjunct that is itself
+   `fence_stamp = <fence>`. Only a compare-and-set may hold the clock token,
+   and a follow-on whose compiled SQL contains the dialect clock is refused. A
+   follow-on may not assign a column a value that adds to that column. Raw
+   fragments remain for dialect expressions, and one in a boolean position is
+   countable from the tree. `packages/conformance/corpus` records every
+   statement a tree-built label compiles to, per dialect. Until PR3.9e, text
+   statements keep their textual scanners.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:
