@@ -319,6 +319,30 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('win', statement(returning))).toThrow(/UpdateQueryNode.returning/)
   })
 
+  it('adds and compiles tree statements while task code has replaced the global Map', () => {
+    const win = statement(winCas())
+    const task = statement(taskFollowOn())
+    const payload = statement(
+      db.selectFrom('runs as r').select('r.run_id').where('r.fence_stamp', '=', fenceValue('win')),
+    )
+    class PoisonedMap {
+      constructor() {
+        throw new Error('task-installed Map constructor ran')
+      }
+    }
+    const original = globalThis.Map
+    let thrown: unknown
+    try {
+      ;(globalThis as { Map: unknown }).Map = PoisonedMap
+      batch().casTree('win', win).followOnTree('task', task, 'one').tailTree('payload', payload)
+    } catch (error) {
+      thrown = error
+    } finally {
+      ;(globalThis as { Map: unknown }).Map = original
+    }
+    expect(thrown).toBeUndefined()
+  })
+
   it('refuses a tree statement in a batch without a tree dialect', () => {
     const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
     expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)

@@ -34,7 +34,13 @@ import {
   createQueryId,
 } from 'kysely'
 import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
+import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlStatement } from './primitives.js'
+
+// Task code shares this process and may replace a global such as `Map` while a pass
+// runs. What these checks keep across calls lives in collections captured at module
+// load, and nothing here constructs an ambient collection at call time.
+const { WeakSet: TrustedWeakSet, WeakSetAdd: weakSetAdd, WeakSetHas: weakSetHas } = TASK_INTRINSICS
 
 /**
  * Engine tokens carried as value nodes whose values are these sentinel objects. A
@@ -132,7 +138,7 @@ export interface DefinedStatement {
   readonly tree: StatementTree
 }
 
-const definedStatements = new WeakSet<object>()
+const definedStatements = new TrustedWeakSet<object>()
 
 /**
  * Define a statement once for every dialect. A batch accepts only statements minted
@@ -145,14 +151,14 @@ export function defineStatement<Binds extends Readonly<Record<string, unknown>>>
   return (binds) => {
     requireDefinedBinds(name, binds)
     const statement = Object.freeze({ name, tree: build(binds).toOperationNode() })
-    definedStatements.add(statement)
+    weakSetAdd(definedStatements, statement)
     return statement
   }
 }
 
 /** True only for a statement `defineStatement` minted. */
 export function isDefinedStatement(value: unknown): value is DefinedStatement {
-  return typeof value === 'object' && value !== null && definedStatements.has(value)
+  return typeof value === 'object' && value !== null && weakSetHas(definedStatements, value)
 }
 
 /**
@@ -177,7 +183,16 @@ export function sqlFragment(sql: string, args: SqlFragment['args'] = []): SqlFra
  */
 export type RawRole = 'predicate' | 'subquery' | 'value'
 
-const mintedRaws = new WeakMap<object, RawRole>()
+const RAW_ROLES = ['predicate', 'subquery', 'value'] as const satisfies readonly RawRole[]
+const mintedRaws: Readonly<Record<RawRole, WeakSet<object>>> = {
+  predicate: new TrustedWeakSet<object>(),
+  subquery: new TrustedWeakSet<object>(),
+  value: new TrustedWeakSet<object>(),
+}
+
+function mintedRole(node: object): RawRole | undefined {
+  return RAW_ROLES.find((role) => weakSetHas(mintedRaws[role], node))
+}
 
 /** The contents of a fragment's single-quoted string literals. */
 function stringLiterals(sql: string): string[] {
@@ -263,7 +278,7 @@ export function rawSql<T>(fragment: SqlFragment, role: RawRole): Expression<T> {
     throw new TypeError(`a SQL fragment binds ${bound} of its ${fragment.args.length} arguments`)
   }
   const raw = RawNode.create(pieces, parameters)
-  mintedRaws.set(raw, role)
+  weakSetAdd(mintedRaws[role], raw)
   return nodeExpression<T>(role === 'subquery' ? raw : ParensNode.create(raw))
 }
 
@@ -397,23 +412,20 @@ function tableName(node: OperationNode | undefined): string | null {
   return TableNode.is(inner) ? inner.table.identifier.name : null
 }
 
-/** The names a query's own tables answer to: each alias or bare table name, to its table. */
-function tableScope(query: OperationNode): Map<string, string> {
+/** The names a query's own tables answer to: each alias or bare table name, with its table. */
+function tableScope(query: OperationNode): { name: string; table: string }[] {
   const sources: OperationNode[] = []
   if (UpdateQueryNode.is(query) && query.table !== undefined) sources.push(query.table)
   if (DeleteQueryNode.is(query)) sources.push(...query.from.froms)
   if (SelectQueryNode.is(query)) {
     sources.push(...(query.from?.froms ?? []), ...(query.joins ?? []).map((join) => join.table))
   }
-  const scope = new Map<string, string>()
-  for (const source of sources) {
+  return sources.flatMap((source) => {
     const table = tableName(source)
-    if (table === null) continue
-    const alias =
-      AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : table
-    scope.set(alias, table)
-  }
-  return scope
+    if (table === null) return []
+    const name = AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : table
+    return [{ name, table }]
+  })
 }
 
 /** A fence that gates, and the table whose `fence_stamp` it is compared with. */
@@ -423,7 +435,10 @@ export interface GatingFence {
 }
 
 /** A conjunct that IS `fence_stamp = <fence token>`, in either orientation. */
-function fenceEquality(node: OperationNode, scope: Map<string, string>): GatingFence | null {
+function fenceEquality(
+  node: OperationNode,
+  scope: readonly { name: string; table: string }[],
+): GatingFence | null {
   if (!BinaryOperationNode.is(node) || operatorName(node.operator) !== '=') return null
   for (const [column, value] of [
     [node.leftOperand, node.rightOperand],
@@ -438,9 +453,9 @@ function fenceEquality(node: OperationNode, scope: Map<string, string>): GatingF
     const qualifier = reference.table?.table.identifier.name
     const table =
       qualifier !== undefined
-        ? scope.get(qualifier)
-        : scope.size === 1
-          ? [...scope.values()][0]
+        ? scope.find((source) => source.name === qualifier)?.table
+        : scope.length === 1
+          ? scope[0]?.table
           : undefined
     if (table !== undefined) return { fence: token.fence, table }
   }
@@ -492,7 +507,7 @@ function mentions(text: string, column: string): boolean {
   return new RegExp(String.raw`(?<![\w.])"?${column}"?(?!\w)`, 'i').test(text)
 }
 
-const COUNTING_OPERATORS = new Set(['+', '-', '*', '/', '%', '||'])
+const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']
 
 /**
  * Assignments that may count twice when a follow-on replays: `arithmetic` combines the
@@ -510,7 +525,7 @@ export function selfCountingAssignments(
     const arithmetic = someNode(update.value, (candidate) => {
       if (!BinaryOperationNode.is(candidate)) return false
       const operator = operatorName(candidate.operator)
-      if (operator === null || !COUNTING_OPERATORS.has(operator)) return false
+      if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false
       return (
         referencedColumn(candidate.leftOperand) === column ||
         referencedColumn(candidate.rightOperand) === column
@@ -544,18 +559,19 @@ function isBuilderRaw(parent: OperationNode, node: OperationNode): boolean {
  * IN or EXISTS there, or anywhere else.
  */
 export function rawFragmentProblem(tree: OperationNode): string | null {
-  const positions = new Map<OperationNode, RawRole>()
+  const predicates: OperationNode[] = []
+  const subqueries: OperationNode[] = []
   const markWhere = (node: OperationNode): void => {
     const inner = unwrapParens(node)
     if (RawNode.is(inner)) {
-      positions.set(inner, 'predicate')
+      predicates.push(inner)
     } else if (AndNode.is(inner) || OrNode.is(inner)) {
       markWhere(inner.left)
       markWhere(inner.right)
     } else if (requiredSubquery(inner) !== null) {
       const subquery = requiredSubquery(inner) as OperationNode
       const where = whereOf(subquery)
-      if (RawNode.is(subquery)) positions.set(subquery, 'subquery')
+      if (RawNode.is(subquery)) subqueries.push(subquery)
       else if (where !== null) markWhere(where)
     } else if (UnaryOperationNode.is(inner)) {
       markWhere(inner.operand)
@@ -569,8 +585,12 @@ export function rawFragmentProblem(tree: OperationNode): string | null {
     for (const child of children(node)) {
       if (problem !== null) return
       if (RawNode.is(child) && !isBuilderRaw(node, child)) {
-        const role = mintedRaws.get(child)
-        const position = positions.get(child) ?? 'value'
+        const role = mintedRole(child)
+        const position = predicates.includes(child)
+          ? 'predicate'
+          : subqueries.includes(child)
+            ? 'subquery'
+            : 'value'
         if (role === undefined) problem = 'a raw fragment that rawSql did not mint'
         else if (role !== position) problem = `a '${role}' fragment standing as a ${position}`
       }
@@ -654,7 +674,7 @@ const QUERY_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ],
 }
 
-const GRAMMAR_NODES = new Set([
+const GRAMMAR_NODES = [
   ...Object.keys(QUERY_FIELDS),
   'AggregateFunctionNode',
   'AliasNode',
@@ -692,7 +712,7 @@ const GRAMMAR_NODES = new Set([
   'ValueNode',
   'WhenNode',
   'WhereNode',
-])
+]
 
 /**
  * Why a tree is outside the statement grammar, or null when it is inside. The grammar
@@ -706,7 +726,7 @@ const GRAMMAR_NODES = new Set([
  */
 export function statementGrammarProblem(tree: OperationNode): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
-    if (!GRAMMAR_NODES.has(node.kind)) return `node kind ${node.kind}`
+    if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`
     if (!isRoot && (UpdateQueryNode.is(node) || DeleteQueryNode.is(node))) {
       return `${node.kind} below the root`
     }
