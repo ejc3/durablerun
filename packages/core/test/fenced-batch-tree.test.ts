@@ -1457,28 +1457,6 @@ describe('FencedBatch tree statements', () => {
       )
     })
 
-    it('reads a value fragment for a function call, as it reads nodes for one', () => {
-      const plain = /must select plain columns and values/
-      const taskFrom = (text: string, args: SqlFragment['args'] = []) =>
-        successor({ task: () => value<string>(text, args) })
-      // The node rule refuses every function node, so the text rule refuses every call,
-      // however it is spaced or quoted, and not a list of aggregate spellings.
-      refused(taskFrom('max(f.task_id)'), plain)
-      refused(taskFrom('MAX (f.task_id)'), plain)
-      refused(taskFrom('"max"(f.task_id)'), plain)
-      refused(taskFrom('`max`(f.task_id)'), plain)
-      refused(taskFrom('[max](f.task_id)'), plain)
-      refused(taskFrom('coalesce(f.task_id, ?)', ['t']), plain)
-      refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), plain)
-      // Plain text stays: a column, arithmetic in parentheses, a keyword before a
-      // parenthesis, and a call that is only the inside of a string literal.
-      expect(() => followOn(taskFrom('f.task_id'))).not.toThrow()
-      expect(() => followOn(taskFrom('(f.task_id)'))).not.toThrow()
-      expect(() =>
-        followOn(taskFrom("CASE WHEN f.attempt IN (1, 2) THEN f.task_id ELSE 'max(x)' END")),
-      ).not.toThrow()
-    })
-
     it('reads each value by position, so a star is refused', () => {
       refused(
         loose
@@ -1618,15 +1596,18 @@ describe('FencedBatch tree statements', () => {
         ).toThrow(/which never matches/)
       })
 
-      it('refuses every call in a value fragment, a harmless scalar one included', () => {
-        // The text rule cannot tell an aggregate from a scalar function, because a name
-        // is all it reads, so it refuses both. The cost is a false refusal: lower() adds
-        // no row. A value that needs a scalar function is built from nodes, where the
-        // same refusal applies, or computed by the caller and bound.
+      it('accepts an aggregate spelled inside a value fragment, which the plain-selection rule cannot read', () => {
+        // A reader of the fragment's text for a call was built and taken back. Two
+        // registered mutations write SQLite's two-argument scalar MIN into the successor
+        // deadline, the one value fragment a shipped follow-on insert passes, and text
+        // cannot tell that scalar from the one-argument aggregate: not by name, and not by
+        // arity, since an aggregate may take two arguments too. What closes this is
+        // building that deadline from nodes, so no value fragment is left to read.
         const plain = /must select plain columns and values/
-        refused(successor({ task: () => value<string>('max(f.task_id)') }), plain)
-        refused(successor({ task: () => value<string>('lower(f.task_id)') }), plain)
-        refused(successor({ task: (eb) => eb.fn('lower', [eb.ref('f.task_id')]) }), plain)
+        refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
+        expect(() =>
+          followOn(successor({ task: () => value<string>('max(f.task_id)') })),
+        ).not.toThrow()
       })
     })
 

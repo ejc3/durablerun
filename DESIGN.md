@@ -794,14 +794,14 @@ are load-bearing):
      thing that keeps a statement narrow. Its SELECT list holds no aggregate and no function call, and
      the SELECT has no HAVING, because each can return a row the fence did not
      match. That is asked of the statement's own SELECT and does not lean on
-     what the gating rule decides about aggregates. A value fragment in that
-     list is read for a call as the nodes are: a name, bare or quoted, followed
-     by a parenthesis, outside the fragment's string literals, is refused,
-     whatever the function is, because a list of aggregate spellings is what a
-     dialect outgrows. So a scalar function is refused there too, in text as
-     in nodes. A value taken from a joined row that only store text ties to the
-     fenced one is still outside what the rule can read, and that exhibit runs
-     in `fenced-batch-tree.test.ts`. A table without provenance
+     what the gating rule decides about aggregates. An aggregate spelled inside
+     a value fragment is outside what the rule can read, and so is a value
+     taken from a joined row that only store text ties to the fenced one. Both
+     exhibits run in `fenced-batch-tree.test.ts`. Text cannot close the first:
+     the one value fragment a shipped follow-on insert passes is the
+     successor's deadline, two registered mutations write SQLite's two-argument
+     scalar MIN into it, and neither a name nor an argument count tells that
+     scalar from an aggregate. Building the deadline from nodes would. A table without provenance
      columns, today `checkpoints`, takes the gate and may carry a conflict arm,
      which the counting rule reads like a SET list. In that arm `excluded` is
      the incoming row and never the row being written, so arithmetic on

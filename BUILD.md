@@ -991,12 +991,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     in `fenced-batch-tree.test.ts`. A tie on a column that is not a key passes,
     because the emit's wake is tied by queue on purpose, and the rows are then
     bounded by store text. A follow-on insert may read a value from a joined
-    row that only store text ties to the fenced one. Both have one cause: a
-    store fragment is opaque to the tree. Closing them means building those
-    predicates from nodes, which the registered mutations that own their text
-    do not allow today. The third residual of that round, an aggregate spelled
-    inside a value fragment, is closed: a follow-on insert's value fragments
-    are read for a call.
+    row that only store text ties to the fenced one. An aggregate spelled
+    inside a value fragment passes the plain-selection rule. All three have one
+    cause: a store fragment is opaque to the tree. Closing them means building
+    those predicates from nodes, which the registered mutations that own their
+    text do not allow today. Part 2's review built a reader of a value
+    fragment's text for a call and took it back, because it broke two
+    registered mutations: `timestamp-addition-claim-timeout-successor-exact`
+    and `timestamp-addition-user-retry-successor-exact` write `MIN(<deadline>,
+    <cap>)`, SQLite's two-argument scalar, into the successor's deadline, and
+    the reader refused the mutant before its own verdict could catch it. The
+    third residual closes when that deadline is built from nodes, which
+    re-aims those two mutations onto core and needs a bridge arm.
   - Deferred until a tree statement names it: `tasks.completed_payload` stays
     out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
     which its statements assign. Completion's task mirror is a generated
