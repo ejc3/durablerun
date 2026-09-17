@@ -106,7 +106,7 @@
         "bindArity": 22
       },
       {
-        "sql": "INSERT INTO checkpoints\n         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)\n       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms\n       FROM runs f WHERE f.run_id = ?\n         AND (typeof(f.attempt) = 'integer' AND f.attempt BETWEEN 1 AND 1000020)\n         AND f.fence_stamp = ?\n       ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET\n    state = excluded.state,\n    owner_run_id = excluded.owner_run_id,\n    owner_attempt = excluded.owner_attempt,\n    updated_at_ms = excluded.updated_at_ms\n  WHERE excluded.owner_attempt >= checkpoints.owner_attempt",
+        "sql": "insert into \"checkpoints\" (\"task_id\", \"checkpoint_name\", \"queue\", \"state\", \"owner_run_id\", \"owner_attempt\", \"updated_at_ms\") select \"f\".\"task_id\" as \"task_id\", ? as \"checkpoint_name\", \"f\".\"queue\" as \"queue\", ? as \"state\", \"f\".\"run_id\" as \"owner_run_id\", \"f\".\"attempt\" as \"owner_attempt\", \"f\".\"fence_at_ms\" as \"updated_at_ms\" from \"runs\" as \"f\" where \"f\".\"run_id\" = ? and ((typeof(f.attempt) = 'integer' AND f.attempt BETWEEN 1 AND 1000020)) and \"f\".\"fence_stamp\" = ? on conflict (\"task_id\", \"checkpoint_name\") do update set \"state\" = \"excluded\".\"state\", \"owner_run_id\" = \"excluded\".\"owner_run_id\", \"owner_attempt\" = \"excluded\".\"owner_attempt\", \"updated_at_ms\" = \"excluded\".\"updated_at_ms\" where \"excluded\".\"owner_attempt\" >= \"checkpoints\".\"owner_attempt\"",
         "bindArity": 4
       },
       {
@@ -174,7 +174,7 @@
         "bindArity": 9
       },
       {
-        "sql": "INSERT INTO checkpoints\n         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)\n       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms\n       FROM runs f WHERE f.run_id = ?\n         AND (typeof(f.attempt) = 'integer' AND f.attempt BETWEEN 1 AND 1000020)\n         AND f.fence_stamp = ?\n       ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET\n    state = excluded.state,\n    owner_run_id = excluded.owner_run_id,\n    owner_attempt = excluded.owner_attempt,\n    updated_at_ms = excluded.updated_at_ms\n  WHERE excluded.owner_attempt >= checkpoints.owner_attempt",
+        "sql": "insert into \"checkpoints\" (\"task_id\", \"checkpoint_name\", \"queue\", \"state\", \"owner_run_id\", \"owner_attempt\", \"updated_at_ms\") select \"f\".\"task_id\" as \"task_id\", ? as \"checkpoint_name\", \"f\".\"queue\" as \"queue\", ? as \"state\", \"f\".\"run_id\" as \"owner_run_id\", \"f\".\"attempt\" as \"owner_attempt\", \"f\".\"fence_at_ms\" as \"updated_at_ms\" from \"runs\" as \"f\" where \"f\".\"run_id\" = ? and ((typeof(f.attempt) = 'integer' AND f.attempt BETWEEN 1 AND 1000020)) and \"f\".\"fence_stamp\" = ? on conflict (\"task_id\", \"checkpoint_name\") do update set \"state\" = \"excluded\".\"state\", \"owner_run_id\" = \"excluded\".\"owner_run_id\", \"owner_attempt\" = \"excluded\".\"owner_attempt\", \"updated_at_ms\" = \"excluded\".\"updated_at_ms\" where \"excluded\".\"owner_attempt\" >= \"checkpoints\".\"owner_attempt\"",
         "bindArity": 4
       }
     ]

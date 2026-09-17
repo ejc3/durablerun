@@ -33,6 +33,7 @@ import {
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
+  checkpointWrite,
   claimCas,
   claimTimeoutSuccessorInsert,
   clampLimit,
@@ -236,19 +237,6 @@ const INFRA_RETRIES_FROM = (successorParam: string, fence: string): string =>
 /** A run's own row, by id — the correlation every fence in this file uses. */
 const BY_RUN = `f.run_id = ?`
 
-/**
- * The last-writer-wins tiebreak on a checkpoint upsert. Wire-visible
- * semantics, so it is ONE constant: the two write sites (the inline
- * checkpoint and the suspension marker) drifting apart would mean a step's
- * state was retained by one path and discarded by the other.
- */
-const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
-    state = excluded.state,
-    owner_run_id = excluded.owner_run_id,
-    owner_attempt = excluded.owner_attempt,
-    updated_at_ms = excluded.updated_at_ms
-  WHERE excluded.owner_attempt >= checkpoints.owner_attempt`
-
 /*
  * The equality makes the two attempt values one semantic ordinal. Validate
  * the checkpoint's canonical representation and range once; any different
@@ -265,8 +253,8 @@ const checkpointOwnerMatches = (checkpoint: string, owner: string): string =>
 /**
  * Validate the existing row whose primary key the checkpoint upsert consumes.
  *
- * This does not compare its ordinal with the incoming writer — CHECKPOINT_LWW
- * remains the tiebreaker. It only refuses malformed ownership before the
+ * This does not compare its ordinal with the incoming writer. The conflict arm of
+ * `checkpointWrite` remains the tiebreaker. It only refuses malformed ownership before the
  * leading CAS can extend a lease or park a run.
  */
 const validCheckpointConflict = (run: string, checkpointName: string): string =>
@@ -1514,16 +1502,15 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // batch's clock, and the reason fence_at_ms is a column rather than a
     // convention: without it, this statement would be a standing exemption to
     // "a follow-on may not read the clock".
-    b.followOn(
+    b.followOnTree(
       'marker',
-      `INSERT INTO checkpoints
-         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
-       FROM runs f WHERE ${BY_RUN}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')}
-         AND f.fence_stamp = ${b.fence('suspend')}
-       ${CHECKPOINT_LWW}`,
-      [checkpoint.key, checkpoint.stateJson, runId],
+      checkpointWrite({
+        runId,
+        checkpointName: checkpoint.key,
+        stateJson: checkpoint.stateJson,
+        fence: 'suspend',
+        attemptStored: sqlFragment(storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')),
+      }),
       'one',
     )
     finishSuspension(b, runId)
@@ -1777,19 +1764,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
         leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),
       }),
     )
-    // The attempt comparison inside CHECKPOINT_LWW is the last-writer-wins
+    // The attempt comparison in checkpointWrite's conflict arm is the last-writer-wins
     // tiebreaker, never the fence: a lower-attempt writer under a still-valid
     // lease is dropped silently and its lease still extends.
-    b.followOn(
+    b.followOnTree(
       'checkpoint',
-      `INSERT INTO checkpoints
-         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
-       FROM runs f WHERE ${BY_RUN}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')}
-         AND f.fence_stamp = ${b.fence('lease')}
-       ${CHECKPOINT_LWW}`,
-      [checkpointName, stateJson, runId],
+      checkpointWrite({
+        runId,
+        checkpointName: checkpointName,
+        stateJson: stateJson,
+        fence: 'lease',
+        attemptStored: sqlFragment(storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')),
+      }),
       'one',
     )
     const { won } = await b.run(this.db)

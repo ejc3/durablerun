@@ -59,8 +59,10 @@ Report a failure when the changed code introduces or materially expands any of t
   `FENCED_TABLES` (`packages/core/src/contract.ts`); `LIVE`, `QUEUED`, `eligibleTask`, `cancelDue`,
   `successorOwned` (the immutable run/task/attempt identity), `fenced`/`fencedAt`/`fenceFrom`
   (`packages/store-libsql/src/fragments.ts`);
-  `USER_ATTEMPTS_FROM`, `INFRA_RETRIES_FROM`, `CHECKPOINT_LWW`, `CLAIMED_RUN_COLUMNS`
-  (`store.ts`); the user-visible attempt ordinal, whose one TS definition is
+  `USER_ATTEMPTS_FROM`, `INFRA_RETRIES_FROM`, `CLAIMED_RUN_COLUMNS`
+  (`store.ts`); `checkpointWrite`, the one checkpoint upsert and its last-writer-wins arm, and
+  `insertedRun`, the one record every run insert is built from
+  (`packages/core/src/statements/`); the user-visible attempt ordinal, whose one TS definition is
   `ReplayContext.attempt = run.attempt - run.infraRetries` (`packages/sdk/src/context.ts`, read
   once at `packages/sdk/src/run-worker.ts`); `CLAIM_LIMIT`
   (`packages/conformance/src/fault-matrix.ts`). An *arithmetically equivalent but differently

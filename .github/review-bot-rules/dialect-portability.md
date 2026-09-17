@@ -219,9 +219,8 @@ Allowed cases (do NOT flag these):
 
 - **Dialect SQL inside a `store-*` package.** `unixepoch('subsec')` in `time.ts`;
   `WITHOUT ROWID` and partial indexes in `schema.ts`; `PRAGMA journal_mode=WAL`
-  and the `SCHEMA_FAULT` regex over SQLite's error wording in `executor.ts`;
-  `CHECKPOINT_LWW`'s `ON CONFLICT (task_id, checkpoint_name) DO UPDATE` in
-  `store.ts`. That is precisely what the package boundary is for.
+  and the `SCHEMA_FAULT` regex over SQLite's error wording in `executor.ts`.
+  That is precisely what the package boundary is for.
 
 - **A dialect named in `core` prose as the reason for a stricter portable
   check.** `UserName.parse` rejects NUL because "A NUL truncates a SQLite TEXT
