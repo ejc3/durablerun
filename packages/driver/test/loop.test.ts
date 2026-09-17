@@ -1,10 +1,10 @@
 import { LaunchOutcome } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
+import { FakeClock, Rng, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { DriverLoop } from '../src/index.js'
-import { FakeClock, FakeLauncher, until } from './loop-harness.js'
+import { FakeLauncher, until } from './loop-harness.js'
 
 const Q = 'q'
 
@@ -212,15 +212,11 @@ describe('DriverLoop', () => {
   it('a store outage is counted and backed off, never a crash or hot loop', async () => {
     const f = await fx('loop-outage')
     let failures = 0
-    const flaky = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        if (prop === 'sweep' && failures < 2) {
-          return () => {
-            failures++
-            return Promise.reject(new Error('db unreachable'))
-          }
-        }
-        return Reflect.get(target, prop, receiver)
+    const flaky = withStoreOverrides(f.store, {
+      sweep: (...args: Parameters<typeof f.store.sweep>) => {
+        if (failures >= 2) return f.store.sweep(...args)
+        failures++
+        return Promise.reject(new Error('db unreachable'))
       },
     })
     await f.store.spawn(Q, 'job', '{}')
@@ -450,16 +446,11 @@ describe('DriverLoop codex review regressions', () => {
     const f = await fx('loop-hanging-beat')
     await f.store.spawn(Q, 'job', '{}')
     const gate = { release: () => {} }
-    const hanging = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        if (prop === 'driverHeartbeat') {
-          return () =>
-            new Promise<void>((resolve) => {
-              gate.release = resolve // hangs until the test releases it
-            })
-        }
-        return Reflect.get(target, prop, receiver)
-      },
+    const hanging = withStoreOverrides(f.store, {
+      driverHeartbeat: () =>
+        new Promise<void>((resolve) => {
+          gate.release = resolve // hangs until the test releases it
+        }),
     })
     const launcher = new FakeLauncher()
     const loop = new DriverLoop({ store: hanging, launcher, ids: f.ids, clock: f.clock }, OPTS)

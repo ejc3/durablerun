@@ -1,49 +1,9 @@
 import { engineInvariantViolations } from '@durablerun/conformance'
 import { type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
-import { openTestDb } from '@durablerun/store-libsql/testing'
+import { withStoreOverrides } from '@durablerun/harness'
 import { describe, expect, it } from 'vitest'
 import { type TaskRegistry, runClaimedRun } from '../src/index.js'
-
-const Q = 'q'
-
-class InstantClock {
-  now = 1_000_000
-  nowEpochMs(): number {
-    return this.now
-  }
-  elapsedMs(): number {
-    return this.nowEpochMs()
-  }
-  yieldTurn(): Promise<void> {
-    return new Promise((resolve) => setImmediate(resolve))
-  }
-  sleep(_ms: number, interrupt?: AbortSignal): Promise<void> {
-    // The pump parks here until the pass ends (its stop signal aborts us);
-    // passes in this suite finish fast, so time itself never advances.
-    return new Promise((resolve) => {
-      if (interrupt?.aborted) {
-        resolve()
-        return
-      }
-      interrupt?.addEventListener('abort', () => resolve(), { once: true })
-    })
-  }
-}
-
-async function fx(seed: string) {
-  const { raw, admin } = await openTestDb()
-  const ids = seededIdSource(new Rng(seed))
-  const store = new LibsqlSchedulerStore(raw, ids)
-  const clock = new InstantClock()
-  await admin.setFakeNowEpochMs(clock.now)
-  const advance = async (ms: number) => {
-    clock.now += ms
-    await admin.setFakeNowEpochMs(clock.now)
-  }
-  return { raw, admin, ids, store, clock, advance, close: () => raw.close() }
-}
+import { Q, fx } from './worker-harness.js'
 
 async function claimAndRun(
   f: Awaited<ReturnType<typeof fx>>,
@@ -72,17 +32,18 @@ describe('SDK review regressions', () => {
     // the lease expires, the infra successor preloads the marker, and a
     // ONE-HOUR sleep completes in seconds.
     let failParkOnce = true
-    const flaky = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        const real = Reflect.get(target, prop, receiver)
-        if ((prop === 'reschedule' || prop === 'suspendRun') && failParkOnce) {
-          return (...args: unknown[]) => {
-            failParkOnce = false
-            return Promise.reject(new Error('store blip'))
-          }
+    const failParkOnceOr =
+      <M extends 'reschedule' | 'suspendRun'>(method: M) =>
+      (...args: Parameters<SchedulerStore[M]>) => {
+        if (!failParkOnce) {
+          return (f.store[method] as (...a: typeof args) => ReturnType<SchedulerStore[M]>)(...args)
         }
-        return typeof real === 'function' ? (real as CallableFunction).bind(target) : real
-      },
+        failParkOnce = false
+        return Promise.reject(new Error('store blip')) as ReturnType<SchedulerStore[M]>
+      }
+    const flaky = withStoreOverrides<SchedulerStore>(f.store, {
+      reschedule: failParkOnceOr('reschedule'),
+      suspendRun: failParkOnceOr('suspendRun'),
     })
     const passes: number[] = []
     const reg: TaskRegistry = new Map([
@@ -115,16 +76,11 @@ describe('SDK review regressions', () => {
   it("a store outage during complete() never spends the user's retry budget", async () => {
     const f = await fx('sdk-complete-outage')
     let failComplete = true
-    const flaky = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        const real = Reflect.get(target, prop, receiver)
-        if (prop === 'complete' && failComplete) {
-          return () => {
-            failComplete = false
-            return Promise.reject(new StoreUnavailableError('ECONNRESET (transient)'))
-          }
-        }
-        return typeof real === 'function' ? (real as CallableFunction).bind(target) : real
+    const flaky = withStoreOverrides<SchedulerStore>(f.store, {
+      complete: (...args: Parameters<SchedulerStore['complete']>) => {
+        if (!failComplete) return f.store.complete(...args)
+        failComplete = false
+        return Promise.reject(new StoreUnavailableError('ECONNRESET (transient)'))
       },
     })
     const reg: TaskRegistry = new Map([['job', async () => 'succeeded']])
@@ -151,16 +107,11 @@ describe('SDK review regressions', () => {
   it("a store outage inside a step never spends the user's retry budget either", async () => {
     const f = await fx('sdk-step-outage')
     let failCheckpoint = true
-    const flaky = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        const real = Reflect.get(target, prop, receiver)
-        if (prop === 'setCheckpoint' && failCheckpoint) {
-          return () => {
-            failCheckpoint = false
-            return Promise.reject(new StoreUnavailableError('SQLITE_BUSY (transient)'))
-          }
-        }
-        return typeof real === 'function' ? (real as CallableFunction).bind(target) : real
+    const flaky = withStoreOverrides<SchedulerStore>(f.store, {
+      setCheckpoint: (...args: Parameters<SchedulerStore['setCheckpoint']>) => {
+        if (!failCheckpoint) return f.store.setCheckpoint(...args)
+        failCheckpoint = false
+        return Promise.reject(new StoreUnavailableError('SQLITE_BUSY (transient)'))
       },
     })
     const reg: TaskRegistry = new Map([['job', async (ctx) => ctx.step('work', () => 'done')]])

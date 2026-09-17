@@ -1,6 +1,6 @@
 import { engineInvariantViolations } from '@durablerun/conformance'
 import { type Buggify, type LaunchInvocation, LaunchOutcome, type Launcher } from '@durablerun/core'
-import { Rng, SimWorld, seededIdSource } from '@durablerun/harness'
+import { Rng, SimWorld, seededIdSource, withStoreOverrides } from '@durablerun/harness'
 import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
@@ -316,13 +316,8 @@ describe('tick() review regressions', () => {
     // The advisory write hits a transient store error. Advisory means
     // best-effort: the lease timer still recovers the run — losing the
     // tick's counts, nextWake, and backlog over it is an escalation.
-    const flaky = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        if (prop === 'expireLeaseNow') {
-          return () => Promise.reject(new Error('transient store error'))
-        }
-        return Reflect.get(target, prop, receiver)
-      },
+    const flaky = withStoreOverrides(f.store, {
+      expireLeaseNow: () => Promise.reject(new Error('transient store error')),
     })
     const launcher = new FakeLauncher(() => LaunchOutcome.launchFailed())
     const result = await tick({ store: flaky, launcher, ids: f.ids }, OPTS)

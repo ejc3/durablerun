@@ -410,6 +410,21 @@ jobs:
                       for marker in markers
                   ),
               )
+          elif digest == '91249d308f3484c0a4367d7d36d23454ad7d84d9ce42f4fcdbe766fbf99041eb':
+              # Decoding the activation answer renamed the run the retry decision reads,
+              # which re-aimed one find.
+              key = '        "sdk-owned-retry-attempt",\n'
+              def spec_block(text):
+                  if text.count(key) != 1:
+                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
+                  start = text.rindex('    (\n', 0, text.index(key))
+                  end = text.index('    ),\n', start) + len('    ),\n')
+                  return start, end
+              start, end = spec_block(previous)
+              new_start, new_end = spec_block(candidate)
+              if previous[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
+                  raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
+              repaired = previous[:start] + candidate[new_start:new_end] + previous[end:]
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

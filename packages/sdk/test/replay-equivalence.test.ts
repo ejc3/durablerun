@@ -1,6 +1,6 @@
 import { engineInvariantViolations } from '@durablerun/conformance'
 import { EventTimeoutError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
+import { FakeClock, Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { type TaskContext, type TaskRegistry, runClaimedRun } from '../src/index.js'
@@ -212,25 +212,6 @@ function programHandler(ops: ProgramOp[]) {
   }
 }
 
-class PumpClock {
-  now = 1_000_000
-  nowEpochMs(): number {
-    return this.now
-  }
-  elapsedMs(): number {
-    return this.nowEpochMs()
-  }
-  yieldTurn(): Promise<void> {
-    return new Promise((resolve) => setImmediate(resolve))
-  }
-  sleep(_ms: number, interrupt?: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-      if (interrupt?.aborted) return resolve()
-      interrupt?.addEventListener('abort', () => resolve(), { once: true })
-    })
-  }
-}
-
 /**
  * Run one program to completion, with the Nth store call (counted across
  * the whole lifetime, 0 = no fault) failing as a transient outage; recover
@@ -262,7 +243,7 @@ async function runProgram(
         }
       },
     }) as SchedulerStore
-    const clock = new PumpClock()
+    const clock = new FakeClock()
     await admin.setFakeNowEpochMs(clock.now)
     const registry: TaskRegistry = new Map([['prog', programHandler(ops)]])
     const spawned = await real.spawn(Q, 'prog', '{}')
@@ -291,7 +272,8 @@ async function runProgram(
           { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen },
         ).catch(() => {})
       }
-      clock.now += 70_000
+      // Moves time without firing sleeps: the pump parks until its pass ends.
+      clock.advance(70_000)
       await admin.setFakeNowEpochMs(clock.now)
       await real.sweep(Q, 10)
     }

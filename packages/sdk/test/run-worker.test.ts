@@ -1,6 +1,5 @@
 import { engineInvariantViolations } from '@durablerun/conformance'
 import {
-  type Clock,
   FatalTaskError,
   LeaseLostError,
   type SchedulerStore,
@@ -8,9 +7,8 @@ import {
   SuspendSignal,
   snapshotTaskThrowable,
 } from '@durablerun/core'
-import { Rng, seededIdSource } from '@durablerun/harness'
-import { LibsqlSchedulerStore } from '@durablerun/store-libsql'
-import { openTestDb } from '@durablerun/store-libsql/testing'
+import { withStoreOverrides } from '@durablerun/harness'
+import type { LibsqlSchedulerStore } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import {
   type TaskContext,
@@ -27,66 +25,7 @@ import {
   taskMapSet,
   trustedPromiseRace,
 } from '../src/intrinsics.js'
-
-const Q = 'q'
-
-/** Instant clock: the pump parks on sleeps we never fire — fine for passes
- * that finish fast; the heartbeat test drives it manually. */
-class FakeClock implements Clock {
-  now = 1_000_000
-  fired: { deadline: number; resolve: () => void }[] = []
-  nowEpochMs(): number {
-    return this.now
-  }
-  elapsedMs(): number {
-    return this.nowEpochMs()
-  }
-  yieldTurn(): Promise<void> {
-    return new Promise((resolve) => setImmediate(resolve))
-  }
-  sleep(ms: number, interrupt?: AbortSignal): Promise<void> {
-    return new Promise((resolve) => {
-      if (interrupt?.aborted || ms <= 0) {
-        resolve()
-        return
-      }
-      const entry = { deadline: this.now + ms, resolve }
-      this.fired.push(entry)
-      interrupt?.addEventListener(
-        'abort',
-        () => {
-          this.fired = this.fired.filter((s) => s !== entry)
-          resolve()
-        },
-        { once: true },
-      )
-    })
-  }
-  advance(ms: number): void {
-    this.now += ms
-    const due = this.fired.filter((s) => s.deadline <= this.now)
-    this.fired = this.fired.filter((s) => s.deadline > this.now)
-    for (const s of due) s.resolve()
-  }
-}
-
-async function fx(seed: string) {
-  const { raw, admin } = await openTestDb()
-  const ids = seededIdSource(new Rng(seed))
-  const store = new LibsqlSchedulerStore(raw, ids)
-  const clock = new FakeClock()
-  await admin.setFakeNowEpochMs(clock.now)
-  const advance = async (ms: number) => {
-    clock.now += ms
-    await admin.setFakeNowEpochMs(clock.now)
-    clock.advance(0)
-  }
-  return { raw, admin, ids, store, clock, advance, close: () => raw.close() }
-}
-
-function registry(entries: Record<string, TaskHandler>): TaskRegistry {
-  return new Map(Object.entries(entries))
-}
+import { Q, claimAndRun, claimInvocation, fx, invocationOf, registry } from './worker-harness.js'
 
 const NON_SERIALIZABLE_VALUES: readonly (readonly [string, () => unknown])[] = [
   ['function', () => () => undefined],
@@ -265,28 +204,6 @@ const TASK_THROWABLE_CASES = {
   },
 } satisfies Record<TaskThrowableCaseId, TaskThrowableCase>
 
-async function claimAndRun(
-  f: Awaited<ReturnType<typeof fx>>,
-  reg: TaskRegistry,
-  token: string,
-): Promise<ReturnType<typeof runClaimedRun>> {
-  return runClaimedRun(
-    { store: f.store, clock: f.clock, registry: reg },
-    await claimInvocation(f, token),
-  )
-}
-
-async function claimInvocation(f: Awaited<ReturnType<typeof fx>>, token: string) {
-  const [run] = await f.store.claim(Q, token, { leaseSeconds: 60, limit: 1 })
-  if (!run) throw new Error('expected a claimable run')
-  return invocationOf(run)
-}
-
-/** The launch a driver builds from a claimed run. */
-function invocationOf(run: { runId: string; claimToken: string; claimGen: number }) {
-  return { queue: Q, runId: run.runId, claimToken: run.claimToken, claimGen: run.claimGen }
-}
-
 async function replacePropertyAsync<T>(
   target: object,
   key: PropertyKey,
@@ -317,7 +234,7 @@ describe('runClaimedRun', () => {
     expect(await claimAndRun(f, registry({ job: async () => 'done' }), 'w1')).toEqual({
       kind: 'completed',
     })
-    expect(f.clock.fired.map(({ deadline }) => deadline - f.clock.now)).toEqual([])
+    expect(f.clock.sleeps.map(({ deadline }) => deadline - f.clock.elapsed)).toEqual([])
     f.close()
   })
 
@@ -940,17 +857,11 @@ describe('runClaimedRun', () => {
     try {
       await f.store.spawn(Q, 'job', '{}')
       const invocation = await claimInvocation(f, 'w1')
-      const store = new Proxy(f.store, {
-        get(target, property, receiver) {
-          if (property === 'complete') return () => Promise.reject(rejection)
-          if (property === 'fail') {
-            return () => {
-              failCalls++
-              return Promise.resolve()
-            }
-          }
-          const value = Reflect.get(target, property, receiver)
-          return typeof value === 'function' ? (value as CallableFunction).bind(target) : value
+      const store = withStoreOverrides<SchedulerStore>(f.store, {
+        complete: () => Promise.reject(rejection),
+        fail: () => {
+          failCalls++
+          return Promise.resolve()
         },
       })
       const observed = await runClaimedRun(
@@ -980,16 +891,12 @@ describe('runClaimedRun', () => {
     try {
       await f.store.spawn(Q, 'job', '{}')
       const invocation = await claimInvocation(f, 'w1')
-      const store = new Proxy(f.store, {
-        get(target, property, receiver) {
-          if (property === 'awaitEvent') {
-            return (...args: unknown[]) => {
-              storedTimeout = args[6]
-              return Promise.resolve({ emitted: true, payloadJson: '{"ok":true}' })
-            }
-          }
-          const value = Reflect.get(target, property, receiver)
-          return typeof value === 'function' ? (value as CallableFunction).bind(target) : value
+      const store = withStoreOverrides<SchedulerStore>(f.store, {
+        awaitEvent: (...args: Parameters<SchedulerStore['awaitEvent']>) => {
+          storedTimeout = args[6]
+          return Promise.resolve({ emitted: true, payloadJson: '{"ok":true}' } as Awaited<
+            ReturnType<SchedulerStore['awaitEvent']>
+          >)
         },
       })
       const opts = {
@@ -1495,16 +1402,10 @@ describe('runClaimedRun', () => {
       const firstBeat = new Promise<void>((resolve) => {
         beatSettled = resolve
       })
-      const other = new Proxy(f.store, {
-        get(target, prop, receiver) {
-          if (prop === 'heartbeat') {
-            return async () => {
-              beatSettled()
-              return answer as unknown as Awaited<ReturnType<SchedulerStore['heartbeat']>>
-            }
-          }
-          const value = Reflect.get(target, prop, receiver)
-          return typeof value === 'function' ? value.bind(target) : value
+      const other = withStoreOverrides<SchedulerStore>(f.store, {
+        heartbeat: async () => {
+          beatSettled()
+          return answer as unknown as Awaited<ReturnType<SchedulerStore['heartbeat']>>
         },
       })
       let stepRan = false
@@ -1541,20 +1442,14 @@ describe('runClaimedRun', () => {
     const firstBeat = new Promise<void>((resolve) => {
       beatSettled = resolve
     })
-    const counting = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        if (prop === 'heartbeat') {
-          return async (...args: Parameters<SchedulerStore['heartbeat']>) => {
-            beats++
-            try {
-              return await target.heartbeat(...args)
-            } finally {
-              beatSettled()
-            }
-          }
+    const counting = withStoreOverrides<SchedulerStore>(f.store, {
+      heartbeat: async (...args: Parameters<SchedulerStore['heartbeat']>) => {
+        beats++
+        try {
+          return await f.store.heartbeat(...args)
+        } finally {
+          beatSettled()
         }
-        const value = Reflect.get(target, prop, receiver)
-        return typeof value === 'function' ? value.bind(target) : value
       },
     })
     let stepRan = false
@@ -1691,14 +1586,8 @@ describe('runClaimedRun', () => {
     // and rethrow raw, so a store blip during a user-failure write surfaced
     // as an unexpected crash instead of a clean abort.
     const f = await fx('sdk-fail-outage')
-    const failing = new Proxy(f.store, {
-      get(target, prop, receiver) {
-        if (prop === 'fail') {
-          return () => Promise.reject(new StoreUnavailableError('outage during fail'))
-        }
-        const value = Reflect.get(target, prop, receiver)
-        return typeof value === 'function' ? value.bind(target) : value
-      },
+    const failing = withStoreOverrides<SchedulerStore>(f.store, {
+      fail: () => Promise.reject(new StoreUnavailableError('outage during fail')),
     })
     const reg = registry({
       job: () => {
@@ -1745,7 +1634,7 @@ describe('runClaimedRun', () => {
     )
     // Let the pass reach its awaits (pump sleep + the job's long call)
     // before moving time — advancing earlier would shift the deadlines.
-    while (f.clock.fired.length < 2) {
+    while (f.clock.sleeps.length < 2) {
       await new Promise((r) => setTimeout(r, 2))
     }
     // Cross the original lease horizon in pump-cadence hops, sweeping en
@@ -1778,18 +1667,12 @@ describe('runClaimedRun', () => {
           args: [spawned.taskId, Q, run.runId, run.attempt, f.clock.now],
         },
       ])
-      const counting = new Proxy(f.store, {
-        get(target, prop, receiver) {
-          if (prop === 'heartbeat') {
-            return async (..._args: Parameters<SchedulerStore['heartbeat']>) => {
-              beats++
-              // End the leaked pump after observing the one call, so the red
-              // test itself leaves no live upkeep loop behind.
-              return { held: false, remainingMs: 0, reason: 'lease-lost' as const }
-            }
-          }
-          const value = Reflect.get(target, prop, receiver)
-          return typeof value === 'function' ? value.bind(target) : value
+      const counting = withStoreOverrides<SchedulerStore>(f.store, {
+        heartbeat: async (..._args: Parameters<SchedulerStore['heartbeat']>) => {
+          beats++
+          // End the leaked pump after observing the one call, so the red
+          // test itself leaves no live upkeep loop behind.
+          return { held: false, remainingMs: 0, reason: 'lease-lost' as const }
         },
       })
 
@@ -1840,11 +1723,11 @@ describe('runClaimedRun', () => {
         invocationOf(run),
       )
 
-      while (f.clock.fired.length < 1) {
+      while (f.clock.sleeps.length < 1) {
         await f.clock.yieldTurn()
       }
       const firstUpkeepDelay =
-        (f.clock.fired[0]?.deadline ?? Number.POSITIVE_INFINITY) - f.clock.now
+        (f.clock.sleeps[0]?.deadline ?? Number.POSITIVE_INFINITY) - f.clock.elapsed
       releaseHandler?.()
       expect(await pass).toEqual({ kind: 'completed' })
       expect(

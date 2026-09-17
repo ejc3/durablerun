@@ -8,6 +8,7 @@ import {
   type SchedulerStore,
   UserName,
   type WakeSpec,
+  type WorkerClaimedRun,
   parseTaskValueJson,
   serializeTaskValue,
   userDurationToMs,
@@ -118,7 +119,7 @@ export class ReplayContext implements TaskContext {
   readonly taskName: string
   readonly #store: SchedulerStore
   readonly #queue: string
-  readonly #run: ClaimedRun
+  readonly #run: WorkerClaimedRun
   readonly #leaseEnd: LeaseEndLatch
   readonly #controls: TaskControlIssuer
   private readonly seen = new TaskMap<string, unknown>()
@@ -136,7 +137,7 @@ export class ReplayContext implements TaskContext {
   constructor(
     store: SchedulerStore,
     queue: string,
-    run: ClaimedRun,
+    run: WorkerClaimedRun,
     checkpoints: Checkpoint[],
     leaseEnd: LeaseEndLatch = { reason: undefined },
     controls: TaskControlIssuer = createTaskControlScope().issuer,

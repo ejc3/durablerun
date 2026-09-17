@@ -20,6 +20,7 @@ const INLINE_ENDING_KINDS = {
   cancelled: 'unknown',
   aborted: 'crashed',
   deferred: 'unknown',
+  'incompatible-store': 'crashed',
 } as const satisfies Record<WorkerOutcome['kind'], Ending['kind']>
 
 export interface InlineLauncherOptions {
