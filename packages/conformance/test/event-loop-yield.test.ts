@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { yieldToTimersAfterEachTest } from './yield-to-timers.js'
+
+yieldToTimersAfterEachTest()
 
 // How late a 50 ms timer fires is how long the event loop went without reaching its
 // timers phase. Three tests that each block for 600 ms show as one stall near 1800 ms
