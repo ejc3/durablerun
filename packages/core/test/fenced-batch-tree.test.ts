@@ -1,6 +1,7 @@
 import { type OperationNode, SqliteQueryCompiler, sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
+  FENCE_SET,
   FencedBatch,
   type SqlExecutor,
   type SqlFragment,
@@ -339,6 +340,93 @@ describe('FencedBatch tree statements', () => {
       thrown = error
     } finally {
       ;(globalThis as { Map: unknown }).Map = original
+    }
+    expect(thrown).toBeUndefined()
+  })
+
+  it('places a raw subquery under NOT IN as a subquery, with one pair of parentheses', async () => {
+    const excluded = winCas().where((eb) =>
+      eb('run_id', 'not in', rawSql<string>(sqlFragment(`(SELECT 'r2')`), 'subquery')),
+    )
+    const { captured, executor } = capturingExecutor(1)
+    await batch().casTree('win', statement(excluded)).run(executor)
+    expect(captured[0]?.sql).toContain(`"run_id" not in (SELECT 'r2')`)
+  })
+
+  it('places a predicate in any boolean clause, and refuses a value standing there', () => {
+    const grouped = (having: ReturnType<typeof predicate>) =>
+      db
+        .selectFrom('runs')
+        .select('task_id')
+        .where('fence_stamp', '=', fenceValue('win'))
+        .groupBy('task_id')
+        .having(having)
+    expect(() =>
+      withCas().tailTree('payload', statement(grouped(predicate('COUNT(*) = 1')))),
+    ).not.toThrow()
+    expect(() =>
+      withCas().tailTree(
+        'payload',
+        statement(grouped(rawSql<boolean>(sqlFragment('COUNT(*) = 1'), 'value'))),
+      ),
+    ).toThrow(/a 'value' fragment standing as a predicate/)
+  })
+
+  it('refuses an operator that compiles to a placeholder no argument binds', () => {
+    const jsonKey = taskFollowOn().where('headers', '?', 'key')
+    expect(() => followOn(jsonKey)).toThrow(/placeholders/)
+  })
+
+  it('refuses a fragment with a comment or a string form its scanner cannot read', () => {
+    expect(() => predicate("/* don't */ x = 'at $NOW$' /* ' */")).toThrow(/comment/)
+    expect(() => predicate('x = 1 -- trailing')).toThrow(/comment/)
+    expect(() => rawSql(sqlFragment('(SELECT 1 /* ( */) OR (1=1 /* ) */)'), 'subquery')).toThrow(
+      /comment/,
+    )
+    expect(() => predicate('x = $q$ $NOW$ $q$')).toThrow(/plain single-quoted/)
+    expect(() => predicate("x = E'it\\'s $NOW$ here'")).toThrow(/plain single-quoted/)
+    expect(() => predicate("json_extract(x, '$.kind') = 'fixed' AND y < $NOW$")).not.toThrow()
+  })
+
+  it('refuses one fragment node placed twice', () => {
+    const once = predicate('1 = 1')
+    const reused = taskFollowOn()
+      .set({ last_attempt_run: once as never })
+      .where(once)
+    expect(() => followOn(reused)).toThrow(/placed twice/)
+  })
+
+  it('refuses a fragment bind the statement never places', () => {
+    const unplaced = defineStatement('unplaced', (_binds: { admission: SqlFragment }) =>
+      db.updateTable('runs').set({ state: 'completed' }).where('run_id', '=', 'r1'),
+    )
+    expect(() => unplaced({ admission: sqlFragment('1 = 1') })).toThrow(/never places/)
+  })
+
+  it('builds a generated follow-on while task code has replaced the global Set', () => {
+    class PoisonedSet {
+      constructor() {
+        throw new Error('task-installed Set constructor ran')
+      }
+    }
+    const original = globalThis.Set
+    let thrown: unknown
+    try {
+      ;(globalThis as { Set: unknown }).Set = PoisonedSet
+      batch()
+        .cas('win', 'runs', `UPDATE runs SET state = 'x', ${FENCE_SET} WHERE run_id = ?`, ['r'])
+        .derived('task', {
+          relation: 'runs-to-tasks',
+          fence: 'win',
+          where: 'f.run_id = ?',
+          whereArgs: ['r'],
+          set: { state: `'completed'` },
+          rows: 'one',
+        })
+    } catch (error) {
+      thrown = error
+    } finally {
+      ;(globalThis as { Set: unknown }).Set = original
     }
     expect(thrown).toBeUndefined()
   })
