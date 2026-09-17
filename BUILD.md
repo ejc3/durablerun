@@ -54,7 +54,7 @@ implements the finished surface once.
 3. Every store batch's SQL is built as a tree and checked as a tree, per
    PR3.9, and the textual scanners it replaces are deleted.
 4. A task can spawn a child from a step and await the child's completion as an
-   event, and awaiting a same-queue child from a worker is refused. It is
+   event, and awaiting a child in another queue is refused. It is
    modeled in TLA before its SQL exists, and conformance on every dialect pins
    it.
 5. A step can declare a rollback that the engine runs in reverse step-start
@@ -1086,15 +1086,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   do it, with its source postmortem.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
-  await, same-queue refusal; `/api/runs/:id` result route. Spec first:
+  await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
   `specs/ChildTasks.tla` models the completion event and lands before its SQL,
   for an await whose event and wait row live in one queue. TLC checks it with
   the await allowed and with it refused, and seven probes each exhibit one
   violation or one reachable behaviour. Sixteen mutants, each one guard of
   the model bent or deleted, must each fail some configuration
   (`specs/ChildTasks.mutants.json`, run by `scripts/tla.sh`), because a probe
-  shows that an invariant can fail and cannot show that a guard is held. The implementation then maps every
-  terminal batch onto the model's ChildTerminal, takes the dialect's event
+  shows that an invariant can fail and cannot show that a guard is held. The
+  implementation then maps every terminal batch onto the model's ChildTerminal, takes the dialect's event
   lock in each of them, reserves the `$task-done:` name at the store's
   `emitEvent` port, and adds `ctx.spawn` and an internal child await to the
   SDK. Nothing reads the model's ledger block, because `scripts/spec-ledger.py`
@@ -1104,10 +1104,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
   Event cleanup, when it is built, must not remove a completion event whose
   task can still be awaited. The spec's review round is
   `postmortems/pr3.3-child-tasks-spec-review.md`.
-  Same-queue refusal stays as DESIGN.md §3.2 and the exit test have it, and is
-  flagged there for the maintainer's decision before the implementation:
-  events are keyed by queue, so the rule as written leaves no await that
-  works.
+  The maintainer settled the queue rule on 2026-09-17, after the spec's
+  review showed that Absurd's same-queue refusal leaves no await that works
+  here: a same-queue await is allowed, and an await across queues is refused
+  until a delivery protocol for it is modeled, because events are keyed by
+  queue.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,

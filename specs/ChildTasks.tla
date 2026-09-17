@@ -30,13 +30,13 @@
 \* one queue.  That is the await this model covers.  An await across queues
 \* needs a delivery protocol that does not exist, and nothing here speaks for it.
 \*
-\* THE RULE IN QUESTION, isolated as one constant.  DESIGN.md keeps Absurd's rule
-\* that awaiting a same-queue child is refused.  Absurd refuses it because its
-\* await polls and holds a worker slot, and ours suspends.  AwaitAllowed is that
-\* rule as one constant.  The three await actions read it and RefusedNeverWaits
-\* holds it, so the protocol is checked with the await allowed and with it
-\* refused.  With it refused, the only await left is the one
-\* across queues, which this model does not cover.
+\* THE QUEUE RULE, isolated as one constant.  A child is awaited only within its
+\* parent's queue.  An await across queues is refused, as a permanent error that
+\* registers nothing.  AwaitAllowed is that rule: TRUE is a child in the parent's
+\* queue, FALSE a child in another.  The three await actions read it and
+\* RefusedNeverWaits holds it, so the protocol is checked with the await allowed
+\* and with it refused.  Absurd refuses the SAME-queue await instead, because its
+\* await polls and holds a worker slot.  Ours suspends and holds nothing.
 \*
 \* WHAT THE SQL OWES THIS MODEL, beyond its actions:
 \*  - Every terminal batch takes the dialect's event lock, as emit-event and
@@ -84,7 +84,7 @@ EXTENDS Naturals
 
 CONSTANTS
   MaxRetries,     \* retry-task revivals of the child.  ARTIFICIAL bound.
-  AwaitAllowed,   \* FALSE is DESIGN.md's rule today: a same-queue await is refused
+  AwaitAllowed,   \* TRUE: the child is in the parent's queue.  FALSE: the await is refused
   AtomicEmit,     \* TRUE in the protocol.  FALSE only in a vacuity probe.
   UserMayForge    \* FALSE in the protocol.  TRUE only in a vacuity probe.
 

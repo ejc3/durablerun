@@ -610,17 +610,17 @@ One invocation executes one claimed run to its next suspension point:
     await cannot be the SDK's `awaitEvent`, which refuses the reserved name:
     it reaches the store by an internal path that builds the name from the
     child's task id.
-  - Absurd's deadlock rule is kept as written, and flagged for a decision
-    before the implementation: awaiting a same-queue child from inside a
-    worker is refused, as a permanent error that registers nothing. Absurd
-    refuses it because its await polls and holds a worker slot, and ours
-    suspends. Events are keyed by queue and are shard-local (§3.7), so a
-    same-queue child is the only one whose terminal batch can wake its parent
-    at all: a child in another queue writes its event under that queue, where
-    the parent's wait row is not. An await across queues needs a delivery
-    protocol that does not exist. The rule as written therefore leaves no
-    await that works. The model isolates the rule as one constant and checks
-    the protocol with the await allowed and with it refused.
+  - A child is awaited only within its parent's queue. Events are keyed by
+    queue and are shard-local (§3.7), so a same-queue child is the only one
+    whose terminal batch can wake its parent: a child in another queue writes
+    its event under that queue, where the parent's wait row is not. Awaiting a
+    child in another queue is refused, as a permanent error that registers
+    nothing, until a delivery protocol across queues exists and is modeled.
+    This departs from Absurd, which refuses the same-queue await because its
+    await polls and holds a worker slot, so a parent and its child can
+    deadlock a small pool. Ours suspends and holds nothing. The model isolates
+    the rule as one constant and checks the protocol with the await allowed
+    and with it refused.
   - Not modeled, and bounded elsewhere: an await cycle, where a parent awaits
     a child that awaits the parent, waits forever in any queue. Nothing
     detects it, and only a cancellation deadline bounds it, as it bounds any
@@ -2026,7 +2026,7 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   burn; duplicate delivery → activation CAS.
 - **Phase 3 — full Absurd semantics.** Events (emit/await, first-write-wins,
   timeout branch), cancellation policies, idempotent spawn, child tasks
-  (completion-event await + same-queue refusal), step repeat counters,
+  (completion-event await + cross-queue refusal), step repeat counters,
   defer-unknown-task deploy rule; Absurd's docs-level API (`ctx.step`,
   `sleepFor`, `awaitEvent`, `spawn`) as the TS SDK.
 - **Phase 4 — dialects + conformance matrix.** MySQL 8 in a CI container
