@@ -437,6 +437,40 @@ describe('FencedBatch tree statements', () => {
       ).not.toThrow()
     })
 
+    it('refuses any read of the assigned row in a fragment, and arithmetic on another row', () => {
+      // A mention qualified by the table being written IS the assigned row, whatever the
+      // text does with it: a function call between the operator and the name hid it.
+      for (const counting of ['1 + COALESCE(tasks.attempts, 0)', 'abs(tasks.attempts)']) {
+        expect(() => mirror({ attempts: counting }), counting).toThrow(/'attempts'/)
+      }
+      // Another row's column beside arithmetic, which the text path refused by name.
+      for (const counting of ['f.attempts + 1', '1 + f.attempts']) {
+        expect(() => mirror({ attempts: counting }), counting).toThrow(/'attempts'/)
+      }
+      // Another row's column with no arithmetic is a copy.
+      expect(() =>
+        mirror({ attempts: '(SELECT f.attempts FROM runs f WHERE f.fence_stamp = $FENCE:win$)' }),
+      ).not.toThrow()
+    })
+
+    it('reads no gate through an ungrouped HAVING', () => {
+      // HAVING with no GROUP BY makes the subquery one group, which returns a row even
+      // when its WHERE matched nothing, so EXISTS over it is always true.
+      const gatedBy = (having: boolean) =>
+        db
+          .updateTable('tasks')
+          .set({ state: 'failed', fence_stamp: stampValue, fence_at_ms: 5 })
+          .where((eb) => {
+            const inner = eb
+              .selectFrom('runs as f')
+              .select('f.run_id')
+              .where('f.fence_stamp', '=', fenceValue('win'))
+            return eb.exists(having ? inner.having((h) => h.fn.countAll<number>(), '>=', 0) : inner)
+          })
+      expect(() => followOn(gatedBy(false))).not.toThrow()
+      expect(() => followOn(gatedBy(true))).toThrow(/fence/)
+    })
+
     it('refuses arguments whose text is missing or empty', () => {
       // A computed correlation that comes out empty must not widen the write to every
       // row under the fence, with its arguments dropped on the floor.
