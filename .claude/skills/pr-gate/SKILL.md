@@ -148,7 +148,7 @@ pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
   invariant in `conformance/src/invariants.ts` or a conformance case.
   `max_attempts` was modeled-but-unenforced while fuzz ran green.
 - Mirror discipline: every run transition mirrors `tasks.state`; successor-
-  creating paths (`fail`, sweep) take core's `SUCCESSOR_PARENT_COLUMNS` and
+  creating paths (`fail`, sweep) build their run from core's `insertedRun` and
   share guard shapes. The conformance case "both successor paths carry every
   inherited run column" checks the carried values on both paths.
 - Consumable state gets consumed: wakes clear on `reschedule`/`complete`
@@ -296,7 +296,7 @@ A live worker's heartbeat legitimately revives an advisorily-expired lease.
   fence).
 - Repeated SQL shapes get builders/constants before the third copy:
   successor-insert columns, waits-gone deletes, fence fragments,
-  `CLAIMED_RUN_COLUMNS`.
+  `CLAIMED_RUN_SELECTION`.
 - Two adjacent same-type params invite silent swaps — options objects
   (`{leaseSeconds, limit}`).
 - Impossible states get unrepresentable types (`EventWake` union: payload

@@ -844,8 +844,8 @@ function assignedColumn(update: ColumnUpdateNode): string | null {
   return referencedColumn(update.column) ?? columnName(update.column)
 }
 
-/** What a statement assigns: an UPDATE's SET list, or an INSERT's conflict arm. */
-function assignments(query: OperationNode): readonly ColumnUpdateNode[] {
+/** What a statement assigns to a row that exists: an UPDATE's SET list, or an INSERT's conflict arm. */
+function assignedUpdates(query: OperationNode): readonly ColumnUpdateNode[] {
   if (InsertQueryNode.is(query)) return query.onConflict?.updates ?? []
   return UpdateQueryNode.is(query) ? (query.updates ?? []) : []
 }
@@ -889,35 +889,38 @@ export function selfCountingAssignments(
   /** The column a node reads from the row being written, or null. */
   const writtenColumn = (node: OperationNode): string | null =>
     incoming !== null && referenceQualifier(node) === incoming ? null : referencedColumn(node)
-  return assignments(query).flatMap((update): { column: string; how: 'arithmetic' | 'raw' }[] => {
-    const column = assignedColumn(update)
-    if (column === null) return []
-    // A fragment's reads of the incoming row are taken out before its text is read for
-    // the written row, so `excluded.x + 1` passes and `excluded.x + x` does not.
-    const written = (text: string): string =>
-      incoming === null
-        ? text
-        : text.replace(
-            new RegExp(String.raw`(?<![\w."])"?${incoming}"?\."?${column}"?(?!\w)`, 'gi'),
-            ' 0 ',
-          )
-    const arithmetic = someNode(update.value, (candidate) => {
-      if (!BinaryOperationNode.is(candidate)) return false
-      const operator = operatorName(candidate.operator)
-      if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false
-      return (
-        writtenColumn(candidate.leftOperand) === column ||
-        writtenColumn(candidate.rightOperand) === column
+  return assignedUpdates(query).flatMap(
+    (update): { column: string; how: 'arithmetic' | 'raw' }[] => {
+      const column = assignedColumn(update)
+      if (column === null) return []
+      // A fragment's reads of the incoming row are taken out before its text is read for
+      // the written row, so `excluded.x + 1` passes and `excluded.x + x` does not.
+      const written = (text: string): string =>
+        incoming === null
+          ? text
+          : text.replace(
+              new RegExp(String.raw`(?<![\w."])"?${incoming}"?\."?${column}"?(?!\w)`, 'gi'),
+              ' 0 ',
+            )
+      const arithmetic = someNode(update.value, (candidate) => {
+        if (!BinaryOperationNode.is(candidate)) return false
+        const operator = operatorName(candidate.operator)
+        if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false
+        return (
+          writtenColumn(candidate.leftOperand) === column ||
+          writtenColumn(candidate.rightOperand) === column
+        )
+      })
+      if (arithmetic) return [{ column, how: 'arithmetic' }]
+      const raw = someNode(
+        update.value,
+        (candidate) =>
+          RawNode.is(candidate) &&
+          mentions(written(candidate.sqlFragments.join(' ')), column, table),
       )
-    })
-    if (arithmetic) return [{ column, how: 'arithmetic' }]
-    const raw = someNode(
-      update.value,
-      (candidate) =>
-        RawNode.is(candidate) && mentions(written(candidate.sqlFragments.join(' ')), column, table),
-    )
-    return raw ? [{ column, how: 'raw' }] : []
-  })
+      return raw ? [{ column, how: 'raw' }] : []
+    },
+  )
 }
 
 /** The raw node the builder makes for itself: an ORDER BY direction. */
@@ -1352,13 +1355,13 @@ function assignedProvenance(updates: readonly ColumnUpdateNode[]) {
   }
 }
 
-/** The provenance an UPDATE's own assignments write. */
+/** The provenance a statement's assignments write: an UPDATE's SET list, or an INSERT's conflict arm. */
 export function writesStampAssignments(tree: OperationNode): {
   stamp: boolean
   instant: boolean
   clockInstant: boolean
 } {
-  return assignedProvenance(assignments(tree))
+  return assignedProvenance(assignedUpdates(tree))
 }
 
 /**

@@ -239,7 +239,7 @@ const INFRA_RETRIES_FROM = (successorParam: string, fence: string): string =>
   `(SELECT f.attempt - 1 - tasks.attempts FROM runs f
     WHERE f.run_id = ${successorParam} AND f.fence_stamp = ${fence})`
 
-/** A run's own row, by id — the correlation every fence in this file uses. */
+/** A run's own row, by id: the correlation `activate` reads its fenced instant by. */
 const BY_RUN = `f.run_id = ?`
 
 /** How this dialect names the type of an event's stored payload. Both reads of an event require 'text'. */
@@ -1949,8 +1949,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
     //
     // It also stops being the second statement in this batch selecting rows
     // the batch did not write: the runs it deletes for are the ones
-    // `wake-runs` just stamped, so the primitive builds the selection and
-    // `wake-runs` is left as the only hand-written escape.
+    // `wake-runs` just stamped, so the primitive builds the selection. No
+    // follow-on of this batch is hand-written text: the wake is a shared statement.
     b.derived('waits-gone', {
       relation: 'runs-to-waits',
       fence: 'wake-runs',

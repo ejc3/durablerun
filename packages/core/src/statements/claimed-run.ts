@@ -47,7 +47,7 @@ export const failedRunColumns = (reason: string) =>
  * these names, so the receipt a retry returns and the payload an activation returns
  * cannot differ in shape.
  */
-export const CLAIMED_RUN_SELECTION = [
+const CLAIMED_RUN_SELECTION = [
   'r.run_id',
   'r.task_id',
   'r.attempt',
