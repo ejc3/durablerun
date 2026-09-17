@@ -1087,14 +1087,27 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
 - **PR3.3 child tasks + SDK completion**: spawn-from-step, completion-event
   await, same-queue refusal; `/api/runs/:id` result route. Spec first:
-  `specs/ChildTasks.tla` models the completion event and lands before its SQL.
-  TLC checks it under both answers to the same-queue rule and with the child
-  in another queue, and five probes show its invariants are not vacuous and
-  its behaviours are reachable. The implementation then maps every terminal
-  batch onto the model's ChildTerminal, reserves the `$task-done:` name at the
-  store's `emitEvent` port, and adds `ctx.spawn` and the child await to the
-  SDK. The same-queue rule is an open question recorded in DESIGN.md §3.2:
-  the model proves the protocol sound either way.
+  `specs/ChildTasks.tla` models the completion event and lands before its SQL,
+  for an await whose event and wait row live in one queue. TLC checks it with
+  the await allowed and with it refused, and seven probes each exhibit one
+  violation or one reachable behaviour. Sixteen mutants, each one guard of
+  the model bent or deleted, must each fail some configuration
+  (`specs/ChildTasks.mutants.json`, run by `scripts/tla.sh`), because a probe
+  shows that an invariant can fail and cannot show that a guard is held. The implementation then maps every
+  terminal batch onto the model's ChildTerminal, takes the dialect's event
+  lock in each of them, reserves the `$task-done:` name at the store's
+  `emitEvent` port, and adds `ctx.spawn` and an internal child await to the
+  SDK. Nothing reads the model's ledger block, because `scripts/spec-ledger.py`
+  reads Scheduler.tla only. So the implementation adds one conformance case
+  per terminal batch, six of them, generated from the batch labels: the batch
+  writes the completion event and wakes a registered waiter, on both dialects.
+  Event cleanup, when it is built, must not remove a completion event whose
+  task can still be awaited. The spec's review round is
+  `postmortems/pr3.3-child-tasks-spec-review.md`.
+  Same-queue refusal stays as DESIGN.md §3.2 and the exit test have it, and is
+  flagged there for the maintainer's decision before the implementation:
+  events are keyed by queue, so the rule as written leaves no await that
+  works.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,

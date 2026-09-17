@@ -33,8 +33,9 @@
 \* THE RULE IN QUESTION, isolated as one constant.  DESIGN.md keeps Absurd's rule
 \* that awaiting a same-queue child is refused.  Absurd refuses it because its
 \* await polls and holds a worker slot, and ours suspends.  AwaitAllowed is that
-\* rule and nothing else reads it, so the protocol is checked with the await
-\* allowed and with it refused.  With it refused, the only await left is the one
+\* rule as one constant.  The three await actions read it and RefusedNeverWaits
+\* holds it, so the protocol is checked with the await allowed and with it
+\* refused.  With it refused, the only await left is the one
 \* across queues, which this model does not cover.
 \*
 \* WHAT THE SQL OWES THIS MODEL, beyond its actions:
@@ -56,6 +57,9 @@
 \*  - Await cycles.  A parent that awaits a child that awaits the parent waits
 \*    forever in any queue.  Nothing detects it, and only a cancellation
 \*    deadline bounds it, as it bounds any untimed await.
+\*  - The dedicated placement, where an emit marks the wait row delivered and
+\*    does not delete it (S3.3, S3.8.3).  `wait` here is a wait row an emit can
+\*    still wake, which a delivered row is not.
 \*  - A second await by the same parent.  After a timeout the parent's code may
 \*    await again, which is a new await: it hits the event or registers a new
 \*    wait.  One await is modeled, so its answer is final here.

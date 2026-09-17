@@ -573,31 +573,58 @@ One invocation executes one claimed run to its next suspension point:
   stability: step names/order must stay compatible, or the task name is
   versioned (`report@v2`) so old runs finish on old handlers.
 - Child tasks: `spawn` from a step, then await the child *as an event*. The
-  parent's await is the ordinary `awaitEvent`, so it suspends like any other
-  wait and holds no worker slot. `specs/ChildTasks.tla` models the protocol
-  ahead of its implementation, and TLC checks it:
+  await suspends like any other wait and holds no worker slot.
+  `specs/ChildTasks.tla` models the completion event ahead of its
+  implementation, for an await whose event and wait row live in ONE queue, and
+  TLC checks it:
   - The child's FIRST terminal transition writes the completion event
     `$task-done:<taskId>` as a follow-on of the same fenced batch, and the same
     batch wakes a registered waiter. Every terminal batch does this: complete,
-    terminal failure, both cancellations, and both sweep caps. A second step
-    would let a crash strand every waiter, which the model shows.
+    terminal failure, both cancellations, and both sweep caps. With the emit as
+    a second step, a crash between the two leaves a registered waiter asleep
+    forever, which the model's liveness probe exhibits.
+  - Every terminal batch takes the dialect's event lock, as `emit-event` and
+    `await-event` do (§3.4 rule 2). The model's actions are atomic and
+    mutually exclusive, and on PostgreSQL only the lock makes them so: without
+    it a parent reads no event, the child inserts the event and sees no wait
+    row, and the parent then sleeps forever. SQLite's single writer hides the
+    race, so the conformance case for it runs on both dialects.
   - The event is first-write-wins like every event (§3.8.3), so it means "the
     first outcome this task reached", never "the task is terminal now".
     `retryTask` can take a failed task back to live, and a revived child that
     ends again does not rewrite the event. A parent that awaited before or
     after the revival sees the same outcome, which keeps its replay
-    deterministic.
-  - The name is reserved. The SDK already refuses a user name that starts
-    with `$`, and the store's `emitEvent` port refuses one too, because HTTP
-    routes call the port with raw names. Otherwise a caller could win
-    first-write-wins and forge a child's result.
-  - Absurd's deadlock rule is kept for now: awaiting a same-queue child from
-    inside a worker is refused, as a permanent error that registers nothing.
-    Absurd refuses it because its await polls and holds a worker slot. Ours
-    suspends, and events are shard-local (§3.7), so a same-queue child is the
-    one case whose terminal batch can always wake the parent atomically. The
-    model isolates the rule as one guard and checks the protocol under both
-    answers, so the rule can change without touching the protocol.
+    deterministic. The await can therefore disagree with the task's current
+    result: after a failed child is revived and completes, the await still
+    returns the failure while `getTaskResult` reports the completion.
+  - The completion event outlives every await of it. Event cleanup must not
+    remove one while its task can still be awaited, or a late await would
+    register a wait that nothing will ever wake.
+  - A timed await that comes due consumes its wait row and returns no
+    outcome, and a later emit finds no row to wake.
+  - The name is reserved, and these are requirements on the implementation.
+    The store's `emitEvent` port must refuse a name that starts with `$`. It
+    does not today. The hosted emit route and the SDK already refuse one
+    through `UserName.parse`, and any other caller of the port could win
+    first-write-wins and forge a child's result. For the same reason the child
+    await cannot be the SDK's `awaitEvent`, which refuses the reserved name:
+    it reaches the store by an internal path that builds the name from the
+    child's task id.
+  - Absurd's deadlock rule is kept as written, and flagged for a decision
+    before the implementation: awaiting a same-queue child from inside a
+    worker is refused, as a permanent error that registers nothing. Absurd
+    refuses it because its await polls and holds a worker slot, and ours
+    suspends. Events are keyed by queue and are shard-local (§3.7), so a
+    same-queue child is the only one whose terminal batch can wake its parent
+    at all: a child in another queue writes its event under that queue, where
+    the parent's wait row is not. An await across queues needs a delivery
+    protocol that does not exist. The rule as written therefore leaves no
+    await that works. The model isolates the rule as one constant and checks
+    the protocol with the await allowed and with it refused.
+  - Not modeled, and bounded elsewhere: an await cycle, where a parent awaits
+    a child that awaits the parent, waits forever in any queue. Nothing
+    detects it, and only a cancellation deadline bounds it, as it bounds any
+    untimed await.
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
   outcome, consuming nothing. A refused heartbeat names the cancellation the

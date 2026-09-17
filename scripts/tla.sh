@@ -117,21 +117,20 @@ run_one() { # run_one <name> <cfg> <mem_mb> <workers> <extra...>
 
 # The small hosted-delivery model supplies the fair tick invocations assumed
 # by Scheduler. Keep it on every existing scope without changing those scopes.
-wake_heap=$((TLA_HEAP_MB < 1024 ? TLA_HEAP_MB : 1024))
-wake_code=0
-tlc "$wake_heap" 2 -metadir "$STATES/wake-delivery" -config WakeDelivery.cfg \
-  WakeDelivery.tla >"$STATES/wake-delivery.log" 2>&1 || wake_code=$?
-report "hosted wake delivery" "$wake_code" "$STATES/wake-delivery.log" || exit 1
+small_heap=$((TLA_HEAP_MB < 1024 ? TLA_HEAP_MB : 1024))
+run_small() { # run_small <name> <cfg> <module>: a side model, on every scope
+  local code=0
+  tlc "$small_heap" 2 -metadir "$STATES/$2" -config "$2" "$3" >"$STATES/$2.log" 2>&1 || code=$?
+  report "$1" "$code" "$STATES/$2.log"
+}
+run_small "hosted wake delivery" WakeDelivery.cfg WakeDelivery.tla || exit 1
 
 # The child-task completion event (specs/ChildTasks.tla), also small and on
 # every scope. Two configurations cover both answers to the same-queue rule.
 # Its vacuity probes run with the others in phase 1, which a TLA_ONLY liveness
 # job skips.
 for cfg in ChildTasks ChildTasksRefuse; do
-  child_code=0
-  tlc "$wake_heap" 2 -metadir "$STATES/$cfg" -config "$cfg.cfg" \
-    ChildTasks.tla >"$STATES/$cfg.log" 2>&1 || child_code=$?
-  report "child tasks ($cfg)" "$child_code" "$STATES/$cfg.log" || exit 1
+  run_small "child tasks ($cfg)" "$cfg.cfg" ChildTasks.tla || exit 1
 done
 
 # TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
