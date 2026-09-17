@@ -1,4 +1,4 @@
-import { type OperationNode, SqliteQueryCompiler, sql } from 'kysely'
+import { type ExpressionBuilder, type OperationNode, SqliteQueryCompiler, sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
   FENCE_SET,
@@ -7,6 +7,7 @@ import {
   type SqlFragment,
   type SqlResult,
   type SqlStatement,
+  type StoreTables,
   TreeDialect,
   aliasedAs,
   treeBuilder as db,
@@ -677,10 +678,11 @@ describe('FencedBatch tree statements', () => {
 
   it('refuses an INSERT … SELECT whose star selection shifts the provenance positions', () => {
     // The star is one selection and many columns, so the stamp read at selection 1
-    // lands in whatever column the expanded star pushes it to.
+    // lands in whatever column the expanded star pushes it to. Three columns for three
+    // selections, so only the star is wrong.
     const shifted = db
       .insertInto('waits')
-      .columns(['run_id', 'fence_stamp', 'fence_at_ms', ...WAIT_COLUMNS.slice(1, 7)])
+      .columns(['run_id', 'fence_stamp', 'fence_at_ms'])
       .expression(
         db
           .selectFrom('events')
@@ -689,6 +691,19 @@ describe('FencedBatch tree statements', () => {
           .where('events.queue', '=', 'q') as never,
       )
     expect(() => batch().casTree('register', statement(shifted))).toThrow(
+      /one plain selection for each column/,
+    )
+    const bareStar = db
+      .insertInto('waits')
+      .columns(['run_id', 'fence_stamp', 'fence_at_ms'])
+      .expression(
+        db
+          .selectFrom('events')
+          .selectAll()
+          .select(() => [aliasedAs(stampValue, 'fence_stamp'), aliasedAs(nowValue, 'fence_at_ms')])
+          .where('events.queue', '=', 'q') as never,
+      )
+    expect(() => batch().casTree('register', statement(bareStar))).toThrow(
       /one plain selection for each column/,
     )
   })
@@ -718,6 +733,89 @@ describe('FencedBatch tree statements', () => {
     })
     expect(() => batch().casTree('event', statement(clientInstant))).toThrow(
       /must insert events.emitted_at_ms as the clock/,
+    )
+  })
+
+  it('holds every condition of the insert rules, one refusal each', () => {
+    const refused = (name: string, builder: Builder, why: RegExp) =>
+      expect(() => batch().casTree(name, statement(builder))).toThrow(why)
+    const conflict = (set: (eb: ExpressionBuilder<StoreTables, 'events'>) => object) =>
+      eventInsert().onConflict((oc) =>
+        oc.columns(['queue', 'event_name']).doUpdateSet((eb) => set(eb as never) as never),
+      )
+    // The clock, where the existing case covers only the stamp.
+    refused(
+      'event',
+      db.insertInto('events').values({
+        queue: 'q',
+        event_name: 'e',
+        payload: 'p',
+        emitted_at_ms: nowValue,
+        fence_stamp: stampValue,
+        fence_at_ms: 5,
+      }),
+      /must insert fence_stamp as the stamp and fence_at_ms as the clock/,
+    )
+    // A conflict arm that copies the right instant and takes no stamp.
+    refused(
+      'event',
+      conflict((eb) => ({ fence_at_ms: eb.ref('events.emitted_at_ms') })),
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    // The right column of the wrong row: the proposed row's instant is this emit's clock.
+    refused(
+      'event',
+      conflict((eb) => ({
+        fence_stamp: stampValue,
+        fence_at_ms: eb.ref('excluded.emitted_at_ms' as never),
+      })),
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    // The right row and the wrong column.
+    refused(
+      'event',
+      conflict((eb) => ({ fence_stamp: stampValue, fence_at_ms: eb.ref('events.fence_at_ms') })),
+      /must preserve events.emitted_at_ms while re-stamping/,
+    )
+    // A column listed twice has no one position to read.
+    refused(
+      'register',
+      db
+        .insertInto('waits')
+        .columns(['fence_stamp', 'fence_stamp', 'fence_at_ms'] as never)
+        .expression(
+          db
+            .selectNoFrom(() => [
+              aliasedAs(stampValue, 'fence_stamp'),
+              aliasedAs(stampValue, 'again'),
+              aliasedAs(nowValue, 'fence_at_ms'),
+            ])
+            .where(predicate('1 = 1')) as never,
+        ),
+      /must insert fence_stamp as the stamp/,
+    )
+    // Two rows, and a SELECT with fewer selections than columns.
+    const row = {
+      queue: 'q',
+      event_name: 'e',
+      payload: 'p',
+      emitted_at_ms: nowValue,
+      fence_stamp: stampValue,
+      fence_at_ms: nowValue,
+    }
+    refused('event', db.insertInto('events').values([row, row]), /exactly one row of values/)
+    refused(
+      'register',
+      db
+        .insertInto('waits')
+        .columns(['run_id', 'fence_stamp', 'fence_at_ms'])
+        .expression(
+          db.selectNoFrom(() => [
+            aliasedAs(stampValue, 'fence_stamp'),
+            aliasedAs(nowValue, 'fence_at_ms'),
+          ]) as never,
+        ),
+      /one plain selection for each column/,
     )
   })
 
