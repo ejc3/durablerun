@@ -1366,6 +1366,25 @@ describe('FencedBatch tree statements', () => {
       refused(successor({ from: joined, instant: (eb) => eb.ref('fence_at_ms') }), instant)
     })
 
+    it('selects from the fenced row alone, so no second source multiplies what it inserts', () => {
+      const alone = /must select from the fenced row alone/
+      const beside = () => loose.selectFrom(['runs as f', 'tasks as t2'])
+      // One FROM item, the fenced source. A join is explicit and carries its ON.
+      expect(() => followOn(successor())).not.toThrow()
+      expect(() => followOn(successor({ from: joined }))).not.toThrow()
+      // A second FROM item inserts one stamped run for every task, whichever it selects.
+      refused(successor({ from: beside, task: (eb) => eb.ref('t2.task_id') }), alone)
+      refused(successor({ from: beside }), alone)
+      // The one FROM item is another table, and the fenced row only joins it.
+      refused(
+        successor({
+          from: () =>
+            loose.selectFrom('tasks as t2').innerJoin('runs as f', 'f.task_id', 't2.task_id'),
+        }),
+        alone,
+      )
+    })
+
     it('never takes the clock for the instant', () => {
       // The instant rule speaks first, and the clock rule would refuse it next.
       refused(
