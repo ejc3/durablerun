@@ -1112,36 +1112,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
   reason away. It reports the reason now, so the next failure names its cause.
   Fix it red first from that cause. Until then a rerun clears it.
 - **PR3.13 `verify` fails with every test passing**: three times on 2026-09-17
-  the `verify` job ended with exit 1 after every test file and every test had
-  passed, because vitest reported one unhandled error, `[vitest-worker]:
-  Timeout calling "onTaskUpdate"`. The mechanism is measured. A worker whose
-  event loop does not turn for 60 seconds cannot take the reply to its own
-  progress message, and vitest reports that message as timed out: a scratch
-  test that blocks its worker for 65 seconds reproduces the error exactly,
-  with every test passing, and the same 65 seconds awaited on a timer does
-  not. The worker is the one that runs
-  `packages/conformance/test/libsql.test.ts`, 5978 tests in one file, alone
-  for the last twelve minutes of every run. The libSQL client executes each
-  statement as a blocking native call and resolves with microtasks only, and
-  vitest does not pass through the event loop's timers phase between two tests
-  that never yield. Measured over that file on main, the worker went 48.9
-  seconds without its loop turning: 16.4 seconds of it the libSQL wake-witness
-  test, and 32.5 seconds tests too short to name one by one, chained to it
-  with nothing between them that yields. A CI runner is slower than the
-  machine that measured it, so the stretch sits under a minute on some runs
-  and over it on others. `packages/conformance/test/yield-to-timers.ts` now
-  yields to a zero-delay timer after every test of that file, and the longest
-  stretch is 17.6 seconds, the wake-witness test alone. The yield sits beside
-  the test file because the determinism lint bans timers in conformance
-  sources. What it cannot split is one test that never yields: the libSQL
-  wake-witness test is a single loop over every generated case, about 20
-  seconds on CI, a third of the limit. If that test grows, split it into
-  several tests, which needs its registered mutations re-aimed by name. Not
-  explained: three of PR #42's last four runs hit the error and none of eleven
-  other runs in the same two days did, on a branch whose one executed change,
-  `tla-artifact.test.ts`, finishes in the first ten seconds. Nothing measured
-  ties it to the branch. The nightly fuzz shards also run libSQL for long
-  stretches in one worker and were not measured.
+  the `verify` job exited 1 after every test had passed, on vitest's unhandled
+  error `[vitest-worker]: Timeout calling "onTaskUpdate"`. Measured: a worker
+  whose event loop does not turn for 60 seconds produces exactly that error,
+  and the worker that runs `packages/conformance/test/libsql.test.ts` went
+  48.9 seconds without turning on a devserver, because the libSQL client
+  blocks and vitest does not reach the timers phase between tests that never
+  yield. `packages/conformance/test/yield-to-timers.ts`, which says why, now
+  yields after every test of that file, and the longest stretch is 17.6
+  seconds, the libSQL wake-witness test alone. Estimated, not measured: no
+  stall was timed on a CI runner. Vitest timed that one test at 16.2 to 22.3
+  seconds in five CI logs against 17.1 on the devserver, which puts the old
+  stretch between 46 and 64 seconds there, across the limit, though the run
+  with the slowest timing passed. Open: (1) A yield between tests cannot split
+  one test that never yields. The wake-witness test is one loop over every
+  generated case. If it grows, split it into several tests, which needs its
+  registered mutations re-aimed by name. (2) Each nightly fuzz shard is one
+  test with a 600 second budget
+  (`packages/conformance/test/fuzz-shard-runner.ts`), so this yield cannot
+  help it. Eleven of the last twelve nightly runs passed and the twelfth
+  failed in TLA, so the failure has not been seen there. If it appears, yield
+  between seeds inside the shard's loop. (3) Not explained: three of PR #42's
+  last four runs hit the error and none of eleven other runs did, on a branch
+  whose one executed change finishes in the first ten seconds. The review
+  round is `postmortems/verify-event-loop-yield-review.md`.
 
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
