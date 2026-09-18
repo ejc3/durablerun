@@ -77,6 +77,8 @@ jobs:
       matrix:
         target: [safety, liveness1, liveness2, liveness3, liveness4, liveness5]
     runs-on: ubuntu-latest
+    # The slowest target takes about forty minutes when healthy.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:

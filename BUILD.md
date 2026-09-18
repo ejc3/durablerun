@@ -1157,6 +1157,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
   crash mid-rollback resumes; reverse order exactly once each; caught errors
   never trigger rollback; `output === undefined` for started-not-persisted
   steps; rollback-failure halts the chain and surfaces in the result.
+  Spec first: `specs/Sagas.tla` models the rolling-back phase and lands before
+  its SQL. TLC checks it under the recommended answers to three questions
+  DESIGN.md §3.10 leaves to the maintainer and under each alternative, and the
+  configurations explore different graphs. Its probes must each fail, and its
+  mutants must each be caught by the property the entry names. A mutant bends
+  a guard. Behaviour that is removed is a probe's to catch, as the
+  forward-phase revival is. `scripts/tla.sh` serves each side model that has a
+  mutant list beside it, and fails when a module or a cfg beside the specs
+  belongs to nothing it runs. WakeDelivery.tla is older and runs from its own
+  line. The implementation then writes the start marker before a registered
+  step's body, enters the phase in the same batch as the terminal decision in
+  `fail` and in both sweep caps, admits rollback passes past the user attempt
+  budget, and changes `retry-task`'s admission, because reviving a task whose
+  saga ran is unsound today. `scripts/spec-ledger.py` reads Scheduler.tla
+  only, so nothing checks this model's ledger block, and the implementation PR
+  owes every guard an executable twin on every dialect. Beyond the conformance
+  cases above those are: the start marker commits before the body runs; the
+  decision and the phase marker are one batch in `fail` and in both sweep
+  caps; no forward step starts or commits in the phase; `retry-task` refuses a
+  task whose saga began; a cancellation mid-rollback records `failed` exactly
+  when a step is left uncompensated; the infrastructure-cap rule; and a failed
+  rollback attempt is counted, which the model cannot see because an uncounted
+  attempt is a stuttering step. The review round is
+  `postmortems/pr3.4-sagas-spec-review.md`.
 
 - **PR3.12 concurrent PostgreSQL migrators**: a concurrent cold-start migrator
   can be rejected, and the cause is not known yet. `lets concurrent cold-start

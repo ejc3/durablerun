@@ -22,7 +22,7 @@ regression that created it.
 
 ```
 pnpm verify        # lints + spec ledger + format + types + 200+ tests (~2 min)
-pnpm verify:tla    # full TLC proof: probes + safety + 5 liveness groups (~12 min)
+pnpm verify:tla    # full TLC proof: side models + their mutants + probes, safety, 5 liveness groups
 pnpm verify:fuzz   # 2000 seeds x 100 steps (confined; ~2 min)
 ```
 

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -53,15 +53,33 @@ for arg in "$@"; do
   prev="$arg"
 done
 probe="\${cfg%.cfg}"
-if [[ -n "\${STUB_PROBES_WITNESSED:-}" && "$probe" == *Probe* ]]; then
-  printf '%s\\n' "Error: Invariant $probe is violated."
-  exit 12
+if [[ "$probe" == *Probe* ]]; then
+  # How many probes are alive at once, for the test that bounds it.
+  if [[ -n "\${STUB_LIVE_DIR:-}" ]]; then
+    : > "$STUB_LIVE_DIR/$$"
+    ls "$STUB_LIVE_DIR" | wc -l >> "$STUB_LIVE_DIR.peaks"
+    sleep 0.1
+    rm -f "$STUB_LIVE_DIR/$$"
+  fi
+  case "\${STUB_PROBES_WITNESSED:-}" in
+    action)
+      printf '%s\\n' "Error: Action property $probe is violated."
+      exit 13
+      ;;
+    ?*)
+      printf '%s\\n' "Error: Invariant $probe is violated."
+      exit 12
+      ;;
+  esac
 fi
 if [[ "$meta" == */mutants/* ]]; then
+  # A caught mutant violates what the cfg it ran under checks, as TLC can violate
+  # nothing else. How many properties that is goes in the log.
+  checks="$(grep -oE '^  [A-Za-z]+$' "$cfg" | tr -d ' ')"
+  printf 'MUTANT-CHECKS %s\\n' "$(wc -w <<< "$checks")" >> "$JAVA_LOG"
   case "\${STUB_MUTANTS:-}" in
     caught)
-      grep -oE '"caughtBy": "[A-Za-z]+"' "$STUB_MUTANTS_JSON" | sort -u |
-        sed -E 's/.*: "(.*)"/Error: Invariant \\1 is violated./'
+      for name in $checks; do printf '%s\\n' "Error: Invariant $name is violated."; done
       exit 12
       ;;
     wrong)
@@ -129,48 +147,209 @@ describe('TLA tool artifact', () => {
     expect(await readIfPresent(commands.curlLog)).toBe('')
     expect(await readIfPresent(commands.javaLog)).toContain('tools/tla/tla2tools.jar')
     expect(await readIfPresent(commands.javaLog)).toContain('SchedulerLiveness1.cfg')
+    // A liveness job runs its own target. A side model that regresses must not stop it.
+    expect(await readIfPresent(commands.javaLog)).not.toMatch(/ChildTasks|Sagas|mutants/)
   })
 
-  describe('the child-task mutant check', () => {
-    const mutantsJson = join(repoRoot, 'specs', 'ChildTasks.mutants.json')
+  describe('the side-model gate', () => {
+    const CFG = 'CONSTANTS\n  X = 1\nSPECIFICATION Spec\nINVARIANT\n  Inv\n  Other\n'
+    const mutant = (name: string, caughtBy: string, find: string) => ({
+      name,
+      guard: `the guard ${name} bends`,
+      caughtBy,
+      find,
+      replace: 'TRUE',
+    })
+    // Two small side models. AlphaBeta's name begins with Alpha's, and it has one
+    // configuration only, the two shapes a glob over file names gets wrong.
+    const FILES: Readonly<Record<string, string>> = {
+      'Scheduler.tla': 'placeholder',
+      'Scheduler.cfg': 'placeholder',
+      'Probes.tla': 'placeholder',
+      'WakeDelivery.tla': 'placeholder',
+      'WakeDelivery.cfg': 'placeholder',
+      ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`ProbeNoThing${n}.cfg`, 'placeholder'])),
+      'Alpha.tla': 'GUARD_ONE\nGUARD_TWO\n',
+      'Alpha.cfg': CFG,
+      'AlphaOther.cfg': CFG.replace('X = 1', 'X = 2'),
+      'AlphaProbes.tla': 'placeholder',
+      'AlphaProbeWitness.cfg': 'placeholder',
+      'Alpha.mutants.json': JSON.stringify(
+        [mutant('one', 'Inv', 'GUARD_ONE'), mutant('two', 'Other', 'GUARD_TWO')],
+        null,
+        2,
+      ),
+      'AlphaBeta.tla': 'GUARD_BETA\n',
+      'AlphaBeta.cfg': CFG.replace('  Inv\n  Other\n', '  BetaInv\n'),
+      'AlphaBetaProbes.tla': 'placeholder',
+      'AlphaBetaProbeSeen.cfg': 'placeholder',
+      'AlphaBeta.mutants.json': JSON.stringify([mutant('three', 'BetaInv', 'GUARD_BETA')], null, 2),
+    }
 
-    async function runGate(mutants: 'survive' | 'caught' | 'wrong') {
+    async function runFixture(
+      env: Readonly<Record<string, string>>,
+      edit: (files: Readonly<Record<string, string>>) => Record<string, string> = (files) => ({
+        ...files,
+      }),
+    ) {
+      const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-gate-'))
+      scratch.push(root)
+      const { fixture } = await copyFixtureRepository(root, true)
+      const files = edit(FILES)
+      await Promise.all(
+        Object.entries(files).map(([name, text]) => writeFile(join(fixture, 'specs', name), text)),
+      )
+      const commands = await fakeCommands(root)
+      const live = join(root, 'live')
+      await mkdir(live)
+      const result = runTla(fixture, commands, {
+        TLA_ONLY: 'safety',
+        STUB_PROBES_WITNESSED: '1',
+        STUB_MUTANTS: 'caught',
+        STUB_MUTANTS_DIR: join(fixture, 'specs'),
+        STUB_LIVE_DIR: live,
+        ...env,
+      })
+      return {
+        javaLog: await readIfPresent(commands.javaLog),
+        output: `${result.stdout}\n${result.stderr}`,
+        peaks: (await readIfPresent(`${live}.peaks`)).split('\n').filter(Boolean).map(Number),
+        status: result.status,
+      }
+    }
+
+    it('passes the real lists when every mutant violates the property its entry names', async () => {
+      const specs = join(repoRoot, 'specs')
       const root = await mkdtemp(join(tmpdir(), 'durablerun-tla-mutants-'))
       scratch.push(root)
       const commands = await fakeCommands(root)
-      // Every probe is witnessed, so the mutants' verdict alone decides the gate.
       const result = runTla(repoRoot, commands, {
         TLA_ONLY: 'safety',
         STUB_PROBES_WITNESSED: '1',
-        STUB_MUTANTS: mutants,
-        STUB_MUTANTS_JSON: mutantsJson,
+        STUB_MUTANTS: 'caught',
+        STUB_MUTANTS_DIR: specs,
       })
-      const names = (
-        JSON.parse(await readFile(mutantsJson, 'utf8')) as readonly { readonly name: string }[]
-      ).map(({ name }) => name)
-      expect(names.length).toBeGreaterThan(0)
-      return { names, output: `${result.stdout}\n${result.stderr}`, status: result.status }
-    }
+      const output = `${result.stdout}\n${result.stderr}`
+      expect(result.status, output).toBe(0)
+      const lists = (await readdir(specs)).filter((file) => file.endsWith('.mutants.json'))
+      expect(lists.sort()).toEqual(['ChildTasks.mutants.json', 'Sagas.mutants.json'])
+      for (const list of lists) {
+        const entries = JSON.parse(await readFile(join(specs, list), 'utf8')) as readonly unknown[]
+        const model = list.slice(0, -'.mutants.json'.length)
+        expect(entries.length).toBeGreaterThan(0)
+        expect(output).toContain(`${model} mutants: ${entries.length} of ${entries.length} caught`)
+      }
+      // Every probe cfg beside the specs is run and witnessed, one line each.
+      const probes = (await readdir(specs)).filter((file) => /Probe.*\.cfg$/.test(file))
+      for (const probe of probes) {
+        expect(output).toContain(`ok: ${probe.slice(0, -'.cfg'.length)} witnessed`)
+      }
+    })
 
-    it('passes when every mutant violates the property its entry names', async () => {
-      const { names, output, status } = await runGate('caught')
+    it('runs each model under its own configurations, probes, and mutants', async () => {
+      const { javaLog, output, status } = await runFixture({})
       expect(status, output).toBe(0)
-      expect(output).toContain(`child-task mutants: ${names.length} of ${names.length} caught`)
+      expect(output).toContain('Alpha mutants: 2 of 2 caught')
+      expect(output).toContain('AlphaBeta mutants: 1 of 1 caught')
+      for (const run of [
+        '-config Alpha.cfg Alpha.tla',
+        '-config AlphaOther.cfg Alpha.tla',
+        '-config AlphaBeta.cfg AlphaBeta.tla',
+        '-config AlphaProbeWitness.cfg AlphaProbes.tla',
+        '-config AlphaBetaProbeSeen.cfg AlphaBetaProbes.tla',
+        '-config ProbeNoThing1.cfg Probes.tla',
+      ]) {
+        expect(javaLog, run).toContain(run)
+      }
+      expect(javaLog).not.toMatch(/-config AlphaBeta\S* Alpha(Probes)?\.tla/)
+      // A mutant of a model runs under that model's configurations and module only.
+      const mutantRuns = javaLog.split('\n').filter((entry) => entry.includes('/mutants/'))
+      expect(mutantRuns.length).toBeGreaterThan(0)
+      for (const entry of mutantRuns) {
+        expect(entry).toMatch(
+          /\/mutants\/(Alpha\/\S+ -config Alpha(Other)?\.cfg Alpha|AlphaBeta\/\S+ -config AlphaBeta\.cfg AlphaBeta)\.tla$/,
+        )
+      }
+    })
+
+    it('checks a mutant against the one property its entry names', async () => {
+      const { javaLog, output, status } = await runFixture({})
+      expect(status, output).toBe(0)
+      // Among several properties TLC reports the first it meets, so the name in an
+      // entry would follow the order of a list.
+      const checks = javaLog.split('\n').filter((entry) => entry.startsWith('MUTANT-CHECKS'))
+      expect(checks).toEqual(['MUTANT-CHECKS 1', 'MUTANT-CHECKS 1', 'MUTANT-CHECKS 1'])
+    })
+
+    it('fails when no mutant names a property a model checks', async () => {
+      const { output, status } = await runFixture({}, (files) => ({
+        ...files,
+        'Alpha.mutants.json': JSON.stringify([mutant('one', 'Inv', 'GUARD_ONE')], null, 2),
+      }))
+      expect(status, output).not.toBe(0)
+      expect(output).toContain('UNNAMED: Alpha/Other')
     })
 
     it('fails when the mutants survive', async () => {
-      const { names, output, status } = await runGate('survive')
+      const { output, status } = await runFixture({ STUB_MUTANTS: 'survive' })
       expect(status, output).not.toBe(0)
       expect(output).not.toContain('VACUOUS')
-      for (const name of names) expect(output).toContain(`SURVIVED: ${name}`)
-      expect(output).toContain(`child-task mutants: 0 of ${names.length} caught`)
+      for (const name of ['Alpha/one', 'Alpha/two', 'AlphaBeta/three']) {
+        expect(output).toContain(`SURVIVED: ${name}`)
+      }
+      expect(output).toContain('Alpha mutants: 0 of 2 caught')
     })
 
     it('fails when a mutant violates only some other property', async () => {
-      const { names, output, status } = await runGate('wrong')
+      const { output, status } = await runFixture({ STUB_MUTANTS: 'wrong' })
       expect(status, output).not.toBe(0)
       expect(output).not.toContain('VACUOUS')
-      for (const name of names) expect(output).toContain(`WRONG-PROPERTY: ${name}`)
+      for (const name of ['Alpha/one', 'Alpha/two', 'AlphaBeta/three']) {
+        expect(output).toContain(`WRONG-PROPERTY: ${name}`)
+      }
+    })
+
+    it('fails when a model loses its mutant list', async () => {
+      const { output, status } = await runFixture({}, (files) =>
+        Object.fromEntries(
+          Object.entries(files).filter(([name]) => name !== 'AlphaBeta.mutants.json'),
+        ),
+      )
+      expect(status, output).not.toBe(0)
+      expect(output).toContain('AlphaBeta.tla is checked by nothing')
+    })
+
+    it('fails when one configuration of a model checks less than the others', async () => {
+      const { output, status } = await runFixture({}, (files) => ({
+        ...files,
+        'AlphaOther.cfg': (files['AlphaOther.cfg'] ?? '').replace('  Other\n', ''),
+      }))
+      expect(status, output).not.toBe(0)
+      expect(output).toContain('AlphaOther.cfg does not check what Alpha.cfg checks')
+    })
+
+    it('takes a violated action property as a probe witness', async () => {
+      const { output, status } = await runFixture({ STUB_PROBES_WITNESSED: 'action' })
+      expect(status, output).toBe(0)
+      expect(output).toContain('ok: AlphaProbeWitness witnessed')
+    })
+
+    it('runs no more probes at once than the heap budget holds', async () => {
+      const { output, peaks, status } = await runFixture({})
+      expect(status, output).toBe(0)
+      // Eight probes at 512 MB each under a 2048 MB budget: four at a time.
+      expect(peaks).toHaveLength(8)
+      expect(Math.max(...peaks)).toBeGreaterThan(1)
+      expect(Math.max(...peaks)).toBeLessThanOrEqual(4)
+    })
+
+    it('gives a side-model probe a small fixed heap, whatever the budget', async () => {
+      const { javaLog, output, status } = await runFixture({ TLA_HEAP_MB: '8192' })
+      expect(status, output).toBe(0)
+      const line = (cfg: string) =>
+        javaLog.split('\n').find((entry) => entry.includes(`-config ${cfg}`))
+      expect(line('AlphaProbeWitness.cfg')).toContain('-Xmx256m')
+      expect(line('ProbeNoThing1.cfg')).toContain('-Xmx512m')
     })
   })
 
