@@ -1918,6 +1918,34 @@ MUTATION_SPECS = [
         "duplicated schema-version rows are interpreted as a fresh database",
     ),
     (
+        "libsql-bootstrap-loss-forgiven",
+        "packages/store-libsql/src/admin.ts",
+        "        if ((await this.readSchemaVersion()) === null) throw error\n",
+        "        throw error\n",
+        "a libSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+    ),
+    (
+        "libsql-bootstrap-failure-rethrown",
+        "packages/store-libsql/src/admin.ts",
+        "        if ((await this.readSchemaVersion()) === null) throw error\n",
+        "        if ((await this.readSchemaVersion()) === undefined) throw error\n",
+        "a libSQL bootstrap that failed with no winner is swallowed and migration runs on",
+    ),
+    (
+        "postgres-bootstrap-loss-forgiven",
+        "packages/store-postgres/src/admin.ts",
+        "      if (version !== null && version >= minimumVersion) return\n",
+        "      if (version !== null && version > minimumVersion) return\n",
+        "a PostgreSQL bootstrap that lost to a concurrent winner rejects the cold-start loser",
+    ),
+    (
+        "postgres-version-read-isolation",
+        "packages/store-postgres/src/executor.ts",
+        "const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY'\n",
+        "const BEGIN_VERSION_READ = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'\n",
+        "the schema-version read keeps a snapshot older than its name lookup and rejects a cold-start migrator",
+    ),
+    (
         "migration-postcondition-old-version",
         "packages/store-libsql/src/admin.ts",
         "    if (version !== CURRENT_SCHEMA_VERSION) {",
@@ -5620,6 +5648,33 @@ VERDICTS = {
         "packages/store-libsql/test/schema-gate.test.ts",
         "migrate reports success only when the schema is current rejects a schema-version read with extra rows",
         "mutation-verdict:behavior:schema-version-extra-rows",
+    ),
+    "libsql-bootstrap-loss-forgiven": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [libsql] forgives a bootstrap that lost to a concurrent migrator, and only then",
+        "mutation-verdict:behavior:bootstrap-loss-forgiven",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "libsql-bootstrap-failure-rethrown": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [libsql] forgives a bootstrap that lost to a concurrent migrator, and only then",
+        "mutation-verdict:behavior:bootstrap-loss-forgiven",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "postgres-bootstrap-loss-forgiven": ExpectedVerdict(
+        "behavior",
+        "packages/conformance/test/libsql.test.ts",
+        "schema/admin conformance [postgres] forgives a bootstrap that lost to a concurrent migrator, and only then",
+        "mutation-verdict:behavior:bootstrap-loss-forgiven",
+        "packages/conformance/src/schema-admin.ts",
+    ),
+    "postgres-version-read-isolation": ExpectedVerdict(
+        "construction",
+        "packages/store-postgres/test/executor.test.ts",
+        "PgExecutor transactions reads the schema version under READ COMMITTED, whose snapshot follows the name lookup",
+        "mutation-verdict:construction:postgres-version-read-isolation",
     ),
     "migration-postcondition-old-version": ExpectedVerdict(
         "behavior",
@@ -9893,7 +9948,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the construction-mutation verifier inventory differs from its canonical projects"
             )
-        if len(MUTATIONS) != 439:
+        if len(MUTATIONS) != 443:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

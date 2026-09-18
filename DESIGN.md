@@ -1286,6 +1286,15 @@ are load-bearing):
    bootstrap DDL; only its explicit absent-metadata result authorizes
    `CREATE meta` and the version-zero insert. `CREATE IF NOT EXISTS` is not
    evidence of freshness and may not relabel an existing empty metadata table.
+   A version read never reports a concurrent bootstrap's metadata table
+   without its version row, and each dialect's adapter owns the means.
+   PostgreSQL resolves a name against the newest catalog, so a read under a
+   REPEATABLE READ snapshot, which is taken first, can see the table and not
+   the row. Its adapter reads the version under READ COMMITTED, where the
+   snapshot follows the name lookup, and so has the property. SQLite commits
+   schema and rows under one snapshot and has it. MySQL commits each DDL
+   statement on its own and does not have it from isolation alone, so its
+   adapter must serialize bootstrap against version reads.
    Concurrent cold-start migrators converge: after an error from bootstrap or
    a versioned migration batch, the loser re-reads the authoritative version
    and treats the write as complete only when metadata now exists at or beyond

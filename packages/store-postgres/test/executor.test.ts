@@ -138,6 +138,25 @@ describe('PgExecutor transactions', () => {
     expect(pool.connectCalls).toBe(1)
   })
 
+  it('reads the schema version under READ COMMITTED, whose snapshot follows the name lookup', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+
+    await executor(new FakePool(client)).batch(
+      'migrate:version',
+      [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }],
+      'read',
+    )
+
+    expect(
+      client.calls.map(({ text }) => text),
+      'mutation-verdict:construction:postgres-version-read-isolation',
+    ).toEqual([
+      'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY',
+      SCHEMA_VERSION_READ_SQL,
+      'COMMIT',
+    ])
+  })
+
   it('acquires the event row lock before protocol SQL without adding a result', async () => {
     const client = new FakeClient((text) => {
       if (text === 'SELECT value FROM protocol_state') {
@@ -301,7 +320,7 @@ describe('PgExecutor error classification', () => {
   it('classifies only the canonical missing-meta read as uninitialized', async () => {
     const missing = databaseError('42P01', 'relation "meta" does not exist')
     const client = new FakeClient((text) => {
-      if (text !== 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY') throw missing
+      if (!text.startsWith('BEGIN ')) throw missing
       return EMPTY_RESULT
     })
     const db = executor(new FakePool(client))

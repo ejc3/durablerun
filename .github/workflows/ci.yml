@@ -659,6 +659,15 @@ jobs:
                   'user-retry-successor',
               ))
               repaired = reaim_moved(repaired, candidate, ('successor-carries-every-column',))
+          elif digest == 'cf51eb8b17f09e79b58915340052cf10b1cbb7cb75ec1fac329ef472816f6ad4':
+              # The PostgreSQL version read's isolation level and both admins' forgiving of
+              # a lost bootstrap got registered mutations, under two new markers. The base
+              # registry predates them and would read them as unregistered. No base entry
+              # changed, so nothing is re-aimed.
+              repaired = exempt(previous, candidate, (
+                  'mutation-verdict:behavior:bootstrap-loss-forgiven',
+                  'mutation-verdict:construction:postgres-version-read-isolation',
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

@@ -19,6 +19,12 @@ export interface PostgresMigration {
 export const SCHEMA_VERSION_READ_SQL =
   `SELECT value FROM meta WHERE key = 'schema_version'` as const
 
+// A migration must not rewrite a table that a read batch reads, or create one together
+// with rows a reader requires. Read batches hold a REPEATABLE READ snapshot taken before
+// they resolve names, and PostgreSQL shows a rewritten table (ALTER COLUMN TYPE, a
+// volatile default, TRUNCATE) as empty to a snapshot older than the rewrite. Creating an
+// empty table and adding a nullable column are safe. The meta table is the one created
+// with a required row, which is why its version read is READ COMMITTED (executor.ts).
 export const MIGRATIONS: readonly PostgresMigration[] = [
   {
     version: 1,
