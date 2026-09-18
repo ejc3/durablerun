@@ -1411,8 +1411,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     no attempt record, which halts the saga`, `revives a failed task whose
     saga never began, as before`, and the SDK case for a step that committed
     before it registered a rollback.
-  The mutation registry gains 45 mutations, one condition each, and moves
-  from 729 to 774. Writing one for each condition showed three guards that
+  The mutation registry gains 58 mutations, one condition each, 45 with the
+  implementation and 13 with the review fold below, and moves from 746 to
+  804. Writing one for each condition showed three guards that
   nothing could kill, because the compare-and-set their statement is fenced
   on already holds them, and they were removed. Measured on one machine: on
   PostgreSQL every failure sends nine queries where it sent eight, because
@@ -1421,12 +1422,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
   touches. Query plan pins hold that every saga read reaches the checkpoints
   by primary key with the task bound. The fault matrix gained a fifth
   starting state and a six-call saga block that every cell runs. That costs
-  time. In three paired runs on one shared machine, the base and this branch
+  time. In three paired runs on one shared machine, taken before the review
+  fold with this branch and the child-task branch it was then built on
   interleaved, the four PostgreSQL tests the base also has took 38 to 49
   seconds on the base, median 45.5, and 47 to 55 on this branch, median 52.0.
   The new starting state took 51 to 61. The limit is 120 seconds. Single runs
   on that machine spread wider than the difference between the two, so only
   the paired runs compare them.
+  One outside review of the implementation found twelve defects, two of them
+  HIGH, and none was found by this entry's own machinery. A task spawned with
+  the largest budget never rolled back, because the pass's guard read the
+  budget its batch replaces. Two registered steps under `Promise.all` shared a
+  start index and rolled back in forward order. The fold fixes those and five
+  MEDIUM findings, each under a red test seen failing on both dialects: an
+  emit left out of the freeze, a rollback budget the retry decision refuses,
+  `ctx.attempt` reading the pass's ordinal, and reserved checkpoint names
+  admitted through a plain checkpoint write. Auditing that last fix found the
+  same defect at two more batches, a suspension's marker and a failed
+  rollback's record, which are closed too. One MEDIUM finding cannot be
+  closed: a handler whose `catch` lets only its own error class through loses
+  its compensation, because only a step's body can make an instance of that
+  class and the body does not run again. DESIGN.md states the rule for
+  handlers, and the halt says where the replay stopped. The saga phase is now
+  a bind no statement can leave out. The review round is
+  `postmortems/pr3.4-sagas-review.md`.
   Open, and owned by this entry until it merges:
   - The poison matrix seeds no task with a started step, so it never reaches
     the rollback pass. The pass's one integer guard is that the budget its
@@ -1438,15 +1457,42 @@ these three things; nothing else in the system does I/O, time, or randomness.
     take. Rollback budgets are the SDK's to keep.
   - A saga with nothing to roll back records nothing, where the model calls
     it complete at entry.
-  - The registry bridge arm in `ci.yml` is keyed on the registry of the
-    child-task branch this branch is built on. It must be keyed again on
-    main's registry when that branch merges or changes.
-  - `packages/store-mysql` merged to main after this branch was cut, and
-    this branch does not have it. The MySQL store owes `fail-rollback`, the
-    rollback pass in `fail` and in both sweep caps, and the phase predicate
-    in `complete`, `set-checkpoint`, `retry-task`, `suspend`, and
-    `await-event`, and must pass the `sagas` surface, before this entry can
-    merge.
+  - The registry bridge arm in `ci.yml` is keyed on main's registry as of
+    the merge of child tasks. It must be keyed again if main's registry
+    changes before this entry merges.
+  - The MySQL store has no sagas. This entry carries only what makes it
+    compile: `failRollback` refuses, `fail` answers that no pass was placed,
+    and it passes `'open'` wherever a statement takes the saga phase, so its
+    SQL is what it was. CI's `conformance-mysql` job runs the identical suite,
+    so it fails on this entry until the store is ported: the `sagas` surface,
+    the saga block of the fault matrix, the poison matrix's `fail-rollback`
+    label, and the corpus's `fail-rollback` variants all reach
+    `failRollback`. The port owes `fail-rollback`, the rollback pass in
+    `fail` and in both sweep caps, the phase predicate in `complete`,
+    `set-checkpoint`, `retry-task`, `suspend`, and `await-event`, the name
+    checks on the three batches that commit a caller's checkpoint, and the
+    rollback outcome columns of the result read. One fragment concatenates
+    with `||`, which MySQL spells `CONCAT`.
+  - The replay-equivalence harness generates sequential programs only. It has
+    no concurrent durable calls, no emit, and no step named after the
+    attempt, which is where three of the review's findings were.
+  - The SDK freezes each durable call with a line of its own, and only the
+    sleep's and the emit's have a test. The store does not freeze a child
+    spawn inside the phase, so that call's freeze is the SDK's alone.
+  - `failRollback` takes the attempt record's name and count from its caller.
+    The name is now checked in SQL. A port that takes the step and derives
+    both would make a foreign name unwritable and close the limit above.
+  - The pass's budget guard is held at the bound by two cases whose tasks
+    have no infrastructure retries, so a guard that ignored them would pass.
+  - `rollback_error` is the latest attempt record of any step not rolled
+    back, which names the wrong rollback when a cancellation follows a failed
+    attempt that had budget left.
+  - The rollback outcome reaches `getTaskResult` only. A parent that awaits
+    the child and the hosted inspect route do not see it.
+  - Saga reads find checkpoints by a prefix test that cannot use the key's
+    second column, so `rollbackPending` walks a task's checkpoints, the plan
+    pin accepts that walk, and the `rollback_error` subquery runs for every
+    result read.
 
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent

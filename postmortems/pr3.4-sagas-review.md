@@ -1,0 +1,124 @@
+# Postmortem: the sagas implementation review (PR3.4)
+
+PR3.4 lets a step declare a rollback, which the engine runs in reverse order of step start once the task's terminal failure is decided. The branch had passed `pnpm verify`, the fuzz, the TLA gate, and a filtered mutation audit that caught 45 of 45, all on its final head. One outside review then found twelve defects, two of them HIGH: a task spawned with the largest budget never rolled back, and two steps started under `Promise.all` rolled back in forward order while the result read `complete`. Eleven are fixed or corrected in this PR. One, a handler whose `catch` filters by error class, cannot be closed from the engine's side, and is now stated as a rule for handlers and made visible in the halt's message. Auditing one of the fixes for what it still let through found the same defect at two more doors, which no reviewer had named.
+
+**This document is adversarial toward the MACHINERY and blameless toward
+people.** Never "who wrote it", "should have noticed", "was careless" — those
+explain nothing and are not actionable. Always "what would have made this
+unwritable, or caught it without a human looking". Every section below asks a
+question whose comfortable answer is the wrong one; if a section is easy to
+fill in, it has not been answered yet.
+
+## Severity
+
+Without the review, a saga could silently compensate nothing or compensate in the wrong order, and the task result would not say so.
+
+- Finding 2 is the worst. Two registered steps started concurrently shared a start index. Their rollbacks ran in forward order, and the rollback outcome read `complete`. A user who wrote `Promise.all` over two steps would have had later work undone after the earlier work it depended on, with nothing in the result to show it.
+- Finding 1 loses compensation outright. A task spawned with `maxAttempts: 1_000_000`, the largest value the port admits, ended `failed` with no rollback run and no `rollback` field, as if it had registered none.
+- Findings 3 and 6 each halt a saga with nothing compensated, for a handler shape that looks ordinary: a `catch` that lets only its own error class through, and a step named after `ctx.attempt`. Both report `rollback-failed`, so they are loud, but neither limit was written down.
+- Finding 4 wakes other tasks on work that is being undone: a rollback pass's replay emitted an event the forward pass never reached.
+- Finding 5 ends a task with the wrong failure reason and never retries the rollback.
+- Finding 7 lets a caller of the port that bypasses the SDK forge a saga. The two further doors found afterwards let the same caller forge one through a suspension, or replace a saga's cause through a failed rollback.
+- Findings 8 to 12 are a worker outcome that can name a pass that will never come, a result field that names the wrong rollback in one interleaving, an outcome no parent or inspect route sees, and statements in DESIGN.md, a comment, and the pr-gate checklist that were false.
+
+## Findings
+
+| # | Defect | Impact | Layer that should have caught it | Why it could not | Mechanism (ladder rung) |
+|---|--------|--------|----------------------------------|------------------|-------------------------|
+| 1 | The batch that places a rollback pass writes `max_attempts` as the failed run's user ordinal plus one, and its guard tested the stored `max_attempts` for room to grow | A task spawned with the largest budget never rolls back, and its result has no rollback field | The `sagas` conformance surface's boundary case | The case was written from the guard and not from the contract. It moved the rows to the top ordinal by hand, which the old guard and the right guard both refuse, and its comment said nothing reaches that state by running | The guard reads the ordinal the batch writes from. A second case spawns with the largest budget and expects a pass. One mutation restores the old guard and one deletes the guard (rung 3) |
+| 2 | `ctx.step` awaited the start marker's write before it set the guard that refuses a nested durable call | Two registered steps under `Promise.all` share an index and roll back in forward order, with outcome `complete` | The replay-equivalence harness, with the row checker's shared-index condition behind it | The harness generates sequential programs only, so no generated program starts two steps at once. The row checker had the right condition and was never shown the rows | The guard goes up before anything in the step is awaited. One SDK case on both dialects, and one mutation that removes the guard (rung 3) |
+| 3 | On a rollback pass a step that started and never persisted throws the engine's signal where its body threw its own error, so a `catch` that filters by class rethrows it and the replay ends | Every registered step after it registers no rollback, and the saga halts with nothing compensated | DESIGN.md section 3.10, which said every started step that registered a rollback is eligible | No test wrote a selective `catch`. The limit cannot be closed: only the step's body can make an instance of the handler's class, and the body does not run again | The rule for handlers is in DESIGN.md. The halt's message names the step where the replay last stopped. One case and one mutation hold the message (rung 3, and a documented limit) |
+| 4 | `emitEvent` was the one durable call left out of the freeze | A rollback pass's replay emits an event the forward pass never reached, and its waiters wake on work being compensated | The SDK's frozen-phase case | That case reaches a sleep and nothing else. The freeze is one line at each durable call, kept by hand, and nothing enumerates the calls | A pass's replay skips the emit and goes on. One case and two mutations, one for each condition of the guard (rung 3) |
+| 5 | Registration accepted a `rollbackConfig.maxAttempts` the retry decision refuses | The `RangeError` escapes on the rollback's first failure: the task ends with the wrong reason, no attempt is recorded, and the rollback is never retried | The SDK's registration case, which is a table of options that cannot be kept | The table had no row above the count ceiling. The bound is spelled in two places, the registration and the retry decision | Registration applies the retry decision's bound. One table row and one mutation (rung 3) |
+| 6 | `ctx.attempt` on a rollback pass was the pass's own ordinal | A step named after the attempt finds no memo, registers nothing, and the saga halts with nothing compensated | The SDK's saga suite | No case read `ctx.attempt` on a pass, and no generated program names a step after it | A pass replays as the failed run, on every pass. One case that also fails a rollback once, and two mutations, one for each term (rung 3) |
+| 7 | The phase predicate of `set-checkpoint` classified only the `$rollback:` prefix | A lease holder that bypasses the SDK writes `$rolling-back` in the forward phase: its task freezes, its failure places no pass, and the result reads a failed rollback nobody recorded | The `sagas` conformance surface, which holds what the store owes every caller | Its cases wrote only the names the SDK writes. The fault matrix and the fuzz write those names too | A fragment names the engine's two names, and every batch that commits a caller's checkpoint checks the name: `set-checkpoint`, `suspendRun`, and `failRollback`. Three cases and five mutations (rung 3) |
+| 8 | DESIGN.md and core's `sagas.ts` said the phase marker's failure is what the task result reports | A reader expects the deciding failure where a sweep cap or a cancellation inside the phase records its own reason | None: nothing reads prose against the code | The conformance cases pin the true behaviour, and no check connects them to the sentence | The two sentences and the batch table's FinishSaga row are corrected (no mechanism) |
+| 9 | The worker's rollback arm reported `rolling-back` from its own retry decision and ignored what `failRollback` answered | The worker reports a pass that will never come when the store ends the task instead | The SDK's saga suite | Every case lets the store place the pass the worker asked for | The worker reports the store's answer (no mechanism, by the LOW rule) |
+| 10 | `rollback_error` is the latest attempt record of any step not rolled back, which stands in for the rollback that halted the saga | A rollback that failed with budget left, followed by a cancellation, is reported as the halting error | The `sagas` conformance surface's cancellation case | It cancels a saga with no failed attempt on record | Not fixed. Recorded in BUILD.md |
+| 11 | The rollback outcome reaches `getTaskResult` only | A parent that awaits the child, and the hosted inspect route, never see it | The child-task surface's outcome cases | The completion event's payload predates sagas and was not revisited | Not fixed. Recorded in BUILD.md |
+| 12 | `rollbackPending` finds saga checkpoints by a prefix test that cannot use the key's second column, the plan pin accepts that scan, the `rollback_error` subquery runs for every result read, and a comment, a pr-gate rule, and two doc comments were stale | Every failure walks all of a task's checkpoints. The stale statements misdirect the next change | The query plan pins | The pin asserts the task is bound and the primary key is used, which a walk of one task's checkpoints satisfies | The comment, the pr-gate rule, and the doc comments are corrected. The scan and the pin are recorded in BUILD.md |
+
+## Detection ledger
+
+Every one of the twelve came from outside review. The branch's own machinery had passed on the reviewed head: `pnpm verify` with 7,619 tests, the fuzz with saga moves under a progress floor, the TLA gate with 56 of 56 Sagas mutants caught, and a filtered mutation audit with 45 of 45 caught by an attributable verdict. Each layer was shown these defects and accepted them.
+
+After the review, auditing the fix for finding 7 for what it still let through found the same defect at two more doors, `suspendRun` and `failRollback`. Those are counted apart, because the twelve are the review's and the review did not name them.
+
+| Detector | Findings | Ours? |
+|----------|----------|-------|
+| One outside review: the built-in code review with one verifier over its list, the reviewer's own scratch reproductions, and a report-only simplify pass | 12 | No |
+| This project's machinery on the reviewed head: conformance, the SDK suites, the replay-equivalence harness, the fault and poison matrices, the fuzz, TLC, the lints, the mutation audit | 0 | Yes |
+
+Self-catch rate: 0 of 12, or 0% (previous round on this work, the sagas spec review: 2 of 21, or 10%. The round before this one on main, the MySQL store's: 0%). It is not improving. The two doors found afterwards would make it 2 of 14, and they were found only because the template's false-negative question was asked of a fix the review had already pointed at.
+
+## Recurrence
+
+**A guard at one door and not at the chokepoint** (finding 7) is the oldest class in this repository. AGENTS.md says the subtle bugs lived in method-local guards and tells every simplify pass to push guards to chokepoints. That is an instruction to a reader, which is not a mechanism, and it failed twice in this round: the branch guarded one checkpoint name at one batch, and the first fix for finding 7 guarded two names at the same one batch. What would be the property is a single place where a caller's checkpoint name enters the store. `checkpointWrite` is that place in the statement tree, and it cannot tell a caller's name from the engine's, because the batches that write the engine's names use it too.
+
+**A test written from the code and not from the contract** (finding 1) recurs from the wake-surface round, where two conditions could be deleted with every case green, and from the rule it produced: a mechanism must fail for every condition it claims. That rule is enforced by one mutation per condition, and finding 1 passed it. The mutation deleted the guard, and the boundary case killed it, so the rule was satisfied by a guard that was wrong in the other direction. A per-condition mutation proves a test sees the guard. It does not prove the guard is the right one, and nothing here does.
+
+**A generated surface that enumerates what its author thought of** (findings 2, 4, and 6) recurs from the SDK residual round, which instituted the replay-equivalence harness as the SDK's generated fault surface. The harness generates programs from a grammar of sequential steps, sleeps, and awaits. It has no `Promise.all`, no emit, and no step named after the attempt, so three defects in exactly the layer it covers were outside it. The harness checks that replay is equivalent under faults. The property is that every program a user can write replays equivalently, and the grammar is a sample of those programs chosen by the author of the code under test.
+
+**Prose stronger than the code** (findings 3, 8, and 12, and the comment in finding 1) has recurred in every round on this work: the child-task spec round's findings 4 to 6, and the sagas spec round's findings 3, 4, 10, and 11. No mechanism has ever been instituted against it, and this round institutes none. The brief for this work carried the rule "no prose claims stronger than what was run", which is again an instruction to the writer. The comment "nothing reaches it by running" was written without running it.
+
+**One bound spelled twice** (finding 5) is the single-representation law from the SDK residual round, applied to a limit instead of a value. The fix uses the same constant in both places, which is still two spellings.
+
+## Mechanism audit — the false negative of each
+
+Each exhibit marked RUN was planted in the tree at the fixed head, the mechanism was run against it, and the tree was restored.
+
+| Mechanism | Rung | Code that still has the bug and still passes |
+|-----------|------|----------------------------------------------|
+| Finding 1: two cases at the budget bound, and two mutations | 3 | RUN. With the guard written as `f.attempt < ${TASK_INTEGER_BOUNDS.max_attempts.max}`, which ignores `t.infra_retries`, both cases pass on both dialects, 4 of 4. Both tasks have no infrastructure retries, so the run's ordinal and its user ordinal are equal. A task near the top of its budget with one infrastructure retry would be refused a pass it is owed |
+| Finding 2: one SDK case of two steps under `Promise.all` | 3 | RUN, and caught: with `await null` placed ahead of the guard the case fails on both dialects. The false negative is elsewhere. The harness still generates no concurrent program, so an ordering defect between any other two durable calls, two awaits of one event for instance, passes every suite |
+| Finding 3: the halt's message, and a rule in DESIGN.md | 3 | The defect itself still passes: a handler whose `catch` filters by class loses its compensation, and the case pins that outcome. The mechanism holds only that the halt says why |
+| Finding 4: the replay skips an emit | 3 | RUN. With `this.refuseForwardProgress()` deleted from `ctx.spawn`, all 149 SDK tests pass. The store does not freeze a child spawn inside the phase, so a rollback pass would spawn a child. The freeze is still one hand-kept line for each durable call, and only the sleep's and now the emit's have a test |
+| Finding 5: registration uses the retry decision's bound | 3 | Not run. Lowering the bound inside `requirePositiveInt` leaves registration's comparison with `MAX_COUNT` behind, and the registration case would still pass with the two apart |
+| Finding 6: a pass subtracts one more than the recorded failed attempts | 3 | Not run. The count comes from attempt records the store takes from the caller without checking. A worker that is not the SDK and records `tries: 5` at once makes every later pass replay as the wrong attempt |
+| Finding 7: a name check at each of three batches | 3 | RUN, as the two red tests of the second red commit. The first fix passed its own case while `suspendRun` admitted `$rolling-back` and `failRollback` replaced the saga's cause, on both dialects. A fourth batch that commits a caller's checkpoint would ship with no check, and nothing enumerates such batches |
+| Findings 8 and 12: corrected prose | none | Any sentence in DESIGN.md can be false again tomorrow. Nothing reads it against the code |
+
+## Fix-induced defects
+
+None of the twelve was caused by a fix for another. One fix was incomplete: the first fix for finding 7 closed one of three doors, and the two left open were found by the false-negative audit above, before any re-review, and closed by a second red and fix pair. One fix broke the registry and was caught by this project's own check: moving a name guard into a suspension's admission predicate changed lines that eleven base mutations own, the exactly-once check over an imported copy of the registry refused it, and the guard now rides the phase bind. The fixes were not re-reviewed as new code. They were re-tested, each under its own red test, the registry's self-test, and a filtered audit of all 58 saga mutations.
+
+## Evidence
+
+- Red tests: commit `50390d4`, seven tests, each run on libSQL and PostgreSQL against the unfixed code and seen to fail, 14 failures naming their own tests. Commit `bf2b164`, two more for the doors found afterwards, 4 failures.
+- Fixes, one commit for each finding: `bf76214` (1), `75b02f2` (2), `a3d300e` (3), `34dcb92` (4), `10890bc` (5), `664dd47` (6), `6bb4a2d` and `d2aaf30` (7), `386992f` (8, 9, and the stale statements of 12). Each fix commit names the test it turns green. Simplify candidates taken: `c83cdbb`. Mutations: `f81028b`.
+- Gate after the fixes: the filtered audit over the saga closure, a subset audit, caught 58 of 58 by an attributable verdict, 58 exact-only and none with collateral failures. The registry's self-test passes, and every find of 804 mutations occurs exactly once in the tree, read from an imported copy. The PR body carries the full gate run on the final head.
+- Finder: one outside review of the branch, quoted verdict: "Findings 1, 2, and 3 can skip rollbacks or run them out of reverse start order. I found no way to run a rollback twice beyond at-least-once re-execution, which DESIGN.md already requires handlers to tolerate."
+- The reviewer's reproductions ran on in-memory libSQL only. Every red test here ran on PostgreSQL too, and each defect reproduced on both.
+- Claims that did not hold as stated: the review asked that compensation not depend on the shape of a handler's `catch` (finding 3). That cannot be built. Reaching a later step's closure means running the handler past the earlier step on the path the forward pass took, which needs the handler's `catch` to accept what the step throws, and an error rebuilt from storage is no instance of the handler's class. Compensating only the steps that did register would run an earlier rollback ahead of a later step that stays uncompensated, which the model's RunRollback guard forbids. The review's second simplify candidate, one shared narrow for the three terminal arms, was declined: the three are fenced on different stamps and one carries the cap's own conjuncts.
+
+## Root cause
+
+Every layer that passed was built by the author of the code it checks, from the author's picture of how the code is used. The conformance cases write the checkpoint names the SDK writes. The harness generates the programs the SDK's author imagined. The boundary case was derived from the guard it guards. The mutations prove each of those tests can see its guard, and none of them asks whether the guard or the test is the right one. The review's defects are all outside that picture: a budget at the port's maximum, two steps at once, a `catch` with a filter, an emit, a name the SDK never writes. This project's machinery is strong at showing that what was built does what its author meant, under faults, on every dialect. It has no layer that generates what the author did not mean, which is where an outside reader starts.
+
+## Mechanisms
+
+Built in this PR:
+
+- The pass's guard reads the value its batch writes (rung 3: two conformance cases on each dialect, two mutations).
+- The SDK's nesting guard goes up before anything in a step is awaited (rung 3: one case, one mutation).
+- Every batch that commits a caller's checkpoint checks its name, through one fragment for the engine's names and one for an attempt record's (rung 3: three cases, five mutations).
+- A rollback pass's replay emits nothing, replays as the failed run's attempt, and refuses a rollback budget the retry decision would refuse (rung 3: three cases, five mutations).
+- The saga phase is a required bind on all four statements it can freeze, `SagaPhasePredicate`, so a store does not compile until it says what the phase requires of each (rung 1, for the omission only: it cannot make the predicate a store passes the right one).
+- The halt for an unregistered rollback says where the replay last stopped (rung 3: one case, one mutation).
+
+Deferred (recorded in BUILD.md):
+
+- A concurrent and an emitting grammar for the replay-equivalence harness. Acceptable for now because the two defects it would have found are fixed and held by cases, and not acceptable for long: it is the only mechanism named here that attacks the root cause.
+- A port where `failRollback` takes a step and the store derives the record's name and count, which makes a foreign name unwritable and closes the trusted-tries limit. The name is checked in SQL until then.
+- The store freezing a child spawn inside the phase, with a test for each frozen durable call of the SDK.
+- Findings 10 and 11, and the prefix scan and its plan pin from finding 12.
+
+## What this round still would not catch
+
+- A guard that reads the wrong term of the right quantity. A pass guard that ignores infrastructure retries passes both budget cases today.
+- An ordering defect between two durable calls other than two steps, because no generated program runs two at once.
+- A durable call of the SDK that loses its freeze line. Deleting it from `ctx.spawn` passes all 149 SDK tests, and the store would let the child spawn happen.
+- A fourth batch that commits a caller's checkpoint under an unchecked name.
+- A handler whose `catch` filters by class still loses its compensation. It is reported, and it is not prevented.
+- Any false sentence in DESIGN.md, BUILD.md, a comment, or a PR body.
+- Sagas on MySQL. This PR does not port them, so none of the above is held on that dialect.
