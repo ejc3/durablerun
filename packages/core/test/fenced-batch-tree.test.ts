@@ -7,6 +7,7 @@ import {
 } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
+  EventName,
   type SqlFragment,
   type SqlStatement,
   type StoreTables,
@@ -79,8 +80,76 @@ describe('FencedBatch tree statements', () => {
       {
         sql: 'update "tasks" set "state" = ?, "fence_stamp" = ?, "fence_at_ms" = ? where "task_id" in (select "f"."task_id" from "runs" as "f" where "f"."run_id" = ? and "f"."fence_stamp" = ?)',
         args: ['completed', 'seed:task', 5, 'r1', 'seed:win'],
+        skipUnlessWrote: 0,
       },
     ])
+  })
+
+  it('tells the executor which statement gates each follow-on and tail, and nothing for the rest', async () => {
+    const { captured, executor } = capturingExecutor(1)
+    const b = withCas()
+    b.derived('task', {
+      relation: 'runs-to-tasks',
+      fence: 'win',
+      set: { state: `'completed'` },
+      rows: 'one',
+    })
+    b.derived('task-runs', {
+      relation: 'tasks-to-runs',
+      fence: 'task',
+      set: { state: `'cancelled'` },
+      rows: 'source-keys',
+    })
+    b.derived('waits', { relation: 'runs-to-waits', fence: 'win', rows: 'source-keys' })
+    b.tailTree(
+      'won',
+      statement(
+        db.selectFrom('runs').select('run_id').where('fence_stamp', '=', fenceValue('win')),
+      ),
+    )
+    b.openTailTree(
+      'other',
+      'a row another batch wrote',
+      statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
+    )
+    // An open tail reads rows this batch did not write. One that carries a fence anyway
+    // is still sent: nothing says its rows depend on that fence alone.
+    b.openTailTree(
+      'other-fenced',
+      'a row another batch wrote, beside one this batch stamped',
+      statement(
+        db.selectFrom('runs').select('run_id').where('fence_stamp', '=', fenceValue('win')),
+      ),
+    )
+    await b.run(executor)
+    expect(
+      captured.map((sent) => sent.skipUnlessWrote),
+      'mutation-verdict:behavior:batch-names-each-gate',
+    ).toEqual([undefined, 0, 1, 0, 0, undefined, undefined])
+  })
+
+  // A skipped statement answers with no rows. That is what an unmatched statement answers
+  // too, unless it answers with a row whatever it matched: a tail that counts the rows
+  // its own WHERE gates returns one row holding 0 when the gate lost. Skipped, it would
+  // return no row on the dialect that skips and that row on the dialect that sends the
+  // batch whole, so such a tail is always sent.
+  it('never skips a gated tail that answers with a row whatever it matched', async () => {
+    const { captured, executor } = capturingExecutor(1)
+    const b = withCas()
+    b.tailTree(
+      'counted',
+      statement(
+        db
+          .selectFrom('runs')
+          .select((eb) => eb.fn.countAll<number>().as('n'))
+          .where('fence_stamp', '=', fenceValue('win')),
+      ),
+    )
+    await b.run(executor)
+    expect(
+      captured.map((sent) => sent.skipUnlessWrote),
+      'mutation-verdict:behavior:batch-never-skips-a-tail-that-always-answers',
+    ).toEqual([undefined, undefined])
   })
 
   it('refuses a statement that defineStatement did not mint, and an undefined bind', () => {
@@ -1219,6 +1288,7 @@ describe('FencedBatch tree statements', () => {
       expect(captured[1]).toEqual({
         sql: 'insert into "runs" ("run_id", "queue", "task_id", "fence_stamp", "fence_at_ms") select ? as "run_id", "f"."queue" as "queue", "f"."task_id" as "task_id", ? as "fence_stamp", "f"."fence_at_ms" as "fence_at_ms" from "runs" as "f" where ("f"."run_id" = ? and "f"."fence_stamp" = ?)',
         args: ['r2', 'seed:successor', 'r1', 'seed:win'],
+        skipUnlessWrote: 0,
       })
       expect(captured[2]?.args).toEqual(['r2', 'seed:successor'])
     })
@@ -1666,6 +1736,7 @@ describe('FencedBatch tree statements', () => {
       maxAttempts: 3,
       cancellationJson: null,
       idempotencyKey: null,
+      parent: null,
       enqueueAt: sqlFragment('$NOW$ + ?', [0]),
       cancelAt: sqlFragment('$NOW$ + ? + ?', [0, null]),
       identityFree: sqlFragment('NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)', ['t1']),
@@ -1735,11 +1806,12 @@ describe('FencedBatch tree statements', () => {
       admission: sqlFragment('EXISTS (SELECT 1 FROM tasks t WHERE t.task_id = runs.task_id)'),
     })
     const register = registerWaitCas({
+      awaitedTaskId: null,
       queue: 'q',
       runId: 'r1',
       taskId: 't1',
       stepName: 's',
-      eventName: 'e',
+      eventName: EventName.fromPort('test', 'e'),
       timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
       timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
       claimToken: 'tok',
@@ -1748,7 +1820,7 @@ describe('FencedBatch tree statements', () => {
     })
     const emit = emitEventCas({
       queue: 'q',
-      eventName: 'e',
+      eventName: EventName.fromPort('test', 'e'),
       payloadJson: '{}',
       existingEventAdmits: sqlFragment('events.payload IS NOT NULL'),
     })

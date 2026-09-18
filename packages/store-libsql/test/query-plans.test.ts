@@ -255,6 +255,105 @@ describe('the emit fan-out, which is a WRITE', () => {
   })
 })
 
+describe("a terminal batch's wake, which every task ending pays", () => {
+  /**
+   * Every batch that ends a task also wakes the runs parked on its completion event,
+   * whether or not anyone awaits it. The follow-on that turns the woken runs' tasks
+   * pending selects its source by queue and state. Correlated to `tasks` on the queue,
+   * that source is evaluated once for every task row, so one `complete` costs the
+   * queue's tasks times its pending runs. Measured on libSQL with nobody waiting: 21 ms
+   * at 250 pending runs, 1,063 ms at 2,000, and 4 ms when the backlog sits in another
+   * queue. The statement is recovered from the real operation, as the emit pin is.
+   */
+  async function shippedWakeTasksStatement(): Promise<{ sql: string; args: unknown[] }> {
+    const seen: { sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, mode) => {
+        if (label === 'complete') {
+          for (const st of statements) seen.push({ sql: st.sql, args: [...st.args] })
+        }
+        return db.batch(label, statements, mode)
+      },
+    }
+    const store = new LibsqlSchedulerStore(recorder, testIdSource('terminal-query-plan'))
+    await store.spawn('q', 'job', '{}')
+    const [run] = await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })
+    if (!run) throw new Error('expected a claimed run')
+    await store.activate('q', run.runId, 'worker', run.claimGen)
+    await store.complete('q', run.runId, 'worker', '{}')
+    // The batch updates tasks twice: once for the task it ends, and once for the tasks
+    // of the runs it woke. Require exactly one of the second.
+    const updates = seen.filter(
+      (st) => /^\s*update "tasks" set/.test(st.sql) && st.sql.includes(`('pending')`),
+    )
+    expect(updates).toHaveLength(1)
+    const only = updates[0]
+    if (!only) throw new Error('unreachable')
+    return only
+  }
+
+  it('looks the woken tasks up by key, and never scans tasks once for each pending run', async () => {
+    const st = await shippedWakeTasksStatement()
+    const p = await writePlan(st.sql, st.args as (string | number)[])
+    expect(
+      [
+        p.includes('SEARCH tasks USING PRIMARY KEY'),
+        !p.includes('SCAN tasks'),
+        !p.includes('CORRELATED LIST SUBQUERY'),
+      ],
+      'mutation-verdict:behavior:wake-tasks-binds-the-queue',
+    ).toEqual([true, true, true])
+  })
+  /**
+   * The pin above reads the side of `wake-tasks` that is written. The side that is read
+   * is where the cost was left: each of the three follow-ons that come after the wake
+   * finds the runs this batch woke by queue and state, and the only index for that is
+   * `runs_poll`, so every task ending walks every pending run of its queue. Measured on
+   * libSQL with nobody waiting: 6 to 10 ms at 2,000 pending runs against 4 ms with the
+   * backlog in another queue, and 215 ms at 100,000 against 55 ms. This reads every write
+   * of every batch that ends a task through a call that needs no clock move.
+   */
+  async function shippedTerminalWrites(): Promise<
+    { label: string; sql: string; args: unknown[] }[]
+  > {
+    const seen: { label: string; sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, mode) => {
+        if (label === 'complete' || label === 'fail' || label === 'cancel-task') {
+          for (const st of statements) seen.push({ label, sql: st.sql, args: [...st.args] })
+        }
+        return db.batch(label, statements, mode)
+      },
+    }
+    const store = new LibsqlSchedulerStore(recorder, testIdSource('terminal-source-plans'))
+    const ready = async (name: string) => {
+      await store.spawn('q', name, '{}', { maxAttempts: 1 })
+      const [run] = await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('expected a claimed run')
+      await store.activate('q', run.runId, 'worker', run.claimGen)
+      return run
+    }
+    await store.complete('q', (await ready('completes')).runId, 'worker', '{}')
+    await store.fail('q', (await ready('fails')).runId, 'worker', '{}', null)
+    await store.cancelTask('q', (await store.spawn('q', 'is-cancelled', '{}')).taskId)
+    expect([...new Set(seen.map((st) => st.label))]).toEqual(['complete', 'fail', 'cancel-task'])
+    return seen.filter((st) => /^\s*(update|delete|insert)/i.test(st.sql))
+  }
+
+  it('finds the runs it woke without walking the pending runs of the queue', async () => {
+    const walks: string[] = []
+    for (const st of await shippedTerminalWrites()) {
+      const p = await writePlan(st.sql, st.args as (string | number)[])
+      for (const step of p.split('\n')) {
+        if (/USING INDEX runs_poll \(queue=\? AND state=\?\)$/.test(step.trim())) {
+          walks.push(`${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 3).join(' ')}`)
+        }
+      }
+    }
+    expect(walks, 'mutation-verdict:behavior:wake-sources-find-the-woken-runs').toEqual([])
+  })
+})
+
 describe('cancellation deadlines', () => {
   it('the cancellation sweep seeks tasks_cancel, never scanning tasks', async () => {
     const p = await plan(

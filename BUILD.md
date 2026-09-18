@@ -1168,8 +1168,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
   await, cross-queue refusal; `/api/runs/:id` result route. Spec first:
   `specs/ChildTasks.tla` models the completion event and lands before its SQL,
   for an await whose event and wait row live in one queue. TLC checks it with
-  the await allowed and with it refused, and seven probes each exhibit one
-  violation or one reachable behaviour. Seventeen mutants, each one guard of
+  the await allowed and with it refused, and ten probes each exhibit one
+  violation or one reachable behaviour. Thirty mutants, each one guard of
   the model bent or deleted, must each violate the property its entry names
   (`specs/ChildTasks.mutants.json`, run by `scripts/tla.sh`), because a probe
   shows that an invariant can fail and cannot show that a guard is held. The
@@ -1188,6 +1188,85 @@ these three things; nothing else in the system does I/O, time, or randomness.
   here: a same-queue await is allowed, and an await across queues is refused
   until a delivery protocol for it is modeled, because events are keyed by
   queue.
+  The implementation is built on that model. Every terminal batch writes the
+  completion event and wakes its waiters as follow-ons of the statement that
+  ended the task, and takes the event lock on PostgreSQL. The `emitEvent` and
+  `awaitEvent` ports refuse a reserved name, `awaitTaskDone` is the child
+  await, and the SDK adds `ctx.spawn` and `ctx.awaitTask`. The conformance
+  surface `child-tasks` holds the model's actions and guards on both dialects,
+  the operation fuzz and the SDK's replay-equivalence harness generate child
+  awaits, and `childTaskViolations` checks every history only the engine wrote.
+  Two reads were added and are recorded in DESIGN.md §3.2: `task-done-state`
+  says why a child await neither registered nor hit, and `run-task` names the
+  task of a run that another store activated. The review round is
+  `postmortems/pr3.3-child-tasks-impl-review.md`. It changed the model first:
+  a child that a build older than this protocol ended has no completion event,
+  and the await records its outcome (`AwaitMaterialize`), under the deploy rule
+  the model states as an assumption. The maintainer decided four things as
+  built: the store remembers a run's task and the task id does not pass through
+  the port, `ctx.spawn` is its own memoized step, `ctx.awaitTask` resolves for a
+  failed or cancelled child, and `TerminalImpliesDone` is held by
+  `childTaskViolations` and not the invariant library. Not built here, each
+  with its reason:
+  - The `/api/runs/:id` route, because `/api/inspect` already answers with a
+    task's result, and a route by run id is left to the PR that needs it.
+  - A repair for the one case the deploy rule covers: an older build that ends
+    a child while a parent is parked on it strands the parent until its timeout
+    or its cancellation deadline. An await that records the outcome wakes
+    nobody, so a second parent's await does not free the first. A sweep that records the event of a terminal
+    task that has a registered waiter would close it. It is deferred because it
+    is a protocol step, so it is modeled first.
+  - Detection of an await cycle, which the model leaves to the cancellation
+    deadline.
+  - Event cleanup, which does not exist yet. It must not remove a completion
+    event whose task can still be awaited.
+  - The completed payload of an awaited child is stored five times: in the task
+    row, in the run's result, inside the completion event, in each waiter's
+    `event_payload`, and in the parent's checkpoint memo, where it is escaped
+    twice. A pointer to the task row cannot replace the event's copy, because a
+    revival overwrites that row. It waits until result sizes are observed.
+  - A task ending on PostgreSQL is 8 round trips where main's was 5. The three
+    more are the completion event, the wake, and the lock. Folding statements
+    needs a grammar the tree path does not have.
+  - Every other string a store port takes. This round holds the spawn queue
+    and a port's event name to the durable string domain, each where it enters.
+    A queue or a step name at the other ports is not checked at the port. One
+    check for the whole port is its own change.
+  - A plan check over every write of the libSQL corpus. `query-plans.test.ts`
+    pins the statements someone chose, so the terminal wake had no pin when it
+    moved into six batches, and the keyed follow-ons below scan `tasks` today
+    with every test green. The property is that no write scans a table once
+    for each row of another, and a check generated from the corpus would hold
+    it for every statement. It is its own change.
+  - Deferred to PR3.3b, the hoists the second review named. Core declares the
+    event lock, so that the eight lines that take it leave the dialect store and
+    a batch that adds a completion event without it is refused, and it decides
+    there whether a batch that ends no task needs the lock. A tree rule refuses a
+    statement that writes a terminal `tasks.state` unless the batch carries the
+    completion event's follow-on. The child await's engine logic, which is the
+    same text in both stores, and its two reads move into core beside
+    `addTaskDone`, so that a third dialect inherits them.
+  - The row lock of a caller's event can be dropped once no build that takes it
+    can still run. That needs a stated oldest build, which nothing records today.
+  - Holding the deadlock count at zero across the PostgreSQL concurrency cases
+    and the fuzz, so that a new lock-order inversion fails a test and is not
+    hidden by the victim's retry. The database's counter is shared by parallel
+    test workers, so it needs a counter on the executor that a fixture can read.
+  - Smaller, from the same review: the run-to-task memo does not forget a run
+    its terminal batch has ended, `EventName` does not carry the task id or a
+    display form, port refusals have no one typed class mapped once at the hosted
+    route, no single helper runs both violation checkers, and a few test helpers
+    are copies.
+  - Option, not a deferral of this PR: the generated follow-ons that select
+    their source by key (`task`, `task-mirror`) still correlate the source to
+    `tasks` on the queue, so their plan is a scan of `tasks` with a keyed probe
+    for each row. It is on main, and its cost grows with every task in the
+    database, in any queue. One `complete` on libSQL measured 2 ms beside 2,000
+    tasks, 5 ms beside 10,000, and 20 ms beside 40,000 on main, and 4, 8, and
+    25 ms here. Beside 100,000 tasks of its own queue it is 61 ms on main, where
+    it is the whole cost of the batch. Binding the queue as the wake now does would make it a keyed
+    lookup. It
+    changes the compiled corpus of every label, so it is its own change.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,
@@ -1442,9 +1521,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   runs the merged order leaves out, which other claimers skip until that claim
   commits. (4) Version 1 holds the whole schema because MySQL DDL cannot roll
   back. The first migration that alters a table needs a repeatable form, which
-  MySQL has no `ADD COLUMN IF NOT EXISTS` for. (5) The optional PlanetScale
-  smoke job is not built. (6) Child tasks and sagas land their batches on
-  libSQL and PostgreSQL first, and `store-mysql` ports them after. The review
+  MySQL has no `ADD COLUMN IF NOT EXISTS` for. Version 6, the `runs_woken`
+  index that child tasks read through, is the first statement after version 1:
+  it is chosen from the catalog and prepared, which is safe to repeat, and a
+  column will need the same form. (5) The optional PlanetScale
+  smoke job is not built. (6) Sagas land their batches on libSQL and PostgreSQL
+  first, and `store-mysql` ports them after. Child tasks are ported, in PR3.3
+  itself: the MySQL leg of the identical suite runs the child-task cases and
+  the fault and poison matrix cells of the new labels, and nothing is owed.
+  The review
   of this PR found eleven defects, eight of them in behaviour and one of them
   introduced by a fix, recorded in
   `postmortems/pr4.3-store-mysql-review.md`. Since it, the store refuses an

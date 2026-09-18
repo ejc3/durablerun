@@ -71,6 +71,15 @@ function contradictionsOf(result: TaskResult): TaskResultContradiction[] {
 }
 
 /**
+ * How an outcome contradicts its state, as words, or null when it does not. The
+ * completion event's decoder holds its payload to the rule a task row is held to.
+ */
+export function taskResultContradiction(result: TaskResult): string | null {
+  const [first] = contradictionsOf(result)
+  return first === undefined ? null : CONTRADICTION_DETAIL[first]
+}
+
+/**
  * Every rule a task row that selected `TASK_RESULT_COLUMNS` breaks, in a fixed order.
  * A completed task must carry its payload, a failed or cancelled task must carry its
  * reason, and no other state may carry either. A row that lacks a column or names an

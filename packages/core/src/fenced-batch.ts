@@ -1,4 +1,5 @@
 import { type Expression, type Kysely, isExpression } from 'kysely'
+import type { EventName } from './child-tasks.js'
 import {
   DERIVED_WRITABLE_COLUMNS,
   type DerivedWritableColumn,
@@ -15,7 +16,6 @@ import { TASK_INTRINSICS } from './intrinsics.js'
 import type {
   SqlBatchMode,
   SqlClaimLockCoordinates,
-  SqlEventLockCoordinates,
   SqlExecutor,
   SqlResult,
   SqlStatement,
@@ -35,6 +35,7 @@ import {
   gatingFences,
   insertProvenance,
   isDefinedStatement,
+  mayReturnNoRow,
   rawFragmentProblem,
   rawFragmentTexts,
   rawSql,
@@ -131,6 +132,14 @@ interface DerivedSelection<R extends FenceRelation = FenceRelation> {
   whereArgs?: SqlStatement['args']
   narrow?: string
   narrowArgs?: SqlStatement['args']
+  /**
+   * The one queue both sides are in, for a queue-scoped relation: the source rows and
+   * the written rows each compare their queue with this bind. Without it the source is
+   * correlated to the target on the queue, which is as safe and runs the source once
+   * for every target row. A source selected by key pays nothing for that. A source
+   * selected by queue and state pays the target table times the queue's backlog.
+   */
+  queue?: string
   rows: 'one' | 'source-keys'
 }
 
@@ -259,9 +268,9 @@ export class FencedBatch {
    * be declared before the batch's first statement, and the first statement
    * after it must be the fenced CAS whose branch the lock protects.
    */
-  lockEvent(coordinates: SqlEventLockCoordinates): this {
+  lockEvent(coordinates: { readonly queue: string; readonly eventName: EventName }): this {
     const { queue, eventName } = coordinates
-    return this.addTransactionLock({ kind: 'event', queue, eventName })
+    return this.addTransactionLock({ kind: 'event', queue, eventName: eventName?.value })
   }
 
   /**
@@ -445,12 +454,24 @@ export class FencedBatch {
       }
     }
     const whereArgs = spec.whereArgs ?? []
+    const boundQueue = spec.queue
+    if (boundQueue !== undefined && spec.set === undefined) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') binds a queue on a DELETE: no generated DELETE follows a queue-scoped relation, so nothing holds that shape`,
+      )
+    }
+    if (boundQueue !== undefined && !relation.queueScoped) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') binds a queue, and '${spec.relation}' is not queue-scoped`,
+      )
+    }
     const fencedSource = () => {
       let rows = generatedBuilder.selectFrom(`${from} as f`)
       if (spec.where) {
         rows = rows.where(rawSql<boolean>(sqlFragment(spec.where, whereArgs), 'predicate'))
       }
-      if (relation.queueScoped) rows = rows.whereRef('f.queue', '=', `${target}.queue`)
+      if (boundQueue !== undefined) rows = rows.where('f.queue', '=', boundQueue)
+      else if (relation.queueScoped) rows = rows.whereRef('f.queue', '=', `${target}.queue`)
       return rows.where((eb) => eb(eb.ref('f.fence_stamp'), '=', fenceValue(spec.fence)))
     }
     // A self relation reads its own target. MySQL refuses that directly, so the keys go
@@ -518,10 +539,11 @@ export class FencedBatch {
     // UPDATE always emits provenance: this statement's stamp, at the instant of the rows
     // it follows. The correlation therefore occurs once in the instant subquery and once
     // in the row selection, and the caller supplies its arguments once.
-    const updated = generatedBuilder
+    let updated = generatedBuilder
       .updateTable(target)
       .set({ ...values, fence_stamp: stampValue, fence_at_ms: sourceInstant })
       .where((eb) => eb(eb.ref(key), 'in', sourceKeys))
+    if (boundQueue !== undefined) updated = updated.where(`${target}.queue`, '=', boundQueue)
     return this.addGenerated(name, narrow === null ? updated : updated.where(narrow), rows)
   }
 
@@ -807,9 +829,20 @@ export class FencedBatch {
     for (const fence of compiled.fences) {
       this.requireFenceSource(fence, `the fence token for '${fence}'`)
     }
+    // The statement whose stamp gates this one, for an executor that can skip a
+    // statement that cannot match (`SqlStatement.skipUnlessWrote`). Only a tied gate of
+    // a statement that must be gated counts: every top-level conjunct is ANDed, so one
+    // gate that no row can satisfy is enough.
+    let gatedBy: number | undefined
     if (!isCas) {
       const positional = gatingFences(tree)
       const gates = positional.filter((gate) => gate.tied)
+      const gateName = open ? undefined : gates[0]?.fence
+      const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)
+      // A skipped statement answers with no rows, which is also what it answers unmatched,
+      // unless it answers with a row whatever it matched. That one is always sent.
+      const alwaysAnswers = !mayReturnNoRow(tree)
+      if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex
       if (!open && gates.length === 0 && positional.length !== 0) {
         throw new Error(
           `${at} is gated only by a subquery that is not tied to the rows it reads or writes: the subquery must read the fenced source alone, and either IN selects one plain column of it against a column of the outer row, or EXISTS equates a column of it with a column of the outer row (§3.4 rule 1)`,
@@ -883,7 +916,10 @@ export class FencedBatch {
       kind,
       fence: stamps ? { target: stamped, sealedBy: null } : null,
       atMost,
-      compiled: { sql: compiled.sql, args },
+      compiled:
+        gatedBy === undefined
+          ? { sql: compiled.sql, args }
+          : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
     })
     return this
   }

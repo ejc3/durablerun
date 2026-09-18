@@ -2,6 +2,7 @@ import { INFRA_RETRY_CAP, RELAUNCH_CAP, type SqlExecutor } from '@durablerun/cor
 import { SimWorld } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
+import { awaitTaskOwned } from './scenario.js'
 
 const Q = 'q'
 
@@ -37,6 +38,7 @@ export const MATRIX_WRITE_LABELS = [
   'suspend',
   'emit-event',
   'await-event',
+  'record-task-done',
   'complete',
   'fail',
   'cancel-task',
@@ -48,9 +50,26 @@ export const MATRIX_WRITE_LABELS = [
   'sweep:claim-timeout',
 ] as const
 
+/**
+ * The write labels whose batch can end a task (specs/ChildTasks.tla's ledger block).
+ * Each owes the task's parent its completion event and the wake of every waiter. The
+ * child-task conformance surface generates its terminal cases from this list, and the
+ * poison matrix lets exactly these labels insert a completion event.
+ */
+export const TERMINAL_BATCH_LABELS = [
+  'complete',
+  'fail',
+  'cancel-task',
+  'sweep:cancel',
+  'sweep:lost-launch',
+  'sweep:claim-timeout',
+] as const satisfies readonly (typeof MATRIX_WRITE_LABELS)[number][]
+
 export const MATRIX_READ_LABELS = [
   'claimed-task-name',
   'refusal-state',
+  'run-task',
+  'task-done-state',
   'sweep:scan',
   'get-checkpoints',
   'task-result',
@@ -393,6 +412,68 @@ export async function runFaultMatrixCase(
         await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
         // A stale replay of that complete is refused and reads why.
         await go(() => store.complete(Q, fin.runId, fin.claimToken, '{"ok":1}'))
+      }
+
+      // A parent awaits its child (ChildTasks.tla). The child is claimed and never
+      // activated, so its terminal batch has to read the run's task first, and that
+      // batch writes the completion event and wakes the parent.
+      const parentTask = await go(() => store.spawn(Q, 'parent', '{}'))
+      const [parent] =
+        (await go(() => store.claim(Q, 'w-parent', { leaseSeconds: 60, limit: 1 }))) ?? []
+      const childTask = await go(() => store.spawn(Q, 'child', '{}'))
+      if (parentTask && childTask && parent?.taskId === parentTask.taskId) {
+        await go(() => store.activate(Q, parent.runId, parent.claimToken, parent.claimGen))
+        // An await of no task at all neither registers nor hits, so it reads why.
+        await go(() => awaitTaskOwned(store, Q, parent, 'w-no-child', 'no-such-task', null))
+        await go(() => awaitTaskOwned(store, Q, parent, 'w-child', childTask.taskId, null))
+        const [child] =
+          (await go(() => store.claim(Q, 'w-child', { leaseSeconds: 60, limit: 1 }))) ?? []
+        if (child?.taskId === childTask.taskId) {
+          await go(() => store.complete(Q, child.runId, child.claimToken, '{"child":1}'))
+        }
+        const [wokenParent] =
+          (await go(() => store.claim(Q, 'w-parent2', { leaseSeconds: 60, limit: 1 }))) ?? []
+        if (wokenParent?.runId === parent.runId) {
+          await go(() =>
+            store.activate(Q, wokenParent.runId, wokenParent.claimToken, wokenParent.claimGen),
+          )
+          await go(() =>
+            store.complete(Q, wokenParent.runId, wokenParent.claimToken, '{"parent":1}'),
+          )
+        }
+      }
+
+      // A child that ended with no completion event, as a build older than the event
+      // leaves it. That build is this store over an executor that sends `cancel-task`
+      // without its event insert, so every statement still goes through the simulated
+      // port: a promise the simulator does not own breaks its determinism contract. The
+      // await of the child records the outcome in a batch of its own (ChildTasks.tla's
+      // AwaitMaterialize), which makes that batch a cell of this matrix.
+      const olderBuild = f.storeOver({
+        batch: (batchLabel, statements, control) =>
+          simDb.batch(
+            batchLabel,
+            batchLabel !== 'cancel-task'
+              ? statements
+              : statements.map((statement) =>
+                  /^insert into ["`]events["`]/i.test(statement.sql)
+                    ? { ...statement, sql: 'SELECT 1 WHERE 1 = 0', args: [] }
+                    : statement,
+                ),
+            control,
+          ),
+      })
+      const endedTask = await go(() => store.spawn(Q, 'ended-child', '{}'))
+      if (endedTask) {
+        await go(() => olderBuild.cancelTask(Q, endedTask.taskId))
+        const lateParent = await go(() => store.spawn(Q, 'late-parent', '{}'))
+        const [late] =
+          (await go(() => store.claim(Q, 'w-late-parent', { leaseSeconds: 60, limit: 1 }))) ?? []
+        if (lateParent && late?.taskId === lateParent.taskId) {
+          await go(() => store.activate(Q, late.runId, late.claimToken, late.claimGen))
+          await go(() => awaitTaskOwned(store, Q, late, 'w-ended-child', endedTask.taskId, null))
+          await go(() => store.complete(Q, late.runId, late.claimToken, '{"late":1}'))
+        }
       }
 
       // A deferral-style park (reschedule keeps its own matrix cell).

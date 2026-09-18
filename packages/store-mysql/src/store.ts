@@ -4,6 +4,7 @@ import {
   type CheckpointWrite,
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
+  EventName,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -18,10 +19,12 @@ import {
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
+  REASON_CANCELLED,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
+  RunTaskMemo,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
@@ -29,14 +32,17 @@ import {
   type SqlRow,
   type SweptRun,
   TASK_RESULT_COLUMNS,
+  type TaskOutcome,
   type TaskResult,
   type WakeSpec,
   activateCas,
   activatedRunRead,
+  addTaskDone,
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
   checkpointWrite,
+  childAwaitRefusal,
   claimCas,
   claimReceiptRead,
   claimTimeoutSuccessorInsert,
@@ -49,9 +55,12 @@ import {
   durationToMs,
   emitEventCas,
   emittedEventRead,
+  encodeTaskOutcome,
   failCas,
   failClaimTimeoutCas,
+  isTerminalState,
   mapLimit,
+  materializeTaskDoneCas,
   neverBuggify,
   normalizeRetryStrategy,
   parseTaskValueJson,
@@ -71,6 +80,7 @@ import {
   revivedRunRead,
   serializeTaskHeaders,
   serializeTaskValue,
+  spawnIdempotencyKey,
   spawnReceiptRead,
   spawnRunInsert,
   spawnTaskCas,
@@ -482,19 +492,28 @@ export class MysqlSchedulerStore implements SchedulerStore {
     private readonly buggify: Buggify = neverBuggify,
   ) {}
 
+  private readonly runTasks = new RunTaskMemo()
+
   async spawn(
     queue: string,
     taskName: string,
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
-    requireIndexable({ queue, idempotencyKey: opts.idempotencyKey })
+    // The queue becomes durable here, so it is held to the domain every store keeps.
+    requireDurableString('queue', queue)
     const durableTaskName = requireDurableString('taskName', taskName)
-    const idempotencyKeyInput = opts.idempotencyKey
-    const key =
-      idempotencyKeyInput === undefined
-        ? null
-        : requireDurableString('idempotencyKey', idempotencyKeyInput)
+    const key = spawnIdempotencyKey(opts)
+    const childOf = opts.childOf
+    // A child's key is built from its parent's task and the call site, so the bound is
+    // held to the key as it will be stored, and to the parent's identifiers.
+    requireIndexable({
+      queue,
+      idempotencyKey: key ?? undefined,
+      parentQueue: childOf?.parentQueue,
+      parentTaskId: childOf?.parentTaskId,
+      parentRunId: childOf?.runId,
+    })
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
     const retryInput = opts.retryStrategy
@@ -552,6 +571,17 @@ export class MysqlSchedulerStore implements SchedulerStore {
         maxAttempts,
         cancellationJson,
         idempotencyKey: key,
+        parent:
+          childOf === undefined
+            ? null
+            : {
+                queue: childOf.parentQueue,
+                runId: childOf.runId,
+                taskId: childOf.parentTaskId,
+                claimToken: childOf.claimToken,
+                taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+                liveTask: sqlFragment(`t.state IN ${LIVE}`),
+              },
         enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
         cancelAt: sqlFragment(`${NOW} + CAST(? AS SIGNED) + CAST(? AS SIGNED)`, [
           delayMs,
@@ -615,7 +645,12 @@ export class MysqlSchedulerStore implements SchedulerStore {
     if (won === 'task') return { taskId, runId, created: true }
 
     const row = results.receipt?.rows[0]
-    if (!row) throw new Error('spawn: the task insert lost but no existing task explains it')
+    if (!row) {
+      // A child is created only under its parent's live claim, so a child spawn that
+      // created nothing and found nothing is that claim, refused.
+      if (childOf !== undefined) throw await this.refusal('spawn', childOf.runId)
+      throw new Error('spawn: the task insert lost but no existing task explains it')
+    }
     // A pre-existing task may legitimately have no run: swept away, or never
     // given one. There is no honest run id to report then, and the previous
     // version reported the one it had minted and never inserted, so every
@@ -873,7 +908,9 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const { won, results } = await b.run(this.db)
     if (won !== 'activate') return null
     const row = results.payload?.rows[0]
-    return row ? decodeClaimedRun(row, claimToken) : null
+    const run = row ? decodeClaimedRun(row, claimToken) : null
+    if (run !== null) this.runTasks.remember(run.runId, run.taskId)
+    return run
   }
 
   async heartbeat(
@@ -1016,6 +1053,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
+    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     const guard = `activated_gen < claim_gen AND ${runClaimExpired('runs', NOW)}`
     const launchLost = sqlFragment(guard)
@@ -1080,6 +1118,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, item.runId, 'cap')
+    this.taskDone(b, queue, item.taskId, 'task-fail', {
+      state: 'failed',
+      failureReasonJson: REASON_RELAUNCH_CAP,
+    })
     const { won } = await b.run(this.db)
     if (won === 'reopen') {
       return {
@@ -1105,6 +1147,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
+    b.lockEvent({ queue, eventName: EventName.taskDone(item.taskId) })
     const swept = { queue, runId: item.runId, claimGen: item.claimGen }
     // Ownership CAS: the activated worker died (or was partitioned). Clearing
     // claimed_by kills the dead worker's token, so its zombie writes are
@@ -1197,6 +1240,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
     })
     // The dead run's waits die with it (the reviewed orphan-waits leak).
     waitsGone(b, item.runId, 'fail')
+    this.taskDone(b, queue, item.taskId, 'task-terminal', {
+      state: 'failed',
+      failureReasonJson: REASON_INFRA_CAP,
+    })
     const { won, results } = await b.run(this.db)
     if (won !== 'fail') return null // lost the race
     // Report what the batch DID, not what it can be inferred to have done.
@@ -1397,6 +1444,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     taskId: string,
     deadlineOnly: boolean,
   ): Promise<boolean> {
+    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''
     b.casTree(
       'cancel',
@@ -1424,6 +1472,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
       where: `f.task_id = ? AND f.state = 'cancelled'`,
       whereArgs: [taskId],
       rows: 'source-keys',
+    })
+    this.taskDone(b, queue, taskId, 'cancel', {
+      state: 'cancelled',
+      failureReasonJson: REASON_CANCELLED,
     })
     const { won } = await b.run(this.db)
     return won === 'cancel'
@@ -1630,7 +1682,9 @@ export class MysqlSchedulerStore implements SchedulerStore {
     resultJson: string,
   ): Promise<void> {
     requireIndexable({ queue, runId })
+    const taskId = await this.endingTask('complete', queue, runId)
     const b = new FencedBatch('complete', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     b.casTree(
       'complete',
       completeCas({
@@ -1652,6 +1706,10 @@ export class MysqlSchedulerStore implements SchedulerStore {
       rows: 'one',
     })
     waitsGone(b, runId, 'complete')
+    this.taskDone(b, queue, taskId, 'task', {
+      state: 'completed',
+      completedPayloadJson: resultJson,
+    })
     const { won } = await b.run(this.db)
     if (won !== 'complete') throw await this.refusal('complete', runId)
   }
@@ -1678,7 +1736,9 @@ export class MysqlSchedulerStore implements SchedulerStore {
         ? ''
         : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts
           OR ${epochAdditionFits(NOW, '?')})`
+    const taskId = await this.endingTask('fail', queue, runId)
     const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
+    b.lockEvent({ queue, eventName: EventName.taskDone(taskId) })
     b.casTree(
       'fail',
       failCas({
@@ -1783,6 +1843,12 @@ export class MysqlSchedulerStore implements SchedulerStore {
       })
     }
     waitsGone(b, runId, 'fail')
+    // The task turns terminal under one of two statements, and only the one that ran
+    // stamped it, so the event follows whichever ended the task and no retry writes one.
+    this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {
+      state: 'failed',
+      failureReasonJson: failureJson,
+    })
     const { won } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal('fail', runId)
   }
@@ -1933,6 +1999,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
     requireIndexable({ queue, eventName })
+    const name = EventName.fromPort('emitEvent', eventName)
     if (typeof payloadJson !== 'string') {
       throw new RangeError('emitEvent payloadJson must be a string')
     }
@@ -1940,7 +2007,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName })
+    b.lockEvent({ queue, eventName: name })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
     // the event's immutable emitted_at_ms as its provenance instant. The
@@ -1951,7 +2018,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       'event',
       emitEventCas({
         queue,
-        eventName,
+        eventName: name,
         payloadJson,
         existingEventAdmits: sqlFragment(
           `events.payload IS NOT NULL
@@ -1959,6 +2026,72 @@ export class MysqlSchedulerStore implements SchedulerStore {
         ),
       }),
     )
+    this.wakeWaiters(b, queue, name, 'waits-gone')
+    b.openTailTree(
+      'stored-event',
+      'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
+      storedEventRead({
+        queue,
+        eventName: name,
+        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+      }),
+    )
+    const { results } = await b.run(this.db)
+    const stored = results['stored-event']?.rows[0]
+    if (stored?.payload_type !== 'text') {
+      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+    }
+  }
+
+  /**
+   * A run's task, read before the batch that ends the run. A terminal batch names its
+   * task's completion event, and `complete` and `fail` are handed only the run. The
+   * task of a run never changes, so an unfenced read is safe, and so is the answer
+   * `activate` gave this store a moment ago, which costs no read. A run remembered
+   * under another queue still loses, because the batch's compare-and-set names the
+   * queue. A run this queue does not have is refused here as the batch would refuse it.
+   */
+  private async endingTask(operation: string, queue: string, runId: string): Promise<string> {
+    const remembered = this.runTasks.recall(runId)
+    if (remembered !== undefined) return remembered
+    const [rows] = await this.db.batch(
+      'run-task',
+      [{ sql: 'SELECT task_id FROM runs WHERE run_id = ? AND queue = ?', args: [runId, queue] }],
+      'read',
+    )
+    const taskId = rows?.rows[0]?.task_id
+    if (typeof taskId !== 'string') throw await this.refusal(operation, runId)
+    return taskId
+  }
+
+  /**
+   * What every terminal batch owes a task's parent, added through core (`addTaskDone`):
+   * the completion event and the wake of every run parked on it.
+   */
+  private taskDone(
+    b: FencedBatch,
+    queue: string,
+    taskId: string,
+    terminal: string,
+    outcome: TaskOutcome,
+  ): void {
+    addTaskDone(
+      b,
+      { queue, taskId, terminal, outcome },
+      {
+        wake: (name) => this.wakeWaiters(b, queue, name, 'woken-waits-gone'),
+      },
+    )
+  }
+
+  /**
+   * Wake every run parked on the event this batch recorded under the statement named
+   * `event`: `emit-event`'s compare-and-set, or a terminal batch's completion event.
+   * A terminal batch already has a `waits-gone`, for the waits of the run it ends, so
+   * the caller names the statement that reaps the woken runs' waits.
+   */
+  private wakeWaiters(b: FencedBatch, queue: string, name: EventName, waitsGone: string): void {
+    const eventName = name.value
     const runWait = registeredWait('runs')
     // THE ONE FOLLOW-ON THAT CANNOT BE GENERATED, and the reason is worth
     // stating rather than hiding. Every other follow-on selects its rows from
@@ -2014,7 +2147,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.followOnTree(
       'wake-runs',
       wakeRunsUpdate({
-        eventName,
+        eventName: name,
         registeredStep: sqlFragment(runWait.step),
         parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),
         waiterRunIds: sqlFragment(
@@ -2044,10 +2177,17 @@ export class MysqlSchedulerStore implements SchedulerStore {
       // Every woken run carries the event's instant, so this is the same value
       // without a caller-controlled stamping escape.
       fence: 'wake-runs',
-      // The queue narrows the source to an index rather than scanning runs;
-      // `state = 'pending'` is what wake-runs just set on exactly these rows.
-      where: `f.queue = ? AND f.state = 'pending'`,
-      whereArgs: [queue],
+      // The source is the runs this batch woke, and the stamp says which those are. The
+      // stamp has no index, so the access path is what wake-runs just set on exactly
+      // these rows: `wake_event`, and `state = 'pending'`. The partial index `runs_woken`
+      // holds only runs that were woken and not yet claimed, so this reads a handful of
+      // rows. By queue and state alone the only index is `runs_poll`, and every batch
+      // that ends a task would walk every pending run of its queue, three times. The
+      // queue is bound on both sides and not correlated, or the source would run once
+      // for every task row.
+      queue,
+      where: `f.wake_event = ? AND f.state = 'pending'`,
+      whereArgs: [eventName],
       set: { state: `'pending'` },
       narrow: `state IN ${LIVE}`,
       rows: 'source-keys',
@@ -2070,13 +2210,13 @@ export class MysqlSchedulerStore implements SchedulerStore {
     // the batch did not write: the runs it deletes for are the ones
     // `wake-runs` just stamped, so the primitive builds the selection. No
     // follow-on of this batch is hand-written text: the wake is a shared statement.
-    b.derived('waits-gone', {
+    b.derived(waitsGone, {
       relation: 'runs-to-waits',
       fence: 'wake-runs',
       // Same reason as wake-tasks: the queue narrows the source to an index,
       // and `state = 'pending'` is what wake-runs just set on these rows.
-      where: `f.queue = ? AND f.state = 'pending'`,
-      whereArgs: [queue],
+      where: `f.queue = ? AND f.wake_event = ? AND f.state = 'pending'`,
+      whereArgs: [queue, eventName],
       narrow: `event_name = ? AND status = 'waiting'`,
       narrowArgs: [eventName],
       rows: 'source-keys',
@@ -2088,20 +2228,166 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.seal('wake-finished', {
       relation: 'runs-to-runs',
       fence: 'wake-runs',
-      where: `f.queue = ? AND f.state = 'pending'`,
-      whereArgs: [queue],
+      where: `f.queue = ? AND f.wake_event = ? AND f.state = 'pending'`,
+      whereArgs: [queue, eventName],
       rows: 'source-keys',
     })
+  }
+
+  async awaitEvent(
+    queue: string,
+    taskId: string,
+    runId: string,
+    claimToken: string,
+    stepName: string,
+    eventName: string,
+    timeoutSeconds: number | null,
+  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
+    const answer = await this.awaitNamedEvent(
+      queue,
+      taskId,
+      runId,
+      claimToken,
+      stepName,
+      EventName.fromPort('awaitEvent', eventName),
+      timeoutSeconds,
+      null,
+    )
+    if (answer === null) throw await this.refusal('awaitEvent', runId)
+    return answer
+  }
+
+  /**
+   * The child await (DESIGN.md §3.2, specs/ChildTasks.tla): `await-event` for the
+   * completion event of `childTaskId`. The batch decides everything the model's await
+   * does in one step: it hits an event that exists, and it registers only on a live
+   * child in this queue. An await that did neither reads the child, once, to say why.
+   * A child in another queue, or no such task, is refused. A child that ended with
+   * nothing recorded has its outcome recorded by the await itself, in a second batch
+   * fenced on the row that was read. Anything else is this run's own claim, lost.
+   */
+  async awaitTaskDone(
+    queue: string,
+    taskId: string,
+    runId: string,
+    claimToken: string,
+    stepName: string,
+    childTaskId: string,
+    timeoutSeconds: number | null,
+  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
+    requireIndexable({ queue, taskId, runId, stepName, childTaskId })
+    const name = EventName.taskDone(childTaskId)
+    // A child revived before the read, or between the read and the batch that records it,
+    // is live again, so the next round registers. Two rounds cover that. A live child that
+    // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
+    // the claim is lost, the task is cancelled, or the timeout does not fit.
+    for (let round = 0; round < 2; round++) {
+      const answer = await this.awaitNamedEvent(
+        queue,
+        taskId,
+        runId,
+        claimToken,
+        stepName,
+        name,
+        timeoutSeconds,
+        childTaskId,
+      )
+      if (answer !== null) return answer
+      const child = await this.taskDoneState(childTaskId)
+      const refusal = childAwaitRefusal(queue, childTaskId, child?.queue)
+      if (refusal !== null) throw refusal
+      // A live child was revived since the batch looked, and the next round registers on it.
+      if (child === null || !isTerminalState(child.outcome.state)) continue
+      const recorded = await this.recordTaskDone(
+        { queue, taskId, runId, claimToken },
+        childTaskId,
+        child.stamp,
+        child.outcome as TaskOutcome,
+      )
+      if (recorded !== null) return recorded
+    }
+    throw await this.refusal('awaitTaskDone', runId)
+  }
+
+  /**
+   * A task as a child await sees it: its queue, its outcome, and the stamp its row
+   * carries. Read only off the common path: by an await that neither registered nor
+   * hit, to say why.
+   */
+  private async taskDoneState(taskId: string): Promise<{
+    queue: string
+    outcome: TaskResult
+    stamp: string | null
+  } | null> {
+    const [rows] = await this.db.batch(
+      'task-done-state',
+      [
+        {
+          sql: `SELECT queue, fence_stamp, ${TASK_RESULT_COLUMNS} FROM tasks WHERE task_id = ?`,
+          args: [taskId],
+        },
+      ],
+      'read',
+    )
+    const row = rows?.rows[0]
+    if (row === undefined) return null
+    return {
+      queue: String(row.queue),
+      outcome: decodeTaskResult(taskId, row),
+      stamp: row.fence_stamp === null ? null : String(row.fence_stamp),
+    }
+  }
+
+  /**
+   * Record the outcome of a child that ended with no completion event, and answer the
+   * await with it (ChildTasks.tla's AwaitMaterialize). Null when the batch recorded
+   * nothing and found no event: the child's row is no longer the one that was read, or
+   * this run's claim is gone.
+   */
+  private async recordTaskDone(
+    claim: { queue: string; taskId: string; runId: string; claimToken: string },
+    childTaskId: string,
+    childStamp: string | null,
+    outcome: TaskOutcome,
+  ): Promise<{ emitted: true; payloadJson: string } | null> {
+    const { queue } = claim
+    const name = EventName.taskDone(childTaskId)
+    const b = new FencedBatch('record-task-done', this.ids.token(), {
+      now: NOW_MS,
+      tree: TREE_DIALECT,
+    })
+    b.lockEvent({ queue, eventName: name })
+    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }
+    b.casTree(
+      'materialize',
+      materializeTaskDoneCas({
+        ...awaiting,
+        childTaskId,
+        eventName: name,
+        payloadJson: encodeTaskOutcome(outcome),
+        childStamp,
+        liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      }),
+    )
     b.openTailTree(
-      'stored-event',
-      'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
-      storedEventRead({ queue, eventName, payloadType: sqlFragment(STORED_PAYLOAD_TYPE) }),
+      'hit',
+      'the event may be one a terminal batch wrote since the read; the live claim token is the fence here',
+      emittedEventRead({
+        ...awaiting,
+        eventName: name,
+        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+        liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      }),
     )
     const { results } = await b.run(this.db)
-    const stored = results['stored-event']?.rows[0]
-    if (stored?.payload_type !== 'text') {
-      throw new RangeError(`emitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+    const row = results.hit?.rows[0]
+    if (row === undefined) return null
+    if (row.payload_type !== 'text') {
+      throw new RangeError(
+        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,
+      )
     }
+    return { emitted: true, payloadJson: String(row.payload) }
   }
 
   /**
@@ -2113,15 +2399,17 @@ export class MysqlSchedulerStore implements SchedulerStore {
    * claim path already delivers the timeout wake (event set, payload
    * NULL) and deletes the expired wait row.
    */
-  async awaitEvent(
+  private async awaitNamedEvent(
     queue: string,
     taskId: string,
     runId: string,
     claimToken: string,
     stepName: string,
-    eventName: string,
+    name: EventName,
     timeoutSeconds: number | null,
-  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
+    awaitedTaskId: string | null,
+  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false } | null> {
+    const eventName = name.value
     requireIndexable({ queue, taskId, runId, stepName, eventName })
     const timeoutMs =
       timeoutSeconds === null
@@ -2131,7 +2419,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName })
+    b.lockEvent({ queue, eventName: name })
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
     // writes nothing, so a run left sleeping under the same wake_step (e.g. by
@@ -2153,7 +2441,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
         taskId,
         claimToken,
         stepName,
-        eventName,
+        eventName: name,
+        awaitedTaskId,
         timeoutAt: sqlFragment(
           `CASE WHEN CAST(? AS SIGNED) IS NOT NULL THEN ${NOW} + ? ELSE NULL END`,
           [timeoutMs, timeoutMs],
@@ -2210,7 +2499,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       'the event was written by the emitting batch, not this one; the live claim token is the fence here',
       emittedEventRead({
         queue,
-        eventName,
+        eventName: name,
         runId,
         taskId,
         claimToken,
@@ -2223,13 +2512,18 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const row = results.hit?.rows[0]
     if (row !== undefined) {
       if (row.payload_type !== 'text') {
-        throw new RangeError(`awaitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+        // A child await reaches the task's code, which never sees the engine's event name.
+        const subject =
+          awaitedTaskId === null
+            ? `awaitEvent ${queue}/${eventName}`
+            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`
+        throw new RangeError(`${subject} found a non-TEXT stored payload`)
       }
       return { emitted: true, payloadJson: String(row.payload) }
     }
-    if (won !== 'register') {
-      throw await this.refusal('awaitEvent', runId)
-    }
+    // Nothing registered and nothing emitted. The caller says why: for a user event it
+    // is this run's claim, and a child await reads the child first.
+    if (won !== 'register') return null
     return { emitted: false }
   }
 }

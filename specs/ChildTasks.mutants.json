@@ -145,5 +145,68 @@
     "caughtBy": "TypeOK",
     "find": "  /\\ parent' = \"cancelled\" /\\ wait' = FALSE\n",
     "replace": "  /\\ parent' = \"canceled\" /\\ wait' = FALSE\n"
+  },
+  {
+    "name": "miss-registers-on-an-ended-child",
+    "guard": "an await never registers a wait on a child that has ended",
+    "caughtBy": "WaitIsWakeable",
+    "find": "  /\\ child \\notin Outcomes\n  /\\ doneEvent = None\n",
+    "replace": "  /\\ doneEvent = None\n"
+  },
+  {
+    "name": "miss-registers-on-an-unknown-child",
+    "guard": "an await never registers a wait on a task that does not exist",
+    "caughtBy": "WaitIsWakeable",
+    "find": "AwaitMiss ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ AwaitAllowed",
+    "replace": "AwaitMiss ==\n  /\\ parent = \"running\" /\\ AwaitAllowed"
+  },
+  {
+    "name": "older-build-ends-a-child-under-a-wait",
+    "guard": "the deploy rule: an older build ends no child while a wait is registered",
+    "caughtBy": "EveryWaitResolves",
+    "find": "  /\\ (wait => LegacyEndWhileWaiting)\n",
+    "replace": ""
+  },
+  {
+    "name": "materialize-leaves-the-event-unwritten",
+    "guard": "the await that finds an unrecorded ending writes the event",
+    "caughtBy": "TerminalImpliesDone",
+    "find": "  /\\ doneEvent' = child\n  /\\ firstOutcome' = IF firstOutcome = None THEN child",
+    "replace": "  /\\ doneEvent' = doneEvent\n  /\\ firstOutcome' = IF firstOutcome = None THEN child"
+  },
+  {
+    "name": "materialize-writes-a-fixed-outcome",
+    "guard": "the event an await writes is the child's own outcome",
+    "caughtBy": "DoneAuthority",
+    "find": "  /\\ doneEvent' = child\n  /\\ firstOutcome' = IF firstOutcome = None THEN child",
+    "replace": "  /\\ doneEvent' = \"completed\"\n  /\\ firstOutcome' = IF firstOutcome = None THEN child"
+  },
+  {
+    "name": "materialize-ignores-the-rule",
+    "guard": "an await across queues writes nothing",
+    "caughtBy": "RefusedNeverWaits",
+    "find": "AwaitMaterialize ==\n  /\\ parent = \"running\" /\\ AwaitAllowed",
+    "replace": "AwaitMaterialize ==\n  /\\ parent = \"running\""
+  },
+  {
+    "name": "materialize-overwrites-an-event",
+    "guard": "an await writes the event only when none exists",
+    "caughtBy": "DoneImmutable",
+    "find": "  /\\ child \\in Outcomes /\\ doneEvent = None\n  /\\ doneEvent' = child",
+    "replace": "  /\\ child \\in Outcomes\n  /\\ doneEvent' = child"
+  },
+  {
+    "name": "unknown-child-refusal-reaches-a-real-child",
+    "guard": "only an await of no task at all is refused as unknown",
+    "caughtBy": "RefusalIsTheRule",
+    "find": "  /\\ parent = \"running\" /\\ child = \"unspawned\"\n  /\\ UNCHANGED",
+    "replace": "  /\\ parent = \"running\"\n  /\\ UNCHANGED"
+  },
+  {
+    "name": "spawn-by-a-parent-that-is-not-running",
+    "guard": "only a running parent spawns a child",
+    "caughtBy": "SpawnAuthority",
+    "find": "/\\ parent = \"running\" /\\ child = \"unspawned\"\n  /\\ child' = \"live\"",
+    "replace": "/\\ child = \"unspawned\"\n  /\\ child' = \"live\""
   }
 ]

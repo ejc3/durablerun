@@ -3,6 +3,7 @@ import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/cor
 import { describe, expect, it } from 'vitest'
 import {
   awaitOwned,
+  awaitTaskOwned,
   checkpointOwned,
   claimActivated,
   claimOne,
@@ -20,14 +21,19 @@ import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
  * signatures than it declares, fails: a new branch must be declared, not discovered.
  */
 const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
-  spawn: ['spawned'],
+  // A child is created only under its parent's live claim, which is one more conjunct.
+  spawn: ['spawned', 'spawned-child'],
   claim: ['claimed'],
   activate: ['activated'],
   complete: ['completed'],
   'defer-launch': ['deferred'],
   reschedule: ['rescheduled'],
   suspend: ['suspended'],
-  'await-event': ['registered'],
+  // A child await registers only on a live child in its queue.
+  'await-event': ['registered', 'registered-child'],
+  // The await of a child that ended with no outcome recorded writes the event itself,
+  // in a batch of its own, so that a crash, a duplicate, and a poisoned row each reach it.
+  'record-task-done': ['recorded'],
   'emit-event': ['emitted'],
   'set-checkpoint': ['written'],
   // A retrying failure carries the retry deadline's headroom guard, and a final one does not.
@@ -47,9 +53,17 @@ type Signature = readonly { sql: string; bindArity: number }[]
  * the order the scenario happened to reach it in.
  */
 const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
+  spawn: (signature) =>
+    signature.some(({ sql }) => /^insert into ["`]tasks["`].*["`]claimed_by["`]/s.test(sql))
+      ? 'spawned-child'
+      : 'spawned',
   // Only a retrying failure inserts a successor run.
   fail: (signature) =>
     signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
+  'await-event': (signature) =>
+    signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
+      ? 'registered-child'
+      : 'registered',
 }
 
 function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>): SqlExecutor {
@@ -107,6 +121,36 @@ describe('generated SQL corpus', () => {
         const woken = await claimActivated(store, 'q', 'w5b')
         expect(woken.taskId).toBe(waiting.taskId)
         await store.complete('q', woken.runId, woken.claimToken, '"woken"')
+        // A parent awaits a live child, the child ends and wakes it, and both finish, so
+        // that no later claim of this scenario takes either.
+        await store.spawn('q', 'parent', '{}')
+        const parent = await claimActivated(store, 'q', 'w5c')
+        const child = await store.spawn('q', 'child', '{}', {
+          childOf: {
+            parentQueue: 'q',
+            parentTaskId: parent.taskId,
+            runId: parent.runId,
+            claimToken: parent.claimToken,
+            replayKey: 'site',
+          },
+        })
+        const awaitChild = (run: typeof parent, childTaskId: string) =>
+          awaitTaskOwned(store, 'q', run, 'step', childTaskId, null)
+        expect(await awaitChild(parent, child.taskId)).toEqual({ emitted: false })
+        const childRun = await claimActivated(store, 'q', 'w5d')
+        expect(childRun.taskId).toBe(child.taskId)
+        await store.complete('q', childRun.runId, childRun.claimToken, '"child"')
+        const wokenParent = await claimActivated(store, 'q', 'w5e')
+        expect(wokenParent.taskId).toBe(parent.taskId)
+        // An older build ended this child and wrote no event, so the await records it.
+        await fixture.raw.batch('an-older-build-wrote-no-event', [
+          {
+            sql: 'DELETE FROM events WHERE queue = ? AND event_name LIKE ?',
+            args: ['q', '$task-done:%'],
+          },
+        ])
+        expect((await awaitChild(wokenParent, child.taskId)).emitted).toBe(true)
+        await store.complete('q', wokenParent.runId, wokenParent.claimToken, '"parent"')
         const flaky = await store.spawn('q', 'job', '{}', { maxAttempts: 2 })
         const failing = await claimActivated(store, 'q', 'w6')
         // The scenario means to fail this task twice. A claim that picked up another

@@ -1,5 +1,6 @@
 import {
   type DefinedStatement,
+  EventName,
   FencedBatch,
   type SqlExecutor,
   type SqlStatement,
@@ -136,7 +137,7 @@ describe('MySQL spelling of the shared statement trees', () => {
       'event',
       emitEventCas({
         queue: 'q',
-        eventName: 'e',
+        eventName: EventName.fromPort('test', 'e'),
         payloadJson: '{}',
         existingEventAdmits: sqlFragment('events.payload IS NOT NULL'),
       }),
@@ -169,7 +170,8 @@ describe('MySQL spelling of the shared statement trees', () => {
         taskId: 't1',
         claimToken: 'tok',
         stepName: 's',
-        eventName: 'e',
+        eventName: EventName.fromPort('test', 'e'),
+        awaitedTaskId: null,
         timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
         timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
         taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),

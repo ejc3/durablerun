@@ -772,11 +772,15 @@ export function gatingFences(query: OperationNode): GatingFence[] {
  * from it proves its WHERE. An aggregate with no GROUP BY returns one row always. The
  * builder spells an aggregate more than one way and a fragment hides one, so an
  * ungrouped SELECT qualifies only when every selection is built from nodes and holds no
- * function of any kind. This is asked of a subquery a row is required from, and of a
- * derived table, never of the statement's own root: a tail may count the rows its own
- * WHERE gates, and a losing batch then counts none.
+ * function of any kind. As a gate, this is asked of a subquery a row is required from,
+ * and of a derived table, never of the statement's own root: a tail may count the rows
+ * its own WHERE gates, and a losing batch then counts none. The batch asks it of a
+ * tail's root for another reason, to decide whether the tail may be skipped.
  */
-function mayReturnNoRow(select: SelectQueryNode): boolean {
+export function mayReturnNoRow(query: OperationNode): boolean {
+  // Only a SELECT can answer with a row it did not match.
+  if (!SelectQueryNode.is(query)) return true
+  const select = query
   if (select.groupBy !== undefined) return true
   // An ungrouped HAVING makes the SELECT one group, which returns a row regardless.
   if (select.having !== undefined) return false

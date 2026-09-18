@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import {
   type DefinedStatement,
+  EventName,
   FencedBatch,
   type SqlExecutor,
   type SqlResult,
@@ -101,18 +102,19 @@ function columnNames(node: OperationNode): string[] {
 const emit = () =>
   emitEventCas({
     queue: 'q',
-    eventName: 'e',
+    eventName: EventName.fromPort('test', 'e'),
     payloadJson: '{}',
     existingEventAdmits: sqlFragment('events.payload IS NOT NULL'),
   })
 const register = () =>
   registerWaitCas({
+    awaitedTaskId: null,
     queue: 'q',
     runId: 'r1',
     taskId: 't1',
     claimToken: 'tok',
     stepName: 's',
-    eventName: 'e',
+    eventName: EventName.fromPort('test', 'e'),
     timeoutAt: sqlFragment('CASE WHEN ? IS NOT NULL THEN $NOW$ + ? ELSE NULL END', [5, 5]),
     timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
     taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),

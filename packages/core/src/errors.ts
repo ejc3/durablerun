@@ -295,8 +295,24 @@ export class FatalTaskError extends Error {
  * payload (§3.4 rule 2's TimeoutError path). Raised into user code by the SDK.
  */
 export class EventTimeoutError extends Error {
-  override readonly name = 'EventTimeoutError'
-  constructor(readonly eventName: string) {
-    super(`timed out waiting for event '${eventName}'`)
+  override readonly name: string = 'EventTimeoutError'
+  constructor(
+    readonly eventName: string,
+    message = `timed out waiting for event '${eventName}'`,
+  ) {
+    super(message)
+  }
+}
+
+/**
+ * A timed await of a child task came due (`ctx.awaitTask`). It is an EventTimeoutError,
+ * so one catch covers both kinds of await, and it names what the caller awaited:
+ * `taskId`, which `eventName` repeats. The engine's reserved name for the child's
+ * completion event never reaches task code.
+ */
+export class TaskTimeoutError extends EventTimeoutError {
+  override readonly name: string = 'TaskTimeoutError'
+  constructor(readonly taskId: string) {
+    super(taskId, `timed out waiting for task '${taskId}'`)
   }
 }

@@ -56,7 +56,24 @@ export interface CancellationPolicy {
 }
 
 export interface SpawnOptions {
+  /** The caller's key. One that starts with `$` is refused: that namespace is the engine's. */
   idempotencyKey?: string
+  /**
+   * Set by `ctx.spawn` alone, for a child task: the parent's live claim and the call
+   * site. The store builds the child's idempotency key from the parent task and the
+   * call site, in the engine's reserved namespace, and creates the child only while
+   * that claim is live, so knowing a parent's id is not enough to place a task under
+   * the key it will look up. A child that exists is found without a live claim, which
+   * is what a replay asks. It excludes `idempotencyKey`, and the hosted enqueue route
+   * never sets it.
+   */
+  childOf?: {
+    readonly parentQueue: string
+    readonly parentTaskId: string
+    readonly runId: string
+    readonly claimToken: string
+    readonly replayKey: string
+  }
   retryStrategy?: RetryStrategy
   maxAttempts?: number
   cancellation?: CancellationPolicy

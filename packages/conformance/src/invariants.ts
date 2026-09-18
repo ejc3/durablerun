@@ -294,7 +294,8 @@ function validTemporal(value: SqlValue, bounds: IntegerBounds): boolean {
   return decodeBoundedInteger(value, bounds).ok
 }
 
-function eventKey(queue: string, eventName: string): string {
+/** One event's key, as one string. The child-task checker keys events the same way. */
+export function eventKey(queue: string, eventName: string): string {
   return JSON.stringify([queue, eventName])
 }
 

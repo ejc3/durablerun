@@ -134,7 +134,8 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
 
       // awaitEvent and emitEvent both lock this row before touching protocol
       // state. Keeping the sentinel distinct from events means "not emitted"
-      // still has a row that PostgreSQL can lock.
+      // still has a row that PostgreSQL can lock. A task's completion event,
+      // which the engine alone writes, is locked without a row (executor.ts).
       `CREATE TABLE event_locks (
         queue TEXT NOT NULL,
         event_name TEXT NOT NULL,
@@ -171,6 +172,18 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
     // upsert-and-cleanup with one writable CTE, so no DDL is needed here.
     version: 5,
     statements: [],
+  },
+  {
+    // A batch that ends a task or emits an event finds the runs it just woke by their
+    // `wake_event`, among the pending runs of the queue. This index holds only runs
+    // that were woken and are not yet claimed, so that lookup reads those rows and not
+    // the queue's whole pending backlog. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged.
+    version: 6,
+    statements: [
+      `CREATE INDEX runs_woken ON runs (queue, wake_event)
+       WHERE wake_event IS NOT NULL AND state = 'pending'`,
+    ],
   },
 ]
 

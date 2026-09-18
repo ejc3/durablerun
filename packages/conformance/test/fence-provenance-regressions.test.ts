@@ -32,6 +32,16 @@ function stampRows(table: 'runs' | 'tasks' | 'waits', match: Record<string, stri
   })({})
 }
 
+/** A compare-and-set that stamps the rows of `table` whose `column` is one of `values`. */
+function stampRowsIn(table: 'runs' | 'tasks' | 'waits', column: string, values: readonly string[]) {
+  return defineStatement(`stamp-${table}-in`, () =>
+    stampBuilder
+      .updateTable(table)
+      .set(FENCE_ASSIGNMENTS)
+      .where(column, 'in', [...values]),
+  )({})
+}
+
 /**
  * Provenance regressions: a batch statement firing without proof that THIS
  * batch produced the state it keys on.
@@ -1209,6 +1219,99 @@ describe('fence provenance', () => {
         { outcome, after },
         'mutation-verdict:behavior:emit-event-requires-run-task-queue-ownership',
       ).toEqual({ outcome: 'resolved', after: before })
+    } finally {
+      await f.close()
+    }
+  })
+
+  it('a generated relation that binds its queue holds both sides to it', async () => {
+    const f = await fixture()
+    try {
+      // The source run is in the bound queue and its task is not.
+      await insertTask(f.raw, { id: 'bound-foreign-task', state: 'pending', queue: 'other' })
+      await insertRun(f.raw, {
+        id: 'bound-foreign-task-run',
+        taskId: 'bound-foreign-task',
+        state: 'pending',
+      })
+      // The task is in the bound queue and its source run is not.
+      await insertTask(f.raw, { id: 'bound-foreign-run', state: 'pending' })
+      await insertRun(f.raw, {
+        id: 'bound-foreign-run-run',
+        taskId: 'bound-foreign-run',
+        state: 'pending',
+        queue: 'other',
+      })
+      // Both in the bound queue: the control the statement must still reach.
+      await insertTask(f.raw, { id: 'bound-same', state: 'pending' })
+      await insertRun(f.raw, { id: 'bound-same-run', taskId: 'bound-same', state: 'pending' })
+      const bound = new FencedBatch('relation:bound-queue', 'relation-seed', {
+        now: NOW_MS,
+        tree: TREE_DIALECT,
+      })
+      bound.casManyTree(
+        'source',
+        stampRowsIn('runs', 'run_id', [
+          'bound-foreign-task-run',
+          'bound-foreign-run-run',
+          'bound-same-run',
+        ]),
+        3,
+      )
+      bound.derived('target', {
+        relation: 'runs-to-tasks',
+        fence: 'source',
+        queue: Q,
+        set: { state: `'completed'` },
+        rows: 'source-keys',
+      })
+      await bound.run(f.raw)
+      const states = await query(
+        f.raw,
+        `SELECT task_id, state FROM tasks WHERE task_id LIKE 'bound-%' ORDER BY task_id`,
+      )
+      expect(states, 'mutation-verdict:behavior:generated-bound-queue-holds-both-sides').toEqual([
+        { task_id: 'bound-foreign-run', state: 'pending' },
+        { task_id: 'bound-foreign-task', state: 'pending' },
+        { task_id: 'bound-same', state: 'completed' },
+      ])
+      const refused = (build: () => unknown): string => {
+        try {
+          build()
+          return 'accepted'
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error)
+        }
+      }
+      const onRuns = () =>
+        new FencedBatch('relation:bound-refusals', 'relation-seed', {
+          now: NOW_MS,
+          tree: TREE_DIALECT,
+        }).casTree('source', stampRows('runs', { run_id: 'bound-same-run' }))
+      expect(
+        refused(() =>
+          onRuns().derived('target', {
+            relation: 'runs-to-waits',
+            fence: 'source',
+            queue: Q,
+            set: undefined,
+            rows: 'source-keys',
+          }),
+        ),
+        'mutation-verdict:behavior:generated-bound-queue-is-an-updates',
+      ).toMatch(/binds a queue on a DELETE/)
+      expect(
+        refused(() =>
+          onRuns().derived('target', {
+            relation: 'runs-to-runs',
+            fence: 'source',
+            queue: Q,
+            set: { state: `'failed'` },
+            rows: 'source-keys',
+          }),
+        ),
+        'mutation-verdict:behavior:generated-bound-queue-needs-a-queue-scoped-relation',
+      ).toMatch(/not queue-scoped/)
     } finally {
       await f.close()
     }

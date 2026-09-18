@@ -11,6 +11,16 @@
 export interface SqlStatement {
   readonly sql: string
   readonly args: ReadonlyArray<string | number | bigint | Uint8Array | null>
+  /**
+   * The index, in this batch, of the statement whose stamp gates this one. Seeds are
+   * unique to an invocation, so when that statement wrote no row, no row carries its
+   * stamp and this statement matches nothing. An executor that pays a round trip for
+   * each statement may skip it then and answer with no rows. An executor that sends
+   * the batch whole ignores this. A skipped statement and an executed one leave the
+   * same state on a first delivery. On an exact replay the gating statement writes
+   * nothing, and the skip leaves alone what the first delivery already committed.
+   */
+  readonly skipUnlessWrote?: number
 }
 
 export interface SqlRow {
@@ -68,6 +78,12 @@ export type SqlTransactionLock =
       readonly claimToken: string
     }
 
+/**
+ * An event lock's coordinates as an executor receives them, where the event name is a
+ * string. A batch declares its lock with an `EventName`, which only core mints, and
+ * `lockEvent` hands the executor that name's text. The released package exports this
+ * name, so it stays.
+ */
 export type SqlEventLockCoordinates = Omit<
   Extract<SqlTransactionLock, { readonly kind: 'event' }>,
   'kind'

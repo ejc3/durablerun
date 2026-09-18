@@ -157,6 +157,107 @@ describe('PgExecutor transactions', () => {
     ])
   })
 
+  it('skips a statement whose gating statement wrote no row, and answers it with no rows', async () => {
+    const sent = async (gateRows: number) => {
+      const client = new FakeClient((text) =>
+        text === 'UPDATE gate' ? result([], [], gateRows) : result([], [], 7),
+      )
+      const results = await executor(new FakePool(client)).batch('gated', [
+        { sql: 'UPDATE gate', args: [] },
+        { sql: 'UPDATE follows_gate', args: [], skipUnlessWrote: 0 },
+        { sql: 'UPDATE follows_the_follower', args: [], skipUnlessWrote: 1 },
+        { sql: 'UPDATE ungated', args: [] },
+      ])
+      return {
+        texts: client.calls.map(({ text }) => text),
+        rowsAffected: results.map((entry) => entry.rowsAffected),
+      }
+    }
+    expect(
+      { lost: await sent(0), won: await sent(1) },
+      'mutation-verdict:behavior:postgres-skips-a-gated-statement',
+    ).toEqual({
+      lost: {
+        texts: ['BEGIN', 'UPDATE gate', 'UPDATE ungated', 'COMMIT'],
+        rowsAffected: [0, 0, 0, 7],
+      },
+      won: {
+        texts: [
+          'BEGIN',
+          'UPDATE gate',
+          'UPDATE follows_gate',
+          'UPDATE follows_the_follower',
+          'UPDATE ungated',
+          'COMMIT',
+        ],
+        rowsAffected: [1, 7, 7, 7],
+      },
+    })
+  })
+
+  it('runs a batch again when PostgreSQL chose it as a deadlock victim, and gives up after three', async () => {
+    const run = async (deadlocksBeforeSuccess: number, code = '40P01') => {
+      let attempts = 0
+      const client = new FakeClient((text) => {
+        if (text !== 'UPDATE contended') return EMPTY_RESULT
+        attempts += 1
+        if (attempts <= deadlocksBeforeSuccess) throw databaseError(code, 'aborted')
+        return result([], [], 1)
+      })
+      const outcome = await executor(new FakePool(client))
+        .batch('contended', [{ sql: 'UPDATE contended', args: [] }])
+        .then(
+          (results) => results.map((entry) => entry.rowsAffected),
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        )
+      return { outcome, texts: client.calls.map(({ text }) => text) }
+    }
+    const once = ['BEGIN', 'UPDATE contended', 'ROLLBACK']
+    expect(
+      {
+        victimOnce: await run(1),
+        victimAlways: await run(99),
+        anotherError: await run(1, '23505'),
+      },
+      'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
+    ).toEqual({
+      victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
+      victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
+      // Only a deadlock is run again. Any other failure is reported the first time.
+      anotherError: { outcome: 'StoreUnavailableError', texts: once },
+    })
+  })
+
+  it('refuses a gate that does not name an earlier statement', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    const refusals: Record<string, string> = {}
+    // The gate rides on the second statement, so each rule has an input only it refuses.
+    for (const [why, skipUnlessWrote] of [
+      ['itself', 1],
+      ['a later one', 2],
+      ['a negative index', -1],
+      ['a fraction', 0.5],
+      ['the first', 0],
+    ] as const) {
+      refusals[why] = await executor(new FakePool(client))
+        .batch('gate', [
+          { sql: 'UPDATE first', args: [] },
+          { sql: 'UPDATE follows', args: [], skipUnlessWrote },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        )
+    }
+    expect(refusals, 'mutation-verdict:behavior:postgres-gate-names-an-earlier-statement').toEqual({
+      itself: 'TypeError',
+      'a later one': 'TypeError',
+      'a negative index': 'TypeError',
+      'a fraction': 'TypeError',
+      'the first': 'accepted',
+    })
+  })
+
   it('acquires the event row lock before protocol SQL without adding a result', async () => {
     const client = new FakeClient((text) => {
       if (text === 'SELECT value FROM protocol_state') {
@@ -174,7 +275,10 @@ describe('PgExecutor transactions', () => {
       },
     )
 
-    expect(client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim())).toEqual([
+    expect(
+      client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+      'mutation-verdict:behavior:postgres-port-event-lock-is-the-row',
+    ).toEqual([
       'BEGIN',
       'INSERT INTO event_locks (queue, event_name) VALUES ($1, $2) ON CONFLICT (queue, event_name) DO NOTHING',
       'SELECT 1 FROM event_locks WHERE queue = $1 AND event_name = $2 FOR UPDATE',
@@ -186,6 +290,30 @@ describe('PgExecutor transactions', () => {
       ['q', `e'; SELECT 1; --`],
     ])
     expect(results).toEqual([{ rows: [{ value: 'ready' }], rowsAffected: 1 }])
+  })
+
+  it("locks a task's completion event with a scoped advisory lock, and leaves no row", async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+
+    await executor(new FakePool(client)).batch(
+      'locked-completion-event',
+      [{ sql: 'SELECT value FROM protocol_state', args: [] }],
+      {
+        mode: 'write',
+        transactionLock: { kind: 'event', queue: 'q', eventName: '$task-done:t1' },
+      },
+    )
+
+    expect(
+      client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+      'mutation-verdict:behavior:postgres-event-lock-is-advisory',
+    ).toEqual([
+      'BEGIN',
+      "SELECT pg_advisory_xact_lock(hashtextextended( jsonb_build_array( 'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text )::text, 0 ))",
+      'SELECT value FROM protocol_state',
+      'COMMIT',
+    ])
+    expect(client.calls[1]?.args).toEqual(['q', '$task-done:t1'])
   })
 
   it('acquires a scoped claim advisory lock before protocol SQL without durable garbage', async () => {

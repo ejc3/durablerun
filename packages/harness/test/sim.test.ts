@@ -1,4 +1,5 @@
 import {
+  EventName,
   FENCE_ASSIGNMENTS,
   FencedBatch,
   type SqlExecutor,
@@ -92,7 +93,7 @@ describe('batch control forwarding', () => {
         treeBuilder.updateTable('events').set(FENCE_ASSIGNMENTS).where('queue', '=', 'q'),
       )({})
       const batch = new FencedBatch('emit-event', 'seed', { now: '1', tree: TREE_DIALECT })
-        .lockEvent({ queue: 'q', eventName: 'e' })
+        .lockEvent({ queue: 'q', eventName: EventName.fromPort('test', 'e') })
         .casTree('event', stampEvents)
       await batch.run(db)
     })

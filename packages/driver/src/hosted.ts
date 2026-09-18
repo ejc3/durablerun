@@ -7,6 +7,7 @@ import {
   UserName,
   durationToMs,
   parseTaskValueJson,
+  refuseReservedIdempotencyKey,
   requirePositiveInt,
   serializeTaskValue,
 } from '@durablerun/core'
@@ -231,6 +232,16 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
         const body = requestObject(bodyText)
         const taskName = requiredNonemptyString(body.taskName)
         const idempotencyKey = optionalString(body.idempotencyKey)
+        // Keys that start with `$` are the engine's: a parent finds its child under one.
+        // The spawn port refuses one too. Asked here, the refusal is the caller's
+        // mistake, a 400, and not a server error.
+        if (idempotencyKey !== undefined) {
+          try {
+            refuseReservedIdempotencyKey('enqueue', idempotencyKey)
+          } catch {
+            throw new HostedRequestError(400, 'invalid_request')
+          }
+        }
         const paramsJson = serializeTaskValue('task parameters', body.params ?? null)
         const spawned = await store.spawn(
           queue,

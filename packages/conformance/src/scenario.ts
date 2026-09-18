@@ -105,6 +105,26 @@ export function awaitOwned(
   )
 }
 
+/** awaitTaskDone for a run's own task, run, and claim token. */
+export function awaitTaskOwned(
+  store: SchedulerStore,
+  queue: string,
+  run: OwnedRun,
+  stepName: string,
+  childTaskId: string,
+  timeoutSeconds: number | null,
+) {
+  return store.awaitTaskDone(
+    queue,
+    run.taskId,
+    run.runId,
+    run.claimToken,
+    stepName,
+    childTaskId,
+    timeoutSeconds,
+  )
+}
+
 /** setCheckpoint for a run's own task, run, and claim token. */
 export function checkpointOwned(
   store: SchedulerStore,

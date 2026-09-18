@@ -23,6 +23,20 @@
 \*    with no suspension, and a miss registers the wait and sleeps in one step.
 \*  - The event's name is reserved.  No user emit can write it, or a caller
 \*    could win first-write-wins and forge a child's result.
+\*  - A child can be terminal with NO completion event: an older build ended it,
+\*    in a rolling deploy or before this protocol existed.  No terminal batch will
+\*    ever fire for it again, so an await that registered a wait would sleep
+\*    forever.  The await therefore never registers on an ended child.  It WRITES
+\*    the missing event from the child's current outcome, in the same atomic step,
+\*    and answers as a hit.  That outcome is the best fact left, and it is the
+\*    recorded first outcome from then on: firstOutcome below is the first outcome
+\*    RECORDED, and an older build's ending records nothing.
+\*  - An older build may end the child only while no wait is registered.  That
+\*    is the deploy rule (every worker and driver runs this build before any task
+\*    awaits a child), and it is an assumption, not something the protocol
+\*    enforces: LegacyEndWhileWaiting lifts it in a probe, and the waiter strands.
+\*  - An await of a task that does not exist is refused like an await across
+\*    queues: nothing would ever end it.
 \*
 \* SCOPE: ONE QUEUE.  Events are keyed by queue and are shard-local (S3.7), so
 \* the child's terminal batch can write the event and wake the waiter in one
@@ -77,8 +91,12 @@
 \*     wake are follow-ons of the terminal compare-and-set, so a replay finds
 \*     the task already terminal and writes nothing)
 \*   'retry-task' -> ReviveChild  [cas-fenced]  (leaves the event alone)
-\*   'await-event' -> AwaitHit / AwaitMiss  [cas-fenced]  (the same batch,
-\*     reached by an internal path that builds the reserved name)
+\*   'await-event' -> AwaitHit / AwaitMiss / AwaitMaterialize / AwaitRefused /
+\*     AwaitUnknown  [cas-fenced]  (the same batch, reached by an internal path
+\*     that builds the reserved name; the child's existence, queue, and state
+\*     are read inside the batch, under the event lock)
+\*   a terminal batch of an older build -> LegacyTerminal  (no SQL of this
+\*     build: it is what this build must tolerate)
 \*   'claim' of a run whose timed wait came due -> AwaitTimeout  [cas-fenced]
 \*     (unchanged: the claim consumes the wait row)
 EXTENDS Naturals
@@ -87,19 +105,23 @@ CONSTANTS
   MaxRetries,     \* retry-task revivals of the child.  ARTIFICIAL bound.
   AwaitAllowed,   \* TRUE: the child is in the parent's queue.  FALSE: the await is refused
   AtomicEmit,     \* TRUE in the protocol.  FALSE only in a vacuity probe.
-  UserMayForge    \* FALSE in the protocol.  TRUE only in a vacuity probe.
+  UserMayForge,   \* FALSE in the protocol.  TRUE only in a vacuity probe.
+  LegacyEnd,      \* TRUE in the protocol: an older build may end the child.
+  LegacyEndWhileWaiting  \* FALSE in the protocol.  TRUE only in a vacuity probe.
 
 ASSUME /\ MaxRetries \in Nat
        /\ AwaitAllowed \in BOOLEAN
        /\ AtomicEmit \in BOOLEAN
        /\ UserMayForge \in BOOLEAN
+       /\ LegacyEnd \in BOOLEAN
+       /\ LegacyEndWhileWaiting \in BOOLEAN
 
 Outcomes == {"completed", "failed", "cancelled"}
 None     == "none"
 
 VARIABLES
   child,         \* "unspawned", "live", or an outcome
-  firstOutcome,  \* ghost: the first outcome the child reached, or None
+  firstOutcome,  \* ghost: the first outcome RECORDED for the child, or None
   doneEvent,     \* the completion event's payload, or None (unset)
   parent,        \* "running", "waiting", "woken", "resolved", "timedout",
                  \* "refused", "cancelled"
@@ -142,6 +164,14 @@ ChildTerminal(o) ==
      ELSE UNCHANGED <<doneEvent, parent, parked, wait>>
   /\ UNCHANGED <<seen, retries>>
 
+\* An older build ends the child.  It writes no event, wakes nobody, and records
+\* nothing.  The deploy rule keeps it away from a registered wait.
+LegacyTerminal(o) ==
+  /\ LegacyEnd /\ child = "live"
+  /\ (wait => LegacyEndWhileWaiting)
+  /\ child' = o
+  /\ UNCHANGED <<firstOutcome, doneEvent, parent, wait, parked, seen, retries>>
+
 \* Probe only: the emit as its own later step, which a crash can separate
 \* from the terminal transition.
 LateEmit ==
@@ -164,9 +194,26 @@ AwaitHit ==
 \* Register and sleep in one step, guarded on the event being absent.
 AwaitMiss ==
   /\ parent = "running" /\ child # "unspawned" /\ AwaitAllowed
+  /\ child \notin Outcomes
   /\ doneEvent = None
   /\ parent' = "waiting" /\ wait' = TRUE
   /\ UNCHANGED <<child, firstOutcome, doneEvent, parked, seen, retries>>
+
+\* The child has ended and nothing recorded it.  The await writes the event from
+\* the child's current outcome and returns it, in one step, and registers nothing.
+AwaitMaterialize ==
+  /\ parent = "running" /\ AwaitAllowed
+  /\ child \in Outcomes /\ doneEvent = None
+  /\ doneEvent' = child
+  /\ firstOutcome' = IF firstOutcome = None THEN child ELSE firstOutcome
+  /\ parent' = "resolved" /\ seen' = child
+  /\ UNCHANGED <<child, wait, parked, retries>>
+
+\* No such task: nothing would ever end the await, so it is refused.
+AwaitUnknown ==
+  /\ parent = "running" /\ child = "unspawned"
+  /\ UNCHANGED <<child, firstOutcome, doneEvent, wait, parked, seen, retries>>
+  /\ parent' = "refused"
 
 AwaitRefused ==
   /\ parent = "running" /\ child # "unspawned" /\ ~AwaitAllowed
@@ -201,9 +248,9 @@ ForgedEmit(o) ==
 
 Next ==
   \/ SpawnChild
-  \/ \E o \in Outcomes : ChildTerminal(o) \/ ForgedEmit(o)
+  \/ \E o \in Outcomes : ChildTerminal(o) \/ ForgedEmit(o) \/ LegacyTerminal(o)
   \/ LateEmit \/ ReviveChild
-  \/ AwaitHit \/ AwaitMiss \/ AwaitRefused
+  \/ AwaitHit \/ AwaitMiss \/ AwaitMaterialize \/ AwaitRefused \/ AwaitUnknown
   \/ ParentClaimWoken \/ AwaitTimeout \/ CancelParent
 
 Spec == Init /\ [][Next]_vars
@@ -227,9 +274,15 @@ TypeOK ==
   /\ parked \in Outcomes \cup {None} /\ seen \in Outcomes \cup {None}
   /\ retries \in 0..MaxRetries
 
-\* A terminal child has its completion event.  The emit cannot be a second
-\* step: a crash between the two would strand every waiter.
-TerminalImpliesDone == child \in Outcomes => doneEvent # None
+\* A child whose ending was recorded has its completion event.  The emit cannot
+\* be a second step: a crash between the two would strand every waiter.  Only an
+\* older build's ending, which records nothing, leaves a terminal child without one.
+TerminalImpliesDone == (child \in Outcomes /\ firstOutcome # None) => doneEvent # None
+
+\* A registered wait has something left to wake it: its child is live, so a
+\* terminal batch of this build is still to come.  An await that registered on an
+\* ended child would sleep forever.
+WaitIsWakeable == wait => child = "live"
 
 \* The event is the FIRST outcome, and only a terminal transition wrote it.
 DoneIsFirstOutcome == doneEvent # None => doneEvent = firstOutcome
@@ -250,15 +303,27 @@ SeenIsFirstOutcome ==
 RefusedNeverWaits ==
   ~AwaitAllowed => parent \notin {"waiting", "woken", "resolved", "timedout"}
 
-\* The rule's other direction: only an await the rule does not allow is
-\* refused.  Without it, SQL that refuses every child await satisfies the model.
-RefusalIsTheRule == parent = "refused" => ~AwaitAllowed
+\* The rule's other direction: only an await the rule does not allow, or an
+\* await of no task at all, is refused.  Without it, SQL that refuses every child
+\* await satisfies the model.
+RefusalIsTheRule == parent = "refused" => (~AwaitAllowed \/ child = "unspawned")
 
 DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 
-\* The event is written only in the step that ends a live child.
+\* Only a running parent spawns.  The pass that calls ctx.spawn holds the parent's live
+\* claim, and the spawn batch creates a child only under that claim.  A caller that
+\* knows a parent's id and nothing else cannot place a task under the key the parent
+\* will look up, which the reserved key alone left open to any caller of the port.
+SpawnAuthority ==
+  [][(child = "unspawned" /\ child' = "live") => parent = "running"]_vars
+
+\* The event is written only in the step that ends a live child, or by an await
+\* that finds the child ended with nothing recorded, and then it is the child's
+\* own outcome and the await returns it.
 DoneAuthority ==
-  [][doneEvent' # doneEvent => (child = "live" /\ child' \in Outcomes)]_vars
+  [][doneEvent' # doneEvent =>
+       \/ (child = "live" /\ child' \in Outcomes)
+       \/ (child \in Outcomes /\ child' = child /\ doneEvent' = child /\ seen' = child)]_vars
 
 \* A woken parent gets its outcome.  The emit consumed the wait row, so no
 \* timeout can take the wake back, and only a cancellation can come first.

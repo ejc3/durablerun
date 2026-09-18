@@ -266,10 +266,11 @@ jobs:
               print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
           PY
       - name: Bridge the new read labels past the older base batch lint
-        # This tree adds two read batches, claimed-task-name and refusal-state.
-        # The base batch lint predates them and cannot classify them. The arm is
-        # pinned to one base lint hash and adds only those READS entries, and only
-        # when this tree's own batch lint declares exactly them as new reads. Any
+        # This tree adds read batches an older base batch lint cannot classify. Each
+        # arm is pinned to one base lint hash and adds only the READS entries it
+        # names, and only when this tree's own batch lint declares exactly them as
+        # new reads. The first arm added claimed-task-name and refusal-state. The
+        # second adds run-task and task-done-state, the two reads child tasks need. Any
         # other base skips.
         run: |
           python3 - <<'PY'
@@ -278,7 +279,12 @@ jobs:
           from pathlib import Path
           base = Path('/tmp/base/scripts/batch-lint.py')
           previous = base.read_text()
-          if hashlib.sha256(previous.encode()).hexdigest() != 'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2':
+          arms = {
+              'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2': ('claimed-task-name', 'refusal-state'),
+              'cde5f0b04e87b84ecde2b4157420c95ae1c727a0697e17293fbb7ad2cdc7b74c': ('run-task', 'task-done-state'),
+          }
+          labels = arms.get(hashlib.sha256(previous.encode()).hexdigest())
+          if labels is None:
               print('Base batch lint does not need the read-label bridge.')
               raise SystemExit(0)
           def reads(text):
@@ -286,7 +292,6 @@ jobs:
               if match is None:
                   raise SystemExit('read-label bridge requires one READS table.')
               return set(re.findall(r'"([^"]+)"', match.group(1)))
-          labels = ('claimed-task-name', 'refusal-state')
           added = reads(Path('scripts/batch-lint.py').read_text()) - reads(previous)
           if added != set(labels):
               raise SystemExit(f'read-label bridge covers exactly {labels}; this tree adds {sorted(added)}.')
@@ -294,7 +299,7 @@ jobs:
           if previous.count(anchor) != 1:
               raise SystemExit('read-label bridge requires one READS anchor.')
           base.write_text(previous.replace(anchor, anchor + ''.join(f'    "{label}",\n' for label in labels)))
-          print('Added two read labels to the base batch lint; all other base bytes are unchanged.')
+          print(f'Added the read labels {labels} to the base batch lint; all other base bytes are unchanged.')
           PY
       - name: Bridge the shared statements past the older base outcome lint
         # This tree lets core's shared statements and their column descriptor name a
@@ -1110,6 +1115,93 @@ jobs:
               ))
               repaired = exempt(repaired, candidate, (
                   'mutation-verdict:construction:tree-followon-insert-no-fragment',
+              ))
+          elif digest == 'fbcf7a71356290b0f36ffb33ee7f633c604129d106e1e753c6f8f521a632b475':
+              # Child tasks re-aim one find and register verdict markers this registry
+              # predates. The generated follow-on's queue correlation became the else arm
+              # of the choice between correlating the queue and binding it, so its find
+              # gained a word. Every other find of this registry still occurs once.
+              def held_by_head(repaired, candidate, file, lines):
+                  # List condition lines of the tree rules that this tree adds. The base
+                  # registry has no mutation for a line it predates. Each line is listed
+                  # only when this tree's registry quotes it as the end of a find.
+                  opening = f'    "{file}": {{\n'
+                  table = repaired.index('TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n')
+                  at = repaired.index(opening, table) + len(opening)
+                  for line in lines:
+                      if f'        "{line}": (\n' in repaired or (line + '\\n"') not in candidate:
+                          raise SystemExit(f'{line}: the bridge lists only a condition this tree holds by a mutation and the base does not list.')
+                  entries = ''.join(
+                      f'        "{line}": (\n            "held by a mutation of the head registry, which the base predates"\n        ),\n'
+                      for line in lines
+                  )
+                  return repaired[:at] + entries + repaired[at:]
+              repaired = reaim(previous, candidate, ('generated-relation-queue-ownership',))
+              repaired = exempt(repaired, candidate, (
+                  'mutation-verdict:behavior:activate-remembers-the-run-task',
+                  'mutation-verdict:behavior:batch-names-each-gate',
+                  'mutation-verdict:behavior:batch-never-skips-a-tail-that-always-answers',
+                  'mutation-verdict:behavior:cancel-locks-runs-before-the-task',
+                  'mutation-verdict:behavior:child-await-allows-the-same-queue',
+                  'mutation-verdict:behavior:child-await-error-names-the-task',
+                  'mutation-verdict:behavior:child-await-keeps-an-event-written-since-the-read',
+                  'mutation-verdict:behavior:child-await-records-an-unrecorded-ending',
+                  'mutation-verdict:behavior:child-await-records-only-the-row-it-read',
+                  'mutation-verdict:behavior:child-await-records-only-under-a-live-claim',
+                  'mutation-verdict:behavior:child-await-refuses-an-unknown-task',
+                  'mutation-verdict:behavior:child-await-refuses-another-queue',
+                  'mutation-verdict:behavior:child-await-registers-on-a-revived-child',
+                  'mutation-verdict:behavior:child-spawn-key-is-unambiguous',
+                  'mutation-verdict:behavior:child-spawn-needs-the-parents-live-claim',
+                  'mutation-verdict:behavior:emit-event-refuses-reserved-name',
+                  'mutation-verdict:behavior:emit-takes-the-event-lock',
+                  'mutation-verdict:behavior:event-name-is-a-durable-string',
+                  'mutation-verdict:behavior:generated-bound-queue-holds-both-sides',
+                  'mutation-verdict:behavior:generated-bound-queue-is-an-updates',
+                  'mutation-verdict:behavior:generated-bound-queue-needs-a-queue-scoped-relation',
+                  'mutation-verdict:behavior:hosted-enqueue-refuses-reserved-key',
+                  'mutation-verdict:behavior:mysql-gated-statement-skipped-when-its-gate-matched-nothing',
+                  'mutation-verdict:behavior:port-event-lock-is-the-row-older-builds-take',
+                  'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
+                  'mutation-verdict:behavior:postgres-event-lock-is-advisory',
+                  'mutation-verdict:behavior:postgres-gate-names-an-earlier-statement',
+                  'mutation-verdict:behavior:postgres-port-event-lock-is-the-row',
+                  'mutation-verdict:behavior:postgres-skips-a-gated-statement',
+                  'mutation-verdict:behavior:recording-await-takes-the-event-lock',
+                  'mutation-verdict:behavior:replay-harness-counts-tasks',
+                  'mutation-verdict:behavior:replay-harness-window-is-measured',
+                  'mutation-verdict:behavior:reserved-event-name-prefix',
+                  'mutation-verdict:behavior:reserved-event-name-type',
+                  'mutation-verdict:behavior:run-task-memo-is-bounded',
+                  'mutation-verdict:behavior:sdk-child-await-refusal-is-permanent',
+                  'mutation-verdict:behavior:sdk-child-outcome-error-is-permanent',
+                  'mutation-verdict:behavior:sdk-child-timeout-names-the-task',
+                  'mutation-verdict:behavior:sdk-spawn-is-idempotent-under-replay',
+                  'mutation-verdict:behavior:sdk-spawn-refusal-is-permanent',
+                  'mutation-verdict:behavior:sdk-spawn-undurable-input-is-permanent',
+                  'mutation-verdict:behavior:spawn-child-key-excludes-a-caller-key',
+                  'mutation-verdict:behavior:spawn-queue-is-a-durable-string',
+                  'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
+                  'mutation-verdict:behavior:task-done-event-first-write-wins',
+                  'mutation-verdict:behavior:task-done-event-follows-the-terminal-statement',
+                  'mutation-verdict:behavior:task-outcome-refuses-contradiction',
+                  'mutation-verdict:behavior:task-outcome-refuses-live-state',
+                  'mutation-verdict:behavior:task-outcome-refuses-non-json',
+                  'mutation-verdict:behavior:task-outcome-refuses-non-object',
+                  'mutation-verdict:behavior:terminal-batch-takes-the-event-lock',
+                  'mutation-verdict:behavior:terminal-batch-writes-the-completion-event',
+                  'mutation-verdict:behavior:wake-sources-find-the-woken-runs',
+                  'mutation-verdict:behavior:wake-tasks-binds-the-queue',
+                  'mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again',
+              ))
+              repaired = held_by_head(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
+                  "const gateName = open ? undefined : gates[0]?.fence",
+                  "const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)",
+                  "if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex",
+                  "gatedBy === undefined",
+              ))
+              repaired = held_by_head(repaired, candidate, 'packages/core/src/sql-tree.ts', (
+                  "if (!SelectQueryNode.is(query)) return true",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

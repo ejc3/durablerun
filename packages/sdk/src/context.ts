@@ -1,14 +1,20 @@
 import {
   type Checkpoint,
+  ChildAwaitRefusedError,
   type ClaimedRun,
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
+  InvalidDurableStringError,
   type LeaseEnd,
   type SchedulerStore,
+  type SpawnOptions,
+  type TaskOutcome,
+  TaskTimeoutError,
   UserName,
   type WakeSpec,
   type WorkerClaimedRun,
+  decodeTaskOutcome,
   parseTaskValueJson,
   serializeTaskValue,
   userDurationToMs,
@@ -34,6 +40,24 @@ class EngineKey {
   static awaitEvent(name: UserName): EngineKey {
     return new EngineKey(`$await:${name.value}`)
   }
+  static spawn(taskName: UserName): EngineKey {
+    return new EngineKey(`$spawn:${taskName.value}`)
+  }
+  static awaitTask(taskId: UserName): EngineKey {
+    return new EngineKey(`$await-task:${taskId.value}`)
+  }
+}
+
+/** A task this task spawned, as `ctx.spawn` returns it and `ctx.awaitTask` takes it. */
+export interface ChildTask {
+  readonly taskId: string
+  readonly queue: string
+}
+
+/** What a parent may set on a child. The idempotency key is the engine's: it is what makes a replayed spawn find the same child. */
+export type ChildSpawnOptions = Omit<SpawnOptions, 'idempotencyKey' | 'childOf'> & {
+  /** The child's queue. It defaults to the parent's, and only a child in the parent's queue can be awaited. */
+  queue?: string
 }
 
 /**
@@ -72,6 +96,22 @@ export interface TaskContext {
   awaitEvent(name: string, opts?: { timeoutSeconds?: number }): Promise<string>
   /** First write wins: a later emit cannot replace the stored payload. */
   emitEvent(name: string, payloadJson: string): Promise<void>
+  /**
+   * Spawn a child task, once. The spawn is memoized like a step, and it carries an
+   * idempotency key built from this task and this call site, so a pass that crashed
+   * after the spawn and before its checkpoint finds the same child again. A task name
+   * follows the rules of a step name: no '#', and no '$' prefix.
+   */
+  spawn(taskName: string, params: unknown, opts?: ChildSpawnOptions): Promise<ChildTask>
+  /**
+   * Suspend until the child ends, and resolve to the FIRST outcome it reached:
+   * completed, failed, or cancelled. It resolves and does not throw for a failed child,
+   * so the parent decides what a failure means. The outcome is memoized, and it stays
+   * the first one even if the child is later revived and ends differently. A timeout
+   * throws EventTimeoutError. A child in another queue is a permanent failure: events
+   * are keyed by queue, so only a child in this task's queue can wake it.
+   */
+  awaitTask(child: ChildTask, opts?: { timeoutSeconds?: number }): Promise<TaskOutcome>
   /** This attempt's user-visible ordinal (infrastructure retries excluded). */
   readonly attempt: number
   readonly taskName: string
@@ -91,8 +131,11 @@ function isTimedOutMemo(memo: EventMemo): memo is Extract<EventMemo, { timedOut:
   return taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true
 }
 
-function eventMemoPayload(name: string, memo: EventMemo): string {
-  if (isTimedOutMemo(memo)) throw new EventTimeoutError(name)
+/** What a timed-out await throws, named for what the caller awaited. */
+type TimedOut = () => EventTimeoutError
+
+function eventMemoPayload(timedOut: TimedOut, memo: EventMemo): string {
+  if (isTimedOutMemo(memo)) throw timedOut()
   return memo.payloadJson
 }
 
@@ -106,6 +149,16 @@ function memoOfWake(wake: EventWake): EventMemo {
   if (isPayloadWake(wake)) return { payloadJson: wake.payloadJson }
   const timedOut: Extract<EventWake, { timedOut: true }> = wake
   return { timedOut: timedOut.timedOut }
+}
+
+/** A child handle read by its own properties, from a caller or from a spawn's memo. */
+function childTaskOf(value: unknown): ChildTask {
+  if (typeof value === 'object' && value !== null) {
+    const taskId = taskHasOwn(value, 'taskId') ? (value as { taskId: unknown }).taskId : undefined
+    const queue = taskHasOwn(value, 'queue') ? (value as { queue: unknown }).queue : undefined
+    if (typeof taskId === 'string' && typeof queue === 'string') return { taskId, queue }
+  }
+  throw new FatalTaskError('a child task is what ctx.spawn returned: { taskId, queue }')
 }
 
 /** The reason the pass's heartbeat pump saw a refused beat, unset while every beat is held. */
@@ -270,21 +323,9 @@ export class ReplayContext implements TaskContext {
       userDurationToMs('awaitEvent timeoutSeconds', timeoutSeconds, { positive: true })
     }
     const key = this.storageName(EngineKey.awaitEvent(parsed))
-    if (taskMapHas(this.seen, key)) {
-      // A memo already covers THIS await (matched by its step key) — retire
-      // its carried wake so it cannot be re-read; a wake for a different
-      // await (same event name, different step) is left untouched.
-      this.takeWake(key)
-      return eventMemoPayload(name, taskMapGet(this.seen, key) as EventMemo)
-    }
-    // A wake delivered with this claim resolves the await, consumed once:
-    // the run row's wake fields persist after delivery, so matching by the
-    // unique step key (not the shared event name) keeps a later same-name
-    // await from stealing this one's wake.
-    const wake = this.takeWake(key)
-    if (wake) {
-      return this.commitEventMemo(name, key, memoOfWake(wake))
-    }
+    const timedOut: TimedOut = () => new EventTimeoutError(name)
+    const settled = await this.settledAwait(timedOut, key)
+    if (settled !== undefined) return settled
     const outcome = await this.#controls.storeCall(() =>
       this.#store.awaitEvent(
         this.#queue,
@@ -303,8 +344,116 @@ export class ReplayContext implements TaskContext {
         timeoutSeconds ?? null,
       ),
     )
+    return this.registeredAwait(timedOut, key, outcome)
+  }
+
+  async spawn(taskName: string, params: unknown, opts?: ChildSpawnOptions): Promise<ChildTask> {
+    const parsed = UserName.parse('task name', taskName)
+    this.enterDurableOp(`ctx.spawn('${taskName}')`)
+    const key = this.storageName(EngineKey.spawn(parsed))
+    if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))
+    const paramsJson = serializeTaskValue('child task params', params)
+    const { queue: childQueue, ...spawnOptions } = opts ?? {}
+    const queue = childQueue === undefined ? this.#queue : childQueue
+    // A queue name is durable, and this is the first one task code chooses. The spawn port
+    // refuses one that no store keeps unchanged, and the catch below makes that permanent.
+    if (typeof queue !== 'string' || queue === '') {
+      throw new FatalTaskError(`ctx.spawn('${taskName}') queue must be a non-empty string`)
+    }
+    // The child is keyed by this task and this call site, so every pass, every retry,
+    // and a pass that died between the spawn and its checkpoint all find one child. The
+    // store builds the key, in a namespace its port refuses to every caller's own key.
+    const childOf = {
+      parentQueue: this.#queue,
+      parentTaskId: this.#run.taskId,
+      runId: this.#run.runId,
+      claimToken: this.#run.claimToken,
+      replayKey: key,
+    }
+    let spawned: Awaited<ReturnType<SchedulerStore['spawn']>>
+    try {
+      spawned = await this.#controls.storeCall(() =>
+        this.#store.spawn(queue, parsed.value, paramsJson, { ...spawnOptions, childOf }),
+      )
+    } catch (error) {
+      // The store refuses an invalid option the same way on every pass, so retrying
+      // the task would only repeat the refusal. A queue no store can keep is refused
+      // with InvalidDurableStringError, which is a TypeError and not a RangeError.
+      if (error instanceof RangeError || error instanceof InvalidDurableStringError) {
+        throw new FatalTaskError(`ctx.spawn('${taskName}') was refused: ${error.message}`)
+      }
+      throw error
+    }
+    return childTaskOf(
+      await this.commitCheckpoint(key, 'child task', { taskId: spawned.taskId, queue }),
+    )
+  }
+
+  async awaitTask(child: ChildTask, opts?: { timeoutSeconds?: number }): Promise<TaskOutcome> {
+    const taskId = UserName.parse('child task id', childTaskOf(child).taskId)
+    this.enterDurableOp('ctx.awaitTask')
+    // Read once: the value validated is the value sent.
+    const timeout = opts?.timeoutSeconds
+    if (timeout !== undefined) {
+      userDurationToMs('awaitTask timeoutSeconds', timeout, { positive: true })
+    }
+    const key = this.storageName(EngineKey.awaitTask(taskId))
+    // The task sees the task it awaited, never the engine's name for the event.
+    const timedOut: TimedOut = () => new TaskTimeoutError(taskId.value)
+    try {
+      const settled = await this.settledAwait(timedOut, key)
+      if (settled !== undefined) return decodeTaskOutcome(taskId.value, settled)
+      const outcome = await this.#controls.storeCall(() =>
+        this.#store.awaitTaskDone(
+          this.#queue,
+          this.#run.taskId,
+          this.#run.runId,
+          this.#run.claimToken,
+          key,
+          taskId.value,
+          timeout === undefined ? null : timeout,
+        ),
+      )
+      return decodeTaskOutcome(taskId.value, await this.registeredAwait(timedOut, key, outcome))
+    } catch (error) {
+      // Neither changes on a retry: the child's queue, so the refusal, and a recorded
+      // outcome that cannot be read, which the store and the decoder refuse with
+      // RangeError. Retrying would rerun every side effect before the await for nothing.
+      if (error instanceof ChildAwaitRefusedError || error instanceof RangeError) {
+        throw new FatalTaskError(error.message)
+      }
+      throw error
+    }
+  }
+
+  /**
+   * An await that needs no store call: its memo, or the wake this claim carried for
+   * it. An empty payload is still an answer, and only undefined means unsettled.
+   */
+  private async settledAwait(timedOut: TimedOut, key: string): Promise<string | undefined> {
+    if (taskMapHas(this.seen, key)) {
+      // A memo already covers THIS await (matched by its step key): retire
+      // its carried wake so it cannot be re-read; a wake for a different
+      // await (same event name, different step) is left untouched.
+      this.takeWake(key)
+      return eventMemoPayload(timedOut, taskMapGet(this.seen, key) as EventMemo)
+    }
+    // A wake delivered with this claim resolves the await, consumed once:
+    // the run row's wake fields persist after delivery, so matching by the
+    // unique step key (not the shared event name) keeps a later same-name
+    // await from stealing this one's wake.
+    const wake = this.takeWake(key)
+    return wake ? this.commitEventMemo(timedOut, key, memoOfWake(wake)) : undefined
+  }
+
+  /** What the store's await answered: the event's payload, or a run the batch already parked. */
+  private async registeredAwait(
+    timedOut: TimedOut,
+    key: string,
+    outcome: { emitted: true; payloadJson: string } | { emitted: false },
+  ): Promise<string> {
     if (outcome.emitted) {
-      return this.commitEventMemo(name, key, { payloadJson: outcome.payloadJson })
+      return this.commitEventMemo(timedOut, key, { payloadJson: outcome.payloadJson })
     }
     // The store batch ALREADY parked the run: signal without a wake so the
     // runtime performs no second suspension.
@@ -337,9 +486,9 @@ export class ReplayContext implements TaskContext {
   }
 
   /** Commit an await's memo, then resolve it exactly as a replay of that memo would. */
-  private async commitEventMemo(name: string, key: string, memo: EventMemo): Promise<string> {
+  private async commitEventMemo(timedOut: TimedOut, key: string, memo: EventMemo): Promise<string> {
     await this.commitCheckpoint(key, 'event wake marker', memo)
-    return eventMemoPayload(name, memo)
+    return eventMemoPayload(timedOut, memo)
   }
 
   /**

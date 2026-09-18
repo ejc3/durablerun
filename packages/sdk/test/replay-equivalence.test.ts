@@ -1,9 +1,14 @@
-import { engineInvariantViolations } from '@durablerun/conformance'
-import { EventTimeoutError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
+import { childTaskViolations, engineInvariantViolations } from '@durablerun/conformance'
+import {
+  EventTimeoutError,
+  FatalTaskError,
+  type SchedulerStore,
+  StoreUnavailableError,
+} from '@durablerun/core'
 import { FakeClock, Rng, seededIdSource } from '@durablerun/harness'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
-import { type TaskContext, type TaskRegistry, runClaimedRun } from '../src/index.js'
+import { type ChildTask, type TaskContext, type TaskRegistry, runClaimedRun } from '../src/index.js'
 
 const Q = 'q'
 
@@ -32,6 +37,8 @@ const CTX_COVERAGE = {
   sleepUntil: 'generated',
   awaitEvent: 'generated',
   emitEvent: 'generated',
+  spawn: 'generated',
+  awaitTask: 'generated',
   attempt: 'observed-property',
   taskName: 'observed-property',
 } as const satisfies Record<keyof TaskContext, 'generated' | 'observed-property'>
@@ -66,12 +73,19 @@ interface ProgramOp {
     | 'await-inline'
     | 'await-external'
     | 'await-timeout'
+    | 'spawn'
+    | 'await-child'
+    | 'await-child-timeout'
   valueIndex: number
   nameIndex: number
   sleepSeconds?: number
   atEpochMs?: number
   eventName?: string
   timeoutSeconds?: number
+  /** A spawned child fails for good when set, so the parent reads a failed outcome. */
+  childFails?: boolean
+  /** Which of the program's spawned children an await-child awaits, in spawn order. */
+  childIndex?: number
 }
 
 const KIND_TO_METHOD: Record<ProgramOp['kind'], keyof TaskContext> = {
@@ -82,12 +96,16 @@ const KIND_TO_METHOD: Record<ProgramOp['kind'], keyof TaskContext> = {
   'await-inline': 'awaitEvent',
   'await-external': 'awaitEvent',
   'await-timeout': 'awaitEvent',
+  spawn: 'spawn',
+  'await-child': 'awaitTask',
+  'await-child-timeout': 'awaitTask',
 }
 
 function generateProgram(rng: Rng): ProgramOp[] {
   const length = 3 + rng.int(5)
   const ops: ProgramOp[] = []
   const emitted: string[] = []
+  let spawned = 0
   for (let i = 0; i < length; i++) {
     const roll = rng.next()
     const valueIndex = rng.int(VALUES.length)
@@ -131,6 +149,18 @@ function generateProgram(rng: Rng): ProgramOp[] {
         eventName: `never${i}`,
         timeoutSeconds: 20,
       })
+    } else if (roll < 0.68) {
+      // A child that completes with an adversarial value, or fails for good. Either
+      // way it ends, so an untimed await of it resolves on every schedule.
+      ops.push({ kind: 'spawn', valueIndex, nameIndex, childFails: rng.next() < 0.3 })
+      spawned++
+    } else if (roll < 0.76 && spawned > 0) {
+      // Untimed on purpose: a fault can delay the child past any timeout, and then
+      // the faulted schedule would time out where the reference did not.
+      ops.push({ kind: 'await-child', valueIndex, nameIndex, childIndex: rng.int(spawned) })
+    } else if (roll < 0.8) {
+      // A child that sleeps past the end of every schedule: the timeout is the only exit.
+      ops.push({ kind: 'await-child-timeout', valueIndex, nameIndex, timeoutSeconds: 20 })
     } else {
       ops.push({ kind: 'step', valueIndex, nameIndex })
     }
@@ -165,8 +195,35 @@ function fingerprint(v: unknown): string {
 function programHandler(ops: ProgramOp[]) {
   return async (ctx: TaskContext) => {
     const observed: string[] = []
+    const children: ChildTask[] = []
     for (const op of ops) {
       switch (op.kind) {
+        case 'spawn':
+          children.push(
+            await ctx.spawn('child', { valueIndex: op.valueIndex, fails: op.childFails === true }),
+          )
+          break
+        case 'await-child': {
+          const child = children[op.childIndex ?? 0]
+          if (child === undefined)
+            throw new FatalTaskError('the generator awaited an unspawned child')
+          const outcome = await ctx.awaitTask(child)
+          observed.push(
+            `child:${outcome.state}:${outcome.completedPayloadJson ?? outcome.failureReasonJson}`,
+          )
+          break
+        }
+        case 'await-child-timeout': {
+          const stuck = await ctx.spawn('stuck', null)
+          try {
+            await ctx.awaitTask(stuck, { timeoutSeconds: op.timeoutSeconds ?? 20 })
+            observed.push('unexpected-child-outcome')
+          } catch (error) {
+            if (!(error instanceof EventTimeoutError)) throw error
+            observed.push('child-timeout')
+          }
+          break
+        }
         case 'sleep':
           await ctx.sleepFor(op.sleepSeconds ?? 5)
           break
@@ -212,17 +269,77 @@ function programHandler(ops: ProgramOp[]) {
   }
 }
 
+/** A child ends with an adversarial value or fails for good, and checkpoints nothing. */
+async function childHandler(_ctx: TaskContext, params: unknown): Promise<unknown> {
+  const { valueIndex, fails } = params as { valueIndex: number; fails: boolean }
+  if (fails) throw new FatalTaskError('child boom')
+  return VALUES[valueIndex]
+}
+
+/** Sleeps past the end of every schedule, so an await of it can only time out. */
+async function stuckHandler(ctx: TaskContext): Promise<unknown> {
+  await ctx.sleepFor(1_000_000)
+  return null
+}
+
+/**
+ * Task ids come from a seeded id source, and the reference and each faulted run use
+ * different seeds and consume ids differently. A spawn's memo holds its child's id and
+ * a child await's key embeds it, so ids are replaced by the child's spawn order, which
+ * is the same on every schedule.
+ */
+function withoutChildIds(rows: { checkpoint_name: unknown; state: unknown }[]): unknown[] {
+  const spawns = rows
+    .filter((row) => String(row.checkpoint_name).startsWith('$spawn:'))
+    .map((row) => ({ name: String(row.checkpoint_name), state: String(row.state) }))
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+  const ids = spawns.map((row) => (JSON.parse(row.state) as { taskId: string }).taskId)
+  const normalize = (text: string): string =>
+    ids.reduce((out, id, index) => out.replaceAll(id, `child-${index}`), text)
+  return rows
+    .map((row) => ({
+      checkpoint_name: normalize(String(row.checkpoint_name)),
+      state: normalize(String(row.state)),
+    }))
+    .sort((left, right) =>
+      left.checkpoint_name < right.checkpoint_name
+        ? -1
+        : left.checkpoint_name > right.checkpoint_name
+          ? 1
+          : 0,
+    )
+}
+
 /**
  * Run one program to completion, with the Nth store call (counted across
  * the whole lifetime, 0 = no fault) failing as a transient outage; recover
  * through the normal lease machinery until the task terminates. Returns
  * the final payload and the checkpoint table.
  */
+/**
+ * The store calls a fault is injected at: a bounded sample of a program's calls. It is
+ * derived from the call count the reference run measured, and it always ends at the
+ * last call, where the parent's final checkpoint and its completion are.
+ */
+function faultPoints(measuredCalls: number): number[] {
+  const points: number[] = []
+  for (let call = 3; call < measuredCalls; call += 2) points.push(call)
+  points.push(measuredCalls)
+  return points
+}
+
 async function runProgram(
   ops: ProgramOp[],
   seed: string,
   failAtCall: number,
-): Promise<{ result: string | undefined; checkpoints: unknown[] }> {
+  tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
+): Promise<{
+  result: string | undefined
+  checkpoints: unknown[]
+  /** How many tasks of each name exist at the end: a second child is a second row here. */
+  tasks: string[]
+  calls: number
+}> {
   const raw = LibsqlExecutor.open(':memory:')
   try {
     const admin = new LibsqlStoreAdmin(raw)
@@ -230,7 +347,7 @@ async function runProgram(
     const ids = seededIdSource(new Rng(seed))
     const real = new LibsqlSchedulerStore(raw, ids)
     let calls = 0
-    const store = new Proxy(real, {
+    const store = new Proxy(tamper(real), {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver)
         if (typeof value !== 'function' || prop === 'constructor') return value
@@ -245,7 +362,11 @@ async function runProgram(
     }) as SchedulerStore
     const clock = new FakeClock()
     await admin.setFakeNowEpochMs(clock.now)
-    const registry: TaskRegistry = new Map([['prog', programHandler(ops)]])
+    const registry: TaskRegistry = new Map([
+      ['prog', programHandler(ops)],
+      ['child', childHandler],
+      ['stuck', stuckHandler],
+    ])
     const spawned = await real.spawn(Q, 'prog', '{}')
     const externals = ops
       .filter((op) => op.kind === 'await-external')
@@ -283,14 +404,33 @@ async function runProgram(
       't',
       [
         {
-          sql: `SELECT checkpoint_name, state FROM checkpoints ORDER BY checkpoint_name`,
-          args: [],
+          sql: `SELECT checkpoint_name, state FROM checkpoints WHERE task_id = ?
+                ORDER BY checkpoint_name`,
+          args: [spawned.taskId],
         },
       ],
       'read',
     )
     expect(await engineInvariantViolations(raw)).toEqual([])
-    return { result: outcome?.completedPayloadJson, checkpoints: cps?.rows ?? [] }
+    expect(await childTaskViolations(raw)).toEqual([])
+    const [counted] = await raw.batch(
+      't',
+      [
+        {
+          sql: 'SELECT task_name, COUNT(*) AS n FROM tasks GROUP BY task_name ORDER BY task_name',
+          args: [],
+        },
+      ],
+      'read',
+    )
+    return {
+      calls,
+      tasks: (counted?.rows ?? []).map((row) => `${String(row.task_name)} x ${Number(row.n)}`),
+      result: outcome?.completedPayloadJson,
+      checkpoints: withoutChildIds(
+        (cps?.rows ?? []) as { checkpoint_name: unknown; state: unknown }[],
+      ),
+    }
   } finally {
     raw.close()
   }
@@ -316,16 +456,56 @@ describe('context-method enrollment (the inventory gate)', () => {
   })
 })
 
+describe('the harness itself (a comparison nobody has seen fail proves nothing)', () => {
+  const SPAWNS_ONE_CHILD: ProgramOp[] = [
+    { kind: 'spawn', valueIndex: 0, nameIndex: 0 },
+    { kind: 'await-child', valueIndex: 0, nameIndex: 0, childIndex: 0 },
+    { kind: 'step', valueIndex: 0, nameIndex: 0 },
+  ]
+
+  /** A store whose spawn forgets the child's key, so a replayed spawn makes a second child. */
+  const forgetsTheChildKey = (store: SchedulerStore): SchedulerStore =>
+    new Proxy(store, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver)
+        if (prop !== 'spawn') return typeof value === 'function' ? value.bind(target) : value
+        return (queue: string, taskName: string, paramsJson: string) =>
+          target.spawn(queue, taskName, paramsJson)
+      },
+    })
+
+  it('sees a duplicated child', async () => {
+    const reference = await runProgram(SPAWNS_ONE_CHILD, 'dup-ref', 0)
+    // The fault lands on the spawn's checkpoint, so the next pass spawns again.
+    const duplicated = await runProgram(SPAWNS_ONE_CHILD, 'dup-fault', 5, forgetsTheChildKey)
+    expect(
+      JSON.stringify(duplicated) === JSON.stringify({ ...reference, calls: duplicated.calls }),
+      'mutation-verdict:behavior:replay-harness-counts-tasks',
+    ).toBe(false)
+  })
+
+  it('faults every program through its last store call', async () => {
+    const uncovered: string[] = []
+    for (let seed = 0; seed < 6; seed++) {
+      const ops = generateProgram(new Rng(`program-${seed}`))
+      const { calls } = await runProgram(ops, `window-${seed}`, 0)
+      const last = Math.max(...faultPoints(calls))
+      if (last !== calls) uncovered.push(`program ${seed}: ${calls} calls, faulted through ${last}`)
+    }
+    expect(uncovered, 'mutation-verdict:behavior:replay-harness-window-is-measured').toEqual([])
+  }, 60_000)
+})
+
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
   for (let seed = 0; seed < 6; seed++) {
     it(`program ${seed}: every fault point yields the reference outcome`, async () => {
       const ops = generateProgram(new Rng(`program-${seed}`))
       const reference = await runProgram(ops, `ref-${seed}`, 0)
-      // Fault a bounded odd-index sample through call 28.
-      for (let call = 3; call <= 28; call += 2) {
+      for (const call of faultPoints(reference.calls)) {
         const faulted = await runProgram(ops, `fault-${seed}-${call}`, call)
         expect(faulted.result, `fault at call ${call}`).toBe(reference.result)
         expect(faulted.checkpoints, `fault at call ${call}`).toEqual(reference.checkpoints)
+        expect(faulted.tasks, `fault at call ${call}`).toEqual(reference.tasks)
       }
     }, 60_000)
   }

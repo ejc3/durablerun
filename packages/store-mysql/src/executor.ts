@@ -48,6 +48,11 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
  */
 const ER_DATA_TOO_LONG = 1406
 
+/** InnoDB found a deadlock and rolled this transaction back so that another could proceed. */
+const ER_LOCK_DEADLOCK = 1213
+/** How many times a write batch runs before a deadlock is reported as an outage. */
+const DEADLOCK_VICTIM_ATTEMPTS = 3
+
 /** The note MySQL raises when it cuts a value to fit its column. */
 const WARN_DATA_TRUNCATED = 1265
 
@@ -113,6 +118,7 @@ export function createOwnedMysqlPool(config: string | PoolOptions): Pool {
 interface PreparedStatement {
   readonly sql: string
   readonly args: (string | number | bigint | Buffer | null)[]
+  readonly skipUnlessWrote?: number
 }
 
 /**
@@ -181,7 +187,14 @@ function prepareStatements(
         `batch(${label}) statement ${statementIndex} has ${placeholders} placeholders but ${args.length} arguments`,
       )
     }
-    return { sql: statement.sql, args }
+    const gate = statement.skipUnlessWrote
+    if (gate === undefined) return { sql: statement.sql, args }
+    if (!Number.isInteger(gate) || gate < 0 || gate >= statementIndex) {
+      throw new TypeError(
+        `batch(${label}) statement ${statementIndex} is gated by statement ${gate}, which is not an earlier statement of the batch`,
+      )
+    }
+    return { sql: statement.sql, args, skipUnlessWrote: gate }
   })
 }
 
@@ -504,47 +517,73 @@ export class MysqlExecutor implements SqlExecutor {
     schemaVersionRead: boolean,
   ): Promise<SqlResult[]> {
     let locked = false
-    let transactionStarted = false
     try {
       if (lock !== null) {
         await acquireNamedLock(connection, lock)
         locked = true
       }
-      if (mode === 'read') {
-        for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {
-          await connection.query(statement)
-        }
-      } else {
-        await connection.query('START TRANSACTION')
-      }
-      transactionStarted = true
-      const results: SqlResult[] = []
-      for (const statement of prepared) {
-        const [result, fields] =
-          statement.args.length === 0
-            ? await connection.query(statement.sql)
-            : await connection.execute(statement.sql, statement.args)
-        if (mode === 'write' && !Array.isArray(result)) {
-          await refuseWriteCutToFit(connection, result as ResultSetHeader)
-        }
-        results.push(normalizeResult(result, fields as FieldPacket[] | undefined, statement.sql))
-      }
-      await connection.query('COMMIT')
-      transactionStarted = false
-      return results
-    } catch (error) {
-      if (transactionStarted) {
+      for (let attempt = 1; ; attempt += 1) {
+        let transactionStarted = false
         try {
-          await connection.query('ROLLBACK')
-        } catch {
-          // The connection is discarded below: a failed rollback leaves it unusable.
-          throw new StoreUnavailableError(
-            `MySQL rollback failed after: ${errorDescription(error)}`,
-            { cause: error },
-          )
+          if (mode === 'read') {
+            for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {
+              await connection.query(statement)
+            }
+          } else {
+            await connection.query('START TRANSACTION')
+          }
+          transactionStarted = true
+          const results: SqlResult[] = []
+          for (const statement of prepared) {
+            // Each statement is a round trip here. One whose gating statement wrote no row
+            // cannot match a row (`SqlStatement.skipUnlessWrote`), so it is not sent. The
+            // gate's count is the port's, rows matched: MySQL's own count is rows changed,
+            // and a gate that matched a row and changed nothing would read as zero there.
+            const gate = statement.skipUnlessWrote
+            if (gate !== undefined && results[gate]?.rowsAffected === 0) {
+              results.push({ rows: [], rowsAffected: 0 })
+              continue
+            }
+            const [result, fields] =
+              statement.args.length === 0
+                ? await connection.query(statement.sql)
+                : await connection.execute(statement.sql, statement.args)
+            if (mode === 'write' && !Array.isArray(result)) {
+              await refuseWriteCutToFit(connection, result as ResultSetHeader)
+            }
+            results.push(
+              normalizeResult(result, fields as FieldPacket[] | undefined, statement.sql),
+            )
+          }
+          await connection.query('COMMIT')
+          transactionStarted = false
+          return results
+        } catch (error) {
+          if (transactionStarted) {
+            try {
+              await connection.query('ROLLBACK')
+            } catch {
+              // The connection is discarded by the caller: a failed rollback leaves it unusable.
+              throw new StoreUnavailableError(
+                `MySQL rollback failed after: ${errorDescription(error)}`,
+                { cause: error },
+              )
+            }
+          }
+          // InnoDB ends a deadlock by rolling one transaction back. That batch committed
+          // nothing, so running it again is a first delivery, and the other transaction
+          // has its locks by now. Reported as an outage, a finished run would be left for
+          // the sweep to charge an infrastructure retry. Only a write batch is run again:
+          // a read batch takes no row lock, so a deadlock there is not this engine's lock
+          // order. The named lock is held across the attempts, because it was taken before
+          // the transaction and a rollback does not release it.
+          const runAgain =
+            mode === 'write' &&
+            attempt < DEADLOCK_VICTIM_ATTEMPTS &&
+            errorNumber(error) === ER_LOCK_DEADLOCK
+          if (!runAgain) throw error
         }
       }
-      throw error
     } finally {
       if (locked && lock !== null) {
         await connection.execute(NAMED_UNLOCK_SQL, [...lock]).catch(() => connection.destroy())

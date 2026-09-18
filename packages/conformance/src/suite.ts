@@ -12,6 +12,8 @@ import {
   SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SqlExecutor,
   type SqlRow,
+  childSpawnKey,
+  taskDoneEventName,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
@@ -111,6 +113,121 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           state: 'pending',
           attempt: 1,
           available_at_ms: START_MS,
+        })
+      })
+
+      // An idempotency key that starts with `$` belongs to the engine: `ctx.spawn` keys
+      // its child there. A caller that could take one would place its own task where a
+      // parent will look for its child, and the parent would adopt it and its result.
+      it('refuses a reserved idempotency key, and writes nothing', async () => {
+        const refused = await refusalName(
+          f.store.spawn(Q, 'evil', '{}', { idempotencyKey: '$spawn:some-parent:$spawn:child' }),
+        )
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(
+          { refused, tasks: Number(count?.n) },
+          'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
+        ).toEqual({ refused: 'RangeError', tasks: 0 })
+      })
+
+      it('keys a child by its parent and call site, under a key only the store builds', async () => {
+        const parentTask = await f.store.spawn(Q, 'parent', '{}')
+        const parent = await claimActivated(f.store, Q, 'w-parent')
+        const childOf = {
+          parentQueue: Q,
+          parentTaskId: parentTask.taskId,
+          runId: parent.runId,
+          claimToken: parent.claimToken,
+          replayKey: '$spawn:child',
+        }
+        const first = await f.store.spawn(Q, 'child', '{}', { childOf })
+        const replayed = await f.store.spawn(Q, 'child', '{}', { childOf })
+        const sibling = await f.store.spawn(Q, 'child', '{}', {
+          childOf: { ...childOf, replayKey: '$spawn:child#2' },
+        })
+        const stored = await readOne(f.raw, `SELECT idempotency_key FROM tasks WHERE task_id = ?`, [
+          first.taskId,
+        ])
+        const both = await refusalName(
+          f.store.spawn(Q, 'child', '{}', { childOf, idempotencyKey: 'mine' }),
+        )
+        expect(
+          {
+            replayFindsTheChild: replayed.taskId === first.taskId && !replayed.created,
+            siblingIsAnotherTask: sibling.taskId !== first.taskId,
+            key: stored?.idempotency_key,
+            both,
+          },
+          'mutation-verdict:behavior:spawn-child-key-excludes-a-caller-key',
+        ).toEqual({
+          replayFindsTheChild: true,
+          siblingIsAnotherTask: true,
+          key: childSpawnKey(parentTask.taskId, '$spawn:child'),
+          both: 'RangeError',
+        })
+      })
+
+      // ChildTasks.tla's SpawnAuthority: only a running parent spawns. The reserved key
+      // keeps a caller's own key out of the engine's namespace, and `childOf` is a second
+      // door into it: a caller that knows a parent's id could place a task of its choosing
+      // under the key that parent will look up, and the parent would adopt it and read
+      // its result. So a child is created only under its parent's live claim. A child that
+      // exists is still found without one, which is what a replay asks.
+      it("creates a child only under its parent's live claim, and still finds one that exists", async () => {
+        const parentTask = await f.store.spawn(Q, 'parent', '{}')
+        const parent = await claimActivated(f.store, Q, 'w-parent')
+        const childOf = {
+          parentQueue: Q,
+          parentTaskId: parentTask.taskId,
+          runId: parent.runId,
+          claimToken: parent.claimToken,
+          replayKey: '$spawn:child',
+        }
+        const wrongToken = { ...childOf, claimToken: 'not-the-token', replayKey: '$spawn:forged' }
+        const forged = await refusalName(f.store.spawn(Q, 'evil', '{}', { childOf: wrongToken }))
+        const first = await f.store.spawn(Q, 'child', '{}', { childOf })
+        await f.store.expireLeaseNow(Q, parent.runId, parent.claimToken)
+        await f.store.sweep(Q, 10)
+        const replayed = await f.store.spawn(Q, 'child', '{}', { childOf })
+        const secondSite = { ...childOf, replayKey: '$spawn:child#2' }
+        const afterTheClaim = await refusalName(
+          f.store.spawn(Q, 'child', '{}', { childOf: secondSite }),
+        )
+        const children = await readOne(
+          f.raw,
+          `SELECT COUNT(*) AS n FROM tasks WHERE task_name IN ('child', 'evil')`,
+          [],
+        )
+        expect(
+          {
+            forged,
+            replayFindsTheChild: replayed.taskId === first.taskId && !replayed.created,
+            afterTheClaim,
+            children: Number(children?.n),
+          },
+          'mutation-verdict:behavior:child-spawn-needs-the-parents-live-claim',
+        ).toEqual({
+          forged: 'LeaseLostError',
+          replayFindsTheChild: true,
+          afterTheClaim: 'LeaseLostError',
+          children: 1,
+        })
+      })
+
+      // A queue name is durable, and the dialects disagree on a NUL and on a lone
+      // surrogate: one stores a different string and the other aborts the statement.
+      it('refuses a queue that does not survive every store, and writes nothing', async () => {
+        const refused = []
+        for (const queue of ['q\u0000tail', 'q\ud800']) {
+          refused.push(await refusalName(f.store.spawn(queue, 'job', '{}')))
+        }
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(
+          { refused, tasks: Number(count?.n) },
+          'mutation-verdict:behavior:spawn-queue-is-a-durable-string',
+        ).toEqual({
+          refused: ['InvalidDurableStringError', 'InvalidDurableStringError'],
+          tasks: 0,
         })
       })
 
@@ -3438,6 +3555,60 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         expect(woken?.runId).toBe(run.runId)
         expect(woken?.wake).toEqual({ event: 'go', step: 's', payloadJson: '{"n":1}' })
         expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+
+      // ChildTasks.tla's UserMayForge is FALSE: a name that starts with `$` belongs to
+      // the engine. A caller that could emit a task's completion event would win
+      // first-write-wins ahead of the task's own terminal batch and forge its result.
+      it('refuses to emit a reserved event name, and writes nothing', async () => {
+        const spawned = await f.store.spawn(Q, 'child', '{}')
+        const reserved = taskDoneEventName(spawned.taskId)
+        const forged = await refusalName(
+          f.store.emitEvent(Q, reserved, '{"state":"completed","completedPayloadJson":"1"}'),
+        )
+        const stored = await readOne(
+          f.raw,
+          `SELECT COUNT(*) AS n FROM events WHERE queue = ? AND event_name = ?`,
+          [Q, reserved],
+        )
+        expect(
+          { forged, events: Number(stored?.n) },
+          'mutation-verdict:behavior:emit-event-refuses-reserved-name',
+        ).toEqual({ forged: 'RangeError', events: 0 })
+      })
+
+      // An event name is durable text, and the dialects disagree on a NUL and on a lone
+      // surrogate: SQLite compares the text up to the NUL and stores the surrogate as
+      // U+FFFD, which merges distinct names, and PostgreSQL aborts the statement. The
+      // port refuses what no store can keep, as spawn refuses such a queue.
+      it('refuses an event name that does not survive every store, and writes nothing', async () => {
+        await f.store.spawn(Q, 'waiter', '{}')
+        const run = await claimActivated(f.store, Q, 'w1')
+        const refused: Record<string, string> = {}
+        for (const [what, name] of [
+          ['a NUL', 'go\u0000tail'],
+          ['a lone surrogate', 'go\ud800'],
+        ] as const) {
+          refused[`emit with ${what}`] = await refusalName(f.store.emitEvent(Q, name, '{}'))
+          refused[`await with ${what}`] = await refusalName(
+            awaitOwned(f.store, Q, run, 's', name, null),
+          )
+        }
+        const events = await readOne(f.raw, `SELECT COUNT(*) AS n FROM events`, [])
+        const waits = await readOne(f.raw, `SELECT COUNT(*) AS n FROM waits`, [])
+        expect(
+          { refused, events: Number(events?.n), waits: Number(waits?.n) },
+          'mutation-verdict:behavior:event-name-is-a-durable-string',
+        ).toEqual({
+          refused: {
+            'emit with a NUL': 'InvalidDurableStringError',
+            'await with a NUL': 'InvalidDurableStringError',
+            'emit with a lone surrogate': 'InvalidDurableStringError',
+            'await with a lone surrogate': 'InvalidDurableStringError',
+          },
+          events: 0,
+          waits: 0,
+        })
       })
 
       it('emit-before-await returns the payload inline with nothing suspended', async () => {

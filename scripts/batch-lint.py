@@ -58,6 +58,8 @@ except ValueError as error:
 READS = {
     "claimed-task-name",
     "refusal-state",
+    "run-task",
+    "task-done-state",
     "get-checkpoints",
     "next-wake",
     "task-result",

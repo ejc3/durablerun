@@ -1,5 +1,6 @@
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
+import { childTaskConformance } from './child-tasks.js'
 import {
   MATRIX_PRE_STATES,
   MATRIX_READ_LABELS,
@@ -202,8 +203,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       expect(duplicatePoisonWitnessIds()).toEqual([])
       expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(114)
       expect(POISON_WITNESS_COUNT).toBe(145)
-      expect(POISON_WRITE_LABELS).toHaveLength(19)
-      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(2_755)
+      expect(POISON_WRITE_LABELS).toHaveLength(20)
+      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(2_900)
       expect(POISON_TARGET_CASES).toHaveLength(50)
       expect(POISON_UNREACHABLE_TARGETS).toHaveLength(26)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
@@ -425,6 +426,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'suspend',
             'emit-event',
             'await-event',
+            'record-task-done',
             'complete',
             'fail',
             'cancel-task',
@@ -1227,5 +1229,6 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'poison-matrix', run: poisonMatrixConformance },
   { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
   { id: 'wake-witness', run: wakeWitnessConformance },
+  { id: 'child-tasks', run: childTaskConformance },
   { id: 'schema-admin', run: schemaAdminConformance },
 ] as const)

@@ -110,6 +110,8 @@ export function runFuzzShard(shard: number, of: number): void {
         nextWakes: 0,
         emits: 0,
         awaits: 0,
+        childAwaits: 0,
+        recordedEndings: 0,
       }
       let walks = 0
       for (const seed of seeds) {

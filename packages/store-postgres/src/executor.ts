@@ -1,4 +1,5 @@
 import {
+  RESERVED_EVENT_PREFIX,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SqlBatchControl,
@@ -43,6 +44,7 @@ type PoolPort = Pick<Pool, 'connect' | 'end'>
 interface PreparedStatement {
   readonly sql: string
   readonly args: unknown[]
+  readonly skipUnlessWrote?: number
 }
 
 class PostgresResultContractError extends TypeError {}
@@ -79,7 +81,14 @@ function prepareStatements(
         `batch(${label}) statement ${statementIndex} has ${compiled.parameterCount} placeholders but ${statement.args.length} arguments`,
       )
     }
-    return { sql: compiled.sql, args: [...statement.args] }
+    const gate = statement.skipUnlessWrote
+    if (gate === undefined) return { sql: compiled.sql, args: [...statement.args] }
+    if (!Number.isInteger(gate) || gate < 0 || gate >= statementIndex) {
+      throw new TypeError(
+        `batch(${label}) statement ${statementIndex} is gated by statement ${gate}, which is not an earlier statement of the batch`,
+      )
+    }
+    return { sql: compiled.sql, args: [...statement.args], skipUnlessWrote: gate }
   })
 }
 
@@ -141,7 +150,14 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
 }
 
 async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
-  if (lock.kind === 'event') {
+  if (lock.kind === 'event' && !lock.eventName.startsWith(RESERVED_EVENT_PREFIX)) {
+    // A caller's event takes the lock every build has taken for it: a row of
+    // `event_locks`, inserted when it is missing and then locked. A process of an older
+    // build keeps running after a newer one has migrated, because a store never reads
+    // the schema version, so for the length of a deploy both builds emit and await the
+    // same events. Two lock kinds would not exclude each other, and an emit could then
+    // slip between an await's read of no event and its wait row, which strands the
+    // waiter. The row can go once no build that takes it can still run (BUILD.md).
     const args = [lock.queue, lock.eventName]
     await client.query(
       `INSERT INTO event_locks (queue, event_name)
@@ -154,6 +170,25 @@ async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLo
        WHERE queue = $1 AND event_name = $2
        FOR UPDATE`,
       args,
+    )
+    return
+  }
+  if (lock.kind === 'event') {
+    // The engine's own event, which is the completion event of a task. No build before
+    // child tasks locks one, so nothing has to agree with a row, and a row would be a
+    // row for every task that ever ends, awaited or not, which nothing deletes. The
+    // lock is transaction-scoped and advisory. Its key is the identity of the `events`
+    // table as this session resolves it, so two pools that reach the same tables
+    // through different search paths still exclude each other. A hash collision can
+    // only over-serialize unrelated events.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended(
+         jsonb_build_array(
+           'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text
+         )::text,
+         0
+       ))`,
+      [lock.queue, lock.eventName],
     )
     return
   }
@@ -202,6 +237,11 @@ function isSchemaVersionRead(
 function errorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
+
+/** SQLSTATE deadlock_detected: this transaction was aborted so that another could proceed. */
+const DEADLOCK_DETECTED = '40P01'
+/** How many times a batch runs before a deadlock is reported as an outage. */
+const DEADLOCK_VICTIM_ATTEMPTS = 3
 
 function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
   if (
@@ -284,43 +324,70 @@ export class PgExecutor implements SqlExecutor {
     }
     client.on('error', onClientError)
 
-    let transactionStarted = false
     let releaseError: Error | undefined
-    let activeStatementIndex: number | null = null
     try {
-      await client.query(
-        mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
-      )
-      transactionStarted = true
-
-      if (transactionLock !== undefined) {
-        await acquireTransactionLock(client, transactionLock)
-      }
-
-      const results: SqlResult[] = []
-      for (const [statementIndex, statement] of prepared.entries()) {
-        activeStatementIndex = statementIndex
-        const result = await client.query<Record<string, unknown>>(statement.sql, statement.args)
-        activeStatementIndex = null
-        results.push(normalizeResult(result))
-      }
-      await client.query('COMMIT')
-      transactionStarted = false
-      return results
-    } catch (error) {
-      const failedSchemaVersionRead = schemaVersionRead && activeStatementIndex === 0
-      activeStatementIndex = null
-      if (transactionStarted) {
+      for (let attempt = 1; ; attempt += 1) {
+        let transactionStarted = false
+        let activeStatementIndex: number | null = null
         try {
-          await client.query('ROLLBACK')
-        } catch (rollbackError) {
-          releaseError =
-            rollbackError instanceof Error
-              ? rollbackError
-              : new Error('PostgreSQL rollback failed', { cause: rollbackError })
+          await client.query(
+            mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
+          )
+          transactionStarted = true
+
+          if (transactionLock !== undefined) {
+            await acquireTransactionLock(client, transactionLock)
+          }
+
+          const results: SqlResult[] = []
+          for (const [statementIndex, statement] of prepared.entries()) {
+            // Each statement is a round trip here. One whose gating statement wrote no
+            // row cannot match a row (`SqlStatement.skipUnlessWrote`), so it is not sent.
+            const gate = statement.skipUnlessWrote
+            if (gate !== undefined && results[gate]?.rowsAffected === 0) {
+              results.push({ rows: [], rowsAffected: 0 })
+              continue
+            }
+            activeStatementIndex = statementIndex
+            const result = await client.query<Record<string, unknown>>(
+              statement.sql,
+              statement.args,
+            )
+            activeStatementIndex = null
+            results.push(normalizeResult(result))
+          }
+          await client.query('COMMIT')
+          transactionStarted = false
+          return results
+        } catch (error) {
+          const failedSchemaVersionRead = schemaVersionRead && activeStatementIndex === 0
+          if (transactionStarted) {
+            try {
+              await client.query('ROLLBACK')
+            } catch (rollbackError) {
+              releaseError =
+                rollbackError instanceof Error
+                  ? rollbackError
+                  : new Error('PostgreSQL rollback failed', { cause: rollbackError })
+            }
+          }
+          // PostgreSQL ends a deadlock by aborting one transaction. That batch committed
+          // nothing, so running it again is a first delivery, and the other transaction
+          // has its locks by now. Reported as an outage, a finished run would be left for
+          // the sweep to charge an infrastructure retry. Only a write batch is run again:
+          // a read batch takes no row lock, so a deadlock there is not this engine's lock
+          // order. It is run again at once, because PostgreSQL chose the victim only
+          // after `deadlock_timeout`, and a store source has no timer to wait on.
+          const runAgain =
+            mode !== 'read' &&
+            attempt < DEADLOCK_VICTIM_ATTEMPTS &&
+            releaseError === undefined &&
+            clientError === undefined &&
+            error instanceof DatabaseError &&
+            error.code === DEADLOCK_DETECTED
+          if (!runAgain) throw classifyError(error, label, failedSchemaVersionRead)
         }
       }
-      throw classifyError(error, label, failedSchemaVersionRead)
     } finally {
       try {
         client.release(releaseError ?? clientError)
