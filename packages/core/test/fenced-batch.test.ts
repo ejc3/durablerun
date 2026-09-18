@@ -550,11 +550,14 @@ describe('bookkeeping checks', () => {
   })
 
   it('cannot be constructed without the dialect that compiles its trees', () => {
-    // The type is the rule. This line stops compiling if the dialect becomes optional,
-    // which is what let a batch hold a statement nothing could compile.
+    const refusal = /FencedBatch\[b\] needs the dialect that compiles its trees/
+    // The type is the first rule. This line stops compiling if the dialect becomes optional.
     // @ts-expect-error a batch takes the dialect that compiles its statements
-    const withoutDialect = () => new FencedBatch('b', 'seed', { now: '0' })
-    expect(withoutDialect).toBeTypeOf('function')
+    expect(() => new FencedBatch('b', 'seed', { now: '0' })).toThrow(refusal)
+    // Untyped code gets the same answer, and so does something that is not a dialect.
+    const untyped = FencedBatch as unknown as new (...args: unknown[]) => FencedBatch
+    expect(() => new untyped('b', 'seed', { now: '0' })).toThrow(refusal)
+    expect(() => new untyped('b', 'seed', { now: '0', tree: {} })).toThrow(refusal)
   })
 
   it('rejects a batch with no CAS', async () => {

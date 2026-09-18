@@ -230,6 +230,13 @@ export class FencedBatch {
         `FencedBatch[${label}] clock expression contains '?' — it is spliced as SQL, not bound`,
       )
     }
+    // The type requires the dialect. Untyped code gets the same answer here, with the
+    // batch's label, and not a read of undefined when its first statement compiles.
+    if (typeof (opts.tree as TreeDialect | undefined)?.compile !== 'function') {
+      throw new Error(
+        `FencedBatch[${label}] needs the dialect that compiles its trees: pass it as \`tree\``,
+      )
+    }
     this.now = opts.now
     this.tree = opts.tree
     // The source audit proves that callers constructed this exact class, but

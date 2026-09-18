@@ -939,7 +939,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     option because it is the dialect's compiler and not a flag. The alpha
     release exported `FENCE_SET`, `FENCE_COLS`, `FENCE_VALS`, and `fenceSetAt`,
     so the published-surface check now takes a withdrawal with a reason, and
-    refuses one of a name that is still exported.
+    refuses one of a name that is still exported. That check reads export
+    names, so it does not see the rest of the break to an alpha consumer:
+    `FencedBatch` lost the methods `cas`, `casMany`, `followOn`, `tail`, and
+    `openTail`, and its constructor requires `tree`.
     Fourteen registered mutations are retired, each with a successor. Twelve
     owned text that is gone: `followon-provenance-check`,
     `positive-fence-required`, `positive-fence-is-not`, `top-level-or-reach`,
