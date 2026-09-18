@@ -1,7 +1,7 @@
-import { InvalidDurableStringError, SchemaMismatchError } from '@durablerun/core'
+import { InvalidDurableStringError, SchemaMismatchError, taskDoneEventName } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor } from '../src/executor.js'
-import { META_BOOTSTRAP_SQL, META_TABLE_SQL } from '../src/schema.js'
+import { META_BOOTSTRAP_SQL, META_TABLE_SQL, createIndexIfMissing } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
@@ -256,6 +256,90 @@ describe('MysqlExecutor against a real server', () => {
       ).toEqual([1, 0, 0, 1, 1, 1])
       expect(results[2]).toEqual({ rows: [], rowsAffected: 0 })
       expect(results[5]?.rows).toEqual([{ key: 'after-a-match-that-changed-nothing' }])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('creates an index in a form that is safe to repeat, which MySQL has no statement for', async () => {
+    // A migrator that died after the index and before the version runs the version again.
+    const db = await openMysqlTestDb({ idNamespace: 'index-repeat' })
+    try {
+      const columns = async () => {
+        const [index] = await db.raw.batch(
+          'fixture:read',
+          [
+            {
+              sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
+                    FROM information_schema.statistics
+                    WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = 'runs_woken'`,
+              args: [],
+            },
+          ],
+          'read',
+        )
+        return index?.rows[0]?.columns
+      }
+      const version6 = createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)').map(
+        (sql) => ({ sql, args: [] }),
+      )
+      expect(await columns()).toBe('queue,wake_event,state')
+      await db.raw.batch('migrate:v6', version6)
+      expect(await columns()).toBe('queue,wake_event,state')
+      await db.raw.batch('fixture:drop', [{ sql: 'DROP INDEX runs_woken ON runs', args: [] }])
+      expect(await columns()).toBeNull()
+      await db.raw.batch('migrate:v6', version6)
+      await db.raw.batch('migrate:v6', version6)
+      expect(await columns()).toBe('queue,wake_event,state')
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('makes a batch that ends a task wait for the lock of its completion event, and no other', async () => {
+    // An await of a child holds this lock while it reads no event and writes its wait row.
+    // A terminal batch that did not take it could insert the event in between and see no
+    // wait, and the parent would sleep for ever. The lock is a session named lock, held
+    // here by a batch that sleeps, and what is compared is the order things finished in.
+    const db = await openMysqlTestDb({ idNamespace: 'terminal-lock', nowMs: 1_000_000 })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const finished: string[] = []
+      const ended = await store.spawn('q', 'ended', '{}')
+      const other = await store.spawn('q', 'other', '{}')
+      const claimed = await store.claim('q', 'w', { leaseSeconds: 60, limit: 2 })
+      for (const run of claimed) await store.activate('q', run.runId, run.claimToken, run.claimGen)
+      const runOf = (taskId: string) => {
+        const run = claimed.find((candidate) => candidate.taskId === taskId)
+        if (run === undefined) throw new Error(`task ${taskId} was not claimed`)
+        return run
+      }
+      const hold = db.raw
+        .batch('fixture:hold', [{ sql: 'SELECT SLEEP(1.5) AS slept', args: [] }], {
+          mode: 'write',
+          transactionLock: {
+            kind: 'event',
+            queue: 'q',
+            eventName: taskDoneEventName(ended.taskId),
+          },
+        })
+        .then(() => finished.push('the lock was released'))
+      // The lock is taken before the sleep starts, so by now it is held.
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const complete = (taskId: string, what: string) => {
+        const run = runOf(taskId)
+        return store.complete('q', run.runId, run.claimToken, '{}').then(() => finished.push(what))
+      }
+      await Promise.all([
+        hold,
+        complete(ended.taskId, 'the task whose event is locked ended'),
+        complete(other.taskId, 'another task ended'),
+      ])
+      expect(finished).toEqual([
+        'another task ended',
+        'the lock was released',
+        'the task whose event is locked ended',
+      ])
     } finally {
       await db.close()
     }
