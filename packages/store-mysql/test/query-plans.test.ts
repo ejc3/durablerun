@@ -214,3 +214,63 @@ describe('the wake a terminal batch owes the parent of its task, on MySQL', () =
     }
   })
 })
+
+describe('the hot path beside a history of tasks, on MySQL', () => {
+  it('claims, activates, and completes without walking the tasks of the database', async () => {
+    // On libSQL the generated task follow-ons scanned `tasks` until their call sites
+    // bound the queue, because SQLite cannot drive a write from a correlated subquery.
+    // MySQL was keyed before that change and is keyed after it: measured on MySQL 8.4
+    // beside 4,000 tasks, claim walked 54 rows, activate 14, and complete 27, with the
+    // queue unbound. An EXPLAIN over empty tables says nothing, so the tables hold a
+    // history, and every write batch is measured from inside its own transaction.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-hot-path', nowMs: 1_000_000 })
+    try {
+      const walked = new Map<string, number>()
+      const measuring: SqlExecutor = {
+        batch: async (label, statements, control) => {
+          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
+          if (mode === 'read') return db.raw.batch(label, statements, control)
+          const shifted: SqlStatement[] = statements.map((statement) =>
+            statement.skipUnlessWrote === undefined
+              ? statement
+              : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
+          )
+          const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
+          const total = (result: (typeof all)[number] | undefined) =>
+            (result?.rows ?? [])
+              .filter((row) => row.Variable_name !== 'Handler_read_key')
+              .reduce((sum, row) => sum + Number(row.Value), 0)
+          walked.set(label, total(all[all.length - 1]) - total(all[0]))
+          return all.slice(1, -1)
+        },
+      }
+      const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn('history', 'old', '{}')
+      for (const [prefix, queue] of [
+        ['a', Q],
+        ['b', Q],
+        ['c', Q],
+        ['d', 'elsewhere'],
+        ['e', 'elsewhere'],
+      ]) {
+        await cloneRows(db, 'tasks', `src.task_id = '${seed.taskId}'`, {
+          task_id: `CONCAT('old-${prefix}-', seq.n)`,
+          queue: `'${queue}'`,
+          state: "'completed'",
+          idempotency_key: 'NULL',
+        })
+      }
+      const store = new MysqlSchedulerStore(measuring, db.ids)
+      await store.spawn(Q, 'job', '{}')
+      const [run] = await store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+      if (run === undefined) throw new Error('the job was not claimed')
+      await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await store.complete(Q, run.runId, run.claimToken, '{}')
+      const hot = ['claim', 'activate', 'complete'].map((label) => [label, walked.get(label)])
+      for (const [label, rows] of hot) {
+        expect(rows, `rows ${String(label)} walked beside ${5 * HISTORY} tasks`).toBeLessThan(150)
+      }
+    } finally {
+      await db.close()
+    }
+  })
+})

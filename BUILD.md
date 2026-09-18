@@ -1257,16 +1257,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     display form, port refusals have no one typed class mapped once at the hosted
     route, no single helper runs both violation checkers, and a few test helpers
     are copies.
-  - Option, not a deferral of this PR: the generated follow-ons that select
-    their source by key (`task`, `task-mirror`) still correlate the source to
-    `tasks` on the queue, so their plan is a scan of `tasks` with a keyed probe
-    for each row. It is on main, and its cost grows with every task in the
-    database, in any queue. One `complete` on libSQL measured 2 ms beside 2,000
-    tasks, 5 ms beside 10,000, and 20 ms beside 40,000 on main, and 4, 8, and
-    25 ms here. Beside 100,000 tasks of its own queue it is 61 ms on main, where
-    it is the whole cost of the batch. Binding the queue as the wake now does would make it a keyed
-    lookup. It
-    changes the compiled corpus of every label, so it is its own change.
+  - Promoted to PR3.14 below: the generated follow-ons that select their source
+    by key correlated it to `tasks` on the queue, and on libSQL their plan was
+    a scan of `tasks`.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,
   engine-triggered on terminal failure only, reverse step-START order,
@@ -1378,6 +1371,48 @@ these three things; nothing else in the system does I/O, time, or randomness.
   `postmortems/verify-event-loop-yield-review.md` and
   `postmortems/verify-fixture-yield-review.md`.
 
+- **PR3.14 keyed generated follow-ons**: on libSQL, eleven shipped writes
+  scanned the table they wrote: the task update of claim, activate,
+  defer-launch, reschedule, suspend, await-event, complete, fail, and both
+  sweeps, and the runs update of cancel-task. A generated follow-on over a
+  queue-scoped relation may bind its queue, as the wake's task follow-on
+  already did, and fourteen call sites in each store gave it none, so the
+  source was correlated to the written table on the queue, and SQLite cannot
+  drive a write from a correlated subquery. Each call site now binds the queue
+  its method was given. The fence reaches the same rows through the same
+  stamp, no tree rule changed, no registered mutation's find text moved, and
+  the three corpus files are regenerated. Two follow-ons that are handed the
+  key of the one row they write also name it on the written side, the
+  cancellation's task and the await's run, because beside a bound queue and a
+  state SQLite prefers the (queue, state) index to the key. One `complete` on
+  libSQL, median of 7, beside tasks of its own queue:
+
+  | Tasks | Correlated | Queue bound |
+  |---|---|---|
+  | 2,000 | 5.4 ms | 5.0 ms |
+  | 10,000 | 8.9 ms | 4.1 ms |
+  | 40,000 | 21.7 ms | 3.7 ms |
+  | 100,000 | 43.4 ms | 3.6 ms |
+
+  The child-task work measured the correlated form on main at 2, 5, 20, and
+  61 ms. PostgreSQL was keyed and is keyed: all 16 task updates plan with an
+  `Index Cond` on `tasks_pkey`, and a plan test in `store-postgres` holds that
+  for the shipped statements. MySQL was keyed too, measured with rows in the
+  table: beside 4,000 tasks claim walked 54 rows, activate 14, and complete
+  27 with the queue unbound, and a plan test now holds those three batches.
+  The PostgreSQL fault matrix took 212 s before and 209 s after, which is
+  flat. `store-libsql`'s plan pins recover every UPDATE and DELETE of thirteen
+  labels from the real operations and refuse a scan of the written table.
+  This PR merges after PR3.4 and PR3.9e part 3c. Both regenerate the corpus
+  and touch these call sites, so the rebase regenerates the corpus and binds
+  the queue in part 3c's `completeTaskMirror` too.
+  - Option, not a deferral of this PR: three statements of `claim` select
+    their source rows by queue and state, through `runs_poll`, so every claim
+    walks the running runs of its queue on libSQL: the runs update, the task
+    update, and the delete of expired waits. The stamp that says which runs
+    this claim took has no index. The wake's follow-ons had the same shape and
+    found their rows by `wake_event` through `runs_woken`. A claim has no such
+    column, so this needs its own design.
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
   landed or was rejected with a reason below, and PR3.5c deleted that file. It

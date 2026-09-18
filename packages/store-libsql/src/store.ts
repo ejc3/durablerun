@@ -293,10 +293,11 @@ const validCheckpointConflict = (run: string, checkpointName: string): string =>
  * two places -- which is the shape that drifts. Their eligibility guards had
  * already drifted once.
  */
-function taskMirrorsRun(b: FencedBatch, runId: string, after: string): void {
+function taskMirrorsRun(b: FencedBatch, queue: string, runId: string, after: string): void {
   b.derived('task-mirror', {
     relation: 'runs-to-tasks',
     fence: after,
+    queue,
     where: 'f.run_id = ?',
     whereArgs: [runId],
     set: {
@@ -330,8 +331,8 @@ function waitsGone(b: FencedBatch, runId: string, after: string): void {
  * mirror and wait reaping inseparable prevents a timer/deferral path from
  * clearing the run's wake fields while leaving an older registration alive.
  */
-function finishSuspension(b: FencedBatch, runId: string): void {
-  taskMirrorsRun(b, runId, 'suspend')
+function finishSuspension(b: FencedBatch, queue: string, runId: string): void {
+  taskMirrorsRun(b, queue, runId, 'suspend')
   waitsGone(b, runId, 'suspend')
 }
 
@@ -692,6 +693,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('task-book', {
       relation: 'runs-to-tasks',
       fence: 'claim',
+      queue,
       where: `f.queue = ? AND f.state = 'running'`,
       whereArgs: [queue],
       set: {
@@ -806,6 +808,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('task-start', {
       relation: 'runs-to-tasks',
       fence: 'activate',
+      queue,
       where: 'f.run_id = ?',
       whereArgs: [runId],
       set: {
@@ -1028,6 +1031,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('task-pending', {
       relation: 'runs-to-tasks',
       fence: 'reopen',
+      queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
       set: { state: `'pending'` },
@@ -1037,6 +1041,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('task-fail', {
       relation: 'runs-to-tasks',
       fence: 'cap',
+      queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
       set: { state: `'failed'`, failure_reason: '?' },
@@ -1129,6 +1134,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('task-terminal', {
       relation: 'runs-to-tasks',
       fence: 'fail',
+      queue,
       where: 'f.run_id = ?',
       whereArgs: [item.runId],
       set: { state: `'failed'`, failure_reason: '?' },
@@ -1153,6 +1159,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('bookkeeping', {
       relation: 'runs-to-tasks',
       fence: 'successor',
+      queue,
       where: 'f.run_id = ?',
       whereArgs: [successorId],
       set: {
@@ -1340,10 +1347,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('runs', {
       relation: 'tasks-to-runs',
       fence: 'cancel',
+      queue,
       where: 'f.task_id = ?',
       whereArgs: [taskId],
       set: { state: `'cancelled'`, claimed_by: 'NULL', claim_expires_at_ms: 'NULL' },
-      narrow: `state IN ${LIVE}`,
+      // The task is named on the written side too. The source already selects this one
+      // task, so it narrows nothing. It gives the planner the key: with the queue bound
+      // and only the state beside it, SQLite reaches `runs` through (queue, state) and
+      // walks every live run of the queue to cancel one task's.
+      narrow: `task_id = ? AND state IN ${LIVE}`,
+      narrowArgs: [taskId],
       rows: 'source-keys',
     })
     b.derived('waits', {
@@ -1446,7 +1459,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         wakeFits: sqlFragment(wakePlan.fitsConjunct, wakePlan.fitArgs),
       }),
     )
-    finishSuspension(b, runId)
+    finishSuspension(b, queue, runId)
     const { won } = await b.run(this.db)
     if (won !== 'suspend') throw await this.refusal('deferLaunch', runId)
   }
@@ -1495,7 +1508,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // A timer/deferral replaces any event wait attached to this run. Drive the
     // mirror and cleanup from the run this CAS actually suspended: a corrupt
     // pre-existing wait must not survive with the wake fields just cleared.
-    finishSuspension(b, runId)
+    finishSuspension(b, queue, runId)
     const { won } = await b.run(this.db)
     if (won !== 'suspend') throw await this.refusal('reschedule', runId)
   }
@@ -1549,7 +1562,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       }),
       'one',
     )
-    finishSuspension(b, runId)
+    finishSuspension(b, queue, runId)
     const { won } = await b.run(this.db)
     if (won !== 'suspend') throw await this.refusal('suspendRun', runId)
   }
@@ -1575,6 +1588,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('task', {
       relation: 'runs-to-tasks',
       fence: 'complete',
+      queue,
       where: 'f.run_id = ?',
       whereArgs: [runId],
       set: { state: `'completed'`, completed_payload: '?', cancel_at_ms: 'NULL' },
@@ -1668,6 +1682,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       b.derived('task-retrying', {
         relation: 'runs-to-tasks',
         fence: 'successor',
+        queue,
         where: 'f.run_id = ?',
         whereArgs: [successorId],
         set: {
@@ -1684,6 +1699,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       b.derived('task-terminal', {
         relation: 'runs-to-tasks',
         fence: 'fail',
+        queue,
         where: 'f.run_id = ?',
         whereArgs: [runId],
         set: {
@@ -1705,6 +1721,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       b.derived('task', {
         relation: 'runs-to-tasks',
         fence: 'fail',
+        queue,
         where: 'f.run_id = ?',
         whereArgs: [runId],
         set: {
@@ -2329,6 +2346,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.derived('park', {
       relation: 'waits-to-runs',
       fence: 'register',
+      queue,
       where: `f.run_id = ? AND f.step_name = ? AND f.status = 'waiting'`,
       whereArgs: [runId, stepName],
       set: {
@@ -2341,15 +2359,19 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ...PARKED_CLAIM_CLEARED_TEXT,
       },
       setArgs: [runId, stepName, eventName, stepName],
-      narrow: `queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
+      // The run is named on the written side too. The source already selects this one
+      // run, so it narrows nothing, and it gives the planner the key: beside a queue
+      // and a state, SQLite prefers (queue, state) and walks the queue's running runs.
+      narrow: `run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
             AND EXISTS (SELECT 1 FROM tasks t
                         WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
-      narrowArgs: [queue, taskId, claimToken],
+      narrowArgs: [runId, queue, taskId, claimToken],
       rows: 'one',
     })
     b.derived('task-mirror', {
       relation: 'runs-to-tasks',
       fence: 'park',
+      queue,
       where: `f.run_id = ? AND f.state = 'sleeping'`,
       whereArgs: [runId],
       set: { state: `'sleeping'` },
