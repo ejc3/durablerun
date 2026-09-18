@@ -59,6 +59,26 @@ export const META_TABLE_SQL = `CREATE TABLE IF NOT EXISTS meta (
  */
 export const META_BOOTSTRAP_SQL = `${META_TABLE_SQL} AS SELECT 'schema_version' AS \`key\`, '0' AS value`
 
+/**
+ * `CREATE INDEX` in a form that is safe to repeat. MySQL commits each DDL statement on
+ * its own and has no `CREATE INDEX IF NOT EXISTS`, so a migrator that died after the
+ * index and before the version would fail its rerun on a duplicate key name. The
+ * statement is chosen by what the catalog holds and then prepared, all in the one
+ * session a migration batch runs in, under the migration lock.
+ */
+export function createIndexIfMissing(table: string, index: string, columns: string): string[] {
+  return [
+    `SET @durablerun_ddl = IF(
+       (SELECT COUNT(*) FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = '${table}' AND index_name = '${index}') = 0,
+       'CREATE INDEX ${index} ON ${table} ${columns}',
+       'DO 0')`,
+    'PREPARE durablerun_ddl FROM @durablerun_ddl',
+    'EXECUTE durablerun_ddl',
+    'DEALLOCATE PREPARE durablerun_ddl',
+  ]
+}
+
 export const MIGRATIONS: readonly MysqlMigration[] = [
   {
     version: 1,
@@ -176,6 +196,16 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
   { version: 3, statements: [] },
   { version: 4, statements: [] },
   { version: 5, statements: [] },
+  {
+    // A batch that ends a task or emits an event finds the runs it just woke by their
+    // `wake_event`, among the pending runs of the queue. The other dialects hold those
+    // runs in a partial index, which MySQL does not have, so the state is the index's
+    // last column: the lookup is one seek to the pending runs of one event, whatever
+    // else the queue holds and however many runs that event woke before. It is an index
+    // and nothing else: a build that predates it runs against this schema unchanged.
+    version: 6,
+    statements: createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

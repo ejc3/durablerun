@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto'
 import { PERSISTED_COUNTER_FIELDS, PERSISTED_TEMPORAL_FIELDS } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
-import { CURRENT_SCHEMA_VERSION, META_TABLE_SQL, MIGRATIONS } from '../src/schema.js'
+import {
+  CURRENT_SCHEMA_VERSION,
+  META_TABLE_SQL,
+  MIGRATIONS,
+  createIndexIfMissing,
+} from '../src/schema.js'
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -23,15 +28,30 @@ function columnDeclaration(table: string, column: string): string | undefined {
 
 describe('MySQL schema', () => {
   it('keeps the logical version numbers of the other dialects', () => {
-    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5])
-    expect(CURRENT_SCHEMA_VERSION).toBe(5)
+    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(CURRENT_SCHEMA_VERSION).toBe(6)
   })
 
   it('writes only statements that are safe to repeat', () => {
     // MySQL commits each DDL statement on its own, so a migrator that dies inside a
     // version leaves part of it behind, and a rerun has to be able to finish the rest.
-    const statements = [META_TABLE_SQL, ...MIGRATIONS.flatMap((migration) => migration.statements)]
+    // An index has no IF NOT EXISTS form, so it goes through the one guarded form, which
+    // the real-server test runs twice. Every other statement creates a table if missing.
+    const guardedIndexes = [
+      createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
+    ]
+    const statements = [
+      META_TABLE_SQL,
+      ...MIGRATIONS.flatMap((migration) =>
+        guardedIndexes.some((guarded) => guarded.join('\n') === migration.statements.join('\n'))
+          ? []
+          : migration.statements,
+      ),
+    ]
     expect(statements.length).toBeGreaterThan(1)
+    expect(
+      MIGRATIONS.filter(({ statements: s }) => /^SET @durablerun_ddl/.test(s[0] ?? '')),
+    ).toHaveLength(guardedIndexes.length)
     for (const statement of statements) {
       expect(statement, 'mutation-verdict:construction:mysql-migration-statements-repeat').toMatch(
         /^CREATE TABLE IF NOT EXISTS /,
@@ -101,6 +121,7 @@ describe('MySQL migrations are append-only', () => {
     3: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     4: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     5: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    6: '282e8754775295bf61972db61c285b7e3ffd92726bd38dbb6c2b60fdf7250ee9',
   }
 
   it('matches every migration to an independently frozen content hash', () => {
