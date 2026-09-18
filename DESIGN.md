@@ -1989,7 +1989,16 @@ realized in the store's compiler, executor, fragments, or schema:
   the length of the parent task id, the id itself, and two colons: 208
   characters under a 36-character parent id. The other dialects hold both.
   Each refusal names what the caller passed, the child task id or the replay
-  key, and never the derived name.
+  key, and never the derived name. A registered saga step's key is bounded the
+  same way (§3.10). A step's checkpoints are named by a prefix and its key, and
+  the longest prefix is `$rollback-tries:`, 16 characters, so a key longer than
+  239 characters is refused on MySQL at the three entries that carry a saga
+  name: `setCheckpoint`, `suspendRun`, and `failRollback`. Every saga name is
+  held to that key and not only the one being written, because a step
+  registers under its shortest name, `$started:`. A key of 240 to 246
+  characters would start there, and the batch that fails its rollback could
+  never store the attempt record, so the saga could not count a failed
+  rollback. The other dialects hold any key.
   Payloads, the claim token, and the statement stamp are `LONGTEXT`. There is
   no partial index: a unique index already holds NULL keys apart, and the hot
   indexes lead with the state after the queue, `tasks_cancel` included, because
@@ -2003,6 +2012,12 @@ realized in the store's compiler, executor, fragments, or schema:
   therefore read the member the decoder reads, and do not refuse a repeated
   key as the other dialects do. `JSON_VALID` is tested before any JSON function,
   because those raise on text it answers false for.
+- **`||` is OR** under the store's fixed `sql_mode`, so a string is built with
+  `CONCAT`. One saga fragment builds a name, a rollback's from its step's, and
+  it is the only line of the saga protocol this store spells differently: the
+  325 lines sagas added to the PostgreSQL store are in this one verbatim, and
+  so are 64 of the 67 lines of saga fragments. That one operator is why the
+  saga fragments stay in the stores and are not hoisted into core.
 
 Schema: Absurd's five tables essentially verbatim (`tasks`, `runs`, `checkpoints`,
 `events`, `waits`), plus an observability-only `drivers` registry table, minus per-queue dynamic DDL (use a `queue` column + the hot

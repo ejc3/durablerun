@@ -1460,19 +1460,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The registry bridge arm in `ci.yml` is keyed on main's registry as of
     the merge of child tasks. It must be keyed again if main's registry
     changes before this entry merges.
-  - The MySQL store has no sagas. This entry carries only what makes it
-    compile: `failRollback` refuses, `fail` answers that no pass was placed,
-    and it passes `'open'` wherever a statement takes the saga phase, so its
-    SQL is what it was. CI's `conformance-mysql` job runs the identical suite,
-    so it fails on this entry until the store is ported: the `sagas` surface,
-    the saga block of the fault matrix, the poison matrix's `fail-rollback`
-    label, and the corpus's `fail-rollback` variants all reach
-    `failRollback`. The port owes `fail-rollback`, the rollback pass in
-    `fail` and in both sweep caps, the phase predicate in `complete`,
-    `set-checkpoint`, `retry-task`, `suspend`, and `await-event`, the name
-    checks on the three batches that commit a caller's checkpoint, and the
-    rollback outcome columns of the result read. One fragment concatenates
-    with `||`, which MySQL spells `CONCAT`.
+  - The MySQL store runs sagas, ported on this entry by the store's author.
+    The port is the PostgreSQL store's change applied to it: all 325 lines
+    added to that store verbatim, and 64 of the 67 lines of saga fragments.
+    The three that differ are one name built with `CONCAT`, because `||` is OR
+    under that store's `sql_mode`. MySQL alone bounds a registered step's key,
+    at 239 characters, because a checkpoint name is indexed there, and a
+    boundary test holds it (DESIGN.md §3.4). The identical suite passes on
+    MySQL 8.4 with no shared change, the `sagas` surface, the saga block of
+    the fault matrix, the poison matrix's `fail-rollback` label, and the
+    corpus's `fail-rollback` variants included: 3,397 tests, 3,337 named for
+    the dialect. A task spawned with a budget of 1,000,000 attempts rolls back
+    there as any other does.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
     attempt, which is where three of the review's findings were.
@@ -1760,10 +1759,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   index that child tasks read through, is the first statement after version 1:
   it is chosen from the catalog and prepared, which is safe to repeat, and a
   column will need the same form. (5) The optional PlanetScale
-  smoke job is not built. (6) Sagas land their batches on libSQL and PostgreSQL
-  first, and `store-mysql` ports them after. Child tasks are ported, in PR3.3
-  itself: the MySQL leg of the identical suite runs the child-task cases and
-  the fault and poison matrix cells of the new labels, and nothing is owed.
+  smoke job is not built. (6) Child tasks and sagas are both ported, each in the
+  entry that brought it, PR3.3 and PR3.4: the MySQL leg of the identical suite
+  runs their surfaces and the fault and poison matrix cells of their labels,
+  and nothing is owed.
   The review
   of this PR found eleven defects, eight of them in behaviour and one of them
   introduced by a fix, recorded in
