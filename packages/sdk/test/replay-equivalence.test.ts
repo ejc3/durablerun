@@ -316,11 +316,23 @@ function withoutChildIds(rows: { checkpoint_name: unknown; state: unknown }[]): 
  * through the normal lease machinery until the task terminates. Returns
  * the final payload and the checkpoint table.
  */
+/**
+ * The store calls a fault is injected at: a bounded sample of a program's calls. It is
+ * derived from the call count the reference run measured, and it always ends at the
+ * last call, where the parent's final checkpoint and its completion are.
+ */
+function faultPoints(_measuredCalls: number): number[] {
+  const points: number[] = []
+  for (let call = 3; call <= 28; call += 2) points.push(call)
+  return points
+}
+
 async function runProgram(
   ops: ProgramOp[],
   seed: string,
   failAtCall: number,
-): Promise<{ result: string | undefined; checkpoints: unknown[] }> {
+  tamper: (store: SchedulerStore) => SchedulerStore = (store) => store,
+): Promise<{ result: string | undefined; checkpoints: unknown[]; calls: number }> {
   const raw = LibsqlExecutor.open(':memory:')
   try {
     const admin = new LibsqlStoreAdmin(raw)
@@ -328,7 +340,7 @@ async function runProgram(
     const ids = seededIdSource(new Rng(seed))
     const real = new LibsqlSchedulerStore(raw, ids)
     let calls = 0
-    const store = new Proxy(real, {
+    const store = new Proxy(tamper(real), {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver)
         if (typeof value !== 'function' || prop === 'constructor') return value
@@ -395,6 +407,7 @@ async function runProgram(
     expect(await engineInvariantViolations(raw)).toEqual([])
     expect(await childTaskViolations(raw)).toEqual([])
     return {
+      calls,
       result: outcome?.completedPayloadJson,
       checkpoints: withoutChildIds(
         (cps?.rows ?? []) as { checkpoint_name: unknown; state: unknown }[],
@@ -425,13 +438,52 @@ describe('context-method enrollment (the inventory gate)', () => {
   })
 })
 
+describe('the harness itself (a comparison nobody has seen fail proves nothing)', () => {
+  const SPAWNS_ONE_CHILD: ProgramOp[] = [
+    { kind: 'spawn', valueIndex: 0, nameIndex: 0 },
+    { kind: 'await-child', valueIndex: 0, nameIndex: 0, childIndex: 0 },
+    { kind: 'step', valueIndex: 0, nameIndex: 0 },
+  ]
+
+  /** A store whose spawn forgets the child's key, so a replayed spawn makes a second child. */
+  const forgetsTheChildKey = (store: SchedulerStore): SchedulerStore =>
+    new Proxy(store, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver)
+        if (prop !== 'spawn') return typeof value === 'function' ? value.bind(target) : value
+        return (queue: string, taskName: string, paramsJson: string) =>
+          target.spawn(queue, taskName, paramsJson)
+      },
+    })
+
+  it('sees a duplicated child', async () => {
+    const reference = await runProgram(SPAWNS_ONE_CHILD, 'dup-ref', 0)
+    // The fault lands on the spawn's checkpoint, so the next pass spawns again.
+    const duplicated = await runProgram(SPAWNS_ONE_CHILD, 'dup-fault', 5, forgetsTheChildKey)
+    expect(
+      JSON.stringify(duplicated) === JSON.stringify({ ...reference, calls: duplicated.calls }),
+      'mutation-verdict:behavior:replay-harness-counts-tasks',
+    ).toBe(false)
+  })
+
+  it('faults every program through its last store call', async () => {
+    const uncovered: string[] = []
+    for (let seed = 0; seed < 6; seed++) {
+      const ops = generateProgram(new Rng(`program-${seed}`))
+      const { calls } = await runProgram(ops, `window-${seed}`, 0)
+      const last = Math.max(...faultPoints(calls))
+      if (last !== calls) uncovered.push(`program ${seed}: ${calls} calls, faulted through ${last}`)
+    }
+    expect(uncovered, 'mutation-verdict:behavior:replay-harness-window-is-measured').toEqual([])
+  }, 60_000)
+})
+
 describe('replay equivalence (generated programs x fault points x adversarial values)', () => {
   for (let seed = 0; seed < 6; seed++) {
     it(`program ${seed}: every fault point yields the reference outcome`, async () => {
       const ops = generateProgram(new Rng(`program-${seed}`))
       const reference = await runProgram(ops, `ref-${seed}`, 0)
-      // Fault a bounded odd-index sample through call 28.
-      for (let call = 3; call <= 28; call += 2) {
+      for (const call of faultPoints(reference.calls)) {
         const faulted = await runProgram(ops, `fault-${seed}-${call}`, call)
         expect(faulted.result, `fault at call ${call}`).toBe(reference.result)
         expect(faulted.checkpoints, `fault at call ${call}`).toEqual(reference.checkpoints)
