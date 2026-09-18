@@ -6,6 +6,7 @@ import {
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
+  MAX_COUNT,
   InvalidDurableStringError,
   type LeaseEnd,
   type RetryStrategy,
@@ -467,8 +468,15 @@ export class ReplayContext implements TaskContext {
         ? (config as { maxAttempts: unknown }).maxAttempts
         : undefined
       if (attempts !== undefined) {
-        if (typeof attempts !== 'number' || !trustedIsSafeInteger(attempts) || attempts < 1) {
-          return refuse('rollbackConfig.maxAttempts must be a positive integer')
+        // The bound is the one the retry decision enforces. A budget it would refuse when
+        // the rollback first fails is refused here instead, before the body runs.
+        if (
+          typeof attempts !== 'number' ||
+          !trustedIsSafeInteger(attempts) ||
+          attempts < 1 ||
+          attempts > MAX_COUNT
+        ) {
+          return refuse(`rollbackConfig.maxAttempts must be an integer in [1, ${MAX_COUNT}]`)
         }
         maxAttempts = attempts
       }
