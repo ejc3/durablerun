@@ -143,12 +143,15 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         const both = await refusalName(
           f.store.spawn(Q, 'child', '{}', { childOf, idempotencyKey: 'mine' }),
         )
-        expect({
-          replayFindsTheChild: replayed.taskId === first.taskId && !replayed.created,
-          siblingIsAnotherTask: sibling.taskId !== first.taskId,
-          key: stored?.idempotency_key,
-          both,
-        }).toEqual({
+        expect(
+          {
+            replayFindsTheChild: replayed.taskId === first.taskId && !replayed.created,
+            siblingIsAnotherTask: sibling.taskId !== first.taskId,
+            key: stored?.idempotency_key,
+            both,
+          },
+          'mutation-verdict:behavior:spawn-child-key-excludes-a-caller-key',
+        ).toEqual({
           replayFindsTheChild: true,
           siblingIsAnotherTask: true,
           key: childSpawnKey('parent-1', '$spawn:child'),

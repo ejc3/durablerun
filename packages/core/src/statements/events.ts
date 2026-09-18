@@ -13,7 +13,7 @@ import {
   stampValue,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
-import { LIVE_STATES, type TerminalState } from '../types.js'
+import { LIVE_STATES } from '../types.js'
 
 /** The claim an awaiting worker presents: its run, in this queue and task, under its token. */
 type AwaitingClaim = {
@@ -322,9 +322,11 @@ export const taskDoneEventInsert = defineStatement(
  * (specs/ChildTasks.tla's AwaitMaterialize): a build older than the completion event
  * ended it, so no terminal batch will ever write its event. The await writes the event
  * itself, from the outcome the store read, and answers as a hit. The insert is fenced
- * on the child's row being the one that was read: the same terminal state under the
- * same stamp, which any transition since, such as a revival, would have replaced. It
- * requires that no event exists, and that the awaiting run still holds its claim.
+ * on the child's row being the one that was read: it carries the same stamp, which any
+ * transition since, such as a revival, would have replaced. The store has already
+ * refused a child in another queue, and a row under the stamp that was read is in the
+ * state that was read, so neither is asked again. It requires that no event exists, and
+ * that the awaiting run still holds its claim.
  */
 export const materializeTaskDoneCas = defineStatement(
   'await-event materialize',
@@ -333,7 +335,6 @@ export const materializeTaskDoneCas = defineStatement(
       childTaskId: string
       eventName: EventName
       payloadJson: string
-      childState: TerminalState
       /** The stamp the child's row carried when its outcome was read, or null. */
       childStamp: string | null
       liveTask: SqlFragment
@@ -356,8 +357,6 @@ export const materializeTaskDoneCas = defineStatement(
           .selectFrom('tasks as c')
           .select(selections)
           .where('c.task_id', '=', binds.childTaskId)
-          .where('c.queue', '=', binds.queue)
-          .where('c.state', '=', binds.childState)
           .where('c.fence_stamp', 'is not distinct from', binds.childStamp)
           .where((where) =>
             where.not(

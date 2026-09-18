@@ -173,7 +173,10 @@ describe('PgExecutor transactions', () => {
         rowsAffected: results.map((entry) => entry.rowsAffected),
       }
     }
-    expect({ lost: await sent(0), won: await sent(1) }).toEqual({
+    expect(
+      { lost: await sent(0), won: await sent(1) },
+      'mutation-verdict:behavior:postgres-skips-a-gated-statement',
+    ).toEqual({
       lost: {
         texts: ['BEGIN', 'UPDATE gate', 'UPDATE ungated', 'COMMIT'],
         rowsAffected: [0, 0, 0, 7],
@@ -193,12 +196,12 @@ describe('PgExecutor transactions', () => {
   })
 
   it('runs a batch again when PostgreSQL chose it as a deadlock victim, and gives up after three', async () => {
-    const run = async (deadlocksBeforeSuccess: number) => {
+    const run = async (deadlocksBeforeSuccess: number, code = '40P01') => {
       let attempts = 0
       const client = new FakeClient((text) => {
         if (text !== 'UPDATE contended') return EMPTY_RESULT
         attempts += 1
-        if (attempts <= deadlocksBeforeSuccess) throw databaseError('40P01', 'deadlock detected')
+        if (attempts <= deadlocksBeforeSuccess) throw databaseError(code, 'aborted')
         return result([], [], 1)
       })
       const outcome = await executor(new FakePool(client))
@@ -210,28 +213,48 @@ describe('PgExecutor transactions', () => {
       return { outcome, texts: client.calls.map(({ text }) => text) }
     }
     const once = ['BEGIN', 'UPDATE contended', 'ROLLBACK']
-    expect({ victimOnce: await run(1), victimAlways: await run(99) }).toEqual({
+    expect(
+      {
+        victimOnce: await run(1),
+        victimAlways: await run(99),
+        anotherError: await run(1, '23505'),
+      },
+      'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
+    ).toEqual({
       victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
       victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
+      // Only a deadlock is run again. Any other failure is reported the first time.
+      anotherError: { outcome: 'StoreUnavailableError', texts: once },
     })
   })
 
   it('refuses a gate that does not name an earlier statement', async () => {
     const client = new FakeClient(() => EMPTY_RESULT)
-    const refusals = []
-    for (const skipUnlessWrote of [0, 1, -1, 0.5]) {
-      refusals.push(
-        await executor(new FakePool(client))
-          .batch('bad-gate', [{ sql: 'UPDATE follows', args: [], skipUnlessWrote }])
-          .then(
-            () => 'accepted',
-            (error: unknown) => (error instanceof Error ? error.name : String(error)),
-          ),
-      )
+    const refusals: Record<string, string> = {}
+    // The gate rides on the second statement, so each rule has an input only it refuses.
+    for (const [why, skipUnlessWrote] of [
+      ['itself', 1],
+      ['a later one', 2],
+      ['a negative index', -1],
+      ['a fraction', 0.5],
+      ['the first', 0],
+    ] as const) {
+      refusals[why] = await executor(new FakePool(client))
+        .batch('gate', [
+          { sql: 'UPDATE first', args: [] },
+          { sql: 'UPDATE follows', args: [], skipUnlessWrote },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        )
     }
-    expect({ refusals, sent: client.calls.length }).toEqual({
-      refusals: ['TypeError', 'TypeError', 'TypeError', 'TypeError'],
-      sent: 0,
+    expect(refusals, 'mutation-verdict:behavior:postgres-gate-names-an-earlier-statement').toEqual({
+      itself: 'TypeError',
+      'a later one': 'TypeError',
+      'a negative index': 'TypeError',
+      'a fraction': 'TypeError',
+      'the first': 'accepted',
     })
   })
 
@@ -252,7 +275,10 @@ describe('PgExecutor transactions', () => {
       },
     )
 
-    expect(client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim())).toEqual([
+    expect(
+      client.calls.map(({ text }) => text.replace(/\s+/g, ' ').trim()),
+      'mutation-verdict:behavior:postgres-event-lock-is-advisory',
+    ).toEqual([
       'BEGIN',
       "SELECT pg_advisory_xact_lock(hashtextextended( jsonb_build_array( current_database(), current_schema(), 'durablerun:event', $1::text, $2::text )::text, 0 ))",
       'SELECT value FROM protocol_state',

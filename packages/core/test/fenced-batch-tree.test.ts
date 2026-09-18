@@ -112,8 +112,20 @@ describe('FencedBatch tree statements', () => {
       'a row another batch wrote',
       statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
     )
+    // An open tail reads rows this batch did not write. One that carries a fence anyway
+    // is still sent: nothing says its rows depend on that fence alone.
+    b.openTailTree(
+      'other-fenced',
+      'a row another batch wrote, beside one this batch stamped',
+      statement(
+        db.selectFrom('runs').select('run_id').where('fence_stamp', '=', fenceValue('win')),
+      ),
+    )
     await b.run(executor)
-    expect(captured.map((sent) => sent.skipUnlessWrote)).toEqual([undefined, 0, 1, 0, 0, undefined])
+    expect(
+      captured.map((sent) => sent.skipUnlessWrote),
+      'mutation-verdict:behavior:batch-names-each-gate',
+    ).toEqual([undefined, 0, 1, 0, 0, undefined, undefined])
   })
 
   it('refuses a statement that defineStatement did not mint, and an undefined bind', () => {

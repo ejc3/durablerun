@@ -418,12 +418,18 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       const child = await f.store.spawn(Q, 'child', '{}', { maxAttempts: 2 })
       await parkedParent(f, parent, child.taskId)
       const run = await claimActivated(f.store, Q, 'w-child')
-      await f.store.fail(Q, run.runId, run.claimToken, FAILURE, { delaySeconds: 0 })
-      expect({
-        event: await storedDoneEvent(f, child.taskId),
-        parent: await runState(f, parent.runId),
-        waits: await waitCount(f),
-      }).toEqual({ event: undefined, parent: 'sleeping', waits: 1 })
+      const retrying = await refusalName(
+        f.store.fail(Q, run.runId, run.claimToken, FAILURE, { delaySeconds: 0 }),
+      )
+      expect(
+        {
+          retrying,
+          event: await storedDoneEvent(f, child.taskId),
+          parent: await runState(f, parent.runId),
+          waits: await waitCount(f),
+        },
+        'mutation-verdict:behavior:task-done-event-follows-the-terminal-statement',
+      ).toEqual({ retrying: 'accepted', event: undefined, parent: 'sleeping', waits: 1 })
       // The retry's own failure is terminal, and that batch writes the event.
       const retried = await claimActivated(f.store, Q, 'w-child-2')
       await f.store.fail(Q, retried.runId, retried.claimToken, FAILURE, { delaySeconds: 0 })
@@ -479,10 +485,11 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
           null,
         ),
       )
-      expect(
-        { refused, parent: await runState(f, parent.runId), waits: await waitCount(f) },
-        'mutation-verdict:behavior:await-event-refuses-reserved-name',
-      ).toEqual({ refused: 'RangeError', parent: 'running', waits: 0 })
+      expect({
+        refused,
+        parent: await runState(f, parent.runId),
+        waits: await waitCount(f),
+      }).toEqual({ refused: 'RangeError', parent: 'running', waits: 0 })
     })
 
     // AwaitRefused and RefusedNeverWaits: a child in another queue is refused for good,
@@ -522,7 +529,10 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
     it('refuses to await a task that does not exist', async () => {
       const parent = await claimedParent(f)
       const refusal = await childRefusal(awaitChild(f.store, Q, parent, 'no-such-task', null))
-      expect({ refusal, waits: await waitCount(f) }).toEqual({
+      expect(
+        { refusal, waits: await waitCount(f) },
+        'mutation-verdict:behavior:child-await-refuses-an-unknown-task',
+      ).toEqual({
         refusal: 'no-such-task',
         waits: 0,
       })
@@ -541,9 +551,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       ).toEqual({ parked: 'accepted', waits: 1 })
       // The child's existence, queue, and state are read inside the batch, under the
       // event lock, so the common await is one batch and no read.
-      expect(recorded.labels, 'mutation-verdict:behavior:child-await-decides-in-the-batch').toEqual(
-        ['await-event'],
-      )
+      expect(recorded.labels).toEqual(['await-event'])
     })
 
     /**
@@ -652,6 +660,55 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       await f.store.complete(Q, revived.runId, revived.claimToken, '{}')
       expect(await runState(f, parent.runId)).toBe('pending')
       expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // The record batch requires that no event exists. A terminal batch of this build may
+    // have written one since the read, and then that event is the answer.
+    it('answers with an event a terminal batch wrote between the read and the batch', async () => {
+      const parent = await claimedParent(f)
+      const childTaskId = await endedWithNoEvent('completed')
+      const written = encodeTaskOutcome({
+        state: 'completed',
+        completedPayloadJson: '{"written":"since"}',
+      })
+      const interposed = interposeAfterBatch(f.raw, 'task-done-state', async () => {
+        await f.raw.batch('a-batch-wrote-the-event-since', [
+          {
+            sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                  VALUES (?, ?, ?, ?)`,
+            args: [Q, taskDoneEventName(childTaskId), written, START_MS],
+          },
+        ])
+      })
+      const answer = await awaitChild(
+        f.storeOver(interposed.executor),
+        Q,
+        parent,
+        childTaskId,
+        null,
+      ).catch((error: unknown) => String(error))
+      expect(
+        { answer, event: (await storedDoneEvent(f, childTaskId))?.payload },
+        'mutation-verdict:behavior:child-await-keeps-an-event-written-since-the-read',
+      ).toEqual({ answer: { emitted: true, payloadJson: written }, event: written })
+    })
+
+    // Only a run that still holds its claim records anything. A zombie whose lease was
+    // swept reads the same ended child and must write nothing.
+    it('records nothing for a run whose claim is gone', async () => {
+      const parent = await claimedParent(f)
+      const childTaskId = await endedWithNoEvent('completed')
+      await f.store.expireLeaseNow(Q, parent.runId, parent.claimToken)
+      await f.store.sweep(Q, 10)
+      const zombie = await refusalName(awaitChild(f.store, Q, parent, childTaskId, null))
+      expect(
+        { zombie, event: await storedDoneEvent(f, childTaskId) },
+        'mutation-verdict:behavior:child-await-records-only-under-a-live-claim',
+      ).toEqual({ zombie: 'LeaseLostError', event: undefined })
+      // The successor holds a live claim, and its await records the ending.
+      await f.admin.setFakeNowEpochMs(START_MS + 10_000)
+      const successor = await claimActivated(f.store, Q, 'w-successor')
+      expect((await awaitChild(f.store, Q, successor, childTaskId, null)).emitted).toBe(true)
     })
 
     // AwaitTimeout: the claim that finds the wait due consumes it and returns no

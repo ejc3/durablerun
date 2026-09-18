@@ -300,11 +300,10 @@ describe('hosted-alpha Web Request router', () => {
         ),
       )
       const tick = await f.router.runTick()
-      expect({
-        status: response.status,
-        body: await responseBody(response),
-        claimed: tick.claimed,
-      }).toEqual({ status: 400, body: { error: 'invalid_request' }, claimed: 0 })
+      expect(
+        { status: response.status, body: await responseBody(response), claimed: tick.claimed },
+        'mutation-verdict:behavior:hosted-enqueue-refuses-reserved-key',
+      ).toEqual({ status: 400, body: { error: 'invalid_request' }, claimed: 0 })
     } finally {
       f.close()
     }

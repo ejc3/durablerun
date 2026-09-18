@@ -454,6 +454,11 @@ export class FencedBatch {
     }
     const whereArgs = spec.whereArgs ?? []
     const boundQueue = spec.queue
+    if (boundQueue !== undefined && spec.set === undefined) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') binds a queue on a DELETE: no generated DELETE follows a queue-scoped relation, so nothing holds that shape`,
+      )
+    }
     if (boundQueue !== undefined && !relation.queueScoped) {
       throw new Error(
         `FencedBatch[${this.label}] derived('${name}') binds a queue, and '${spec.relation}' is not queue-scoped`,
@@ -487,10 +492,9 @@ export class FencedBatch {
       : null
 
     if (spec.set === undefined) {
-      let selected = generatedBuilder
+      const selected = generatedBuilder
         .deleteFrom(target)
         .where((eb) => eb(eb.ref(key), 'in', sourceKeys))
-      if (boundQueue !== undefined) selected = selected.where(`${target}.queue`, '=', boundQueue)
       return this.addGenerated(name, narrow === null ? selected : selected.where(narrow), rows)
     }
     if (assignments.length === 0) {

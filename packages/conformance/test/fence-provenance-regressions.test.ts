@@ -1261,21 +1261,45 @@ describe('fence provenance', () => {
         { task_id: 'bound-foreign-task', state: 'pending' },
         { task_id: 'bound-same', state: 'completed' },
       ])
-      expect(() =>
-        new FencedBatch('relation:bound-unscoped', 'relation-seed', {
+      const refused = (build: () => unknown): string => {
+        try {
+          build()
+          return 'accepted'
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error)
+        }
+      }
+      const onRuns = () =>
+        new FencedBatch('relation:bound-refusals', 'relation-seed', {
           now: NOW_MS,
           tree: TREE_DIALECT,
-        })
-          .cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
-            'bound-same-run',
-          ])
-          .derived('target', {
+        }).cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
+          'bound-same-run',
+        ])
+      expect(
+        refused(() =>
+          onRuns().derived('target', {
             relation: 'runs-to-waits',
             fence: 'source',
             queue: Q,
+            set: undefined,
             rows: 'source-keys',
           }),
-      ).toThrow(/not queue-scoped/)
+        ),
+        'mutation-verdict:behavior:generated-bound-queue-is-an-updates',
+      ).toMatch(/binds a queue on a DELETE/)
+      expect(
+        refused(() =>
+          onRuns().derived('target', {
+            relation: 'runs-to-runs',
+            fence: 'source',
+            queue: Q,
+            set: { state: `'failed'` },
+            rows: 'source-keys',
+          }),
+        ),
+        'mutation-verdict:behavior:generated-bound-queue-needs-a-queue-scoped-relation',
+      ).toMatch(/not queue-scoped/)
     } finally {
       await f.close()
     }

@@ -60,13 +60,16 @@ it('a child ending does not deadlock against a cancel of its parked parent', asy
   const completing = refusalName(f.store.complete('q', childRun.runId, childRun.claimToken, '{}'))
   const task = async (taskId: string) =>
     (await readOne(f.raw, 'SELECT state FROM tasks WHERE task_id = ?', [taskId]))?.state
-  expect({
-    cancel: await cancelling,
-    complete: await completing,
-    parent: await task(parentTask.taskId),
-    child: await task(child.taskId),
-    deadlocks: (await deadlocks()) - before,
-  }).toEqual({
+  expect(
+    {
+      cancel: await cancelling,
+      complete: await completing,
+      parent: await task(parentTask.taskId),
+      child: await task(child.taskId),
+      deadlocks: (await deadlocks()) - before,
+    },
+    'mutation-verdict:behavior:cancel-locks-runs-before-the-task',
+  ).toEqual({
     cancel: 'accepted',
     complete: 'accepted',
     parent: 'cancelled',

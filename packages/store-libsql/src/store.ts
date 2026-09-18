@@ -2223,7 +2223,6 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         childTaskId,
         eventName: name,
         payloadJson: encodeTaskOutcome(outcome),
-        childState: outcome.state,
         childStamp,
         liveTask: sqlFragment(`t.state IN ${LIVE}`),
       }),
