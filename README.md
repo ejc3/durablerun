@@ -55,6 +55,29 @@ DURABLERUN_POSTGRES_URL=postgresql://postgres:postgres@127.0.0.1:5432/durablerun
 CI and nightly jobs provide the same PostgreSQL service; no repository secret
 is required.
 
+## Run MySQL conformance
+
+The same matrix requires MySQL 8 through `DURABLERUN_MYSQL_URL`. The suite
+creates a database for every case, so the disposable service keeps its data on
+a tmpfs with the binary log and durable flushes off:
+
+```sh
+podman run --name durablerun-mysql-8 \
+  -e MYSQL_ROOT_PASSWORD=durablerun -e MYSQL_DATABASE=durablerun \
+  -p 127.0.0.1:3306:3306 --tmpfs /var/lib/mysql:rw,size=4g -d docker.io/library/mysql:8.4 \
+  --skip-log-bin --innodb-flush-log-at-trx-commit=0 --innodb-doublewrite=0 \
+  --sync-binlog=0 --max-connections=500
+DURABLERUN_MYSQL_URL=mysql://root:durablerun@127.0.0.1:3306/durablerun \
+  bash packages/conformance/bin/dialect-conformance.sh mysql
+```
+
+`packages/conformance/bin/dialect-conformance.sh` runs one dialect's conformance and its store's
+own tests, and fails a run that exercised nothing. `pnpm verify` runs every
+enrolled dialect, so it needs all three servers unless
+`DURABLERUN_CONFORMANCE_DIALECTS` names the ones it has, as a comma list such
+as `libsql,postgres`. CI runs MySQL in its own job, `conformance-mysql`, beside
+`verify`.
+
 ## Run against remote Turso
 
 Copy `.env.example` to `.env` and set `TURSO_DATABASE_URL` and
