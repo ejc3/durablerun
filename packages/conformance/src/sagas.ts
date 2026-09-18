@@ -699,11 +699,12 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       await f.store.cancelTask(Q, dies.taskId)
     })
 
-    // The pass runs one ordinal past the budget, so placing it raises the budget by one. A
-    // task already at the top of the budget a task may have cannot be given a pass, and it
-    // ends where it stands, as it did before sagas, with no rollback outcome to report. The
-    // bound keeps a stored counter an exact integer. Nothing reaches it by running, so
-    // the rows are moved there by hand, and they stay a state the engine could have left.
+    // The pass runs one ordinal past the failed run, and its batch writes that ordinal as
+    // the task's budget. A run that failed at the largest user ordinal a budget can hold
+    // cannot be given a pass, and its task ends where it stands, as it did before sagas,
+    // with no rollback outcome to report. The bound keeps a stored counter an exact
+    // integer. Running there takes a million attempts, so the rows are moved there by
+    // hand, and they stay a state the engine could have left.
     it('ends a task whose budget cannot be raised, and places no pass', async () => {
       const spawned = await f.store.spawn(Q, 'saga', '{}', { maxAttempts: MAX_COUNT })
       const run = await claimActivated(f.store, Q, 'w-last')

@@ -1429,8 +1429,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   the paired runs compare them.
   Open, and owned by this entry until it merges:
   - The poison matrix seeds no task with a started step, so it never reaches
-    the rollback pass. The pass's one stored-integer guard is held by a
-    boundary case in the `sagas` surface.
+    the rollback pass. The pass's one integer guard is that the budget its
+    batch writes fits. Two cases in the `sagas` surface hold it: a run at the
+    largest user ordinal gets no pass, and a task spawned with the largest
+    budget rolls back.
   - The store records the attempt count the SDK hands it and does not check
     it against the last one, and nothing caps how many passes a task may
     take. Rollback budgets are the SDK's to keep.

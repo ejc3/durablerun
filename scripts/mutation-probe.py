@@ -11655,7 +11655,7 @@ MUTATION_SPECS.extend(
         (
             "saga-pass-needs-room-in-the-budget",
             "packages/store-libsql/src/store.ts",
-            "           AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 't')}`,\n",
+            "           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,\n",
             "           AND 1 = 1`,\n",
             "a pass is placed for a task at the top of its budget, and the budget is stored past its bound",
         ),

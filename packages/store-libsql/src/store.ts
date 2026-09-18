@@ -1697,13 +1697,16 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         delayMs: pass.delayMs,
         fence,
         taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
-        // The pass runs one ordinal past the budget, so the budget must have room to be
-        // raised. Its ordinal then has room too: every compare-and-set a pass is fenced on
-        // vouches for the accounting identity, under which the run's ordinal is the task's
-        // attempts and infrastructure retries plus one, and its attempts are below its budget.
+        // The batch writes the task's budget as the failed run's user ordinal plus one, so
+        // that sum must be a budget a task may have. The guard reads the ordinal the batch
+        // writes from, and never the stored budget, which the batch replaces: a task spawned
+        // with the largest budget rolls back like any other. The pass's own ordinal has room
+        // too, because every compare-and-set a pass is fenced on vouches for the accounting
+        // identity, under which a run's ordinal is its task's attempts and infrastructure
+        // retries plus one.
         admission: sqlFragment(
           `t.state IN ${LIVE} AND ${pass.admission}
-           AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 't')}`,
+           AND (f.attempt - t.infra_retries) < ${TASK_INTEGER_BOUNDS.max_attempts.max}`,
           [...pass.admissionArgs],
         ),
         successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [
