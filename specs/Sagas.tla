@@ -275,12 +275,19 @@ TypeOK ==
   /\ fwd \in [Steps -> {"none", "started", "done"}]
   /\ startIdx \in [Steps -> Nat]
   /\ rb \in [Steps -> {"none", "done", "failed"}]
-  /\ \A s \in Steps : rbTries[s] \in 0..(MaxRollbackAttempts - 1)
+  /\ rbTries \in [Steps -> Nat]
   /\ outcome \in {"none", "complete", "failed"}
   /\ cause \in {"none", "user", "infra"}
   /\ effect \in [Steps -> {"absent", "maybe", "live", "gone"}]
-  /\ revivals \in 0..MaxRevivals /\ generation \in 0..MaxRevivals
+  /\ revivals \in Nat /\ generation \in Nat
   /\ owed \in BOOLEAN
+
+\* A rollback's failed attempts stay inside its own budget.
+RollbackBudgetHeld == \A s \in Steps : rbTries[s] < MaxRollbackAttempts
+
+\* Revivals are counted and bounded.  The bound is ARTIFICIAL: it keeps the model
+\* finite, and the SQL owes it nothing.
+RevivalBoundHeld == revivals <= MaxRevivals /\ generation <= revivals
 
 \* A step has an index exactly when it started, and no two steps share one.
 StartOrderDistinct ==

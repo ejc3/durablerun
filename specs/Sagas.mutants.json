@@ -212,7 +212,7 @@
   {
     "name": "retry-past-the-budget",
     "guard": "a rollback retries only within its own budget",
-    "caughtBy": "TypeOK",
+    "caughtBy": "RollbackBudgetHeld",
     "find": "  /\\ rbTries[s] + 1 < MaxRollbackAttempts\n",
     "replace": "  /\\ TRUE\n"
   },
@@ -281,8 +281,8 @@
   },
   {
     "name": "revive-past-the-budget",
-    "guard": "revivals are bounded",
-    "caughtBy": "TypeOK",
+    "guard": "revivals are bounded, which only keeps the model finite",
+    "caughtBy": "RevivalBoundHeld",
     "find": "Revive ==\n  /\\ task = \"failed\" /\\ revivals < MaxRevivals\n",
     "replace": "Revive ==\n  /\\ task = \"failed\"\n"
   },
