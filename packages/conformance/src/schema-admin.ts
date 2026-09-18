@@ -189,6 +189,41 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
       }
     })
 
+    it('forgives a bootstrap that lost to a concurrent migrator, and only then', async () => {
+      const bootstrapFailing = async (winnerFinishesFirst: boolean) => {
+        const fixture = await makeFixture(`schema-admin-bootstrap-lost-${winnerFinishesFirst}`, {
+          migrate: false,
+        })
+        try {
+          const loser = fixture.adminOver({
+            batch: async (label, statements, control) => {
+              if (label !== 'migrate:bootstrap')
+                return fixture.raw.batch(label, statements, control)
+              if (winnerFinishesFirst) await fixture.admin.migrate()
+              throw new Error('the bootstrap failed')
+            },
+          })
+          return {
+            migration: await loser.migrate().then(
+              () => 'resolved',
+              (error: unknown) => describeFailure(error).split('\n')[0],
+            ),
+            migrated: (await fixture.admin.schemaVersion()) > 0,
+          }
+        } finally {
+          await fixture.close()
+        }
+      }
+
+      expect({
+        afterAWinner: await bootstrapFailing(true),
+        withNoWinner: await bootstrapFailing(false),
+      }).toEqual({
+        afterAWinner: { migration: 'resolved', migrated: true },
+        withNoWinner: { migration: 'Error: the bootstrap failed', migrated: false },
+      })
+    })
+
     it('accepts only canonical nonnegative safe base-10 schema versions', async () => {
       const fixture = await makeFixture('schema-admin-canonical')
       try {
