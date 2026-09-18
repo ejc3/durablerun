@@ -427,11 +427,24 @@ export const sagaBeganOf = (taskId: string): string =>
              AND sp.checkpoint_name = '${SAGA_PHASE_CHECKPOINT}')`
 
 /**
+ * A reserved name as the literal a name is compared with, byte for byte. A bind compared
+ * with a plain literal takes the connection's collation, and the driver's default folds
+ * case and pads spaces, so `$ROLLBACK:a` and `$rolling-back ` would read as reserved here
+ * and as plain names on the other two stores. A column compares in its own collation,
+ * which is binary, and a binary operand makes a bind compare the same way. The cast is in
+ * the statement and not a session setting, because whoever owns a foreign pool's
+ * connections can undo a session setting, with `SET NAMES` for one, and cannot change the
+ * text of a statement. Every reserved name is ASCII, so its bytes are the same in any
+ * character set a connection may use.
+ */
+const exactly = (reserved: string): string => `CAST('${reserved}' AS BINARY)`
+
+/**
  * `name` starts with `prefix`, exactly. LIKE would not do: it folds ASCII case on one
  * dialect and not another, and a reserved prefix is matched the same way everywhere.
  */
 const namedUnder = (name: string, prefix: string): string =>
-  `substr(${name}, 1, ${prefix.length}) = '${prefix}'`
+  `substr(${name}, 1, ${prefix.length}) = ${exactly(prefix)}`
 
 /**
  * What the saga phase requires of a checkpoint write, as one predicate for every name:
@@ -447,7 +460,7 @@ export const checkpointInItsPhase = (task: string, name: string): string =>
  * either phase, so no caller of the port can forge a saga or spend a rollback's budget.
  */
 export const checkpointIsTheEngines = (name: string): string =>
-  `(${name} = '${SAGA_PHASE_CHECKPOINT}'
+  `(${name} = ${exactly(SAGA_PHASE_CHECKPOINT)}
     OR ${namedUnder(name, SAGA_TRIES_PREFIX)})`
 
 /**
