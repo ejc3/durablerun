@@ -702,6 +702,43 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       expect(await engineInvariantViolations(f.raw)).toEqual([])
     })
 
+    // The other side of the same race: the child is revived before the read that says why
+    // the await neither registered nor hit. It is live again, so the next round registers
+    // on it. Answering with the claim's loss would make a parent that holds a live claim
+    // abandon its pass, and the sweep would charge it an infrastructure retry.
+    it('registers on a child that is revived before the read that says why', async () => {
+      const parent = await claimedParent(f)
+      const childTaskId = await endedWithNoEvent('failed')
+      const interposed = interposeAfterBatch(f.raw, 'await-event', async () => {
+        expect(await f.store.retryTask(Q, childTaskId)).not.toBeNull()
+      })
+      const answer = await awaitChild(
+        f.storeOver(interposed.executor),
+        Q,
+        parent,
+        childTaskId,
+        null,
+      ).catch((error: unknown) => (error instanceof Error ? error.name : String(error)))
+      expect(
+        {
+          revivedInBetween: interposed.fired(),
+          answer,
+          parent: await runState(f, parent.runId),
+          waits: await waitCount(f),
+        },
+        'mutation-verdict:behavior:child-await-registers-on-a-revived-child',
+      ).toEqual({
+        revivedInBetween: true,
+        answer: { emitted: false },
+        parent: 'sleeping',
+        waits: 1,
+      })
+      // The revived child ends under this build, and that batch wakes the parent.
+      const revived = await claimActivated(f.store, Q, 'w-revived')
+      await f.store.complete(Q, revived.runId, revived.claimToken, '{}')
+      expect(await runState(f, parent.runId)).toBe('pending')
+    })
+
     // The record batch requires that no event exists. A terminal batch of this build may
     // have written one since the read, and then that event is the answer.
     it('answers with an event a terminal batch wrote between the read and the batch', async () => {
