@@ -6640,6 +6640,34 @@ MUTATION_SPECS.extend(
             "two awaits that record the outcome of one child insert the same event row, and the second is reported as an outage",
         ),
         (
+            "batch-gate-is-the-named-statement",
+            "packages/core/src/fenced-batch.ts",
+            "      const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)\n",
+            "      const gateIndex = this.statements.findIndex((earlier) => earlier.name !== gateName)\n",
+            "a follow-on names some other statement as its gate, and PostgreSQL skips it or sends it on the wrong word",
+        ),
+        (
+            "batch-states-a-gate-only-where-there-is-one",
+            "packages/core/src/fenced-batch.ts",
+            "        gatedBy === undefined\n",
+            "        gatedBy !== undefined\n",
+            "a gated statement reaches the executor with no gate, and an ungated one with an undefined one",
+        ),
+        (
+            "postgres-emit-takes-the-event-lock",
+            "packages/store-postgres/src/store.ts",
+            "    b.lockEvent({ queue, eventName: name })\n    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,\n",
+            "    // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,\n",
+            "an emit inserts its event between an await reading none and registering its wait, and the waiter sleeps for ever",
+        ),
+        (
+            "postgres-await-takes-the-event-lock",
+            "packages/store-postgres/src/store.ts",
+            "    b.lockEvent({ queue, eventName: name })\n    // Wait registration FIRST, fenced on the LIVE claim token + running + task\n",
+            "    // Wait registration FIRST, fenced on the LIVE claim token + running + task\n",
+            "an await registers its wait after a terminal batch that did not wait for it has looked for one, and the parent sleeps for ever",
+        ),
+        (
             "hosted-enqueue-refuses-reserved-key",
             "packages/driver/src/hosted.ts",
             "        if (idempotencyKey?.startsWith(RESERVED_EVENT_PREFIX)) {\n",
@@ -10786,6 +10814,8 @@ for _verdict, _names in (
         (
             "batch-names-each-gate",
             "open-tail-is-never-skipped",
+            "batch-gate-is-the-named-statement",
+            "batch-states-a-gate-only-where-there-is-one",
         ),
     ),
     (
@@ -10835,6 +10865,7 @@ for _verdict, _names in (
             "postgres-cancel-takes-the-event-lock",
             "postgres-complete-takes-the-event-lock",
             "postgres-fail-takes-the-event-lock",
+            "postgres-await-takes-the-event-lock",
         ),
     ),
     (
@@ -10984,6 +11015,17 @@ for _verdict, _names in (
         ),
         (
             "postgres-recording-await-takes-the-event-lock",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/postgres-terminal-lock.test.ts",
+            "an emit waits for an await of its event that has not committed",
+            "mutation-verdict:behavior:emit-takes-the-event-lock",
+        ),
+        (
+            "postgres-emit-takes-the-event-lock",
         ),
     ),
     (

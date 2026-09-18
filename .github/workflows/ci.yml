@@ -1116,6 +1116,12 @@ jobs:
               repaired = exempt(repaired, candidate, (
                   'mutation-verdict:construction:tree-followon-insert-no-fragment',
               ))
+              repaired = held_by_head(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
+                  "const gateName = open ? undefined : gates[0]?.fence",
+                  "const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)",
+                  "if (gateIndex >= 0) gatedBy = gateIndex",
+                  "gatedBy === undefined",
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
