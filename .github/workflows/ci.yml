@@ -399,7 +399,7 @@ jobs:
                   "mutation-verdict:construction:tree-eligibility-asked-of-every-statement",
                   "mutation-verdict:construction:tree-deadline-refuses-a-comparison",
                   "mutation-verdict:construction:tree-deadline-either-side",
-                  "mutation-verdict:construction:tree-deadline-under-arithmetic",
+                  "mutation-verdict:construction:tree-deadline-under-a-call",
                   "mutation-verdict:construction:tree-deadline-test-is-null",
                   "mutation-verdict:construction:tree-deadline-test-is-not-null",
                   "mutation-verdict:construction:tree-deadline-names-the-column",

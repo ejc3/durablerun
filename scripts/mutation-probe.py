@@ -1030,11 +1030,11 @@ MUTATION_SPECS = [
         "a deadline comparison passes when the column stands on the right",
     ),
     (
-        "tree-deadline-under-arithmetic",
+        "tree-deadline-under-a-call",
         "packages/core/src/sql-tree.ts",
         "  return referencedColumn(node) === 'cancel_at_ms' || children(node).some(namesDeadline)",
         "  return referencedColumn(node) === 'cancel_at_ms'",
-        "a deadline comparison passes when arithmetic surrounds the column",
+        "a deadline comparison passes when a call surrounds the column",
     ),
     (
         "tree-deadline-test-is-null",
@@ -7447,11 +7447,11 @@ VERDICTS = {
         "a second definition of eligibility a test of the cancellation deadline refuses it with the column on the right",
         "mutation-verdict:construction:tree-deadline-either-side",
     ),
-    "tree-deadline-under-arithmetic": ExpectedVerdict(
+    "tree-deadline-under-a-call": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
         "a second definition of eligibility a test of the cancellation deadline refuses it with arithmetic or a call around the column",
-        "mutation-verdict:construction:tree-deadline-under-arithmetic",
+        "mutation-verdict:construction:tree-deadline-under-a-call",
     ),
     "tree-deadline-test-is-null": ExpectedVerdict(
         "construction",

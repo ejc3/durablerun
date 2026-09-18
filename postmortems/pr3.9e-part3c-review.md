@@ -114,7 +114,11 @@ pass. The fold itself was re-tested and not re-reviewed, under the project's cap
 review round. One defect of the fold was caught by our own check before it was kept:
 the red commit for finding 1 did not typecheck as first committed, because the commit
 ran after a failed check in an unguarded command, and it was repaired before anything
-was built on it.
+was built on it. A second was caught by the mutation probe: a verdict test of the fold
+carried its marker on arithmetic around the deadline, which the rule refuses as an
+operator in its own right, so the mutant that stops reading below an operand was
+caught by the test's other assertion and reported WRONG-PATH. The marker moved to the
+call, which is the shape only that condition decides.
 
 ## Evidence
 

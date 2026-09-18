@@ -1034,10 +1034,12 @@ describe('a second definition of eligibility', () => {
     })
 
     it('refuses it with arithmetic or a call around the column', () => {
-      refuses('mutation-verdict:construction:tree-deadline-under-arithmetic', DEADLINE, () =>
+      // Arithmetic is an operator on the column, so it is refused as itself. A call is no
+      // operator, so only reading below the operand finds the column inside it.
+      refuses('arithmetic around the column', DEADLINE, () =>
         runsWhere((eb) => eb(eb('cancel_at_ms', '-', 5), '<=', 0)),
       )
-      refuses('a call around the column', DEADLINE, () =>
+      refuses('mutation-verdict:construction:tree-deadline-under-a-call', DEADLINE, () =>
         runsWhere((eb) => eb(eb.fn('coalesce', [eb.ref('cancel_at_ms'), eb.val(0)]), '<=', 5)),
       )
     })
