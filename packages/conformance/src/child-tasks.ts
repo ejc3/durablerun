@@ -1,0 +1,641 @@
+import {
+  ChildAwaitRefusedError,
+  type ClaimedRun,
+  INFRA_RETRY_CAP,
+  REASON_CANCELLED,
+  REASON_INFRA_CAP,
+  REASON_RELAUNCH_CAP,
+  RELAUNCH_CAP,
+  type SqlExecutor,
+  type TaskOutcome,
+  decodeTaskOutcome,
+  encodeTaskOutcome,
+  isTerminalState,
+  taskDoneEventName,
+} from '@durablerun/core'
+import { SimWorld } from '@durablerun/harness'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
+import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { engineInvariantViolations } from './invariants.js'
+import { claimActivated, claimOne, readOne, refusalName, withFixture } from './scenario.js'
+
+const Q = 'q'
+const START_MS = 1_000_000
+const STEP = '$await-task'
+
+/** One event's key, as one string. */
+function eventKey(queue: unknown, eventName: string): string {
+  return JSON.stringify([String(queue), eventName])
+}
+
+/**
+ * What specs/ChildTasks.tla requires of any history the engine itself produced, read
+ * from the shared schema. It is not part of the invariant library, because that library
+ * also judges states the poison matrix writes by hand, and a hand-written terminal task
+ * has no batch that could have written its event. Every walk and scenario whose rows
+ * only the engine wrote runs this beside the library.
+ *
+ * - TerminalImpliesDone: a terminal task has its completion event, in its own queue.
+ * - DoneAuthority, as far as rows can show it: a completion event names a task of its
+ *   queue, and its payload is an outcome `encodeTaskOutcome` wrote.
+ */
+export async function childTaskViolations(raw: SqlExecutor): Promise<string[]> {
+  const [tasks, events] = await raw.batch(
+    'child-task-violations',
+    [
+      { sql: 'SELECT task_id, queue, state FROM tasks', args: [] },
+      { sql: 'SELECT queue, event_name, payload FROM events', args: [] },
+    ],
+    'read',
+  )
+  const violations: string[] = []
+  const prefix = taskDoneEventName('')
+  const done = new Map<string, { eventName: string; payload: string }>()
+  for (const event of events?.rows ?? []) {
+    const eventName = String(event.event_name)
+    if (!eventName.startsWith(prefix)) continue
+    done.set(eventKey(event.queue, eventName), { eventName, payload: String(event.payload) })
+  }
+  for (const task of tasks?.rows ?? []) {
+    const taskId = String(task.task_id)
+    const key = eventKey(task.queue, taskDoneEventName(taskId))
+    const event = done.get(key)
+    done.delete(key)
+    if (event === undefined) {
+      if (isTerminalState(task.state)) {
+        violations.push(`terminal-task-without-completion-event: ${taskId}`)
+      }
+      continue
+    }
+    try {
+      decodeTaskOutcome(taskId, event.payload)
+    } catch (error) {
+      violations.push(`completion-event-undecodable: ${taskId}: ${String(error)}`)
+    }
+  }
+  for (const { eventName } of done.values()) {
+    violations.push(`completion-event-without-task: ${eventName}`)
+  }
+  return violations
+}
+
+/** A store over the fixture's real executor that records every batch label, in order. */
+function recordingLabels(f: StoreFixture): { store: StoreFixture['store']; labels: string[] } {
+  const labels: string[] = []
+  const store = f.storeOver({
+    batch: (label, statements, control) => {
+      labels.push(label)
+      return f.raw.batch(label, statements, control)
+    },
+  })
+  return { store, labels }
+}
+
+function awaitChild(
+  store: StoreFixture['store'],
+  queue: string,
+  parent: ClaimedRun,
+  childTaskId: string,
+  timeoutSeconds: number | null,
+) {
+  return store.awaitTaskDone(
+    queue,
+    parent.taskId,
+    parent.runId,
+    parent.claimToken,
+    STEP,
+    childTaskId,
+    timeoutSeconds,
+  )
+}
+
+/** Park an activated parent on `childTaskId`. The parent is claimed before the child is spawned. */
+async function parkedParent(
+  f: StoreFixture,
+  parent: ClaimedRun,
+  childTaskId: string,
+  timeoutSeconds: number | null = null,
+): Promise<void> {
+  const outcome = await awaitChild(f.store, Q, parent, childTaskId, timeoutSeconds)
+  expect(outcome, 'a same-queue child that has not ended parks its parent').toEqual({
+    emitted: false,
+  })
+}
+
+async function claimedParent(f: StoreFixture): Promise<ClaimedRun> {
+  await f.store.spawn(Q, 'parent', '{}')
+  return claimActivated(f.store, Q, 'w-parent')
+}
+
+/** Why a child await was refused, or 'accepted'. */
+function childRefusal(awaited: Promise<unknown>): Promise<string> {
+  return awaited.then(
+    () => 'accepted',
+    (error: unknown) => (error instanceof ChildAwaitRefusedError ? error.reason : String(error)),
+  )
+}
+
+interface TerminalBatch {
+  /** The batch label that ends the child. */
+  readonly label: (typeof TERMINAL_BATCH_LABELS)[number]
+  /** Spawn the child, let the parent park on it, end it through `store`, and say how it ended. */
+  readonly end: (
+    f: StoreFixture,
+    store: StoreFixture['store'],
+    beforeEnd: (childTaskId: string) => Promise<void>,
+  ) => Promise<{ childTaskId: string; outcome: TaskOutcome }>
+}
+
+const FAILURE = '{"name":"ChildBoom"}'
+
+/**
+ * One entry for each batch that can end a task (ChildTasks.tla's ledger block). Each
+ * owes the task's parent the same thing, so the cases below are generated from this
+ * list and not written one by one.
+ */
+const TERMINAL_BATCHES: readonly TerminalBatch[] = [
+  {
+    label: 'complete',
+    end: async (f, store, beforeEnd) => {
+      const child = await f.store.spawn(Q, 'child', '{}')
+      await beforeEnd(child.taskId)
+      const run = await claimActivated(f.store, Q, 'w-child')
+      await store.complete(Q, run.runId, run.claimToken, '{"out":7}')
+      return {
+        childTaskId: child.taskId,
+        outcome: { state: 'completed', completedPayloadJson: '{"out":7}' },
+      }
+    },
+  },
+  {
+    label: 'fail',
+    end: async (f, store, beforeEnd) => {
+      const child = await f.store.spawn(Q, 'child', '{}')
+      await beforeEnd(child.taskId)
+      const run = await claimActivated(f.store, Q, 'w-child')
+      await store.fail(Q, run.runId, run.claimToken, FAILURE, null)
+      return { childTaskId: child.taskId, outcome: { state: 'failed', failureReasonJson: FAILURE } }
+    },
+  },
+  {
+    label: 'cancel-task',
+    end: async (f, store, beforeEnd) => {
+      const child = await f.store.spawn(Q, 'child', '{}')
+      await beforeEnd(child.taskId)
+      expect(await store.cancelTask(Q, child.taskId)).toBe(true)
+      return {
+        childTaskId: child.taskId,
+        outcome: { state: 'cancelled', failureReasonJson: REASON_CANCELLED },
+      }
+    },
+  },
+  {
+    label: 'sweep:cancel',
+    end: async (f, store, beforeEnd) => {
+      const child = await f.store.spawn(Q, 'child', '{}', {
+        cancellation: { maxDelaySeconds: 5 },
+      })
+      await beforeEnd(child.taskId)
+      await f.admin.setFakeNowEpochMs(START_MS + 10_000)
+      expect((await store.sweep(Q, 10)).map((swept) => swept.kind)).toEqual(['cancelled'])
+      return {
+        childTaskId: child.taskId,
+        outcome: { state: 'cancelled', failureReasonJson: REASON_CANCELLED },
+      }
+    },
+  },
+  {
+    label: 'sweep:lost-launch',
+    end: async (f, store, beforeEnd) => {
+      const child = await f.store.spawn(Q, 'child', '{}')
+      await beforeEnd(child.taskId)
+      const run = await claimOne(f.store, Q, 'w-child')
+      await f.raw.batch('seed-relaunch-cap', [
+        {
+          sql: 'UPDATE runs SET relaunch_count = ? WHERE run_id = ?',
+          args: [RELAUNCH_CAP, run.runId],
+        },
+      ])
+      await f.admin.setFakeNowEpochMs(START_MS + 100_000)
+      expect((await store.sweep(Q, 10)).map((swept) => swept.kind)).toEqual([
+        'relaunch-cap-exhausted',
+      ])
+      return {
+        childTaskId: child.taskId,
+        outcome: { state: 'failed', failureReasonJson: REASON_RELAUNCH_CAP },
+      }
+    },
+  },
+  {
+    label: 'sweep:claim-timeout',
+    end: async (f, store, beforeEnd) => {
+      const child = await f.store.spawn(Q, 'child', '{}')
+      await beforeEnd(child.taskId)
+      const run = await claimActivated(f.store, Q, 'w-child')
+      await f.raw.batch('seed-infra-cap', [
+        {
+          sql: 'UPDATE tasks SET infra_retries = ? WHERE task_id = ?',
+          args: [INFRA_RETRY_CAP, run.taskId],
+        },
+        {
+          sql: 'UPDATE runs SET attempt = ? WHERE run_id = ?',
+          args: [INFRA_RETRY_CAP + 1, run.runId],
+        },
+      ])
+      await f.admin.setFakeNowEpochMs(START_MS + 100_000)
+      expect((await store.sweep(Q, 10)).map((swept) => swept.kind)).toEqual(['infra-cap-exhausted'])
+      return {
+        childTaskId: child.taskId,
+        outcome: { state: 'failed', failureReasonJson: REASON_INFRA_CAP },
+      }
+    },
+  },
+]
+
+async function storedDoneEvent(f: StoreFixture, childTaskId: string, queue = Q) {
+  return readOne(f.raw, 'SELECT payload FROM events WHERE queue = ? AND event_name = ?', [
+    queue,
+    taskDoneEventName(childTaskId),
+  ])
+}
+
+async function waitCount(f: StoreFixture): Promise<number> {
+  const counted = await readOne(f.raw, 'SELECT COUNT(*) AS n FROM waits', [])
+  return Number(counted?.n)
+}
+
+async function runState(f: StoreFixture, runId: string): Promise<unknown> {
+  return (await readOne(f.raw, 'SELECT state FROM runs WHERE run_id = ?', [runId]))?.state
+}
+
+/**
+ * The executable twins of specs/ChildTasks.tla, for every dialect. The model's ledger
+ * block is read by nothing (`scripts/spec-ledger.py` reads Scheduler.tla), so each of
+ * its actions and guards is held here by a case that names it.
+ */
+export function childTaskConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
+  describe(`child task conformance [${dialect}]`, () => {
+    let f: StoreFixture
+
+    beforeEach(async () => {
+      f = await makeFixture('child-tasks')
+      await f.admin.setFakeNowEpochMs(START_MS)
+    })
+
+    afterEach(async () => {
+      const violations = await childTaskViolations(f.raw)
+      await f.close()
+      expect(violations).toEqual([])
+    })
+
+    it('has one way to end a child for every terminal batch label', () => {
+      expect(TERMINAL_BATCHES.map((batch) => batch.label)).toEqual([...TERMINAL_BATCH_LABELS])
+    })
+
+    // ChildTerminal, with AtomicEmit: the batch that ends the child writes its completion
+    // event and wakes the registered waiter. TerminalImpliesDone and WaitIntegrity. One
+    // case over every terminal batch, so a batch added to the list is held to it.
+    it('every terminal batch writes the completion event and wakes a registered waiter', async () => {
+      const observed: Record<string, unknown> = {}
+      const expected: Record<string, unknown> = {}
+      for (const batch of TERMINAL_BATCHES) {
+        await withFixture(makeFixture, `child-terminal-${batch.label}`, async (fx) => {
+          await fx.admin.setFakeNowEpochMs(START_MS)
+          const parent = await claimedParent(fx)
+          const recorded = recordingLabels(fx)
+          const { childTaskId, outcome } = await batch.end(fx, recorded.store, (taskId) =>
+            parkedParent(fx, parent, taskId),
+          )
+          const payloadJson = encodeTaskOutcome(outcome)
+          const eventName = taskDoneEventName(childTaskId)
+          const parentRun = await readOne(
+            fx.raw,
+            'SELECT state, wake_event, event_payload FROM runs WHERE run_id = ?',
+            [parent.runId],
+          )
+          // ParentClaimWoken: the claim hands the parent the parked outcome.
+          const [woken] = await fx.store.claim(Q, 'w-parent-again', { leaseSeconds: 60, limit: 1 })
+          observed[batch.label] = {
+            ran: recorded.labels.includes(batch.label),
+            event: (await storedDoneEvent(fx, childTaskId))?.payload,
+            parent: parentRun,
+            waits: await waitCount(fx),
+            woken: woken?.runId === parent.runId ? woken.wake : 'the parent was not claimable',
+            decoded: decodeTaskOutcome(childTaskId, payloadJson),
+            violations: [
+              ...(await engineInvariantViolations(fx.raw)),
+              ...(await childTaskViolations(fx.raw)),
+            ],
+          }
+          expected[batch.label] = {
+            ran: true,
+            event: payloadJson,
+            parent: { state: 'pending', wake_event: eventName, event_payload: payloadJson },
+            waits: 0,
+            woken: { event: eventName, step: STEP, payloadJson },
+            decoded: outcome,
+            violations: [],
+          }
+        })
+      }
+      expect(
+        observed,
+        'mutation-verdict:behavior:terminal-batch-writes-the-completion-event',
+      ).toEqual(expected)
+    })
+
+    for (const batch of TERMINAL_BATCHES) {
+      // The same batch with nobody waiting still writes the event: AwaitHit reads it later.
+      it(`${batch.label} writes the completion event with no waiter, and a later await hits it`, async () => {
+        const { childTaskId, outcome } = await batch.end(f, f.store, async () => {})
+        // Claimed only now: a sweep that ends the child moves the clock past any lease.
+        const parent = await claimedParent(f)
+        const hit = await awaitChild(f.store, Q, parent, childTaskId, null)
+        expect(hit).toEqual({ emitted: true, payloadJson: encodeTaskOutcome(outcome) })
+        expect(await runState(f, parent.runId), 'a hit suspends nothing').toBe('running')
+        expect(await waitCount(f)).toBe(0)
+        expect(await engineInvariantViolations(f.raw)).toEqual([])
+      })
+    }
+
+    // A failure that retries ends nothing: the task is live, so it has no outcome yet.
+    it('a failure that schedules a retry writes no completion event and wakes nobody', async () => {
+      const parent = await claimedParent(f)
+      const child = await f.store.spawn(Q, 'child', '{}', { maxAttempts: 2 })
+      await parkedParent(f, parent, child.taskId)
+      const run = await claimActivated(f.store, Q, 'w-child')
+      await f.store.fail(Q, run.runId, run.claimToken, FAILURE, { delaySeconds: 0 })
+      expect({
+        event: await storedDoneEvent(f, child.taskId),
+        parent: await runState(f, parent.runId),
+        waits: await waitCount(f),
+      }).toEqual({ event: undefined, parent: 'sleeping', waits: 1 })
+      // The retry's own failure is terminal, and that batch writes the event.
+      const retried = await claimActivated(f.store, Q, 'w-child-2')
+      await f.store.fail(Q, retried.runId, retried.claimToken, FAILURE, { delaySeconds: 0 })
+      expect((await storedDoneEvent(f, child.taskId))?.payload).toBe(
+        encodeTaskOutcome({ state: 'failed', failureReasonJson: FAILURE }),
+      )
+      expect(await runState(f, parent.runId)).toBe('pending')
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // ReviveChild, DoneIsFirstOutcome, DoneImmutable: a revived child that ends again
+    // leaves the event alone, so an await before or after the revival reads one outcome.
+    it('keeps the first outcome after retryTask revives the child and it completes', async () => {
+      const child = await f.store.spawn(Q, 'child', '{}', { maxAttempts: 1 })
+      const first = await claimActivated(f.store, Q, 'w-child')
+      await f.store.fail(Q, first.runId, first.claimToken, FAILURE, null)
+      expect(await f.store.retryTask(Q, child.taskId)).not.toBeNull()
+      const revived = await claimActivated(f.store, Q, 'w-child-2')
+      const secondEnding = await refusalName(
+        f.store.complete(Q, revived.runId, revived.claimToken, '{"late":true}'),
+      )
+      const parent = await claimedParent(f)
+      const hit = await awaitChild(f.store, Q, parent, child.taskId, null)
+      expect(
+        { secondEnding, hit, result: await f.store.getTaskResult(Q, child.taskId) },
+        'mutation-verdict:behavior:task-done-event-first-write-wins',
+      ).toEqual({
+        secondEnding: 'accepted',
+        hit: {
+          emitted: true,
+          payloadJson: encodeTaskOutcome({ state: 'failed', failureReasonJson: FAILURE }),
+        },
+        result: { state: 'completed', completedPayloadJson: '{"late":true}' },
+      })
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // UserMayForge is FALSE: the emit port refuses the reserved name. That case needs
+    // nothing but the emit port, so it lives with the event cases of the scheduler suite.
+
+    // The queue rule cannot be skipped by awaiting the reserved name directly.
+    it('refuses to await a reserved event name through awaitEvent, and registers nothing', async () => {
+      const parent = await claimedParent(f)
+      const child = await f.store.spawn('other', 'child', '{}')
+      const refused = await refusalName(
+        f.store.awaitEvent(
+          Q,
+          parent.taskId,
+          parent.runId,
+          parent.claimToken,
+          STEP,
+          taskDoneEventName(child.taskId),
+          null,
+        ),
+      )
+      expect(
+        { refused, parent: await runState(f, parent.runId), waits: await waitCount(f) },
+        'mutation-verdict:behavior:await-event-refuses-reserved-name',
+      ).toEqual({ refused: 'RangeError', parent: 'running', waits: 0 })
+    })
+
+    // AwaitRefused and RefusedNeverWaits: a child in another queue is refused for good,
+    // and the refusal registers nothing and issues no await batch.
+    it('refuses to await a child in another queue, and registers nothing', async () => {
+      const parent = await claimedParent(f)
+      const child = await f.store.spawn('other', 'child', '{}')
+      const recorded = recordingLabels(f)
+      const refusal = await childRefusal(awaitChild(recorded.store, Q, parent, child.taskId, 30))
+      expect(
+        {
+          refusal,
+          awaitBatchRan: recorded.labels.includes('await-event'),
+          parent: await runState(f, parent.runId),
+          waits: await waitCount(f),
+        },
+        'mutation-verdict:behavior:child-await-refuses-another-queue',
+      ).toEqual({ refusal: 'other-queue', awaitBatchRan: false, parent: 'running', waits: 0 })
+      // The child ends in its own queue, where its event is written, and the parent's
+      // queue hears nothing of it.
+      const childRun = await claimActivated(f.store, 'other', 'w-child')
+      await f.store.complete('other', childRun.runId, childRun.claimToken, '{}')
+      expect({
+        there: (await storedDoneEvent(f, child.taskId, 'other')) !== undefined,
+        here: await storedDoneEvent(f, child.taskId),
+      }).toEqual({ there: true, here: undefined })
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    it('refuses to await a task that does not exist', async () => {
+      const parent = await claimedParent(f)
+      const refusal = await childRefusal(awaitChild(f.store, Q, parent, 'no-such-task', null))
+      expect({ refusal, waits: await waitCount(f) }).toEqual({
+        refusal: 'no-such-task',
+        waits: 0,
+      })
+    })
+
+    // RefusalIsTheRule: an allowed await is never refused. Without this direction a
+    // store that refused every child await would satisfy the case above.
+    it('never refuses a same-queue child', async () => {
+      const parent = await claimedParent(f)
+      const child = await f.store.spawn(Q, 'child', '{}')
+      const parked = await childRefusal(awaitChild(f.store, Q, parent, child.taskId, null))
+      expect(
+        { parked, waits: await waitCount(f) },
+        'mutation-verdict:behavior:child-await-allows-the-same-queue',
+      ).toEqual({ parked: 'accepted', waits: 1 })
+    })
+
+    // AwaitTimeout: the claim that finds the wait due consumes it and returns no
+    // outcome, and the child's later terminal batch finds no wait row to wake.
+    it('a timed child await that comes due returns no outcome, and the late event wakes nobody', async () => {
+      const parent = await claimedParent(f)
+      const child = await f.store.spawn(Q, 'child', '{}')
+      await parkedParent(f, parent, child.taskId, 30)
+      await f.admin.setFakeNowEpochMs(START_MS + 31_000)
+      const claimed = await f.store.claim(Q, 'w-timeout', { leaseSeconds: 60, limit: 5 })
+      const woken = claimed.find((run) => run.runId === parent.runId)
+      expect(woken?.wake).toEqual({
+        event: taskDoneEventName(child.taskId),
+        step: STEP,
+        timedOut: true,
+      })
+      const childRun = claimed.find((run) => run.taskId === child.taskId)
+      if (childRun === undefined) throw new Error('expected the child run in the same claim')
+      await f.store.complete(Q, childRun.runId, childRun.claimToken, '{}')
+      // AnswerIsFinal: the timeout was the answer, and the emit moves the parent nowhere.
+      expect({ parent: await runState(f, parent.runId), waits: await waitCount(f) }).toEqual({
+        parent: 'running',
+        waits: 0,
+      })
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // CancelParent: the parent's cancellation deletes its wait, so the child's
+    // terminal batch wakes nobody and resurrects nothing.
+    it('cancelling a waiting parent removes its wait, and the child ending wakes nobody', async () => {
+      const parent = await claimedParent(f)
+      const child = await f.store.spawn(Q, 'child', '{}')
+      await parkedParent(f, parent, child.taskId)
+      expect(await f.store.cancelTask(Q, parent.taskId)).toBe(true)
+      const childRun = await claimActivated(f.store, Q, 'w-child')
+      await f.store.complete(Q, childRun.runId, childRun.claimToken, '{}')
+      expect({ parent: await runState(f, parent.runId), waits: await waitCount(f) }).toEqual({
+        parent: 'cancelled',
+        waits: 0,
+      })
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // Not modeled, because each wait is its own row: one child wakes every parent.
+    it('wakes every parent that awaits the same child', async () => {
+      await f.store.spawn(Q, 'parent-a', '{}')
+      await f.store.spawn(Q, 'parent-b', '{}')
+      const parents = [
+        await claimActivated(f.store, Q, 'w-a'),
+        await claimActivated(f.store, Q, 'w-b'),
+      ]
+      const child = await f.store.spawn(Q, 'child', '{}')
+      for (const parent of parents) await parkedParent(f, parent, child.taskId)
+      expect(await f.store.cancelTask(Q, child.taskId)).toBe(true)
+      const woken = await f.store.claim(Q, 'w-both', { leaseSeconds: 60, limit: 5 })
+      expect(woken.map((run) => run.runId).sort()).toEqual(parents.map((run) => run.runId).sort())
+      expect(await waitCount(f)).toBe(0)
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // The model's actions are atomic and mutually exclusive. Every interleaving of the
+    // parent's await with the child's terminal batch ends delivered: a hit, or a wake.
+    it('no lost wakeup: the child ending races the await, every interleaving, ends delivered', async () => {
+      for (let seed = 0; seed < 10; seed++) {
+        await withFixture(makeFixture, `child-race-${seed}`, async (fx) => {
+          await fx.admin.setFakeNowEpochMs(START_MS)
+          await fx.store.spawn(Q, 'parent', '{}')
+          const parent = await claimActivated(fx.store, Q, 'w-parent')
+          const child = await fx.store.spawn(Q, 'child', '{}')
+          const childRun = await claimActivated(fx.store, Q, 'w-child')
+          const world = new SimWorld(fx.raw, seed)
+          let inline: string | null = null
+          world.actor('parent', async (simDb) => {
+            const out = await awaitChild(fx.storeOver(simDb), Q, parent, child.taskId, null).catch(
+              () => null,
+            )
+            if (out?.emitted) inline = out.payloadJson
+          })
+          world.actor('child', async (simDb) => {
+            await fx.storeOver(simDb).complete(Q, childRun.runId, childRun.claimToken, '{"r":1}')
+          })
+          await world.run()
+          const payloadJson = encodeTaskOutcome({
+            state: 'completed',
+            completedPayloadJson: '{"r":1}',
+          })
+          if (inline === null) {
+            const [woken] = await fx.store.claim(Q, 'w-parent-2', { leaseSeconds: 60, limit: 1 })
+            expect(woken?.runId, `seed ${seed}`).toBe(parent.runId)
+            expect(woken?.wake, `seed ${seed}`).toEqual({
+              event: taskDoneEventName(child.taskId),
+              step: STEP,
+              payloadJson,
+            })
+          } else {
+            expect(inline, `seed ${seed}`).toBe(payloadJson)
+          }
+          expect(await engineInvariantViolations(fx.raw), `seed ${seed}`).toEqual([])
+          expect(await childTaskViolations(fx.raw), `seed ${seed}`).toEqual([])
+        })
+      }
+    })
+
+    // SimWorld schedules whole batches, so it cannot show the transaction prelude that
+    // serializes two real PostgreSQL clients. Without the event lock in the terminal
+    // batch, a parent reads no event, the child inserts it and sees no wait row, and the
+    // parent sleeps forever. SQLite's single writer hides that race, so it runs on both.
+    it('serializes real concurrent child endings and awaits without losing a wakeup', async () => {
+      const races = []
+      for (let index = 0; index < 12; index++) {
+        const queue = `native-child-${index}`
+        await f.store.spawn(queue, 'parent', '{}')
+        const parent = await claimActivated(f.store, queue, `native-parent-${index}`)
+        const child = await f.store.spawn(queue, 'child', '{}')
+        const childRun = await claimActivated(f.store, queue, `native-child-${index}`)
+        if (childRun.taskId !== child.taskId) throw new Error('expected the child run')
+        races.push({ queue, parent, child, childRun })
+      }
+      await Promise.all(
+        Array.from({ length: 12 }, (_, index) =>
+          f.raw.batch(
+            `native-child:warm-${index}`,
+            [{ sql: 'SELECT 1 AS ready', args: [] }],
+            'read',
+          ),
+        ),
+      )
+      const observations = await Promise.all(
+        races.map(async ({ queue, parent, child, childRun }) => {
+          const [awaited] = await Promise.all([
+            awaitChild(f.store, queue, parent, child.taskId, null),
+            f.store.complete(queue, childRun.runId, childRun.claimToken, '{"race":true}'),
+          ])
+          const stored = await readOne(
+            f.raw,
+            'SELECT state, event_payload FROM runs WHERE run_id = ?',
+            [parent.runId],
+          )
+          return { awaited, stored }
+        }),
+      )
+      const payloadJson = encodeTaskOutcome({
+        state: 'completed',
+        completedPayloadJson: '{"race":true}',
+      })
+      for (const { awaited, stored } of observations) {
+        expect({
+          inline: awaited.emitted,
+          state: stored?.state,
+          payload: stored?.event_payload,
+        }).toEqual(
+          awaited.emitted
+            ? { inline: true, state: 'running', payload: null }
+            : { inline: false, state: 'pending', payload: payloadJson },
+        )
+      }
+      expect(await waitCount(f), 'no registration is stranded').toBe(0)
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+  })
+}

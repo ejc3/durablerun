@@ -1,5 +1,6 @@
 import { attributeExpectedFailure } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
+import { childTaskConformance } from './child-tasks.js'
 import {
   MATRIX_PRE_STATES,
   MATRIX_READ_LABELS,
@@ -1227,5 +1228,6 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'poison-matrix', run: poisonMatrixConformance },
   { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
   { id: 'wake-witness', run: wakeWitnessConformance },
+  { id: 'child-tasks', run: childTaskConformance },
   { id: 'schema-admin', run: schemaAdminConformance },
 ] as const)

@@ -14,6 +14,7 @@ const EXPECTED_SURFACE_IDS = [
   'poison-matrix',
   'timestamp-boundaries',
   'wake-witness',
+  'child-tasks',
   'schema-admin',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const

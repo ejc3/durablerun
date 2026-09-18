@@ -1,5 +1,6 @@
-import { type ClaimedRun, isRefusedWrite } from '@durablerun/core'
+import { ChildAwaitRefusedError, type ClaimedRun, isRefusedWrite } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
+import { childTaskViolations } from './child-tasks.js'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 import { awaitOwned, checkpointOwned, withFixture } from './scenario.js'
@@ -28,6 +29,7 @@ export interface FuzzStats {
   nextWakes: number
   emits: number
   awaits: number
+  childAwaits: number
 }
 
 /**
@@ -72,7 +74,14 @@ async function runWalk(
     nextWakes: 0,
     emits: 0,
     awaits: 0,
+    childAwaits: 0,
   }
+
+  /** The engine invariants, and what ChildTasks.tla requires of rows only the engine wrote. */
+  const violationsNow = async (): Promise<string[]> => [
+    ...(await engineInvariantViolations(f.raw)),
+    ...(await childTaskViolations(f.raw)),
+  ]
 
   /** Fractional seconds are legal (rounded to ms) — exercise them freely. */
   const frac = (): number => (rng.next() < 0.3 ? 0.5005 : 0)
@@ -221,19 +230,62 @@ async function runWalk(
         throw new Error(`fuzz seed ${seed} step ${step}: nextWakeAt returned ${wake}`)
       }
       stats.nextWakes++
+    } else if (roll < 0.91 && held.length > 0) {
+      // Three steps in a hundred, taken from the clock's share, so that a shard of
+      // twenty short walks cannot miss the op its aggregate floor requires.
+      const run = held.splice(rng.int(held.length), 1)[0]
+      if (!run) continue
+      // A parent awaits a child: a task it spawns now, or any task the walk knows,
+      // which may have ended already, may end later by any terminal batch, or may
+      // be the parent itself. Every terminal batch in the walk owes it a wake.
+      if (rng.next() < 0.2) {
+        // The queue rule: a child in another queue MUST be refused, and the refusal
+        // must leave the run held. A silent acceptance is a walk failure.
+        const foreign = await f.store.spawn('other', `foreign${step}`, '{}')
+        try {
+          await f.store.awaitTaskDone(
+            Q,
+            run.taskId,
+            run.runId,
+            run.claimToken,
+            `cw${step}`,
+            foreign.taskId,
+            null,
+          )
+          throw new Error(`fuzz seed ${seed} step ${step}: a cross-queue child await was ACCEPTED`)
+        } catch (error) {
+          if (!(error instanceof ChildAwaitRefusedError)) throw error
+        }
+        held.push(run)
+      } else {
+        const known = knownTasks[rng.int(knownTasks.length + 1)]
+        const childTaskId = known ?? (await f.store.spawn(Q, `child${step}`, '{}')).taskId
+        if (known === undefined) knownTasks.push(childTaskId)
+        await countIfHeld('childAwaits', () =>
+          f.store.awaitTaskDone(
+            Q,
+            run.taskId,
+            run.runId,
+            run.claimToken,
+            `cw${step}`,
+            childTaskId,
+            rng.next() < 0.5 ? 30 + rng.int(60) : null,
+          ),
+        )
+      }
     } else {
       now += (1 + rng.int(120)) * 1000
       await f.admin.setFakeNowEpochMs(now)
     }
 
     if (step % 10 === 9) {
-      const violations = await engineInvariantViolations(f.raw)
+      const violations = await violationsNow()
       if (violations.length > 0) {
         throw new Error(`fuzz seed ${seed} step ${step}: ${violations.join('; ')}`)
       }
     }
   }
-  const violations = await engineInvariantViolations(f.raw)
+  const violations = await violationsNow()
   if (violations.length > 0) {
     throw new Error(`fuzz seed ${seed} final: ${violations.join('; ')}`)
   }
@@ -247,7 +299,8 @@ async function runWalk(
     stats.fails +
     stats.reschedules +
     stats.sweepTransitions +
-    stats.cancels
+    stats.cancels +
+    stats.childAwaits
   if (steps >= 50 && progress === 0) {
     throw new Error(`fuzz seed ${seed}: zero progress across ${steps} steps`)
   }
