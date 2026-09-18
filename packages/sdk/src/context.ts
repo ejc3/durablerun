@@ -264,6 +264,8 @@ export class ReplayContext implements TaskContext {
   private readonly rollbackTries = new TaskMap<string, RollbackTry>()
   private readonly registered = new TaskMap<string, RegisteredRollback>()
   private topStartIndex = 0
+  /** Every failed rollback attempt on record, over all steps. Each one was followed by a pass. */
+  private recordedRollbackTries = 0
   #sagaCauseJson: string | undefined
   /** A saga checkpoint that cannot be read. It reads the same on every pass, so it is permanent. */
   #sagaCorruption: { readonly stepKey: string; readonly message: string } | undefined
@@ -290,13 +292,20 @@ export class ReplayContext implements TaskContext {
     this.#run = run
     this.#leaseEnd = leaseEnd
     this.#controls = controls
-    this.#attempt = attempt
     this.taskName = run.taskName
     this.pendingWake = run.wake
     for (const cp of checkpoints) {
       taskMapSet(this.seen, cp.checkpointName, parseTaskValueJson(cp.stateJson))
       this.readSagaCheckpoint(cp.checkpointName, cp.stateJson)
     }
+    // A rollback pass replays as the run that failed. Each pass is one ordinal past the
+    // run before it, so a pass that kept its own ordinal would replay as an attempt that
+    // never ran, and a step named after `ctx.attempt` would find no memo and register no
+    // rollback. The first pass follows the failed run, and every later pass follows one
+    // recorded failed attempt of a rollback, so the passes so far are one more than the
+    // attempts recorded. An infrastructure retry of a pass moves no user ordinal.
+    this.#attempt =
+      this.#sagaCauseJson === undefined ? attempt : attempt - 1 - this.recordedRollbackTries
   }
 
   private readSagaCheckpoint(name: string, stateJson: string): void {
@@ -334,6 +343,7 @@ export class ReplayContext implements TaskContext {
         return
       }
       taskMapSet(this.rollbackTries, stepKey, record)
+      this.recordedRollbackTries += record.tries
     }
   }
 

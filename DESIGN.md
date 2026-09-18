@@ -2567,7 +2567,13 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   every existing accounting invariant holds as it stands. The consequence is
   visible: `attempts` counts rollback passes. A task that failed on its first
   attempt and rolled back in one pass reads two attempts. An infrastructure
-  retry of a pass spends none of it.
+  retry of a pass spends none of it. A rollback pass replays as the run that
+  failed: `ctx.attempt` reads that run's attempt on every pass, however many
+  passes the rollbacks take, because a pass that replayed as a later attempt
+  would find no memo for a step named after the attempt. A handler that names
+  steps after the attempt still cannot register the steps of its earlier
+  attempts, which no replay reaches. The saga compensates what it can in
+  order and then halts, naming the step it could not reach.
 - **The rollback outcome is derived, and stored nowhere.** When a task result
   is read, the outcome is `failed` exactly when a step that started has no
   `$rollback:` checkpoint, and `complete` otherwise, for an ended task whose
