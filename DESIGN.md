@@ -754,7 +754,8 @@ One invocation executes one claimed run to its next suspension point:
     untimed await. A task that awaits itself is the shortest such cycle.
   - The SDK surface is `ctx.spawn(taskName, params, opts?)` and
     `ctx.awaitTask(child, opts?)`. A spawn is memoized like a step, and it
-    carries the idempotency key `$spawn:<parent task id>:<replay key>`, so a
+    carries the idempotency key `$spawn:<length of the parent task id>:<parent
+    task id>:<replay key>`, so a
     pass that died after the spawn committed and before its checkpoint did
     finds the same child on the next pass, and so does a zombie. `awaitTask`
     resolves to the child's first outcome and does not throw for a failed or
@@ -1924,7 +1925,15 @@ realized in the store's compiler, executor, fragments, or schema:
   the excess is, because MySQL refuses only some: excess that is trailing
   spaces is cut with note 1265 in every `sql_mode`, and the cut value is a
   different identifier. The executor also refuses any write that raised that
-  note, and its transaction rolls back.
+  note, and its transaction rolls back. The bound also reaches the two names
+  the engine derives from an identifier, which are longer than it. A child
+  task id longer than 244 characters is refused, because its completion event
+  name, `$task-done:` and the id, must fit 255. A `ctx.spawn` replay key is
+  bounded by 255 less the rest of the stored child key, which is `$spawn:`,
+  the length of the parent task id, the id itself, and two colons: 208
+  characters under a 36-character parent id. The other dialects hold both.
+  Each refusal names what the caller passed, the child task id or the replay
+  key, and never the derived name.
   Payloads, the claim token, and the statement stamp are `LONGTEXT`. There is
   no partial index: a unique index already holds NULL keys apart, and the hot
   indexes lead with the state after the queue, `tasks_cancel` included, because

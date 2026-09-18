@@ -35,8 +35,12 @@ describe('MySQL schema', () => {
   it('writes only statements that are safe to repeat', () => {
     // MySQL commits each DDL statement on its own, so a migrator that dies inside a
     // version leaves part of it behind, and a rerun has to be able to finish the rest.
-    // An index has no IF NOT EXISTS form, so it goes through the one guarded form, which
-    // the real-server test runs twice. Every other statement creates a table if missing.
+    // An index has no IF NOT EXISTS form, so it goes through the one guarded form. For
+    // such a version the comparison below is with that form's own output and cannot fail:
+    // it only keeps the version out of the table check. That the form is safe to repeat
+    // is carried by the real-server test, which runs it again over an index that exists
+    // and twice over one that was dropped, and by the frozen hash of version 6. Every
+    // other statement creates a table if missing.
     const guardedIndexes = [
       createIndexIfMissing('runs', 'runs_woken', '(queue, wake_event, state)'),
     ]

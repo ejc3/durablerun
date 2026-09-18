@@ -463,7 +463,8 @@ const TASK_ADMITS_COMPLETION = `EXISTS (
  * is a different identifier: an event stored under another name, an idempotency key that
  * answers for another task. Refusing here, whatever the excess is, keeps the difference
  * from the other dialects a refusal. A value that is not a string is left to the
- * validation that already owns it.
+ * validation that already owns it. Each entry is keyed by what the caller passed, so a
+ * name the store derives from an identifier is refused in the caller's own terms.
  */
 function requireIndexable(identifiers: Readonly<Record<string, unknown>>): void {
   for (const [what, value] of Object.entries(identifiers)) {
@@ -506,10 +507,14 @@ export class MysqlSchedulerStore implements SchedulerStore {
     const key = spawnIdempotencyKey(opts)
     const childOf = opts.childOf
     // A child's key is built from its parent's task and the call site, so the bound is
-    // held to the key as it will be stored, and to the parent's identifiers.
+    // held to the key as it will be stored, and to the parent's identifiers. A child
+    // spawn passes no idempotency key, so its refusal names the replay key it did pass.
     requireIndexable({
       queue,
-      idempotencyKey: key ?? undefined,
+      [childOf === undefined
+        ? 'idempotencyKey'
+        : 'childOf.replayKey, as the stored child key, which also holds the parent task id,']:
+        key ?? undefined,
       parentQueue: childOf?.parentQueue,
       parentTaskId: childOf?.parentTaskId,
       parentRunId: childOf?.runId,
@@ -2275,8 +2280,17 @@ export class MysqlSchedulerStore implements SchedulerStore {
     childTaskId: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
-    requireIndexable({ queue, taskId, runId, stepName, childTaskId })
     const name = EventName.taskDone(childTaskId)
+    // The completion event's name is longer than the child's id and must fit too. The
+    // caller passed the id and never sees the name, so the refusal names the id.
+    requireIndexable({
+      queue,
+      taskId,
+      runId,
+      stepName,
+      childTaskId,
+      'childTaskId, as the name of its completion event,': name.value,
+    })
     // A child revived before the read, or between the read and the batch that records it,
     // is live again, so the next round registers. Two rounds cover that. A live child that
     // two rounds could not register on is this run's own refusal, as it is for awaitEvent:
