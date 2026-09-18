@@ -274,3 +274,82 @@ describe('the hot path beside a history of tasks, on MySQL', () => {
     }
   })
 })
+
+describe('the saga batches beside a history of tasks, on MySQL', () => {
+  it('enters the rolling-back phase, and fails a rollback, without walking the tasks of the database', async () => {
+    // A failure that enters the phase places the pass, writes the marker, and moves the
+    // task, and a failed rollback does the same behind its attempt record. Each reaches
+    // `tasks` and `runs` by key, and reads the task's own checkpoints, which are few.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-sagas', nowMs: 1_000_000 })
+    try {
+      const walked = new Map<string, number>()
+      const measuring: SqlExecutor = {
+        batch: async (label, statements, control) => {
+          const mode = typeof control === 'string' ? control : (control?.mode ?? 'write')
+          if (mode === 'read') return db.raw.batch(label, statements, control)
+          const shifted: SqlStatement[] = statements.map((statement) =>
+            statement.skipUnlessWrote === undefined
+              ? statement
+              : { ...statement, skipUnlessWrote: statement.skipUnlessWrote + 1 },
+          )
+          const all = await db.raw.batch(label, [READ_COUNTERS, ...shifted, READ_COUNTERS], control)
+          const total = (result: (typeof all)[number] | undefined) =>
+            (result?.rows ?? [])
+              .filter((row) => row.Variable_name !== 'Handler_read_key')
+              .reduce((sum, row) => sum + Number(row.Value), 0)
+          walked.set(label, total(all[all.length - 1]) - total(all[0]))
+          return all.slice(1, -1)
+        },
+      }
+      const seed = await new MysqlSchedulerStore(db.raw, db.ids).spawn('history', 'old', '{}')
+      for (const prefix of ['a', 'b', 'c', 'd', 'e']) {
+        await cloneRows(db, 'tasks', `src.task_id = '${seed.taskId}'`, {
+          task_id: `CONCAT('old-${prefix}-', seq.n)`,
+          queue: `'${Q}'`,
+          state: "'completed'",
+          idempotency_key: 'NULL',
+        })
+      }
+      const store = new MysqlSchedulerStore(measuring, db.ids)
+      const task = await store.spawn(Q, 'job', '{}', { maxAttempts: 1 })
+      const [run] = await store.claim(Q, 'forward', { leaseSeconds: 60, limit: 1 })
+      if (run === undefined) throw new Error('the job was not claimed')
+      await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await store.setCheckpoint(
+        Q,
+        task.taskId,
+        run.runId,
+        run.claimToken,
+        '$started:charge',
+        '0',
+        60,
+      )
+      expect(await store.fail(Q, run.runId, run.claimToken, '{}', null)).toEqual({
+        rollingBack: true,
+      })
+      const [pass] = await store.claim(Q, 'pass', { leaseSeconds: 60, limit: 1 })
+      if (pass === undefined) throw new Error('the rollback pass was not claimed')
+      await store.activate(Q, pass.runId, pass.claimToken, pass.claimGen)
+      expect(
+        await store.failRollback(
+          Q,
+          pass.runId,
+          pass.claimToken,
+          '{}',
+          { delaySeconds: 5 },
+          {
+            key: '$rollback-tries:charge',
+            stateJson: '{"tries":1,"errorJson":"{}"}',
+          },
+        ),
+      ).toEqual({ rollingBack: true })
+      for (const label of ['set-checkpoint', 'fail', 'fail-rollback']) {
+        expect(walked.get(label), `rows ${label} walked beside ${5 * HISTORY} tasks`).toBeLessThan(
+          150,
+        )
+      }
+    } finally {
+      await db.close()
+    }
+  })
+})
