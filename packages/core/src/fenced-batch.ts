@@ -235,6 +235,9 @@ export interface FencedResult {
 export class FencedBatch {
   private readonly statements: Named[] = []
   private readonly transactionLocks: SqlTransactionLock[] = []
+  /** The reads of a batch that only reads, and the ones among them that read the clock. */
+  private readonly reads: string[] = []
+  private readonly clockReads: string[] = []
   private readonly now: string
   private readonly tree: TreeDialect
 
@@ -666,6 +669,20 @@ export class FencedBatch {
     return this.addTree('openTail', name, statement, null)
   }
 
+  /**
+   * A SELECT of a batch that only reads: no compare-and-set, no stamp, and no fence to
+   * gate it. Every other tree rule still reads it. A batch holds reads or a transition,
+   * never both, and a batch of reads runs in read mode whatever the caller asked for.
+   *
+   * A read may hold the clock. Two statements of one batch see different clocks on a real
+   * backend, so a second read of the clock must say, in `drift`, why a disagreement
+   * between the two is harmless. Like an open tail's reason it is a forcing function,
+   * written beside the statement, and nothing reads it back.
+   */
+  readTree(name: string, statement: DefinedStatement, drift = ''): this {
+    return this.addTree('read', name, statement, null, drift)
+  }
+
   /** The batch-shape rules every statement passes. Returns the error prefix. */
   private admit(kind: Kind, name: string): string {
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
@@ -700,30 +717,39 @@ export class FencedBatch {
    * scans store sources.
    */
   private addTree(
-    asked: Kind | 'openTail',
+    asked: Kind | 'openTail' | 'read',
     name: string,
     statement: DefinedStatement,
     atMost: number | null,
+    drift = '',
   ): this {
-    return readingOnce(() => this.admitTree(asked, name, statement, atMost))
+    return readingOnce(() => this.admitTree(asked, name, statement, atMost, drift))
   }
 
   /** `addTree`'s checks. They run under `readingOnce`, so the tree's object graph is read once for all of them. */
   private admitTree(
-    asked: Kind | 'openTail',
+    asked: Kind | 'openTail' | 'read',
     name: string,
     statement: DefinedStatement,
     atMost: number | null,
+    drift: string,
   ): this {
-    // An open tail is a tail in every way but one: no fence has to gate it.
-    const open = asked === 'openTail'
+    // An open tail is a tail in every way but one: no fence has to gate it. A read is an
+    // open tail of a batch that holds nothing else, and it may read the clock.
+    const reading = asked === 'read'
+    const open = asked === 'openTail' || reading
     const kind: Kind = open ? 'tail' : asked
     const at = this.admit(kind, name)
+    if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {
+      throw new Error(
+        `${at}: a batch holds reads or a transition, never both, because a read beside a write must be a tail that a fence gates`,
+      )
+    }
     if (!isDefinedStatement(statement)) {
       throw new Error(`${at} must come from defineStatement, which refuses undefined binds`)
     }
     const { tree } = statement
-    const grammar = statementGrammarProblem(tree)
+    const grammar = statementGrammarProblem(tree, reading)
     if (grammar !== null) {
       throw new Error(`${at} is outside the statement grammar: it holds ${grammar}`)
     }
@@ -899,8 +925,16 @@ export class FencedBatch {
     )
     // The clock token compiles to the batch clock's own text, so one comparison finds
     // the token and that text written into a fragment alike.
-    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {
+    if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {
       throw new Error(clockReadRule(at))
+    }
+    if (reading && compiled.sql.includes(this.now)) {
+      if (this.clockReads.length !== 0 && drift.trim() === '') {
+        throw new Error(
+          `${at} is this batch's second read of the clock: two statements of one batch see different clocks, so say why a disagreement with '${this.clockReads[0]}' is harmless`,
+        )
+      }
+      this.clockReads.push(name)
     }
     if (spelledClock) {
       throw new Error(
@@ -949,13 +983,18 @@ export class FencedBatch {
     }
     weakSetAdd(treeBuilt, held.compiled)
     this.statements.push(held)
+    if (reading) this.reads.push(name)
     return this
   }
 
-  async run(db: SqlExecutor, mode: SqlBatchMode = 'write'): Promise<FencedResult> {
-    if (!this.statements.some((s) => s.kind === 'cas' || s.kind === 'casMany')) {
+  async run(db: SqlExecutor, asked: SqlBatchMode = 'write'): Promise<FencedResult> {
+    // A batch of reads has no compare-and-set to win, and it runs in read mode whatever
+    // was asked: nothing in it may write.
+    const readsOnly = this.reads.length !== 0
+    if (!readsOnly && !this.statements.some((s) => s.kind === 'cas' || s.kind === 'casMany')) {
       throw new Error(`FencedBatch[${this.label}] has no CAS`)
     }
+    const mode: SqlBatchMode = readsOnly ? 'read' : asked
     const compiled = this.statements.map((s) => s.compiled)
     const transactionLock = this.transactionLocks[0]
     if (transactionLock !== undefined && mode !== 'write') {

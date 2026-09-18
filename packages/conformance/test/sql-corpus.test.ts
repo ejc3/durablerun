@@ -74,6 +74,15 @@ describe('generated SQL corpus', () => {
         const run = await claimActivated(store, 'q', 'w1')
         // MySQL builds the heartbeat as a fenced batch, because it has no RETURNING.
         expect((await store.heartbeat('q', run.runId, run.claimToken, 30)).held).toBe(true)
+        // The reads, beside a live run. A read changes nothing, so where it stands is free.
+        // An activated claim has no name left to learn, and the statement is sent all the same.
+        expect(await store.claimedTaskName('q', run.runId, run.claimToken, run.claimGen)).toBeNull()
+        expect(await store.getCheckpoints('q', run.taskId, 1)).toEqual([])
+        expect(await store.getTaskResult('q', run.taskId)).not.toBeNull()
+        expect(await store.nextWakeAtEpochMs('q')).not.toBeNull()
+        // A run this store never heard of: the terminal batch reads its task, finds none,
+        // and reads its state to say why it refuses.
+        await expect(store.complete('q', 'no-such-run', 'no-token', '"x"')).rejects.toThrow()
         await store.complete('q', run.runId, run.claimToken, '"done"')
         await store.spawn('q', 'job', '{}')
         const unlaunched = await claimOne(store, 'q', 'w2')

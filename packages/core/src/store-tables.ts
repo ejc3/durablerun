@@ -102,6 +102,8 @@ export const STORE_TABLE_COLUMNS = {
     checkpoint_name: text,
     queue: text,
     state: text,
+    // Every checkpoint write leaves the status to its default. The checkpoints read names it.
+    status: text,
     owner_run_id: text,
     owner_attempt: integer,
     updated_at_ms: integer,

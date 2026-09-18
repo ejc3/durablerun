@@ -18,6 +18,7 @@ import {
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
+  READS_SEED,
   REASON_CANCELLED,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
@@ -31,7 +32,6 @@ import {
   type SqlExecutor,
   type SqlRow,
   type SweptRun,
-  TASK_RESULT_COLUMNS,
   type TaskOutcome,
   type TaskResult,
   type WakeSpec,
@@ -42,10 +42,12 @@ import {
   capLostLaunchCas,
   checkpointLeaseCas,
   checkpointWrite,
+  checkpointsRead,
   childAwaitRefusal,
   claimCas,
   claimReceiptRead,
   claimTimeoutSuccessorInsert,
+  claimedTaskNameRead,
   clampLimit,
   coalesced,
   completeCas,
@@ -64,9 +66,11 @@ import {
   mapLimit,
   materializeTaskDoneCas,
   neverBuggify,
+  nextWakeRead,
   normalizeRetryStrategy,
   parseTaskValueJson,
   rawSql,
+  refusalStateRead,
   refusedLease,
   refusedWriteError,
   registerWaitCas,
@@ -81,6 +85,7 @@ import {
   reviveCas,
   revivedRunRead,
   rollbackPassInsert,
+  runTaskRead,
   serializeTaskHeaders,
   serializeTaskValue,
   spawnIdempotencyKey,
@@ -91,6 +96,10 @@ import {
   storageValueKind,
   storedEventRead,
   suspendCas,
+  sweepDueCancelsRead,
+  sweepExpiredClaimsRead,
+  taskDoneStateRead,
+  taskResultRead,
   userRetrySuccessorInsert,
   wakeRunsUpdate,
 } from '@durablerun/core'
@@ -108,7 +117,8 @@ import {
   fencedAt,
   jsonbInputValid,
   registeredWait,
-  rollbackOutcomeColumns,
+  rollbackError,
+  rollbackOutcome,
   rollbackPending,
   runAvailableDue,
   runClaimExpired,
@@ -352,38 +362,24 @@ function finishSuspension(b: FencedBatch, queue: string, runId: string): void {
 }
 
 /**
- * Sweep discovery scans, exported so the query-plan suite pins the EXACT
- * production SQL (the reviewed prevention: pins on stand-ins can't catch
- * drift in the queries they protect).
+ * Sweep discovery's predicates, as the fragments its two reads take (`sweepDueCancelsRead`
+ * and `sweepExpiredClaimsRead`). Each binds the queue once. The query-plan suite pins the
+ * statements a real sweep sends, which it records from the store.
  */
-export const SWEEP_SCAN_CANCELS_SQL = `SELECT t.task_id,
-       (SELECT r.run_id FROM runs r
-          WHERE ${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}
-          ORDER BY r.attempt DESC LIMIT 1) AS run_id
-FROM tasks t
-WHERE t.queue = ? AND ${cancelDue('t', NOW_MS)}
+const SWEEP_CANCELS_DUE = `t.queue = ? AND ${cancelDue('t', NOW)}
   AND t.state IN ${LIVE}
-  AND ${taskOwnsEveryRun('t')}
-ORDER BY t.cancel_at_ms, t.task_id
-LIMIT ?`
+  AND ${taskOwnsEveryRun('t')}`
+const SWEEP_LIVE_RUN_OF_TASK = `${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}`
 
-export const NEXT_WAKE_SQL = `SELECT MIN(v) AS wake_ms FROM (
-  SELECT MIN(r.available_at_ms) AS v FROM runs r
-    WHERE r.queue = ? AND r.state = 'pending'
-      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}
-  UNION ALL
-  SELECT MIN(r.available_at_ms) FROM runs r
-    WHERE r.queue = ? AND r.state = 'sleeping'
-      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}
-  UNION ALL
-  SELECT MIN(r.claim_expires_at_ms) FROM runs r
-    WHERE r.queue = ? AND r.state = 'running'
-      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}
-  UNION ALL
-  SELECT MIN(t.cancel_at_ms) FROM tasks t
-    WHERE t.queue = ? AND t.state IN ${LIVE}
-      AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't')}
-)`
+/** `next-wake`'s four sources, as the predicates `nextWakeRead` takes. Each binds the queue once. */
+const NEXT_WAKE_PENDING = `r.queue = ? AND r.state = 'pending'
+  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}`
+const NEXT_WAKE_SLEEPING = `r.queue = ? AND r.state = 'sleeping'
+  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}`
+const NEXT_WAKE_RUNNING = `r.queue = ? AND r.state = 'running'
+  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}`
+const NEXT_WAKE_CANCELLABLE = `t.queue = ? AND t.state IN ${LIVE}
+  AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't')}`
 
 const storedSweepGenerations = (run: string): string =>
   `${storedPositiveClaimGeneration(run)}
@@ -424,13 +420,9 @@ const sweepScanAdmissible = (run: string, task: string): string =>
   `((${task}.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible(run, task)})
     OR (${task}.state NOT IN ${LIVE} AND ${sweepTerminalOwnerAdmissible(run)}))`
 
-export const SWEEP_SCAN_EXPIRED_SQL = `SELECT r.run_id, r.task_id, r.claim_gen, r.activated_gen, r.relaunch_count
-FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
-WHERE r.queue = ? AND r.state = 'running'
-  AND ${runClaimExpired('r', NOW_MS)}
-  AND ${sweepScanAdmissible('r', 't')}
-ORDER BY r.claim_expires_at_ms, r.run_id
-LIMIT ?`
+const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
+  AND ${runClaimExpired('r', NOW)}
+  AND ${sweepScanAdmissible('r', 't')}`
 
 /**
  * The sweep runs its per-item batches at most this many at once through core
@@ -908,14 +900,27 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const budget = clampLimit(limit)
     if (budget === 0) return []
     const effectiveBudget = budget > 1 && this.buggify('sweep:short-batch') ? 1 : budget
-    const [cancels, expired] = await this.db.batch(
-      'sweep:scan',
-      [
-        { sql: SWEEP_SCAN_CANCELS_SQL, args: [queue, effectiveBudget] },
-        { sql: SWEEP_SCAN_EXPIRED_SQL, args: [queue, effectiveBudget] },
-      ],
-      'read',
+    const scan = new FencedBatch('sweep:scan', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    scan.readTree(
+      'cancels',
+      sweepDueCancelsRead({
+        limit: effectiveBudget,
+        due: sqlFragment(SWEEP_CANCELS_DUE, [queue]),
+        liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
+      }),
     )
+    scan.readTree(
+      'expired',
+      sweepExpiredClaimsRead({
+        limit: effectiveBudget,
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+        expired: sqlFragment(SWEEP_CLAIMS_EXPIRED, [queue]),
+      }),
+      'read-only discovery: every item is checked again under its own fence, at the instant of its own batch',
+    )
+    const { results: scanned } = await scan.run(this.db)
+    const cancels = scanned.cancels
+    const expired = scanned.expired
 
     type Item =
       | { kind: 'cancel'; taskId: string; runId: string | null }
@@ -1463,12 +1468,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
 
   /** A refused run's state, read only after its fence refused a write or a heartbeat. */
   private async refusalState(runId: string): Promise<unknown> {
-    const [rows] = await this.db.batch(
-      'refusal-state',
-      [{ sql: 'SELECT state FROM runs WHERE run_id = ?', args: [runId] }],
-      'read',
-    )
-    return rows?.rows[0]?.state
+    const b = new FencedBatch('refusal-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    b.readTree('state', refusalStateRead({ runId }))
+    const { results } = await b.run(this.db)
+    return results.state?.rows[0]?.state
   }
 
   async claimedTaskName(
@@ -1481,19 +1484,19 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // The launch carries only ids, so the worker learns the claimed task's name
     // here. The name is immutable, so an unfenced read is safe; the claim
     // conditions only make a stale or already-activated launch read nothing.
-    const [rows] = await this.db.batch(
-      'claimed-task-name',
-      [
-        {
-          sql: `SELECT t.task_name FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
-                WHERE r.run_id = ? AND r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
-                  AND r.claim_gen = ? AND r.activated_gen < ?`,
-          args: [runId, queue, claimToken, validClaimGen, validClaimGen],
-        },
-      ],
-      'read',
+    const b = new FencedBatch('claimed-task-name', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    b.readTree(
+      'name',
+      claimedTaskNameRead({
+        queue,
+        runId,
+        claimToken,
+        claimGen: validClaimGen,
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      }),
     )
-    const name = rows?.rows[0]?.task_name
+    const { results } = await b.run(this.db)
+    const name = results.name?.rows[0]?.task_name
     return typeof name === 'string' ? name : null
   }
 
@@ -2046,23 +2049,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
     const visibleThrough = requireRunOrdinal('getCheckpoints.attempt', attempt)
-    const [rows] = await this.db.batch(
-      'get-checkpoints',
-      [
-        {
-          sql: `SELECT c.checkpoint_name, c.state, c.owner_run_id, c.owner_attempt
-                FROM checkpoints c
-                JOIN runs owner
-                  ON ${checkpointOwnerMatches('c', 'owner')}
-                WHERE c.task_id = ? AND c.queue = ? AND c.status = 'committed'
-                  AND c.owner_attempt <= ?
-                ORDER BY c.checkpoint_name`,
-          args: [taskId, queue, visibleThrough],
-        },
-      ],
-      'read',
+    const b = new FencedBatch('get-checkpoints', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    b.readTree(
+      'checkpoints',
+      checkpointsRead({
+        queue,
+        taskId,
+        visibleThrough,
+        ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner')),
+      }),
     )
-    return (rows?.rows ?? []).map((row) => ({
+    const { results } = await b.run(this.db)
+    return (results.checkpoints?.rows ?? []).map((row) => ({
       checkpointName: String(row.checkpoint_name),
       stateJson: String(row.state),
       ownerRunId: String(row.owner_run_id),
@@ -2152,19 +2150,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   async getTaskResult(queue: string, taskId: string): Promise<TaskResult | null> {
-    const [rows] = await this.db.batch(
-      'task-result',
-      [
-        {
-          sql: `SELECT ${TASK_RESULT_COLUMNS}, ${rollbackOutcomeColumns('tasks')}
-                FROM tasks
-                WHERE task_id = ? AND queue = ?`,
-          args: [taskId, queue],
-        },
-      ],
-      'read',
+    const b = new FencedBatch('task-result', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    b.readTree(
+      'result',
+      taskResultRead({
+        queue,
+        taskId,
+        rollbackOutcome: sqlFragment(rollbackOutcome('tasks')),
+        rollbackError: sqlFragment(rollbackError('tasks')),
+      }),
     )
-    const row = rows?.rows[0]
+    const { results } = await b.run(this.db)
+    const row = results.result?.rows[0]
     if (row === undefined) return null
     const result = decodeTaskResult(taskId, row)
     const rollback = decodeRollbackOutcome(taskId, row)
@@ -2172,12 +2169,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
   }
 
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
-    const [rows] = await this.db.batch(
-      'next-wake',
-      [{ sql: NEXT_WAKE_SQL, args: [queue, queue, queue, queue] }],
-      'read',
+    const b = new FencedBatch('next-wake', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    b.readTree(
+      'wake',
+      nextWakeRead({
+        pendingRuns: sqlFragment(NEXT_WAKE_PENDING, [queue]),
+        sleepingRuns: sqlFragment(NEXT_WAKE_SLEEPING, [queue]),
+        runningRuns: sqlFragment(NEXT_WAKE_RUNNING, [queue]),
+        cancellableTasks: sqlFragment(NEXT_WAKE_CANCELLABLE, [queue]),
+      }),
     )
-    const value = rows?.rows[0]?.wake_ms
+    const { results } = await b.run(this.db)
+    const value = results.wake?.rows[0]?.wake_ms
     return value === null || value === undefined
       ? null
       : requireDerivedInteger('nextWakeAtEpochMs.wake_ms', value, DERIVED_INTEGER_BOUNDS.epoch_ms)
@@ -2250,12 +2253,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
   private async endingTask(operation: string, queue: string, runId: string): Promise<string> {
     const remembered = this.runTasks.recall(runId)
     if (remembered !== undefined) return remembered
-    const [rows] = await this.db.batch(
-      'run-task',
-      [{ sql: 'SELECT task_id FROM runs WHERE run_id = ? AND queue = ?', args: [runId, queue] }],
-      'read',
-    )
-    const taskId = rows?.rows[0]?.task_id
+    const b = new FencedBatch('run-task', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    b.readTree('task', runTaskRead({ queue, runId }))
+    const { results } = await b.run(this.db)
+    const taskId = results.task?.rows[0]?.task_id
     if (typeof taskId !== 'string') throw await this.refusal(operation, runId)
     return taskId
   }
@@ -2514,17 +2515,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
     outcome: TaskResult
     stamp: string | null
   } | null> {
-    const [rows] = await this.db.batch(
-      'task-done-state',
-      [
-        {
-          sql: `SELECT queue, fence_stamp, ${TASK_RESULT_COLUMNS} FROM tasks WHERE task_id = ?`,
-          args: [taskId],
-        },
-      ],
-      'read',
-    )
-    const row = rows?.rows[0]
+    const b = new FencedBatch('task-done-state', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT })
+    b.readTree('task', taskDoneStateRead({ taskId }))
+    const { results } = await b.run(this.db)
+    const row = results.task?.rows[0]
     if (row === undefined) return null
     return {
       queue: String(row.queue),

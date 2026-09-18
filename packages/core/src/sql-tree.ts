@@ -31,6 +31,7 @@ import {
   SelectAllNode,
   SelectModifierNode,
   SelectQueryNode,
+  SetOperationNode,
   SqliteAdapter,
   SqliteIntrospector,
   SqliteQueryCompiler,
@@ -1152,6 +1153,7 @@ const NODE_FIELDS: Readonly<Record<string, readonly string[]>> = {
     'having',
     'orderBy',
     'limit',
+    'setOperations',
   ],
   SelectModifierNode: ['kind', 'modifier'],
   InsertQueryNode: ['kind', 'into', 'columns', 'values', 'onConflict'],
@@ -1189,6 +1191,7 @@ const GRAMMAR_NODES = [
   'SchemableIdentifierNode',
   'SelectAllNode',
   'SelectionNode',
+  'SetOperationNode',
   'TableNode',
   'TupleNode',
   'UnaryOperationNode',
@@ -1251,6 +1254,9 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
   return null
 }
 
+/** The one set operation the grammar lists. UNION, INTERSECT and EXCEPT compare whole rows, which no read here needs. */
+const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union' && node.all
+
 /**
  * Why a tree is outside the statement grammar, or null when it is inside. The grammar
  * is closed: a node kind or query clause it does not list is refused, so a builder
@@ -1258,14 +1264,20 @@ function insertShapeProblem(insert: InsertQueryNode): string | null {
  * that needs a new kind adds it here, with the check that reads it.
  *
  * It lists no common table expression, RETURNING, or `UPDATE … FROM`, no write below
- * the root, and no schema-qualified table. An INSERT takes one row of values or one
+ * the root, and no schema-qualified table. It lists one set operation, UNION ALL, and
+ * only for a batch of reads (`reading`): a transition's statement is one SELECT or one
+ * write, so a set operation there is a form nobody considered. An INSERT takes one row of values or one
  * SELECT, with a conflict clause that names its columns (`insertShapeProblem`). It binds
  * what is built from nodes. A store fragment is opaque text, reviewed through the
  * generated corpus.
  */
-export function statementGrammarProblem(tree: OperationNode): string | null {
+export function statementGrammarProblem(tree: OperationNode, reading = false): string | null {
   const visit = (node: OperationNode, isRoot: boolean): string | null => {
     if (!GRAMMAR_NODES.includes(node.kind)) return `node kind ${node.kind}`
+    if (SetOperationNode.is(node)) {
+      if (!reading) return 'a set operation outside a batch of reads'
+      if (!isUnionAll(node)) return 'a set operation other than UNION ALL'
+    }
     if (FunctionNode.is(node) && !GRAMMAR_FUNCTIONS.includes(node.func.toLowerCase())) {
       return `a call of ${node.func}, which the grammar does not list`
     }

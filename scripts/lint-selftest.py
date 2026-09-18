@@ -1383,7 +1383,7 @@ CLEAN_STORE = store(
     """
 export class S {
   async ok(q: string) {
-    await this.db.batch('sweep:scan', [{ sql: `SELECT 1`, args: [] }], 'read')
+    await this.db.batch('migrate:version', [{ sql: `SELECT 1`, args: [] }], 'read')
   }
 }
 """
@@ -1576,12 +1576,12 @@ export class S {
             """
 export class S {
   async probe(q: string) {
-    await this.db.batch('sweep:scan', [{ sql: `UPDATE runs SET a = 1`, args: [] }])
+    await this.db.batch('migrate:version', [{ sql: `UPDATE runs SET a = 1`, args: [] }])
   }
 }
 """
         ),
-        "'sweep:scan' is declared a READ but is not run in 'read' mode",
+        "'migrate:version' is declared a READ but is not run in 'read' mode",
         "a label declared a READ must fail when it is not run in read mode",
     ),
     (
@@ -1590,7 +1590,7 @@ export class S {
             """
 export class S {
   async probe(q: string) {
-    await this.db.batch('get-checkpoints', [
+    await this.db.batch('migrate:version', [
       { sql: `SELECT ${NOW_MS} AS first_clock`, args: [] },
       { sql: `SELECT ${NOW_MS} AS second_clock`, args: [] },
     ], 'read')
@@ -1598,7 +1598,7 @@ export class S {
 }
 """
         ),
-        "'get-checkpoints' reads the clock in 2 places across 2 statements",
+        "'migrate:version' reads the clock in 2 places across 2 statements",
         "two statements of one batch reading the clock is the class-A bug itself",
     ),
     (
@@ -1611,7 +1611,7 @@ export class S {
       { sql: `SELECT ${NOW_MS} AS first_clock`, args: [] },
       { sql: `SELECT ${NOW_MS} AS second_clock`, args: [] },
     ]
-    await this.db.batch('get-checkpoints', statements, 'read')
+    await this.db.batch('migrate:version', statements, 'read')
   }
 }
 """
@@ -3956,7 +3956,7 @@ export class S {
 export class S {
   async ok() {
     await this.db.batch(
-      'sweep:scan',
+      'migrate:version',
       [
         { sql: `SELECT 1`, args: [] },
         /* statement-list trailing trivia */

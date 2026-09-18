@@ -13,7 +13,8 @@ const {
 /** The task columns that hold an outcome. The stores own them; every other reader decodes here. */
 export const TASK_OUTCOME_COLUMNS = Object.freeze(['completed_payload', 'failure_reason'] as const)
 
-const TASK_RESULT_COLUMN_LIST = Object.freeze(['state', ...TASK_OUTCOME_COLUMNS] as const)
+/** The same columns as a list, for a statement built from nodes. */
+export const TASK_RESULT_COLUMN_LIST = Object.freeze(['state', ...TASK_OUTCOME_COLUMNS] as const)
 
 /** The task columns `decodeTaskResult` reads: select exactly this list to decode an outcome. */
 export const TASK_RESULT_COLUMNS = TASK_RESULT_COLUMN_LIST.join(', ')

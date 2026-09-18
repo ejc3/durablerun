@@ -2,6 +2,8 @@ import { sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
   EventName,
+  NOW,
+  type SqlExecutor,
   aliasedAs,
   treeBuilder as db,
   fenceValue,
@@ -11,6 +13,7 @@ import {
   sqlFragment,
   stampValue,
 } from '../src/index.js'
+import { attributeExpectedFailure } from '../src/testing.js'
 import {
   type Loose,
   accepts,
@@ -1237,6 +1240,121 @@ describe('the tree path', () => {
               'a reason',
               statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
             ),
+      )
+    })
+  })
+
+  describe('a batch of reads', () => {
+    const state = () => statement(db.selectFrom('runs').select('state').where('run_id', '=', 'r1'))
+    const due = () =>
+      statement(
+        db
+          .selectFrom('runs')
+          .select('run_id')
+          .where(predicate(`claim_expires_at_ms <= ${NOW}`)),
+      )
+    const SECOND_CLOCK = /second read of the clock/
+    const runs = () => loose.selectFrom('runs').select('run_id')
+    /** An executor that answers every statement with no rows, and keeps the mode it was asked for. */
+    const modeKeeper = () => {
+      const modes: unknown[] = []
+      const executor: SqlExecutor = {
+        async batch(_label, statements, mode) {
+          modes.push(mode)
+          return statements.map(() => ({ rows: [], rowsAffected: 0 }))
+        },
+      }
+      return { modes, executor }
+    }
+
+    it('takes a SELECT with no fence to gate it', () => {
+      accepts('mutation-verdict:construction:tree-read-asked', () =>
+        batch().readTree('state', state()),
+      )
+    })
+
+    it('takes a join with no fence to gate it', () => {
+      accepts('mutation-verdict:construction:tree-read-is-open', () =>
+        batch().readTree(
+          'name',
+          statement(
+            db
+              .selectFrom('runs as r')
+              .innerJoin('tasks as t', 't.task_id', 'r.task_id')
+              .select('t.task_name')
+              .where('r.run_id', '=', 'r1'),
+          ),
+        ),
+      )
+    })
+
+    it('refuses a read beside a transition, whichever came first', () => {
+      const APART = /holds reads or a transition, never both/
+      refuses('mutation-verdict:construction:tree-reads-apart-from-a-transition', APART, () =>
+        withCas().readTree('state', state()),
+      )
+      refuses('mutation-verdict:construction:tree-reads-apart-from-a-transition', APART, () =>
+        withCas(batch().readTree('state', state())),
+      )
+    })
+
+    it('admits a read that holds the clock', () => {
+      accepts('mutation-verdict:construction:tree-read-may-hold-the-clock', () =>
+        batch().readTree('due', due()),
+      )
+    })
+
+    it('asks the first read of the clock for no reason', () => {
+      accepts('mutation-verdict:construction:tree-first-clock-read-needs-no-reason', () =>
+        batch().readTree('state', state()).readTree('due', due()),
+      )
+    })
+
+    it('refuses a second read of the clock that gives no reason', () => {
+      const twice = (drift?: string) =>
+        batch().readTree('cancels', due()).readTree('expired', due(), drift)
+      // The marked refusals come first: a mutant must fail this test at its own marker.
+      const MARKER = 'mutation-verdict:construction:tree-second-clock-read-needs-a-reason'
+      refuses(MARKER, SECOND_CLOCK, () => twice())
+      refuses(MARKER, SECOND_CLOCK, () => twice(' '))
+      expect(() => twice('each row is checked again under its own fence')).not.toThrow()
+    })
+
+    it('counts a read of the clock wherever it stands in the batch', () => {
+      refuses('mutation-verdict:construction:tree-clock-read-counted', SECOND_CLOCK, () =>
+        batch().readTree('cancels', due()).readTree('state', state()).readTree('expired', due()),
+      )
+    })
+
+    it('counts the clock reads of a batch of reads alone', () => {
+      // Two compare-and-sets of a transition may both hold the clock: at most one wins.
+      accepts('mutation-verdict:construction:tree-clock-read-counts-reads-only', () =>
+        withCas().casTree('again', statement(winCas())),
+      )
+    })
+
+    it('runs with no compare-and-set to win', async () => {
+      const ran = await attributeExpectedFailure(
+        { kind: 'construction', mutation: 'tree-read-recorded' },
+        /has no CAS/,
+        () => batch().readTree('state', state()).run(modeKeeper().executor),
+      )
+      expect(ran.won).toBeNull()
+    })
+
+    it('runs in read mode whatever was asked', async () => {
+      const { modes, executor } = modeKeeper()
+      await batch().readTree('state', state()).run(executor, 'write')
+      expect(modes, 'mutation-verdict:construction:tree-reads-run-in-read-mode').toEqual(['read'])
+    })
+
+    it('admits UNION ALL, which a transition may not hold', () => {
+      const joined = () => statement(runs().unionAll(runs()))
+      expect(() => withCas().openTailTree('both', 'a reason', joined())).toThrow(
+        /a set operation outside a batch of reads/,
+      )
+      accepts('mutation-verdict:construction:tree-read-grammar-is-the-reads', () =>
+        batch().readTree('both', joined()),
       )
     })
   })

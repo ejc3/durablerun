@@ -1,7 +1,7 @@
 import type { SqlExecutor, SqlStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
-import { MysqlSchedulerStore, NEXT_WAKE_SQL, SWEEP_SCAN_CANCELS_SQL } from '../src/store.js'
+import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
 /**
@@ -21,7 +21,7 @@ const READ_COUNTERS = {
 type TestDb = Awaited<ReturnType<typeof openMysqlTestDb>>
 
 /** Rows the statement read by walking an index or a table, and what it returned. */
-async function measured(db: TestDb, sql: string, args: readonly (string | number)[]) {
+async function measured(db: TestDb, sql: string, args: SqlStatement['args']) {
   const [before, result, after] = await db.raw.batch(
     'fixture:measure',
     [READ_COUNTERS, { sql, args: [...args] }, READ_COUNTERS],
@@ -32,6 +32,27 @@ async function measured(db: TestDb, sql: string, args: readonly (string | number
       .filter((row) => row.Variable_name !== 'Handler_read_key')
       .reduce((sum, row) => sum + Number(row.Value), 0)
   return { rows: result?.rows ?? [], walked: walked(after) - walked(before) }
+}
+
+/**
+ * The statements one labelled batch of a real operation sends, recorded from the store.
+ * A measurement of these is a measurement of what ships, which a statement typed into
+ * this file could drift from.
+ */
+async function shippedBatch(
+  db: TestDb,
+  label: string,
+  act: (store: MysqlSchedulerStore) => Promise<unknown>,
+): Promise<SqlStatement[]> {
+  const seen: SqlStatement[] = []
+  const recorder: SqlExecutor = {
+    batch: (sent, statements, control) => {
+      if (sent === label) seen.push(...statements)
+      return db.raw.batch(sent, statements, control)
+    },
+  }
+  await act(new MysqlSchedulerStore(recorder, db.ids))
+  return seen
 }
 
 /** Copy one row of a table `HISTORY` times, with some columns replaced by SQL. */
@@ -82,9 +103,12 @@ describe('production sweep scans on MySQL (exact shipped SQL)', () => {
         cancel_at_ms: '1',
         idempotency_key: 'NULL',
       })
-      const binds = countMysqlPlaceholders(SWEEP_SCAN_CANCELS_SQL)
-      expect(binds).toBe(2)
-      const nothingDue = await measured(db, SWEEP_SCAN_CANCELS_SQL, [Q, 10])
+      const [cancels] = await shippedBatch(db, 'sweep:scan', (sweeper) => sweeper.sweep(Q, 10))
+      if (cancels === undefined) throw new Error('the sweep sent no discovery read')
+      expect(cancels.sql).toContain('from `tasks` as `t`')
+      expect(countMysqlPlaceholders(cancels.sql)).toBe(2)
+      expect(cancels.args).toEqual([Q, 10])
+      const nothingDue = await measured(db, cancels.sql, cancels.args)
       expect(nothingDue.rows).toEqual([])
       expect(nothingDue.walked, 'rows walked with nothing due').toBeLessThan(20)
     } finally {
@@ -119,8 +143,10 @@ describe('the next-wake read on MySQL, which every driver tick runs', () => {
         cancel_at_ms: '4000000 + seq.n',
       })
       expect(await store.nextWakeAtEpochMs(Q)).toBe(1_005_000)
-      const binds = Array.from({ length: countMysqlPlaceholders(NEXT_WAKE_SQL) }, () => Q)
-      const wake = await measured(db, NEXT_WAKE_SQL, binds)
+      const [sent] = await shippedBatch(db, 'next-wake', (driver) => driver.nextWakeAtEpochMs(Q))
+      if (sent === undefined) throw new Error('next-wake sent no statement')
+      expect(sent.sql.match(/FORCE INDEX/g)?.length).toBe(sent.args.length)
+      const wake = await measured(db, sent.sql, sent.args)
       expect(wake.rows).toEqual([{ wake_ms: 1_005_000 }])
       expect(wake.walked, 'rows walked to find the next wake').toBeLessThan(20)
     } finally {

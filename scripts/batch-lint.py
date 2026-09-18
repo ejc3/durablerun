@@ -54,16 +54,10 @@ try:
 except ValueError as error:
     sys.exit(str(error))
 
-# Read-only batches — no write to fence.
+# Read-only batches sent as text — no write to fence. A store's own reads are not here:
+# each is a FencedBatch of reads (`readTree`), which runs in read mode whatever is asked
+# and refuses a second read of the clock that gives no reason.
 READS = {
-    "claimed-task-name",
-    "refusal-state",
-    "run-task",
-    "task-done-state",
-    "get-checkpoints",
-    "next-wake",
-    "task-result",
-    "sweep:scan",
     "admin:now",
     "migrate:version",
 }
@@ -92,13 +86,9 @@ TOKEN_FENCED = {
 # Batches allowed to read the clock in more than one statement. Every entry is
 # a standing bug of class A unless the reason says why the drift is harmless,
 # so this stays as close to empty as the engine allows.
-MULTI_CLOCK = {
-    # Two read-only discovery scans. A task sitting exactly on a deadline can
-    # appear in one and not the other; the per-item batch that follows
-    # re-checks every predicate under its own fence, so the only effect is
-    # that the item waits for the next tick.
-    "sweep:scan": "read-only discovery; every item is re-checked under its own fence",
-}
+# It is empty. The sweep's two discovery reads were its one entry, and they now give their
+# reason to `readTree`, where the batch itself refuses a second clock read without one.
+MULTI_CLOCK: dict[str, str] = {}
 
 # Call sites whose label is legitimately computed. Each names the file and the
 # prefix it produces, so the label still has to be classified above; only the

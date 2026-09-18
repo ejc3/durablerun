@@ -18,6 +18,7 @@ import {
   rawSql,
   sqlFragment,
   stampValue,
+  statementGrammarProblem,
 } from '../src/index.js'
 import {
   type Builder,
@@ -403,6 +404,49 @@ describe('the tree rules', () => {
           (eventInsert() as Loose).onConflict((oc: Loose) => oc.doNothing()),
         ),
       )
+    })
+  })
+
+  describe('a set operation', () => {
+    const leg = () => loose.selectFrom('runs').select('run_id')
+    const problem = (joined: Builder, reading: boolean) =>
+      statementGrammarProblem(joined.toOperationNode(), reading)
+    const OTHER = 'a set operation other than UNION ALL'
+
+    it('belongs to a batch of reads alone', () => {
+      expect(problem(leg().unionAll(leg()), true)).toBeNull()
+      expect(
+        problem(leg().unionAll(leg()), false),
+        'mutation-verdict:construction:tree-set-operation-reads-only',
+      ).toBe('a set operation outside a batch of reads')
+    })
+
+    it('is read wherever the tree holds one', () => {
+      expect(
+        problem(leg().except(leg()), true),
+        'mutation-verdict:construction:tree-set-operation-checked',
+      ).toBe(OTHER)
+    })
+
+    it('is refused when it is not a UNION ALL', () => {
+      expect(
+        problem(leg().intersect(leg()), true),
+        'mutation-verdict:construction:tree-set-operation-union-all-only',
+      ).toBe(OTHER)
+    })
+
+    it('is refused as a UNION that drops duplicate rows', () => {
+      expect(
+        problem(leg().union(leg()), true),
+        'mutation-verdict:construction:tree-union-needs-all',
+      ).toBe(OTHER)
+    })
+
+    it('is refused as another operation that keeps duplicate rows', () => {
+      expect(
+        problem(leg().intersectAll(leg()), true),
+        'mutation-verdict:construction:tree-set-operation-is-union',
+      ).toBe(OTHER)
     })
   })
 

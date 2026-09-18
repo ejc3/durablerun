@@ -13,9 +13,6 @@ import {
   LibsqlExecutor,
   LibsqlSchedulerStore,
   LibsqlStoreAdmin,
-  NEXT_WAKE_SQL,
-  SWEEP_SCAN_CANCELS_SQL,
-  SWEEP_SCAN_EXPIRED_SQL,
 } from '../src/index.js'
 import { testIdSource } from '../src/testing.js'
 
@@ -48,6 +45,28 @@ async function plan(sql: string, args: (string | number)[] = []): Promise<string
 async function writePlan(sql: string, args: (string | number)[] = []): Promise<string> {
   const r = await raw.execute({ sql: `EXPLAIN QUERY PLAN ${sql}`, args })
   return r.rows.map((row) => String(row.detail)).join('\n')
+}
+
+/**
+ * The statements one labelled batch of a real operation sends, recorded from the store.
+ * A pin on these is a pin on what ships. A statement typed into this file would be a
+ * second representation, free to drift from the one it stands for.
+ */
+async function shippedBatch(
+  label: string,
+  act: (store: LibsqlSchedulerStore) => Promise<unknown>,
+): Promise<{ sql: string; args: unknown[] }[]> {
+  const seen: { sql: string; args: unknown[] }[] = []
+  const recorder: SqlExecutor = {
+    batch: (sent, statements, mode) => {
+      if (sent === label) {
+        for (const st of statements) seen.push({ sql: st.sql, args: [...st.args] })
+      }
+      return db.batch(sent, statements, mode)
+    },
+  }
+  await act(new LibsqlSchedulerStore(recorder, testIdSource('read-plans')))
+  return seen
 }
 
 beforeEach(async () => {
@@ -143,13 +162,26 @@ describe('claim candidate legs', () => {
 })
 
 describe('production sweep scans (exact shipped SQL)', () => {
+  /** The two discovery reads a real sweep sends: due cancellations, then expired claims. */
+  async function shippedScans() {
+    const seen = await shippedBatch('sweep:scan', (store) => store.sweep('q', 10))
+    expect(seen).toHaveLength(2)
+    const [cancels, expired] = seen
+    if (!cancels || !expired) throw new Error('unreachable')
+    expect(cancels.sql).toContain('from "tasks" as "t"')
+    expect(expired.sql).toContain('from "runs" as "r"')
+    return { cancels, expired }
+  }
+
   it('the cancel scan seeks tasks_cancel', async () => {
-    const p = await plan(SWEEP_SCAN_CANCELS_SQL, ['q', 10])
+    const { cancels } = await shippedScans()
+    const p = await plan(cancels.sql, cancels.args as (string | number)[])
     expect(p).toContain('tasks_cancel')
   })
 
   it('the expired-lease scan seeks runs_lease with no backlog sort', async () => {
-    const p = await plan(SWEEP_SCAN_EXPIRED_SQL, ['q', 10])
+    const { expired } = await shippedScans()
+    const p = await plan(expired.sql, expired.args as (string | number)[])
     expect(p).toContain('runs_lease')
     expect(p).not.toContain('TEMP B-TREE')
   })
@@ -176,12 +208,14 @@ describe('lease queries', () => {
   })
 
   it('the PRODUCTION next-wake query seeks an index on every leg', async () => {
-    // NEXT_WAKE_SQL was exported "so the query-plan suite pins it" and then
-    // never imported: the pins above are hand-written stand-ins for its legs,
-    // which is exactly the mistake this file's own header warns about — a pin
-    // on a stand-in cannot catch drift in the query it protects. Every driver
-    // tick runs this one, so a lost index term is a per-tick full scan.
-    const p = await plan(NEXT_WAKE_SQL, ['q', 'q', 'q', 'q'])
+    // The pins above are hand-written stand-ins for this query's legs, and a pin on a
+    // stand-in cannot catch drift in the query it protects. This is the statement a
+    // driver tick sends, recorded from the store. Every tick runs it, so a lost index
+    // term is a per-tick full scan.
+    const [wake] = await shippedBatch('next-wake', (store) => store.nextWakeAtEpochMs('q'))
+    if (!wake) throw new Error('next-wake sent no statement')
+    expect(wake.sql.match(/ union all /g)).toHaveLength(3)
+    const p = await plan(wake.sql, wake.args as (string | number)[])
     expect(p).not.toContain('SCAN runs')
     expect(p).not.toContain('SCAN tasks')
     expect(p).toContain('runs_poll')

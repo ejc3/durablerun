@@ -495,12 +495,19 @@ export const rollbackPending = (task: string): string =>
  * `failed` exactly when a step that started is left uncompensated. No checkpoint of a
  * terminal task changes, so the answer does not either.
  */
-export const rollbackOutcomeColumns = (task: string): string =>
+export const rollbackOutcome = (task: string): string =>
   `CASE WHEN ${task}.state NOT IN ${LIVE} AND ${sagaBegan(task)}
         THEN CASE WHEN ${rollbackPending(task)} THEN 'failed' ELSE 'complete' END
-   END AS rollback_outcome,
-   (SELECT st.state FROM checkpoints st
+   END`
+
+/**
+ * The attempt record of the rollback that halted a saga, the second value
+ * `decodeRollbackOutcome` reads. The task-result statement names both values, so neither
+ * carries an alias here.
+ */
+export const rollbackError = (task: string): string =>
+  `SELECT st.state FROM checkpoints st
      WHERE st.task_id = ${task}.task_id
        AND ${namedUnder('st.checkpoint_name', SAGA_TRIES_PREFIX)}
        AND NOT ${rollbackRan('st', SAGA_TRIES_PREFIX)}
-     ORDER BY st.owner_attempt DESC, st.checkpoint_name LIMIT 1) AS rollback_error`
+     ORDER BY st.owner_attempt DESC, st.checkpoint_name LIMIT 1`

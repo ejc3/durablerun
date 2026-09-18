@@ -1355,8 +1355,8 @@ MUTATION_SPECS = [
         # showed no mutation touched. A spelling list has one entry for each spelling.
         "tree-clock-text-in-followon",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && spelledClock) {",
+        "    if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && !reading && spelledClock) {",
         "a tree follow-on may carry the batch clock, as the clock token or as its own text in a fragment",
     ),
     (
@@ -2251,9 +2251,121 @@ MUTATION_SPECS = [
     (
         "tree-followon-spelled-clock-message",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && compiled.sql.includes(this.now)) {",
+        "    if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && !reading && compiled.sql.includes(this.now)) {",
         "a follow-on's spelled-out clock is refused as a second clock, not as a follow-on reading the clock",
+    ),
+    (
+        "tree-read-asked",
+        "packages/core/src/fenced-batch.ts",
+        "    const reading = asked === 'read'\n",
+        "    const reading = false\n",
+        "a read is held to the rules of a transition, which has a fence to gate it",
+    ),
+    (
+        "tree-read-is-open",
+        "packages/core/src/fenced-batch.ts",
+        "    const open = asked === 'openTail' || reading\n",
+        "    const open = asked === 'openTail'\n",
+        "a read must be gated by a fence its batch cannot hold",
+    ),
+    (
+        "tree-reads-apart-from-a-transition",
+        "packages/core/src/fenced-batch.ts",
+        "    if (this.statements.some((held) => this.reads.includes(held.name) !== reading)) {\n",
+        "    if (false) {\n",
+        "a read stands beside a compare-and-set, as a tail no fence gates",
+    ),
+    (
+        "tree-read-may-hold-the-clock",
+        "packages/core/src/fenced-batch.ts",
+        "    if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {\n",
+        "    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {\n",
+        "a read that holds the batch clock is refused as a follow-on that reads the clock",
+    ),
+    (
+        "tree-first-clock-read-needs-no-reason",
+        "packages/core/src/fenced-batch.ts",
+        "      if (this.clockReads.length !== 0 && drift.trim() === '') {\n",
+        "      if (drift.trim() === '') {\n",
+        "a batch's first read of the clock is asked why it may disagree with a read that does not exist",
+    ),
+    (
+        "tree-second-clock-read-needs-a-reason",
+        "packages/core/src/fenced-batch.ts",
+        "      if (this.clockReads.length !== 0 && drift.trim() === '') {\n",
+        "      if (false) {\n",
+        "a second read of the clock gives no reason why a disagreement between the two is harmless",
+    ),
+    (
+        "tree-clock-read-counted",
+        "packages/core/src/fenced-batch.ts",
+        "    if (reading && compiled.sql.includes(this.now)) {\n",
+        "    if (false) {\n",
+        "no read of the clock is counted, so a second one is never seen",
+    ),
+    (
+        "tree-clock-read-counts-reads-only",
+        "packages/core/src/fenced-batch.ts",
+        "    if (reading && compiled.sql.includes(this.now)) {\n",
+        "    if (compiled.sql.includes(this.now)) {\n",
+        "a transition's second compare-and-set that holds the clock is refused as a second read of it",
+    ),
+    (
+        "tree-read-recorded",
+        "packages/core/src/fenced-batch.ts",
+        "    if (reading) this.reads.push(name)\n",
+        "    if (false) this.reads.push(name)\n",
+        "a batch of reads is not known as one, so it is refused for having no compare-and-set",
+    ),
+    (
+        "tree-reads-run-in-read-mode",
+        "packages/core/src/fenced-batch.ts",
+        "    const mode: SqlBatchMode = readsOnly ? 'read' : asked\n",
+        "    const mode: SqlBatchMode = asked\n",
+        "a batch of reads runs in write mode when its caller asks, or says nothing",
+    ),
+    (
+        "tree-read-grammar-is-the-reads",
+        "packages/core/src/fenced-batch.ts",
+        "    const grammar = statementGrammarProblem(tree, reading)\n",
+        "    const grammar = statementGrammarProblem(tree)\n",
+        "a read is held to the grammar of a transition, which lists no set operation",
+    ),
+    (
+        "tree-set-operation-checked",
+        "packages/core/src/sql-tree.ts",
+        "    if (SetOperationNode.is(node)) {\n",
+        "    if (false) {\n",
+        "any set operation is inside the grammar, wherever it stands",
+    ),
+    (
+        "tree-set-operation-reads-only",
+        "packages/core/src/sql-tree.ts",
+        "      if (!reading) return 'a set operation outside a batch of reads'\n",
+        "      if (false) return 'a set operation outside a batch of reads'\n",
+        "a statement of a transition may hold a UNION ALL",
+    ),
+    (
+        "tree-set-operation-union-all-only",
+        "packages/core/src/sql-tree.ts",
+        "      if (!isUnionAll(node)) return 'a set operation other than UNION ALL'\n",
+        "      if (false) return 'a set operation other than UNION ALL'\n",
+        "a read may hold INTERSECT, EXCEPT, or a UNION that drops duplicate rows",
+    ),
+    (
+        "tree-union-needs-all",
+        "packages/core/src/sql-tree.ts",
+        "const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union' && node.all\n",
+        "const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union'\n",
+        "a UNION that drops duplicate rows passes for UNION ALL",
+    ),
+    (
+        "tree-set-operation-is-union",
+        "packages/core/src/sql-tree.ts",
+        "const isUnionAll = (node: SetOperationNode): boolean => node.operator === 'union' && node.all\n",
+        "const isUnionAll = (node: SetOperationNode): boolean => node.all\n",
+        "INTERSECT ALL and EXCEPT ALL pass for UNION ALL",
     ),
     (
         "tree-raw-fragment-unminted-message",
@@ -2636,19 +2748,21 @@ MUTATION_SPECS = [
     ),
     (
         "checkpoint-read-requires-owner-join",
-        "packages/store-libsql/src/store.ts",
-        "                JOIN runs owner\n",
-        "                LEFT JOIN runs owner\n",
+        "packages/core/src/statements/reads.ts",
+        "      .innerJoin('runs as owner', (join) =>\n",
+        "      .leftJoin('runs as owner', (join) =>\n",
         "checkpoint reads surface a row whose declared owner tuple names no matching run",
     ),
     (
         "checkpoint-read-requires-owner-attempt-relation",
         "packages/store-libsql/src/store.ts",
-        "                  ON ${checkpointOwnerMatches('c', 'owner')}",
-        "                  ON ${checkpointOwnerMatches('c', 'owner').replace(\n"
-        "                    'AND owner.attempt = c.owner_attempt',\n"
-        "                    'AND 1 = 1',\n"
-        "                  )}",
+        "        ownerMatches: sqlFragment(checkpointOwnerMatches('c', 'owner')),\n",
+        "        ownerMatches: sqlFragment(\n"
+        "          checkpointOwnerMatches('c', 'owner').replace(\n"
+        "            'AND owner.attempt = c.owner_attempt',\n"
+        "            'AND 1 = 1',\n"
+        "          ),\n"
+        "        ),\n",
         "checkpoint reads surface a forged owner ordinal",
     ),
     (
@@ -3050,12 +3164,8 @@ MUTATION_SPECS = [
     (
         "poison-sweep-scan-prelimit",
         "packages/store-libsql/src/store.ts",
-        "  AND ${sweepScanAdmissible('r', 't')}\n"
-        "ORDER BY r.claim_expires_at_ms, r.run_id\n"
-        "LIMIT ?`",
-        "  AND 1 = 1\n"
-        "ORDER BY r.claim_expires_at_ms, r.run_id\n"
-        "LIMIT ?`",
+        "  AND ${sweepScanAdmissible('r', 't')}`\n",
+        "  AND 1 = 1`\n",
         "a corrupt expired row consumes the sweep scan limit before target eligibility",
     ),
     (
@@ -4168,13 +4278,10 @@ MUTATION_SPECS = [
     ),
     (
         "claimed-task-name-requires-queue",
-        "packages/store-libsql/src/store.ts",
-        "                WHERE r.run_id = ? AND r.queue = ? AND r.claimed_by = ? AND r.state = 'running'\n"
-        "                  AND r.claim_gen = ? AND r.activated_gen < ?`,\n"
-        "          args: [runId, queue, claimToken, validClaimGen, validClaimGen],\n",
-        "                WHERE r.run_id = ? AND r.claimed_by = ? AND r.state = 'running'\n"
-        "                  AND r.claim_gen = ? AND r.activated_gen < ?`,\n"
-        "          args: [runId, claimToken, validClaimGen, validClaimGen],\n",
+        "packages/core/src/statements/reads.ts",
+        "      .where('r.queue', '=', binds.queue)\n"
+        "      .where('r.claimed_by', '=', binds.claimToken)\n",
+        "      .where('r.claimed_by', '=', binds.claimToken)\n",
         "a worker learns the task name of a claim in another queue",
     ),
     (
@@ -4805,9 +4912,9 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-sweep-lost-launch-lower-before-limit",
         "packages/store-libsql/src/store.ts",
-        "  AND ${runClaimExpired('r', NOW_MS)}\n"
+        "  AND ${runClaimExpired('r', NOW)}\n"
         "  AND ${sweepScanAdmissible('r', 't')}",
-        "  AND ${runClaimExpired('r', NOW_MS).replace(\n"
+        "  AND ${runClaimExpired('r', NOW).replace(\n"
         '    " BETWEEN 0 AND ",\n'
         '    " BETWEEN CASE WHEN r.activated_gen < r.claim_gen THEN -1 ELSE 0 END AND ",\n'
         "  )}\n"
@@ -4818,9 +4925,9 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-sweep-timeout-lower-before-limit",
         "packages/store-libsql/src/store.ts",
-        "  AND ${runClaimExpired('r', NOW_MS)}\n"
+        "  AND ${runClaimExpired('r', NOW)}\n"
         "  AND ${sweepScanAdmissible('r', 't')}",
-        "  AND ${runClaimExpired('r', NOW_MS).replace(\n"
+        "  AND ${runClaimExpired('r', NOW).replace(\n"
         '    " BETWEEN 0 AND ",\n'
         '    " BETWEEN CASE WHEN r.activated_gen = r.claim_gen THEN -1 ELSE 0 END AND ",\n'
         "  )}\n"
@@ -4849,40 +4956,40 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-next-wake-pending-lower",
         "packages/store-libsql/src/store.ts",
-        "    WHERE r.queue = ? AND r.state = 'pending'\n"
-        "      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}",
-        "    WHERE r.queue = ? AND r.state = 'pending'\n"
-        '      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, \'r\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "const NEXT_WAKE_PENDING = `r.queue = ? AND r.state = 'pending'\n"
+        "  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}`",
+        "const NEXT_WAKE_PENDING = `r.queue = ? AND r.state = 'pending'\n"
+        "  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r').replace(\" BETWEEN 0 AND \", \" <= \")}`",
         "nextWakeAt skips a negative pending availability",
         "nextWakeAt reports a negative pending availability",
     ),
     (
         "timestamp-next-wake-sleeping-lower",
         "packages/store-libsql/src/store.ts",
-        "    WHERE r.queue = ? AND r.state = 'sleeping'\n"
-        "      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}",
-        "    WHERE r.queue = ? AND r.state = 'sleeping'\n"
-        '      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, \'r\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "const NEXT_WAKE_SLEEPING = `r.queue = ? AND r.state = 'sleeping'\n"
+        "  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}`",
+        "const NEXT_WAKE_SLEEPING = `r.queue = ? AND r.state = 'sleeping'\n"
+        "  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r').replace(\" BETWEEN 0 AND \", \" <= \")}`",
         "nextWakeAt skips a negative sleeping availability",
         "nextWakeAt reports a negative sleeping availability",
     ),
     (
         "timestamp-next-wake-expiry-lower",
         "packages/store-libsql/src/store.ts",
-        "    WHERE r.queue = ? AND r.state = 'running'\n"
-        "      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}",
-        "    WHERE r.queue = ? AND r.state = 'running'\n"
-        '      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, \'r\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "const NEXT_WAKE_RUNNING = `r.queue = ? AND r.state = 'running'\n"
+        "  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}`",
+        "const NEXT_WAKE_RUNNING = `r.queue = ? AND r.state = 'running'\n"
+        "  AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r').replace(\" BETWEEN 0 AND \", \" <= \")}`",
         "nextWakeAt skips a negative running claim expiry",
         "nextWakeAt reports a negative running claim expiry",
     ),
     (
         "timestamp-next-wake-cancel-lower",
         "packages/store-libsql/src/store.ts",
-        "    WHERE t.queue = ? AND t.state IN ${LIVE}\n"
-        "      AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't')}",
-        "    WHERE t.queue = ? AND t.state IN ${LIVE}\n"
-        '      AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, \'t\').replace(" BETWEEN 0 AND ", " <= ")}',
+        "const NEXT_WAKE_CANCELLABLE = `t.queue = ? AND t.state IN ${LIVE}\n"
+        "  AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't')}`",
+        "const NEXT_WAKE_CANCELLABLE = `t.queue = ? AND t.state IN ${LIVE}\n"
+        "  AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't').replace(\" BETWEEN 0 AND \", \" <= \")}`",
         "nextWakeAt skips a negative cancellation deadline",
         "nextWakeAt reports a negative cancellation deadline",
     ),
@@ -5011,9 +5118,9 @@ TIMESTAMP_BEHAVIOR_MUTATIONS = (
     (
         "timestamp-cancel-lower-before-limit",
         "packages/store-libsql/src/store.ts",
-        "WHERE t.queue = ? AND ${cancelDue('t', NOW_MS)}\n"
+        "t.queue = ? AND ${cancelDue('t', NOW)}\n"
         "  AND t.state IN ${LIVE}",
-        'WHERE t.queue = ? AND ${cancelDue(\'t\', NOW_MS).replace(" BETWEEN 0 AND ", " <= ")}\n'
+        "t.queue = ? AND ${cancelDue('t', NOW).replace(\" BETWEEN 0 AND \", \" <= \")}\n"
         "  AND t.state IN ${LIVE}",
         "deadline cancellation skips a negative deadline before its limit",
         "a negative cancellation deadline consumes the bounded sweep scan",
@@ -8454,6 +8561,102 @@ VERDICTS = {
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
         "the tree path the clock says a follow-on that spells a clock reads the clock",
         "mutation-verdict:construction:tree-followon-spelled-clock-message",
+    ),
+    "tree-read-asked": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads takes a SELECT with no fence to gate it",
+        "mutation-verdict:construction:tree-read-asked",
+    ),
+    "tree-read-is-open": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads takes a join with no fence to gate it",
+        "mutation-verdict:construction:tree-read-is-open",
+    ),
+    "tree-reads-apart-from-a-transition": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads refuses a read beside a transition, whichever came first",
+        "mutation-verdict:construction:tree-reads-apart-from-a-transition",
+    ),
+    "tree-read-may-hold-the-clock": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads admits a read that holds the clock",
+        "mutation-verdict:construction:tree-read-may-hold-the-clock",
+    ),
+    "tree-first-clock-read-needs-no-reason": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads asks the first read of the clock for no reason",
+        "mutation-verdict:construction:tree-first-clock-read-needs-no-reason",
+    ),
+    "tree-second-clock-read-needs-a-reason": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads refuses a second read of the clock that gives no reason",
+        "mutation-verdict:construction:tree-second-clock-read-needs-a-reason",
+    ),
+    "tree-clock-read-counted": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads counts a read of the clock wherever it stands in the batch",
+        "mutation-verdict:construction:tree-clock-read-counted",
+    ),
+    "tree-clock-read-counts-reads-only": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads counts the clock reads of a batch of reads alone",
+        "mutation-verdict:construction:tree-clock-read-counts-reads-only",
+    ),
+    "tree-read-recorded": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads runs with no compare-and-set to win",
+        "mutation-verdict:construction:tree-read-recorded",
+    ),
+    "tree-reads-run-in-read-mode": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads runs in read mode whatever was asked",
+        "mutation-verdict:construction:tree-reads-run-in-read-mode",
+    ),
+    "tree-read-grammar-is-the-reads": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a batch of reads admits UNION ALL, which a transition may not hold",
+        "mutation-verdict:construction:tree-read-grammar-is-the-reads",
+    ),
+    "tree-set-operation-checked": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a set operation is read wherever the tree holds one",
+        "mutation-verdict:construction:tree-set-operation-checked",
+    ),
+    "tree-set-operation-reads-only": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a set operation belongs to a batch of reads alone",
+        "mutation-verdict:construction:tree-set-operation-reads-only",
+    ),
+    "tree-set-operation-union-all-only": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a set operation is refused when it is not a UNION ALL",
+        "mutation-verdict:construction:tree-set-operation-union-all-only",
+    ),
+    "tree-union-needs-all": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a set operation is refused as a UNION that drops duplicate rows",
+        "mutation-verdict:construction:tree-union-needs-all",
+    ),
+    "tree-set-operation-is-union": ExpectedVerdict(
+        "construction",
+        "packages/core/test/sql-tree-verdicts.test.ts",
+        "the tree rules a set operation is refused as another operation that keeps duplicate rows",
+        "mutation-verdict:construction:tree-set-operation-is-union",
     ),
     "tree-raw-fragment-unminted-message": ExpectedVerdict(
         "construction",
@@ -12579,8 +12782,8 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
-    "claimed-task-name-requires-queue": (
-        "replacement removes the queue condition's SQL bind together with its argument"
+    "tree-reads-run-in-read-mode": (
+        "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
     "poison-targeted-settlement-owner": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
@@ -14318,7 +14521,7 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "const kind: Kind = open ? 'tail' : asked": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 5 at the fewest"
         ),
-        "const open = asked === 'openTail'": (
+        "const open = asked === 'openTail' || reading": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 245 at the fewest"
         ),
         "const preservedInstant = stamped === null ? undefined : preservedInstants[stamped]": (
@@ -14336,7 +14539,7 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "fence: stamps ? { target: stamped, sealedBy: null } : null,": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
         ),
-        "if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {": (
+        "if (!isCas && !reading && (spelledClock || compiled.sql.includes(this.now))) {": (
             "fails closed: with `!isCas` gone every compare-and-set that reads the clock is refused, and 226 of the 472 core tests fail"
         ),
         "if (!isCas) {": (
@@ -16378,7 +16581,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 832:
+        if len(MUTATIONS) != 848:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
