@@ -887,7 +887,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     one statement, the emit's wake reads the recorded event through nodes, and
     both reads of a claimed run select one list. `checkpoints` joins
     `STORE_TABLE_COLUMNS`. Spawn's receipt became one read of `tasks` with an
-    OR predicate, because the grammar has no UNION. Part 3 opens with
+    OR predicate, because the grammar has no UNION. Part 2's review
+    round is `postmortems/pr3.9e-part2-review.md`. Part 3 opens with
     registered mutations for the tree checks, as its own PR, before the text
     path is deleted. Part 1's review round,
     `postmortems/pr3.9e-part1-review.md`, is the third running whose findings
