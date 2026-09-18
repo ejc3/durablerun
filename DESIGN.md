@@ -2462,8 +2462,11 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     ordering index. `<step>` is the step's storage key, which already carries
     `#<count>` for a repeated name.
   - `$rolling-back` is the phase marker. Its state is the failure that decided
-    the task's end, which is what the task result reports and what every
-    rollback handler is handed as `error`.
+    the task's end, which every rollback handler is handed as `error`. The
+    task result reports the reason of the write that ends the task. The SDK
+    passes the marker's failure when it finishes or halts a saga. A sweep cap
+    or a cancellation that ends the task inside the phase records its own
+    reason, and the store keeps whatever reason a caller of the port passes.
   - `$rollback:<step>` says the rollback of that step ran. It is the
     `rollback:<step>#<count>` step above, under the reserved prefix.
   - `$rollback-tries:<step>` holds a rollback's failed attempts,
@@ -2529,7 +2532,7 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   | InfraCap | the cap arm of `sweep:lost-launch`, and `sweep:claim-timeout` at the infrastructure cap | The same three statements. The sweep reports `rollback-started`. Inside the phase each ends the task as it always did. |
   | RunRollback | `set-checkpoint` of `$rollback:<step>` | Admitted only inside the phase. Any other checkpoint is admitted only before it. |
   | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The attempt record lands behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
-  | FinishSaga | `fail` with no retry, inside the phase | Ends the task with the failure that began the saga. |
+  | FinishSaga | `fail` with no retry, inside the phase | Ends the task with the reason the caller passes, which the SDK makes the failure that began the saga. |
   | Cancel | `cancel-task`, `sweep:cancel` | Unchanged. |
   | Revive | `retry-task` | Refuses a task whose saga began. |
 

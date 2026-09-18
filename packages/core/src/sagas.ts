@@ -17,7 +17,9 @@ const {
  * - `$started:<step>` is a registered step's START marker, committed before its body
  *   runs. Its state is the step's ordering index.
  * - `$rolling-back` is the phase marker, written in the batch that decides the task's
- *   terminal failure. Its state is that failure, which the task ends with.
+ *   terminal failure. Its state is that failure, which every rollback handler is handed.
+ *   The SDK ends the task with it. A cap or a cancellation that ends the task inside the
+ *   phase records its own reason.
  * - `$rollback:<step>` is a rollback that ran, an ordinary memoized step.
  * - `$rollback-tries:<step>` records a rollback's failed attempts, written in the batch
  *   that fails the pass, so a failed attempt is counted or the pass did not fail.

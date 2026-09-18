@@ -269,7 +269,7 @@ export async function runClaimedRun(
             // The attempt record lands with the failure, so a failed attempt is counted.
             const failure = ctx.rollbackFailure(next.stepKey, snapshotTaskThrowable(error))
             try {
-              await store.failRollback(
+              const placed = await store.failRollback(
                 queue,
                 runId,
                 claimToken,
@@ -277,10 +277,12 @@ export async function runClaimedRun(
                 failure.retry,
                 failure.record,
               )
+              // The store says whether a pass follows. It can end the task where the retry
+              // decision asked for a pass, when the pass does not fit the budget bound.
+              return placed.rollingBack ? { kind: 'rolling-back' } : { kind: 'rollback-failed' }
             } catch (inner) {
               return trustedStoreOutcome(inner)
             }
-            return failure.retry === null ? { kind: 'rollback-failed' } : { kind: 'rolling-back' }
           }
         }
         try {

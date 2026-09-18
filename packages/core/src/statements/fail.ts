@@ -35,13 +35,6 @@ export const failCas = defineStatement(
 )
 
 /**
- * `fail`'s retry run, placed while the task has user budget left. It is due at once
- * when the retry carries no delay, and asleep until the delay has run otherwise. The
- * delay is a number the caller holds, so the state is decided before the statement is
- * built and bound as a value. No dialect then has to type a bind that is compared with
- * nothing but a bind.
- */
-/**
  * A rollback pass (DESIGN.md §3.10, specs/Sagas.tla): the run that carries a saga on
  * once its task's terminal failure is decided, or once a rollback attempt failed with
  * budget left. It is the failed run's successor as a retry is, and the store's admission
@@ -58,6 +51,13 @@ export const rollbackPassInsert = defineStatement(
     ),
 )
 
+/**
+ * `fail`'s retry run, placed while the task has user budget left. It is due at once
+ * when the retry carries no delay, and asleep until the delay has run otherwise. The
+ * delay is a number the caller holds, so the state is decided before the statement is
+ * built and bound as a value. No dialect then has to type a bind that is compared with
+ * nothing but a bind.
+ */
 export const userRetrySuccessorInsert = defineStatement(
   'fail successor',
   (binds: FailureSuccessor) =>
