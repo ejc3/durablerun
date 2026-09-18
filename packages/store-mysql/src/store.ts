@@ -1234,21 +1234,36 @@ export class MysqlSchedulerStore implements SchedulerStore {
         args: [queue, driverId, ttlMs, ttlMs],
       },
       // Expired rows go in the same transaction, measured against the instant the
-      // beat above stored and never against the clock. The beat is read through a
-      // derived table because MySQL refuses a subquery over the table a DELETE
-      // writes. The headroom guard is repeated, because the other dialects clean
-      // up only when the beat was written, and a row from an earlier beat would
-      // otherwise stand in for one this batch refused. It is the one clock read
-      // here, and it decides only whether the instant is within a TTL of the
-      // epoch ceiling.
+      // beat above stored and never against the clock. The headroom guard is
+      // repeated, because the other dialects clean up only when the beat was
+      // written, and a row from an earlier beat would otherwise stand in for one
+      // this batch refused. It is the one clock read here, and it decides only
+      // whether the instant is within a TTL of the epoch ceiling.
+      //
+      // The expired rows are found by a locking read that skips locked rows, and
+      // deleted by primary key. A plain DELETE has no index to find them by, so it
+      // locks every row it scans, and it waited on the rows other drivers had just
+      // written in their own open transactions: 171 of 200 concurrent beats
+      // deadlocked on MySQL 8.4. A skipped row is one another beat is writing, which
+      // is not expired, or one another beat is burying. The statement waits on
+      // nothing, so no cycle can form. NO_MERGE keeps the derived table
+      // materialized, which is also how MySQL lets a DELETE read the table it writes
+      // (error 1093 without it), and STRAIGHT_JOIN keeps the expired rows first, so
+      // the delete never scans the table itself. The same locking read under
+      // `WHERE (queue, driver_id) IN (...)` let the DELETE scan, and 22 of 200 beats
+      // still deadlocked. This form measured 0 of 200.
       {
-        sql: `DELETE FROM drivers
-              WHERE expires_at_ms < (SELECT beat.last_beat_ms FROM (
-                                       SELECT d.last_beat_ms FROM drivers d
-                                       WHERE d.queue = ? AND d.driver_id = ?) AS beat)
-                AND ${epochAdditionFits(NOW_MS, '?')}
-                AND last_beat_ms BETWEEN 0 AND ${PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms.max}
-                AND expires_at_ms BETWEEN 0 AND ${PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms.max}`,
+        sql: `DELETE /*+ NO_MERGE(expired) */ d FROM (
+                SELECT stale.queue, stale.driver_id FROM drivers stale
+                WHERE stale.expires_at_ms < (SELECT beat.last_beat_ms FROM drivers beat
+                                             WHERE beat.queue = ? AND beat.driver_id = ?)
+                  AND ${epochAdditionFits(NOW_MS, '?')}
+                  AND stale.last_beat_ms BETWEEN 0 AND ${PERSISTED_INTEGER_BOUNDS.drivers.last_beat_ms.max}
+                  AND stale.expires_at_ms BETWEEN 0 AND ${PERSISTED_INTEGER_BOUNDS.drivers.expires_at_ms.max}
+                FOR UPDATE SKIP LOCKED
+              ) AS expired
+              STRAIGHT_JOIN drivers d
+                ON d.queue = expired.queue AND d.driver_id = expired.driver_id`,
         args: [queue, driverId, ttlMs],
       },
     ])
