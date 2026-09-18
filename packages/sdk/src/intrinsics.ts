@@ -77,3 +77,11 @@ export function trustedPromiseRace(left: Promise<void>, right: Promise<void>): P
 export const trustedCharCodeAt = String.prototype.charCodeAt.call.bind(
   String.prototype.charCodeAt,
 ) as (value: string, index: number) => number
+export const trustedStartsWith = String.prototype.startsWith.call.bind(
+  String.prototype.startsWith,
+) as (value: string, prefix: string) => boolean
+export const trustedSliceFrom = String.prototype.slice.call.bind(String.prototype.slice) as (
+  value: string,
+  start: number,
+) => string
+export const trustedIsSafeInteger = Number.isSafeInteger

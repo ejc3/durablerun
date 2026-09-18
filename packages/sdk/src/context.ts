@@ -1,5 +1,6 @@
 import {
   type Checkpoint,
+  type CheckpointWrite,
   ChildAwaitRefusedError,
   type ClaimedRun,
   EventTimeoutError,
@@ -7,21 +8,41 @@ import {
   FatalTaskError,
   InvalidDurableStringError,
   type LeaseEnd,
+  type RetryStrategy,
+  type RollbackTry,
+  SAGA_PHASE_CHECKPOINT,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type SpawnOptions,
   type TaskOutcome,
+  type TaskThrowableSnapshot,
   TaskTimeoutError,
   UserName,
   type WakeSpec,
   type WorkerClaimedRun,
+  decideRetry,
+  decodeRollbackTry,
   decodeTaskOutcome,
+  encodeRollbackTry,
+  normalizeRetryStrategy,
   parseTaskValueJson,
   serializeTaskValue,
   userDurationToMs,
   userEpochMs,
   userJsonValue,
 } from '@durablerun/core'
-import { TaskMap, taskHasOwn, taskMapGet, taskMapHas, taskMapSet } from './intrinsics.js'
+import {
+  TaskMap,
+  taskHasOwn,
+  taskMapGet,
+  taskMapHas,
+  taskMapSet,
+  trustedIsSafeInteger,
+  trustedSliceFrom,
+  trustedStartsWith,
+} from './intrinsics.js'
 import { type TaskControlIssuer, createTaskControlScope } from './task-control.js'
 
 /**
@@ -47,6 +68,58 @@ class EngineKey {
     return new EngineKey(`$await-task:${taskId.value}`)
   }
 }
+
+/** What a rollback handler is handed (DESIGN.md §3.10). */
+export interface RollbackInput<T> {
+  /** What the step returned, or undefined when it started and never persisted. Handlers guard on it. */
+  readonly output: T | undefined
+  /** The failure that decided the task's end, as the task result will report it. */
+  readonly error: unknown
+  /** The pass's context. A rollback runs as a step, so only what a step may call is open to it. */
+  readonly ctx: TaskContext
+}
+
+/** A step's compensation. It runs at least once for each time it commits, so it must be idempotent. */
+export type RollbackHandler<T> = (input: RollbackInput<T>) => Promise<void> | void
+
+/** A rollback's own retry budget, apart from the task's. */
+export interface RollbackConfig {
+  /** How many times the rollback may be attempted in all. Defaults to 3. */
+  readonly maxAttempts?: number
+  /** Defaults to the task's strategy. */
+  readonly retryStrategy?: RetryStrategy
+}
+
+export interface StepOptions<T> {
+  /**
+   * Registers the step's compensation. The engine runs it, and only when the task is about
+   * to fail for good: an error the task function catches and survives never does. Handlers
+   * run in reverse order of step START, each as a durable step of its own.
+   */
+  readonly rollback?: RollbackHandler<T>
+  readonly rollbackConfig?: RollbackConfig
+}
+
+/** How often a rollback is attempted when its step does not say. */
+const DEFAULT_ROLLBACK_MAX_ATTEMPTS = 3
+
+/** A rollback this pass's replay registered, with what its handler will be handed. */
+interface RegisteredRollback {
+  readonly name: string
+  readonly rollback: RollbackHandler<unknown>
+  readonly maxAttempts: number
+  readonly retryStrategy: RetryStrategy
+  readonly output: unknown
+}
+
+type RollbackRegistration = Omit<RegisteredRollback, 'name' | 'output'>
+
+/** What a rollback pass does next. It is a function of the saga's checkpoints and this pass's replay alone. */
+export type NextRollback =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'run'; readonly stepKey: string }
+  /** The saga cannot go on, for good: the record says why, and it lands with the halt. */
+  | { readonly kind: 'halt'; readonly record: CheckpointWrite }
 
 /** A task this task spawned, as `ctx.spawn` returns it and `ctx.awaitTask` takes it. */
 export interface ChildTask {
@@ -77,7 +150,7 @@ export interface TaskContext {
    * need their own idempotency key. The returned value is the serialized
    * canonical form on every pass.
    */
-  step<T>(name: string, fn: () => Promise<T> | T): Promise<T>
+  step<T>(name: string, fn: () => Promise<T> | T, opts?: StepOptions<T>): Promise<T>
   /**
    * Durable sleep. Suspends the run now and resumes AFTER the duration —
    * the awaited expression never returns on the suspending pass (it
@@ -179,6 +252,21 @@ export class ReplayContext implements TaskContext {
   private readonly nameUses = new TaskMap<string, number>()
   private inStep = false
   /**
+   * The saga as its checkpoints tell it (core `sagas.ts`, specs/Sagas.tla): the start
+   * index of every registered step that started, which rollbacks ran, each rollback's
+   * failed attempts, and the failure that began the rolling-back phase. Nothing else
+   * holds saga state, so a pass that resumes after a crash derives the same sequence.
+   */
+  private readonly startIndexes = new TaskMap<string, number>()
+  private readonly startedKeys: string[] = []
+  private readonly rolledBack = new TaskMap<string, true>()
+  private readonly rollbackTries = new TaskMap<string, RollbackTry>()
+  private readonly registered = new TaskMap<string, RegisteredRollback>()
+  private topStartIndex = 0
+  #sagaCauseJson: string | undefined
+  /** A saga checkpoint that cannot be read. It reads the same on every pass, so it is permanent. */
+  #sagaCorruption: { readonly stepKey: string; readonly message: string } | undefined
+  /**
    * The claim's carried wake, held as the ONLY mutable reference to it —
    * takeWake consumes it, and nothing else reads this.#run.wake. Consume-once
    * is then structural, not a discipline: a taken wake is unreadable, so a
@@ -206,6 +294,45 @@ export class ReplayContext implements TaskContext {
     this.pendingWake = run.wake
     for (const cp of checkpoints) {
       taskMapSet(this.seen, cp.checkpointName, parseTaskValueJson(cp.stateJson))
+      this.readSagaCheckpoint(cp.checkpointName, cp.stateJson)
+    }
+  }
+
+  private readSagaCheckpoint(name: string, stateJson: string): void {
+    if (name === SAGA_PHASE_CHECKPOINT) {
+      this.#sagaCauseJson = stateJson
+      return
+    }
+    if (trustedStartsWith(name, SAGA_STARTED_PREFIX)) {
+      const stepKey = trustedSliceFrom(name, SAGA_STARTED_PREFIX.length)
+      const index = taskMapGet(this.seen, name)
+      if (typeof index !== 'number' || !trustedIsSafeInteger(index) || index < 1) {
+        this.#sagaCorruption ??= {
+          stepKey,
+          message: `the start marker of step '${stepKey}' holds no positive index`,
+        }
+        return
+      }
+      taskMapSet(this.startIndexes, stepKey, index)
+      this.startedKeys[this.startedKeys.length] = stepKey
+      if (index > this.topStartIndex) this.topStartIndex = index
+      return
+    }
+    if (trustedStartsWith(name, SAGA_ROLLBACK_PREFIX)) {
+      taskMapSet(this.rolledBack, trustedSliceFrom(name, SAGA_ROLLBACK_PREFIX.length), true)
+      return
+    }
+    if (trustedStartsWith(name, SAGA_TRIES_PREFIX)) {
+      const stepKey = trustedSliceFrom(name, SAGA_TRIES_PREFIX.length)
+      const record = decodeRollbackTry(stateJson)
+      if (record === null) {
+        this.#sagaCorruption ??= {
+          stepKey,
+          message: `the attempt record of the rollback of step '${stepKey}' cannot be read`,
+        }
+        return
+      }
+      taskMapSet(this.rollbackTries, stepKey, record)
     }
   }
 
@@ -265,12 +392,33 @@ export class ReplayContext implements TaskContext {
     if (reason !== undefined) this.#controls.leaseEnded(reason, this.#run)
   }
 
-  async step<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+  async step<T>(name: string, fn: () => Promise<T> | T, opts?: StepOptions<T>): Promise<T> {
     const parsed = UserName.parse('step name', name)
     this.enterDurableOp(`ctx.step('${name}')`)
+    // A registration that cannot be kept is refused here, for good, before the body runs.
+    const registration = this.rollbackRegistration(name, opts)
     const key = this.storageName(parsed)
+    // A memoized step re-registers its closure with what it returned, on every pass.
+    if (registration !== undefined && taskMapHas(this.seen, key)) {
+      this.register(key, name, registration, taskMapGet(this.seen, key))
+    }
     if (taskMapHas(this.seen, key)) {
       return taskMapGet(this.seen, key) as T
+    }
+    if (this.#sagaCauseJson !== undefined) {
+      // The forward phase is frozen. A step that started and never persisted is still
+      // owed its rollback, which is handed no output.
+      if (registration !== undefined && taskMapHas(this.startIndexes, key)) {
+        this.register(key, name, registration, undefined)
+      }
+      this.#controls.rollbackPhase()
+    }
+    if (registration !== undefined) {
+      // The start marker commits BEFORE the body runs. A step commits only after its body
+      // returns, so without the marker a step that started and never persisted would
+      // leave nothing for a rollback to find.
+      await this.markStarted(key)
+      this.register(key, name, registration, undefined)
     }
     // Execute, then commit. A throwing step checkpoints NOTHING — the next
     // attempt re-executes it (retries are the failure story, not replay).
@@ -281,7 +429,196 @@ export class ReplayContext implements TaskContext {
     } finally {
       this.inStep = false
     }
-    return (await this.commitCheckpoint(key, `step '${name}' result`, raw)) as T
+    const value = await this.commitCheckpoint(key, `step '${name}' result`, raw)
+    if (registration !== undefined) this.register(key, name, registration, value)
+    return value as T
+  }
+
+  /**
+   * What a step's options register, or undefined for a step with no rollback. Bad options
+   * are bad on every pass, so they fail the task for good and burn no retry.
+   */
+  private rollbackRegistration(name: string, opts: unknown): RollbackRegistration | undefined {
+    if (opts === undefined) return undefined
+    const refuse = (what: string): never => {
+      throw new FatalTaskError(`ctx.step('${name}') ${what}`)
+    }
+    if (typeof opts !== 'object' || opts === null) return refuse('options must be an object')
+    const rollback = taskHasOwn(opts, 'rollback')
+      ? (opts as { rollback: unknown }).rollback
+      : undefined
+    const config = taskHasOwn(opts, 'rollbackConfig')
+      ? (opts as { rollbackConfig: unknown }).rollbackConfig
+      : undefined
+    if (rollback === undefined) {
+      return config === undefined ? undefined : refuse('has a rollbackConfig and no rollback')
+    }
+    if (typeof rollback !== 'function') return refuse('rollback must be a function')
+    let maxAttempts = DEFAULT_ROLLBACK_MAX_ATTEMPTS
+    let retryStrategy: RetryStrategy = this.#run.retryStrategy
+    if (config !== undefined) {
+      if (typeof config !== 'object' || config === null)
+        return refuse('rollbackConfig must be an object')
+      const attempts = taskHasOwn(config, 'maxAttempts')
+        ? (config as { maxAttempts: unknown }).maxAttempts
+        : undefined
+      if (attempts !== undefined) {
+        if (typeof attempts !== 'number' || !trustedIsSafeInteger(attempts) || attempts < 1) {
+          return refuse('rollbackConfig.maxAttempts must be a positive integer')
+        }
+        maxAttempts = attempts
+      }
+      const strategy = taskHasOwn(config, 'retryStrategy')
+        ? (config as { retryStrategy: unknown }).retryStrategy
+        : undefined
+      if (strategy !== undefined) {
+        try {
+          // Kept as normalized: the form the engine reads, and the one a retry decision takes.
+          retryStrategy = normalizeRetryStrategy(strategy)
+        } catch (error) {
+          return refuse(
+            `rollbackConfig.retryStrategy was refused: ${error instanceof Error ? error.message : 'not a retry strategy'}`,
+          )
+        }
+      }
+    }
+    // A saga checkpoint that cannot be read would order or budget a rollback wrongly.
+    const corrupt = this.#sagaCorruption
+    if (corrupt !== undefined && this.#sagaCauseJson === undefined) {
+      throw new FatalTaskError(`${corrupt.message}, so no step can register a rollback`)
+    }
+    return { rollback: rollback as RollbackHandler<unknown>, maxAttempts, retryStrategy }
+  }
+
+  private register(
+    key: string,
+    name: string,
+    registration: RollbackRegistration,
+    output: unknown,
+  ): void {
+    taskMapSet(this.registered, key, { ...registration, name, output })
+  }
+
+  /**
+   * Sagas.tla's StartStep. The index is first-write-wins: a step a later attempt runs
+   * again finds its marker and keeps its place, and the next start takes the index after
+   * the highest one handed out, so no two started steps share one.
+   */
+  private async markStarted(key: string): Promise<void> {
+    if (taskMapHas(this.startIndexes, key)) return
+    const index = this.topStartIndex + 1
+    await this.commitCheckpoint(`${SAGA_STARTED_PREFIX}${key}`, 'step start marker', index)
+    taskMapSet(this.startIndexes, key, index)
+    this.startedKeys[this.startedKeys.length] = key
+    this.topStartIndex = index
+  }
+
+  /** The failure that began the rolling-back phase, as stored, or undefined in the forward phase. */
+  get rollingBack(): { readonly causeJson: string } | undefined {
+    const causeJson = this.#sagaCauseJson
+    return causeJson === undefined ? undefined : { causeJson }
+  }
+
+  /**
+   * Sagas.tla's RunRollback guard: the step that started last among those not rolled back.
+   * A step owed a rollback that this pass's replay did not register cannot be compensated,
+   * and an earlier step must not be compensated ahead of it, so the saga halts there.
+   */
+  nextRollback(): NextRollback {
+    const corrupt = this.#sagaCorruption
+    if (corrupt !== undefined) {
+      return {
+        kind: 'halt',
+        record: this.haltRecord(corrupt.stepKey, '$SagaStateCorrupt', corrupt.message),
+      }
+    }
+    let stepKey: string | undefined
+    let top = 0
+    for (let at = 0; at < this.startedKeys.length; at++) {
+      const candidate = this.startedKeys[at]
+      if (candidate === undefined || taskMapHas(this.rolledBack, candidate)) continue
+      const index = taskMapGet(this.startIndexes, candidate) ?? 0
+      if (index > top) {
+        top = index
+        stepKey = candidate
+      }
+    }
+    if (stepKey === undefined) return { kind: 'none' }
+    if (!taskMapHas(this.registered, stepKey)) {
+      return {
+        kind: 'halt',
+        record: this.haltRecord(
+          stepKey,
+          '$RollbackNotRegistered',
+          `step '${stepKey}' started, and this pass's replay registered no rollback for it`,
+        ),
+      }
+    }
+    return { kind: 'run', stepKey }
+  }
+
+  /** Run one rollback as a step of its own: the handler, then the checkpoint that says it ran. */
+  async runRollback(stepKey: string): Promise<void> {
+    this.assertLeaseHeld()
+    const registered = taskMapGet(this.registered, stepKey)
+    const causeJson = this.#sagaCauseJson
+    if (registered === undefined || causeJson === undefined) {
+      throw new FatalTaskError(`no rollback is owed for step '${stepKey}'`)
+    }
+    const failure = parseTaskValueJson(causeJson)
+    this.inStep = true
+    try {
+      await registered.rollback({ output: registered.output, error: failure, ctx: this })
+    } finally {
+      this.inStep = false
+    }
+    // A rollback is recorded as done only when its compensation happened.
+    await this.commitCheckpoint(
+      `${SAGA_ROLLBACK_PREFIX}${stepKey}`,
+      `rollback of step '${registered.name}'`,
+      null,
+    )
+    taskMapSet(this.rolledBack, stepKey, true)
+  }
+
+  /**
+   * What a failed rollback owes the store: its attempt record, one past the attempts
+   * already recorded, and whether its own budget admits another pass. A fatal error and
+   * a spent budget both fail the rollback for good.
+   */
+  rollbackFailure(
+    stepKey: string,
+    thrown: TaskThrowableSnapshot,
+  ): { readonly record: CheckpointWrite; readonly retry: { delaySeconds: number } | null } {
+    const registered = taskMapGet(this.registered, stepKey)
+    const tries = (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) + 1
+    const decision =
+      thrown.fatal || registered === undefined
+        ? ({ retry: false } as const)
+        : decideRetry(registered.retryStrategy, tries, registered.maxAttempts)
+    return {
+      record: {
+        key: `${SAGA_TRIES_PREFIX}${stepKey}`,
+        stateJson: encodeRollbackTry({ tries, errorJson: thrown.failureJson }),
+      },
+      retry: decision.retry ? { delaySeconds: decision.delaySeconds } : null,
+    }
+  }
+
+  private haltRecord(stepKey: string, name: string, message: string): CheckpointWrite {
+    const tries = (taskMapGet(this.rollbackTries, stepKey)?.tries ?? 0) + 1
+    return {
+      key: `${SAGA_TRIES_PREFIX}${stepKey}`,
+      stateJson: encodeRollbackTry({
+        tries,
+        errorJson: serializeTaskValue('rollback failure', { name, message }),
+      }),
+    }
+  }
+
+  /** Every durable call with no memo ends a pass's replay: the forward phase is frozen. */
+  private refuseForwardProgress(): void {
+    if (this.#sagaCauseJson !== undefined) this.#controls.rollbackPhase()
   }
 
   async sleepFor(seconds: number): Promise<void> {
@@ -352,6 +689,7 @@ export class ReplayContext implements TaskContext {
     this.enterDurableOp(`ctx.spawn('${taskName}')`)
     const key = this.storageName(EngineKey.spawn(parsed))
     if (taskMapHas(this.seen, key)) return childTaskOf(taskMapGet(this.seen, key))
+    this.refuseForwardProgress()
     const paramsJson = serializeTaskValue('child task params', params)
     const { queue: childQueue, ...spawnOptions } = opts ?? {}
     const queue = childQueue === undefined ? this.#queue : childQueue
@@ -438,6 +776,8 @@ export class ReplayContext implements TaskContext {
       this.takeWake(key)
       return eventMemoPayload(timedOut, taskMapGet(this.seen, key) as EventMemo)
     }
+    // Ahead of the carried wake: consuming one commits a memo, which is forward progress.
+    this.refuseForwardProgress()
     // A wake delivered with this claim resolves the await, consumed once:
     // the run row's wake fields persist after delivery, so matching by the
     // unique step key (not the shared event name) keeps a later same-name
@@ -503,6 +843,7 @@ export class ReplayContext implements TaskContext {
   private async suspendPoint(kind: EngineKey, wake: WakeSpec): Promise<void> {
     const key = this.storageName(kind)
     if (taskMapHas(this.seen, key)) return // the wake already happened: continue
+    this.refuseForwardProgress()
     this.#controls.sleep(wake, {
       key,
       stateJson: serializeTaskValue('sleep marker', wake),

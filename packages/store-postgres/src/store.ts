@@ -445,8 +445,9 @@ const SWEEP_PIPELINE_WIDTH = 8
 const TASK_ADMITS_COMPLETION = `EXISTS (
   SELECT 1 FROM tasks t
   WHERE ${runOwnedByTask('runs', 't')}
+    AND (t.state NOT IN ${LIVE} OR NOT ${sagaBegan('t')})
     AND (t.state NOT IN ${LIVE}
-      OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')} AND NOT ${sagaBegan('t')}))
+      OR (t.state IN ${LIVE} AND ${soleLiveRun('runs')}))
 )`
 
 /**

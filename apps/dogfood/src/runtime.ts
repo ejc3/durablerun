@@ -81,6 +81,10 @@ const DOGFOOD_WORKER_DISPOSITIONS = {
   suspended: null,
   'retry-scheduled': 'task',
   failed: 'task',
+  // A failure of the task was decided, or a rollback of it failed (DESIGN.md §3.10).
+  'rolling-back': 'task',
+  'rolled-back': 'task',
+  'rollback-failed': 'task',
   superseded: null,
   'lease-lost': 'infrastructure',
   cancelled: 'task',

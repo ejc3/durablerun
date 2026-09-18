@@ -557,6 +557,86 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // A crash between batches changes nothing durable, and the next rollback is a function
+    // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
+    // that dies is recovered by the lease story like any run, and the pass that follows
+    // finds what ran and carries on from there.
+    it('resumes a rollback pass that died where it died', async () => {
+      const { taskId, pass } = await rollingBack(f, ['a', 'b'])
+      await checkpointOwned(f.store, Q, pass, rollbackOf('b'), 'null', 60)
+      await f.admin.setFakeNowEpochMs(START_MS + 100_000)
+      const swept = (await f.store.sweep(Q, 10)).map((one) => one.kind)
+      const recovering = await taskRow(f, taskId)
+      await f.admin.setFakeNowEpochMs(START_MS + 5_000_000)
+      const next = await claimActivated(f.store, Q, 'w-pass-2')
+      const found = (await f.store.getCheckpoints(Q, taskId, next.attempt)).map(
+        (checkpoint) => checkpoint.checkpointName,
+      )
+      await checkpointOwned(f.store, Q, next, rollbackOf('a'), 'null', 60)
+      await f.store.fail(Q, next.runId, next.claimToken, CAUSE, null)
+      expect({
+        swept,
+        recovering: { attempts: recovering?.attempts, maxAttempts: recovering?.maxAttempts },
+        nextIsTheInfrastructureSuccessor:
+          next.attempt === pass.attempt + 1 && next.infraRetries === 1,
+        found: found.sort(),
+        result: await f.store.getTaskResult(Q, taskId),
+      }).toEqual({
+        swept: ['claim-timeout'],
+        // An infrastructure retry spends none of the budget the pass runs under.
+        recovering: { attempts: 1, maxAttempts: 2 },
+        nextIsTheInfrastructureSuccessor: true,
+        found: [
+          SAGA_PHASE_CHECKPOINT,
+          rollbackOf('b'),
+          startMarker('a'),
+          startMarker('b'),
+          'a',
+          'b',
+        ].sort(),
+        result: { state: 'failed', failureReasonJson: CAUSE, rollback: { outcome: 'complete' } },
+      })
+    })
+
+    // Rolling deploys. A build that predates sagas decides a terminal failure with no saga
+    // arm, so a step a newer build started is left as it is: the task ends, nothing rolls
+    // back, and the result says nothing of a rollback, because no saga began. The rows are
+    // the ones that build leaves: its own `fail` of a task with no marker, and the marker
+    // beside it. The rollback stays owed, and the next build that knows sagas and decides
+    // a terminal failure of this task enters the phase.
+    it('leaves a failure an older build decided alone, and rolls back once a newer one decides', async () => {
+      const spawned = await f.store.spawn(Q, 'saga', '{}')
+      const run = await claimActivated(f.store, Q, 'w-older-build')
+      await f.store.fail(Q, run.runId, run.claimToken, CAUSE, null)
+      await f.raw.batch('a-newer-build-started-this-step', [
+        {
+          sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, status,
+                  owner_run_id, owner_attempt, updated_at_ms)
+                VALUES (?, ?, ?, '1', 'committed', ?, ?, ?)`,
+          args: [spawned.taskId, startMarker('a'), Q, run.runId, run.attempt, START_MS],
+        },
+      ])
+      const asTheOlderBuildLeftIt = await f.store.getTaskResult(Q, spawned.taskId)
+      const revived = await f.store.retryTask(Q, spawned.taskId)
+      const again = await claimActivated(f.store, Q, 'w-newer-build')
+      const forward = await refusalName(checkpointOwned(f.store, Q, again, 'b', '"forward"', 60))
+      const decided = await f.store.fail(Q, again.runId, again.claimToken, CAUSE, null)
+      expect({
+        asTheOlderBuildLeftIt,
+        revivedAttempt: revived?.attempt,
+        forward,
+        decided,
+        task: (await taskRow(f, spawned.taskId))?.state,
+      }).toEqual({
+        asTheOlderBuildLeftIt: { state: 'failed', failureReasonJson: CAUSE },
+        revivedAttempt: 2,
+        forward: 'accepted',
+        decided: { rollingBack: true },
+        task: 'pending',
+      })
+      await f.store.cancelTask(Q, spawned.taskId)
+    })
+
     // The completion event is the task's first terminal outcome, so the batch that enters
     // the phase writes none, and each batch that can end a task writes exactly one when it
     // ends a task that is rolling back. One case over every terminal label: a label added

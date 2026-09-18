@@ -2,6 +2,10 @@ export {
   type ChildSpawnOptions,
   type ChildTask,
   ReplayContext,
+  type RollbackConfig,
+  type RollbackHandler,
+  type RollbackInput,
+  type StepOptions,
   type TaskContext,
 } from './context.js'
 export {
