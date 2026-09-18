@@ -1142,9 +1142,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
   was already known here: `nightly.yml` splits the fuzz into batches to stay
   under it. The conformance file was the case nobody had batched, and its
   worker went 48.9 seconds without turning on a devserver. `makeLibsqlFixture`
-  now awaits one zero-delay timer, which every conformance test and every fuzz
-  walk passes through, and `fixture-libsql-yields.test.ts` holds that line
-  without measuring a duration. With it the conformance file's longest stretch
+  now awaits one zero-delay timer. Every test of the generated conformance
+  suite and every fuzz walk builds its fixture there, and
+  `fixture-libsql-yields.test.ts` holds that line for every build, without
+  measuring a duration. It is a timer on purpose. Run in a worker thread, a
+  blocking stretch that resumes from a timer callback has a waiting reply
+  handled before a deadline armed during it, and one that resumes from
+  `setImmediate` meets the deadline first. How that maps onto vitest's own
+  calls is inferred, not run. With it the conformance file's longest stretch
   is 15.7 seconds, and a nightly-sized fuzz batch, which was one stretch of
   43.6 seconds, has none of two seconds or more. Estimated, not measured: no
   stall was timed on a CI runner. Vitest timed the libSQL wake-witness test at
@@ -1153,16 +1158,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   though the run with the slowest timing passed. The root `vitest.config.ts`
   sets `testTimeout` and `hookTimeout` to 15 seconds and is type-checked
   through `tsconfig.vitest.json`, because vitest loads a misspelled key in
-  silence. Open: (1) One test that never yields is still one stretch. The
-  wake-witness test is one loop over every generated case on one fixture, 15
-  to 22 seconds. If it grows, split it into several tests, which needs its
-  registered mutations re-aimed by name. (2) `verify:fuzz:deep` sets no
-  `FUZZ_BATCHES`, so each shard is one test of about 3,125 walks, some 830
-  seconds at the measured rate, past that test's own 600 second budget. It is
+  silence, and `root-vitest-config.test.ts` reads the limit back. Open: (1)
+  One loop that never yields is still one stretch. The wake-witness test runs
+  two loops, one for each generated case list and each on its own fixture. The
+  test takes 16 to 22 seconds on CI, and its longer loop was one stretch of
+  15.1 seconds here. If it grows, build a fixture for each chunk of cases, or
+  split the test, which needs its registered mutations re-aimed by name. (2)
+  `verify:fuzz:deep` sets no `FUZZ_BATCHES`, so each shard is one test of
+  about 3,125 walks, some 830 seconds at the 0.266 seconds a walk that the
+  review's verifier measured, past that test's own 600 second budget. It is
   older than this entry and runs in no gate. (3) Not explained: three of PR
   #42's last four runs hit the error and none of eleven other runs did, on a
-  branch whose one executed change finishes in the first ten seconds. The
-  review rounds are `postmortems/verify-event-loop-yield-review.md` and
+  branch whose one executed change finishes in the first ten seconds. (4)
+  Eighteen files under test directories open a libSQL database through
+  `openTestDb` and not through the fixture factory, four of them in the
+  conformance package, and get no yield. They are small today. The yield
+  cannot move into `openTestDb`, which lives in `packages/store-libsql/src`,
+  where the determinism lint bans timers. The review rounds are
+  `postmortems/verify-event-loop-yield-review.md` and
   `postmortems/verify-fixture-yield-review.md`.
 
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
