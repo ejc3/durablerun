@@ -10,10 +10,14 @@ const rows = (values: Record<string, unknown>[], name: string) =>
 /** A connection that records what it is sent and answers what a server would. */
 class FakeConnection {
   readonly sent: string[] = []
+  /** What the server answers a statement with, where a test cares. */
+  readonly headers = new Map<string, { affectedRows: number; info: string }>()
   released = 0
 
   async query(sql: string) {
     this.sent.push(sql)
+    const header = this.headers.get(sql)
+    if (header !== undefined) return [header, undefined] as const
     return sql.startsWith('SELECT') ? rows([{ value: '5' }], 'value') : OK
   }
 
@@ -91,6 +95,21 @@ describe('MysqlExecutor transactions', () => {
       'COMMIT',
       'unlock',
     ])
+  })
+
+  it('reports a DELETE of two rows as two rows', async () => {
+    // MySQL answers a DELETE with a count and no info line, which is also how it answers
+    // a single-row upsert that updated. Only the upsert counts its row twice.
+    const connection = new FakeConnection()
+    const twoRows = "DELETE FROM meta WHERE `key` IN ('a', 'b')"
+    connection.headers.set(twoRows, { affectedRows: 2, info: '' })
+    const results = await executorOver(connection).batch('fixture:delete', [
+      { sql: twoRows, args: [] },
+    ])
+    expect(
+      results.map(({ rowsAffected }) => rowsAffected),
+      'mutation-verdict:construction:mysql-only-an-insert-counts-twice',
+    ).toEqual([2])
   })
 
   it('takes no lock for the version read', async () => {
