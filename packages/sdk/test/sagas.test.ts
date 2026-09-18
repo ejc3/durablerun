@@ -5,6 +5,7 @@ import {
 } from '@durablerun/conformance'
 import {
   FatalTaskError,
+  MAX_COUNT,
   type SchedulerStore,
   StoreUnavailableError,
   decodeRollbackTry,
@@ -314,6 +315,11 @@ for (const { dialect, open } of SAGA_DIALECTS) {
           rollbackConfig: { retryStrategy: { kind: 'sometimes' } },
         },
         'a budget with no rollback': { rollbackConfig: { maxAttempts: 2 } },
+        // The retry decision refuses a budget above the count ceiling, so registration does.
+        'a budget above the count ceiling': {
+          rollback: () => {},
+          rollbackConfig: { maxAttempts: MAX_COUNT + 1 },
+        },
       }
       const observed: Record<string, unknown> = {}
       for (const [what, opts] of Object.entries(bad)) {
@@ -572,6 +578,202 @@ for (const { dialect, open } of SAGA_DIALECTS) {
         // a has no start marker, so no saga knows it started. A rolling deploy's limit.
         effects: ['do:b', 'undo:b'],
         rollback: { outcome: 'complete' },
+      })
+      await expectCleanRows(f)
+      await f.close()
+    })
+
+    it('refuses a second registered step while the first writes its start marker, as it refuses any nested step', async () => {
+      const f = await open('saga-concurrent-start')
+      const effects: string[] = []
+      const reg = registry({
+        saga: async (ctx) => {
+          await Promise.all([effectfulStep(ctx, effects, 'a'), effectfulStep(ctx, effects, 'b')])
+          throw new FatalTaskError('boom')
+        },
+      })
+      const task = await f.store.spawn(Q, 'saga', '{}')
+      await drive(f, reg, task.taskId)
+      const [rows] = await f.raw.batch(
+        'saga-start-markers',
+        [
+          {
+            sql: 'SELECT checkpoint_name, state FROM checkpoints WHERE task_id = ? ORDER BY checkpoint_name',
+            args: [task.taskId],
+          },
+        ],
+        'read',
+      )
+      const markers = (rows?.rows ?? [])
+        .map((row) => ({ name: String(row.checkpoint_name), index: String(row.state) }))
+        .filter((row) => row.name.startsWith('$started:'))
+      // The refusal ends the pass while the first step's marker write is in flight, so that
+      // marker may or may not land. What cannot happen is a second start beside it.
+      expect({
+        secondStepRan: effects.includes('do:b'),
+        secondStepStarted: markers.some((row) => row.name === '$started:b'),
+        indexesShared: new Set(markers.map((row) => row.index)).size !== markers.length,
+        state: (await f.store.getTaskResult(Q, task.taskId))?.state,
+      }).toEqual({
+        secondStepRan: false,
+        secondStepStarted: false,
+        indexesShared: false,
+        state: 'failed',
+      })
+      await expectCleanRows(f)
+      await f.close()
+    })
+
+    it('says where the replay ended when a handler rethrows past a step that never persisted', async () => {
+      const f = await open('saga-selective-catch')
+      class PaymentDeclined extends Error {}
+      const effects: string[] = []
+      const reg = registry({
+        saga: async (ctx) => {
+          await effectfulStep(ctx, effects, 'a')
+          try {
+            await ctx.step(
+              'b',
+              () => {
+                effects.push('do:b')
+                throw new PaymentDeclined('declined')
+              },
+              { rollback: () => void effects.push('undo:b') },
+            )
+          } catch (error) {
+            // A catch that lets only its own error class through. On a rollback pass the
+            // step's body does not run again, so what `b` throws there is the engine's.
+            if (!(error instanceof PaymentDeclined)) throw error
+          }
+          await effectfulStep(ctx, effects, 'c')
+          throw new FatalTaskError('boom')
+        },
+      })
+      const task = await f.store.spawn(Q, 'saga', '{}')
+      const outcomes = await drive(f, reg, task.taskId)
+      const result = await f.store.getTaskResult(Q, task.taskId)
+      const error = JSON.parse(result?.rollback?.errorJson ?? 'null') as {
+        name?: string
+        message?: string
+      } | null
+      expect({
+        outcomes,
+        effects,
+        outcome: result?.rollback?.outcome,
+        error: error?.name,
+        namesTheStepLeftUnregistered: error?.message?.includes("'c'"),
+        namesWhereTheReplayEnded: error?.message?.includes("'b'"),
+      }).toEqual({
+        outcomes: ['rolling-back', 'rollback-failed'],
+        // c started last and its rollback was never registered, so nothing runs ahead of it.
+        effects: ['do:a', 'do:b', 'do:c'],
+        outcome: 'failed',
+        error: '$RollbackNotRegistered',
+        namesTheStepLeftUnregistered: true,
+        namesWhereTheReplayEnded: true,
+      })
+      await expectCleanRows(f)
+      await f.close()
+    })
+
+    it('emits nothing from a rollback pass that the forward pass never reached', async () => {
+      const f = await open('saga-frozen-emit')
+      const effects: string[] = []
+      let forward = true
+      const reg = registry({
+        saga: async (ctx) => {
+          await ctx.step(
+            'a',
+            () => {
+              effects.push('do:a')
+              return 'a'
+            },
+            {
+              // A rollback is a step of its own, and a step may emit.
+              rollback: async ({ ctx: inRollback }) => {
+                effects.push('undo:a')
+                await inRollback.emitEvent('undone', JSON.stringify({ step: 'a' }))
+              },
+            },
+          )
+          if (forward) {
+            forward = false
+            throw new FatalTaskError('died before the emit')
+          }
+          await ctx.emitEvent('late', JSON.stringify({ announced: 'a' }))
+          effects.push('replayed-past-the-emit')
+        },
+      })
+      const task = await f.store.spawn(Q, 'saga', '{}')
+      const outcomes = await drive(f, reg, task.taskId)
+      const [rows] = await f.raw.batch(
+        'saga-events',
+        [{ sql: 'SELECT event_name FROM events ORDER BY event_name', args: [] }],
+        'read',
+      )
+      const emitted = (rows?.rows ?? [])
+        .map((row) => String(row.event_name))
+        .filter((name) => name === 'late' || name === 'undone')
+      expect({ outcomes, effects, emitted }).toEqual({
+        outcomes: ['rolling-back', 'rolled-back'],
+        effects: ['do:a', 'replayed-past-the-emit', 'undo:a'],
+        emitted: ['undone'],
+      })
+      await expectCleanRows(f)
+      await f.close()
+    })
+
+    it('replays a rollback pass with the attempt of the run that failed, on every pass', async () => {
+      const f = await open('saga-attempt')
+      const effects: string[] = []
+      const attempts: number[] = []
+      let undoFails = true
+      const reg = registry({
+        saga: async (ctx) => {
+          attempts.push(ctx.attempt)
+          const name = `charge-${ctx.attempt}`
+          await ctx.step(
+            name,
+            () => {
+              effects.push(`do:${name}`)
+              return name
+            },
+            {
+              rollback: () => {
+                effects.push(`undo:${name}`)
+                if (undoFails) {
+                  undoFails = false
+                  throw new Error('the refund did not go through')
+                }
+              },
+              rollbackConfig: { maxAttempts: 2, retryStrategy: NO_DELAY },
+            },
+          )
+          throw new Error('again')
+        },
+      })
+      const task = await f.store.spawn(Q, 'saga', '{}', { maxAttempts: 2, retryStrategy: NO_DELAY })
+      await drive(f, reg, task.taskId)
+      const result = await f.store.getTaskResult(Q, task.taskId)
+      const error = JSON.parse(result?.rollback?.errorJson ?? 'null') as {
+        name?: string
+        message?: string
+      } | null
+      expect({
+        attempts,
+        effects,
+        outcome: result?.rollback?.outcome,
+        error: error?.name,
+        left: error?.message?.includes('charge-1'),
+      }).toEqual({
+        // Two forward attempts, then two rollback passes, which both replay as attempt 2.
+        attempts: [1, 2, 2, 2],
+        effects: ['do:charge-1', 'do:charge-2', 'undo:charge-2', 'undo:charge-2'],
+        // The handler names its step after the attempt, so no pass can register the first
+        // attempt's rollback. The saga says so, after compensating what it could in order.
+        outcome: 'failed',
+        error: '$RollbackNotRegistered',
+        left: true,
       })
       await expectCleanRows(f)
       await f.close()

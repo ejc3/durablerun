@@ -737,6 +737,48 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // The budget the pass is checked against is the one its batch writes, the failed run's
+    // user ordinal plus one, and not the one the task was spawned with.
+    it('rolls back a task spawned with the largest budget a task may have', async () => {
+      const spawned = await f.store.spawn(Q, 'saga', '{}', { maxAttempts: MAX_COUNT })
+      const run = await claimActivated(f.store, Q, 'w-forward')
+      await startStep(f, run, 'a', 1)
+      const decided = await f.store.fail(Q, run.runId, run.claimToken, CAUSE, null)
+      expect({ decided, task: await taskRow(f, spawned.taskId) }).toEqual({
+        decided: { rollingBack: true },
+        task: { state: 'pending', attempts: 1, maxAttempts: 2, failureReason: null },
+      })
+    })
+
+    // The engine alone writes the phase marker and a rollback's attempt record, each from
+    // the batch that decides a failure. A caller of the port that holds a lease is refused
+    // both names in either phase, so it cannot forge a saga or spend a rollback's budget.
+    it('refuses the phase marker and an attempt record through a plain checkpoint write', async () => {
+      const spawned = await f.store.spawn(Q, 'saga', '{}', { maxAttempts: 3 })
+      const forward = await claimActivated(f.store, Q, 'w-forward')
+      await startStep(f, forward, 'a', 1)
+      const tried = triesOf('a', 1)
+      const forgedBy = async (run: ClaimedRun) => ({
+        marker: await refusalName(
+          checkpointOwned(f.store, Q, run, SAGA_PHASE_CHECKPOINT, '"forged"', 60),
+        ),
+        attemptRecord: await refusalName(
+          checkpointOwned(f.store, Q, run, tried.key, tried.stateJson, 60),
+        ),
+      })
+      expect((await forgedBy(forward)).marker).toBe('LeaseLostError')
+      expect((await forgedBy(forward)).attemptRecord).toBe('LeaseLostError')
+      await f.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null)
+      const pass = await claimActivated(f.store, Q, 'w-pass')
+      expect({
+        inThePhase: await forgedBy(pass),
+        checkpoints: await checkpointNames(f, spawned.taskId),
+      }).toEqual({
+        inThePhase: { marker: 'LeaseLostError', attemptRecord: 'LeaseLostError' },
+        checkpoints: [SAGA_PHASE_CHECKPOINT, startMarker('a')].sort(),
+      })
+    })
+
     // A crash between batches changes nothing durable, and the next rollback is a function
     // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
     // that dies is recovered by the lease story like any run, and the pass that follows
