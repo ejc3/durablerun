@@ -682,6 +682,50 @@ for (const { dialect, open } of SAGA_DIALECTS) {
       await f.close()
     })
 
+    it('says where the replay ended when the step that cut it registered no rollback', async () => {
+      const f = await open('saga-selective-catch-unregistered')
+      class PaymentDeclined extends Error {}
+      const effects: string[] = []
+      const reg = registry({
+        saga: async (ctx) => {
+          await effectfulStep(ctx, effects, 'a')
+          try {
+            // No rollback is registered for b, so nothing durable says it ever started.
+            await ctx.step('b', () => {
+              effects.push('do:b')
+              throw new PaymentDeclined('declined')
+            })
+          } catch (error) {
+            if (!(error instanceof PaymentDeclined)) throw error
+          }
+          await effectfulStep(ctx, effects, 'c')
+          throw new FatalTaskError('boom')
+        },
+      })
+      const task = await f.store.spawn(Q, 'saga', '{}')
+      const outcomes = await drive(f, reg, task.taskId)
+      const result = await f.store.getTaskResult(Q, task.taskId)
+      const error = JSON.parse(result?.rollback?.errorJson ?? 'null') as {
+        name?: string
+        message?: string
+      } | null
+      expect({
+        outcomes,
+        effects,
+        error: error?.name,
+        namesTheStepLeftUnregistered: error?.message?.includes("'c'"),
+        namesWhereTheReplayEnded: error?.message?.includes("'b'"),
+      }).toEqual({
+        outcomes: ['rolling-back', 'rollback-failed'],
+        effects: ['do:a', 'do:b', 'do:c'],
+        error: '$RollbackNotRegistered',
+        namesTheStepLeftUnregistered: true,
+        namesWhereTheReplayEnded: true,
+      })
+      await expectCleanRows(f)
+      await f.close()
+    })
+
     it('emits nothing from a rollback pass that the forward pass never reached', async () => {
       const f = await open('saga-frozen-emit')
       const effects: string[] = []

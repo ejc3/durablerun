@@ -11654,8 +11654,8 @@ MUTATION_SPECS.extend(
         (
             "saga-halt-says-where-the-replay-ended",
             "packages/sdk/src/context.ts",
-            "        this.replayLastCutAt = key\n",
-            "        // MUTATION: the pass forgets where its replay stopped\n",
+            "      this.replayLastCutAt = key\n",
+            "      // MUTATION: the pass forgets where its replay stopped\n",
             "a saga halted by a handler's selective catch names only the step left unregistered",
         ),
         (

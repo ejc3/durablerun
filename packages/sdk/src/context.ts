@@ -6,9 +6,9 @@ import {
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
-  MAX_COUNT,
   InvalidDurableStringError,
   type LeaseEnd,
+  MAX_COUNT,
   type RetryStrategy,
   type RollbackTry,
   SAGA_PHASE_CHECKPOINT,
@@ -423,10 +423,11 @@ export class ReplayContext implements TaskContext {
       // owed its rollback, which is handed no output.
       if (registration !== undefined && taskMapHas(this.startIndexes, key)) {
         this.register(key, name, registration, undefined)
-        // What this step's body threw before was never stored, so what the step throws
-        // now is the engine's signal. A handler that rethrows it ends the replay here.
-        this.replayLastCutAt = key
       }
+      // What this step's body threw before was never stored, so what the step throws now
+      // is the engine's signal. A handler that rethrows it ends the replay here, whether
+      // or not this step registered a rollback, and a halt at a later step says so.
+      this.replayLastCutAt = key
       this.#controls.rollbackPhase()
     }
     // Execute, then commit. A throwing step checkpoints NOTHING — the next
