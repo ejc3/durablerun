@@ -19,9 +19,9 @@ const nullableInteger = { kind: 'integer', nullable: true } as const
  *
  * `failure_reason` is here because `fail`, `cancel`, and `retry-task` assign it. The
  * outcome lint still confines reading an outcome to the stores and `decodeTaskResult`,
- * and allows this descriptor and the shared statements to name the column. No tree
- * statement names `tasks.completed_payload` yet, so it stays out. So does
- * `checkpoints.status`, which every checkpoint write leaves to its default.
+ * and allows this descriptor and the shared statements to name the column.
+ * `completed_payload` is here because `complete`'s task mirror assigns it.
+ * `checkpoints.status` stays out, because every checkpoint write leaves it to its default.
  */
 export const STORE_TABLE_COLUMNS = {
   runs: {
@@ -69,6 +69,7 @@ export const STORE_TABLE_COLUMNS = {
     first_started_at_ms: nullableInteger,
     cancel_at_ms: nullableInteger,
     cancelled_at_ms: nullableInteger,
+    completed_payload: nullableText,
     failure_reason: nullableText,
     created_at_ms: integer,
     fence_stamp: nullableText,

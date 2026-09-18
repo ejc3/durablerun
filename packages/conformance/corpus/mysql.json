@@ -72,8 +72,8 @@
         "bindArity": 12
       },
       {
-        "sql": "update `tasks` set `state` = ('completed'), `completed_payload` = (?), `cancel_at_ms` = (NULL), `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where (f.run_id = ?) and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and (state IN ('pending','running','sleeping'))",
-        "bindArity": 9
+        "sql": "update `tasks` set `state` = ?, `completed_payload` = ?, `cancel_at_ms` = ?, `fence_stamp` = ?, `fence_at_ms` = (select min(`f`.`fence_at_ms`) as `source_instant` from `runs` as `f` where `f`.`run_id` = ? and `f`.`queue` = ? and `f`.`fence_stamp` = ?) where `task_id` in (select `f`.`task_id` from `runs` as `f` where `f`.`run_id` = ? and `f`.`queue` = ? and `f`.`fence_stamp` = ?) and `tasks`.`queue` = ? and `state` in (?, ?, ?)",
+        "bindArity": 14
       },
       {
         "sql": "delete from `waits` where `run_id` in (select `f`.`run_id` from `runs` as `f` where (f.run_id = ?) and `f`.`fence_stamp` = ?)",
