@@ -462,37 +462,69 @@ describe('every write a store ships, by the table it writes', () => {
     return writes
   }
 
-  it('never scans the table it writes', async () => {
-    const scans: string[] = []
+  /** The access a write is allowed to reach each table by: a seek by the key it was handed. */
+  const KEYED: Readonly<Record<string, readonly RegExp[]>> = {
+    tasks: [/ USING PRIMARY KEY \(task_id=\?\)$/],
+    runs: [
+      / USING PRIMARY KEY \(run_id=\?\)$/,
+      / USING (?:COVERING )?INDEX runs_task_attempt \(task_id=\?\)$/,
+    ],
+    waits: [/ USING PRIMARY KEY \(run_id=\?(?: AND step_name=\?)?\)$/],
+  }
+
+  /**
+   * Statements this file excuses, by name, each with where the open question is recorded.
+   * A claim finds the runs it took by queue and state, because the stamp that says which
+   * they are has no index and a claim has no column like `wake_event` to seek by.
+   */
+  const EXCUSED_SOURCE_WALKS: Readonly<Record<string, string>> = {
+    'claim: update "runs"': 'BUILD.md PR3.14, the option about the claim',
+    'claim: update "tasks"': 'BUILD.md PR3.14, the option about the claim',
+    'claim: delete from': 'BUILD.md PR3.14, the option about the claim',
+  }
+
+  const named = (st: { label: string; sql: string }) =>
+    `${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 2).join(' ')}`
+
+  it('reaches the table it writes by the key it was handed, whatever the plan calls that table', async () => {
+    // The property, and not one spelling of its failure: the plan step over the written
+    // table, under its name or its alias in that statement, must be a seek by key. A scan,
+    // a walk of (queue, state), a covering variant, or an index added later all fail alike,
+    // and a table with no key declared above fails until one is.
+    const unkeyed: string[] = []
     for (const st of await shippedWrites()) {
-      const table = /^\s*(?:update|delete from)\s+"?([a-z_]+)"?/i.exec(st.sql)?.[1]
-      if (table === undefined) throw new Error(`cannot name the table of: ${st.sql.slice(0, 60)}`)
+      const target = /^\s*(?:update|delete from)\s+"?([a-z_]+)"?(?:\s+as\s+"?([a-z_]+)"?)?/i.exec(
+        st.sql,
+      )
+      if (!target?.[1]) throw new Error(`cannot name the table of: ${st.sql.slice(0, 60)}`)
+      const [, table, alias] = target
       const p = await writePlan(st.sql, st.args as (string | number)[])
-      const scanned = p
+      const step = p
         .split('\n')
-        .some((step) => new RegExp(`^SCAN ${table}\\b`).test(step.trim()))
-      if (scanned) scans.push(`${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 2).join(' ')}`)
+        .map((line) => line.trim())
+        .find((line) => new RegExp(`^(?:SCAN|SEARCH) (?:${table}|${alias ?? table})\\b`).test(line))
+      const keyed = step !== undefined && (KEYED[table] ?? []).some((key) => key.test(step))
+      if (!keyed) unkeyed.push(`${named(st)} -> ${step ?? 'no step over the written table'}`)
     }
-    expect([...new Set(scans)].sort()).toEqual([])
+    expect([...new Set(unkeyed)].sort()).toEqual([])
   })
 
-  it('never walks the runs of a queue to write the one run it was given', async () => {
-    // With a queue and a state beside the key, SQLite prefers (queue, state) to the key
-    // and walks every run of the queue in that state. A write that is handed its run
-    // names it on the written side, which costs nothing and gives the planner the key.
-    // Only the written table is read here, which the plan names in full. A source is
-    // named by its alias, and a source that selects a batch's rows by queue and state,
-    // as the claim's follow-ons do, is another question (BUILD.md).
+  it('walks the runs of a queue by state in no step of any write, but for the claim it names', async () => {
+    // Any step, under any alias, through any index, covering or not, that is pinned by a
+    // queue and a state and nothing more reads every run of the queue in that state.
     const walks: string[] = []
     for (const st of await shippedWrites()) {
       const p = await writePlan(st.sql, st.args as (string | number)[])
       const walked = p
         .split('\n')
-        .some((step) =>
-          /^SEARCH runs USING INDEX runs_poll \(queue=\? AND state=\?\)$/.test(step.trim()),
+        .some((line) =>
+          / USING (?:COVERING )?INDEX \w+ \(queue=\? AND state=\?\)$/.test(line.trim()),
         )
-      if (walked) walks.push(`${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 2).join(' ')}`)
+      if (walked) walks.push(named(st))
     }
-    expect([...new Set(walks)].sort()).toEqual([])
+    const found = [...new Set(walks)].sort()
+    expect(found.filter((name) => !(name in EXCUSED_SOURCE_WALKS))).toEqual([])
+    // An excuse that nothing needs any more is removed, not kept.
+    expect(Object.keys(EXCUSED_SOURCE_WALKS).filter((name) => !found.includes(name))).toEqual([])
   })
 })
