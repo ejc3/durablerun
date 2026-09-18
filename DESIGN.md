@@ -2548,7 +2548,12 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   plain checkpoint write is refused both, so no caller of the port, a worker
   in another language included, can forge a saga or spend a rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
   the task's handler must still be able to defer a launch. The SDK never asks:
-  the first durable call with no memo ends a pass's replay.
+  the first durable call with no memo ends a pass's replay. An emit is the one
+  durable call with no memo at all, and the store cannot freeze it, because an
+  emit belongs to no run. The SDK freezes it: a rollback pass's replay emits
+  nothing and goes on, so the steps after it still register their rollbacks.
+  An emit the forward pass did reach is first-write-wins, so skipping it
+  changes nothing. A rollback handler is a step of its own and may emit.
 - **The completion event** is a task's first terminal outcome, so the batch
   that enters the phase writes none, and each batch that can end a task writes
   exactly one when it ends a task that is rolling back. A parent awaiting a

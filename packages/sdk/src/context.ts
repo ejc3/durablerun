@@ -669,6 +669,13 @@ export class ReplayContext implements TaskContext {
     // allocates no replay key, so unlike the other durable ops it may run
     // inside a step; hence the bare lease check, not the full nesting gate.)
     this.assertLeaseHeld()
+    // The forward phase is frozen, and an emit is forward progress: its waiters would wake
+    // on work a rollback is about to compensate. An emit has no memo to say whether the
+    // forward pass reached it. One it did reach is first-write-wins, so repeating it would
+    // change nothing. A rollback pass's replay therefore emits nothing, and it goes on:
+    // ending the replay here would leave every later step's rollback unregistered. A
+    // rollback handler runs as a step of its own, and a step may emit.
+    if (this.#sagaCauseJson !== undefined && !this.inStep) return
     await this.#controls.storeCall(() => this.#store.emitEvent(this.#queue, parsed.value, payload))
   }
 
