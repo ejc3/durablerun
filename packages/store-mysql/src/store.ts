@@ -1752,6 +1752,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
     _retry: { delaySeconds: number } | null,
     _rollbackTry: CheckpointWrite,
   ): Promise<FailOutcome> {
+    // Every public method refuses an identifier past the indexed width before anything else.
+    requireIndexable({ queue: _queue, runId: _runId, checkpointName: _rollbackTry.key })
     throw new Error('sagas are not ported to the MySQL store: failRollback is not implemented')
   }
 

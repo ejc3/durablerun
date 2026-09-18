@@ -49,6 +49,11 @@ const ENTRIES: Readonly<Record<string, Entry>> = {
   ],
   complete: (s, id) => [s.complete(id, 'r', 'c', '{}'), s.complete('q', id, 'c', '{}')],
   fail: (s, id) => [s.fail(id, 'r', 'c', '{}', null), s.fail('q', id, 'c', '{}', null)],
+  failRollback: (s, id) => [
+    s.failRollback(id, 'r', 'c', '{}', null, { key: 'k', stateJson: '{}' }),
+    s.failRollback('q', id, 'c', '{}', null, { key: 'k', stateJson: '{}' }),
+    s.failRollback('q', 'r', 'c', '{}', null, { key: id, stateJson: '{}' }),
+  ],
   getCheckpoints: (s, id) => [s.getCheckpoints(id, 't', 1), s.getCheckpoints('q', id, 1)],
   setCheckpoint: (s, id) => [
     s.setCheckpoint(id, 't', 'r', 'c', 'k', '{}', 30),
