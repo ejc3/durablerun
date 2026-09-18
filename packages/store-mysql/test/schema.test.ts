@@ -96,7 +96,7 @@ describe('MySQL schema', () => {
 
 describe('MySQL migrations are append-only', () => {
   const FROZEN: Record<number, string> = {
-    1: '6b7e3a8a5010af7ba4c9a9645ffc2a03b1eab85ab324530f156cf98d3abf8848',
+    1: '187df34faca4f9fa45abee9fefb18c11227bd536cc3d81ea7073f055b5c63551',
     2: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     3: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     4: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',

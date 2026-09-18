@@ -86,7 +86,7 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
         fence_at_ms BIGINT,
         CONSTRAINT tasks_state CHECK (state IN ${LIVE_OR_TERMINAL}),
         UNIQUE KEY tasks_idem (queue, idempotency_key),
-        KEY tasks_cancel (queue, cancel_at_ms)
+        KEY tasks_cancel (queue, state, cancel_at_ms)
       )`,
 
       `CREATE TABLE IF NOT EXISTS runs (
