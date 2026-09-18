@@ -120,9 +120,9 @@
   },
   {
     "name": "infra-halt-hides-the-outcome",
-    "guard": "a saga an infrastructure cap halts records a failed outcome",
+    "guard": "a saga an infrastructure cap ends records an outcome",
     "caughtBy": "FailedImpliesSettled",
-    "find": "     ELSE task' = \"failed\" /\\ outcome' = \"failed\" /\\ UNCHANGED <<phase, cause>>",
+    "find": "     ELSE task' = \"failed\" /\\ outcome' = HaltOutcome /\\ UNCHANGED <<phase, cause>>",
     "replace": "     ELSE task' = \"failed\" /\\ UNCHANGED <<phase, cause, outcome>>"
   },
   {
@@ -253,10 +253,24 @@
   },
   {
     "name": "cancel-hides-the-halt",
-    "guard": "a cancellation that halts a saga records a failed outcome",
+    "guard": "a cancellation that ends a saga records an outcome",
     "caughtBy": "CancelledSagaIsSurfaced",
-    "find": "  /\\ outcome' = IF phase = \"rolling_back\" THEN \"failed\" ELSE outcome\n",
+    "find": "  /\\ outcome' = IF phase = \"rolling_back\" THEN HaltOutcome ELSE outcome\n",
     "replace": "  /\\ outcome' = outcome\n"
+  },
+  {
+    "name": "early-end-always-says-failed",
+    "guard": "a saga that ends early with nothing left uncompensated records complete",
+    "caughtBy": "FailedOutcomeHonest",
+    "find": "HaltOutcome == IF \\E s \\in Eligible : rb[s] # \"done\" THEN \"failed\" ELSE \"complete\"",
+    "replace": "HaltOutcome == \"failed\""
+  },
+  {
+    "name": "early-end-always-says-complete",
+    "guard": "a saga that ends early with a step left uncompensated records failed",
+    "caughtBy": "OutcomeHonest",
+    "find": "HaltOutcome == IF \\E s \\in Eligible : rb[s] # \"done\" THEN \"failed\" ELSE \"complete\"",
+    "replace": "HaltOutcome == \"complete\""
   },
   {
     "name": "revive-a-live-task",

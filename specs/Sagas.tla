@@ -21,7 +21,8 @@
 \* actions read and an invariant holds, so the protocol is checked under both
 \* answers:
 \*  - CancelMidRollback.  "halts": cancelling a task that is rolling back wins,
-\*    the remaining rollbacks never run, and the outcome is recorded as failed.
+\*    the remaining rollbacks never run, and the outcome is failed exactly when a
+\*    step that started is left uncompensated.
 \*    "refused": a task that is rolling back cannot be cancelled.
 \*  - ReviveAfterSaga.  "refused": retry-task refuses a failed task whose saga
 \*    began.  "fresh": it admits one whose saga COMPLETED, forgets every
@@ -123,6 +124,9 @@ TopIdx == CHOOSE n \in {startIdx[s] : s \in Steps} \cup {0} :
 \* A rollback is owed for every registered step that started, finished or not.
 Eligible == {s \in Registered : fwd[s] # "none"}
 Pending == {s \in Eligible : rb[s] = "none"}
+\* What a saga that ends early records: failed when a step that started is left
+\* uncompensated, and complete when none is.
+HaltOutcome == IF \E s \in Eligible : rb[s] # "done" THEN "failed" ELSE "complete"
 
 \* The start marker commits, and then the body runs.
 StartStep(s) ==
@@ -172,7 +176,8 @@ LateEnter ==
   /\ UNCHANGED <<task, fwd, startIdx, rb, rbTries, outcome, cause, effect, revivals, generation>>
 
 \* A sweep fails the task at an infrastructure cap.  In the forward phase the
-\* rule decides.  In the rolling-back phase the saga halts, and says so.
+\* rule decides.  In the rolling-back phase the saga ends there, and the outcome
+\* says whether anything was left.
 InfraCap ==
   /\ task = "live"
   /\ IF phase = "forward"
@@ -180,7 +185,7 @@ InfraCap ==
           /\ IF InfraCapRollsBack
              THEN phase' = "rolling_back" /\ UNCHANGED <<task, outcome>>
              ELSE task' = "failed" /\ UNCHANGED <<phase, outcome>>
-     ELSE task' = "failed" /\ outcome' = "failed" /\ UNCHANGED <<phase, cause>>
+     ELSE task' = "failed" /\ outcome' = HaltOutcome /\ UNCHANGED <<phase, cause>>
   /\ UNCHANGED <<fwd, startIdx, rb, rbTries, effect, revivals, generation, owed>>
 
 \* The next rollback is the pending step that started last.
@@ -222,7 +227,7 @@ Cancel ==
   /\ task = "live"
   /\ (phase = "rolling_back") => (CancelMidRollback = "halts")
   /\ task' = "cancelled"
-  /\ outcome' = IF phase = "rolling_back" THEN "failed" ELSE outcome
+  /\ outcome' = IF phase = "rolling_back" THEN HaltOutcome ELSE outcome
   /\ UNCHANGED <<phase, fwd, startIdx, rb, rbTries, cause, effect, revivals, generation, owed>>
 
 \* retry-task.  A task that failed with no saga revives as it does today.  One
@@ -322,9 +327,9 @@ OutcomeOnlyWhenTerminal == outcome # "none" => task \in {"failed", "cancelled"}
 FailedImpliesSettled ==
   task = "failed" => (outcome # "none" \/ (cause = "infra" /\ ~InfraCapRollsBack))
 
-\* A cancellation that halts a saga says so in the outcome.
+\* A cancellation that ends a saga records its outcome.
 CancelledSagaIsSurfaced ==
-  (task = "cancelled" /\ phase = "rolling_back") => outcome = "failed"
+  (task = "cancelled" /\ phase = "rolling_back") => outcome # "none"
 
 \* What replay will skip really holds its effect, and what it will run again
 \* does not: a memoized forward step is live, and an unstarted one is absent
