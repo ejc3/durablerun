@@ -6612,6 +6612,34 @@ MUTATION_SPECS.extend(
             "a timed-out child await does not say which kind of await it was, or carry the task id as one",
         ),
         (
+            "event-name-is-a-durable-string",
+            "packages/core/src/child-tasks.ts",
+            "    return new EventName(requireDurableString(`${operation} eventName`, raw))\n",
+            "    return new EventName(raw) // MUTATION\n",
+            "an emit or an await with a NUL in its event name is stored as a shorter name on one dialect and reported as an outage on another",
+        ),
+        (
+            "child-await-hit-error-names-the-task",
+            "packages/store-libsql/src/store.ts",
+            "            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`\n",
+            "            : `awaitEvent ${queue}/${eventName}`\n",
+            "a child await that hits a corrupt stored payload hands the task the engine's event name",
+        ),
+        (
+            "child-await-recording-error-names-the-task",
+            "packages/store-libsql/src/store.ts",
+            "        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,\n",
+            "        `awaitTaskDone ${queue}/${name.value} found a non-TEXT stored payload`,\n",
+            "a child await that records an outcome and reads a corrupt stored payload hands the task the engine's event name",
+        ),
+        (
+            "postgres-recording-await-takes-the-event-lock",
+            "packages/store-postgres/src/store.ts",
+            "    b.lockEvent({ queue, eventName: name })\n    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }\n",
+            "    const awaiting = { ...claim, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }\n",
+            "two awaits that record the outcome of one child insert the same event row, and the second is reported as an outage",
+        ),
+        (
             "hosted-enqueue-refuses-reserved-key",
             "packages/driver/src/hosted.ts",
             "        if (idempotencyKey?.startsWith(RESERVED_EVENT_PREFIX)) {\n",
@@ -10921,6 +10949,41 @@ for _verdict, _names in (
         ),
         (
             "sdk-child-timeout-names-the-task",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] events (the TLC-verified emit/await protocol) refuses an event name that does not survive every store, and writes nothing",
+            "mutation-verdict:behavior:event-name-is-a-durable-string",
+            "packages/conformance/src/suite.ts",
+        ),
+        (
+            "event-name-is-a-durable-string",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/child-await-error.test.ts",
+            "a child await's error names the child task, and never the engine event, on both paths that read the payload",
+            "mutation-verdict:behavior:child-await-error-names-the-task",
+        ),
+        (
+            "child-await-hit-error-names-the-task",
+            "child-await-recording-error-names-the-task",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/postgres-terminal-lock.test.ts",
+            "an await that records an outcome waits for another that has not committed",
+            "mutation-verdict:behavior:recording-await-takes-the-event-lock",
+        ),
+        (
+            "postgres-recording-await-takes-the-event-lock",
         ),
     ),
     (
