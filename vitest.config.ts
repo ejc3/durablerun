@@ -6,7 +6,10 @@ import { parseDialectSelection } from './packages/conformance/test/dialect-selec
 // (DURABLERUN_CONFORMANCE_DIALECTS, a comma list) leaves out the files of the others.
 // Unset, every file runs.
 const SERVER_TEST_FILES: Readonly<Record<string, readonly string[]>> = {
-  postgres: ['packages/conformance/test/postgres-bootstrap-window.test.ts'],
+  postgres: [
+    'packages/conformance/test/postgres-bootstrap-window.test.ts',
+    'packages/store-postgres/test/query-plans.test.ts',
+  ],
   mysql: [
     'packages/store-mysql/test/real-server.test.ts',
     'packages/store-mysql/test/query-plans.test.ts',
