@@ -185,7 +185,7 @@ export const storedInteger = (col: string): string => `(${col}) IS NOT NULL`
 const storedBoundedInteger = (col: string, min: number, max: number): string =>
   `(${storedInteger(col)} AND ${col} BETWEEN ${min} AND ${max})`
 
-const persistedColumn = (bounds: PersistedIntegerBounds, alias?: string): string => {
+export const persistedColumn = (bounds: PersistedIntegerBounds, alias?: string): string => {
   const separator = bounds.field.indexOf('.')
   if (separator < 0 || separator === bounds.field.length - 1) {
     throw new Error(`persisted integer field must be table-qualified, got ${bounds.field}`)

@@ -7,6 +7,7 @@ import {
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
+  LIVE_STATES,
   LOST_LEASE,
   type LeaseState,
   MAX_DURATION_MS,
@@ -88,6 +89,7 @@ import {
   epochAdditionFits,
   fencedAt,
   jsonInputValid,
+  persistedColumn,
   registeredWait,
   runAvailableDue,
   runClaimExpired,
@@ -347,22 +349,36 @@ WHERE t.queue = ? AND ${cancelDue('t', NOW_MS)}
 ORDER BY t.cancel_at_ms, t.task_id
 LIMIT ?`
 
+/**
+ * One wake source: the earliest stored instant of one state of one queue. MySQL does not
+ * answer `MIN()` from an index once the bounds check stands beside it, and reads every
+ * row of the state. The first row in index order is the same instant, and it is one seek,
+ * because each index here is (queue, state, instant). Each leg binds the queue once.
+ */
+const wakeLeg = (
+  table: 'runs' | 'tasks',
+  index: string,
+  state: string,
+  bounds: PersistedIntegerBoundsExceptClaimGeneration,
+): string => {
+  const instant = persistedColumn(bounds, 'w')
+  return `(SELECT ${instant} AS v FROM ${table} w FORCE INDEX (${index})
+    WHERE w.queue = ? AND w.state = '${state}'
+      AND ${storedIntegerWithin(bounds, 'w')}
+    ORDER BY ${instant} LIMIT 1)`
+}
+
+const NEXT_WAKE_LEGS: readonly string[] = [
+  wakeLeg('runs', 'runs_poll', 'pending', RUN_INTEGER_BOUNDS.available_at_ms),
+  wakeLeg('runs', 'runs_poll', 'sleeping', RUN_INTEGER_BOUNDS.available_at_ms),
+  wakeLeg('runs', 'runs_lease', 'running', RUN_INTEGER_BOUNDS.claim_expires_at_ms),
+  ...LIVE_STATES.map((state) =>
+    wakeLeg('tasks', 'tasks_cancel', state, TASK_INTEGER_BOUNDS.cancel_at_ms),
+  ),
+]
+
 export const NEXT_WAKE_SQL = `SELECT MIN(v) AS wake_ms FROM (
-  SELECT MIN(r.available_at_ms) AS v FROM runs r
-    WHERE r.queue = ? AND r.state = 'pending'
-      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}
-  UNION ALL
-  SELECT MIN(r.available_at_ms) FROM runs r
-    WHERE r.queue = ? AND r.state = 'sleeping'
-      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.available_at_ms, 'r')}
-  UNION ALL
-  SELECT MIN(r.claim_expires_at_ms) FROM runs r
-    WHERE r.queue = ? AND r.state = 'running'
-      AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}
-  UNION ALL
-  SELECT MIN(t.cancel_at_ms) FROM tasks t
-    WHERE t.queue = ? AND t.state IN ${LIVE}
-      AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.cancel_at_ms, 't')}
+  ${NEXT_WAKE_LEGS.join('\n  UNION ALL\n  ')}
 ) AS wakes`
 
 const storedSweepGenerations = (run: string): string =>
@@ -1836,7 +1852,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
   async nextWakeAtEpochMs(queue: string): Promise<number | null> {
     const [rows] = await this.db.batch(
       'next-wake',
-      [{ sql: NEXT_WAKE_SQL, args: [queue, queue, queue, queue] }],
+      [{ sql: NEXT_WAKE_SQL, args: NEXT_WAKE_LEGS.map(() => queue) }],
       'read',
     )
     const value = rows?.rows[0]?.wake_ms
