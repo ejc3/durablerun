@@ -1212,7 +1212,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     task's result, and a route by run id is left to the PR that needs it.
   - A repair for the one case the deploy rule covers: an older build that ends
     a child while a parent is parked on it strands the parent until its timeout
-    or its cancellation deadline. A sweep that records the event of a terminal
+    or its cancellation deadline. An await that records the outcome wakes
+    nobody, so a second parent's await does not free the first. A sweep that records the event of a terminal
     task that has a registered waiter would close it. It is deferred because it
     is a protocol step, so it is modeled first, and no deployment mixes builds
     across this change yet.
@@ -1227,11 +1228,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - A task ending on PostgreSQL is 8 round trips where main's was 5. The three
     more are the completion event, the wake, and the lock. Folding statements
     needs a grammar the tree path does not have.
+  - Every other string a store port takes. This round holds the spawn queue
+    and a port's event name to the durable string domain, each where it enters.
+    A queue or a step name at the other ports is not checked at the port. One
+    check for the whole port is its own change.
   - Option, not a deferral of this PR: the generated follow-ons that select
     their source by key (`task`, `task-mirror`) still correlate the source to
     `tasks` on the queue, so their plan is a scan of `tasks` with a keyed probe
-    for each row. It is on main, it measured 4 to 6 ms at 2,000 tasks, and
-    binding the queue as the wake now does would make it a keyed lookup. It
+    for each row. It is on main, and its cost grows with every task in the
+    database, in any queue. One `complete` on libSQL measured 2 ms beside 2,000
+    tasks, 5 ms beside 10,000, and 20 ms beside 40,000 on main, and 4, 8, and
+    25 ms here. Binding the queue as the wake now does would make it a keyed
+    lookup. It
     changes the compiled corpus of every label, so it is its own change.
 - **PR3.4 saga / step rollbacks** per DESIGN §3.10 (Cloudflare's shipped
   June-2026 API shape): `ctx.step(name, fn, { rollback, rollbackConfig })`,

@@ -596,7 +596,11 @@ One invocation executes one claimed run to its next suspension point:
     each is held by a PostgreSQL case that keeps the await's transaction open
     across the whole terminal batch, with a trigger that sleeps after the wait
     row is inserted: a locked batch waits and wakes the parent, and an unlocked
-    one loses the wakeup every time. A race of twelve real concurrent awaits
+    one loses the wakeup every time. The await that records an outcome writes
+    the event too, so it takes the same lock, and a case of the same kind holds
+    it: two such awaits of one child, the first held open after its insert.
+    Without the lock the second inserts the same row, the table's key refuses
+    it, and the await is reported as an outage. A race of twelve real concurrent awaits
     against every terminal batch also runs on both dialects. It is a smoke and
     not the proof: with the lock dropped it caught one site of five.
   - The PostgreSQL event lock is `pg_advisory_xact_lock` on a key hashed from
@@ -640,8 +644,10 @@ One invocation executes one claimed run to its next suspension point:
     outcome, and a later emit finds no row to wake.
   - The name is reserved. Every event statement and the event lock take an
     `EventName`, which only core mints, in two ways: `EventName.fromPort`
-    refuses a name that starts with `$` with `RangeError`, and
-    `EventName.taskDone` is the completion event of a task. So the `emitEvent`
+    refuses a name that starts with `$` with `RangeError`, and a name no store
+    can keep, one with a NUL or a lone surrogate, with
+    `InvalidDurableStringError`, and `EventName.taskDone` is the completion
+    event of a task. So the `emitEvent`
     and `awaitEvent` ports cannot forget the refusal, and they write or
     register nothing for a reserved name. The hosted emit route and the SDK
     already refused one through `UserName.parse`. Any other caller of the emit
@@ -714,7 +720,8 @@ One invocation executes one claimed run to its next suspension point:
     resolves to the child's first outcome and does not throw for a failed or
     cancelled child, so the parent decides what a failure means. A timeout
     throws `TaskTimeoutError`, which is an `EventTimeoutError` that names the
-    task awaited and never the engine's event. A refused await, and a spawn the
+    task awaited and never the engine's event, and an error the store raises
+    from a child await names the task the same way. A refused await, and a spawn the
     store refuses as invalid input, are permanent failures (`FatalTaskError`),
     because neither changes on a retry: that covers `RangeError`, and
     `InvalidDurableStringError` for a header no store can keep. A child defaults
