@@ -955,11 +955,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and its successor is the type. `tree-clock-ban-token-in-followon` is
     retired because, with `readsClock` deleted, it removed the same condition
     as `tree-clock-text-in-followon`, whose test now holds both shapes. The
-    tests that began from a text statement build trees. The twenty-eight that
+    tests that began from a text statement build trees. The twenty-seven that
     only exercised the text scanners are deleted, and the PR accounts for each
     by name. The failure successors' deadline is built from nodes in the
     shared statement, and a follow-on insert's SELECT list holds no fragment,
-    as the option below records. The registry holds 647 mutations.
+    as the option below records. The registry holds 644 mutations.
   - PR3.9e part 3c, live. Exit test 3 of the current milestone is met when it
     lands, and not before. It owns the items below that name it: one pass over
     the tree, a tree-level form of the two text lints' rules, the corpus

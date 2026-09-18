@@ -4284,7 +4284,9 @@ def exact_epoch_ceiling_replacement(
     if expression == NODE_BUILT_DEADLINE:
         # The same cap built from nodes, as a CASE, because a follow-on insert may select
         # no call. The ceiling is MAX_EPOCH_MS written out, since the statement does not
-        # import it: if the ceiling moves, this mutant survives and the audit says so.
+        # import it. If the ceiling moves down, this mutant survives and the audit says so.
+        # If it moves up, the mutant is still caught while no longer capping at the ceiling,
+        # so this literal moves with MAX_EPOCH_MS.
         ceiling = "253_402_300_799_000"
         capped = (
             f"eb.case().when({expression}, '>=', {ceiling})"
