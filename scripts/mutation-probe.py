@@ -4183,8 +4183,8 @@ MUTATION_SPECS = [
         "retry-task-requires-failed-task",
         "packages/core/src/statements/retry-task.ts",
         "      .where('state', '=', 'failed')\n",
-        "      .where('state', 'in', ['failed', 'cancelled'])\n",
-        "retryTask revives a cancelled task",
+        "      .where('state', 'in', ['completed', 'failed', 'cancelled'])\n",
+        "retryTask revives a cancelled or a completed task",
     ),
     (
         "retry-task-requires-well-formed-failure",

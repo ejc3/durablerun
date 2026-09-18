@@ -306,6 +306,23 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
+          def reaim_entry(repaired, candidate, name):
+              # Replace one top-level entry of the base registry with this tree's entry of the
+              # same name, for a mutation whose target line this tree rewrote. Its name and its
+              # file must stand, so only the find, the replacement and the description move.
+              def span(text):
+                  key = f'        "{name}",\n'
+                  if text.count(key) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  start = text.rindex('    (\n', 0, text.index(key))
+                  if not text.startswith('    (\n' + key, start):
+                      raise SystemExit(f'{name}: the bridge re-aims only a top-level entry.')
+                  return start, text.index('    ),\n', start) + len('    ),\n')
+              start, end = span(repaired)
+              new_start, new_end = span(candidate)
+              if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
+                  raise SystemExit(f'{name}: the bridge may change only find, replacement, and description.')
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def list_conditions(repaired, candidate, file, lines):
               # List condition lines of a tree rule whose mutations this tree registers and the
               # base predates, so the base's derived coverage check reads them as held.
@@ -349,8 +366,16 @@ jobs:
               # statement to one definition of eligibility is new: the head registry
               # registers a mutation for each of its conditions or lists the line with what
               # a sweep showed, the base predates all of them, and so its lines are listed
-              # and its verdict markers exempted. No base entry is re-aimed or retired.
-              repaired = unlist_conditions(previous, candidate, 'packages/core/src/sql-tree.ts', (
+              # and its verdict markers exempted. One base entry is re-aimed: the mutant of
+              # retry-task-requires-failed-task spelled a list of states the new rule
+              # refuses, so it never reached its own test, and it now lists the terminal
+              # states, which the rule admits and which still revives a cancelled task.
+              repaired = previous
+              for name in (
+                  'retry-task-requires-failed-task',
+              ):
+                  repaired = reaim_entry(repaired, candidate, name)
+              repaired = unlist_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
                   "for (const item of value) if (isNode(item)) out.push(item)",
                   "if (Array.isArray(value)) {",
                   "if (ValueNode.is(node)) return []",
