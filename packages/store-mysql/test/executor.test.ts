@@ -242,13 +242,27 @@ describe('MysqlExecutor transactions', () => {
     it('runs a write batch again after a deadlock, under the named lock it already holds', async () => {
       const connection = new FakeConnection()
       connection.failures.set(WRITE, { error: DEADLOCK, times: 2 })
-      const results = await executorOver(connection).batch('migrate:v1', [{ sql: WRITE, args: [] }])
-      expect(results).toHaveLength(1)
+      // The outcome is taken first, so that a batch which is not run again fails the
+      // assertion below and not the test's own await.
+      const outcome = await executorOver(connection)
+        .batch('migrate:v1', [{ sql: WRITE, args: [] }])
+        .then(
+          (results) => `answered ${results.length} statement`,
+          (error: unknown) => error,
+        )
+      expect(outcome, 'mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again').toBe(
+        'answered 1 statement',
+      )
       const attempt = ['START TRANSACTION', WRITE, 'ROLLBACK']
-      expect(
-        shape(connection),
-        'mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again',
-      ).toEqual(['lock', ...attempt, ...attempt, 'START TRANSACTION', WRITE, 'COMMIT', 'unlock'])
+      expect(shape(connection)).toEqual([
+        'lock',
+        ...attempt,
+        ...attempt,
+        'START TRANSACTION',
+        WRITE,
+        'COMMIT',
+        'unlock',
+      ])
       expect(connection.released).toBe(1)
     })
 
