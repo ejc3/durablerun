@@ -229,6 +229,38 @@ describe('MysqlExecutor against a real server', () => {
     }
   })
 
+  it('leaves a gated statement unsent when its gate matched no row, and sends it when the gate matched a row it did not change', async () => {
+    // `SqlStatement.skipUnlessWrote` names the earlier statement whose stamp gates this
+    // one. This executor pays a round trip for each statement, so it skips one whose gate
+    // wrote no row. MySQL counts rows changed, and a gate that matched a row and changed
+    // nothing counts zero there, so the gate is read as the port means it: rows matched.
+    // The gated statements here are plain inserts, so that a skipped one can be seen.
+    const db = await openMysqlTestDb({ idNamespace: 'gated' })
+    try {
+      const gated = (key: string, gate: number) => ({
+        sql: 'INSERT INTO meta (`key`, value) VALUES (?, ?)',
+        args: [key, 'sent'],
+        skipUnlessWrote: gate,
+      })
+      const results = await db.raw.batch('fixture:gated', [
+        { sql: "INSERT INTO meta (`key`, value) VALUES ('k', 'same')", args: [] },
+        { sql: "UPDATE meta SET value = 'x' WHERE `key` = 'absent'", args: [] },
+        gated('after-no-match', 1),
+        { sql: "UPDATE meta SET value = 'same' WHERE `key` = 'k'", args: [] },
+        gated('after-a-match-that-changed-nothing', 3),
+        { sql: "SELECT `key` FROM meta WHERE value = 'sent' ORDER BY `key`", args: [] },
+      ])
+      expect(
+        results.map(({ rowsAffected }) => rowsAffected),
+        'mutation-verdict:behavior:mysql-gated-statement-skipped-when-its-gate-matched-nothing',
+      ).toEqual([1, 0, 0, 1, 1, 1])
+      expect(results[2]).toEqual({ rows: [], rowsAffected: 0 })
+      expect(results[5]?.rows).toEqual([{ key: 'after-a-match-that-changed-nothing' }])
+    } finally {
+      await db.close()
+    }
+  })
+
   it('runs write batches at READ COMMITTED and read batches in a read-only snapshot', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'isolation' })
     try {

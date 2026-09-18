@@ -202,6 +202,21 @@ describe('MysqlExecutor transactions', () => {
     expect(over(OWNED_POOL_CONFIG.config)).not.toThrow()
   })
 
+  it('refuses a statement gated by one that is not earlier in its batch', async () => {
+    const gatedBy = (gate: number) =>
+      executorOver(new FakeConnection())
+        .batch('fixture:gate', [
+          { sql: 'SELECT 1 AS value', args: [] },
+          { sql: 'SELECT 2 AS value', args: [], skipUnlessWrote: gate },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+    for (const gate of [1, 2, -1, 0.5]) expect(await gatedBy(gate)).toBeInstanceOf(TypeError)
+    expect(await gatedBy(0)).toBe('accepted')
+  })
+
   it('takes no lock for the version read', async () => {
     const connection = new FakeConnection()
     await executorOver(connection).batch(
