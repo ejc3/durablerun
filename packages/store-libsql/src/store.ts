@@ -2029,12 +2029,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       // Every woken run carries the event's instant, so this is the same value
       // without a caller-controlled stamping escape.
       fence: 'wake-runs',
-      // The queue narrows the source to an index rather than scanning runs;
-      // `state = 'pending'` is what wake-runs just set on exactly these rows. The queue
-      // is bound on both sides and not correlated, or the source would run once for
-      // every task row: every batch that ends a task pays for this statement.
+      // The source is the runs this batch woke, and the stamp says which those are. The
+      // stamp has no index, so the access path is what wake-runs just set on exactly
+      // these rows: `wake_event`, and `state = 'pending'`. The partial index `runs_woken`
+      // holds only runs that were woken and not yet claimed, so this reads a handful of
+      // rows. By queue and state alone the only index is `runs_poll`, and every batch
+      // that ends a task would walk every pending run of its queue, three times. The
+      // queue is bound on both sides and not correlated, or the source would run once
+      // for every task row.
       queue,
-      where: `f.state = 'pending'`,
+      where: `f.wake_event = ? AND f.state = 'pending'`,
+      whereArgs: [eventName],
       set: { state: `'pending'` },
       narrow: `state IN ${LIVE}`,
       rows: 'source-keys',
@@ -2062,8 +2067,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       fence: 'wake-runs',
       // Same reason as wake-tasks: the queue narrows the source to an index,
       // and `state = 'pending'` is what wake-runs just set on these rows.
-      where: `f.queue = ? AND f.state = 'pending'`,
-      whereArgs: [queue],
+      where: `f.queue = ? AND f.wake_event = ? AND f.state = 'pending'`,
+      whereArgs: [queue, eventName],
       narrow: `event_name = ? AND status = 'waiting'`,
       narrowArgs: [eventName],
       rows: 'source-keys',
@@ -2075,8 +2080,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.seal('wake-finished', {
       relation: 'runs-to-runs',
       fence: 'wake-runs',
-      where: `f.queue = ? AND f.state = 'pending'`,
-      whereArgs: [queue],
+      where: `f.queue = ? AND f.wake_event = ? AND f.state = 'pending'`,
+      whereArgs: [queue, eventName],
       rows: 'source-keys',
     })
   }

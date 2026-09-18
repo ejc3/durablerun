@@ -221,6 +221,18 @@ export const MIGRATIONS: Migration[] = [
        END`,
     ],
   },
+  {
+    // A batch that ends a task or emits an event finds the runs it just woke by their
+    // `wake_event`, among the pending runs of the queue. This index holds only runs
+    // that were woken and are not yet claimed, so that lookup reads those rows and not
+    // the queue's whole pending backlog. It is an index and nothing else: a build that
+    // predates it runs against this schema unchanged.
+    version: 6,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS runs_woken ON runs (queue, wake_event)
+       WHERE wake_event IS NOT NULL AND state = 'pending'`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
