@@ -1411,9 +1411,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
     no attempt record, which halts the saga`, `revives a failed task whose
     saga never began, as before`, and the SDK case for a step that committed
     before it registered a rollback.
-  The mutation registry gains 58 mutations, one condition each, 45 with the
-  implementation and 13 with the review fold below, and moves from 746 to
-  804. Writing one for each condition showed three guards that
+  The mutation registry gains 61 mutations, one condition each, 45 with the
+  implementation, 13 with the review fold below, one with the MySQL port, and
+  two with the re-review's fold, and moves from 746 to 807. Writing one for
+  each condition showed three guards that
   nothing could kill, because the compare-and-set their statement is fenced
   on already holds them, and they were removed. Measured on one machine: on
   PostgreSQL every failure sends nine queries where it sent eight, because
@@ -1444,8 +1445,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
   its compensation, because only a step's body can make an instance of that
   class and the body does not run again. DESIGN.md states the rule for
   handlers, and the halt says where the replay stopped. The saga phase is now
-  a bind no statement can leave out. The review round is
-  `postmortems/pr3.4-sagas-review.md`.
+  a bind no statement can leave out. One narrow re-review of that fold and of
+  the MySQL port then found one MEDIUM and three LOW. The MEDIUM is the
+  reserved-name defect again, at a pair of batch and name the fold's audit
+  had not crossed: a suspension admitted `$rollback:<step>` as its marker
+  before the phase, on all three stores, which leaves a started step
+  uncompensated. The suspension now applies the predicate a checkpoint write
+  applies, and one table-driven case in the `sagas` surface crosses every
+  batch that takes a caller's checkpoint name with every reserved name in
+  both phases, on every dialect. The MySQL store compared a name with a
+  reserved literal in the connection's collation, which folds case and pads
+  spaces, and now compares byte for byte. The halt names where the replay
+  stopped whether or not the step there registered a rollback. The review
+  round is `postmortems/pr3.4-sagas-review.md`.
   Open, and owned by this entry until it merges:
   - The poison matrix seeds no task with a started step, so it never reaches
     the rollback pass. The pass's one integer guard is that the budget its
@@ -1469,7 +1481,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     boundary test holds it (DESIGN.md §3.4). The identical suite passes on
     MySQL 8.4 with no shared change, the `sagas` surface, the saga block of
     the fault matrix, the poison matrix's `fail-rollback` label, and the
-    corpus's `fail-rollback` variants included: all 3,337 conformance tests
+    corpus's `fail-rollback` variants included: all 3,338 conformance tests
     named for the dialect, with the store's own tests beside them, none failed
     or skipped. A task spawned with a budget of 1,000,000 attempts rolls back
     there as any other does.

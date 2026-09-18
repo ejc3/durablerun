@@ -2545,7 +2545,7 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   | StartStep | `set-checkpoint` of `$started:<step>` | One SQL shape for every checkpoint. The phase predicate is one expression over the name. |
   | UserTerminal | `fail` with no retry, or with a retry the budget refuses | Places the rollback pass, writes the phase marker, and the task follows the pass. The terminal arm yields to the pass by id, so nothing ends. |
   | InfraCap | the cap arm of `sweep:lost-launch`, and `sweep:claim-timeout` at the infrastructure cap | The same three statements. The sweep reports `rollback-started`. Inside the phase each ends the task as it always did. |
-  | RunRollback | `set-checkpoint` of `$rollback:<step>` | Admitted only inside the phase. Any other checkpoint is admitted only before it. |
+  | RunRollback | `set-checkpoint` of `$rollback:<step>` | Admitted only inside the phase, and through no other batch: a suspension's marker is held to the same predicate over the name, and a suspension runs only before the phase. Any other checkpoint is admitted only before it. |
   | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The attempt record lands behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
   | FinishSaga | `fail` with no retry, inside the phase | Ends the task with the reason the caller passes, which the SDK makes the failure that began the saga. |
   | Cancel | `cancel-task`, `sweep:cancel` | Unchanged. |
@@ -2564,9 +2564,19 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   which only the batch that decides a failure writes, and a rollback's attempt
   record, which only the batch that fails a pass writes. A lease holder's
   plain checkpoint write is refused both, and so is the marker a suspension
-  commits for its caller. The attempt record a failed rollback commits for its
-  caller is refused every other name. Those are the three batches that take a
-  caller's checkpoint name, so no caller of the port, a worker in another
+  commits for its caller. A rollback's name is admitted through a plain
+  checkpoint write inside the phase and through nothing else: a suspension,
+  which runs only before the phase, refuses it, because a rollback recorded
+  that early leaves its step owed nothing when the failure is decided. The
+  attempt record a failed rollback commits for its caller is refused every
+  other name. Those are the three batches that take a caller's checkpoint
+  name, and one conformance case holds the whole table: each of the three
+  against every reserved name, in both phases, refused or admitted only in
+  its phase. A reserved name is matched byte for byte on every dialect, so a
+  name in another case, or padded with a space, is a plain name everywhere.
+  The MySQL store casts the reserved literal to binary to get that, because a
+  bind compared with a literal there takes the connection's collation, which
+  folds case and pads spaces. So no caller of the port, a worker in another
   language included, can forge a saga, replace its cause, or spend a
   rollback's budget. `reschedule` and `defer-launch` stay open, because a build without
   the task's handler must still be able to defer a launch. The SDK never asks:
@@ -2618,7 +2628,8 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   lets through only its own error class, the replay ends there, the later
   steps register no rollback, and the saga halts as failed with nothing
   compensated, because no earlier step is compensated ahead of one that cannot
-  be. The halt names both steps. Storing the error would not close this: an
+  be. The halt names both steps, whether or not the step that ended the
+  replay registered a rollback. Storing the error would not close this: an
   error rebuilt from storage is no instance of the handler's class either.
   Then each rollback owed runs as a step of its own, the step that
   started last first. A failed rollback is counted with the failure and
