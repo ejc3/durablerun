@@ -209,162 +209,47 @@ jobs:
             mkdir -p "$added_root"
             mv -- "packages/$package" "$added_root/$package"
           done
-      - name: Bootstrap staged dependency installation for the older base runner
-        # Only the known pre-install runner needs this one-release bridge.
-        # Preserve every byte outside the reviewed install insertion; checker
-        # inventory, sources, and the canonical BASE invocation remain unchanged.
+      - name: Bridge pinned file pairs past their older base copies
+        # The base's checkers run against this tree from a staged copy of the base. When
+        # a checker or its data must change in the same pull request as the code it
+        # reads, the base copy cannot pass, and the reviewed exception is one row here:
+        # a path, the sha256 of the base's file, and the sha256 of this tree's file,
+        # which is installed over it. A base whose file has another hash skips the row,
+        # and so does a tree that leaves the file as the base has it. A tree that
+        # changes the file to anything but the pinned head file is refused, so a later
+        # edit to that file must re-pin it in the same reviewed change. A row is dead
+        # once its pull request is the base, and is deleted then. No row is live today:
+        # the last one carried the batch lint that child tasks changed, which main has.
         run: |
           python3 - <<'PY'
           import hashlib
           from pathlib import Path
-          base = Path('/tmp/base/scripts/gate-lint.py')
-          previous = base.read_text()
-          if hashlib.sha256(previous.encode()).hexdigest() != 'bcb9983eb2d17e8b68a832feef08d21f056d8f708a5f143c164440ad62ad55bf':
-              print('Base runner does not need the staged-install bootstrap.')
-              raise SystemExit(0)
-          candidate = Path('scripts/gate-lint.py').read_text()
-          marker = '        # The staged checkout needs its own tools and workspace links.\n'
-          anchor = '        ran = 0\n'
-          if candidate.count(marker) != 1 or candidate.count(anchor) != 1 or previous.count(anchor) != 1:
-              raise SystemExit('Staged-install bootstrap requires unique insertion boundaries.')
-          insertion = candidate[candidate.index(marker):candidate.index(anchor)]
-          repaired = previous.replace(anchor, insertion + anchor)
-          if not insertion or repaired != candidate:
-              raise SystemExit('Staged-install bootstrap may only add the dependency prerequisite.')
-          base.write_text(repaired)
-          print('Applied the staged-install prerequisite; all other BASE runner bytes are unchanged.')
-          PY
-      - name: Bridge fixed release data in the older base package checkers
-        # Only these exact alpha.0 checkers need the one-release bridge.
-        # Replace release data, never checker logic, inventory, or assertions.
-        # The next base reads source version data itself and skips this step.
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import re
-          from pathlib import Path
-          version = json.loads(Path('packages/core/package.json').read_text()).get('version')
-          number = r'(?:0|[1-9][0-9]*)'
-          identifier = rf'(?:{number}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
-          pattern = rf'{number}\.{number}\.{number}(?:-{identifier}(?:\.{identifier})*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?'
-          if not isinstance(version, str) or re.fullmatch(pattern, version) is None:
-              raise SystemExit('Release bridge requires an exact source core release version.')
-          for name, expected_hash, expected_count in (
-              ('package-smoke-manifest.mjs', '52c858788371b4b57f5e9cbfb8e157652a2264cb2eb6a7bb96bded767e515666', 2),
-              ('package-smoke-manifest-selftest.mjs', '0d7636485d70f18ab14df79e2ff602b7d3a298326a036ebf481c80c3a154a357', 1),
-          ):
-              base = Path('/tmp/base/scripts') / name
-              previous = base.read_bytes()
-              if hashlib.sha256(previous).hexdigest() != expected_hash:
-                  print(f'{name}: base does not need the fixed-release bridge.')
+          PAIRS = (
+              # (path, sha256 of the base's file, sha256 of this tree's file, why)
+          )
+          for path, base_hash, head_hash, why in PAIRS:
+              base = Path('/tmp/base') / path
+              if not base.exists() or hashlib.sha256(base.read_bytes()).hexdigest() != base_hash:
+                  print(f'{path}: the base does not need this pair.')
                   continue
-              old = b"'0.1.0-alpha.0'"
-              if previous.count(old) != expected_count:
-                  raise SystemExit(f'{name}: release literal count changed.')
-              base.write_bytes(previous.replace(old, f"'{version}'".encode()))
-              print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
-          PY
-      - name: Bridge the new read labels past the older base batch lint
-        # This tree adds read batches an older base batch lint cannot classify. Each
-        # arm is pinned to one base lint hash and adds only the READS entries it
-        # names, and only when this tree's own batch lint declares exactly them as
-        # new reads. The first arm added claimed-task-name and refusal-state. The
-        # second adds run-task and task-done-state, the two reads child tasks need. Any
-        # other base skips.
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          import re
-          from pathlib import Path
-          base = Path('/tmp/base/scripts/batch-lint.py')
-          previous = base.read_text()
-          arms = {
-              'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2': ('claimed-task-name', 'refusal-state'),
-              'cde5f0b04e87b84ecde2b4157420c95ae1c727a0697e17293fbb7ad2cdc7b74c': ('run-task', 'task-done-state'),
-          }
-          labels = arms.get(hashlib.sha256(previous.encode()).hexdigest())
-          if labels is None:
-              print('Base batch lint does not need the read-label bridge.')
-              raise SystemExit(0)
-          def reads(text):
-              match = re.search(r'^READS = \{\n(.*?)^\}', text, re.M | re.S)
-              if match is None:
-                  raise SystemExit('read-label bridge requires one READS table.')
-              return set(re.findall(r'"([^"]+)"', match.group(1)))
-          added = reads(Path('scripts/batch-lint.py').read_text()) - reads(previous)
-          if added != set(labels):
-              raise SystemExit(f'read-label bridge covers exactly {labels}; this tree adds {sorted(added)}.')
-          anchor = 'READS = {\n'
-          if previous.count(anchor) != 1:
-              raise SystemExit('read-label bridge requires one READS anchor.')
-          base.write_text(previous.replace(anchor, anchor + ''.join(f'    "{label}",\n' for label in labels)))
-          print(f'Added the read labels {labels} to the base batch lint; all other base bytes are unchanged.')
-          PY
-      - name: Bridge the shared statements past the older base outcome lint
-        # This tree lets core's shared statements and their column descriptor name a
-        # task outcome column as an object key, because fail and the cancel transition
-        # assign failure_reason. The base lint predates that and rejects them. The arm
-        # is pinned to one base lint and one head lint, both by hash, and installs
-        # that head lint. Any other base skips, and any other head refuses, so a later
-        # edit to the lint must re-pin it here in the same reviewed change.
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          from pathlib import Path
-          base = Path('/tmp/base/scripts/outcome-lint.py')
-          if hashlib.sha256(base.read_bytes()).hexdigest() != '67b32d020579c27abf73fed876b699efaa35fcbf93fc0ff5913963d04d49dde5':
-              print('Base outcome lint does not need the shared-statement bridge.')
-              raise SystemExit(0)
-          candidate = Path('scripts/outcome-lint.py').read_bytes()
-          if hashlib.sha256(candidate).hexdigest() != '9f84cabbe6f121cda60eda8a7dcc7cfec1478c387ce005a21b9b0bea6a17b4d6':
-              raise SystemExit('outcome lint bridge is pinned to one head lint; re-pin it with the lint change.')
-          base.write_bytes(candidate)
-          print('Installed the pinned head outcome lint over the pinned base lint.')
-          PY
-      - name: Bridge withdrawn published names past the older base surface snapshot
-        # The base's package-surface check fails when a name its snapshot lists is
-        # gone, and the base snapshot cannot say a name left on purpose. This tree's
-        # snapshot withdraws names with a reason, and this tree's own check refuses a
-        # withdrawal that does not hold. Pinned to one base snapshot and to the exact
-        # names, this removes those names from the base's list. It replaces data,
-        # never checker logic. Any other base snapshot skips.
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          from pathlib import Path
-          base = Path('/tmp/base/scripts/published-surface-v0.1.0-alpha.1.json')
-          head = Path('scripts/published-surface-v0.1.0-alpha.1.json')
-          pinned = '3b737a4a98c5accefbd025cfc044702dcc64993faa7baed7601a5930c23601f3'
-          if not base.exists() or hashlib.sha256(base.read_bytes()).hexdigest() != pinned:
-              print('Base surface snapshot does not need the withdrawal bridge.')
-              raise SystemExit(0)
-          expected = {'@durablerun/core': {'.': ['FENCE_COLS', 'FENCE_SET', 'FENCE_VALS', 'fenceSetAt']}}
-          withdrawn = json.loads(head.read_text()).get('withdrawn', {})
-          declared = {
-              package: {subpath: sorted(reasons) for subpath, reasons in subpaths.items()}
-              for package, subpaths in withdrawn.items()
-          }
-          if declared != expected:
-              raise SystemExit('The withdrawal bridge is pinned to four names, and this tree withdraws a different set.')
-          snapshot = json.loads(base.read_text())
-          for package, subpaths in withdrawn.items():
-              for subpath, reasons in subpaths.items():
-                  names = snapshot['surface'][package][subpath]
-                  for name, reason in reasons.items():
-                      if names.count(name) != 1 or not isinstance(reason, str) or not reason.strip():
-                          raise SystemExit(f'{package} {subpath}: {name}: the bridge removes only a name the base lists once and this tree withdraws with a reason.')
-                      names.remove(name)
-          base.write_text(json.dumps(snapshot, indent=2) + '\n')
-          print('Removed four withdrawn names from the base surface snapshot; its checker is unchanged.')
+              candidate = Path(path).read_bytes()
+              if candidate == base.read_bytes():
+                  print(f'{path}: this tree leaves the file as the base has it.')
+                  continue
+              if hashlib.sha256(candidate).hexdigest() != head_hash:
+                  raise SystemExit(f'{path}: the pair is pinned to one head file; re-pin it with the change to that file.')
+              base.write_bytes(candidate)
+              print(f'{path}: installed the pinned head file over the pinned base file ({why}).')
+          print(f'{len(PAIRS)} pinned file pairs.')
           PY
       - name: Bridge re-aimed mutation targets in the older base registry
         # A base registry's find strings must occur in this tree, and every verdict
         # marker in this tree's tests must be registered or exempted by it. Some
         # find strings were legitimately re-aimed, and some markers are newer than
-        # a base. Each arm is pinned to one base registry hash and replaces or adds
-        # only that data, never checker logic or verdicts. Any other base skips.
+        # a base. The one arm is pinned to the base registry's hash and replaces or
+        # adds only that data, never checker logic or verdicts. Any other base skips.
+        # An arm is dead once its pull request is the base, and the next pull request
+        # that needs one replaces it, keeping the helpers.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -512,696 +397,89 @@ jobs:
                   for line in lines
               )
               return repaired[:at] + entries + repaired[at:]
-          if digest == '0ee074470a4315d43f41d6e6947b72a43512dd0b1a423951487d28ffbf0d0dd8':
-              # Three SDK guard specs were re-aimed against this registry.
-              repaired = previous
-              for name in (
-                  'sdk-context-captured-json-parse',
-                  'sdk-owned-event-timeout-discriminant',
-                  'sdk-owned-event-payload-discriminant',
-              ):
-                  start, end = entry(repaired, name)
-                  new_start, new_end = entry(candidate, name)
-                  old_entry = repaired[start:end]
-                  new_entry = candidate[new_start:new_end]
-                  if old_entry.splitlines()[:3] != new_entry.splitlines()[:3]:
-                      raise SystemExit(f'{name}: the re-aim bridge may change only find, replacement, and description.')
-                  repaired = repaired[:start] + new_entry + repaired[end:]
-          elif digest == '0bb4f12a043a7642f096799306d9a526ee0f9dd3baddf9b243e911d4327d4a73':
-              # The spawn cancellation deadline addition was re-aimed against this registry.
-              case = '        "spawn-cancellation",\n'
-              old = '        "         CASE WHEN ? IS NOT NULL THEN ${NOW} + ? + ? ELSE NULL END,\\n",\n'
-              new = '        "         ${NOW} + ? + ?,\\n",\n'
-              for text, line, count in ((previous, old, 1), (candidate, new, 1), (candidate, old, 0)):
-                  if text.count(line) != count:
-                      raise SystemExit('spawn-cancellation: the re-aim bridge requires one old and one new addition text.')
-              for text, line in ((previous, old), (candidate, new)):
-                  at = text.index(line)
-                  if case not in text[text.rindex('    (\n', 0, at):at]:
-                      raise SystemExit('spawn-cancellation: the re-aimed addition text must belong to its case.')
-              repaired = previous.replace(old, new)
-              # Two verdict markers this tree registers are unknown to this registry.
-              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
-              if repaired.count(exemptions) != 1:
-                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
-              markers = (
-                  'mutation-verdict:behavior:successor-carries-every-column',
-                  'mutation-verdict:behavior:task-result-accepts-engine-outcomes',
-              )
-              for marker in markers:
-                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
-                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
-              entries = ''.join(
-                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
-                  for marker in markers
-              )
-              repaired = repaired.replace(exemptions, exemptions + entries)
-          elif digest == '21afc73785b502980482196a44fb618b732911058784e30ab4c035e70269fe2d':
-              # Removing reschedule's 'preserve' disposition re-aimed three finds, and
-              # one verdict marker this tree registers is unknown to this registry.
-              def block(text, key):
-                  if text.count(key) != 1:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
-                  start = text.rindex('    (\n', 0, text.index(key))
-                  end = text.index('    ),\n', start) + len('    ),\n')
-                  return start, end
-              repaired = previous
-              for key in (
-                  '        "reschedule-wake-own-discriminant",\n        "packages/store-libsql/src/store.ts",\n',
-                  '        "reschedule-wake",\n        "reschedule wake deadline",\n',
-                  '        "suspend-wake",\n        "suspend wake deadline",\n',
-              ):
-                  start, end = block(repaired, key)
-                  new_start, new_end = block(candidate, key)
-                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
-              if repaired.count(exemptions) != 1:
-                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
-              marker = 'mutation-verdict:behavior:claimed-task-name-requires-queue'
-              if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
-                  raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
-              repaired = repaired.replace(
-                  exemptions,
-                  exemptions + f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n',
-              )
-          elif digest == '205e8666661bfefeaf65c5ce620314f0542cce95f4dce867c34318268e6a0845':
-              # Eight verdict markers this tree registers for retryTask are unknown to
-              # this registry. Nothing it quotes was re-aimed.
-              repaired = previous
-              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
-              if repaired.count(exemptions) != 1:
-                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
-              markers = (
-                  'mutation-verdict:behavior:retry-task-charges-net-of-infra-retries',
-                  'mutation-verdict:behavior:retry-task-charges-unaccounted-top-run',
-                  'mutation-verdict:behavior:retry-task-requires-accounting-band',
-                  'mutation-verdict:behavior:retry-task-requires-charge-within-budget',
-                  'mutation-verdict:behavior:retry-task-requires-counters-in-range',
-                  'mutation-verdict:behavior:retry-task-requires-failed-task',
-                  'mutation-verdict:behavior:retry-task-requires-incrementable-budget',
-                  'mutation-verdict:behavior:retry-task-requires-well-formed-failure',
-              )
-              for marker in markers:
-                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
-                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
-              entries = ''.join(
-                  f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
-                  for marker in markers
-              )
-              repaired = repaired.replace(exemptions, exemptions + entries)
-          elif digest == 'd72b80282762dd41b7f2a6acc495250a7fb9f38a52180bc99fa7e0bc8ac68839':
-              # Naming the cancellation on a refused heartbeat re-aimed three finds,
-              # removed one guard whose code path no longer exists, and registered five
-              # verdict markers this registry predates.
-              def spec_block(text, key, opener, closer):
-                  if text.count(key) != 1:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
-                  start = text.rindex(opener, 0, text.index(key))
-                  end = text.index(closer, start) + len(closer)
-                  return start, end
-              repaired = previous
-              for key, opener, closer in (
-                  ('        "sdk-owned-retry-attempt",\n', '    (\n', '    ),\n'),
-                  ('        "sdk-malformed-checkpoint-stops-pump",\n', '    (\n', '    ),\n'),
-                  ('            "task-control-runtime-lease-auth",\n', '        (\n', '        ),\n'),
-              ):
-                  start, end = spec_block(repaired, key, opener, closer)
-                  new_start, new_end = spec_block(candidate, key, opener, closer)
-                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
-                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-              removed = 'sdk-context-captured-aborted-getter'
-              if f'"{removed}"' in candidate:
-                  raise SystemExit(f'{removed}: the bridge removes only a spec this tree no longer registers.')
-              start, end = spec_block(repaired, f'            "{removed}",\n', '        (\n', '        ),\n')
-              repaired = repaired[:start] + repaired[end:]
-              verdict = f'        "{removed}": ExpectedVerdict(\n'
-              if repaired.count(verdict) != 1:
-                  raise SystemExit(f'{removed}: the bridge requires exactly one verdict entry.')
-              start = repaired.index(verdict)
-              end = repaired.index('        ),\n', start) + len('        ),\n')
-              repaired = repaired[:start] + repaired[end:]
-              cardinality = '        if len(MUTATIONS) != 434:\n'
-              if repaired.count(cardinality) != 1:
-                  raise SystemExit('the bridge requires the base inventory size assertion.')
-              repaired = repaired.replace(cardinality, '        if len(MUTATIONS) != 433:\n')
-              exemptions = 'VERDICT_MARKER_EXEMPTIONS = {\n'
-              if repaired.count(exemptions) != 1:
-                  raise SystemExit('verdict exemptions: the bridge requires one exemption table.')
-              markers = (
-                  'mutation-verdict:behavior:heartbeat-names-cancellation',
-                  'mutation-verdict:behavior:sdk-heartbeat-cancellation-outcome',
-                  'mutation-verdict:behavior:sdk-reasonless-refusal-is-lease-lost',
-                  'mutation-verdict:behavior:task-control-cancellation-error-class',
-                  'mutation-verdict:construction:task-control-runtime-cancellation-auth',
-              )
-              for marker in markers:
-                  if f'"{marker}"' in repaired or f'"{marker}"' not in candidate:
-                      raise SystemExit(f'{marker}: the bridge exempts only markers this tree registers and the base does not.')
-              repaired = repaired.replace(
-                  exemptions,
-                  exemptions + ''.join(
-                      f'    "{marker}": (\n        "registered by the head registry, which the base predates"\n    ),\n'
-                      for marker in markers
-                  ),
-              )
-          elif digest == '91249d308f3484c0a4367d7d36d23454ad7d84d9ce42f4fcdbe766fbf99041eb':
-              # Decoding the activation answer renamed the run the retry decision reads,
-              # which re-aimed one find.
-              key = '        "sdk-owned-retry-attempt",\n'
-              def spec_block(text):
-                  if text.count(key) != 1:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
-                  start = text.rindex('    (\n', 0, text.index(key))
-                  end = text.index('    ),\n', start) + len('    ),\n')
-                  return start, end
-              start, end = spec_block(previous)
-              new_start, new_end = spec_block(candidate)
-              if previous[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
-                  raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
-              repaired = previous[:start] + candidate[new_start:new_end] + previous[end:]
-          elif digest == '04cf2ece351df1592ed2710c7b12027b63a1f86aaccd500e913cddb95937c083':
-              # Building store batches as statement trees re-aimed these finds.
-              def spec_block(text, key):
-                  if text.count(key) != 1:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge requires exactly one entry.')
-                  start = text.rindex('    (\n', 0, text.index(key))
-                  end = text.index('    ),\n', start) + len('    ),\n')
-                  return start, end
-              repaired = previous
-              for name in ('complete-terminalization-requires-sole-live-run',):
-                  key = f'        "{name}",\n'
-                  start, end = spec_block(repaired, key)
-                  new_start, new_end = spec_block(candidate, key)
-                  if repaired[start:end].splitlines()[:3] != candidate[new_start:new_end].splitlines()[:3]:
-                      raise SystemExit(f'{key.strip()}: the re-aim bridge may change only find, replacement, and description.')
-                  repaired = repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          elif digest == '2900a1485022ce92ccb9cadee41cc68b8fe292a916dea232f57c2ca38d0282c9':
-              # Moving claim, activation, and the launch deferral onto statement trees
-              # re-aimed these finds. Activation's guards now live in the admission
-              # fragment it shares with the deferral, and two timestamp-addition cases
-              # generate four mutations. The deferral's use of that fragment gains a
-              # mutation, whose verdict marker this registry predates.
-              repaired = reaim(previous, candidate, (
-                  'legacy-wait-step-backfill',
-                  'activate-requires-sole-live-run',
-                  'activate-rejects-zero-lease',
-                  'activate-requires-relaunch-bound',
-                  'activate-requires-current-run-accounting',
-                  'activate-payload-validation-atomic',
-                  'activate-headers-admissible',
-                  'claim-lease',
-                  'activation-lease',
+          def unlist_conditions(repaired, candidate, file, lines):
+              # Drop listed condition lines of a tree rule file that this tree deleted or moved
+              # to another file, so the base's derived coverage check does not read them as
+              # stale. This tree's registry must no longer list them for that file.
+              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
+              opening = f'    "{file}": {{\n'
+              def section(text):
+                  if text.count(table) != 1 or text.count(opening, text.index(table)) != 1:
+                      raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
+                  start = text.index(opening, text.index(table)) + len(opening)
+                  return start, text.index('\n    },\n', start) + 1
+              head_start, head_end = section(candidate)
+              for line in lines:
+                  key = f'        "{line}": (\n'
+                  start, end = section(repaired)
+                  if repaired.count(key, start, end) != 1 or key in candidate[head_start:head_end]:
+                      raise SystemExit(f'{line}: the bridge unlists only a line the base lists once and this tree no longer lists.')
+                  at = repaired.index(key, start, end)
+                  repaired = repaired[:at] + repaired[repaired.index('        ),\n', at) + len('        ),\n'):]
+              return repaired
+          if digest == '841b2d76bb5f4aae00927222cdce6df72f0b6430e8384d481032fe736c5c42ae':
+              # The generic reading of a node's children moved from sql-tree.ts to
+              # tree-walk.ts, which the base's coverage check does not read, so the
+              # lines the base lists for the old reader are unlisted. The rule that holds a
+              # statement to one definition of eligibility is new: the head registry
+              # registers a mutation for each of its conditions or lists the line with what
+              # a sweep showed, the base predates all of them, and so its lines are listed
+              # and its verdict markers exempted. No base entry is re-aimed or retired.
+              repaired = unlist_conditions(previous, candidate, 'packages/core/src/sql-tree.ts', (
+                  "for (const item of value) if (isNode(item)) out.push(item)",
+                  "if (Array.isArray(value)) {",
+                  "if (ValueNode.is(node)) return []",
+                  "return test(node) || children(node).some((child) => someNode(child, test))",
+                  "typeof (value as { kind?: unknown }).kind === 'string'",
+                  "typeof value === 'object' &&",
+                  "value !== null &&",
+                  "} else if (isNode(value)) {",
               ))
-              repaired = exempt(repaired, candidate, (
-                  'mutation-verdict:behavior:defer-launch-requires-claim-receipt-admission',
-              ))
-          elif digest == '6d861a88e117b1be686c0e123562a2a76946c75404a688425eb1e289a6d51a58':
-              # Moving reschedule, suspend, the await registration, and the event emit
-              # onto statement trees re-aimed these finds. Suspend's statement now ends
-              # at its checkpoint bind, so the tail anchor its generated checkpoint
-              # conflict mutations share moved with it.
-              repaired = reaim(previous, candidate, (
-                  'suspend-preserves-valid-higher-lww',
-                  'null-event-payload-never-becomes-timeout',
-                  'suspend-rejects-noninteger-attempt',
-                  'reschedule-requires-run-task-queue-ownership',
-                  'suspend-requires-run-task-queue-ownership',
-                  'await-event-register-requires-run-task-queue-ownership',
-                  'reschedule-wake',
-                  'suspend-wake',
-                  'event-timeout',
-              ))
-              repaired = reaim_consumer(repaired, candidate, 'suspend')
-          elif digest == 'a89e9e9259e1ae1cab337fb6edf7e063f441e7f93b2e3ca6eba0ec76beb0e242':
-              # Moving fail, cancel, retry-task, and set-checkpoint's lease onto statement
-              # trees re-aimed these finds. The lease statement now ends at its checkpoint
-              # name bind, so the tail anchor its generated checkpoint conflict mutations
-              # share moved with it.
-              repaired = reaim(previous, candidate, (
-                  'matrix-attempt-edge-progress',
-                  'provenance-fail-progress',
-                  'cancel-task-requires-run-task-queue-ownership',
-                  'timestamp-cancel-rechecks-deadline-bound',
-                  'retry-task-charges-unaccounted-top-run',
-                  'set-checkpoint-requires-run-task-queue-ownership',
-                  'checkpoint-write-rejects-fractional-owner-attempt',
-                  'checkpoint-write-rejects-owner-attempt-overflow',
-                  'checkpoint-lease',
-              ))
-              # The failed-state check retry-task requires is now a node in the shared
-              # statement, so its mutation moved from the store to core with it.
-              repaired = reaim_moved(repaired, candidate, ('retry-task-requires-failed-task',))
-              repaired = reaim_consumer(repaired, candidate, 'checkpoint-write')
-          elif digest == 'f0be18a687a12585b2ea36ab7aa3e23591f33a4ac1916c74be1f395a1aaef104':
-              # Moving spawn's task insert and the two lease sweeps' compare-and-sets onto
-              # statement trees re-aimed these finds. The plain re-aim requires each
-              # entry's first three lines to be unchanged, which all sixteen satisfy.
-              repaired = reaim(previous, candidate, (
-                  'sweep-claim-timeout-rechecks-accounting',
-                  'terminal-timeout-cas-admits-terminal-owner',
-                  'terminal-relaunch-cap-cas-admits-terminal-owner',
-                  'matrix-lost-launch-edge-progress',
-                  'sweep-lost-launch-generation',
-                  'matrix-claim-timeout-edge-progress',
-                  'sweep-claim-timeout-generation',
-                  'provenance-sweep-progress',
-                  'spawn-primary-key-guard',
-                  'sweep-rejects-noninteger-attempt',
-                  'spawn-enqueue',
-                  'spawn-cancellation',
-                  'lost-launch-relaunch',
-                  'timestamp-terminal-relaunch-cap-at-max',
-                  'timestamp-sweep-lost-launch-rechecks-expiry-bound',
-                  'timestamp-sweep-timeout-rechecks-expiry-bound',
-              ))
-          elif digest == '84f0fedf2ef24704c573d06008f3d35c4670d2e185a3ca2ac34738d679600b7e':
-              # The generated follow-ons, derived() and seal(), became statement trees.
-              # Five finds were re-aimed in place. Two moved from fenced-batch.ts to
-              # sql-tree.ts with the conditions they remove, and the table of reasons a
-              # mutant may change a statement's placeholder count is keyed by mutation
-              # name, so one key moved with them.
-              repaired = reaim(previous, candidate, (
-                  'generated-selection-fence',
-                  'generated-narrow-drops-all',
-                  'generated-update-provenance-assignment',
-                  'generated-relation-queue-ownership',
-                  'derived-source-table',
-              ))
-              repaired = reaim_moved(repaired, candidate, (
-                  'generated-where-parens',
-                  'generated-narrow-widens',
-              ))
-              repaired = reaim_table(repaired, candidate, 'QUESTION_TOKEN_DELTA_REASONS')
-          elif digest == '4aee0d865f9f2dbe525815b726b5d7315ce586f5dec52d48f5281a792d9173dd':
-              # The hand-written follow-ons and tails became statement trees. Ten finds
-              # were re-aimed in place, where the store now passes the same expression as
-              # a fragment of a shared statement. Two timestamp addition cases were
-              # re-aimed the same way: their tuples have the shape of a registry entry
-              # and their names occur once, so the plain re-aim addresses them. One find
-              # moved from contract.ts to statements/successor.ts with the list of
-              # carried columns it mutates.
-              repaired = reaim(previous, candidate, (
-                  'emit-wake-event-correlation',
-                  'successor-ownership',
-                  'claim-receipt-requires-sole-live-run',
-                  'claim-receipt-requires-user-attempt-budget',
-                  'claim-receipt-requires-highest-owned-ordinal',
-                  'claim-receipt-retry-admissible',
-                  'spawn-receipt-idempotency-priority-is-queue-scoped',
-                  'spawn-receipt-task-id-collision-is-queue-scoped',
-                  'await-event-register-requires-run-task-queue-ownership',
-                  'emit-event-requires-run-task-queue-ownership',
-                  'claim-timeout-successor',
-                  'user-retry-successor',
-              ))
-              repaired = reaim_moved(repaired, candidate, ('successor-carries-every-column',))
-          elif digest == 'cf51eb8b17f09e79b58915340052cf10b1cbb7cb75ec1fac329ef472816f6ad4':
-              # The PostgreSQL version read's isolation level and both admins' forgiving of
-              # a lost bootstrap got registered mutations, under two new markers. The base
-              # registry predates them and would read them as unregistered. No base entry
-              # changed, so nothing is re-aimed.
-              repaired = exempt(previous, candidate, (
-                  'mutation-verdict:behavior:bootstrap-loss-forgiven',
-                  'mutation-verdict:construction:postgres-version-read-isolation',
-              ))
-          elif digest == '90c15c069858ffe90b2f1b064e6302d06bb13d86c83740dd3128573bdc8539d9':
-              # The tree rules got registered mutations, each with one marker in
-              # fenced-batch-tree-verdicts.test.ts or sql-tree-verdicts.test.ts. No base entry changed, so
-              # nothing is re-aimed. The base registry predates the markers and would
-              # read them as unregistered.
-              repaired = exempt(previous, candidate, (
-                  'mutation-verdict:construction:tree-cas-writes-fenced-table',
-                  'mutation-verdict:construction:tree-cas-update-stamp',
-                  'mutation-verdict:construction:tree-cas-update-clock-instant',
-                  'mutation-verdict:construction:tree-followon-update-stamp',
-                  'mutation-verdict:construction:tree-followon-update-instant',
-                  'mutation-verdict:construction:tree-stamp-assigned-once',
-                  'mutation-verdict:construction:tree-positive-fence-required',
-                  'mutation-verdict:construction:tree-top-level-or-reach',
-                  'mutation-verdict:construction:tree-fence-equality-operator',
-                  'mutation-verdict:construction:tree-fence-equality-column',
-                  'mutation-verdict:construction:tree-fence-equality-ambiguous-source',
-                  'mutation-verdict:construction:tree-gate-not-in',
-                  'mutation-verdict:construction:tree-raw-fence-token-check',
-                  'mutation-verdict:construction:tree-tail-must-select',
-                  'mutation-verdict:construction:tree-open-tail-reason',
-                  'mutation-verdict:construction:tree-open-tail-table-check',
-                  'mutation-verdict:construction:tree-gate-subquery-may-return-no-row',
-                  'mutation-verdict:construction:tree-no-row-having',
-                  'mutation-verdict:construction:tree-no-row-aggregate',
-                  'mutation-verdict:construction:tree-no-row-function',
-                  'mutation-verdict:construction:tree-no-row-raw',
-                  'mutation-verdict:construction:tree-derived-gate-may-return-no-row',
-                  'mutation-verdict:construction:tree-gate-counts-only-tied',
-                  'mutation-verdict:construction:tree-gate-requires-tie',
-                  'mutation-verdict:construction:tree-one-source-froms',
-                  'mutation-verdict:construction:tree-one-source-joins',
-                  'mutation-verdict:construction:tree-tie-in-left-column',
-                  'mutation-verdict:construction:tree-tie-in-selects-source-column',
-                  'mutation-verdict:construction:tree-tie-in-one-selection',
-                  'mutation-verdict:construction:tree-tie-in-plain-column',
-                  'mutation-verdict:construction:tree-tie-in-source-qualifier',
-                  'mutation-verdict:construction:tree-tie-in-derived-column',
-                  'mutation-verdict:construction:tree-tie-exists-one-source',
-                  'mutation-verdict:construction:tree-tie-exists-equality',
-                  'mutation-verdict:construction:tree-tie-exists-shadowed-outer',
-                  'mutation-verdict:construction:tree-followon-insert-plain',
-                  'mutation-verdict:construction:tree-followon-insert-no-having',
-                  'mutation-verdict:construction:tree-followon-insert-no-aggregate',
-                  'mutation-verdict:construction:tree-followon-insert-no-function',
-                  'mutation-verdict:construction:tree-followon-insert-alone',
-                  'mutation-verdict:construction:tree-followon-insert-one-from',
-                  'mutation-verdict:construction:tree-followon-insert-from-is-fenced',
-                  'mutation-verdict:construction:tree-followon-insert-join-on',
-                  'mutation-verdict:construction:tree-followon-insert-stamp',
-                  'mutation-verdict:construction:tree-followon-insert-instant',
-                  'mutation-verdict:construction:tree-followon-insert-instant-column',
-                  'mutation-verdict:construction:tree-followon-insert-instant-fenced-source',
-                  'mutation-verdict:construction:tree-followon-insert-instant-ambiguous',
-                  'mutation-verdict:construction:tree-followon-insert-preserved-instant',
-                  'mutation-verdict:construction:tree-followon-insert-no-conflict',
-                  'mutation-verdict:construction:tree-cas-insert-stamp',
-                  'mutation-verdict:construction:tree-cas-insert-clock-instant',
-                  'mutation-verdict:construction:tree-cas-insert-preserved-clock',
-                  'mutation-verdict:construction:tree-event-upsert-requires-preserved-instant',
-                  'mutation-verdict:construction:tree-upsert-preserved-instant-table',
-                  'mutation-verdict:construction:tree-upsert-preserved-instant-column',
-                  'mutation-verdict:construction:tree-upsert-restamps',
-                  'mutation-verdict:construction:tree-upsert-restamps-instant',
-                  'mutation-verdict:construction:tree-upsert-preserved-fact-columns',
-                  'mutation-verdict:construction:tree-counting-arithmetic',
-                  'mutation-verdict:construction:tree-counting-raw-fragment',
-                  'mutation-verdict:construction:tree-counting-reads-conflict-arm',
-                  'mutation-verdict:construction:tree-counting-excluded-is-incoming',
-                  'mutation-verdict:construction:tree-counting-excluded-in-fragment',
-                  'mutation-verdict:construction:tree-clock-ban-token-in-followon',
-                  'mutation-verdict:construction:tree-clock-spelling-in-fragment',
-                  'mutation-verdict:construction:tree-cas-second-clock',
-                  'mutation-verdict:construction:tree-statement-defined',
-                  'mutation-verdict:construction:tree-statement-grammar',
-                  'mutation-verdict:construction:tree-raw-fragment-problems-read',
-                  'mutation-verdict:construction:tree-raw-fragment-placed-once',
-                  'mutation-verdict:construction:tree-raw-fragment-role',
-                  'mutation-verdict:construction:tree-value-fragment-parens',
-                  'mutation-verdict:construction:tree-bind-placeholder-count',
-                  'mutation-verdict:construction:tree-bind-placeholder-count-brand',
-                  'mutation-verdict:construction:tree-bind-argument-type',
-                  'mutation-verdict:construction:tree-bind-argument-type-brand',
-                  'mutation-verdict:construction:tree-clock-text-in-followon',
-                  'mutation-verdict:construction:tree-gate-inner-tie-carried',
-                  'mutation-verdict:construction:tree-gate-exists-operator',
-                  'mutation-verdict:construction:tree-statement-kind',
-                  'mutation-verdict:construction:tree-cas-refuses-delete',
-                  'mutation-verdict:construction:tree-followon-instant-assigned-once',
-                  'mutation-verdict:construction:tree-cas-instant-assigned-once',
-                  'mutation-verdict:construction:tree-clock-now-literal',
-                  'mutation-verdict:construction:tree-grammar-function-list',
-                  'mutation-verdict:construction:tree-grammar-function-case-fold',
-                  'mutation-verdict:construction:tree-grammar-aggregate-list',
-                  'mutation-verdict:construction:tree-grammar-aggregate-case-fold',
-                  'mutation-verdict:construction:tree-clock-spelling-case-fold',
-                  'mutation-verdict:construction:tree-clock-spelling-call-arm',
-                  'mutation-verdict:construction:tree-clock-spelling-keyword-arm',
-                  'mutation-verdict:construction:tree-clock-spelling-no-argument-arm',
-                  'mutation-verdict:construction:tree-clock-function-unixepoch',
-                  'mutation-verdict:construction:tree-clock-function-julianday',
-                  'mutation-verdict:construction:tree-clock-function-strftime',
-                  'mutation-verdict:construction:tree-clock-function-now',
-                  'mutation-verdict:construction:tree-clock-function-sysdate',
-                  'mutation-verdict:construction:tree-clock-function-clock-timestamp',
-                  'mutation-verdict:construction:tree-clock-function-statement-timestamp',
-                  'mutation-verdict:construction:tree-clock-function-transaction-timestamp',
-                  'mutation-verdict:construction:tree-clock-function-getdate',
-                  'mutation-verdict:construction:tree-clock-function-timeofday',
-                  'mutation-verdict:construction:tree-clock-function-curdate',
-                  'mutation-verdict:construction:tree-clock-function-curtime',
-                  'mutation-verdict:construction:tree-clock-function-unix-timestamp',
-                  'mutation-verdict:construction:tree-clock-keyword-current-timestamp',
-                  'mutation-verdict:construction:tree-clock-keyword-current-time',
-                  'mutation-verdict:construction:tree-clock-keyword-current-date',
-                  'mutation-verdict:construction:tree-clock-keyword-localtime',
-                  'mutation-verdict:construction:tree-clock-keyword-localtimestamp',
-                  'mutation-verdict:construction:tree-clock-keyword-utc-timestamp',
-                  'mutation-verdict:construction:tree-clock-keyword-utc-date',
-                  'mutation-verdict:construction:tree-clock-keyword-utc-time',
-                  'mutation-verdict:construction:tree-clock-no-argument-datetime',
-                  'mutation-verdict:construction:tree-clock-no-argument-date',
-                  'mutation-verdict:construction:tree-clock-no-argument-time',
-                  'mutation-verdict:construction:tree-grammar-node-kind',
-                  'mutation-verdict:construction:tree-grammar-update-below-root',
-                  'mutation-verdict:construction:tree-grammar-delete-below-root',
-                  'mutation-verdict:construction:tree-grammar-insert-below-root',
-                  'mutation-verdict:construction:tree-grammar-node-fields',
-                  'mutation-verdict:construction:tree-grammar-schema-qualified',
-                  'mutation-verdict:construction:tree-grammar-select-modifier',
-                  'mutation-verdict:construction:tree-grammar-insert-shape',
-                  'mutation-verdict:construction:tree-grammar-assigns-a-column',
-                  'mutation-verdict:construction:tree-grammar-reads-children',
-                  'mutation-verdict:construction:tree-insert-shape-star',
-                  'mutation-verdict:construction:tree-insert-shape-qualified-star',
-                  'mutation-verdict:construction:tree-insert-shape-selection-count',
-                  'mutation-verdict:construction:tree-insert-shape-conflict-needs-where',
-                  'mutation-verdict:construction:tree-insert-shape-values-or-select',
-                  'mutation-verdict:construction:tree-insert-shape-one-row',
-                  'mutation-verdict:construction:tree-insert-shape-conflict-names-columns',
-                  'mutation-verdict:construction:tree-insert-shape-index-predicate-fragment',
-                  'mutation-verdict:construction:tree-insert-shape-index-predicate-bind',
-                  'mutation-verdict:construction:tree-inserted-column-listed-once',
-                  'mutation-verdict:construction:tree-fragment-unused-argument',
-                  'mutation-verdict:construction:tree-fragment-missing-argument',
-                  'mutation-verdict:construction:tree-fragment-stamp-token',
-                  'mutation-verdict:construction:tree-fragment-line-comment',
-                  'mutation-verdict:construction:tree-fragment-block-comment',
-                  'mutation-verdict:construction:tree-fragment-prefixed-literal',
-                  'mutation-verdict:construction:tree-fragment-stray-dollar',
-                  'mutation-verdict:construction:tree-fragment-bind-in-literal',
-                  'mutation-verdict:construction:tree-fragment-clock-in-literal',
-                  'mutation-verdict:construction:tree-fragment-fence-in-literal',
-                  'mutation-verdict:construction:tree-subquery-fragment-one-group',
-                  'mutation-verdict:construction:tree-subquery-fragment-opens',
-                  'mutation-verdict:construction:tree-subquery-fragment-closes-at-end',
-                  'mutation-verdict:construction:tree-fragment-cache-keyed-by-role',
-                  'mutation-verdict:construction:tree-bind-undefined',
-                  'mutation-verdict:construction:tree-bind-undefined-nested',
-                  'mutation-verdict:construction:tree-fragment-never-placed',
-                  'mutation-verdict:construction:tree-fragment-placement-consumed',
-                  'mutation-verdict:construction:tree-scope-includes-joins',
-                  'mutation-verdict:construction:tree-scope-includes-every-from',
-                  'mutation-verdict:construction:tree-fence-equality-qualifier-in-scope',
-                  'mutation-verdict:construction:tree-counting-left-operand',
-                  'mutation-verdict:construction:tree-counting-right-operand',
-                  'mutation-verdict:construction:tree-counting-operator-plus',
-                  'mutation-verdict:construction:tree-counting-operator-minus',
-                  'mutation-verdict:construction:tree-counting-operator-times',
-                  'mutation-verdict:construction:tree-counting-operator-divide',
-                  'mutation-verdict:construction:tree-counting-operator-modulo',
-                  'mutation-verdict:construction:tree-counting-operator-concat',
-                  'mutation-verdict:construction:tree-counting-mention-unqualified',
-                  'mutation-verdict:construction:tree-counting-mention-table-qualified',
-                  'mutation-verdict:construction:tree-counting-mention-operator-after',
-                  'mutation-verdict:construction:tree-counting-mention-operator-before',
-                  'mutation-verdict:construction:tree-builder-raw-stands-as-direction',
-                  'mutation-verdict:construction:tree-builder-raw-has-no-parameters',
-                  'mutation-verdict:construction:tree-builder-raw-text',
-                  'mutation-verdict:construction:tree-role-operand-of-exists',
-                  'mutation-verdict:construction:tree-role-operand-of-in',
-                  'mutation-verdict:construction:tree-role-operand-of-not-in',
-                  'mutation-verdict:construction:tree-role-boolean-of-where',
-                  'mutation-verdict:construction:tree-role-boolean-of-having',
-                  'mutation-verdict:construction:tree-role-boolean-of-on',
-                  'mutation-verdict:construction:tree-role-boolean-of-when',
-                  'mutation-verdict:construction:tree-role-boolean-under-and',
-                  'mutation-verdict:construction:tree-role-boolean-under-or',
-                  'mutation-verdict:construction:tree-role-boolean-under-not',
-                  'mutation-verdict:construction:tree-followon-insert-stamp-is-the-stamp-token',
-                  'mutation-verdict:construction:tree-update-stamp-is-the-stamp-token',
-                  'mutation-verdict:construction:tree-update-clock-is-the-clock-token',
-                  'mutation-verdict:construction:tree-cas-insert-stamp-is-the-stamp-token',
-                  'mutation-verdict:construction:tree-cas-insert-clock-is-the-clock-token',
-                  'mutation-verdict:construction:tree-cas-insert-preserved-is-the-clock-token',
-                  'mutation-verdict:construction:tree-fence-names-a-statement',
-                  'mutation-verdict:construction:tree-fence-source-writes-a-stamp',
-                  'mutation-verdict:construction:tree-cas-many-max-is-an-integer',
-                  'mutation-verdict:construction:tree-cas-many-max-is-positive',
-                  'mutation-verdict:construction:tree-statement-name-grammar',
-                  'mutation-verdict:construction:tree-statement-name-unique',
-                  'mutation-verdict:construction:tree-lock-precedes-a-cas',
-                  'mutation-verdict:construction:tree-needs-a-dialect',
-                  'mutation-verdict:construction:tree-followon-insert-selects',
-                  'mutation-verdict:construction:tree-gate-untied-message',
-                  'mutation-verdict:construction:tree-followon-spelled-clock-message',
-                  'mutation-verdict:construction:tree-raw-fragment-unminted-message',
-                  'mutation-verdict:construction:tree-counting-arithmetic-message',
-                  'mutation-verdict:construction:tree-fragment-malformed-fence-token',
-                  'mutation-verdict:construction:tree-fragment-dollar-quoted',
-                  'mutation-verdict:construction:tree-fence-equality-is-a-fence-token',
-                  'mutation-verdict:construction:tree-tie-exists-outer-in-scope',
-                  'mutation-verdict:construction:tree-tie-exists-value-equals-outer',
-                  'mutation-verdict:construction:tree-tie-exists-inner-equals-value',
-                  'mutation-verdict:construction:tree-tie-exists-outer-equals-value',
-                  'mutation-verdict:construction:tree-tie-exists-value-equals-inner',
-                  'mutation-verdict:construction:tree-no-row-every-selection',
-                  'mutation-verdict:construction:tree-role-operand-only-of-in-or-exists',
-                  'mutation-verdict:construction:tree-followon-insert-instants-are-filtered',
-                  'mutation-verdict:construction:tree-clock-spelling-any-fragment',
-              ))
-          elif digest == '6bfce7f63d8c96771bf2a47584d4a4144a8e8f12c094a2b1e58b33a0e221c700':
-              # Deleting FencedBatch's text path retired the twelve mutations that owned its
-              # text, each with a tree-path successor, and two tree mutations: the question
-              # tree-needs-a-dialect removed is gone now that the dialect is required, and
-              # tree-clock-ban-token-in-followon removed the same condition as
-              # tree-clock-text-in-followon once the dead clock flag went. Four entries
-              # are re-aimed at lines that changed, and the derived coverage check's two
-              # tables move with the rules they bound. The failure successors' deadline
-              # is built from nodes in core, so this tree's registry aims their two exact
-              # mutations at packages/core/src/statements/successor.ts. The base generator
-              # hardcodes the libSQL store as their file and writes its cap as SQL text,
-              # and the base self-test parses every mutant it generates. So each of its
-              # two tuples is aimed at the store text that still stands for that
-              # deadline, the headroom guard that protects the addition, where the
-              # generated text sits inside a template literal and parses. The base gate
-              # runs no mutant. The head registry owns the two that cap the deadline.
-              # A follow-on insert's SELECT list now refuses a fragment, which is one
-              # more operand on a line two base mutations touch, and one new marker.
-              repaired = retire(previous, candidate, (
-                  'followon-provenance-check',
-                  'positive-fence-required',
-                  'positive-fence-is-not',
-                  'top-level-or-reach',
-                  'clock-ban-in-followon',
-                  'clock-ban-raw-dialect-in-followon',
-                  'raw-fence-token-check',
-                  'event-upsert-requires-preserved-instant',
-                  'testing-helper-bind-count-missing-argument',
-                  'testing-helper-bind-count-unused-argument',
-                  'testing-helper-bind-count-factory',
-                  'testing-helper-bind-undefined-brand',
-                  'tree-needs-a-dialect',
-                  'tree-clock-ban-token-in-followon',
-              ), 678)
-              repaired = reaim(repaired, candidate, (
-                  'tree-clock-text-in-followon',
-                  'tree-followon-spelled-clock-message',
-                  'tree-followon-insert-no-function',
-                  'tree-followon-insert-no-aggregate',
-              ))
-              repaired = reaim_lines(
-                  repaired,
-                  'claim-timeout-successor',
-                  '        "        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),\\n",\n'
-                  '        "f.fence_at_ms + ${infraDelayMs}",\n',
-                  '        "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\\n"\n'
-                  '        "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",\n'
-                  '        "${epochAdditionFits(NOW, infraDelayMs)}",\n',
-              )
-              repaired = reaim_lines(
-                  repaired,
-                  'user-retry-successor',
-                  '        "          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),\\n",\n'
-                  '        "f.fence_at_ms + ?",\n',
-                  '        "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\\n"\n'
-                  '        "          OR ${epochAdditionFits(NOW, \'?\')})`",\n'
-                  '        "${epochAdditionFits(NOW, \'?\')}",\n',
-              )
-              repaired = reaim_table(
-                  repaired, candidate, 'TREE_RULE_REGIONS: dict[str, tuple[tuple[str | None, str | None], ...]]'
-              )
-              repaired = reaim_table(
-                  repaired, candidate, 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]]'
-              )
               repaired = list_conditions(repaired, candidate, 'packages/core/src/sql-tree.ts', (
-                  '(node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),',
+                  "if (values.length < 2) return null",
+                  "if (!values.some((value) => typeof value === 'string' && STATE_NAMES.includes(value))) return null",
+                  "const defined = STATE_SETS.some(",
+                  "(set) => set.length === values.length && set.every((state) => values.includes(state)),",
+                  "if (ValuesNode.is(node)) {",
+                  "} else if (rows.includes(node)) {",
+                  "} else if (PrimitiveValueListNode.is(node)) {",
+                  "} else if (ValueListNode.is(node)) {",
+                  "node.values.map((value) => (ValueNode.is(value) ? value.value : undefined)),",
+                  "} else if (RawNode.is(node)) {",
+                  "BinaryOperationNode.is(node) &&",
+                  "ORDERING_OPERATORS.includes(operatorName(node.operator) ?? '')",
+                  "const compared = [node.leftOperand, node.rightOperand].some((operand) =>",
+                  "someNode(operand, (inner) => columnName(inner) === 'cancel_at_ms'),",
+                  "if (compared) {",
+                  "return problem !== null",
+              ))
+              repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
+                  "if (second !== null) throw new Error(`${at} holds ${second}`)",
               ))
               repaired = exempt(repaired, candidate, (
-                  'mutation-verdict:construction:tree-followon-insert-no-fragment',
-              ))
-          elif digest == 'fbcf7a71356290b0f36ffb33ee7f633c604129d106e1e753c6f8f521a632b475':
-              # Child tasks re-aim one find and register verdict markers this registry
-              # predates. The generated follow-on's queue correlation became the else arm
-              # of the choice between correlating the queue and binding it, so its find
-              # gained a word. Every other find of this registry still occurs once.
-              def held_by_head(repaired, candidate, file, lines):
-                  # List condition lines of the tree rules that this tree adds. The base
-                  # registry has no mutation for a line it predates. Each line is listed
-                  # only when this tree's registry quotes it as the end of a find.
-                  opening = f'    "{file}": {{\n'
-                  table = repaired.index('TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n')
-                  at = repaired.index(opening, table) + len(opening)
-                  for line in lines:
-                      if f'        "{line}": (\n' in repaired or (line + '\\n"') not in candidate:
-                          raise SystemExit(f'{line}: the bridge lists only a condition this tree holds by a mutation and the base does not list.')
-                  entries = ''.join(
-                      f'        "{line}": (\n            "held by a mutation of the head registry, which the base predates"\n        ),\n'
-                      for line in lines
-                  )
-                  return repaired[:at] + entries + repaired[at:]
-              repaired = reaim(previous, candidate, ('generated-relation-queue-ownership',))
-              repaired = exempt(repaired, candidate, (
-                  'mutation-verdict:behavior:activate-remembers-the-run-task',
-                  'mutation-verdict:behavior:batch-names-each-gate',
-                  'mutation-verdict:behavior:batch-never-skips-a-tail-that-always-answers',
-                  'mutation-verdict:behavior:cancel-locks-runs-before-the-task',
-                  'mutation-verdict:behavior:child-await-allows-the-same-queue',
-                  'mutation-verdict:behavior:child-await-error-names-the-task',
-                  'mutation-verdict:behavior:child-await-keeps-an-event-written-since-the-read',
-                  'mutation-verdict:behavior:child-await-records-an-unrecorded-ending',
-                  'mutation-verdict:behavior:child-await-records-only-the-row-it-read',
-                  'mutation-verdict:behavior:child-await-records-only-under-a-live-claim',
-                  'mutation-verdict:behavior:child-await-refuses-an-unknown-task',
-                  'mutation-verdict:behavior:child-await-refuses-another-queue',
-                  'mutation-verdict:behavior:child-await-registers-on-a-revived-child',
-                  'mutation-verdict:behavior:child-spawn-key-is-unambiguous',
-                  'mutation-verdict:behavior:child-spawn-needs-the-parents-live-claim',
-                  'mutation-verdict:behavior:emit-event-refuses-reserved-name',
-                  'mutation-verdict:behavior:emit-takes-the-event-lock',
-                  'mutation-verdict:behavior:event-name-is-a-durable-string',
-                  'mutation-verdict:behavior:generated-bound-queue-holds-both-sides',
-                  'mutation-verdict:behavior:generated-bound-queue-is-an-updates',
-                  'mutation-verdict:behavior:generated-bound-queue-needs-a-queue-scoped-relation',
-                  'mutation-verdict:behavior:hosted-enqueue-refuses-reserved-key',
-                  'mutation-verdict:behavior:mysql-gated-statement-skipped-when-its-gate-matched-nothing',
-                  'mutation-verdict:behavior:port-event-lock-is-the-row-older-builds-take',
-                  'mutation-verdict:behavior:postgres-deadlock-victim-runs-again',
-                  'mutation-verdict:behavior:postgres-event-lock-is-advisory',
-                  'mutation-verdict:behavior:postgres-gate-names-an-earlier-statement',
-                  'mutation-verdict:behavior:postgres-port-event-lock-is-the-row',
-                  'mutation-verdict:behavior:postgres-skips-a-gated-statement',
-                  'mutation-verdict:behavior:recording-await-takes-the-event-lock',
-                  'mutation-verdict:behavior:replay-harness-counts-tasks',
-                  'mutation-verdict:behavior:replay-harness-window-is-measured',
-                  'mutation-verdict:behavior:reserved-event-name-prefix',
-                  'mutation-verdict:behavior:reserved-event-name-type',
-                  'mutation-verdict:behavior:run-task-memo-is-bounded',
-                  'mutation-verdict:behavior:sdk-child-await-refusal-is-permanent',
-                  'mutation-verdict:behavior:sdk-child-outcome-error-is-permanent',
-                  'mutation-verdict:behavior:sdk-child-timeout-names-the-task',
-                  'mutation-verdict:behavior:sdk-spawn-is-idempotent-under-replay',
-                  'mutation-verdict:behavior:sdk-spawn-refusal-is-permanent',
-                  'mutation-verdict:behavior:sdk-spawn-undurable-input-is-permanent',
-                  'mutation-verdict:behavior:spawn-child-key-excludes-a-caller-key',
-                  'mutation-verdict:behavior:spawn-queue-is-a-durable-string',
-                  'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
-                  'mutation-verdict:behavior:task-done-event-first-write-wins',
-                  'mutation-verdict:behavior:task-done-event-follows-the-terminal-statement',
-                  'mutation-verdict:behavior:task-outcome-refuses-contradiction',
-                  'mutation-verdict:behavior:task-outcome-refuses-live-state',
-                  'mutation-verdict:behavior:task-outcome-refuses-non-json',
-                  'mutation-verdict:behavior:task-outcome-refuses-non-object',
-                  'mutation-verdict:behavior:terminal-batch-takes-the-event-lock',
-                  'mutation-verdict:behavior:terminal-batch-writes-the-completion-event',
-                  'mutation-verdict:behavior:wake-sources-find-the-woken-runs',
-                  'mutation-verdict:behavior:wake-tasks-binds-the-queue',
-                  'mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again',
-              ))
-              repaired = held_by_head(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
-                  "const gateName = open ? undefined : gates[0]?.fence",
-                  "const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)",
-                  "if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex",
-                  "gatedBy === undefined",
-              ))
-              repaired = held_by_head(repaired, candidate, 'packages/core/src/sql-tree.ts', (
-                  "if (!SelectQueryNode.is(query)) return true",
+                  "mutation-verdict:construction:tree-state-list-built-from-nodes",
+                  "mutation-verdict:construction:tree-state-list-of-value-nodes",
+                  "mutation-verdict:construction:tree-state-set-live",
+                  "mutation-verdict:construction:tree-state-set-queued",
+                  "mutation-verdict:construction:tree-state-set-terminal",
+                  "mutation-verdict:construction:tree-state-list-one-state",
+                  "mutation-verdict:construction:tree-state-list-names-a-state",
+                  "mutation-verdict:construction:tree-state-list-length",
+                  "mutation-verdict:construction:tree-state-list-members",
+                  "mutation-verdict:construction:tree-state-list-skips-insert-rows",
+                  "mutation-verdict:construction:tree-state-list-in-a-fragment",
+                  "mutation-verdict:construction:tree-state-list-every-list-of-a-fragment",
+                  "mutation-verdict:construction:tree-eligibility-first-problem-stands",
+                  "mutation-verdict:construction:tree-eligibility-asked-of-every-statement",
+                  "mutation-verdict:construction:tree-deadline-operator-less",
+                  "mutation-verdict:construction:tree-deadline-operator-less-or-equal",
+                  "mutation-verdict:construction:tree-deadline-operator-greater",
+                  "mutation-verdict:construction:tree-deadline-operator-greater-or-equal",
+                  "mutation-verdict:construction:tree-deadline-either-side",
+                  "mutation-verdict:construction:tree-deadline-under-arithmetic",
+                  "mutation-verdict:construction:tree-deadline-orders",
+                  "mutation-verdict:construction:tree-deadline-names-the-column",
+                  "mutation-verdict:construction:tree-walk-reads-below-the-root",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
