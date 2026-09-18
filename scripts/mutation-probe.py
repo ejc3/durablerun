@@ -11803,7 +11803,7 @@ MUTATION_SPECS.extend(
             "packages/store-libsql/src/store.ts",
             "          `NOT ${sagaBegan('runs')}\n",
             "          `1 = 1\n",
-            "a rollback pass parks itself on a durable sleep and commits its marker",
+            "a rollback pass suspends under a rollback's name, which parks the pass and records a rollback that never ran",
         ),
         (
             "saga-wait-refused-in-the-phase",
@@ -12105,7 +12105,6 @@ for _verdict, _names in (
         (
             "saga-rolling-back-task-cannot-complete",
             "saga-forward-checkpoint-refused-in-the-phase",
-            "saga-suspension-refused-in-the-phase",
             "saga-wait-refused-in-the-phase",
         ),
     ),
@@ -12471,6 +12470,7 @@ for _verdict, _names in (
         ),
         (
             "saga-suspension-marker-is-in-its-phase",
+            "saga-suspension-refused-in-the-phase",
         ),
     ),
     (
