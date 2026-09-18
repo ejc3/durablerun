@@ -630,6 +630,7 @@ describe('every write a store ships, by the table it writes', () => {
     'emit-event',
     'complete',
     'fail',
+    'fail-rollback',
     'retry-task',
     'cancel-task',
     'sweep:lost-launch',
@@ -692,6 +693,45 @@ describe('every write a store ships, by the table it writes', () => {
     await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
     const failed = await started('fails', { maxAttempts: 1 })
     await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    // A saga (DESIGN.md §3.10). A registered step starts, and the failure that ends the
+    // forward phase places the rollback pass, which `fail` ships. A rollback's failed
+    // attempt places the next pass, and the one after it halts the saga, which
+    // `fail-rollback` ships both ways.
+    const saga = await started('rolls-back', { maxAttempts: 1 })
+    await store.setCheckpoint(
+      'q',
+      saga.taskId,
+      saga.runId,
+      saga.claimToken,
+      `${SAGA_STARTED_PREFIX}a`,
+      '1',
+      60,
+    )
+    const entered = await store.fail('q', saga.runId, saga.claimToken, '{}', null)
+    if (!entered.rollingBack) throw new Error('expected the failure to place a rollback pass')
+    const sagaTried = (tries: number) => ({
+      key: `${SAGA_TRIES_PREFIX}a`,
+      stateJson: encodeRollbackTry({ tries, errorJson: '{}' }),
+    })
+    const passOf = async () => {
+      claims += 1
+      const [pass] = await store.claim('q', `worker-${claims}`, { leaseSeconds: 60, limit: 1 })
+      if (pass?.taskId !== saga.taskId) throw new Error('expected to claim the rollback pass')
+      await store.activate('q', pass.runId, pass.claimToken, pass.claimGen)
+      return pass
+    }
+    const firstPass = await passOf()
+    const again = await store.failRollback(
+      'q',
+      firstPass.runId,
+      firstPass.claimToken,
+      '{}',
+      { delaySeconds: 0 },
+      sagaTried(1),
+    )
+    if (!again.rollingBack) throw new Error('expected the failed rollback to place another pass')
+    const lastPass = await passOf()
+    await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried(2))
     await store.retryTask('q', failed.taskId)
     await store.cancelTask('q', failed.taskId)
     // One run whose launch is lost and one whose worker dies, then the clock passes both leases.
