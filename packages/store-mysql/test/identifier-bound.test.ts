@@ -23,54 +23,70 @@ function storeOverRecorder() {
 
 const wake = { inSeconds: 1 }
 
-/** One call for every place a bounded identifier enters the store. */
-const entries = (s: MysqlSchedulerStore, id: string): Promise<unknown>[] => [
-  s.spawn(id, 't', '{}'),
-  s.spawn('q', 't', '{}', { idempotencyKey: id }),
-  s.claim(id, 'w', { leaseSeconds: 30, limit: 1 }),
-  s.activate(id, 'r', 'c', 1),
-  s.activate('q', id, 'c', 1),
-  s.heartbeat(id, 'r', 'c', 30),
-  s.heartbeat('q', id, 'c', 30),
-  s.sweep(id, 10),
-  s.expireLeaseNow(id, 'r', 'c'),
-  s.expireLeaseNow('q', id, 'c'),
-  s.driverHeartbeat(id, 'd', 30),
-  s.driverHeartbeat('q', id, 30),
-  s.retryTask(id, 't'),
-  s.retryTask('q', id),
-  s.cancelTask(id, 't'),
-  s.cancelTask('q', id),
-  s.claimedTaskName(id, 'r', 'c', 1),
-  s.claimedTaskName('q', id, 'c', 1),
-  s.deferLaunch(id, 'r', 'c', 1, 5),
-  s.deferLaunch('q', id, 'c', 1, 5),
-  s.reschedule(id, 'r', 'c', wake),
-  s.reschedule('q', id, 'c', wake),
-  s.suspendRun(id, 'r', 'c', wake, { key: 'k', stateJson: '{}' }),
-  s.suspendRun('q', id, 'c', wake, { key: 'k', stateJson: '{}' }),
-  s.suspendRun('q', 'r', 'c', wake, { key: id, stateJson: '{}' }),
-  s.complete(id, 'r', 'c', '{}'),
-  s.complete('q', id, 'c', '{}'),
-  s.fail(id, 'r', 'c', '{}', null),
-  s.fail('q', id, 'c', '{}', null),
-  s.getCheckpoints(id, 't', 1),
-  s.getCheckpoints('q', id, 1),
-  s.setCheckpoint(id, 't', 'r', 'c', 'k', '{}', 30),
-  s.setCheckpoint('q', id, 'r', 'c', 'k', '{}', 30),
-  s.setCheckpoint('q', 't', id, 'c', 'k', '{}', 30),
-  s.setCheckpoint('q', 't', 'r', 'c', id, '{}', 30),
-  s.getTaskResult(id, 't'),
-  s.getTaskResult('q', id),
-  s.nextWakeAtEpochMs(id),
-  s.emitEvent(id, 'e', '{}'),
-  s.emitEvent('q', id, '{}'),
-  s.awaitEvent(id, 't', 'r', 'c', 's', 'e', null),
-  s.awaitEvent('q', id, 'r', 'c', 's', 'e', null),
-  s.awaitEvent('q', 't', id, 'c', 's', 'e', null),
-  s.awaitEvent('q', 't', 'r', 'c', id, 'e', null),
-  s.awaitEvent('q', 't', 'r', 'c', 's', id, null),
+type Entry = (s: MysqlSchedulerStore, id: string) => Promise<unknown>[]
+
+/** For every public method, one call for each place a bounded identifier enters it. */
+const ENTRIES: Readonly<Record<string, Entry>> = {
+  spawn: (s, id) => [s.spawn(id, 't', '{}'), s.spawn('q', 't', '{}', { idempotencyKey: id })],
+  claim: (s, id) => [s.claim(id, 'w', { leaseSeconds: 30, limit: 1 })],
+  activate: (s, id) => [s.activate(id, 'r', 'c', 1), s.activate('q', id, 'c', 1)],
+  heartbeat: (s, id) => [s.heartbeat(id, 'r', 'c', 30), s.heartbeat('q', id, 'c', 30)],
+  sweep: (s, id) => [s.sweep(id, 10)],
+  expireLeaseNow: (s, id) => [s.expireLeaseNow(id, 'r', 'c'), s.expireLeaseNow('q', id, 'c')],
+  driverHeartbeat: (s, id) => [s.driverHeartbeat(id, 'd', 30), s.driverHeartbeat('q', id, 30)],
+  retryTask: (s, id) => [s.retryTask(id, 't'), s.retryTask('q', id)],
+  cancelTask: (s, id) => [s.cancelTask(id, 't'), s.cancelTask('q', id)],
+  claimedTaskName: (s, id) => [
+    s.claimedTaskName(id, 'r', 'c', 1),
+    s.claimedTaskName('q', id, 'c', 1),
+  ],
+  deferLaunch: (s, id) => [s.deferLaunch(id, 'r', 'c', 1, 5), s.deferLaunch('q', id, 'c', 1, 5)],
+  reschedule: (s, id) => [s.reschedule(id, 'r', 'c', wake), s.reschedule('q', id, 'c', wake)],
+  suspendRun: (s, id) => [
+    s.suspendRun(id, 'r', 'c', wake, { key: 'k', stateJson: '{}' }),
+    s.suspendRun('q', id, 'c', wake, { key: 'k', stateJson: '{}' }),
+    s.suspendRun('q', 'r', 'c', wake, { key: id, stateJson: '{}' }),
+  ],
+  complete: (s, id) => [s.complete(id, 'r', 'c', '{}'), s.complete('q', id, 'c', '{}')],
+  fail: (s, id) => [s.fail(id, 'r', 'c', '{}', null), s.fail('q', id, 'c', '{}', null)],
+  getCheckpoints: (s, id) => [s.getCheckpoints(id, 't', 1), s.getCheckpoints('q', id, 1)],
+  setCheckpoint: (s, id) => [
+    s.setCheckpoint(id, 't', 'r', 'c', 'k', '{}', 30),
+    s.setCheckpoint('q', id, 'r', 'c', 'k', '{}', 30),
+    s.setCheckpoint('q', 't', id, 'c', 'k', '{}', 30),
+    s.setCheckpoint('q', 't', 'r', 'c', id, '{}', 30),
+  ],
+  getTaskResult: (s, id) => [s.getTaskResult(id, 't'), s.getTaskResult('q', id)],
+  nextWakeAtEpochMs: (s, id) => [s.nextWakeAtEpochMs(id)],
+  emitEvent: (s, id) => [s.emitEvent(id, 'e', '{}'), s.emitEvent('q', id, '{}')],
+  awaitEvent: (s, id) => [
+    s.awaitEvent(id, 't', 'r', 'c', 's', 'e', null),
+    s.awaitEvent('q', id, 'r', 'c', 's', 'e', null),
+    s.awaitEvent('q', 't', id, 'c', 's', 'e', null),
+    s.awaitEvent('q', 't', 'r', 'c', id, 'e', null),
+    s.awaitEvent('q', 't', 'r', 'c', 's', id, null),
+  ],
+}
+
+/** Methods no caller reaches: each runs inside a public one, behind its check. */
+const INTERNAL = [
+  'sweepLostLaunch',
+  'sweepClaimTimeout',
+  'cancelTransition',
+  'refusal',
+  'refusalState',
 ]
+
+const entries = (s: MysqlSchedulerStore, id: string): Promise<unknown>[] =>
+  Object.values(ENTRIES).flatMap((entry) => entry(s, id))
+
+it('has an entry for every method the store has, so a new method cannot arrive unchecked', () => {
+  const prototype = MysqlSchedulerStore.prototype as unknown as Record<string, unknown>
+  const methods = Object.getOwnPropertyNames(prototype).filter(
+    (name) => name !== 'constructor' && typeof prototype[name] === 'function',
+  )
+  expect([...methods].sort()).toEqual([...Object.keys(ENTRIES), ...INTERNAL].sort())
+})
 
 const outcomes = (calls: Promise<unknown>[]) =>
   Promise.all(
