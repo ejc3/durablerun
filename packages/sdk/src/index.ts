@@ -1,4 +1,9 @@
-export { ReplayContext, type TaskContext } from './context.js'
+export {
+  type ChildSpawnOptions,
+  type ChildTask,
+  ReplayContext,
+  type TaskContext,
+} from './context.js'
 export {
   runClaimedRun,
   type RunInvocation,

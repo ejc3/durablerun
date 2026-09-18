@@ -125,6 +125,8 @@ async function interruptedWorker(): Promise<void> {
                 sleepUntil: ctx.sleepUntil.bind(ctx),
                 awaitEvent: ctx.awaitEvent.bind(ctx),
                 emitEvent: ctx.emitEvent.bind(ctx),
+                spawn: ctx.spawn.bind(ctx),
+                awaitTask: ctx.awaitTask.bind(ctx),
               }
               return handler(interrupted, params)
             },

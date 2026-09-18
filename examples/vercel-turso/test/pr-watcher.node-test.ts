@@ -52,6 +52,8 @@ function context(sleeps: number[] = []): TaskContext {
     sleepUntil: unused,
     awaitEvent: unused,
     emitEvent: unused,
+    spawn: unused,
+    awaitTask: unused,
   }
 }
 
