@@ -140,37 +140,29 @@ function normalizeResult(result: QueryResult<Record<string, unknown>>): SqlResul
   }
 }
 
-async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
-  if (lock.kind === 'event') {
-    const args = [lock.queue, lock.eventName]
-    await client.query(
-      `INSERT INTO event_locks (queue, event_name)
-       VALUES ($1, $2)
-       ON CONFLICT (queue, event_name) DO NOTHING`,
-      args,
-    )
-    await client.query(
-      `SELECT 1 FROM event_locks
-       WHERE queue = $1 AND event_name = $2
-       FOR UPDATE`,
-      args,
-    )
-    return
-  }
+/** The advisory-lock domain of each lock kind, so an event and a claim never share a key. */
+const LOCK_DOMAINS = Object.freeze({
+  event: 'durablerun:event',
+  claim: 'durablerun:claim',
+} as const)
 
-  // Claim tokens are fresh per tick, so a durable row sentinel would grow
-  // without bound. A transaction-scoped advisory lock has exactly the needed
-  // lifetime. PostgreSQL computes the key from bound coordinates plus the
-  // database/schema and a fixed domain tag; a hash collision can only
-  // over-serialize unrelated claims, never let equal coordinates overlap.
+async function acquireTransactionLock(client: PoolClient, lock: SqlTransactionLock): Promise<void> {
+  // Both locks are transaction-scoped advisory locks, which have exactly the needed
+  // lifetime and leave nothing behind. A durable row sentinel would grow without
+  // bound: claim tokens are fresh per tick, and every task that ends locks the name
+  // of its own completion event, whether or not anyone ever awaits it. PostgreSQL
+  // computes the key from bound coordinates plus the database/schema and a fixed
+  // domain tag; a hash collision can only over-serialize unrelated transitions, never
+  // let equal coordinates overlap. Equal coordinates of one kind exclude each other,
+  // which is all an emit, an await, and a terminal batch of one event need.
   await client.query(
     `SELECT pg_advisory_xact_lock(hashtextextended(
        jsonb_build_array(
-         current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text
+         current_database(), current_schema(), '${LOCK_DOMAINS[lock.kind]}', $1::text, $2::text
        )::text,
        0
      ))`,
-    [lock.queue, lock.claimToken],
+    [lock.queue, lock.kind === 'event' ? lock.eventName : lock.claimToken],
   )
 }
 
