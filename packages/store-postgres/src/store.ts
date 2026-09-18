@@ -1610,12 +1610,14 @@ export class PostgresSchedulerStore implements SchedulerStore {
       'suspend',
       suspendCas({
         // A suspension commits a marker, and the forward phase is frozen once a saga began.
-        // The marker is the caller's checkpoint, so its name is checked as a plain
-        // checkpoint write's is: the engine's own names are refused it.
+        // The marker is the caller's checkpoint, so its name is checked by the predicates a
+        // plain checkpoint write's is. A rollback's name is admitted only inside the phase,
+        // where no run suspends, and the engine's own names are refused in either.
         phase: sqlFragment(
           `NOT ${sagaBegan('runs')}
+         AND ${checkpointInItsPhase('runs', '?')}
          AND NOT ${checkpointIsTheEngines('?')}`,
-          [checkpoint.key, checkpoint.key],
+          [checkpoint.key, checkpoint.key, checkpoint.key],
         ),
         queue,
         runId,

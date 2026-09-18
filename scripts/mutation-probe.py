@@ -11598,8 +11598,8 @@ MUTATION_SPECS.extend(
         (
             "saga-suspension-marker-name-is-checked",
             "packages/store-libsql/src/store.ts",
-            "         AND NOT ${checkpointIsTheEngines('?')}`,\n          [checkpoint.key, checkpoint.key],\n",
-            "         AND ? IS NOT NULL`,\n          [checkpoint.key],\n",
+            "         AND NOT ${checkpointIsTheEngines('?')}`,\n          [checkpoint.key, checkpoint.key, checkpoint.key],\n",
+            "         AND ? IS NOT NULL`,\n          [checkpoint.key, checkpoint.key],\n",
             "a suspension commits a marker named as the phase marker and forges a saga",
         ),
         (
