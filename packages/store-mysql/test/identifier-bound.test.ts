@@ -93,6 +93,8 @@ const INTERNAL = [
   'awaitNamedEvent',
   'taskDoneState',
   'recordTaskDone',
+  'sagaPass',
+  'failInto',
 ]
 
 const entries = (s: MysqlSchedulerStore, id: string): Promise<unknown>[] =>
