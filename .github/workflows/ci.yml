@@ -266,10 +266,11 @@ jobs:
               print(f'{name}: updated {expected_count} release literals; all other base bytes unchanged.')
           PY
       - name: Bridge the new read labels past the older base batch lint
-        # This tree adds two read batches, claimed-task-name and refusal-state.
-        # The base batch lint predates them and cannot classify them. The arm is
-        # pinned to one base lint hash and adds only those READS entries, and only
-        # when this tree's own batch lint declares exactly them as new reads. Any
+        # This tree adds read batches an older base batch lint cannot classify. Each
+        # arm is pinned to one base lint hash and adds only the READS entries it
+        # names, and only when this tree's own batch lint declares exactly them as
+        # new reads. The first arm added claimed-task-name and refusal-state. The
+        # second adds run-task and child-queue, the two reads child tasks need. Any
         # other base skips.
         run: |
           python3 - <<'PY'
@@ -278,7 +279,12 @@ jobs:
           from pathlib import Path
           base = Path('/tmp/base/scripts/batch-lint.py')
           previous = base.read_text()
-          if hashlib.sha256(previous.encode()).hexdigest() != 'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2':
+          arms = {
+              'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2': ('claimed-task-name', 'refusal-state'),
+              '7f3040ea2b8273256581bf37b97f691fda2e8df627e7ab955d7573180d212132': ('run-task', 'child-queue'),
+          }
+          labels = arms.get(hashlib.sha256(previous.encode()).hexdigest())
+          if labels is None:
               print('Base batch lint does not need the read-label bridge.')
               raise SystemExit(0)
           def reads(text):
@@ -286,7 +292,6 @@ jobs:
               if match is None:
                   raise SystemExit('read-label bridge requires one READS table.')
               return set(re.findall(r'"([^"]+)"', match.group(1)))
-          labels = ('claimed-task-name', 'refusal-state')
           added = reads(Path('scripts/batch-lint.py').read_text()) - reads(previous)
           if added != set(labels):
               raise SystemExit(f'read-label bridge covers exactly {labels}; this tree adds {sorted(added)}.')
@@ -294,7 +299,7 @@ jobs:
           if previous.count(anchor) != 1:
               raise SystemExit('read-label bridge requires one READS anchor.')
           base.write_text(previous.replace(anchor, anchor + ''.join(f'    "{label}",\n' for label in labels)))
-          print('Added two read labels to the base batch lint; all other base bytes are unchanged.')
+          print(f'Added the read labels {labels} to the base batch lint; all other base bytes are unchanged.')
           PY
       - name: Bridge the shared statements past the older base outcome lint
         # This tree lets core's shared statements and their column descriptor name a
