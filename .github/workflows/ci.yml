@@ -249,8 +249,9 @@ jobs:
               return installed
           bridge(PAIRS, Path('/tmp/base'), Path('.'))
           print(f'{len(PAIRS)} pinned file pairs.')
-          # The table has no live row, so these controls are what runs its three answers on
-          # every pull request: another base skips, an unpinned head refuses, a pinned one installs.
+          # The table has no live row, so these controls are what runs its four answers on every
+          # pull request: another base skips, a head that leaves the file alone skips, an
+          # unpinned head refuses, a pinned one installs.
           with tempfile.TemporaryDirectory() as scratch:
               base_root, head_root = Path(scratch) / 'base', Path(scratch) / 'head'
               base_root.mkdir()
@@ -259,6 +260,10 @@ jobs:
               (head_root / 'f').write_bytes(b'new')
               if bridge((('f', sha(b'another base'), sha(b'new'), 'control'),), base_root, head_root) or (base_root / 'f').read_bytes() != b'old':
                   raise SystemExit('pinned pairs control: a base with another hash was not skipped.')
+              (head_root / 'f').write_bytes(b'old')
+              if bridge((('f', sha(b'old'), sha(b'a head nobody reviewed'), 'control'),), base_root, head_root) or (base_root / 'f').read_bytes() != b'old':
+                  raise SystemExit('pinned pairs control: a head that leaves the file as the base has it was not skipped.')
+              (head_root / 'f').write_bytes(b'new')
               refused = False
               try:
                   bridge((('f', sha(b'old'), sha(b'a head nobody reviewed'), 'control'),), base_root, head_root)
@@ -268,7 +273,7 @@ jobs:
                   raise SystemExit('pinned pairs control: a head file other than the pinned one was not refused.')
               if bridge((('f', sha(b'old'), sha(b'new'), 'control'),), base_root, head_root) != ['f'] or (base_root / 'f').read_bytes() != b'new':
                   raise SystemExit('pinned pairs control: the pinned head file was not installed.')
-          print('pinned pairs controls: skipped, refused, and installed as pinned.')
+          print('pinned pairs controls: skipped twice, refused, and installed as pinned.')
           PY
       - name: Bridge re-aimed mutation targets in the older base registry
         # A base registry's find strings must occur in this tree, and every verdict
