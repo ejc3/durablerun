@@ -1,4 +1,9 @@
-import { INFRA_RETRY_CAP, RELAUNCH_CAP, type SqlExecutor } from '@durablerun/core'
+import {
+  INFRA_RETRY_CAP,
+  RELAUNCH_CAP,
+  type SqlExecutor,
+  taskDoneEventName,
+} from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
@@ -440,6 +445,28 @@ export async function runFaultMatrixCase(
           await go(() =>
             store.complete(Q, wokenParent.runId, wokenParent.claimToken, '{"parent":1}'),
           )
+        }
+      }
+
+      // A child that ended with no completion event, as a build older than the event
+      // leaves it. The await of it records the outcome in a batch of its own
+      // (ChildTasks.tla's AwaitMaterialize), which makes that batch a cell of this matrix.
+      const endedTask = await go(() => store.spawn(Q, 'ended-child', '{}'))
+      if (endedTask) {
+        await go(() => store.cancelTask(Q, endedTask.taskId))
+        await f.raw.batch('matrix:an-older-build-wrote-no-event', [
+          {
+            sql: 'DELETE FROM events WHERE queue = ? AND event_name = ?',
+            args: [Q, taskDoneEventName(endedTask.taskId)],
+          },
+        ])
+        const lateParent = await go(() => store.spawn(Q, 'late-parent', '{}'))
+        const [late] =
+          (await go(() => store.claim(Q, 'w-late-parent', { leaseSeconds: 60, limit: 1 }))) ?? []
+        if (lateParent && late?.taskId === lateParent.taskId) {
+          await go(() => store.activate(Q, late.runId, late.claimToken, late.claimGen))
+          await go(() => awaitTaskOwned(store, Q, late, 'w-ended-child', endedTask.taskId, null))
+          await go(() => store.complete(Q, late.runId, late.claimToken, '{"late":1}'))
         }
       }
 

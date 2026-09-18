@@ -71,6 +71,9 @@ const IDEMPOTENCY_KEY = 'poison-key'
 const TRIGGER_TASK = 'label-trigger-task'
 const TRIGGER_RUN = 'label-trigger-run'
 const TRIGGER_TOKEN = 'trigger-worker'
+/** Children that ended with no completion event, one for each invocation of `record-task-done`. */
+const ENDED_CHILD = 'poison-ended-child'
+const TRIGGER_ENDED_CHILD = 'label-trigger-ended-child'
 const TRIGGER_EVENT = 'label-trigger-event'
 const TRIGGER_STEP = '$await:trigger'
 const TRIGGER_IDEMPOTENCY_KEY = 'label-trigger-key'
@@ -1588,6 +1591,18 @@ function triggerRun(options: {
   )
 }
 
+/** A task that ended with no completion event, as a build older than the event leaves it. */
+function endedChild(taskId: string): SqlStatement {
+  return sql(
+    `INSERT INTO tasks
+       (task_id, queue, task_name, params, retry_strategy, max_attempts,
+        state, attempts, infra_retries, completed_payload, enqueue_at_ms, created_at_ms)
+     VALUES (?, ?, 'ended-child', '{}', '{"kind":"none"}', 1,
+             'completed', 0, 0, '{"ended":true}', ?, ?)`,
+    [taskId, Q, NOW, NOW],
+  )
+}
+
 async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void> {
   if (label === 'driver-heartbeat' || label === 'spawn') return
   let statements: readonly SqlStatement[]
@@ -1598,6 +1613,15 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
     case 'activate':
     case 'defer-launch':
       statements = [triggerTask('running'), triggerRun({ state: 'running', activatedGen: 0 })]
+      break
+    case 'record-task-done':
+      // The awaiting run is running, and each invocation's child ended with nothing recorded.
+      statements = [
+        triggerTask('running'),
+        triggerRun({ state: 'running' }),
+        endedChild(ENDED_CHILD),
+        endedChild(TRIGGER_ENDED_CHILD),
+      ]
       break
     case 'emit-event':
       statements = [
@@ -1679,6 +1703,7 @@ interface InvocationTarget {
   eventPayload: string
   completionPayload: string
   failure: string
+  endedChildId: string
 }
 
 const POISON_INVOCATION: InvocationTarget = {
@@ -1696,6 +1721,7 @@ const POISON_INVOCATION: InvocationTarget = {
   eventPayload: '{"delivered":true}',
   completionPayload: '{"ok":true}',
   failure: '{"name":"PoisonProbe"}',
+  endedChildId: ENDED_CHILD,
 }
 
 const HEALTHY_INVOCATION: InvocationTarget = {
@@ -1713,6 +1739,7 @@ const HEALTHY_INVOCATION: InvocationTarget = {
   eventPayload: '{"healthy":true}',
   completionPayload: '{"healthy":true}',
   failure: '{"name":"HealthyProbe"}',
+  endedChildId: TRIGGER_ENDED_CHILD,
 }
 
 async function invoke(
@@ -1755,6 +1782,16 @@ async function invoke(
         target.stepName,
         target.eventName,
         30,
+      )
+    case 'record-task-done':
+      return store.awaitTaskDone(
+        Q,
+        target.taskId,
+        target.runId,
+        target.token,
+        target.stepName,
+        target.endedChildId,
+        null,
       )
     case 'complete':
       return store.complete(Q, target.runId, target.token, target.completionPayload)
@@ -1953,6 +1990,15 @@ function explicitInsertAuthority(
       event_name: TRIGGER_EVENT,
     })
   }
+  if (label === 'record-task-done') {
+    // The await of a child that ended with nothing recorded writes that child's event.
+    // `completionEventBarrier` holds it to a terminal task the call left as it was.
+    allowInsert(authority, 'events', { queue: Q, event_name: taskDoneEventName(ENDED_CHILD) })
+    allowInsert(authority, 'events', {
+      queue: Q,
+      event_name: taskDoneEventName(TRIGGER_ENDED_CHILD),
+    })
+  }
   if (label === 'suspend') {
     allowInsert(authority, 'checkpoints', {
       task_id: TASK,
@@ -2134,10 +2180,17 @@ function leaseOnlyShortened(before: SqlRow, after: SqlRow): boolean {
 
 /**
  * A completion event may appear only for a task this call took from live to terminal,
- * and only in that task's queue. The insert authority allows the event by name. This
- * barrier is what stops a refused or laundering transition from writing one anyway.
+ * and only in that task's queue. The one other writer is `record-task-done`, the await
+ * of a child that ended with nothing recorded: its task was terminal before the call,
+ * and the call left that row exactly as it was. The insert authority allows the event by
+ * name. This barrier is what stops a refused or laundering transition from writing one
+ * anyway.
  */
-function completionEventBarrier(before: ProtocolSnapshot, after: ProtocolSnapshot): string[] {
+function completionEventBarrier(
+  label: string,
+  before: ProtocolSnapshot,
+  after: ProtocolSnapshot,
+): string[] {
   const existed = rowsByKey('events', before.events)
   const beforeTasks = rowsByKey('tasks', before.tasks)
   const afterTasks = rowsByKey('tasks', after.tasks)
@@ -2154,7 +2207,14 @@ function completionEventBarrier(before: ProtocolSnapshot, after: ProtocolSnapsho
       isLiveState(was.state) &&
       isTerminalState(is.state) &&
       String(is.queue) === String(event.queue)
-    if (!ended) {
+    const recorded =
+      label === 'record-task-done' &&
+      was !== undefined &&
+      is !== undefined &&
+      isTerminalState(was.state) &&
+      same(was, is) &&
+      String(is.queue) === String(event.queue)
+    if (!ended && !recorded) {
       errors.push(`completion event ${eventName} was written for a task this call did not end`)
     }
   }
@@ -2879,6 +2939,16 @@ function healthyWinErrors(
       )
       break
     }
+    case 'record-task-done':
+      expect(
+        hasOutcome(healthy, (result) => object(result)?.emitted === true) &&
+          run?.state === 'running' &&
+          after.events.some(
+            (row) => row.queue === Q && row.event_name === taskDoneEventName(TRIGGER_ENDED_CHILD),
+          ),
+        "trigger await did not record the ended child's outcome",
+      )
+      break
     case 'complete':
       expect(
         task?.state === 'completed' &&
@@ -3219,7 +3289,7 @@ export async function runPoisonMatrixCase(
         (row) => `write escaped authority: ${row}`,
       ),
       ...terminalBarrier(label, before, after),
-      ...completionEventBarrier(before, after),
+      ...completionEventBarrier(label, before, after),
       ...(witness.inertLive ? inertLiveBarrier(label, before, after) : []),
       ...newFindings(label, beforeFindings, afterFindings).map(
         (item) => `new invariant violation: ${item}`,

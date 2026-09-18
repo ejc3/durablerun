@@ -1,4 +1,9 @@
-import { ChildAwaitRefusedError, type ClaimedRun, isRefusedWrite } from '@durablerun/core'
+import {
+  ChildAwaitRefusedError,
+  type ClaimedRun,
+  isRefusedWrite,
+  taskDoneEventName,
+} from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
 import { childTaskViolations } from './child-tasks.js'
 import type { StoreFixtureFactory } from './fixture.js'
@@ -30,6 +35,8 @@ export interface FuzzStats {
   emits: number
   awaits: number
   childAwaits: number
+  /** Awaits that recorded the outcome of a child that had ended with no completion event. */
+  recordedEndings: number
 }
 
 /**
@@ -75,6 +82,7 @@ async function runWalk(
     emits: 0,
     awaits: 0,
     childAwaits: 0,
+    recordedEndings: 0,
   }
 
   /** The engine invariants, and what ChildTasks.tla requires of rows only the engine wrote. */
@@ -238,7 +246,8 @@ async function runWalk(
       // A parent awaits a child: a task it spawns now, or any task the walk knows,
       // which may have ended already, may end later by any terminal batch, or may
       // be the parent itself. Every terminal batch in the walk owes it a wake.
-      if (rng.next() < 0.2) {
+      const kind = rng.next()
+      if (kind < 0.2) {
         // The queue rule: a child in another queue MUST be refused, and the refusal
         // must leave the run held. A silent acceptance is a walk failure.
         const foreign = await f.store.spawn('other', `foreign${step}`, '{}')
@@ -249,6 +258,57 @@ async function runWalk(
           if (!(error instanceof ChildAwaitRefusedError)) throw error
         }
         held.push(run)
+      } else if (kind < 0.6) {
+        // A child that ended with no completion event, as a build older than the event
+        // leaves it, and that nobody awaits yet, which is the deploy rule. The await
+        // records its outcome and answers as a hit, so the run stays held. A run whose
+        // claim is already lost is refused, and then the event is put back: a terminal
+        // task with no event is a violation at the next checkpoint.
+        const ended = await f.store.spawn(Q, `ended${step}`, '{}')
+        await f.store.cancelTask(Q, ended.taskId)
+        const eventName = taskDoneEventName(ended.taskId)
+        const [saved] = await f.raw.batch(
+          'fuzz:the-completion-event',
+          [
+            {
+              sql: 'SELECT * FROM events WHERE queue = ? AND event_name = ?',
+              args: [Q, eventName],
+            },
+          ],
+          'read',
+        )
+        const row = saved?.rows[0]
+        if (row === undefined) {
+          throw new Error(
+            `fuzz seed ${seed} step ${step}: a cancelled task has no completion event`,
+          )
+        }
+        await f.raw.batch('fuzz:an-older-build-wrote-no-event', [
+          { sql: 'DELETE FROM events WHERE queue = ? AND event_name = ?', args: [Q, eventName] },
+        ])
+        let answer: { emitted: boolean } | undefined
+        try {
+          answer = await awaitTaskOwned(f.store, Q, run, `cw${step}`, ended.taskId, null)
+        } catch (error) {
+          if (!isRefusedWrite(error)) throw error
+        }
+        if (answer?.emitted === true) {
+          stats.recordedEndings++
+          held.push(run)
+          knownTasks.push(ended.taskId)
+        } else if (answer !== undefined) {
+          throw new Error(
+            `fuzz seed ${seed} step ${step}: an await PARKED on a child that had ended`,
+          )
+        } else {
+          const columns = Object.keys(row)
+          await f.raw.batch('fuzz:the-event-is-put-back', [
+            {
+              sql: `INSERT INTO events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+              args: columns.map((column) => row[column] ?? null),
+            },
+          ])
+        }
       } else {
         const known = knownTasks[rng.int(knownTasks.length + 1)]
         const childTaskId = known ?? (await f.store.spawn(Q, `child${step}`, '{}')).taskId
