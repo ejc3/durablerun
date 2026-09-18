@@ -1317,6 +1317,8 @@ describe('FencedBatch tree statements', () => {
       refused(taskFrom('[max](f.task_id)'), plain)
       refused(taskFrom('coalesce(f.task_id, ?)', ['t']), plain)
       refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), plain)
+      // A qualified name is a call too: PostgreSQL resolves pg_catalog.max to the aggregate.
+      refused(taskFrom('pg_catalog.max(f.task_id)'), plain)
       // Plain text stays: a column, arithmetic in parentheses, a keyword before a
       // parenthesis, and a call that is only the inside of a string literal.
       expect(() => followOn(taskFrom('f.task_id'))).not.toThrow()
