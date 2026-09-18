@@ -2216,7 +2216,6 @@ export class PostgresSchedulerStore implements SchedulerStore {
   ): Promise<{ emitted: true; payloadJson: string } | null> {
     const { queue } = claim
     const name = EventName.taskDone(childTaskId)
-    const eventName = name.value
     const b = new FencedBatch('await-event', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
@@ -2248,7 +2247,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const row = results.hit?.rows[0]
     if (row === undefined) return null
     if (row.payload_type !== 'text') {
-      throw new RangeError(`awaitTaskDone ${queue}/${eventName} found a non-TEXT stored payload`)
+      throw new RangeError(
+        `awaitTaskDone ${queue}/task ${childTaskId} found a non-TEXT stored payload`,
+      )
     }
     return { emitted: true, payloadJson: String(row.payload) }
   }
@@ -2374,7 +2375,12 @@ export class PostgresSchedulerStore implements SchedulerStore {
     const row = results.hit?.rows[0]
     if (row !== undefined) {
       if (row.payload_type !== 'text') {
-        throw new RangeError(`awaitEvent ${queue}/${eventName} found a non-TEXT stored payload`)
+        // A child await reaches the task's code, which never sees the engine's event name.
+        const subject =
+          awaitedTaskId === null
+            ? `awaitEvent ${queue}/${eventName}`
+            : `awaitTaskDone ${queue}/task ${awaitedTaskId}`
+        throw new RangeError(`${subject} found a non-TEXT stored payload`)
       }
       return { emitted: true, payloadJson: String(row.payload) }
     }
