@@ -1,6 +1,7 @@
 import { InvalidDurableStringError, SchemaMismatchError } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { META_BOOTSTRAP_SQL, META_TABLE_SQL } from '../src/schema.js'
+import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
 /**
@@ -59,6 +60,66 @@ describe('MysqlExecutor against a real server', () => {
         'read',
       )
       expect(rows?.rows).toEqual([{ n: 0 }])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('refuses a write MySQL would cut to fit its column, and writes nothing', async () => {
+    // MySQL cuts trailing spaces past a VARCHAR's width with a note, in every sql_mode,
+    // where any other excess is error 1406. Cut, the value is a different identifier.
+    const db = await openMysqlTestDb({ idNamespace: 'cut-to-fit' })
+    try {
+      const outcome = await db.raw
+        .batch('fixture:cut-to-fit', [
+          { sql: "INSERT INTO meta (`key`, value) VALUES ('before', 'v')", args: [] },
+          {
+            sql: 'INSERT INTO meta (`key`, value) VALUES (?, ?)',
+            args: [`${'k'.repeat(255)} `, 'v'],
+          },
+        ])
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+      expect(outcome, 'mutation-verdict:behavior:mysql-write-cut-to-fit-is-refused').toBeInstanceOf(
+        InvalidDurableStringError,
+      )
+      const [rows] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: "SELECT COUNT(*) AS n FROM meta WHERE value = 'v'", args: [] }],
+        'read',
+      )
+      expect(rows?.rows).toEqual([{ n: 0 }])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('keeps a name with trailing spaces past the width apart from the name it would be cut to', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'trailing-space' })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const refused = (error: unknown) => error
+      const event = await store
+        .emitEvent('q', `${'e'.repeat(255)} `, '{"x":1}')
+        .then(() => 'accepted', refused)
+      expect(event).toBeInstanceOf(InvalidDurableStringError)
+      const [events] = await db.raw.batch(
+        'fixture:read',
+        [{ sql: 'SELECT COUNT(*) AS n FROM events', args: [] }],
+        'read',
+      )
+      expect(events?.rows).toEqual([{ n: 0 }])
+
+      const key = 'i'.repeat(255)
+      const spaced = await store
+        .spawn('q', 't', '{}', { idempotencyKey: `${key} ` })
+        .then(() => 'accepted', refused)
+      expect(spaced).toBeInstanceOf(InvalidDurableStringError)
+      expect(await store.spawn('q', 't', '{}', { idempotencyKey: key })).toMatchObject({
+        created: true,
+      })
     } finally {
       await db.close()
     }
