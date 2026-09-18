@@ -1,5 +1,10 @@
 import { childTaskViolations, engineInvariantViolations } from '@durablerun/conformance'
-import { EventTimeoutError, type SchedulerStore, StoreUnavailableError } from '@durablerun/core'
+import {
+  EventTimeoutError,
+  type SchedulerStore,
+  StoreUnavailableError,
+  taskDoneEventName,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { type ChildTask, type TaskRegistry, runClaimedRun } from '../src/index.js'
 import { Q, claimAndRun, fx, invocationOf, registry } from './worker-harness.js'
@@ -252,6 +257,46 @@ describe('child tasks through the SDK', () => {
         'nul header': permanent,
       },
       children: 0,
+    })
+    f.close()
+  })
+
+  // A recorded outcome that cannot be read is the same on every pass, like a refused
+  // await: retrying the parent would rerun every side effect before the await and throw
+  // the same error again, until the budget is gone.
+  it("fails the parent for good when the child's recorded outcome cannot be read", async () => {
+    const f = await fx('child-unreadable')
+    const outcomes: Record<string, unknown> = {}
+    for (const [name, corrupt] of [
+      ['a payload that is not text', `x'00'`],
+      ['an outcome that is not terminal', `'{"state":"running"}'`],
+    ] as const) {
+      const child = await f.store.spawn(Q, 'child', '{}')
+      const reg = registry({
+        child: async () => 1,
+        parent: async (ctx) => ctx.awaitTask({ taskId: child.taskId, queue: Q } as ChildTask),
+      })
+      expect(await claimAndRun(f, reg, `w-child-${name}`)).toEqual({ kind: 'completed' })
+      await f.raw.batch('a-writer-that-is-not-the-engine', [
+        {
+          sql: `UPDATE events SET payload = ${corrupt} WHERE event_name = ?`,
+          args: [taskDoneEventName(child.taskId)],
+        },
+      ])
+      const parent = await f.store.spawn(Q, 'parent', '{}', { maxAttempts: 3 })
+      const outcome = await claimAndRun(f, reg, `w-parent-${name}`)
+      const result = await f.store.getTaskResult(Q, parent.taskId)
+      outcomes[name] = {
+        outcome: outcome.kind,
+        failure: JSON.parse(result?.failureReasonJson ?? 'null')?.name,
+      }
+      // Whatever became of this parent, the next round starts from an empty queue.
+      await f.store.cancelTask(Q, parent.taskId)
+    }
+    const permanent = { outcome: 'failed', failure: 'FatalTaskError' }
+    expect(outcomes, 'mutation-verdict:behavior:sdk-child-outcome-error-is-permanent').toEqual({
+      'a payload that is not text': permanent,
+      'an outcome that is not terminal': permanent,
     })
     f.close()
   })
