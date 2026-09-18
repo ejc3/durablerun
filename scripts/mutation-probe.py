@@ -6187,36 +6187,36 @@ MUTATION_SPECS.extend(
         (
             "task-done-event-complete",
             "packages/store-libsql/src/store.ts",
-            "    const taskDoneRecorded = this.taskDone(b, queue, taskId, 'task', {\n      state: 'completed',\n      completedPayloadJson: resultJson,\n    })\n",
-            "    const taskDoneRecorded = async (_results: unknown): Promise<void> => {} // MUTATION\n",
+            "    this.taskDone(b, queue, taskId, 'task', {\n      state: 'completed',\n      completedPayloadJson: resultJson,\n    })\n",
+            "    // MUTATION: no completion event, and no wake\n",
             "complete ends a task without writing its completion event or waking its waiters",
         ),
         (
             "task-done-event-fail",
             "packages/store-libsql/src/store.ts",
-            "    const taskDoneRecorded = this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {\n      state: 'failed',\n      failureReasonJson: failureJson,\n    })\n",
-            "    const taskDoneRecorded = async (_results: unknown): Promise<void> => void (retry ? 0 : 1) // MUTATION\n",
+            "    this.taskDone(b, queue, taskId, retry ? 'task-terminal' : 'task', {\n      state: 'failed',\n      failureReasonJson: failureJson,\n    })\n",
+            "    void (retry ? 0 : 1) // MUTATION: no completion event, and no wake\n",
             "a terminal fail ends a task without writing its completion event or waking its waiters",
         ),
         (
             "task-done-event-cancel",
             "packages/store-libsql/src/store.ts",
-            "    const taskDoneRecorded = this.taskDone(b, queue, taskId, 'cancel', {\n      state: 'cancelled',\n      failureReasonJson: REASON_CANCELLED,\n    })\n",
-            "    const taskDoneRecorded = async (_results: unknown): Promise<void> => {} // MUTATION\n",
+            "    this.taskDone(b, queue, taskId, 'cancel', {\n      state: 'cancelled',\n      failureReasonJson: REASON_CANCELLED,\n    })\n",
+            "    // MUTATION: no completion event, and no wake\n",
             "both cancellations end a task without writing its completion event or waking its waiters",
         ),
         (
             "task-done-event-relaunch-cap",
             "packages/store-libsql/src/store.ts",
-            "    const taskDoneRecorded = this.taskDone(b, queue, item.taskId, 'task-fail', {\n      state: 'failed',\n      failureReasonJson: REASON_RELAUNCH_CAP,\n    })\n",
-            "    const taskDoneRecorded = async (_results: unknown): Promise<void> => {} // MUTATION\n",
+            "    this.taskDone(b, queue, item.taskId, 'task-fail', {\n      state: 'failed',\n      failureReasonJson: REASON_RELAUNCH_CAP,\n    })\n",
+            "    // MUTATION: no completion event, and no wake\n",
             "the relaunch cap ends a task without writing its completion event or waking its waiters",
         ),
         (
             "task-done-event-infra-cap",
             "packages/store-libsql/src/store.ts",
-            "    const taskDoneRecorded = this.taskDone(b, queue, item.taskId, 'task-terminal', {\n      state: 'failed',\n      failureReasonJson: REASON_INFRA_CAP,\n    })\n",
-            "    const taskDoneRecorded = async (_results: unknown): Promise<void> => {} // MUTATION\n",
+            "    this.taskDone(b, queue, item.taskId, 'task-terminal', {\n      state: 'failed',\n      failureReasonJson: REASON_INFRA_CAP,\n    })\n",
+            "    // MUTATION: no completion event, and no wake\n",
             "the infrastructure cap ends a task without writing its completion event or waking its waiters",
         ),
         (
@@ -6229,8 +6229,8 @@ MUTATION_SPECS.extend(
         (
             "wake-tasks-binds-the-queue",
             "packages/store-libsql/src/store.ts",
-            "      queue,\n      where: `f.state = 'pending'`,\n",
-            "      where: `f.state = 'pending'`,\n",
+            "      queue,\n      where: `f.wake_event = ? AND f.state = 'pending'`,\n",
+            "      where: `f.wake_event = ? AND f.state = 'pending'`,\n",
             "every task ending scans tasks once for each pending run of its queue",
         ),
         (
@@ -6260,34 +6260,6 @@ MUTATION_SPECS.extend(
             "  store.wake(EventName.taskDone(taskId))\n",
             "  // MUTATION: the terminal batch wakes nobody\n",
             "a terminal batch writes the completion event and leaves every registered waiter asleep",
-        ),
-        (
-            "terminal-batch-requires-its-event",
-            "packages/core/src/task-done.ts",
-            "    if (!endedHere || inserted || (await store.isRecorded())) return\n",
-            "    if (endedHere || !endedHere) return // MUTATION\n",
-            "a batch that names the wrong task or the wrong terminal statement ends the task with no event, in silence",
-        ),
-        (
-            "task-done-check-allows-a-recorded-event",
-            "packages/core/src/task-done.ts",
-            "    if (!endedHere || inserted || (await store.isRecorded())) return\n",
-            "    if (!endedHere || inserted) return // MUTATION\n",
-            "a revived task that ends again is reported as a batch that recorded nothing",
-        ),
-        (
-            "task-done-check-reads-only-when-nothing-was-inserted",
-            "packages/core/src/task-done.ts",
-            "    if (!endedHere || inserted || (await store.isRecorded())) return\n",
-            "    if (!endedHere || (await store.isRecorded())) return // MUTATION\n",
-            "every task ending pays a read to confirm the event it just inserted",
-        ),
-        (
-            "task-done-check-asks-only-of-an-ended-task",
-            "packages/core/src/task-done.ts",
-            "    if (!endedHere || inserted || (await store.isRecorded())) return\n",
-            "    if (inserted || (await store.isRecorded())) return // MUTATION\n",
-            "a failure that scheduled a retry is reported as a batch that recorded nothing",
         ),
         (
             "emit-event-refuses-reserved-name",
@@ -6320,8 +6292,8 @@ MUTATION_SPECS.extend(
         (
             "spawn-child-key-excludes-a-caller-key",
             "packages/core/src/child-tasks.ts",
-            "    if (callerKey !== undefined) {\n      throw new RangeError('spawn takes idempotencyKey or childOf, never both')\n",
-            "    if (callerKey === null) {\n      throw new RangeError('spawn takes idempotencyKey or childOf, never both')\n",
+            "    if (callerKey !== undefined) {\n      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')\n",
+            "    if (callerKey === null) {\n      throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')\n",
             "a spawn given both keys silently drops the caller's",
         ),
         (
@@ -6439,7 +6411,7 @@ MUTATION_SPECS.extend(
         (
             "batch-names-each-gate",
             "packages/core/src/fenced-batch.ts",
-            "      if (gateIndex >= 0) gatedBy = gateIndex\n",
+            "      if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex\n",
             "      // MUTATION: no statement names its gate\n",
             "PostgreSQL pays a round trip for every statement a lost gate made a no-op",
         ),
@@ -6572,9 +6544,9 @@ MUTATION_SPECS.extend(
         (
             "postgres-event-lock-is-advisory",
             "packages/store-postgres/src/executor.ts",
-            "         current_database(), current_schema(), '${LOCK_DOMAINS[lock.kind]}', $1::text, $2::text\n",
-            "         current_database(), current_schema(), 'durablerun:claim', $1::text, $2::text\n",
-            "an event and a claim with equal coordinates share one advisory key",
+            "           'durablerun:event', 'events'::regclass::oid::text, $1::text, $2::text\n",
+            "           'durablerun:claim', 'events'::regclass::oid::text, $1::text, $2::text\n",
+            "a completion event's advisory key carries the claim lock's tag",
         ),
         (
             "sdk-spawn-is-idempotent-under-replay",
@@ -6586,8 +6558,8 @@ MUTATION_SPECS.extend(
         (
             "sdk-child-await-refusal-is-permanent",
             "packages/sdk/src/context.ts",
-            "      if (error instanceof ChildAwaitRefusedError) throw new FatalTaskError(error.message)\n",
-            "      // MUTATION: a refused child await is an ordinary failure\n",
+            "      if (error instanceof ChildAwaitRefusedError || error instanceof RangeError) {\n",
+            "      if (error instanceof RangeError) {\n",
             "a parent that awaits a child in another queue retries a refusal that can never change",
         ),
         (
@@ -6670,8 +6642,8 @@ MUTATION_SPECS.extend(
         (
             "hosted-enqueue-refuses-reserved-key",
             "packages/driver/src/hosted.ts",
-            "        if (idempotencyKey?.startsWith(RESERVED_EVENT_PREFIX)) {\n",
-            "        if (idempotencyKey?.startsWith('never')) {\n",
+            "            refuseReservedIdempotencyKey('enqueue', idempotencyKey)\n",
+            "            // MUTATION: any key reaches the store\n",
             "the enqueue route answers a reserved key with a server error, where the input is the caller's mistake",
         ),
         (
@@ -6687,6 +6659,83 @@ MUTATION_SPECS.extend(
             "  points.push(measuredCalls)\n",
             "  // MUTATION: the last call is never faulted\n",
             "no fault reaches a program's last store call, where the parent's final checkpoint and completion are",
+        ),
+        (
+            "wake-sources-find-the-woken-runs",
+            "packages/store-libsql/src/store.ts",
+            "      where: `f.queue = ? AND f.wake_event = ? AND f.state = 'pending'`,\n      whereArgs: [queue, eventName],\n      rows: 'source-keys',\n",
+            "      where: `f.queue = ? AND ? IS NOT NULL AND f.state = 'pending'`,\n      whereArgs: [queue, eventName],\n      rows: 'source-keys',\n",
+            "every task ending walks every pending run of its queue to find the runs it woke",
+        ),
+        (
+            "child-await-registers-on-a-revived-child",
+            "packages/store-libsql/src/store.ts",
+            "      if (child === null || !isTerminalState(child.outcome.state)) continue\n",
+            "      if (child === null || !isTerminalState(child.outcome.state)) break\n",
+            "a parent whose claim is live is told its lease is lost, because its child was revived before the read that says why",
+        ),
+        (
+            "sdk-child-outcome-error-is-permanent",
+            "packages/sdk/src/context.ts",
+            "      if (error instanceof ChildAwaitRefusedError || error instanceof RangeError) {\n",
+            "      if (error instanceof ChildAwaitRefusedError) {\n",
+            "a child's recorded outcome that cannot be read is retried until the budget is gone",
+        ),
+        (
+            "postgres-port-event-lock-is-the-row-older-builds-take",
+            "packages/store-postgres/src/executor.ts",
+            "  if (lock.kind === 'event' && !lock.eventName.startsWith(RESERVED_EVENT_PREFIX)) {\n",
+            "  if (lock.kind === 'event' && lock.eventName.startsWith(RESERVED_EVENT_PREFIX)) {\n",
+            "an older build's emit and this build's await of one event do not exclude each other, and the waiter sleeps for ever",
+        ),
+        (
+            "postgres-port-event-lock-inserts-its-row",
+            "packages/store-postgres/src/executor.ts",
+            "    await client.query(\n      `INSERT INTO event_locks (queue, event_name)\n       VALUES ($1, $2)\n       ON CONFLICT (queue, event_name) DO NOTHING`,\n      args,\n    )\n",
+            "",
+            "an event nobody has locked before has no row to lock, so its first emit and await take no lock at all",
+        ),
+        (
+            "batch-never-skips-a-tail-that-always-answers",
+            "packages/core/src/fenced-batch.ts",
+            "      const alwaysAnswers = !mayReturnNoRow(tree)\n",
+            "      const alwaysAnswers = false // MUTATION\n",
+            "a counting tail is skipped on PostgreSQL and answers with no row there and with 0 on libSQL",
+        ),
+        (
+            "batch-states-only-a-gate-it-found",
+            "packages/core/src/fenced-batch.ts",
+            "      if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex\n",
+            "      if (!alwaysAnswers) gatedBy = gateIndex\n",
+            "a statement with no gate reaches the executor gated on a statement that does not exist",
+        ),
+        (
+            "only-a-select-can-always-answer",
+            "packages/core/src/sql-tree.ts",
+            "  if (!SelectQueryNode.is(query)) return true\n",
+            "  if (!SelectQueryNode.is(query)) return false\n",
+            "no follow-on is ever skipped, and PostgreSQL pays a round trip for every statement a lost gate made a no-op",
+        ),
+        (
+            "child-spawn-needs-the-parents-live-claim",
+            "packages/core/src/statements/spawn.ts",
+            "          : admitted.where((where) => where.exists(stillClaimed(parent, parent.liveTask))),\n",
+            "          : admitted, // MUTATION\n",
+            "any caller of the spawn port creates a parent's child, and the parent adopts it and reads its result",
+        ),
+        (
+            "child-spawn-refusal-is-the-runs",
+            "packages/store-libsql/src/store.ts",
+            "      if (childOf !== undefined) throw await this.refusal('spawn', childOf.runId)\n",
+            "",
+            "a child spawn under a lost claim is reported as an engine fault and not as the lost lease it is",
+        ),
+        (
+            "child-spawn-key-is-unambiguous",
+            "packages/core/src/child-tasks.ts",
+            "  return `${RESERVED_EVENT_PREFIX}spawn:${parentTaskId.length}:${parentTaskId}:${replayKey}`\n",
+            "  return `${RESERVED_EVENT_PREFIX}spawn:${parentTaskId}:${replayKey}`\n",
+            "two pairs of parent and call site spell one key, and the second spawn adopts the first one's task",
         ),
     )
 )
@@ -10540,7 +10589,6 @@ for _verdict, _names in (
         ),
         (
             "task-done-event-fail-names-its-terminal-statement",
-            "task-done-check-asks-only-of-an-ended-task",
         ),
     ),
     (
@@ -10563,7 +10611,6 @@ for _verdict, _names in (
         ),
         (
             "activate-remembers-the-run-task",
-            "task-done-check-reads-only-when-nothing-was-inserted",
         ),
     ),
     (
@@ -10590,31 +10637,6 @@ for _verdict, _names in (
             "child-await-raises-its-refusal",
             "child-await-names-the-reason",
             "child-await-requires-the-childs-queue",
-        ),
-    ),
-    (
-        ExpectedVerdict(
-            "behavior",
-            "packages/conformance/test/libsql.test.ts",
-            "child task conformance [libsql] fails loudly when a batch ends a task and records no completion event",
-            "mutation-verdict:behavior:terminal-batch-requires-its-event",
-            "packages/conformance/src/child-tasks.ts",
-        ),
-        (
-            "terminal-batch-requires-its-event",
-        ),
-    ),
-    (
-        ExpectedVerdict(
-            "behavior",
-            "packages/conformance/test/libsql.test.ts",
-            "child task conformance [libsql] keeps the first outcome after retryTask revives the child and it completes",
-            "mutation-verdict:behavior:task-done-event-first-write-wins",
-            "packages/conformance/src/child-tasks.ts",
-        ),
-        (
-            "task-done-check-allows-a-recorded-event",
-            "task-done-event-first-write-wins",
         ),
     ),
     (
@@ -10736,6 +10758,18 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
+            "child task conformance [libsql] keeps the first outcome after retryTask revives the child and it completes",
+            "mutation-verdict:behavior:task-done-event-first-write-wins",
+            "packages/conformance/src/child-tasks.ts",
+        ),
+        (
+            "task-done-event-first-write-wins",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
             "child task conformance [libsql] never refuses a same-queue child",
             "mutation-verdict:behavior:child-await-allows-the-same-queue",
             "packages/conformance/src/child-tasks.ts",
@@ -10816,6 +10850,8 @@ for _verdict, _names in (
             "open-tail-is-never-skipped",
             "batch-gate-is-the-named-statement",
             "batch-states-a-gate-only-where-there-is-one",
+            "batch-states-only-a-gate-it-found",
+            "only-a-select-can-always-answer",
         ),
     ),
     (
@@ -10920,7 +10956,7 @@ for _verdict, _names in (
         ExpectedVerdict(
             "behavior",
             "packages/store-postgres/test/executor.test.ts",
-            "PgExecutor transactions acquires a scoped event advisory lock before protocol SQL without durable garbage",
+            "PgExecutor transactions locks a task's completion event with a scoped advisory lock, and leaves no row",
             "mutation-verdict:behavior:postgres-event-lock-is-advisory",
         ),
         (
@@ -11059,6 +11095,97 @@ for _verdict, _names in (
         ),
         (
             "replay-harness-window-is-measured",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/query-plans.test.ts",
+            "a terminal batch's wake, which every task ending pays finds the runs it woke without walking the pending runs of the queue",
+            "mutation-verdict:behavior:wake-sources-find-the-woken-runs",
+        ),
+        (
+            "wake-sources-find-the-woken-runs",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "child task conformance [libsql] registers on a child that is revived before the read that says why",
+            "mutation-verdict:behavior:child-await-registers-on-a-revived-child",
+            "packages/conformance/src/child-tasks.ts",
+        ),
+        (
+            "child-await-registers-on-a-revived-child",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/child-tasks.test.ts",
+            "child tasks through the SDK fails the parent for good when the child's recorded outcome cannot be read",
+            "mutation-verdict:behavior:sdk-child-outcome-error-is-permanent",
+        ),
+        (
+            "sdk-child-outcome-error-is-permanent",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/postgres-terminal-lock.test.ts",
+            "an older build's emit and this build's await of one event exclude each other, and the other way round",
+            "mutation-verdict:behavior:port-event-lock-is-the-row-older-builds-take",
+        ),
+        (
+            "postgres-port-event-lock-is-the-row-older-builds-take",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor transactions acquires the event row lock before protocol SQL without adding a result",
+            "mutation-verdict:behavior:postgres-port-event-lock-is-the-row",
+        ),
+        (
+            "postgres-port-event-lock-inserts-its-row",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/fenced-batch-tree.test.ts",
+            "FencedBatch tree statements never skips a gated tail that answers with a row whatever it matched",
+            "mutation-verdict:behavior:batch-never-skips-a-tail-that-always-answers",
+        ),
+        (
+            "batch-never-skips-a-tail-that-always-answers",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "scheduler conformance [libsql] spawn creates a child only under its parent's live claim, and still finds one that exists",
+            "mutation-verdict:behavior:child-spawn-needs-the-parents-live-claim",
+            "packages/conformance/src/suite.ts",
+        ),
+        (
+            "child-spawn-needs-the-parents-live-claim",
+            "child-spawn-refusal-is-the-runs",
+        ),
+    ),
+    (
+        ExpectedVerdict(
+            "behavior",
+            "packages/core/test/child-tasks.test.ts",
+            "a child's spawn key is a different key for every pair of parent and call site",
+            "mutation-verdict:behavior:child-spawn-key-is-unambiguous",
+        ),
+        (
+            "child-spawn-key-is-unambiguous",
         ),
     ),
 ):

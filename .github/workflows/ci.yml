@@ -1119,8 +1119,11 @@ jobs:
               repaired = held_by_head(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
                   "const gateName = open ? undefined : gates[0]?.fence",
                   "const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)",
-                  "if (gateIndex >= 0) gatedBy = gateIndex",
+                  "if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex",
                   "gatedBy === undefined",
+              ))
+              repaired = held_by_head(repaired, candidate, 'packages/core/src/sql-tree.ts', (
+                  "if (!SelectQueryNode.is(query)) return true",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
