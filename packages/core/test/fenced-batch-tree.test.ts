@@ -1304,6 +1304,28 @@ describe('FencedBatch tree statements', () => {
       )
     })
 
+    it('reads a value fragment for a function call, as it reads nodes for one', () => {
+      const plain = /must select plain columns and values/
+      const taskFrom = (text: string, args: SqlFragment['args'] = []) =>
+        successor({ task: () => value<string>(text, args) })
+      // The node rule refuses every function node, so the text rule refuses every call,
+      // however it is spaced or quoted, and not a list of aggregate spellings.
+      refused(taskFrom('max(f.task_id)'), plain)
+      refused(taskFrom('MAX (f.task_id)'), plain)
+      refused(taskFrom('"max"(f.task_id)'), plain)
+      refused(taskFrom('`max`(f.task_id)'), plain)
+      refused(taskFrom('[max](f.task_id)'), plain)
+      refused(taskFrom('coalesce(f.task_id, ?)', ['t']), plain)
+      refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), plain)
+      // Plain text stays: a column, arithmetic in parentheses, a keyword before a
+      // parenthesis, and a call that is only the inside of a string literal.
+      expect(() => followOn(taskFrom('f.task_id'))).not.toThrow()
+      expect(() => followOn(taskFrom('(f.task_id)'))).not.toThrow()
+      expect(() =>
+        followOn(taskFrom("CASE WHEN f.attempt IN (1, 2) THEN f.task_id ELSE 'max(x)' END")),
+      ).not.toThrow()
+    })
+
     it('reads each value by position, so a star is refused', () => {
       refused(
         loose
