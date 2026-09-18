@@ -309,24 +309,27 @@ export const eligibleTask = (t: string, at: string): string =>
 export const runOwnedByTask = (run: string, task: string): string =>
   `${task}.task_id = ${run}.task_id AND ${task}.queue = ${run}.queue`
 
-/** A task transition must not strand or consume a run from another queue. */
 /**
- * Lock a task's runs before the task's own row, inside the statement that updates the
- * task. Every worker write, every sweep, and the wake of a parked run lock the run and
- * then the task that mirrors it. A cancellation updates the task first, and two
+ * Lock a task's live runs before the task's own row, inside the statement that updates
+ * the task. Every worker write, every sweep, and the wake of a parked run lock the run
+ * and then the task that mirrors it. A cancellation updates the task first, and two
  * transactions that take the same two rows in opposite orders deadlock. PostgreSQL
  * evaluates a statement's predicates before it locks the row they admit, so this
  * predicate, which is always true, takes the run locks first and gives the
- * cancellation the order everything else has. SQLite has one writer and needs none.
+ * cancellation the order everything else has. Only live runs are locked: nothing that
+ * writes a task also writes a run of it that has ended. SQLite has one writer and
+ * needs none.
  */
 export const runsLockedBeforeTask = (task: string): string =>
   `(SELECT COUNT(*) FROM (
       SELECT 1 FROM runs lock_order_run
       WHERE lock_order_run.task_id = ${task}.task_id
+        AND lock_order_run.state IN ${LIVE}
       ORDER BY lock_order_run.run_id
       FOR UPDATE
     ) locked_runs) >= 0`
 
+/** A task transition must not strand or consume a run from another queue. */
 export const taskOwnsEveryRun = (task: string): string =>
   `NOT EXISTS (
     SELECT 1 FROM runs ownership_run
