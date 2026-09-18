@@ -3522,6 +3522,40 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toEqual({ forged: 'RangeError', events: 0 })
       })
 
+      // An event name is durable text, and the dialects disagree on a NUL and on a lone
+      // surrogate: SQLite compares the text up to the NUL and stores the surrogate as
+      // U+FFFD, which merges distinct names, and PostgreSQL aborts the statement. The
+      // port refuses what no store can keep, as spawn refuses such a queue.
+      it('refuses an event name that does not survive every store, and writes nothing', async () => {
+        await f.store.spawn(Q, 'waiter', '{}')
+        const run = await claimActivated(f.store, Q, 'w1')
+        const refused: Record<string, string> = {}
+        for (const [what, name] of [
+          ['a NUL', 'go\u0000tail'],
+          ['a lone surrogate', 'go\ud800'],
+        ] as const) {
+          refused[`emit with ${what}`] = await refusalName(f.store.emitEvent(Q, name, '{}'))
+          refused[`await with ${what}`] = await refusalName(
+            awaitOwned(f.store, Q, run, 's', name, null),
+          )
+        }
+        const events = await readOne(f.raw, `SELECT COUNT(*) AS n FROM events`, [])
+        const waits = await readOne(f.raw, `SELECT COUNT(*) AS n FROM waits`, [])
+        expect(
+          { refused, events: Number(events?.n), waits: Number(waits?.n) },
+          'mutation-verdict:behavior:event-name-is-a-durable-string',
+        ).toEqual({
+          refused: {
+            'emit with a NUL': 'InvalidDurableStringError',
+            'await with a NUL': 'InvalidDurableStringError',
+            'emit with a lone surrogate': 'InvalidDurableStringError',
+            'await with a lone surrogate': 'InvalidDurableStringError',
+          },
+          events: 0,
+          waits: 0,
+        })
+      })
+
       it('emit-before-await returns the payload inline with nothing suspended', async () => {
         await f.store.emitEvent(Q, 'ready', '{"x":2}')
         await f.store.spawn(Q, 'late', '{}')
