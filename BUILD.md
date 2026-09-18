@@ -959,7 +959,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     only exercised the text scanners are deleted, and the PR accounts for each
     by name. The failure successors' deadline is built from nodes in the
     shared statement, and a follow-on insert's SELECT list holds no fragment,
-    as the option below records. The registry holds 644 mutations.
+    as the option below records. The registry holds 665 mutations. Its review
+    round is `postmortems/pr3.9e-part3b-review.md`.
   - PR3.9e part 3c, live. Exit test 3 of the current milestone is met when it
     lands, and not before. It owns the items below that name it: one pass over
     the tree, a tree-level form of the two text lints' rules, the corpus
