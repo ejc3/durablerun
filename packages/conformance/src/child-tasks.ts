@@ -137,7 +137,7 @@ function childRefusal(awaited: Promise<unknown>): Promise<string> {
 }
 
 /** A child made ready for one terminal batch to end. */
-interface ReadyChild {
+export interface ReadyChild {
   readonly childTaskId: string
   /** How the batch will end it. */
   readonly outcome: TaskOutcome
@@ -147,7 +147,7 @@ interface ReadyChild {
   readonly end: (store: StoreFixture['store']) => Promise<void>
 }
 
-interface TerminalBatch {
+export interface TerminalBatch {
   /** The batch label that ends the child. */
   readonly label: (typeof TERMINAL_BATCH_LABELS)[number]
   /** Spawn a child in `queue` and bring it to where this batch ends it. Claim any parent first. */
@@ -166,7 +166,7 @@ async function sweepOnce(store: StoreFixture['store'], queue: string, kind: stri
  * owes the task's parent the same thing, so every case below that ends a child is
  * generated from this list and not written once for the batch someone thought of.
  */
-const TERMINAL_BATCHES: readonly TerminalBatch[] = [
+export const TERMINAL_BATCHES: readonly TerminalBatch[] = [
   {
     label: 'complete',
     prepare: async (f, queue) => {
@@ -787,9 +787,11 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
           expected[batch.label] = { delivered: RACES, strandedWaits: 0, violations: [] }
         })
       }
-      expect(observed, 'mutation-verdict:behavior:terminal-batch-takes-the-event-lock').toEqual(
-        expected,
-      )
+      // A smoke of real concurrency on every dialect. Whether an unlocked batch loses a
+      // wakeup here is a matter of timing, and four of the five PostgreSQL lock sites
+      // were seen to survive it. The PostgreSQL case that holds the window open is the
+      // one that holds each lock.
+      expect(observed).toEqual(expected)
     })
   })
 }
