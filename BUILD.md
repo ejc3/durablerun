@@ -1136,28 +1136,34 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.13 `verify` fails with every test passing**: three times on 2026-09-17
   the `verify` job exited 1 after every test had passed, on vitest's unhandled
   error `[vitest-worker]: Timeout calling "onTaskUpdate"`. Measured: a worker
-  whose event loop does not turn for 60 seconds produces exactly that error,
-  and the worker that runs `packages/conformance/test/libsql.test.ts` went
-  48.9 seconds without turning on a devserver, because the libSQL client
-  blocks and vitest does not reach the timers phase between tests that never
-  yield. `packages/conformance/test/yield-to-timers.ts`, which says why, now
-  yields after every test of that file, and the longest stretch is 17.6
-  seconds, the libSQL wake-witness test alone. Estimated, not measured: no
-  stall was timed on a CI runner. Vitest timed that one test at 16.2 to 22.3
-  seconds in five CI logs against 17.1 on the devserver, which puts the old
-  stretch between 46 and 64 seconds there, across the limit, though the run
-  with the slowest timing passed. Open: (1) A yield between tests cannot split
-  one test that never yields. The wake-witness test is one loop over every
-  generated case. If it grows, split it into several tests, which needs its
-  registered mutations re-aimed by name. (2) Each nightly fuzz shard is one
-  test with a 600 second budget
-  (`packages/conformance/test/fuzz-shard-runner.ts`), so this yield cannot
-  help it. Eleven of the last twelve nightly runs passed and the twelfth
-  failed in TLA, so the failure has not been seen there. If it appears, yield
-  between seeds inside the shard's loop. (3) Not explained: three of PR #42's
-  last four runs hit the error and none of eleven other runs did, on a branch
-  whose one executed change finishes in the first ten seconds. The review
-  round is `postmortems/verify-event-loop-yield-review.md`.
+  whose event loop does not turn for 60 seconds produces exactly that error.
+  The libSQL client runs every statement as a blocking native call, and vitest
+  does not reach the timers phase between tests that never yield. The deadline
+  was already known here: `nightly.yml` splits the fuzz into batches to stay
+  under it. The conformance file was the case nobody had batched, and its
+  worker went 48.9 seconds without turning on a devserver. `makeLibsqlFixture`
+  now awaits one zero-delay timer, which every conformance test and every fuzz
+  walk passes through, and `fixture-libsql-yields.test.ts` holds that line
+  without measuring a duration. With it the conformance file's longest stretch
+  is 15.7 seconds, and a nightly-sized fuzz batch, which was one stretch of
+  43.6 seconds, has none of two seconds or more. Estimated, not measured: no
+  stall was timed on a CI runner. Vitest timed the libSQL wake-witness test at
+  16.2 to 22.3 seconds in five CI logs against 17.1 on the devserver, which
+  puts the old stretch between 46 and 64 seconds there, across the limit,
+  though the run with the slowest timing passed. The root `vitest.config.ts`
+  sets `testTimeout` and `hookTimeout` to 15 seconds and is type-checked
+  through `tsconfig.vitest.json`, because vitest loads a misspelled key in
+  silence. Open: (1) One test that never yields is still one stretch. The
+  wake-witness test is one loop over every generated case on one fixture, 15
+  to 22 seconds. If it grows, split it into several tests, which needs its
+  registered mutations re-aimed by name. (2) `verify:fuzz:deep` sets no
+  `FUZZ_BATCHES`, so each shard is one test of about 3,125 walks, some 830
+  seconds at the measured rate, past that test's own 600 second budget. It is
+  older than this entry and runs in no gate. (3) Not explained: three of PR
+  #42's last four runs hit the error and none of eleven other runs did, on a
+  branch whose one executed change finishes in the first ten seconds. The
+  review rounds are `postmortems/verify-event-loop-yield-review.md` and
+  `postmortems/verify-fixture-yield-review.md`.
 
 - **PR3.5 simplification sweep**: DONE. The findings recorded in
   SIMPLIFY-BACKLOG.md were re-audited against `main` at `06bba58`. Every finding
