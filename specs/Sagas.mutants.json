@@ -70,6 +70,13 @@
     "replace": "  /\\ IF FALSE\n"
   },
   {
+    "name": "start-hides-the-effect",
+    "guard": "a step that starts may have had its effect, so its rollback has something to compensate",
+    "caughtBy": "CompensatesAnEffect",
+    "find": "  /\\ fwd[s] = \"none\"\n  /\\ effect' = [effect EXCEPT ![s] = \"maybe\"]\n",
+    "replace": "  /\\ fwd[s] = \"none\"\n  /\\ UNCHANGED effect\n"
+  },
+  {
     "name": "start-reuses-an-index",
     "guard": "a start takes an index above every other",
     "caughtBy": "StartOrderDistinct",
@@ -204,7 +211,7 @@
   },
   {
     "name": "rollback-runs-twice",
-    "guard": "a rollback that is done is not pending",
+    "guard": "a rollback that is done is not pending. RollbackIsFinal reports first, because a done rollback left pending can still fail for good. Without it DecisionSettles holds the guard: the saga never finishes",
     "caughtBy": "RollbackIsFinal",
     "find": "Pending == {s \\in Eligible : rb[s] = \"none\"}",
     "replace": "Pending == {s \\in Eligible : rb[s] # \"failed\"}"
@@ -243,6 +250,13 @@
     "caughtBy": "OutcomeHonest",
     "find": "  /\\ Pending = {}\n",
     "replace": "  /\\ TRUE\n"
+  },
+  {
+    "name": "finish-saga-only-when-empty",
+    "guard": "a saga whose rollbacks are all done finishes",
+    "caughtBy": "DecisionSettles",
+    "find": "  /\\ Pending = {}\n  /\\ outcome' = \"complete\" /\\ task' = \"failed\"",
+    "replace": "  /\\ Eligible = {}\n  /\\ outcome' = \"complete\" /\\ task' = \"failed\""
   },
   {
     "name": "cancel-a-dead-task",
@@ -337,7 +351,7 @@
   },
   {
     "name": "revive-keeps-the-memo",
-    "guard": "a revival forgets every rolled-back step",
+    "guard": "a revival forgets every rolled-back step. StartOrderDistinct reports first, at the revival. Without it MemoMatchesEffect holds the guard: replay would skip a step whose effect is gone",
     "caughtBy": "StartOrderDistinct",
     "find": "          /\\ fwd' = [s \\in Steps |-> IF s \\in Eligible THEN \"none\" ELSE fwd[s]]\n",
     "replace": "          /\\ fwd' = fwd\n"
@@ -351,14 +365,14 @@
   },
   {
     "name": "revive-keeps-the-rollbacks",
-    "guard": "a new generation starts with no rollback done",
+    "guard": "a new generation starts with no rollback done. RollbackOnlyEligible reports first, at the revival. Without it DoneMeansCompensated holds the guard: the step runs again and its rollback already reads as done",
     "caughtBy": "RollbackOnlyEligible",
     "find": "          /\\ rb' = [s \\in Steps |-> \"none\"]\n",
     "replace": "          /\\ rb' = rb\n"
   },
   {
     "name": "revive-keeps-the-tries",
-    "guard": "a new generation starts with fresh rollback budgets",
+    "guard": "a new generation starts with fresh rollback budgets. Held by bookkeeping only: RollbackOnlyEligible, ReverseOrder, and SagaOnlyAfterDecision each see an attempt spent before any rollback is owed, and no soundness property speaks for it",
     "caughtBy": "RollbackOnlyEligible",
     "find": "          /\\ rbTries' = [s \\in Steps |-> 0]\n",
     "replace": "          /\\ rbTries' = rbTries\n"
