@@ -448,55 +448,6 @@ def behavioral_verdict_title_diagnostic(
 # (name, file, find, replace, what removing it should break)
 MUTATION_SPECS = [
     (
-        "followon-provenance-check",
-        "packages/core/src/fenced-batch.ts",
-        "      assertWritesStamp(at, bare, head, target, false)",
-        "      void 0 // MUTATION",
-        "a follow-on may write a fenced table without stamping it",
-    ),
-    (
-        "positive-fence-required",
-        "packages/core/src/fenced-batch.ts",
-        "function hasPositiveFence(sql: string): boolean {",
-        "function hasPositiveFence(sql: string): boolean {\n  if (sql) return true // MUTATION",
-        "a follow-on may run with no fence at all",
-    ),
-    (
-        "positive-fence-is-not",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!matchesWord(sql, i, 'NOT')) continue",
-        "    if (!matchesWord(sql, i, 'NOT') || /\\bIS\\s*$/i.test(sql.slice(0, i))) continue",
-        "a fence inside the right-hand side of IS NOT is mistaken for positive authority",
-    ),
-    (
-        "top-level-or-reach",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && s.open === undefined && hasTopLevelOr(bare)) {",
-        "    if (false && !isCas && s.open === undefined && hasTopLevelOr(bare)) {",
-        "a top-level OR lets a follow-on write rows that did not satisfy its fence",
-    ),
-    (
-        "clock-ban-in-followon",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
-        "    if (!isCas && (false || sql.includes(this.now))) { // MUTATION",
-        "a follow-on may resolve the clock token a second time",
-    ),
-    (
-        "clock-ban-raw-dialect-in-followon",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (sql.includes(NOW) || sql.includes(this.now))) {",
-        "    if (!isCas && (sql.includes(NOW) || false)) { // MUTATION",
-        "a follow-on may embed the dialect clock expression directly",
-    ),
-    (
-        "raw-fence-token-check",
-        "packages/core/src/fenced-batch.ts",
-        "      new RegExp(`\\\\$FENCE:(${FENCE_STATEMENT_NAME_SOURCE})\\\\$`, 'g'),",
-        "      new RegExp('(?!)', 'g'),",
-        "a hand-written fence token naming nothing compiles to a dead filter",
-    ),
-    (
         # Replaces the two per-call-site fence mutations. Those statements no
         # longer CONTAIN a fence a caller could remove — the primitive builds
         # the selection — so the mutation moves to the generator, where one
@@ -640,14 +591,6 @@ MUTATION_SPECS = [
         "      AND w.queue = ${run}.queue\n",
         "",
         "two wait rows, each disqualifying, combine into a wake",
-    ),
-    (
-        "event-upsert-requires-preserved-instant",
-        "packages/core/src/fenced-batch.ts",
-        "        !containsCompleteSet(conflictUpdate, required)",
-        "        !containsCompleteSet(conflictUpdate, required) &&\n"
-        "        !containsCompleteSet(conflictUpdate, FENCE_SET)",
-        "the event upsert primitive accepts the current statement instant",
     ),
     (
         # The tree path's own mutations. Each removes one condition of a rule that reads a
@@ -931,15 +874,22 @@ MUTATION_SPECS = [
     (
         "tree-followon-insert-no-aggregate",
         "packages/core/src/sql-tree.ts",
-        "        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),",
-        "        someNode(selection, (node) => FunctionNode.is(node)),",
+        "          (node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),",
+        "          (node) => RawNode.is(node) || FunctionNode.is(node),",
         "an aggregate lets a follow-on insert write a row its fence did not match",
+    ),
+    (
+        "tree-followon-insert-no-fragment",
+        "packages/core/src/sql-tree.ts",
+        "          (node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),",
+        "          (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node),",
+        "a fragment in a follow-on insert's SELECT list may spell a call no rule reads, and the insert writes a row its fence did not match",
     ),
     (
         "tree-followon-insert-no-function",
         "packages/core/src/sql-tree.ts",
-        "        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),",
-        "        someNode(selection, (node) => AggregateFunctionNode.is(node)),",
+        "          (node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),",
+        "          (node) => RawNode.is(node) || AggregateFunctionNode.is(node),",
         "a function call lets a follow-on insert write a row its fence did not match",
     ),
     (
@@ -1123,13 +1073,6 @@ MUTATION_SPECS = [
         "a fragment's read of the incoming row is refused as a read of the written row",
     ),
     (
-        "tree-clock-ban-token-in-followon",
-        "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && spelledClock) {",
-        "a tree follow-on may resolve the clock token a second time",
-    ),
-    (
         "tree-clock-spelling-in-fragment",
         "packages/core/src/fenced-batch.ts",
         "      CLOCK_SPELLING.test(isCas ? text.split(this.now).join(' ') : text),",
@@ -1226,9 +1169,9 @@ MUTATION_SPECS = [
         # showed no mutation touched. A spelling list has one entry for each spelling.
         "tree-clock-text-in-followon",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && (spelledClock || compiled.readsClock)) {",
-        "a tree follow-on may carry the batch clock's own text in a fragment",
+        "    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && spelledClock) {",
+        "a tree follow-on may carry the batch clock, as the clock token or as its own text in a fragment",
     ),
     (
         "tree-gate-inner-tie-carried",
@@ -2106,15 +2049,6 @@ MUTATION_SPECS = [
         "a transaction lock may be followed by a statement that is not the compare-and-set it protects",
     ),
     (
-        "tree-needs-a-dialect",
-        "packages/core/src/fenced-batch.ts",
-        "    if (dialect === null) {\n"
-        "      throw new Error(`${at} is a tree statement, but the batch has no tree dialect`)\n"
-        "    }\n",
-        "",
-        "a batch without a tree dialect fails on a null read and no longer says why",
-    ),
-    (
         "tree-followon-insert-selects",
         "packages/core/src/fenced-batch.ts",
         "      if (!following.selects) {",
@@ -2131,8 +2065,8 @@ MUTATION_SPECS = [
     (
         "tree-followon-spelled-clock-message",
         "packages/core/src/fenced-batch.ts",
-        "    if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {",
-        "    if (!isCas && (compiled.readsClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {",
+        "    if (!isCas && compiled.sql.includes(this.now)) {",
         "a follow-on's spelled-out clock is refused as a second clock, not as a follow-on reading the clock",
     ),
     (
@@ -2319,38 +2253,6 @@ MUTATION_SPECS = [
         "    weakSetHas(bindCompilationErrors, value)\n",
         "    false // MUTATION: ignore the private compiler-error brand\n",
         "the compiler-error predicate stops reading its private brand",
-    ),
-    (
-        "testing-helper-bind-count-missing-argument",
-        "packages/core/src/fenced-batch.ts",
-        "    if (argIndex !== s.args.length) {",
-        "    if (argIndex < s.args.length) {",
-        "a statement with more placeholders than explicit args bypasses the compiler bind-count check",
-    ),
-    (
-        "testing-helper-bind-count-unused-argument",
-        "packages/core/src/fenced-batch.ts",
-        "    if (argIndex !== s.args.length) {",
-        "    if (argIndex > s.args.length) {",
-        "a statement with fewer placeholders than explicit args bypasses the compiler bind-count check",
-    ),
-    (
-        "testing-helper-bind-count-factory",
-        "packages/core/src/fenced-batch.ts",
-        "      throw bindCompilationError(\n"
-        "        `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,\n",
-        "      throw new TrustedTypeError(\n"
-        "        `FencedBatch[${this.label}] '${s.name}' binds ${argIndex} of ${s.args.length} explicit args`,\n",
-        "the bind-count failure bypasses the authenticated compiler-error factory",
-    ),
-    (
-        "testing-helper-bind-undefined-brand",
-        "packages/core/src/fenced-batch.ts",
-        "          throw bindCompilationError(\n"
-        "            `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,\n",
-        "          throw new TrustedTypeError(\n"
-        "            `FencedBatch[${this.label}] '${s.name}' argument ${index} is undefined — bind null explicitly if that is what you mean`,\n",
-        "the explicit-undefined bind failure bypasses the authenticated compiler-error factory",
     ),
     (
         "testing-helper-bind-error-constructor",
@@ -4379,7 +4281,26 @@ def exact_epoch_ceiling_replacement(
         )
     if anchor.count(expression) != 1:
         raise ValueError("exact-ceiling anchor must own one persisted expression")
+    if expression == NODE_BUILT_DEADLINE:
+        # The same cap built from nodes, as a CASE, because a follow-on insert may select
+        # no call. The ceiling is MAX_EPOCH_MS written out, since the statement does not
+        # import it. If the ceiling moves down, this mutant survives and the audit says so.
+        # If it moves up, the mutant is still caught while no longer capping at the ceiling,
+        # so this literal moves with MAX_EPOCH_MS.
+        ceiling = "253_402_300_799_000"
+        capped = (
+            f"eb.case().when({expression}, '>=', {ceiling})"
+            f".then({ceiling} - 1).else({expression}).end()"
+        )
     return anchor.replace(expression, capped, 1)
+
+
+# Both failure successors take their deadline from one node expression in the shared
+# statement. Their exact mutations cap that expression, so the two share one find, and
+# each is caught through its own store path.
+NODE_BUILT_DEADLINE_FILE = "packages/core/src/statements/successor.ts"
+NODE_BUILT_DEADLINE = "eb('f.fence_at_ms', '+', binds.delayMs)"
+NODE_BUILT_DEADLINE_LINE = f"    availableAt: {NODE_BUILT_DEADLINE},\n"
 
 
 TIMESTAMP_ADDITION_CASES = (
@@ -4447,8 +4368,8 @@ TIMESTAMP_ADDITION_CASES = (
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
         "epochAdditionFits(NOW, infraDelayMs)",
-        "        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),\n",
-        "f.fence_at_ms + ${infraDelayMs}",
+        NODE_BUILT_DEADLINE_LINE,
+        NODE_BUILT_DEADLINE,
     ),
     (
         "driver-heartbeat",
@@ -4489,8 +4410,8 @@ TIMESTAMP_ADDITION_CASES = (
         "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\n"
         "          OR ${epochAdditionFits(NOW, '?')})`",
         "epochAdditionFits(NOW, '?')",
-        "          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),\n",
-        "f.fence_at_ms + ?",
+        NODE_BUILT_DEADLINE_LINE,
+        NODE_BUILT_DEADLINE,
     ),
     (
         "checkpoint-lease",
@@ -4613,7 +4534,9 @@ for slug, title, guard_anchor, guard_call, exact_find, exact_expression in (
             ),
             (
                 f"timestamp-addition-{slug}-exact",
-                "packages/store-libsql/src/store.ts",
+                NODE_BUILT_DEADLINE_FILE
+                if exact_expression == NODE_BUILT_DEADLINE
+                else "packages/store-libsql/src/store.ts",
                 exact_find,
                 exact_replace,
                 f"{title} persists an off-by-one result at the exact epoch ceiling",
@@ -6417,48 +6340,6 @@ MUTATION_SPECS.extend(
 )
 
 VERDICTS = {
-    "followon-provenance-check": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a CAS must write its own provenance rejects every follow-on write that omits complete provenance",
-        "mutation-verdict:construction:followon-provenance-check",
-    ),
-    "positive-fence-required": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects every non-authoritative fence spelling",
-        "mutation-verdict:construction:positive-fence-required",
-    ),
-    "positive-fence-is-not": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects every non-authoritative fence spelling",
-        "mutation-verdict:construction:positive-fence-is-not",
-    ),
-    "top-level-or-reach": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a follow-on must filter on a fence, positively, in the WHERE side rejects a top-level OR but accepts alternation inside a fenced conjunct",
-        "mutation-verdict:construction:top-level-or-reach",
-    ),
-    "clock-ban-in-followon": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "only a CAS may read the clock rejects token and raw dialect clock reads in every downstream position",
-        "mutation-verdict:construction:clock-ban-in-followon",
-    ),
-    "clock-ban-raw-dialect-in-followon": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "only a CAS may read the clock rejects token and raw dialect clock reads in every downstream position",
-        "mutation-verdict:construction:clock-ban-raw-dialect-in-followon",
-    ),
-    "raw-fence-token-check": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "fence() names a statement, and the primitive supplies the value applies the same rules to a fence token written by hand",
-        "mutation-verdict:construction:raw-fence-token-check",
-    ),
     "tree-cas-writes-fenced-table": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -6687,6 +6568,12 @@ VERDICTS = {
         "the tree path a follow-on that inserts selects no aggregate node",
         "mutation-verdict:construction:tree-followon-insert-no-aggregate",
     ),
+    "tree-followon-insert-no-fragment": ExpectedVerdict(
+        "construction",
+        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
+        "the tree path a follow-on that inserts selects no fragment",
+        "mutation-verdict:construction:tree-followon-insert-no-fragment",
+    ),
     "tree-followon-insert-no-function": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -6843,12 +6730,6 @@ VERDICTS = {
         "the tree path counting assignments reads excluded as the incoming row when it is spelled in a fragment",
         "mutation-verdict:construction:tree-counting-excluded-in-fragment",
     ),
-    "tree-clock-ban-token-in-followon": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
-        "the tree path the clock refuses the clock token in a follow-on",
-        "mutation-verdict:construction:tree-clock-ban-token-in-followon",
-    ),
     "tree-clock-spelling-in-fragment": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -6924,7 +6805,7 @@ VERDICTS = {
     "tree-clock-text-in-followon": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
-        "the tree path the clock refuses the text of the batch clock in a follow-on fragment",
+        "the tree path the clock refuses the batch clock in a follow-on, as the token and as its own text",
         "mutation-verdict:construction:tree-clock-text-in-followon",
     ),
     "tree-gate-inner-tie-carried": ExpectedVerdict(
@@ -7635,12 +7516,6 @@ VERDICTS = {
         "the tree path the statement, its fragments, and its binds refuses a statement that is not a compare-and-set after a lock",
         "mutation-verdict:construction:tree-lock-precedes-a-cas",
     ),
-    "tree-needs-a-dialect": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch-tree-verdicts.test.ts",
-        "the tree path the statement, its fragments, and its binds says a batch without a tree dialect has none",
-        "mutation-verdict:construction:tree-needs-a-dialect",
-    ),
     "tree-followon-insert-selects": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -7834,12 +7709,6 @@ VERDICTS = {
         "mutation-verdict:behavior:emit-wake-one-witness",
         "packages/conformance/src/suite.ts",
     ),
-    "event-upsert-requires-preserved-instant": ExpectedVerdict(
-        "construction",
-        "packages/core/test/fenced-batch.test.ts",
-        "a CAS must write its own provenance rejects an event upsert that re-stamps at the current statement instant",
-        "mutation-verdict:construction:event-upsert-requires-preserved-instant",
-    ),
     "emit-index-driver": ExpectedVerdict(
         "behavior",
         "packages/store-libsql/test/query-plans.test.ts",
@@ -7899,30 +7768,6 @@ VERDICTS = {
         "mutation-verdict:construction:testing-helper-bind-brand-read",
     ),
     "testing-helper-bind-brand-read": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-count-missing-argument": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-count-unused-argument": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-count-factory": ExpectedVerdict(
-        "construction",
-        "packages/core/test/testing.test.ts",
-        "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
-        "mutation-verdict:construction:testing-helper-bind-brand-read",
-    ),
-    "testing-helper-bind-undefined-brand": ExpectedVerdict(
         "construction",
         "packages/core/test/testing.test.ts",
         "mutation verdict promise helpers authenticates both compiler bind producers before every caller matcher",
@@ -10233,7 +10078,6 @@ QUESTION_TOKEN_DELTA_REASONS = {
     "poison-targeted-settlement-owner": (
         "replacement removes a TypeScript conditional token, not a SQL bind"
     ),
-    "raw-fence-token-check": "replacement adds a RegExp negative-lookahead token, not a SQL bind",
     "generated-selection-fence": (
         "replacement adds a TypeScript conditional around a label-scoped SQL mutation"
     ),
@@ -11729,16 +11573,15 @@ def verdict_inventory_problems(
 
 
 # Where the rules that read a statement tree live. A region runs from its first anchor to
-# its second, and `None` is a whole file. Part 3b moves these rules, and moves the anchors
-# with them.
+# its second, and `None` is a whole file. An anchor moves with the rule it bounds.
 TREE_RULE_REGIONS: dict[str, tuple[tuple[str | None, str | None], ...]] = {
     "packages/core/src/sql-tree.ts": ((None, None),),
     "packages/core/src/fenced-batch.ts": (
         (
             "  private requireFenceSource(",
-            "  /**\n   * A statement that runs meaningfully only when a CAS of this batch won.",
+            "  /**\n   * A follow-on whose row set is GENERATED from the fence.",
         ),
-        ("  /** `cas`, built as a tree.", "  private add(s: {"),
+        ("  casTree(name: string, statement: DefinedStatement): this {", "  async run(db: SqlExecutor"),
     ),
 }
 # A spelling list is a rule for each entry, so every line of one needs a mutation.
@@ -11912,8 +11755,8 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "fence: stamps ? { target: stamped, sealedBy: null } : null,": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
         ),
-        "if (!isCas && (spelledClock || compiled.readsClock || compiled.sql.includes(this.now))) {": (
-            "changes nothing a statement can show: `compiled.readsClock` is subsumed: the clock token compiles to the batch clock's text, which the comparison beside it finds, and deleting readsClock alone fails no test of 490"
+        "if (!isCas && (spelledClock || compiled.sql.includes(this.now))) {": (
+            "fails closed: with `!isCas` gone every compare-and-set that reads the clock is refused, and 226 of the 472 core tests fail"
         ),
         "if (!isCas) {": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 49 at the fewest"
@@ -13913,7 +13756,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 678:
+        if len(MUTATIONS) != 665:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

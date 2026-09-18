@@ -1,7 +1,6 @@
 import { sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
-  FencedBatch,
   aliasedAs,
   treeBuilder as db,
   fenceValue,
@@ -12,7 +11,6 @@ import {
   stampValue,
 } from '../src/index.js'
 import {
-  CLOCK,
   type Loose,
   accepts,
   batch,
@@ -688,6 +686,13 @@ describe('the tree path', () => {
       )
     })
 
+    it('selects no fragment', () => {
+      // The nearest shape only this operand refuses: a plain column, written as text.
+      refuses('mutation-verdict:construction:tree-followon-insert-no-fragment', PLAIN, () =>
+        followOn(successor({ task: () => value<string>('f.task_id') })),
+      )
+    })
+
     it('selects from the fenced row alone', () => {
       expect(() => followOn(successor({ from: joined }))).not.toThrow()
       refuses('mutation-verdict:construction:tree-followon-insert-alone', ALONE, () =>
@@ -1010,14 +1015,6 @@ describe('the tree path', () => {
   })
 
   describe('the clock', () => {
-    it('refuses the clock token in a follow-on', () => {
-      refuses(
-        'mutation-verdict:construction:tree-clock-ban-token-in-followon',
-        /reads the clock/,
-        () => followOn(taskFollowOn().set({ first_started_at_ms: nowValue })),
-      )
-    })
-
     it('refuses a clock spelled in a fragment', () => {
       refuses(
         'mutation-verdict:construction:tree-clock-spelling-in-fragment',
@@ -1057,21 +1054,26 @@ describe('the tree path', () => {
       )
     })
 
-    it('refuses the text of the batch clock in a follow-on fragment', () => {
-      // A clock no spelling list names, so only the comparison with the batch's own text sees it.
+    it('refuses the batch clock in a follow-on, as the token and as its own text', () => {
+      // The token compiles to the batch clock's text, so one comparison holds both shapes.
+      // The clock is one no spelling list names, so nothing else sees its text.
       const clock = '(SELECT 7)'
-      const started = (text: string) =>
+      const started = (assigned: typeof nowValue) =>
         batchWithClock(clock)
           .casTree('win', statement(winCas()))
           .followOnTree(
             'task',
-            statement(taskFollowOn().set({ first_started_at_ms: value<number>(text) })),
+            statement(taskFollowOn().set({ first_started_at_ms: assigned })),
             'one',
           )
-      expect(() => started('(SELECT 8)')).not.toThrow()
-      refuses('mutation-verdict:construction:tree-clock-text-in-followon', /reads the clock/, () =>
-        started(clock),
-      )
+      expect(() => started(value<number>('(SELECT 8)'))).not.toThrow()
+      for (const assigned of [nowValue, value<number>(clock)]) {
+        refuses(
+          'mutation-verdict:construction:tree-clock-text-in-followon',
+          /reads the clock/,
+          () => started(assigned),
+        )
+      }
     })
 
     it('says a follow-on that spells a clock reads the clock', () => {
@@ -1189,15 +1191,6 @@ describe('the tree path', () => {
         /a raw fragment that rawSql did not mint/,
         /fragment standing as a/,
         () => followOn(unmintedPredicate()),
-      )
-    })
-
-    it('says a batch without a tree dialect has none', () => {
-      refusesAs(
-        'mutation-verdict:construction:tree-needs-a-dialect',
-        /the batch has no tree dialect/,
-        /Cannot read properties of null/,
-        () => new FencedBatch('b', 'seed', { now: CLOCK }).casTree('win', statement(winCas())),
       )
     })
 

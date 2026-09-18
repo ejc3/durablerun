@@ -1,8 +1,12 @@
-import { type ExpressionBuilder, SelectModifierNode, SelectQueryNode, sql } from 'kysely'
+import {
+  type ExpressionBuilder,
+  SelectModifierNode,
+  SelectQueryNode,
+  expressionBuilder,
+  sql,
+} from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
-  FENCE_SET,
-  FencedBatch,
   type SqlFragment,
   type SqlStatement,
   type StoreTables,
@@ -55,6 +59,8 @@ import {
   winCas,
   withCas,
 } from './tree-fixtures.js'
+
+const PLAIN = /must select plain columns and values/
 
 /**
  * Each tree check paired: a shape it must refuse, and the nearest legitimate shape it
@@ -372,10 +378,7 @@ describe('FencedBatch tree statements', () => {
   })
 
   describe('generated follow-ons are trees', () => {
-    const generated = () =>
-      batch().cas('win', 'runs', `UPDATE runs SET state = 'x', ${FENCE_SET} WHERE run_id = ?`, [
-        'r',
-      ])
+    const generated = () => withCas()
     const mirror = (set: Record<string, unknown>, setArgs: SqlStatement['args'] = []) =>
       generated().derived('mirror', {
         relation: 'runs-to-tasks',
@@ -805,16 +808,14 @@ describe('FencedBatch tree statements', () => {
     let thrown: unknown
     try {
       ;(globalThis as { Set: unknown }).Set = PoisonedSet
-      batch()
-        .cas('win', 'runs', `UPDATE runs SET state = 'x', ${FENCE_SET} WHERE run_id = ?`, ['r'])
-        .derived('task', {
-          relation: 'runs-to-tasks',
-          fence: 'win',
-          where: 'f.run_id = ?',
-          whereArgs: ['r'],
-          set: { state: `'completed'` },
-          rows: 'one',
-        })
+      withCas().derived('task', {
+        relation: 'runs-to-tasks',
+        fence: 'win',
+        where: 'f.run_id = ?',
+        whereArgs: ['r'],
+        set: { state: `'completed'` },
+        rows: 'one',
+      })
     } catch (error) {
       thrown = error
     } finally {
@@ -1236,7 +1237,13 @@ describe('FencedBatch tree statements', () => {
     it('stamps the inserted row, and takes its instant from the fenced row and nowhere else', () => {
       const instant = /fence_at_ms as the fenced row's own fence_at_ms/
       refused(successor({ stamp: fenceValue('win') }), /must insert fence_stamp as the stamp/)
-      refused(successor({ stamp: sql.lit('s') }), /must insert fence_stamp as the stamp/)
+      // A literal is a fragment, which the plain-selection rule refuses first. A bound
+      // value is what the stamp rule itself refuses.
+      refused(successor({ stamp: sql.lit('s') }), PLAIN)
+      refused(
+        successor({ stamp: expressionBuilder<never, never>().val('s') }),
+        /must insert fence_stamp as the stamp/,
+      )
       // Not a bind, and not another column of the fenced row.
       refused(successor({ instant: (eb) => eb.val(5) }), instant)
       refused(successor({ instant: (eb) => eb.ref('f.available_at_ms') }), instant)
@@ -1300,15 +1307,31 @@ describe('FencedBatch tree statements', () => {
     })
 
     it('selects plain columns and values, so no row appears that the fence did not match', () => {
-      const plain = /must select plain columns and values/
-      refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
-      refused(successor({ task: (eb) => eb.fn.coalesce('f.task_id', eb.val('t0')) }), plain)
+      refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), PLAIN)
+      refused(successor({ task: (eb) => eb.fn.coalesce('f.task_id', eb.val('t0')) }), PLAIN)
       refused(
         successor({
           from: (select) => select.having((eb: Loose) => eb(eb.fn.countAll(), '>=', 0)),
         }),
-        plain,
+        PLAIN,
       )
+    })
+
+    it('refuses a fragment in its SELECT list, whatever the text holds', () => {
+      const taskFrom = (text: string, args: SqlFragment['args'] = []) =>
+        successor({ task: () => value<string>(text, args) })
+      // Text can spell a call in more ways than a reader of text closes, so none is read.
+      refused(taskFrom('max(f.task_id)'), PLAIN)
+      refused(taskFrom('MAX (f.task_id)'), PLAIN)
+      refused(taskFrom('"max"(f.task_id)'), PLAIN)
+      refused(taskFrom('coalesce(f.task_id, ?)', ['t']), PLAIN)
+      refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), PLAIN)
+      // A qualified name is a call too: PostgreSQL resolves pg_catalog.max to the aggregate.
+      refused(taskFrom('pg_catalog.max(f.task_id)'), PLAIN)
+      // The cost is a false refusal: a plain column written as text adds no row. A
+      // follow-on insert builds its values from nodes, or its caller binds them.
+      refused(taskFrom('f.task_id'), PLAIN)
+      expect(() => followOn(successor())).not.toThrow()
     })
 
     it('reads each value by position, so a star is refused', () => {
@@ -1448,20 +1471,6 @@ describe('FencedBatch tree statements', () => {
         expect(() =>
           withCas().openTailTree('read', 'a reason', statement(misplaced('and'))),
         ).toThrow(/which never matches/)
-      })
-
-      it('accepts an aggregate spelled inside a value fragment, which the plain-selection rule cannot read', () => {
-        // A reader of the fragment's text for a call was built and taken back. Two
-        // registered mutations write SQLite's two-argument scalar MIN into the successor
-        // deadline, the one value fragment a shipped follow-on insert passes, and text
-        // cannot tell that scalar from the one-argument aggregate: not by name, and not by
-        // arity, since an aggregate may take two arguments too. What closes this is
-        // building that deadline from nodes, so no value fragment is left to read.
-        const plain = /must select plain columns and values/
-        refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
-        expect(() =>
-          followOn(successor({ task: () => value<string>('max(f.task_id)') })),
-        ).not.toThrow()
       })
     })
 
@@ -1768,11 +1777,6 @@ describe('FencedBatch tree statements', () => {
     expect(sent[2]).toContain(
       'do update set "fence_stamp" = ?, "fence_at_ms" = "events"."emitted_at_ms" where "events"."fence_stamp" is distinct from ? and (events.payload IS NOT NULL)',
     )
-  })
-
-  it('refuses a tree statement in a batch without a tree dialect', () => {
-    const textOnly = new FencedBatch('b', 'seed', { now: CLOCK })
-    expect(() => withCas(textOnly)).toThrow(/has no tree dialect/)
   })
 
   it('refuses a tail that is not a SELECT, and allows a fenced SELECT', () => {

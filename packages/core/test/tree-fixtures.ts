@@ -36,8 +36,8 @@ export function batchWithClock(now: string): FencedBatch {
   return new FencedBatch('b', 'seed', { now, tree: dialect })
 }
 
-export function batch(): FencedBatch {
-  return new FencedBatch('b', 'seed', { now: CLOCK, tree: dialect })
+export function batch(label = 'b'): FencedBatch {
+  return new FencedBatch(label, 'seed', { now: CLOCK, tree: dialect })
 }
 
 /** An executor that records what it was sent and reports `rowsAffected` for each statement. */

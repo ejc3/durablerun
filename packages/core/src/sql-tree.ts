@@ -330,6 +330,11 @@ const FRAGMENT_TOKEN = new RegExp(
   'g',
 )
 
+/** A fragment's text outside its string literals, with each literal left as `''`. */
+export function fragmentOutsideLiterals(sql: string): string {
+  return readFragment(sql).outside
+}
+
 /** How many arguments a fragment's text binds: its `?` outside string literals. */
 export function fragmentBinds(sql: string): number {
   return readFragment(sql).outside.split('?').length - 1
@@ -460,22 +465,18 @@ export interface CompiledTree {
   readonly placeholders: number
   /** Every fence the statement names, wherever it appears. */
   readonly fences: readonly string[]
-  /** Whether the clock token appears anywhere in the statement. */
-  readonly readsClock: boolean
 }
 
 class TokenBinder extends OperationNodeTransformer {
   #bindings: TokenBindings | null = null
   #fences: string[] = []
-  #readsClock = false
 
   bind(tree: StatementTree, bindings: TokenBindings) {
     this.#bindings = bindings
     this.#fences = []
-    this.#readsClock = false
     try {
       const bound = this.transformNode(tree)
-      return { bound, fences: this.#fences, readsClock: this.#readsClock }
+      return { bound, fences: this.#fences }
     } finally {
       this.#bindings = null
     }
@@ -486,7 +487,6 @@ class TokenBinder extends OperationNodeTransformer {
     const bindings = this.#bindings
     if (token === null || bindings === null) return super.transformNode(node, queryId)
     if (token.kind === 'now') {
-      this.#readsClock = true
       return RawNode.createWithSql(bindings.now) as unknown as T
     }
     if (token.kind === 'stamp') return ValueNode.create(bindings.stamp) as unknown as T
@@ -506,14 +506,13 @@ export class TreeDialect {
 
   /** Bind every engine token and compile, in one walk of the tree. */
   compile(tree: StatementTree, bindings: TokenBindings): CompiledTree {
-    const { bound, fences, readsClock } = this.#binder.bind(tree, bindings)
+    const { bound, fences } = this.#binder.bind(tree, bindings)
     const compiled = this.compiler.compileQuery(bound, createQueryId())
     return {
       sql: compiled.sql,
       parameters: compiled.parameters,
       placeholders: compiled.sql.split('?').length - 1,
       fences,
-      readsClock,
     }
   }
 }
@@ -818,8 +817,8 @@ function assignedUpdates(query: OperationNode): readonly ColumnUpdateNode[] {
  * cannot see what text does with a value, so any read of the assigned row counts: an
  * unqualified mention, or one qualified by the table being written, whatever wraps it.
  * A mention under another qualifier is another row, read through a subquery, and a copy
- * of it is fine. Arithmetic on it is refused all the same, as the text path refused
- * `x = t.x + 1` by name: `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are one write.
+ * of it is fine. Arithmetic on it is refused all the same, such as `x = t.x + 1`:
+ * `t.x + 1`, `1 + t.x`, and `(t.x + 1)` are one write.
  */
 function mentions(text: string, column: string, table: string | null): boolean {
   const name = String.raw`"?${column}"?(?!\w)`
@@ -1225,8 +1224,9 @@ function insertedValue(insert: InsertQueryNode, name: string): OperationNode | u
  * compares with a fence. `fencedInstants` names every inserted column that takes exactly
  * that, so a preserved first instant can be held to it as well. `plain` is false when the
  * SELECT could return a row its WHERE did not match, which an insert would then write
- * with no gate: an aggregate or a function call in its list, built from nodes, or a
- * HAVING. A call spelled inside a value fragment is outside what this can read. This is asked here, of the statement's own
+ * with no gate: an aggregate, a function call, or a fragment in its list, or a HAVING. A
+ * fragment is refused whatever it holds: text can spell a call in more ways than a reader
+ * of text closes, and no shipped follow-on insert selects one. This is asked here, of the statement's own
  * SELECT, and does not lean on what `gatingFences` decides about aggregates. `alone` is
  * false when the SELECT could return more rows than the fenced ones: a second FROM item,
  * a FROM item that is not the source the fence is compared on, or a join with no ON. A
@@ -1279,7 +1279,10 @@ export function followOnInsertProvenance(tree: OperationNode): {
       select !== null &&
       select.having === undefined &&
       !(select.selections ?? []).some((selection) =>
-        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),
+        someNode(
+          selection,
+          (node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),
+        ),
       ),
     // With no fence compared at all, the gate rule and the instant rule speak for it.
     alone:

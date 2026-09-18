@@ -214,4 +214,9 @@ export type DerivedWritableColumn<T extends FenceTable> =
 export const PRESERVED_FENCE_INSTANTS = {
   events: 'emitted_at_ms',
 } as const satisfies Partial<Record<FenceTable, string>>
+/**
+ * The tables `PRESERVED_FENCE_INSTANTS` is keyed by. Nothing in this repository names it
+ * since the text path went. It stays because both names are published, and a consumer
+ * that indexes the constant by table names its key with this.
+ */
 export type PreservedFenceTable = keyof typeof PRESERVED_FENCE_INSTANTS

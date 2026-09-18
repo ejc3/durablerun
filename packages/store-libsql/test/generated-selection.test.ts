@@ -1,4 +1,10 @@
-import { FENCE_SET, FencedBatch, type SqlExecutor } from '@durablerun/core'
+import {
+  FENCE_ASSIGNMENTS,
+  FencedBatch,
+  type SqlExecutor,
+  defineStatement,
+  treeBuilder,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { LibsqlExecutor } from '../src/index.js'
 import { openTestDb } from '../src/testing.js'
@@ -6,6 +12,20 @@ import { NOW_MS } from '../src/time.js'
 import { TREE_DIALECT } from '../src/tree.js'
 
 const NOW = 1_000_000
+
+/** The compare-and-set every batch here opens with: it stamps one run, from one state if given. */
+function stampRun(runId: string, state?: string, from?: string) {
+  return defineStatement('stamp-run', () => {
+    const update = treeBuilder
+      .updateTable('runs')
+      .set({
+        ...(state === undefined ? {} : { state }),
+        ...FENCE_ASSIGNMENTS,
+      })
+      .where('run_id', '=', runId)
+    return from === undefined ? update : update.where('state', '=', from)
+  })({})
+}
 
 /**
  * `derived()` exists so that no caller writes the clause that decides which
@@ -61,9 +81,7 @@ async function stateOf(raw: LibsqlExecutor, taskId: string): Promise<string> {
  */
 async function spread(raw: LibsqlExecutor, label = 'probe'): Promise<void> {
   const b = new FencedBatch(label, 'seed', { now: NOW_MS, tree: TREE_DIALECT })
-  b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
-    'run-stamped',
-  ])
+  b.casTree('win', stampRun('run-stamped', 'running'))
   b.derived('spread', {
     relation: 'runs-to-tasks',
     fence: 'win',
@@ -120,9 +138,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     await insert(f.raw, 'untouched', 'run-untouched', 'a')
 
     const b = new FencedBatch('narrow', 'narrow-seed', { now: NOW_MS, tree: TREE_DIALECT })
-    b.cas('win', 'runs', `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`, [
-      'run-stamped',
-    ])
+    b.casTree('win', stampRun('run-stamped', 'running'))
     b.derived('spread', {
       relation: 'runs-to-tasks',
       fence: 'win',
@@ -152,12 +168,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    matching.cas(
-      'win',
-      'runs',
-      `UPDATE runs SET state = 'running', ${FENCE_SET} WHERE run_id = ?`,
-      ['run-stamped'],
-    )
+    matching.casTree('win', stampRun('run-stamped', 'running'))
     matching.derived('spread', {
       relation: 'runs-to-tasks',
       fence: 'win',
@@ -236,7 +247,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     )
 
     const b = new FencedBatch('delete-waits', 'bound', { now: NOW_MS, tree: TREE_DIALECT })
-    b.cas('win', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, ['run'])
+    b.casTree('win', stampRun('run'))
     b.derived('waits', {
       relation: 'runs-to-waits',
       fence: 'win',
@@ -266,13 +277,7 @@ describe('a generated selection restricts to rows this batch stamped', () => {
     }
 
     const b = new FencedBatch('replayed', 'same-seed', { now: NOW_MS, tree: TREE_DIALECT })
-    b.cas(
-      'win',
-      'runs',
-      `UPDATE runs SET state = 'sleeping', ${FENCE_SET}
-       WHERE run_id = ? AND state = 'running'`,
-      ['run'],
-    )
+    b.casTree('win', stampRun('run', 'sleeping', 'running'))
     b.derived('task', {
       relation: 'runs-to-tasks',
       fence: 'win',

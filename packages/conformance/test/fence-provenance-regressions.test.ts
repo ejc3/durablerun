@@ -1,5 +1,5 @@
 import {
-  FENCE_SET,
+  FENCE_ASSIGNMENTS,
   FencedBatch,
   INFRA_RETRY_CAP,
   LeaseLostError,
@@ -7,6 +7,8 @@ import {
   REASON_CLAIM_TIMEOUT,
   RELAUNCH_CAP,
   type SqlExecutor,
+  compileOnlyBuilder,
+  defineStatement,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import {
@@ -18,6 +20,17 @@ import {
 import { openTestDb } from '@durablerun/store-libsql/testing'
 import { describe, expect, it } from 'vitest'
 import { engineInvariantViolations } from '../src/invariants.js'
+
+const stampBuilder = compileOnlyBuilder<Record<string, Record<string, unknown>>>()
+
+/** A compare-and-set that stamps the rows of `table` matching every column given. */
+function stampRows(table: 'runs' | 'tasks' | 'waits', match: Record<string, string>) {
+  return defineStatement(`stamp-${table}`, () => {
+    let update = stampBuilder.updateTable(table).set(FENCE_ASSIGNMENTS)
+    for (const [column, value] of Object.entries(match)) update = update.where(column, '=', value)
+    return update
+  })({})
+}
 
 /**
  * Provenance regressions: a batch statement firing without proof that THIS
@@ -1214,9 +1227,7 @@ describe('fence provenance', () => {
         now: NOW_MS,
         tree: TREE_DIALECT,
       })
-      runsToTasks.cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
-        'runs-to-tasks-source',
-      ])
+      runsToTasks.casTree('source', stampRows('runs', { run_id: 'runs-to-tasks-source' }))
       runsToTasks.derived('target', {
         relation: 'runs-to-tasks',
         fence: 'source',
@@ -1236,9 +1247,7 @@ describe('fence provenance', () => {
         now: NOW_MS,
         tree: TREE_DIALECT,
       })
-      tasksToRuns.cas('source', 'tasks', `UPDATE tasks SET ${FENCE_SET} WHERE task_id = ?`, [
-        'tasks-to-runs',
-      ])
+      tasksToRuns.casTree('source', stampRows('tasks', { task_id: 'tasks-to-runs' }))
       tasksToRuns.derived('target', {
         relation: 'tasks-to-runs',
         fence: 'source',
@@ -1265,11 +1274,9 @@ describe('fence provenance', () => {
         now: NOW_MS,
         tree: TREE_DIALECT,
       })
-      waitsToRuns.cas(
+      waitsToRuns.casTree(
         'source',
-        'waits',
-        `UPDATE waits SET ${FENCE_SET} WHERE run_id = ? AND step_name = 'step'`,
-        ['waits-to-runs-target'],
+        stampRows('waits', { run_id: 'waits-to-runs-target', step_name: 'step' }),
       )
       waitsToRuns.derived('target', {
         relation: 'waits-to-runs',
@@ -1320,9 +1327,7 @@ describe('fence provenance', () => {
         now: NOW_MS,
         tree: TREE_DIALECT,
       })
-      runsToWaits.cas('source', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, [
-        'runs-to-waits-source',
-      ])
+      runsToWaits.casTree('source', stampRows('runs', { run_id: 'runs-to-waits-source' }))
       runsToWaits.derived('target', {
         relation: 'runs-to-waits',
         fence: 'source',

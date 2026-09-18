@@ -52,7 +52,10 @@ implements the finished surface once.
    the coordinator's failure message, and an aborted audit's teardown either
    reaps every worker group or reports a measured reason it cannot.
 3. Every store batch's SQL is built as a tree and checked as a tree, per
-   PR3.9, and the textual scanners it replaces are deleted.
+   PR3.9, and the textual scanners it replaces are deleted. PR3.9e part 3b
+   deleted `FencedBatch`'s text path and its scanners. `fragment-lint` and
+   `clock-lint` still scan store SQL text, so this is met when PR3.9e part 3c
+   lands.
 4. A task can spawn a child from a step and await the child's completion as an
    event, and awaiting a child in another queue is refused. It is
    modeled in TLA before its SQL exists, and conformance on every dialect pins
@@ -829,8 +832,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR3.9 compile the SQL instead of scanning it** (in progress, five PRs).
   Thirteen operations across two dialects, plus about 170 registered mutations
   whose finds quote store SQL, do not fit one reviewable PR, so it lands in five.
-  Until PR3.9e, a batch may hold both tree statements, checked as trees, and
-  text statements, still checked by the scanners.
+  Since PR3.9e part 3b a batch holds tree statements only, and `FencedBatch`
+  has no text path. PR3.9e part 3c is what remains.
   - PR3.9a: the tree layer in core. Engine tokens are value nodes carrying
     sentinel objects, and `FencedBatch` checks a tree statement by node identity
     and position inside a closed statement grammar. Statements are defined once
@@ -872,7 +875,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     what remains text is follow-ons, derived statements, tails, and reads. The first half's
     review round is `postmortems/pr3.9d-first-half-review.md`. The second half's is
     `postmortems/pr3.9d-second-half-review.md`.
-  - PR3.9e, in three parts. Part 1: the generated follow-ons, `derived()` and
+  - PR3.9e, in five parts. Part 1: the generated follow-ons, `derived()` and
     `seal()`, build trees from the relation contract and take the tree path.
     The stores change in one place, activation's first-start value, which
     reads its own column and so is built from nodes. A fragment may carry a
@@ -920,55 +923,51 @@ these three things; nothing else in the system does I/O, time, or randomness.
     line holds more conditions than registered mutations touch it, unless
     `TREE_CONDITIONS_WITHOUT_A_MUTATION` in `scripts/mutation-probe.py` lists
     the line with what a run showed: deleting it fails ordinary tests, or no
-    shape can tell it from the code. One entry matters to part 3b by name:
-    `compiled.readsClock`. The comparison beside it,
-    `compiled.sql.includes(this.now)`, refuses every shape `readsClock` refuses,
-    and also the batch clock's own text written into a fragment, which
-    `readsClock` does not see. Part 3b may delete `readsClock` and must keep
-    the comparison, which `tree-clock-text-in-followon` holds.
-    Part 3b follows: the text path and its scanners deleted, with `cas`,
-    `casMany`, `followOn`, `tail`, `openTail`, and `fenceSetAt`, one pass over
-    the tree for all checks, the corpus enrolled from label and variant
-    descriptors, and the bridge as one table of pinned file pairs. Its one pass
-    moves the lines the self-test reads, so it moves the region anchors and the
-    listed lines with them, and a condition it drops fails the self-test.
-    Twelve registered mutations own text that part 3b deletes, and each has a
-    tree-path successor, so part 3b retires them with a bridge arm:
-    `followon-provenance-check`, `positive-fence-required`,
-    `positive-fence-is-not`, `top-level-or-reach`, `clock-ban-in-followon`,
-    `clock-ban-raw-dialect-in-followon`, `raw-fence-token-check`,
-    `event-upsert-requires-preserved-instant`, and the four
-    `testing-helper-bind-*` entries that mutate the text compiler's bind count
-    and undefined-argument errors. `clock-ban-raw-dialect-in-followon` removes
-    the comparison with the batch clock's text, and its successor is
-    `tree-clock-text-in-followon`. The spelled-out clock and the clock called
-    as a function node are rules only the tree path has.
-    Twenty tests move to trees in that PR, not twelve: the twelve retirements'
-    tests in `fenced-batch.test.ts` and the bind-producer test in
-    `testing.test.ts`, and the tests of eight more registered mutations that
-    part 3b keeps. Those eight mutate code the tree path runs, and their tests
-    begin from the text `cas`, which part 3b deletes:
-    `generated-set-provenance-guard`, `generated-set-column-guard`,
-    `derived-source-table`, `seal-source-key`, `seal-intermediate-fence`,
-    `seal-lifecycle-transition`, `self-source-selection-materialized`, and
-    `self-source-instant-materialized`.
-  - Deferred to PR3.9e part 3b, with the text path's deletion: a batch's `tree`
-    option is optional while text-only batches exist, and `derived()` needs
-    one. It becomes required then, so a batch built without it fails to
-    compile instead of failing when it runs.
-  - Deferred to PR3.9e part 3b: a generated follow-on now costs about 159 µs to
-    build, check, and compile, where the text generator cost about 44 µs,
-    measured on libSQL's compiler with a stub executor. Building the tree is
-    about 28 µs and compiling it about 19 µs, so most of the rest is the tree
-    checks, which walk the tree once each. A batch holds up to five generated
-    statements. The one-pass item above owns this.
-  - Deferred to PR3.9e part 3b: a hand-written follow-on costs more as a tree by
-    the same cause. The revival's run insert takes about 247 µs to build, check,
-    and compile where its text took about 59 µs, and the `revived` tail about
-    32 µs where its text took about 1 µs, measured on libSQL's compiler with a
-    stub executor, beside a batch that costs about 66 µs with its
-    compare-and-set alone. The one-pass item above owns this too.
-  - Deferred to PR3.9e: a tree statement is rebuilt and re-checked on every
+    shape can tell it from the code. Part 3b deleted one entry by name,
+    `compiled.readsClock`. The comparison that stood beside it,
+    `compiled.sql.includes(this.now)`, refuses every shape `readsClock` refused,
+    because the clock token compiles to the batch clock's text, and also that
+    text written into a fragment. `tree-clock-text-in-followon` holds the
+    comparison with both shapes.
+    Part 3b, done: `FencedBatch` has no text path. `cas`, `casMany`,
+    `followOn`, `tail`, `openTail`, and `fenceSetAt` are deleted with the text
+    compiler and every scanner that read a statement's text. The text path's
+    copy of the string-literal and parenthesis scanner went with them, so the
+    tree module's is the only one, and `derived()` reads a set value's
+    literals through it. The `tree` option is required, so a batch built
+    without the dialect that compiles its trees fails typecheck. It stays an
+    option because it is the dialect's compiler and not a flag. The alpha
+    release exported `FENCE_SET`, `FENCE_COLS`, `FENCE_VALS`, and `fenceSetAt`,
+    so the published-surface check now takes a withdrawal with a reason, and
+    refuses one of a name that is still exported. That check reads export
+    names, so it does not see the rest of the break to an alpha consumer:
+    `FencedBatch` lost the methods `cas`, `casMany`, `followOn`, `tail`, and
+    `openTail`, and its constructor requires `tree`.
+    Fourteen registered mutations are retired, each with a successor. Twelve
+    owned text that is gone: `followon-provenance-check`,
+    `positive-fence-required`, `positive-fence-is-not`, `top-level-or-reach`,
+    `clock-ban-in-followon`, `clock-ban-raw-dialect-in-followon`,
+    `raw-fence-token-check`, `event-upsert-requires-preserved-instant`, and the
+    four `testing-helper-bind-*` entries that mutated the text compiler's bind
+    count and undefined-argument errors. Their successors are the tree
+    mutations part 3a registered for the same conditions.
+    `tree-needs-a-dialect` is retired because the question it removed is gone,
+    and its successor is the type. `tree-clock-ban-token-in-followon` is
+    retired because, with `readsClock` deleted, it removed the same condition
+    as `tree-clock-text-in-followon`, whose test now holds both shapes. The
+    tests that began from a text statement build trees. The twenty-seven that
+    only exercised the text scanners are deleted, and the PR accounts for each
+    by name. The failure successors' deadline is built from nodes in the
+    shared statement, and a follow-on insert's SELECT list holds no fragment,
+    as the option below records. The registry holds 665 mutations. Its review
+    round is `postmortems/pr3.9e-part3b-review.md`.
+  - PR3.9e part 3c, live. Exit test 3 of the current milestone is met when it
+    lands, and not before. It owns the items below that name it: one pass over
+    the tree, a tree-level form of the two text lints' rules, the corpus
+    enrolled from descriptors, the bridge as one table, and
+    `tasks.completed_payload`.
+  - Deferred to PR3.9e part 3c:
+    a tree statement is rebuilt and re-checked on every
     call, and the checks walk the tree once each. PR3.9c's review measured the
     four moved methods on libSQL with a stub executor: reschedule 78.5 µs to
     about 167 µs, suspend 121 µs to about 201 µs, await-event 141 µs to about
@@ -976,7 +975,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     is about 100 µs and a remote one is milliseconds. PR3.9d's review measured
     about 68 to 153 µs more store CPU for each set-checkpoint and 68 to 136 µs
     for each cancel, by the same cause. Collect node kinds, raw nodes, and
-    function nodes in one pass when the text checks are deleted.
+    function nodes in one pass, and measure before and after the same way.
+  - Deferred to PR3.9e part 3c: a generated follow-on now costs about 159 µs to
+    build, check, and compile, where the text generator cost about 44 µs,
+    measured on libSQL's compiler with a stub executor. Building the tree is
+    about 28 µs and compiling it about 19 µs, so most of the rest is the tree
+    checks, which walk the tree once each. A batch holds up to five generated
+    statements. The one-pass item above owns this.
+  - Deferred to PR3.9e part 3c: a hand-written follow-on costs more as a tree by
+    the same cause. The revival's run insert takes about 247 µs to build, check,
+    and compile where its text took about 59 µs, and the `revived` tail about
+    32 µs where its text took about 1 µs, measured on libSQL's compiler with a
+    stub executor, beside a batch that costs about 66 µs with its
+    compare-and-set alone. The one-pass item above owns this too.
   - Resolved by PR4.3: the shared await-event, emit-event, and
     checkpoint-write statements are built with the builder's conflict clause
     and `IS DISTINCT FROM`, and MySQL 8 has neither spelling. `store-mysql`'s
@@ -992,24 +1003,20 @@ these three things; nothing else in the system does I/O, time, or randomness.
     tiebreak rides in each assignment as `IF(condition, value, column)`, with
     the incoming row named `excluded` through a derived table, and the
     checkpoint conformance cases pass.
-  - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
-    since emit-event's conflict arm became nodes. It stays while the text path
-    and its checks stay, and goes with them. The stores' `fenced` and
-    `fenceFrom` fragment helpers lost their last caller when part 2 moved the
-    emit's wake, and part 2's review deleted them.
-  - Deferred to PR3.9e: `fragment-lint` and `clock-lint` scan store SQL text, and
+  - Deferred to PR3.9e part 3c:
+    `fragment-lint` and `clock-lint` scan store SQL text, and
     a condition built from nodes in `packages/core/src/statements/` is outside
     what a text lint can see. PR #41's review asked for the wider scope. Run
     with core's statements in scope: a second definition of the live states
     built from nodes passes `fragment-lint`, and the same list as SQL text in
     that file is refused. So the wider scope would check nothing. The rules
     that still matter, one definition of the live states among them, get a
-    tree-level form when the text path is deleted.
-  - Deferred to PR3.9e: `sql-tree.ts` and `fenced-batch.ts` each scan string
-    literals and parentheses. The text path's scanners are owned by its
-    mutations and go when the text path goes, leaving the tree module's as the
-    only copies.
-  - Deferred to PR3.9e: base-gate's re-aim bridge has one arm per historical
+    tree-level form, and then the two text lints are deleted.
+  - Deferred to PR3.9e part 3c: the corpus is enrolled from label and variant
+    descriptors, as this entry requires below, and a tree label that is not
+    enrolled fails.
+  - Deferred to PR3.9e part 3c:
+    base-gate's re-aim bridge has one arm per historical
     registry hash. Arms pinned to a registry no open PR is based on are deleted
     then, leaving the helpers and the live arm. The checker bridges go the same
     way: the batch lint bridge is pinned to a lint main no longer has, and the
@@ -1024,22 +1031,23 @@ these three things; nothing else in the system does I/O, time, or randomness.
     in `fenced-batch-tree.test.ts`. A tie on a column that is not a key passes,
     because the emit's wake is tied by queue on purpose, and the rows are then
     bounded by store text. A follow-on insert may read a value from a joined
-    row that only store text ties to the fenced one. An aggregate spelled
-    inside a value fragment passes the plain-selection rule. All three have one
-    cause: a store fragment is opaque to the tree. Closing them means building
-    those predicates from nodes, which the registered mutations that own their
-    text do not allow today. Part 2's review built a reader of a value
-    fragment's text for a call and took it back, because it broke two
-    registered mutations: `timestamp-addition-claim-timeout-successor-exact`
-    and `timestamp-addition-user-retry-successor-exact` write `MIN(<deadline>,
-    <cap>)`, SQLite's two-argument scalar, into the successor's deadline, and
-    the reader refused the mutant before its own verdict could catch it. The
-    third residual closes when that deadline is built from nodes, which
-    re-aims those two mutations onto core and needs a bridge arm.
-  - Deferred until a tree statement names it: `tasks.completed_payload` stays
+    row that only store text ties to the fenced one. Both have one cause: a
+    store fragment is opaque to the tree. Closing them means building those
+    predicates from nodes, which the registered mutations that own their text
+    do not allow today. The third residual of that round, an aggregate spelled
+    inside a value fragment, is closed. Part 2's review built a reader of a
+    value fragment's text for a call and took it back, because two registered
+    mutations wrote SQLite's scalar `MIN(<deadline>, <cap>)` into the
+    successor's deadline, and the reader refused the mutant before its own
+    verdict could catch it. PR3.9e part 3b built that deadline from nodes in
+    the shared statement, re-aimed those two mutations there, where they cap
+    it with a CASE, and then refused every fragment in a follow-on insert's
+    SELECT list, because a reader of text passed a schema-qualified call.
+  - Deferred to PR3.9e part 3c, until a tree statement names it:
+    `tasks.completed_payload` stays
     out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
     which its statements assign. Completion's task mirror is a generated
-    `derived()` statement, which PR3.9e moves. `checkpoints.status` stays out
+    `derived()` statement, which part 3c moves. `checkpoints.status` stays out
     the same way: every checkpoint write leaves it to its default.
   - Option, not scheduled: load compiled statements from the generated corpus at
     run time, so Kysely becomes a build-time dependency. Importing Kysely

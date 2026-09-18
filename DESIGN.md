@@ -781,7 +781,7 @@ are load-bearing):
      rule cannot read a fragment. In a fragment it refuses any mention of that
      column that is unqualified or qualified by the table being written,
      whatever wraps it, and arithmetic on that column under any other
-     qualifier, as the text path refused `x = t.x + 1` by name. A copy of
+     qualifier, such as `x = t.x + 1`. A copy of
      another row's column stays allowed. A fragment may hold a fence token,
      which becomes a fence node: it is bound and must name a fence of the
      batch, and it gates nothing. Nothing may be left over beside a token. The
@@ -846,14 +846,17 @@ are load-bearing):
      thing that keeps a statement narrow. Its SELECT list holds no aggregate and no function call, and
      the SELECT has no HAVING, because each can return a row the fence did not
      match. That is asked of the statement's own SELECT and does not lean on
-     what the gating rule decides about aggregates. An aggregate spelled inside
-     a value fragment is outside what the rule can read, and so is a value
-     taken from a joined row that only store text ties to the fenced one. Both
-     exhibits run in `fenced-batch-tree.test.ts`. Text cannot close the first:
-     the one value fragment a shipped follow-on insert passes is the
-     successor's deadline, two registered mutations write SQLite's two-argument
-     scalar MIN into it, and neither a name nor an argument count tells that
-     scalar from an aggregate. Building the deadline from nodes would. A table without provenance
+     what the gating rule decides about aggregates. A SQL fragment in that
+     list is refused whatever it holds, because text can spell a call in more
+     ways than a reader of text closes: a reader of names before a parenthesis
+     passed the schema-qualified `pg_catalog.max(...)`. A value that needs a
+     function is computed by the caller and bound. No shipped follow-on insert
+     passes a value fragment: the failure
+     successors' deadline, the failed run's instant plus a delay the store
+     binds, is built from nodes in the shared statement. A value taken from a
+     joined row that only store text ties to the fenced one is still outside
+     what the rule can read, and that exhibit runs in
+     `fenced-batch-tree.test.ts`. A table without provenance
      columns, today `checkpoints`, takes the gate and may carry a conflict arm,
      which the counting rule reads like a SET list. In that arm `excluded` is
      the incoming row and never the row being written, so arithmetic on
@@ -974,9 +977,12 @@ are load-bearing):
 
    `packages/conformance/corpus` records every statement a tree-built label
    compiles to, per dialect, and a conformance case compares the builder's
-   column descriptor with every dialect's catalog. No `FencedBatch` statement
-   in a store is text any more. `FencedBatch` keeps its text path and the
-   scanners that guard it until PR3.9e part 3 deletes them.
+   column descriptor with every dialect's catalog. `FencedBatch` has no text
+   path: every statement it holds is a tree, its constructor's type requires
+   the dialect that compiles one, and the scanners that read a
+   statement's text are deleted. `scripts/fragment-lint.py` and
+   `scripts/clock-lint.py` still read store SQL text, until PR3.9e part 3c
+   gives the rules of theirs that still matter a tree-level form.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:

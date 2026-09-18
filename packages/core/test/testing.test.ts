@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { FENCE_SET, FencedBatch, type SqlExecutor, isFencedBatchBindError } from '../src/index.js'
+import { isFencedBatchBindError } from '../src/index.js'
 import {
   attributeExpectedFailure,
   attributeReplacedFailure,
   requireExpectedFailure,
 } from '../src/testing.js'
+import { followOn, taskFollowOn } from './tree-fixtures.js'
 
 const marker = 'mutation-verdict:behavior:testing-helper'
 const verdict = { kind: 'behavior', mutation: 'testing-helper' } as const
@@ -15,52 +16,18 @@ const namedReplacementExpectation = {
   replacementError: (error: unknown) => error === unrelated,
 } satisfies Parameters<typeof attributeReplacedFailure>[1]
 
-async function bindArityFailure(): Promise<never> {
-  const unreachable: SqlExecutor = {
-    batch: async () => {
-      throw new Error('bind-arity failure reached the executor')
-    },
-  }
-  const batch = new FencedBatch('testing-helper', 'seed', { now: 'CURRENT_TIMESTAMP' }).cas(
-    'win',
-    'runs',
-    `UPDATE runs SET ${FENCE_SET} WHERE run_id = ? AND queue = ?`,
-    ['only-one'],
-  )
-  await batch.run(unreachable)
-  throw new Error('bind-arity failure unexpectedly returned')
+const PLACEHOLDERS = /compiles to \d+ placeholders for \d+ arguments/
+
+/** An operator that compiles to `?` adds a placeholder that no argument binds. */
+async function bindPlaceholderFailure(): Promise<never> {
+  followOn(taskFollowOn().where('headers', '?', 'key'))
+  throw new Error('placeholder-count failure unexpectedly returned')
 }
 
-async function bindUnusedArgumentFailure(): Promise<never> {
-  const unreachable: SqlExecutor = {
-    batch: async () => {
-      throw new Error('unused-argument failure reached the executor')
-    },
-  }
-  const batch = new FencedBatch('testing-helper', 'seed', { now: 'CURRENT_TIMESTAMP' }).cas(
-    'win',
-    'runs',
-    `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`,
-    ['run', 'unused'],
-  )
-  await batch.run(unreachable)
-  throw new Error('unused-argument failure unexpectedly returned')
-}
-
-async function bindUndefinedFailure(): Promise<never> {
-  const unreachable: SqlExecutor = {
-    batch: async () => {
-      throw new Error('undefined-bind failure reached the executor')
-    },
-  }
-  const batch = new FencedBatch('testing-helper', 'seed', { now: 'CURRENT_TIMESTAMP' }).cas(
-    'win',
-    'runs',
-    `UPDATE runs SET ${FENCE_SET} WHERE run_id = ? AND queue = ?`,
-    ['run', undefined as unknown as string],
-  )
-  await batch.run(unreachable)
-  throw new Error('undefined-bind failure unexpectedly returned')
+/** A boolean is a value no driver binds. */
+async function bindArgumentTypeFailure(): Promise<never> {
+  followOn(taskFollowOn().where('task_name', '=', true as never))
+  throw new Error('argument-type failure unexpectedly returned')
 }
 
 async function observeCompilerBindPropagation(
@@ -83,12 +50,13 @@ describe('mutation verdict promise helpers', () => {
   it('authenticates both compiler bind producers before every caller matcher', async () => {
     let arityFailure: unknown
     try {
-      await bindArityFailure()
+      await bindPlaceholderFailure()
     } catch (error) {
       arityFailure = error
     }
-    const undefinedProducer = await observeCompilerBindPropagation(/argument 1 is undefined/, () =>
-      attributeExpectedFailure(verdict, /.*/, bindUndefinedFailure),
+    const argumentTypeProducer = await observeCompilerBindPropagation(
+      /argument \d+ is boolean/,
+      () => attributeExpectedFailure(verdict, /.*/, bindArgumentTypeFailure),
     )
 
     const originalError = Object.getOwnPropertyDescriptor(globalThis, 'Error')
@@ -105,7 +73,7 @@ describe('mutation verdict promise helpers', () => {
       Object.defineProperty(globalThis, 'Error', { ...originalError, value: PoisonedError })
       Object.defineProperty(globalThis, 'TypeError', { ...originalTypeError, value: PoisonedError })
       try {
-        await attributeExpectedFailure(verdict, /.*/, bindArityFailure)
+        await attributeExpectedFailure(verdict, /.*/, bindPlaceholderFailure)
       } catch (error) {
         observed = error
       }
@@ -114,39 +82,32 @@ describe('mutation verdict promise helpers', () => {
       Object.defineProperty(globalThis, 'Error', originalError)
     }
 
-    const missingArgument = await observeCompilerBindPropagation(
-      /binds 2 of 1 explicit args/,
-      bindArityFailure,
-    )
-    const unusedArgument = await observeCompilerBindPropagation(
-      /binds 1 of 2 explicit args/,
-      bindUnusedArgumentFailure,
+    const placeholderCount = await observeCompilerBindPropagation(
+      PLACEHOLDERS,
+      bindPlaceholderFailure,
     )
 
     expect(
       {
         producers: {
-          arityBrand: isFencedBatchBindError(arityFailure),
-          undefined: undefinedProducer,
+          placeholderBrand: isFencedBatchBindError(arityFailure),
+          argumentType: argumentTypeProducer,
           capturedConstructor: observed instanceof (originalTypeError.value as ErrorConstructor),
           poisonedConstructorBrand: isFencedBatchBindError(observed),
         },
-        bindCounts: {
-          missingArgument,
-          unusedArgument,
-        },
+        bindCounts: { placeholderCount },
         consumers: {
-          attribute: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>
-            attributeExpectedFailure(verdict, /.*/, bindArityFailure),
+          attribute: await observeCompilerBindPropagation(PLACEHOLDERS, () =>
+            attributeExpectedFailure(verdict, /.*/, bindPlaceholderFailure),
           ),
-          require: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>
-            requireExpectedFailure(verdict, /.*/, bindArityFailure),
+          require: await observeCompilerBindPropagation(PLACEHOLDERS, () =>
+            requireExpectedFailure(verdict, /.*/, bindPlaceholderFailure),
           ),
-          replacement: await observeCompilerBindPropagation(/binds 2 of 1 explicit args/, () =>
+          replacement: await observeCompilerBindPropagation(PLACEHOLDERS, () =>
             attributeReplacedFailure(
               verdict,
               { expectedError: /expected healthy failure/, replacementError: /.*/ },
-              bindArityFailure,
+              bindPlaceholderFailure,
             ),
           ),
         },
@@ -154,15 +115,12 @@ describe('mutation verdict promise helpers', () => {
       'mutation-verdict:construction:testing-helper-bind-brand-read',
     ).toEqual({
       producers: {
-        arityBrand: true,
-        undefined: 'propagated',
+        placeholderBrand: true,
+        argumentType: 'propagated',
         capturedConstructor: true,
         poisonedConstructorBrand: true,
       },
-      bindCounts: {
-        missingArgument: 'propagated',
-        unusedArgument: 'propagated',
-      },
+      bindCounts: { placeholderCount: 'propagated' },
       consumers: {
         attribute: 'propagated',
         require: 'propagated',

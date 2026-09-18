@@ -8,6 +8,11 @@
 // an export disappear. The compiler API reads the declaration files a consumer
 // installs and lists every name each published entry point exports. Additions
 // are allowed; the snapshot is replaced when a new release ships.
+//
+// A name leaves on purpose through the snapshot's `withdrawn` table, which gives
+// the reason beside the name. A withdrawn name must be one the release exported,
+// and it must be gone: a withdrawal of a name still exported is refused, so the
+// table cannot become a list of names nobody checks.
 import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
@@ -62,6 +67,31 @@ export function packedSurface(unpackedRoot) {
 
 const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'))
 const current = packedSurface(root)
+const withdrawn = snapshot.withdrawn ?? {}
+const misdeclared = []
+let withdrawals = 0
+for (const [packageName, subpaths] of Object.entries(withdrawn)) {
+  for (const [subpath, reasons] of Object.entries(subpaths)) {
+    for (const [name, reason] of Object.entries(reasons)) {
+      withdrawals++
+      const at = `${packageName} ${subpath}: ${name}`
+      if (!snapshot.surface[packageName]?.[subpath]?.includes(name)) {
+        misdeclared.push(`${at} is withdrawn, but ${snapshot.release} never exported it`)
+      }
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        misdeclared.push(`${at} is withdrawn with no reason`)
+      }
+      if (current[packageName]?.[subpath]?.includes(name)) {
+        misdeclared.push(`${at} is withdrawn, but it is still exported`)
+      }
+    }
+  }
+}
+if (misdeclared.length > 0) {
+  console.error(`package-surface: ${misdeclared.length} withdrawal(s) do not hold:`)
+  for (const line of misdeclared) console.error(`  ${line}`)
+  process.exit(1)
+}
 const removed = []
 for (const [packageName, subpaths] of Object.entries(snapshot.surface)) {
   for (const [subpath, names] of Object.entries(subpaths)) {
@@ -71,8 +101,10 @@ for (const [packageName, subpaths] of Object.entries(snapshot.surface)) {
       continue
     }
     const have = new Set(now)
+    const gone = withdrawn[packageName]?.[subpath] ?? {}
     for (const name of names)
-      if (!have.has(name)) removed.push(`${packageName} ${subpath}: ${name}`)
+      if (!have.has(name) && !Object.hasOwn(gone, name))
+        removed.push(`${packageName} ${subpath}: ${name}`)
   }
 }
 if (removed.length > 0) {
@@ -86,5 +118,5 @@ const counted = Object.values(snapshot.surface)
   .flatMap((s) => Object.values(s))
   .flat().length
 console.log(
-  `package-surface: every name ${snapshot.release} exported is still exported (${counted} names)`,
+  `package-surface: every name ${snapshot.release} exported is still exported or withdrawn with a reason (${counted} names, ${withdrawals} withdrawn)`,
 )
