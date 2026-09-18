@@ -722,20 +722,14 @@ describe('the tree rules', () => {
     })
 
     it('refuses a date function with no argument in a fragment', () => {
-      refuses('mutation-verdict:construction:tree-clock-now-no-argument', READS, () =>
+      refuses('mutation-verdict:construction:tree-clock-spelling-no-argument-arm', READS, () =>
         startedAt('datetime()'),
       )
     })
 
-    it('refuses a date function given now in a fragment', () => {
+    it('refuses the literal now in a fragment, whatever function takes it', () => {
       refuses('mutation-verdict:construction:tree-clock-now-literal', READS, () =>
-        startedAt("time('now')"),
-      )
-    })
-
-    it('refuses a date function of now in a fragment', () => {
-      refuses('mutation-verdict:construction:tree-clock-spelling-now-arm', READS, () =>
-        startedAt("datetime('now')"),
+        startedAt("timediff('now', '2000-01-01')"),
       )
     })
 
@@ -755,14 +749,14 @@ describe('the tree rules', () => {
       })
     }
 
-    const OF_NOW = [
-      ['datetime', 'mutation-verdict:construction:tree-clock-now-datetime'],
-      ['date', 'mutation-verdict:construction:tree-clock-now-date'],
-      ['time', 'mutation-verdict:construction:tree-clock-now-time'],
+    const NO_ARGUMENT = [
+      ['datetime', 'mutation-verdict:construction:tree-clock-no-argument-datetime'],
+      ['date', 'mutation-verdict:construction:tree-clock-no-argument-date'],
+      ['time', 'mutation-verdict:construction:tree-clock-no-argument-time'],
     ] as const
-    for (const [word, marker] of OF_NOW) {
-      it(`refuses ${word} of now in a fragment`, () => {
-        refuses(marker, READS, () => startedAt(`${word}('now')`))
+    for (const [word, marker] of NO_ARGUMENT) {
+      it(`refuses ${word} called with no argument in a fragment`, () => {
+        refuses(marker, READS, () => startedAt(`${word}()`))
       })
     }
   })

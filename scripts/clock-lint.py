@@ -64,9 +64,11 @@ CLOCKS = re.compile(
     # LOCALTIME and UTC_TIMESTAMP bare; Postgres accepts LOCALTIMESTAMP.
     r"|\b(?:current_timestamp|current_time|current_date"
     r"|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\b"
-    # SQLite reads a date function with no argument as the current time, the same
-    # as with 'now'.
-    r"|\b(?:datetime|date|time)\s*\(\s*(?:'now'|\))",
+    # SQLite reads a date function with no argument as the current time.
+    r"|\b(?:datetime|date|time)\s*\(\s*\)"
+    # The literal 'now' reads the clock whatever function takes it: SQLite's
+    # timediff('now', …), PostgreSQL's 'now' cast to a timestamp.
+    r"|'\s*now\s*'",
     re.IGNORECASE,
 )
 META_KEY = r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?key"

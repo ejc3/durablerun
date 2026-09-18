@@ -929,7 +929,8 @@ are load-bearing):
      fragment text is the one thing a tree cannot read, so it is scanned for
      the batch clock's text and for the clock spellings
      `scripts/clock-lint.py` lists, which include a date function called with
-     no argument, SQLite's spelling of the current time. That scan is a
+     no argument, SQLite's spelling of the current time, and the literal
+     `'now'`, whatever function takes it. That scan is a
      spelling proxy, confined to raw text, and a spelling nobody has listed
      passes it.
    - A follow-on may not assign a column a value that combines that column

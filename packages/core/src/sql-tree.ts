@@ -1008,15 +1008,16 @@ const CLOCK_FUNCTIONS = [
 /**
  * A database clock spelled out in raw SQL text. This is a spelling list, the same one
  * `scripts/clock-lint.py` applies to store sources, because raw text is the one place a
- * tree cannot be read. A date function with no argument is on it: SQLite reads
- * `datetime()` as the current time. The only clock a tree may hold is the clock token, and
+ * tree cannot be read. A date function with no argument is on it, because SQLite reads
+ * `datetime()` as the current time, and so is the literal 'now', whatever function takes it. The only clock a tree may hold is the clock token, and
  * a clock called as a function node is outside the grammar, which lists no clock.
  */
 export const CLOCK_SPELLING = new RegExp(
   [
     String.raw`\b(?:${CLOCK_FUNCTIONS.join('|')})\s*\(`,
     String.raw`\b(?:current_timestamp|current_time|current_date|localtime|localtimestamp|utc_timestamp|utc_date|utc_time)\b`,
-    String.raw`\b(?:datetime|date|time)\s*\(\s*(?:'now'|\))`,
+    String.raw`\b(?:datetime|date|time)\s*\(\s*\)`,
+    String.raw`'\s*now\s*'`,
   ].join('|'),
   'i',
 )

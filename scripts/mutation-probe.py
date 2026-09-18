@@ -1282,18 +1282,11 @@ MUTATION_SPECS = [
         "a second assignment may overwrite the clock a tree compare-and-set writes",
     ),
     (
-        "tree-clock-now-no-argument",
-        "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|$^)`,",
-        "a date function with no argument, SQLite's spelling of the current time, goes unseen in a fragment",
-    ),
-    (
         "tree-clock-now-literal",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:$^|\\))`,",
-        "a date function given 'now' goes unseen in a fragment",
+        "    String.raw`'\\s*now\\s*'`,\n",
+        "",
+        "the literal 'now' goes unseen in a fragment, so any function that takes it reads the clock",
     ),
     (
         "tree-grammar-function-list",
@@ -1349,11 +1342,11 @@ MUTATION_SPECS = [
         "a bare clock keyword in a fragment goes unseen",
     ),
     (
-        "tree-clock-spelling-now-arm",
+        "tree-clock-spelling-no-argument-arm",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,\n",
-        "    String.raw`(?!)(?:)`,\n",
-        "datetime('now') in a fragment goes unseen",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,\n",
+        "    String.raw`(?!)`,\n",
+        "a date function with no argument, SQLite's spelling of the current time, goes unseen in a fragment",
     ),
     (
         "tree-clock-function-unixepoch",
@@ -1503,25 +1496,25 @@ MUTATION_SPECS = [
         "the bare clock keyword utc_time goes unseen in a fragment",
     ),
     (
-        "tree-clock-now-datetime",
+        "tree-clock-no-argument-datetime",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
-        "    String.raw`\\b(?:date|time)\\s*\\(\\s*(?:'now'|\\))`,",
-        "datetime('now') goes unseen in a fragment",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,",
+        "    String.raw`\\b(?:date|time)\\s*\\(\\s*\\)`,",
+        "datetime() with no argument goes unseen in a fragment",
     ),
     (
-        "tree-clock-now-date",
+        "tree-clock-no-argument-date",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
-        "    String.raw`\\b(?:datetime|time)\\s*\\(\\s*(?:'now'|\\))`,",
-        "date('now') goes unseen in a fragment",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,",
+        "    String.raw`\\b(?:datetime|time)\\s*\\(\\s*\\)`,",
+        "date() with no argument goes unseen in a fragment",
     ),
     (
-        "tree-clock-now-time",
+        "tree-clock-no-argument-time",
         "packages/core/src/sql-tree.ts",
-        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*(?:'now'|\\))`,",
-        "    String.raw`\\b(?:datetime|date)\\s*\\(\\s*(?:'now'|\\))`,",
-        "time('now') goes unseen in a fragment",
+        "    String.raw`\\b(?:datetime|date|time)\\s*\\(\\s*\\)`,",
+        "    String.raw`\\b(?:datetime|date)\\s*\\(\\s*\\)`,",
+        "time() with no argument goes unseen in a fragment",
     ),
     (
         "tree-grammar-node-kind",
@@ -6817,16 +6810,10 @@ VERDICTS = {
         "the tree path stamping refuses a compare-and-set clock assigned twice",
         "mutation-verdict:construction:tree-cas-instant-assigned-once",
     ),
-    "tree-clock-now-no-argument": ExpectedVerdict(
-        "construction",
-        "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses a date function with no argument in a fragment",
-        "mutation-verdict:construction:tree-clock-now-no-argument",
-    ),
     "tree-clock-now-literal": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses a date function given now in a fragment",
+        "the tree rules the spellings of a clock refuses the literal now in a fragment, whatever function takes it",
         "mutation-verdict:construction:tree-clock-now-literal",
     ),
     "tree-grammar-function-list": ExpectedVerdict(
@@ -6871,11 +6858,11 @@ VERDICTS = {
         "the tree rules the spellings of a clock refuses a bare clock keyword in a fragment",
         "mutation-verdict:construction:tree-clock-spelling-keyword-arm",
     ),
-    "tree-clock-spelling-now-arm": ExpectedVerdict(
+    "tree-clock-spelling-no-argument-arm": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses a date function of now in a fragment",
-        "mutation-verdict:construction:tree-clock-spelling-now-arm",
+        "the tree rules the spellings of a clock refuses a date function with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-spelling-no-argument-arm",
     ),
     "tree-clock-function-unixepoch": ExpectedVerdict(
         "construction",
@@ -7003,23 +6990,23 @@ VERDICTS = {
         "the tree rules the spellings of a clock refuses the bare keyword utc_time in a fragment",
         "mutation-verdict:construction:tree-clock-keyword-utc-time",
     ),
-    "tree-clock-now-datetime": ExpectedVerdict(
+    "tree-clock-no-argument-datetime": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses datetime of now in a fragment",
-        "mutation-verdict:construction:tree-clock-now-datetime",
+        "the tree rules the spellings of a clock refuses datetime called with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-no-argument-datetime",
     ),
-    "tree-clock-now-date": ExpectedVerdict(
+    "tree-clock-no-argument-date": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses date of now in a fragment",
-        "mutation-verdict:construction:tree-clock-now-date",
+        "the tree rules the spellings of a clock refuses date called with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-no-argument-date",
     ),
-    "tree-clock-now-time": ExpectedVerdict(
+    "tree-clock-no-argument-time": ExpectedVerdict(
         "construction",
         "packages/core/test/sql-tree-verdicts.test.ts",
-        "the tree rules the spellings of a clock refuses time of now in a fragment",
-        "mutation-verdict:construction:tree-clock-now-time",
+        "the tree rules the spellings of a clock refuses time called with no argument in a fragment",
+        "mutation-verdict:construction:tree-clock-no-argument-time",
     ),
     "tree-grammar-node-kind": ExpectedVerdict(
         "construction",
@@ -13641,7 +13628,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 658:
+        if len(MUTATIONS) != 657:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
