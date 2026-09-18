@@ -151,9 +151,13 @@ export class ChildAwaitRefusedError extends Error {
   }
 }
 
-/** The idempotency key of the child a parent spawns at one call site. Only a store builds it. */
+/**
+ * The idempotency key of the child a parent spawns at one call site. Only a store builds
+ * it. Both strings are a caller's at the port and either may hold the delimiter, so the
+ * parent id's length comes first, and no two pairs spell one key.
+ */
 export function childSpawnKey(parentTaskId: string, replayKey: string): string {
-  return `${RESERVED_EVENT_PREFIX}spawn:${parentTaskId}:${replayKey}`
+  return `${RESERVED_EVENT_PREFIX}spawn:${parentTaskId.length}:${parentTaskId}:${replayKey}`
 }
 
 /**
@@ -180,6 +184,9 @@ export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
     if (callerKey !== undefined) {
       throw new TrustedRangeError('spawn takes idempotencyKey or childOf, never both')
     }
+    requireDurableString('childOf.parentQueue', childOf.parentQueue)
+    requireDurableString('childOf.runId', childOf.runId)
+    requireDurableString('childOf.claimToken', childOf.claimToken)
     return childSpawnKey(
       requireDurableString('childOf.parentTaskId', childOf.parentTaskId),
       requireDurableString('childOf.replayKey', childOf.replayKey),

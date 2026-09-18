@@ -463,6 +463,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     requireDurableString('queue', queue)
     const durableTaskName = requireDurableString('taskName', taskName)
     const key = spawnIdempotencyKey(opts)
+    const childOf = opts.childOf
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
     const retryInput = opts.retryStrategy
@@ -519,6 +520,17 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         maxAttempts,
         cancellationJson,
         idempotencyKey: key,
+        parent:
+          childOf === undefined
+            ? null
+            : {
+                queue: childOf.parentQueue,
+                runId: childOf.runId,
+                taskId: childOf.parentTaskId,
+                claimToken: childOf.claimToken,
+                taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+                liveTask: sqlFragment(`t.state IN ${LIVE}`),
+              },
         enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
         cancelAt: sqlFragment(`${NOW} + ? + ?`, [delayMs, maxDelayMs]),
         identityFree: sqlFragment(
@@ -580,7 +592,12 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     if (won === 'task') return { taskId, runId, created: true }
 
     const row = results.receipt?.rows[0]
-    if (!row) throw new Error('spawn: the task insert lost but no existing task explains it')
+    if (!row) {
+      // A child is created only under its parent's live claim, so a child spawn that
+      // created nothing and found nothing is that claim, refused.
+      if (childOf !== undefined) throw await this.refusal('spawn', childOf.runId)
+      throw new Error('spawn: the task insert lost but no existing task explains it')
+    }
     // A pre-existing task may legitimately have no run — swept away, or never
     // given one. There is no honest run id to report then, and the previous
     // version reported the one it had minted and never inserted, so every

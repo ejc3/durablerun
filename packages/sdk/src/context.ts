@@ -363,7 +363,13 @@ export class ReplayContext implements TaskContext {
     // The child is keyed by this task and this call site, so every pass, every retry,
     // and a pass that died between the spawn and its checkpoint all find one child. The
     // store builds the key, in a namespace its port refuses to every caller's own key.
-    const childOf = { parentTaskId: this.#run.taskId, replayKey: key }
+    const childOf = {
+      parentQueue: this.#queue,
+      parentTaskId: this.#run.taskId,
+      runId: this.#run.runId,
+      claimToken: this.#run.claimToken,
+      replayKey: key,
+    }
     let spawned: Awaited<ReturnType<SchedulerStore['spawn']>>
     try {
       spawned = await this.#controls.storeCall(() =>

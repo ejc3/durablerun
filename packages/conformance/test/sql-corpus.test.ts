@@ -21,7 +21,8 @@ import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
  * signatures than it declares, fails: a new branch must be declared, not discovered.
  */
 const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
-  spawn: ['spawned'],
+  // A child is created only under its parent's live claim, which is one more conjunct.
+  spawn: ['spawned', 'spawned-child'],
   claim: ['claimed'],
   activate: ['activated'],
   complete: ['completed'],
@@ -52,6 +53,10 @@ type Signature = readonly { sql: string; bindArity: number }[]
  * the order the scenario happened to reach it in.
  */
 const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
+  spawn: (signature) =>
+    signature.some(({ sql }) => /^insert into "tasks".*"claimed_by"/s.test(sql))
+      ? 'spawned-child'
+      : 'spawned',
   // Only a retrying failure inserts a successor run.
   fail: (signature) =>
     signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
@@ -118,7 +123,15 @@ describe('generated SQL corpus', () => {
         // that no later claim of this scenario takes either.
         await store.spawn('q', 'parent', '{}')
         const parent = await claimActivated(store, 'q', 'w5c')
-        const child = await store.spawn('q', 'child', '{}')
+        const child = await store.spawn('q', 'child', '{}', {
+          childOf: {
+            parentQueue: 'q',
+            parentTaskId: parent.taskId,
+            runId: parent.runId,
+            claimToken: parent.claimToken,
+            replayKey: 'site',
+          },
+        })
         const awaitChild = (run: typeof parent, childTaskId: string) =>
           awaitTaskOwned(store, 'q', run, 'step', childTaskId, null)
         expect(await awaitChild(parent, child.taskId)).toEqual({ emitted: false })

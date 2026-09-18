@@ -1737,6 +1737,7 @@ describe('FencedBatch tree statements', () => {
       maxAttempts: 3,
       cancellationJson: null,
       idempotencyKey: null,
+      parent: null,
       enqueueAt: sqlFragment('$NOW$ + ?', [0]),
       cancelAt: sqlFragment('$NOW$ + ? + ?', [0, null]),
       identityFree: sqlFragment('NOT EXISTS (SELECT 1 FROM tasks x WHERE x.task_id = ?)', ['t1']),

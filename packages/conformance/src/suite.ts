@@ -131,7 +131,15 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
       })
 
       it('keys a child by its parent and call site, under a key only the store builds', async () => {
-        const childOf = { parentTaskId: 'parent-1', replayKey: '$spawn:child' }
+        const parentTask = await f.store.spawn(Q, 'parent', '{}')
+        const parent = await claimActivated(f.store, Q, 'w-parent')
+        const childOf = {
+          parentQueue: Q,
+          parentTaskId: parentTask.taskId,
+          runId: parent.runId,
+          claimToken: parent.claimToken,
+          replayKey: '$spawn:child',
+        }
         const first = await f.store.spawn(Q, 'child', '{}', { childOf })
         const replayed = await f.store.spawn(Q, 'child', '{}', { childOf })
         const sibling = await f.store.spawn(Q, 'child', '{}', {
@@ -154,7 +162,7 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         ).toEqual({
           replayFindsTheChild: true,
           siblingIsAnotherTask: true,
-          key: childSpawnKey('parent-1', '$spawn:child'),
+          key: childSpawnKey(parentTask.taskId, '$spawn:child'),
           both: 'RangeError',
         })
       })

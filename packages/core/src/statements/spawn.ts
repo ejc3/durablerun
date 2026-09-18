@@ -9,6 +9,7 @@ import {
   rawSql,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
+import { type AwaitingClaim, stillClaimed } from './events.js'
 import { insertedRun } from './successor.js'
 
 /**
@@ -38,6 +39,8 @@ export const spawnTaskCas = defineStatement(
     identityFree: SqlFragment
     enqueueFits: SqlFragment
     cancelFits: SqlFragment
+    /** The parent's live claim, for a child task, or null for any other spawn. */
+    parent: (AwaitingClaim & { liveTask: SqlFragment }) | null
   }) => {
     const eb = expressionBuilder<StoreTables, never>()
     const task = {
@@ -57,15 +60,21 @@ export const spawnTaskCas = defineStatement(
       ...FENCE_ASSIGNMENTS,
     }
     const { columns, selections } = insertedFrom(task)
+    const admitted = treeBuilder
+      .selectNoFrom(selections)
+      .where(rawSql<boolean>(binds.identityFree, 'predicate'))
+      .where(rawSql<boolean>(binds.enqueueFits, 'predicate'))
+      .where(rawSql<boolean>(binds.cancelFits, 'predicate'))
+    // ChildTasks.tla's SpawnAuthority: a child is created only under its parent's live
+    // claim. The conflict arm below still finds a child that exists, claim or none.
+    const parent = binds.parent
     return treeBuilder
       .insertInto('tasks')
       .columns(columns)
       .expression(
-        treeBuilder
-          .selectNoFrom(selections)
-          .where(rawSql<boolean>(binds.identityFree, 'predicate'))
-          .where(rawSql<boolean>(binds.enqueueFits, 'predicate'))
-          .where(rawSql<boolean>(binds.cancelFits, 'predicate')),
+        parent === null
+          ? admitted
+          : admitted.where((where) => where.exists(stillClaimed(parent, parent.liveTask))),
       )
       .onConflict((conflict) =>
         conflict

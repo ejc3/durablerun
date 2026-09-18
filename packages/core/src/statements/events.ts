@@ -16,7 +16,7 @@ import { type StoreTables, treeBuilder } from '../store-tables.js'
 import { LIVE_STATES } from '../types.js'
 
 /** The claim an awaiting worker presents: its run, in this queue and task, under its token. */
-type AwaitingClaim = {
+export type AwaitingClaim = {
   queue: string
   runId: string
   taskId: string
@@ -30,7 +30,7 @@ type AwaitingClaim = {
  * `t` that owns it. The claim's identity is nodes, so a store fragment cannot leave it
  * out. Registering a wait and reading an emitted event both require this.
  */
-const stillClaimed = (claim: AwaitingClaim, task: SqlFragment) =>
+export const stillClaimed = (claim: AwaitingClaim, task: SqlFragment) =>
   treeBuilder
     .selectFrom('runs as r')
     .innerJoin('tasks as t', (join) => join.on(rawSql<boolean>(claim.taskOwnsRun, 'predicate')))
