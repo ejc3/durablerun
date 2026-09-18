@@ -1,4 +1,4 @@
-import { type Expression, type Kysely, isExpression } from 'kysely'
+import { type Expression, type Kysely, SelectQueryNode, isExpression } from 'kysely'
 import type { EventName } from './child-tasks.js'
 import {
   DERIVED_WRITABLE_COLUMNS,
@@ -35,6 +35,7 @@ import {
   gatingFences,
   insertProvenance,
   isDefinedStatement,
+  mayReturnNoRow,
   rawFragmentProblem,
   rawFragmentTexts,
   rawSql,
@@ -838,7 +839,10 @@ export class FencedBatch {
       const gates = positional.filter((gate) => gate.tied)
       const gateName = open ? undefined : gates[0]?.fence
       const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)
-      if (gateIndex >= 0) gatedBy = gateIndex
+      // A skipped statement answers with no rows, which is also what it answers unmatched,
+      // unless it answers with a row whatever it matched. That one is always sent.
+      const alwaysAnswers = SelectQueryNode.is(tree) && !mayReturnNoRow(tree)
+      if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex
       if (!open && gates.length === 0 && positional.length !== 0) {
         throw new Error(
           `${at} is gated only by a subquery that is not tied to the rows it reads or writes: the subquery must read the fenced source alone, and either IN selects one plain column of it against a column of the outer row, or EXISTS equates a column of it with a column of the outer row (§3.4 rule 1)`,
