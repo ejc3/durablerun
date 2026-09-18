@@ -47,6 +47,9 @@ const ER_NO_SUCH_TABLE = 1146
  */
 const ER_DATA_TOO_LONG = 1406
 
+/** The handshake capability that makes MySQL report matched rows in place of changed ones. */
+const CLIENT_FOUND_ROWS = 0x2
+
 /** How long a batch waits for a named lock before the store reports itself unavailable. */
 const LOCK_WAIT_SECONDS = 30
 
@@ -387,8 +390,22 @@ export class MysqlExecutor implements SqlExecutor {
     return new MysqlExecutor(createOwnedMysqlPool(config), true)
   }
 
-  /** The pool must have been built by `createOwnedMysqlPool`: the affected-row contract depends on its flags. */
+  /**
+   * A pool the caller owns. It must connect without `FOUND_ROWS`, as
+   * `createOwnedMysqlPool` builds one: mysql2 turns the flag on by default, and under it
+   * a conflict arm that changed nothing reports one row, so a compare-and-set that lost
+   * would read as one that won. The flag is part of the handshake and no session
+   * setting can repair it, so a pool that has it, or whose flags cannot be read, is
+   * refused here.
+   */
   static fromPool(pool: Pool): MysqlExecutor {
+    const flags = (pool as { pool?: { config?: { connectionConfig?: { clientFlags?: unknown } } } })
+      .pool?.config?.connectionConfig?.clientFlags
+    if (typeof flags !== 'number' || (flags & CLIENT_FOUND_ROWS) !== 0) {
+      throw new TypeError(
+        "MysqlExecutor.fromPool needs a pool that connects without FOUND_ROWS: build it with createOwnedMysqlPool, or pass flags: ['-FOUND_ROWS']",
+      )
+    }
     return new MysqlExecutor(pool, false)
   }
 
