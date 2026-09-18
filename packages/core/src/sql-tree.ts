@@ -997,9 +997,9 @@ function stateListProblem(values: readonly unknown[]): string | null {
 
 /** One item of a list in a fragment's text: a literal's content, or the index of the bind it takes. */
 type TextListItem = string | number
-/** `state IN (…)`, `state NOT IN (…)`, or `state = ANY (…)` in a fragment's text, where each item is a literal or a bind. */
+/** `state IN (…)`, `state NOT IN (…)`, or `state = ANY (…)` in a fragment's text, the column bare or quoted, where each item is a literal or a bind. */
 const STATE_LIST_IN_TEXT =
-  /\bstate\s*(?:(?:not\s+)?in|=\s*any)\s*(\(\s*(?:'(?:[^']|'')*'|\?)(?:\s*,\s*(?:'(?:[^']|'')*'|\?))*\s*\))/gi
+  /\bstate["`]?\s*(?:(?:not\s+)?in|=\s*any)\s*(\(\s*(?:'(?:[^']|'')*'|\?)(?:\s*,\s*(?:'(?:[^']|'')*'|\?))*\s*\))/gi
 const LIST_ITEM = /'((?:[^']|'')*)'|\?/g
 /** A literal doubles a quote it holds. */
 const QUOTE = "'"
@@ -1038,11 +1038,14 @@ const DEADLINE_TESTS = ['is', 'is not']
 const DEADLINE_PROBLEM =
   "a test of cancel_at_ms built from nodes that is not IS NULL or IS NOT NULL: the deadline is compared by the store's cancelDue and cancelNotDue fragments alone"
 
-/** Whether an operand names the deadline: the column itself, or arithmetic, a call, or a cast around it. A subquery is its own statement. */
-function namesDeadline(node: OperationNode): boolean {
+/** Whether an operand names a column: the column itself, or arithmetic, a call, or a cast around it. A subquery is its own statement. */
+function namesColumn(node: OperationNode, column: string): boolean {
   if (SelectQueryNode.is(node)) return false
-  return referencedColumn(node) === 'cancel_at_ms' || children(node).some(namesDeadline)
+  return (
+    referencedColumn(node) === column || children(node).some((child) => namesColumn(child, column))
+  )
 }
+const namesDeadline = (node: OperationNode): boolean => namesColumn(node, 'cancel_at_ms')
 
 function eligibilityProblemAt(node: OperationNode): string | null {
   if (RawNode.is(node)) {
@@ -1056,7 +1059,7 @@ function eligibilityProblemAt(node: OperationNode): string | null {
   }
   if (!BinaryOperationNode.is(node)) return null
   const operator = operatorName(node.operator) ?? ''
-  if (LIST_OPERATORS.includes(operator) && referencedColumn(node.leftOperand) === 'state') {
+  if (LIST_OPERATORS.includes(operator) && namesColumn(node.leftOperand, 'state')) {
     const list = unwrapParens(node.rightOperand)
     if (PrimitiveValueListNode.is(list)) return stateListProblem(list.values)
     if (ValueListNode.is(list)) return stateListProblem(list.values.map(boundValue))
@@ -1071,7 +1074,8 @@ function eligibilityProblemAt(node: OperationNode): string | null {
  * These are the rules a scan of store SQL text applied to text alone, asked of the tree,
  * where a condition built from nodes is as visible as one written as text.
  *
- * A list compared with a `state` column by IN or NOT IN must be one of the defined sets. A
+ * A list compared with a `state` column by IN or NOT IN must be one of the defined sets,
+ * and the column is found through arithmetic, a call, or a cast around it. A
  * list built from nodes is read as nodes. A list in a fragment's text is read as text, with
  * each bind it takes read from the fragment's own arguments. The rule is keyed on the
  * column, so a list of caller data compared with another column is never read. This is a

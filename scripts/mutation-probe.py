@@ -953,7 +953,7 @@ MUTATION_SPECS = [
     (
         "tree-state-list-keys-on-the-column",
         "packages/core/src/sql-tree.ts",
-        "  if (LIST_OPERATORS.includes(operator) && referencedColumn(node.leftOperand) === 'state') {",
+        "  if (LIST_OPERATORS.includes(operator) && namesColumn(node.leftOperand, 'state')) {",
         "  if (LIST_OPERATORS.includes(operator) && referencedColumn(node.leftOperand) !== null) {",
         "a list of caller data compared with another column is judged as a list of states",
     ),
@@ -976,8 +976,8 @@ MUTATION_SPECS = [
     (
         "tree-state-list-fragment-keys-on-the-column",
         "packages/core/src/sql-tree.ts",
-        "  /\\bstate\\s*(?:(?:not\\s+)?in|=\\s*any)\\s*(\\(\\s*(?:'(?:[^']|'')*'|\\?)(?:\\s*,\\s*(?:'(?:[^']|'')*'|\\?))*\\s*\\))/gi",
-        "  /\\b\\w+\\s*(?:(?:not\\s+)?in|=\\s*any)\\s*(\\(\\s*(?:'(?:[^']|'')*'|\\?)(?:\\s*,\\s*(?:'(?:[^']|'')*'|\\?))*\\s*\\))/gi",
+        "  /\\bstate[\"`]?\\s*(?:(?:not\\s+)?in|=\\s*any)\\s*(\\(\\s*(?:'(?:[^']|'')*'|\\?)(?:\\s*,\\s*(?:'(?:[^']|'')*'|\\?))*\\s*\\))/gi",
+        "  /\\b\\w+[\"`]?\\s*(?:(?:not\\s+)?in|=\\s*any)\\s*(\\(\\s*(?:'(?:[^']|'')*'|\\?)(?:\\s*,\\s*(?:'(?:[^']|'')*'|\\?))*\\s*\\))/gi",
         "a list of caller data a fragment compares with another column is judged as a list of states",
     ),
     (
@@ -1032,8 +1032,8 @@ MUTATION_SPECS = [
     (
         "tree-deadline-under-a-call",
         "packages/core/src/sql-tree.ts",
-        "  return referencedColumn(node) === 'cancel_at_ms' || children(node).some(namesDeadline)",
-        "  return referencedColumn(node) === 'cancel_at_ms'",
+        "    referencedColumn(node) === column || children(node).some((child) => namesColumn(child, column))",
+        "    referencedColumn(node) === column",
         "a deadline comparison passes when a call surrounds the column",
     ),
     (
@@ -1060,10 +1060,8 @@ MUTATION_SPECS = [
     (
         "tree-deadline-stops-at-a-subquery",
         "packages/core/src/sql-tree.ts",
-        "  if (SelectQueryNode.is(node)) return false\n"
-        "  return referencedColumn(node) === 'cancel_at_ms'",
-        "  if (false && SelectQueryNode.is(node)) return false\n"
-        "  return referencedColumn(node) === 'cancel_at_ms'",
+        "  if (SelectQueryNode.is(node)) return false\n  return (",
+        "  if (false && SelectQueryNode.is(node)) return false\n  return (",
         "a subquery that tests the deadline makes the comparison holding it a test of the deadline",
     ),
     (
@@ -13542,7 +13540,7 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "if (InsertQueryNode.is(tree)) return tableName(tree.into)": (
             "changes nothing a statement can show: a SELECT has no into field, and an absent table reads as null either way"
         ),
-        "if (LIST_OPERATORS.includes(operator) && referencedColumn(node.leftOperand) === 'state') {": (
+        "if (LIST_OPERATORS.includes(operator) && namesColumn(node.leftOperand, 'state')) {": (
             "refuses more: with the operator test gone a list under any other operator is judged too, and one mutation holds the column test"
         ),
         "if (RawNode.is(candidate)) texts.push(candidate.sqlFragments.join(' '))": (
@@ -13721,6 +13719,9 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         ),
         "qualifier !== undefined": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 27 at the fewest"
+        ),
+        "referencedColumn(node) === column || children(node).some((child) => namesColumn(child, column))": (
+            "fails closed: with the column itself never counted 13 ordinary tests fail, and one mutation holds the descent"
         ),
         "return AliasNode.is(aliased) && IdentifierNode.is(aliased.alias) ? aliased.alias.name : column": (
             "a guard, and no shape tells it from the code: the builder's alias is always an identifier"

@@ -888,6 +888,35 @@ describe('a second definition of eligibility', () => {
       accepts('a row of inserted values', () => cas('task', taskInsert()))
     })
 
+    it('reads the state column through a cast or a call around it, as the deadline is read', () => {
+      refuses('a cast around the column', STATE_LIST, () =>
+        runsWhere((eb) => eb(eb.cast(eb.ref('state'), 'text'), 'in', ['pending', 'running'])),
+      )
+      refuses('a call around the column', STATE_LIST, () =>
+        runsWhere((eb) =>
+          eb(eb.fn('coalesce', [eb.ref('state'), eb.val('pending')]), 'in', ['pending', 'running']),
+        ),
+      )
+      accepts('the live states through a cast', () =>
+        runsWhere((eb) =>
+          eb(eb.cast(eb.ref('state'), 'text'), 'in', ['pending', 'running', 'sleeping']),
+        ),
+      )
+    })
+
+    it('reads a quoted state column in the text of a fragment', () => {
+      for (const text of [
+        `"state" IN ('pending','running')`,
+        "`state` IN ('pending','running')",
+        `t."state" not in ('pending','running')`,
+      ]) {
+        refuses(text, STATE_LIST, () => runsWhere(() => predicate(text)))
+      }
+      accepts('the live states on a quoted column', () =>
+        runsWhere(() => predicate(`"state" IN ('pending','running','sleeping')`)),
+      )
+    })
+
     it('reads a qualified state column, and NOT IN as it reads IN', () => {
       refuses('a qualified column', STATE_LIST, () =>
         runsWhere((eb) => eb('runs.state', 'in', ['pending', 'running'])),

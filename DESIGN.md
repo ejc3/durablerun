@@ -1203,9 +1203,13 @@ are load-bearing):
      is as visible as one written as text. A list that IN or NOT IN compares
      with a `state` column is one of the defined sets: the live, the queued,
      or the terminal states. It is read from nodes, or from a fragment's text
-     with the binds the list takes, and a list compared with any other column
-     is never read, so caller data is never judged, and the refusal never
-     quotes a value. This half is a check of spellings. It does not read a set
+     with the binds the list takes, and the column is found bare or quoted in
+     text, and through arithmetic, a call, or a cast in nodes. A list compared
+     with a column of any other name is never read, and the refusal never
+     quotes a value. The rule keys on the column's name, so it does read a list
+     compared with `checkpoints.state`, which holds caller JSON. A JSON string
+     carries its own quotes and cannot equal a state's name, so such a list
+     names no state and is not judged. This half is a check of spellings. It does not read a set
      spelled as alternatives joined by OR, a chain of `<>`, CASE arms, the
      complement of a defined set, an array, or a join to a list of values, and
      the verdict tests run each of those as an exhibit that passes. The
