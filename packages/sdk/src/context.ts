@@ -10,6 +10,7 @@ import {
   type SchedulerStore,
   type SpawnOptions,
   type TaskOutcome,
+  TaskTimeoutError,
   UserName,
   type WakeSpec,
   type WorkerClaimedRun,
@@ -17,7 +18,6 @@ import {
   parseTaskValueJson,
   requireDurableString,
   serializeTaskValue,
-  taskDoneEventName,
   userDurationToMs,
   userEpochMs,
   userJsonValue,
@@ -132,8 +132,11 @@ function isTimedOutMemo(memo: EventMemo): memo is Extract<EventMemo, { timedOut:
   return taskHasOwn(memo, 'timedOut') && (memo as { timedOut: unknown }).timedOut === true
 }
 
-function eventMemoPayload(name: string, memo: EventMemo): string {
-  if (isTimedOutMemo(memo)) throw new EventTimeoutError(name)
+/** What a timed-out await throws, named for what the caller awaited. */
+type TimedOut = () => EventTimeoutError
+
+function eventMemoPayload(timedOut: TimedOut, memo: EventMemo): string {
+  if (isTimedOutMemo(memo)) throw timedOut()
   return memo.payloadJson
 }
 
@@ -321,8 +324,9 @@ export class ReplayContext implements TaskContext {
       userDurationToMs('awaitEvent timeoutSeconds', timeoutSeconds, { positive: true })
     }
     const key = this.storageName(EngineKey.awaitEvent(parsed))
-    const settled = await this.settledAwait(name, key)
-    if (settled !== undefined) return settled.payloadJson
+    const timedOut: TimedOut = () => new EventTimeoutError(name)
+    const settled = await this.settledAwait(timedOut, key)
+    if (settled !== undefined) return settled
     const outcome = await this.#controls.storeCall(() =>
       this.#store.awaitEvent(
         this.#queue,
@@ -341,7 +345,7 @@ export class ReplayContext implements TaskContext {
         timeoutSeconds ?? null,
       ),
     )
-    return this.registeredAwait(name, key, outcome)
+    return this.registeredAwait(timedOut, key, outcome)
   }
 
   async spawn(taskName: string, params: unknown, opts?: ChildSpawnOptions): Promise<ChildTask> {
@@ -393,10 +397,11 @@ export class ReplayContext implements TaskContext {
     if (timeout !== undefined) {
       userDurationToMs('awaitTask timeoutSeconds', timeout, { positive: true })
     }
-    const name = taskDoneEventName(taskId.value)
     const key = this.storageName(EngineKey.awaitTask(taskId))
-    const settled = await this.settledAwait(name, key)
-    if (settled !== undefined) return decodeTaskOutcome(taskId.value, settled.payloadJson)
+    // The task sees the task it awaited, never the engine's name for the event.
+    const timedOut: TimedOut = () => new TaskTimeoutError(taskId.value)
+    const settled = await this.settledAwait(timedOut, key)
+    if (settled !== undefined) return decodeTaskOutcome(taskId.value, settled)
     let outcome: Awaited<ReturnType<SchedulerStore['awaitTaskDone']>>
     try {
       outcome = await this.#controls.storeCall(() =>
@@ -415,43 +420,37 @@ export class ReplayContext implements TaskContext {
       if (error instanceof ChildAwaitRefusedError) throw new FatalTaskError(error.message)
       throw error
     }
-    return decodeTaskOutcome(taskId.value, await this.registeredAwait(name, key, outcome))
+    return decodeTaskOutcome(taskId.value, await this.registeredAwait(timedOut, key, outcome))
   }
 
   /**
    * An await that needs no store call: its memo, or the wake this claim carried for
-   * it. The payload is wrapped so that an empty payload is still an answer.
+   * it. An empty payload is still an answer, and only undefined means unsettled.
    */
-  private async settledAwait(
-    name: string,
-    key: string,
-  ): Promise<{ payloadJson: string } | undefined> {
+  private async settledAwait(timedOut: TimedOut, key: string): Promise<string | undefined> {
     if (taskMapHas(this.seen, key)) {
-      // A memo already covers THIS await (matched by its step key) — retire
+      // A memo already covers THIS await (matched by its step key): retire
       // its carried wake so it cannot be re-read; a wake for a different
       // await (same event name, different step) is left untouched.
       this.takeWake(key)
-      return { payloadJson: eventMemoPayload(name, taskMapGet(this.seen, key) as EventMemo) }
+      return eventMemoPayload(timedOut, taskMapGet(this.seen, key) as EventMemo)
     }
     // A wake delivered with this claim resolves the await, consumed once:
     // the run row's wake fields persist after delivery, so matching by the
     // unique step key (not the shared event name) keeps a later same-name
     // await from stealing this one's wake.
     const wake = this.takeWake(key)
-    if (wake) {
-      return { payloadJson: await this.commitEventMemo(name, key, memoOfWake(wake)) }
-    }
-    return undefined
+    return wake ? this.commitEventMemo(timedOut, key, memoOfWake(wake)) : undefined
   }
 
   /** What the store's await answered: the event's payload, or a run the batch already parked. */
   private async registeredAwait(
-    name: string,
+    timedOut: TimedOut,
     key: string,
     outcome: { emitted: true; payloadJson: string } | { emitted: false },
   ): Promise<string> {
     if (outcome.emitted) {
-      return this.commitEventMemo(name, key, { payloadJson: outcome.payloadJson })
+      return this.commitEventMemo(timedOut, key, { payloadJson: outcome.payloadJson })
     }
     // The store batch ALREADY parked the run: signal without a wake so the
     // runtime performs no second suspension.
@@ -484,9 +483,9 @@ export class ReplayContext implements TaskContext {
   }
 
   /** Commit an await's memo, then resolve it exactly as a replay of that memo would. */
-  private async commitEventMemo(name: string, key: string, memo: EventMemo): Promise<string> {
+  private async commitEventMemo(timedOut: TimedOut, key: string, memo: EventMemo): Promise<string> {
     await this.commitCheckpoint(key, 'event wake marker', memo)
-    return eventMemoPayload(name, memo)
+    return eventMemoPayload(timedOut, memo)
   }
 
   /**
