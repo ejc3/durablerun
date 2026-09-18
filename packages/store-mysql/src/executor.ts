@@ -113,6 +113,7 @@ export function createOwnedMysqlPool(config: string | PoolOptions): Pool {
 interface PreparedStatement {
   readonly sql: string
   readonly args: (string | number | bigint | Buffer | null)[]
+  readonly skipUnlessWrote?: number
 }
 
 /**
@@ -181,7 +182,14 @@ function prepareStatements(
         `batch(${label}) statement ${statementIndex} has ${placeholders} placeholders but ${args.length} arguments`,
       )
     }
-    return { sql: statement.sql, args }
+    const gate = statement.skipUnlessWrote
+    if (gate === undefined) return { sql: statement.sql, args }
+    if (!Number.isInteger(gate) || gate < 0 || gate >= statementIndex) {
+      throw new TypeError(
+        `batch(${label}) statement ${statementIndex} is gated by statement ${gate}, which is not an earlier statement of the batch`,
+      )
+    }
+    return { sql: statement.sql, args, skipUnlessWrote: gate }
   })
 }
 
@@ -520,6 +528,15 @@ export class MysqlExecutor implements SqlExecutor {
       transactionStarted = true
       const results: SqlResult[] = []
       for (const statement of prepared) {
+        // Each statement is a round trip here. One whose gating statement wrote no row
+        // cannot match a row (`SqlStatement.skipUnlessWrote`), so it is not sent. The
+        // gate's count is the port's, rows matched: MySQL's own count is rows changed,
+        // and a gate that matched a row and changed nothing would read as zero there.
+        const gate = statement.skipUnlessWrote
+        if (gate !== undefined && results[gate]?.rowsAffected === 0) {
+          results.push({ rows: [], rowsAffected: 0 })
+          continue
+        }
         const [result, fields] =
           statement.args.length === 0
             ? await connection.query(statement.sql)
