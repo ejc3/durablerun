@@ -64,6 +64,8 @@ export const registerWaitCas = defineStatement(
     taskOwnsRun: SqlFragment
     /** What the store requires of the task `t` for its run to suspend. */
     taskEligible: SqlFragment
+    /** The forward phase is frozen once a saga began, so no wait registers then (§3.10). */
+    phase: SqlFragment
     /**
      * The task whose completion event this is, for a child await, or null for any other
      * event. A wait on a completion event registers only while that task is live and in
@@ -101,6 +103,7 @@ export const registerWaitCas = defineStatement(
       )
       .where((where) => where.exists(stillClaimed(binds, binds.taskEligible)))
       .where(rawSql<boolean>(binds.timeoutFits, 'predicate'))
+      .where(rawSql<boolean>(binds.phase, 'predicate'))
     const awaitedTaskId = binds.awaitedTaskId
     if (awaitedTaskId !== null) {
       guarded = guarded.where((where) =>

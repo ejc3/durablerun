@@ -861,7 +861,7 @@ describe('runClaimedRun', () => {
         complete: () => Promise.reject(rejection),
         fail: () => {
           failCalls++
-          return Promise.resolve()
+          return Promise.resolve({ rollingBack: false })
         },
       })
       const observed = await runClaimedRun(

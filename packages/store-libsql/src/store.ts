@@ -5,6 +5,7 @@ import {
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
   EventName,
+  type FailOutcome,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -110,6 +111,7 @@ import {
   runClaimUnexpired,
   runOwnedByTask,
   sagaBegan,
+  sagaBeganOf,
   singletonAggregate,
   soleLiveRun,
   storedCurrentRunAccounting,
@@ -1041,6 +1043,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // registered step is owed its rollback (DESIGN.md §3.10, Sagas.tla InfraCap).
     const passId = this.ids.uuidv7()
     this.sagaPass(b, {
+      queue,
       failedRunId: item.runId,
       passId,
       fence: 'cap',
@@ -1172,6 +1175,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     // InfraCap). The pass takes the identity the refused successor would have had, so
     // the terminal arm below yields to it as it yields to a successor.
     this.sagaPass(b, {
+      queue,
       failedRunId: item.runId,
       passId: successorId,
       fence: 'fail',
@@ -1596,6 +1600,8 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     b.casTree(
       'suspend',
       suspendCas({
+        // A suspension commits a marker, and the forward phase is frozen once a saga began.
+        phase: sqlFragment(`NOT ${sagaBegan('runs')}`),
         queue,
         runId,
         claimToken,
@@ -1670,6 +1676,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
   private sagaPass(
     b: FencedBatch,
     pass: {
+      queue: string
       failedRunId: string
       passId: string
       fence: 'fail' | 'cap'
@@ -1680,7 +1687,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       admissionArgs: readonly number[]
     },
   ): void {
-    const { failedRunId, passId, fence } = pass
+    const { queue, failedRunId, passId, fence } = pass
     b.followOnTree(
       'rollback-pass',
       rollbackPassInsert({
@@ -1716,6 +1723,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     }
     b.derived('task-rolling-back', {
       relation: 'runs-to-tasks',
+      // Bound, not correlated: a source that names the target's queue is evaluated once
+      // for every task row, and the update then walks the table to find one task.
+      queue,
       fence: 'rollback-pass',
       where: 'f.run_id = ?',
       whereArgs: [passId],
@@ -1745,13 +1755,13 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-  ): Promise<void> {
+  ): Promise<FailOutcome> {
     const successorId = retry ? this.ids.uuidv7() : null
     const passId = successorId ?? this.ids.uuidv7()
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
     const taskId = await this.endingTask('fail', queue, runId)
     const b = new FencedBatch('fail', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    await this.failInto(b, {
+    return this.failInto(b, {
       operation: 'fail',
       queue,
       runId,
@@ -1777,7 +1787,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     failureJson: string,
     retry: { delaySeconds: number } | null,
     rollbackTry: CheckpointWrite,
-  ): Promise<void> {
+  ): Promise<FailOutcome> {
     const passId = this.ids.uuidv7()
     const passDelayMs =
       retry === null ? null : durationToMs('retry.delaySeconds', retry.delaySeconds)
@@ -1786,7 +1796,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    await this.failInto(b, {
+    return this.failInto(b, {
       operation: 'failRollback',
       queue,
       runId,
@@ -1819,7 +1829,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       passId: string
       rollback?: { tried: CheckpointWrite; passDelayMs: number | null }
     },
-  ): Promise<void> {
+  ): Promise<FailOutcome> {
     const { queue, runId, claimToken, failureJson, taskId, successorId, retryDelayMs, passId } =
       failure
     const { rollback } = failure
@@ -1879,6 +1889,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     if (rollback === undefined) {
       const budgetSpent = retry ? ' AND (f.attempt - t.infra_retries) >= t.max_attempts' : ''
       this.sagaPass(b, {
+        queue,
         failedRunId: runId,
         passId,
         fence: 'fail',
@@ -1889,6 +1900,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       })
     } else if (rollback.passDelayMs !== null) {
       this.sagaPass(b, {
+        queue,
         failedRunId: runId,
         passId,
         fence: 'fail',
@@ -1996,8 +2008,9 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       state: 'failed',
       failureReasonJson: failureJson,
     })
-    const { won } = await b.run(this.db)
+    const { won, results } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal(failure.operation, runId)
+    return { rollingBack: (results['task-rolling-back']?.rowsAffected ?? 0) === 1 }
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
@@ -2596,6 +2609,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         ]),
         taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
         taskEligible: sqlFragment(eligibleTask('t', NOW)),
+        phase: sqlFragment(`NOT ${sagaBeganOf('?')}`, [taskId]),
       }),
     )
     // available_at_ms IS this wait's own timeout_at_ms — copied from the row

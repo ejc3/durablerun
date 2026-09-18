@@ -119,6 +119,7 @@ const register = () =>
     timeoutFits: sqlFragment('? IS NULL OR 1 = 1', [5]),
     taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),
     taskEligible: sqlFragment('t.cancel_at_ms IS NULL'),
+    phase: sqlFragment('NOT EXISTS (SELECT 1 FROM checkpoints sp WHERE sp.task_id = ?)', ['t1']),
   })
 
 async function sent(dialect: TreeDialect, clock: string, name: string, cas: DefinedStatement) {

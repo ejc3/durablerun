@@ -3,6 +3,7 @@ import type {
   Checkpoint,
   CheckpointWrite,
   ClaimedRun,
+  FailOutcome,
   LaunchIdentity,
   LeaseState,
   SpawnOptions,
@@ -143,7 +144,7 @@ export interface SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-  ): Promise<void>
+  ): Promise<FailOutcome>
 
   /**
    * A rollback of a task that is rolling back failed (DESIGN.md §3.10, specs/Sagas.tla
@@ -162,7 +163,7 @@ export interface SchedulerStore {
     failureJson: string,
     retry: { delaySeconds: number } | null,
     rollbackTry: CheckpointWrite,
-  ): Promise<void>
+  ): Promise<FailOutcome>
 
   /** §3.1 steps 0–1: cancellation policies + expired leases, classified by activation state. */
   sweep(queue: string, limit: number): Promise<SweptRun[]>

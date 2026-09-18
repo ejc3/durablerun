@@ -1817,6 +1817,7 @@ describe('FencedBatch tree statements', () => {
       claimToken: 'tok',
       taskOwnsRun: sqlFragment('t.task_id = r.task_id AND t.queue = r.queue'),
       taskEligible: sqlFragment('t.cancel_at_ms IS NULL'),
+      phase: sqlFragment('NOT EXISTS (SELECT 1 FROM checkpoints sp WHERE sp.task_id = ?)', ['t1']),
     })
     const emit = emitEventCas({
       queue: 'q',

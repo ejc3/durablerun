@@ -1,15 +1,20 @@
 import {
   INFRA_RETRY_CAP,
+  REASON_INFRA_CAP,
+  REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
+  SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
   type SqlExecutor,
   encodeRollbackTry,
+  taskDoneEventName,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
+import { sagaViolations } from './saga-rows.js'
 import { awaitTaskOwned } from './scenario.js'
 
 const Q = 'q'
@@ -123,6 +128,7 @@ export const MATRIX_PRE_STATES = [
   'infra-cap-edge',
   'relaunch-cap-edge',
   'attempt-cap-edge',
+  'saga-cap-edges',
 ] as const
 export type MatrixPreState = (typeof MATRIX_PRE_STATES)[number]
 
@@ -143,8 +149,218 @@ const EDGE_CLAIM_GEN = 3
  * successor is still due), so a seeded cell that fails is failing on the
  * transition under test and not on its own setup.
  */
+/**
+ * Three tasks, each with a registered step that started, and each standing AT the cap
+ * one of the three batches that decide a terminal failure enforces: the user attempt
+ * budget, the infrastructure retry cap, and the relaunch cap. Crossing it enters the
+ * rolling-back phase (Sagas.tla's UserTerminal and InfraCap). Each batch has its own
+ * label, so one starting state puts the armed fault on all three crossings. Each run has
+ * its own claim token, so an untouched seed stays inside the claim bound.
+ */
+const SAGA_EDGE_BOOM = '{"name":"SagaEdgeBoom"}'
+const SAGA_EDGES = [
+  {
+    key: 'attempt',
+    label: 'fail',
+    cause: SAGA_EDGE_BOOM,
+    attempts: EDGE_MAX_ATTEMPTS - 1,
+    infraRetries: 0,
+    attempt: EDGE_MAX_ATTEMPTS,
+    activated: true,
+    relaunchCount: 0,
+    expired: false,
+  },
+  {
+    key: 'infra',
+    label: 'sweep:claim-timeout',
+    cause: REASON_INFRA_CAP,
+    attempts: 0,
+    infraRetries: INFRA_RETRY_CAP,
+    attempt: INFRA_RETRY_CAP + 1,
+    activated: true,
+    relaunchCount: 0,
+    expired: true,
+  },
+  {
+    key: 'relaunch',
+    label: 'sweep:lost-launch',
+    cause: REASON_RELAUNCH_CAP,
+    attempts: 0,
+    infraRetries: 0,
+    attempt: 1,
+    activated: false,
+    relaunchCount: RELAUNCH_CAP,
+    expired: true,
+  },
+] as const
+type SagaEdge = (typeof SAGA_EDGES)[number]
+const sagaEdgeTask = (edge: SagaEdge) => `saga-edge-${edge.key}`
+const sagaEdgeRun = (edge: SagaEdge) => `saga-edge-${edge.key}-run`
+const sagaEdgeToken = (edge: SagaEdge) => `saga-edge-${edge.key}-worker`
+const SAGA_EDGE_STEP = 'edge'
+
+function sagaEdgeSeed(nowMs: number) {
+  return SAGA_EDGES.flatMap((edge) => [
+    {
+      sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
+              state, attempts, infra_retries, enqueue_at_ms, created_at_ms)
+            VALUES (?, ?, 'saga-edge', '{}', '{"kind":"none"}', ?, 'running', ?, ?, ?, ?)`,
+      args: [
+        sagaEdgeTask(edge),
+        Q,
+        EDGE_MAX_ATTEMPTS,
+        edge.attempts,
+        edge.infraRetries,
+        nowMs,
+        nowMs,
+      ],
+    },
+    {
+      sql: `INSERT INTO runs (run_id, queue, task_id, attempt, state, claimed_by, claim_gen,
+              activated_gen, relaunch_count, lease_ms, claim_expires_at_ms, created_at_ms)
+            VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, 30000, ?, ?)`,
+      args: [
+        sagaEdgeRun(edge),
+        Q,
+        sagaEdgeTask(edge),
+        edge.attempt,
+        sagaEdgeToken(edge),
+        EDGE_CLAIM_GEN,
+        edge.activated ? EDGE_CLAIM_GEN : EDGE_CLAIM_GEN - 1,
+        edge.relaunchCount,
+        edge.expired ? nowMs - 1 : nowMs + 60_000,
+        nowMs,
+      ],
+    },
+    {
+      // The step started under this run: a launch that was lost at this claim
+      // generation was activated at an earlier one.
+      sql: `INSERT INTO checkpoints (task_id, checkpoint_name, queue, state, status,
+              owner_run_id, owner_attempt, updated_at_ms)
+            VALUES (?, ?, ?, '1', 'committed', ?, ?, ?)`,
+      args: [
+        sagaEdgeTask(edge),
+        `${SAGA_STARTED_PREFIX}${SAGA_EDGE_STEP}`,
+        Q,
+        sagaEdgeRun(edge),
+        edge.attempt,
+        nowMs,
+      ],
+    },
+  ])
+}
+
+/**
+ * Each saga edge is exactly where it was seeded, exactly inside the phase, or exactly
+ * ended, and never between. An edge whose crossing reached the database entered the
+ * phase, and when no crash cut the workload's saga prefix short, every edge ended with
+ * its rollback run.
+ */
+async function assertSagaEdges(
+  raw: SqlExecutor,
+  trace: readonly { label: string; outcome: string }[],
+  cell: string,
+): Promise<void> {
+  const crashed = (outcome: string) => outcome === 'crash-before' || outcome === 'crash-after'
+  const firstCrash = trace.findIndex(({ outcome }) => crashed(outcome))
+  const firstSpawn = trace.findIndex(({ label }) => label === 'spawn')
+  const prefixRan = firstSpawn !== -1 && (firstCrash === -1 || firstCrash >= firstSpawn)
+  for (const edge of SAGA_EDGES) {
+    const exact = (condition: boolean, detail: string): void => {
+      if (!condition) {
+        throw new Error(`matrix ${cell}: saga edge '${edge.key}' is not exact: ${detail}`)
+      }
+    }
+    const crossing = trace.find(({ label }) => label === edge.label)?.outcome
+    const reached = crossing === 'ok' || crossing === 'dup' || crossing === 'crash-after'
+    const [tasks, runs, checkpoints, events] = await raw.batch(
+      'matrix:saga-edge-postcondition',
+      [
+        {
+          sql: `SELECT state, attempts, max_attempts, infra_retries, failure_reason
+                FROM tasks WHERE task_id = ?`,
+          args: [sagaEdgeTask(edge)],
+        },
+        {
+          sql: 'SELECT run_id, attempt, state FROM runs WHERE task_id = ? ORDER BY attempt, run_id',
+          args: [sagaEdgeTask(edge)],
+        },
+        {
+          sql: 'SELECT checkpoint_name, state FROM checkpoints WHERE task_id = ?',
+          args: [sagaEdgeTask(edge)],
+        },
+        {
+          sql: 'SELECT COUNT(*) AS n FROM events WHERE queue = ? AND event_name = ?',
+          args: [Q, taskDoneEventName(sagaEdgeTask(edge))],
+        },
+      ],
+      'read',
+    )
+    const task = tasks?.rows[0]
+    const rows = runs?.rows ?? []
+    const named = (name: string) =>
+      (checkpoints?.rows ?? []).find((row) => row.checkpoint_name === name)
+    const doneEvents = Number(events?.rows[0]?.n)
+    const marker = named(SAGA_PHASE_CHECKPOINT)
+    const rolledBack = named(`${SAGA_ROLLBACK_PREFIX}${SAGA_EDGE_STEP}`) !== undefined
+    if (marker === undefined) {
+      exact(!reached, 'its crossing reached the database and wrote no phase marker')
+      exact(
+        task?.state === 'running' &&
+          rows.length === 1 &&
+          rows[0]?.state === 'running' &&
+          !rolledBack &&
+          doneEvents === 0,
+        'neither seeded nor in the phase',
+      )
+      continue
+    }
+    const [failed, pass] = rows
+    const userAttempts = edge.attempt - edge.infraRetries
+    exact(marker.state === edge.cause, 'the phase marker does not hold the deciding failure')
+    exact(
+      rows.length === 2 &&
+        failed?.run_id === sagaEdgeRun(edge) &&
+        failed?.state === 'failed' &&
+        Number(pass?.attempt) === edge.attempt + 1,
+      'the rollback pass is not the one successor of the failed run',
+    )
+    // The pass is one ordinal past the user budget, so entering raises the budget to the
+    // pass's own ordinal. The pass that ends the task charges that ordinal, as any
+    // failing run charges its own, so an ended saga reads one attempt more than at entry.
+    const ended = task?.state === 'failed'
+    exact(
+      Number(task?.attempts) === userAttempts + (ended ? 1 : 0) &&
+        Number(task?.max_attempts) === userAttempts + 1 &&
+        Number(task?.infra_retries) === edge.infraRetries,
+      `task bookkeeping ${ended ? 'after the saga ended' : 'inside the phase'}`,
+    )
+    if (ended) {
+      exact(
+        task?.failure_reason === edge.cause &&
+          pass?.state === 'failed' &&
+          rolledBack &&
+          doneEvents === 1,
+        'ended, but not with its rollback run, its deciding failure, and one completion event',
+      )
+    } else {
+      exact(!prefixRan, 'the saga prefix ran to its end and the task did not end')
+      exact(
+        (pass?.state === 'pending' || pass?.state === 'running') &&
+          task?.state === pass.state &&
+          doneEvents === 0,
+        'inside the phase, but the task does not mirror a live pass, or an event was written',
+      )
+    }
+  }
+}
+
 async function seedPreState(raw: SqlExecutor, preState: MatrixPreState, nowMs: number) {
   if (preState === 'fresh') return
+  if (preState === 'saga-cap-edges') {
+    await raw.batch('setup', sagaEdgeSeed(nowMs), 'write')
+    return
+  }
   const task = (attempts: number, infraRetries: number) => ({
     sql: `INSERT INTO tasks (task_id, queue, task_name, params, retry_strategy, max_attempts,
             state, attempts, infra_retries, enqueue_at_ms, created_at_ms)
@@ -190,7 +406,7 @@ async function seedPreState(raw: SqlExecutor, preState: MatrixPreState, nowMs: n
   await raw.batch('setup', statements, 'write')
 }
 
-const EDGE_TRANSITION: Record<Exclude<MatrixPreState, 'fresh'>, string> = {
+const EDGE_TRANSITION: Record<Exclude<MatrixPreState, 'fresh' | 'saga-cap-edges'>, string> = {
   'infra-cap-edge': 'sweep:claim-timeout',
   'relaunch-cap-edge': 'sweep:lost-launch',
   'attempt-cap-edge': 'fail',
@@ -213,6 +429,7 @@ async function assertEdgePostcondition(
   cell: string,
 ): Promise<void> {
   if (preState === 'fresh') return
+  if (preState === 'saga-cap-edges') return assertSagaEdges(raw, trace, cell)
   const transition = EDGE_TRANSITION[preState]
   const reached = trace.some(
     ({ label, outcome }) =>
@@ -364,7 +581,38 @@ export async function runFaultMatrixCase(
       // on one of those instead, and the cell goes green without the
       // boundary ever having been tested — exactly the vacuous coverage
       // this axis exists to remove.
-      if (preState === 'attempt-cap-edge') {
+      if (preState === 'saga-cap-edges') {
+        // Cross all three caps, then run each rollback pass to its end: one rollback,
+        // and the failure with no retry that finishes the saga.
+        const [attemptEdge] = SAGA_EDGES
+        await go(() =>
+          store.fail(Q, sagaEdgeRun(attemptEdge), sagaEdgeToken(attemptEdge), SAGA_EDGE_BOOM, {
+            delaySeconds: 0,
+          }),
+        )
+        await go(() => store.sweep(Q, 10))
+        for (const worker of ['w-saga-edge-1', 'w-saga-edge-2']) {
+          const passes =
+            (await go(() => store.claim(Q, worker, { leaseSeconds: 60, limit: CLAIM_LIMIT }))) ?? []
+          for (const pass of passes) {
+            const edge = SAGA_EDGES.find((candidate) => sagaEdgeTask(candidate) === pass.taskId)
+            if (edge === undefined) continue
+            await go(() => store.activate(Q, pass.runId, pass.claimToken, pass.claimGen))
+            await go(() =>
+              store.setCheckpoint(
+                Q,
+                pass.taskId,
+                pass.runId,
+                pass.claimToken,
+                `${SAGA_ROLLBACK_PREFIX}${SAGA_EDGE_STEP}`,
+                'null',
+                60,
+              ),
+            )
+            await go(() => store.fail(Q, pass.runId, pass.claimToken, edge.cause, null))
+          }
+        }
+      } else if (preState === 'attempt-cap-edge') {
         await go(() =>
           store.fail(Q, EDGE_RUN, EDGE_TOKEN, '{"name":"EdgeBoom"}', { delaySeconds: 0 }),
         )
@@ -486,47 +734,36 @@ export async function runFaultMatrixCase(
         }
       }
 
-      // A saga (Sagas.tla). Two registered steps start, the task fails for good, and
-      // that batch enters the rolling-back phase. One rollback runs. The other fails,
-      // is retried past the user budget, and fails for good, which halts the saga.
+      // A saga (Sagas.tla), as short as reaches its label, because every cell of every
+      // starting state runs it: a registered step starts, the task fails for good, which
+      // enters the rolling-back phase, and the rollback fails for good, which halts the
+      // saga. The saga starting state runs a rollback and finishes one.
       const sagaTask = await go(() => store.spawn(Q, 'saga', '{}', { maxAttempts: 1 }))
       const [forward] =
         (await go(() => store.claim(Q, 'w-saga', { leaseSeconds: 60, limit: 1 }))) ?? []
       if (sagaTask && forward?.taskId === sagaTask.taskId) {
         const cause = '{"name":"SagaBoom"}'
-        const tried = (tries: number) => ({
-          key: `${SAGA_TRIES_PREFIX}a`,
-          stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"RollbackBoom"}' }),
-        })
-        const mark = (run: typeof forward, name: string, state: string) =>
-          go(() => store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, name, state, 60))
-        await go(() => store.activate(Q, forward.runId, forward.claimToken, forward.claimGen))
-        await mark(forward, `${SAGA_STARTED_PREFIX}a`, '1')
-        await mark(forward, `${SAGA_STARTED_PREFIX}b`, '2')
+        await go(() =>
+          store.setCheckpoint(
+            Q,
+            forward.taskId,
+            forward.runId,
+            forward.claimToken,
+            `${SAGA_STARTED_PREFIX}a`,
+            '1',
+            60,
+          ),
+        )
         await go(() => store.fail(Q, forward.runId, forward.claimToken, cause, null))
         const [pass] =
           (await go(() => store.claim(Q, 'w-saga-pass', { leaseSeconds: 60, limit: 1 }))) ?? []
         if (pass?.taskId === sagaTask.taskId) {
-          await go(() => store.activate(Q, pass.runId, pass.claimToken, pass.claimGen))
-          await mark(pass, `${SAGA_ROLLBACK_PREFIX}b`, 'null')
           await go(() =>
-            store.failRollback(
-              Q,
-              pass.runId,
-              pass.claimToken,
-              cause,
-              { delaySeconds: 0 },
-              tried(1),
-            ),
+            store.failRollback(Q, pass.runId, pass.claimToken, cause, null, {
+              key: `${SAGA_TRIES_PREFIX}a`,
+              stateJson: encodeRollbackTry({ tries: 1, errorJson: '{"name":"RollbackBoom"}' }),
+            }),
           )
-          const [again] =
-            (await go(() => store.claim(Q, 'w-saga-pass-2', { leaseSeconds: 60, limit: 1 }))) ?? []
-          if (again?.taskId === sagaTask.taskId) {
-            await go(() => store.activate(Q, again.runId, again.claimToken, again.claimGen))
-            await go(() =>
-              store.failRollback(Q, again.runId, again.claimToken, cause, null, tried(2)),
-            )
-          }
         }
       }
 
@@ -603,8 +840,12 @@ export async function runFaultMatrixCase(
 
     await assertEdgePostcondition(f.raw, preState, world.trace, cell)
 
-    // (1) Nothing the fault did may have corrupted state.
-    const violations = await engineInvariantViolations(f.raw)
+    // (1) Nothing the fault did may have corrupted state, or let a saga's rows say
+    // something Sagas.tla forbids.
+    const violations = [
+      ...(await engineInvariantViolations(f.raw)),
+      ...(await sagaViolations(f.raw)),
+    ]
     if (violations.length > 0) {
       throw new Error(`matrix ${cell}: ${violations.join('; ')}`)
     }

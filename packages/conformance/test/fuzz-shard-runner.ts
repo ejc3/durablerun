@@ -112,6 +112,11 @@ export function runFuzzShard(shard: number, of: number): void {
         awaits: 0,
         childAwaits: 0,
         recordedEndings: 0,
+        stepsStarted: 0,
+        sagasEntered: 0,
+        rollbacks: 0,
+        rollbackFailures: 0,
+        sagasEnded: 0,
       }
       let walks = 0
       for (const seed of seeds) {

@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process'
+import { expect, it } from 'vitest'
 import {
   MATRIX_EXEMPT_LABELS,
   MATRIX_READ_LABELS,
   MATRIX_WRITE_LABELS,
 } from '../src/fault-matrix.js'
-import { expect, it } from 'vitest'
 
 /**
  * Completeness gate for the fault matrix: every batch label in this store's

@@ -391,9 +391,12 @@ export const soleLiveRun = (run: string): string =>
  * DESIGN.md §3.10). `task` is any alias that carries a `task_id`: a task, or a run.
  * The phase marker is written in the batch that decides the task's terminal failure.
  */
-export const sagaBegan = (task: string): string =>
+export const sagaBegan = (task: string): string => sagaBeganOf(`${task}.task_id`)
+
+/** `sagaBegan` for a task named by an expression, such as a bound id. */
+export const sagaBeganOf = (taskId: string): string =>
   `EXISTS (SELECT 1 FROM checkpoints sp
-           WHERE sp.task_id = ${task}.task_id
+           WHERE sp.task_id = ${taskId}
              AND sp.checkpoint_name = '${SAGA_PHASE_CHECKPOINT}')`
 
 /**

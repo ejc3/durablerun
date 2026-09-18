@@ -208,6 +208,12 @@ export interface TaskResult {
  * rollback that failed for good, a cancellation, or an infrastructure cap. `errorJson`
  * is the failure of the rollback that halted it, when one did.
  */
+/** What a failure did to its task's saga (DESIGN.md §3.10). */
+export interface FailOutcome {
+  /** The batch placed a rollback pass, so the task is rolling back and has not ended. */
+  readonly rollingBack: boolean
+}
+
 export interface RollbackOutcome {
   outcome: 'complete' | 'failed'
   errorJson?: string

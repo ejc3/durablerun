@@ -1,6 +1,10 @@
 import {
   ChildAwaitRefusedError,
   type ClaimedRun,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
+  encodeRollbackTry,
   isRefusedWrite,
   taskDoneEventName,
 } from '@durablerun/core'
@@ -8,6 +12,7 @@ import { Rng } from '@durablerun/harness'
 import { childTaskViolations } from './child-tasks.js'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
+import { sagaViolations } from './saga-rows.js'
 import { awaitOwned, awaitTaskOwned, checkpointOwned, withFixture } from './scenario.js'
 
 const Q = 'q'
@@ -37,6 +42,16 @@ export interface FuzzStats {
   childAwaits: number
   /** Awaits that recorded the outcome of a child that had ended with no completion event. */
   recordedEndings: number
+  /** Registered steps that started: the start marker committed (Sagas.tla's StartStep). */
+  stepsStarted: number
+  /** Terminal failures that entered the rolling-back phase. */
+  sagasEntered: number
+  /** Rollbacks that ran and committed (RunRollback). */
+  rollbacks: number
+  /** Failed rollback attempts that were recorded (RollbackRetry and RollbackHalts). */
+  rollbackFailures: number
+  /** Tasks that ended from inside the phase by a pass's own write. */
+  sagasEnded: number
 }
 
 /**
@@ -83,25 +98,114 @@ async function runWalk(
     awaits: 0,
     childAwaits: 0,
     recordedEndings: 0,
+    stepsStarted: 0,
+    sagasEntered: 0,
+    rollbacks: 0,
+    rollbackFailures: 0,
+    sagasEnded: 0,
+  }
+  /** What the walk knows of each task's saga: its steps in start order, and what ran. */
+  const sagas = new Map<
+    string,
+    { started: string[]; rolledBack: Set<string>; tries: Map<string, number> }
+  >()
+  /** Tasks the walk saw enter the phase. One may since have ended by a cancel or a sweep. */
+  const rolling = new Set<string>()
+  const sagaOf = (taskId: string) => {
+    const known = sagas.get(taskId)
+    if (known) return known
+    const fresh = { started: [], rolledBack: new Set<string>(), tries: new Map<string, number>() }
+    sagas.set(taskId, fresh)
+    return fresh
   }
 
   /** The engine invariants, and what ChildTasks.tla requires of rows only the engine wrote. */
   const violationsNow = async (): Promise<string[]> => [
     ...(await engineInvariantViolations(f.raw)),
     ...(await childTaskViolations(f.raw)),
+    ...(await sagaViolations(f.raw)),
   ]
 
   /** Fractional seconds are legal (rounded to ms) — exercise them freely. */
   const frac = (): number => (rng.next() < 0.3 ? 0.5005 : 0)
 
-  /** Run a transition that may lose its lease, and count it only when it held. */
-  const countIfHeld = async (stat: keyof FuzzStats, op: () => Promise<unknown>): Promise<void> => {
+  /** Run a transition that may lose its lease, count it only when it held, and say whether it did. */
+  const countIfHeld = async (
+    stat: keyof FuzzStats,
+    op: () => Promise<unknown>,
+  ): Promise<boolean> => {
     try {
       await op()
       stats[stat]++
+      return true
     } catch (error) {
       // Abandoned, swept, or cancelled runs legitimately refuse writes mid-walk.
       if (!isRefusedWrite(error)) throw error
+      return false
+    }
+  }
+
+  const SAGA_CAUSE = '{"name":"FuzzSagaCause"}'
+  /**
+   * One move of a rollback pass (Sagas.tla): run the rollback of the pending step that
+   * started last, fail it with budget left, fail it for good, or end the task. The walk
+   * keeps the order legal, because the order is the SDK's to keep and the row checker's
+   * to hold. Whatever else the walk does to a pass, the store must refuse.
+   */
+  const passMove = async (run: ClaimedRun): Promise<void> => {
+    const saga = sagaOf(run.taskId)
+    const pending = saga.started.filter((step) => !saga.rolledBack.has(step))
+    const step = pending[pending.length - 1]
+    const release = () => {
+      const at = held.indexOf(run)
+      if (at !== -1) held.splice(at, 1)
+    }
+    const kind = rng.next()
+    if (step !== undefined && kind < 0.4) {
+      const ran = await countIfHeld('rollbacks', () =>
+        checkpointOwned(f.store, Q, run, `${SAGA_ROLLBACK_PREFIX}${step}`, 'null', 60),
+      )
+      if (ran) saga.rolledBack.add(step)
+      return
+    }
+    release()
+    if (step !== undefined && kind < 0.8) {
+      const tries = (saga.tries.get(step) ?? 0) + 1
+      const halts = kind >= 0.7
+      const failed = await countIfHeld('rollbackFailures', () =>
+        f.store.failRollback(
+          Q,
+          run.runId,
+          run.claimToken,
+          SAGA_CAUSE,
+          halts ? null : { delaySeconds: rng.int(5) + frac() },
+          {
+            key: `${SAGA_TRIES_PREFIX}${step}`,
+            stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"FuzzRollbackBoom"}' }),
+          },
+        ),
+      )
+      if (failed) saga.tries.set(step, tries)
+      if (failed && halts) {
+        stats.sagasEnded++
+        rolling.delete(run.taskId)
+      }
+      return
+    }
+    // FinishSaga, or a pass that gives up with a rollback still owed, which the outcome says.
+    const ended = await countIfHeld('fails', () =>
+      f.store.fail(Q, run.runId, run.claimToken, SAGA_CAUSE, null),
+    )
+    if (ended) {
+      stats.sagasEnded++
+      rolling.delete(run.taskId)
+    }
+  }
+
+  /** Up to three moves of a pass the walk holds, so one saga usually shows every kind of move. */
+  const passMoves = async (run: ClaimedRun): Promise<void> => {
+    for (let move = 0; move < 3 && held.includes(run) && rolling.has(run.taskId); move++) {
+      await passMove(run)
     }
   }
 
@@ -122,6 +226,65 @@ async function runWalk(
         throw new Error(`fuzz seed ${seed} step ${step}: invalid numeric input was ACCEPTED`)
       } catch (error) {
         if (!(error instanceof RangeError)) throw error
+      }
+    } else if (roll >= 0.15 && roll < 0.2 && held.length > 0) {
+      // Sagas, five steps in a hundred taken from the spawn's share while a run is held.
+      // A held pass moves its saga on. Any other held run starts a registered step, and
+      // more often than not then fails for good, which enters the phase. The walk claims
+      // at once, so the pass is usually in hand, and moves it.
+      const run =
+        held.find((candidate) => rolling.has(candidate.taskId)) ??
+        held.find((candidate) => sagaOf(candidate.taskId).started.length > 0) ??
+        held[rng.int(held.length)]
+      if (!run) continue
+      const saga = sagaOf(run.taskId)
+      if (rolling.has(run.taskId)) {
+        await passMoves(run)
+      } else {
+        if (saga.started.length === 0 || rng.next() < 0.5) {
+          const step = `s${saga.started.length + 1}`
+          const started = await countIfHeld('stepsStarted', () =>
+            checkpointOwned(
+              f.store,
+              Q,
+              run,
+              `${SAGA_STARTED_PREFIX}${step}`,
+              String(saga.started.length + 1),
+              30 + rng.int(60) + frac(),
+            ),
+          )
+          if (started) saga.started.push(step)
+        }
+        if (saga.started.length > 0 && rng.next() < 0.6) {
+          held.splice(held.indexOf(run), 1)
+          try {
+            const failed = await f.store.fail(Q, run.runId, run.claimToken, SAGA_CAUSE, null)
+            stats.fails++
+            if (failed.rollingBack) {
+              stats.sagasEntered++
+              rolling.add(run.taskId)
+              const claimed = await f.store.claim(Q, `w${claimCounter++}`, {
+                leaseSeconds: 60,
+                limit: 3,
+              })
+              stats.claims += claimed.length
+              for (const next of claimed) {
+                const activated = await f.store.activate(
+                  Q,
+                  next.runId,
+                  next.claimToken,
+                  next.claimGen,
+                )
+                if (!activated) continue
+                held.push(activated)
+                stats.activates++
+                if (activated.taskId === run.taskId) await passMoves(activated)
+              }
+            }
+          } catch (error) {
+            if (!isRefusedWrite(error)) throw error
+          }
+        }
       }
     } else if (roll < 0.2) {
       const opts =
@@ -161,6 +324,13 @@ async function runWalk(
     } else if (roll < 0.65 && held.length > 0) {
       const run = held.splice(rng.int(held.length), 1)[0]
       if (!run) continue
+      if (rolling.has(run.taskId) && rng.next() < 0.5) {
+        // A pass moves its saga on. The other half of the time the walk treats it as
+        // any held run, and the store must refuse whatever would move it forward.
+        held.push(run)
+        await passMoves(run)
+        continue
+      }
       const kind = rng.next()
       if (kind < 0.35) {
         await countIfHeld('completes', () =>
@@ -350,7 +520,9 @@ async function runWalk(
     stats.fails +
     stats.reschedules +
     stats.sweepTransitions +
-    stats.cancels
+    stats.cancels +
+    stats.rollbacks +
+    stats.sagasEnded
   if (steps >= 50 && progress === 0) {
     throw new Error(`fuzz seed ${seed}: zero progress across ${steps} steps`)
   }

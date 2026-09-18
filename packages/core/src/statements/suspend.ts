@@ -17,6 +17,8 @@ export const suspendCas = defineStatement(
     wakeAt: SqlFragment
     wakeFits: SqlFragment
     admission: SqlFragment
+    /** What the saga phase requires of this park, when it requires anything (§3.10). */
+    phase?: SqlFragment
   }) =>
     treeBuilder
       .updateTable('runs')
@@ -26,5 +28,8 @@ export const suspendCas = defineStatement(
       }))
       .$call(whereClaimedRun(binds))
       .where(rawSql<boolean>(binds.admission, 'predicate'))
-      .where(rawSql<boolean>(binds.wakeFits, 'predicate')),
+      .where(rawSql<boolean>(binds.wakeFits, 'predicate'))
+      .$if(binds.phase !== undefined, (query) =>
+        query.where(rawSql<boolean>(binds.phase as SqlFragment, 'predicate')),
+      ),
 )

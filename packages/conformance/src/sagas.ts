@@ -1,6 +1,7 @@
 import {
   type ClaimedRun,
   INFRA_RETRY_CAP,
+  REASON_CANCELLED,
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   REASON_ROLLED_BACK,
@@ -9,16 +10,28 @@ import {
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
+  type SpawnOptions,
   type SqlExecutor,
-  type SqlRow,
+  type TaskOutcome,
   decodeRollbackTry,
   encodeRollbackTry,
+  encodeTaskOutcome,
 } from '@durablerun/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { childTaskViolations } from './child-tasks.js'
+import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
-import { checkpointOwned, claimActivated, claimOne, refusalName } from './scenario.js'
+import { sagaViolations } from './saga-rows.js'
+import {
+  awaitOwned,
+  awaitTaskOwned,
+  checkpointOwned,
+  claimActivated,
+  claimOne,
+  refusalName,
+  withFixture,
+} from './scenario.js'
 
 const Q = 'q'
 const START_MS = 1_000_000
@@ -28,90 +41,6 @@ const ROLLBACK_BOOM = '{"name":"RollbackBoom"}'
 async function rowsOf(raw: SqlExecutor, sql: string, args: (string | number)[] = []) {
   const [result] = await raw.batch('saga-rows', [{ sql, args }], 'read')
   return result?.rows ?? []
-}
-
-/**
- * What specs/Sagas.tla requires of any history the engine itself produced, read from the
- * saga's checkpoints (core `sagas.ts`). Like `childTaskViolations` it is not part of the
- * invariant library, which also judges rows the poison matrix writes by hand.
- *
- * - StartOrderDistinct: a start marker holds a positive index, and no two of a task share one.
- * - RollbackOnlyEligible: a rollback ran only for a step that started.
- * - SagaOnlyAfterDecision: a rollback or an attempt record exists only once the phase began.
- * - ReverseOrder: a step is rolled back only once every step that started after it is.
- * - ForwardFrozenInSaga: no forward checkpoint is as new as the phase marker, and a task
- *   in the phase never completed.
- */
-export async function sagaViolations(raw: SqlExecutor): Promise<string[]> {
-  const tasks = await rowsOf(raw, 'SELECT task_id, state FROM tasks')
-  const checkpoints = await rowsOf(
-    raw,
-    'SELECT task_id, checkpoint_name, state, owner_attempt FROM checkpoints',
-  )
-  const violations: string[] = []
-  const byTask = new Map<string, SqlRow[]>()
-  for (const row of checkpoints) {
-    const taskId = String(row.task_id)
-    byTask.set(taskId, [...(byTask.get(taskId) ?? []), row])
-  }
-  for (const task of tasks) {
-    const taskId = String(task.task_id)
-    const rows = byTask.get(taskId) ?? []
-    const named = (prefix: string) =>
-      rows.filter((row) => String(row.checkpoint_name).startsWith(prefix))
-    const stepOf = (row: SqlRow, prefix: string) => String(row.checkpoint_name).slice(prefix.length)
-    const marker = rows.find((row) => String(row.checkpoint_name) === SAGA_PHASE_CHECKPOINT)
-    const started = new Map<string, number>()
-    for (const row of named(SAGA_STARTED_PREFIX)) {
-      const index = Number(row.state)
-      if (!Number.isSafeInteger(index) || index < 1 || String(index) !== String(row.state)) {
-        violations.push(`saga/start-index-not-a-positive-integer: ${taskId}/${row.checkpoint_name}`)
-      }
-      if ([...started.values()].includes(index)) {
-        violations.push(`saga/start-index-shared: ${taskId}/${index}`)
-      }
-      started.set(stepOf(row, SAGA_STARTED_PREFIX), index)
-    }
-    const rolledBack = new Set(
-      named(SAGA_ROLLBACK_PREFIX).map((row) => stepOf(row, SAGA_ROLLBACK_PREFIX)),
-    )
-    for (const step of rolledBack) {
-      const index = started.get(step)
-      if (index === undefined) {
-        violations.push(`saga/rollback-of-a-step-that-never-started: ${taskId}/${step}`)
-        continue
-      }
-      for (const [later, laterIndex] of started) {
-        if (laterIndex > index && !rolledBack.has(later)) {
-          violations.push(`saga/rollback-out-of-order: ${taskId}/${step} before ${later}`)
-        }
-      }
-    }
-    for (const row of named(SAGA_TRIES_PREFIX)) {
-      if (decodeRollbackTry(String(row.state)) === null) {
-        violations.push(`saga/attempt-record-undecodable: ${taskId}/${row.checkpoint_name}`)
-      }
-    }
-    if (marker === undefined) {
-      if (rolledBack.size > 0 || named(SAGA_TRIES_PREFIX).length > 0) {
-        violations.push(`saga/rollback-outside-the-phase: ${taskId}`)
-      }
-      continue
-    }
-    if (String(task.state) === 'completed')
-      violations.push(`saga/completed-in-the-phase: ${taskId}`)
-    for (const row of rows) {
-      const name = String(row.checkpoint_name)
-      const ofThePhase =
-        name === SAGA_PHASE_CHECKPOINT ||
-        name.startsWith(SAGA_ROLLBACK_PREFIX) ||
-        name.startsWith(SAGA_TRIES_PREFIX)
-      if (!ofThePhase && Number(row.owner_attempt) >= Number(marker.owner_attempt)) {
-        violations.push(`saga/forward-checkpoint-in-the-phase: ${taskId}/${name}`)
-      }
-    }
-  }
-  return violations
 }
 
 const startMarker = (step: string) => `${SAGA_STARTED_PREFIX}${step}`
@@ -170,6 +99,106 @@ async function rollingBack(f: StoreFixture, steps: readonly string[] = ['a']) {
   await f.store.fail(Q, run.runId, run.claimToken, CAUSE, null)
   const pass = await claimActivated(f.store, Q, 'w-pass')
   return { taskId: spawned.taskId, forward: run, pass }
+}
+
+/** How one batch that can end a task ends a task that is rolling back, with one rollback owed. */
+interface SagaEnding {
+  readonly spawn?: SpawnOptions
+  /** Put the forward run where this batch needs it, before its step starts. */
+  readonly seedForward?: (f: StoreFixture, forward: ClaimedRun) => Promise<void>
+  /** The pass is claimed and never activated, as a lost launch is. */
+  readonly unlaunched?: boolean
+  readonly seedPass?: (f: StoreFixture, pass: ClaimedRun) => Promise<void>
+  readonly advanceMs?: number
+  readonly end: (f: StoreFixture, taskId: string, pass: ClaimedRun) => Promise<unknown>
+  /** What `end` answers. */
+  readonly ended: unknown
+  /** The outcome the batch gives the task, or null when the phase refuses the batch. */
+  readonly outcome: TaskOutcome | null
+  readonly rollback?: { outcome: 'complete' | 'failed'; errorJson?: string }
+}
+
+const sweepKinds = async (f: StoreFixture) =>
+  (await f.store.sweep(Q, 10)).map((swept) => swept.kind)
+
+const SAGA_ENDINGS: Record<(typeof TERMINAL_BATCH_LABELS)[number], SagaEnding> = {
+  // A task that is rolling back cannot complete.
+  complete: {
+    end: (f, _taskId, pass) => refusalName(f.store.complete(Q, pass.runId, pass.claimToken, '"x"')),
+    ended: 'LeaseLostError',
+    outcome: null,
+  },
+  // FinishSaga: the pass ran every rollback, and ends the task with the deciding failure.
+  fail: {
+    end: async (f, _taskId, pass) => {
+      await checkpointOwned(f.store, Q, pass, rollbackOf('a'), 'null', 60)
+      return f.store.fail(Q, pass.runId, pass.claimToken, CAUSE, null)
+    },
+    ended: { rollingBack: false },
+    outcome: { state: 'failed', failureReasonJson: CAUSE },
+    rollback: { outcome: 'complete' },
+  },
+  // RollbackHalts.
+  'fail-rollback': {
+    end: (f, _taskId, pass) =>
+      f.store.failRollback(Q, pass.runId, pass.claimToken, CAUSE, null, triesOf('a', 1)),
+    ended: { rollingBack: false },
+    outcome: { state: 'failed', failureReasonJson: CAUSE },
+    rollback: { outcome: 'failed', errorJson: ROLLBACK_BOOM },
+  },
+  // Cancel, under "halts".
+  'cancel-task': {
+    end: (f, taskId) => f.store.cancelTask(Q, taskId),
+    ended: true,
+    outcome: { state: 'cancelled', failureReasonJson: REASON_CANCELLED },
+    rollback: { outcome: 'failed' },
+  },
+  'sweep:cancel': {
+    spawn: { cancellation: { maxDurationSeconds: 30 } },
+    advanceMs: 100_000,
+    end: sweepKinds,
+    ended: ['cancelled'],
+    outcome: { state: 'cancelled', failureReasonJson: REASON_CANCELLED },
+    rollback: { outcome: 'failed' },
+  },
+  // An infrastructure cap inside the phase ends the saga where it stands.
+  'sweep:lost-launch': {
+    unlaunched: true,
+    seedPass: async (f, pass) => {
+      await f.raw.batch('seed-relaunch-cap', [
+        {
+          sql: 'UPDATE runs SET relaunch_count = ? WHERE run_id = ?',
+          args: [RELAUNCH_CAP, pass.runId],
+        },
+      ])
+    },
+    advanceMs: 100_000,
+    end: sweepKinds,
+    ended: ['relaunch-cap-exhausted'],
+    outcome: { state: 'failed', failureReasonJson: REASON_RELAUNCH_CAP },
+    rollback: { outcome: 'failed' },
+  },
+  'sweep:claim-timeout': {
+    // The forward run is already the last infrastructure retry, so the pass that
+    // follows it dies at the cap.
+    seedForward: async (f, forward) => {
+      await f.raw.batch('seed-infra-cap', [
+        {
+          sql: 'UPDATE tasks SET infra_retries = ? WHERE task_id = ?',
+          args: [INFRA_RETRY_CAP, forward.taskId],
+        },
+        {
+          sql: 'UPDATE runs SET attempt = ? WHERE run_id = ?',
+          args: [INFRA_RETRY_CAP + 1, forward.runId],
+        },
+      ])
+    },
+    advanceMs: 4_000_000,
+    end: sweepKinds,
+    ended: ['infra-cap-exhausted'],
+    outcome: { state: 'failed', failureReasonJson: REASON_INFRA_CAP },
+    rollback: { outcome: 'failed' },
+  },
 }
 
 /**
@@ -277,6 +306,18 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         step: await refusalName(checkpointOwned(f.store, Q, pass, 'b', '"late"', 60)),
         start: await refusalName(startStep(f, pass, 'b', 2)),
         complete: await refusalName(f.store.complete(Q, pass.runId, pass.claimToken, '"done"')),
+        // What a worker of an older build would try next: a durable sleep, which commits
+        // a marker, and an await, which parks the pass on an event that may never come.
+        suspend: await refusalName(
+          f.store.suspendRun(
+            Q,
+            pass.runId,
+            pass.claimToken,
+            { inSeconds: 5 },
+            { key: '$sleep', stateJson: '{"inSeconds":5}' },
+          ),
+        ),
+        await: await refusalName(awaitOwned(f.store, Q, pass, '$await:never', 'never', null)),
       }
       const rollback = await refusalName(
         checkpointOwned(f.store, Q, pass, rollbackOf('a'), 'null', 60),
@@ -289,7 +330,13 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         checkpoints: await checkpointNames(f, spawned.taskId),
       }).toEqual({
         before: 'LeaseLostError',
-        frozen: { step: 'LeaseLostError', start: 'LeaseLostError', complete: 'LeaseLostError' },
+        frozen: {
+          step: 'LeaseLostError',
+          start: 'LeaseLostError',
+          complete: 'LeaseLostError',
+          suspend: 'LeaseLostError',
+          await: 'LeaseLostError',
+        },
         rollback: 'accepted',
         task: 'running',
         checkpoints: [SAGA_PHASE_CHECKPOINT, rollbackOf('a'), startMarker('a')].sort(),
@@ -508,6 +555,74 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
           },
         },
       })
+    })
+
+    // The completion event is the task's first terminal outcome, so the batch that enters
+    // the phase writes none, and each batch that can end a task writes exactly one when it
+    // ends a task that is rolling back. One case over every terminal label: a label added
+    // to the list does not compile until it says how it ends a saga.
+    it('a parent awaiting a rolling-back child sees nothing until the saga ends, then one outcome', async () => {
+      const observed: Record<string, unknown> = {}
+      const expected: Record<string, unknown> = {}
+      for (const label of TERMINAL_BATCH_LABELS) {
+        const ending = SAGA_ENDINGS[label]
+        await withFixture(makeFixture, `saga-ending-${label}`, async (fx) => {
+          await fx.admin.setFakeNowEpochMs(START_MS)
+          await fx.store.spawn(Q, 'parent', '{}')
+          const parent = await claimActivated(fx.store, Q, 'w-parent', 3600)
+          const child = await fx.store.spawn(Q, 'child', '{}', ending.spawn ?? {})
+          const forward = await claimActivated(fx.store, Q, 'w-child')
+          await ending.seedForward?.(fx, forward)
+          await startStep(fx, forward, 'a', 1)
+          const parked = await awaitTaskOwned(fx.store, Q, parent, 's', child.taskId, null)
+          const entered = await fx.store.fail(Q, forward.runId, forward.claimToken, CAUSE, null)
+          const whileRollingBack = {
+            events: await doneEvents(fx),
+            parent: (
+              await rowsOf(fx.raw, 'SELECT state FROM runs WHERE run_id = ?', [parent.runId])
+            )[0]?.state,
+          }
+          const pass = ending.unlaunched
+            ? await claimOne(fx.store, Q, 'w-pass')
+            : await claimActivated(fx.store, Q, 'w-pass', 3600)
+          await ending.seedPass?.(fx, pass)
+          if (ending.advanceMs !== undefined) {
+            await fx.admin.setFakeNowEpochMs(START_MS + ending.advanceMs)
+          }
+          const ended = await ending.end(fx, child.taskId, pass)
+          const [parentRun] = await rowsOf(
+            fx.raw,
+            'SELECT state, event_payload FROM runs WHERE run_id = ?',
+            [parent.runId],
+          )
+          observed[label] = {
+            parked,
+            entered,
+            whileRollingBack,
+            ended,
+            events: await doneEvents(fx),
+            parent: { state: parentRun?.state, payload: parentRun?.event_payload },
+            result: await fx.store.getTaskResult(Q, child.taskId),
+            violations: await sagaViolations(fx.raw),
+          }
+          const outcome = ending.outcome
+          expected[label] = {
+            parked: { emitted: false },
+            entered: { rollingBack: true },
+            whileRollingBack: { events: 0, parent: 'sleeping' },
+            ended: ending.ended,
+            events: outcome === null ? 0 : 1,
+            parent:
+              outcome === null
+                ? { state: 'sleeping', payload: null }
+                : { state: 'pending', payload: encodeTaskOutcome(outcome) },
+            result:
+              outcome === null ? { state: 'running' } : { ...outcome, rollback: ending.rollback },
+            violations: [],
+          }
+        })
+      }
+      expect(observed).toEqual(expected)
     })
 
     it('names the reason a finished pass ends its run with', () => {

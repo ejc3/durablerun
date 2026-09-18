@@ -5,6 +5,7 @@ import {
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
   EventName,
+  type FailOutcome,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -1746,7 +1747,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     _failureJson: string,
     _retry: { delaySeconds: number } | null,
     _rollbackTry: CheckpointWrite,
-  ): Promise<void> {
+  ): Promise<FailOutcome> {
     throw new Error('sagas are not ported to the MySQL store: failRollback is not implemented')
   }
 
@@ -1756,7 +1757,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     claimToken: string,
     failureJson: string,
     retry: { delaySeconds: number } | null,
-  ): Promise<void> {
+  ): Promise<FailOutcome> {
     requireIndexable({ queue, runId })
     const successorId = retry ? this.ids.uuidv7() : null
     const retryDelayMs = retry ? durationToMs('retry.delaySeconds', retry.delaySeconds) : null
@@ -1883,6 +1884,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
     })
     const { won } = await b.run(this.db)
     if (won !== 'fail') throw await this.refusal('fail', runId)
+    // No saga runs on this store (`SAGAS_NOT_PORTED`), so no failure places a rollback pass.
+    return { rollingBack: false }
   }
 
   async getCheckpoints(queue: string, taskId: string, attempt: number): Promise<Checkpoint[]> {
@@ -2495,6 +2498,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
         ]),
         taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
         taskEligible: sqlFragment(eligibleTask('t', NOW)),
+        phase: SAGAS_NOT_PORTED,
       }),
     )
     // available_at_ms IS this wait's own timeout_at_ms, copied from the row

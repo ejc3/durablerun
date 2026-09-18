@@ -67,6 +67,7 @@ function faultMatrixConformance(dialect: string, makeFixture: StoreFixtureFactor
             'mutation-verdict:behavior:fault-matrix-edge-crossing:relaunch-cap-edge',
           'attempt-cap-edge':
             'mutation-verdict:behavior:fault-matrix-edge-crossing:attempt-cap-edge',
+          'saga-cap-edges': 'mutation-verdict:behavior:fault-matrix-edge-crossing:saga-cap-edges',
         }[preState]
         expect(observed, crossingMarker).toEqual(
           cellSeedVector.map(({ label, fault, seed }) => ({
