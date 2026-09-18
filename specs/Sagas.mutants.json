@@ -211,7 +211,7 @@
   },
   {
     "name": "rollback-runs-twice",
-    "guard": "a rollback that is done is not pending. RollbackIsFinal reports first, because a done rollback left pending can still fail for good. Without it DecisionSettles holds the guard: the saga never finishes",
+    "guard": "a rollback that is done is not pending. RollbackIsFinal holds it because a done rollback left pending can still fail for good, and DecisionSettles holds it too, because the saga never finishes",
     "caughtBy": "RollbackIsFinal",
     "find": "Pending == {s \\in Eligible : rb[s] = \"none\"}",
     "replace": "Pending == {s \\in Eligible : rb[s] # \"failed\"}"
@@ -351,8 +351,8 @@
   },
   {
     "name": "revive-keeps-the-memo",
-    "guard": "a revival forgets every rolled-back step. StartOrderDistinct reports first, at the revival. Without it MemoMatchesEffect holds the guard: replay would skip a step whose effect is gone",
-    "caughtBy": "StartOrderDistinct",
+    "guard": "a revival forgets every rolled-back step, or replay would skip a step whose effect is gone",
+    "caughtBy": "MemoMatchesEffect",
     "find": "          /\\ fwd' = [s \\in Steps |-> IF s \\in Eligible THEN \"none\" ELSE fwd[s]]\n",
     "replace": "          /\\ fwd' = fwd\n"
   },
@@ -365,14 +365,14 @@
   },
   {
     "name": "revive-keeps-the-rollbacks",
-    "guard": "a new generation starts with no rollback done. RollbackOnlyEligible reports first, at the revival. Without it DoneMeansCompensated holds the guard: the step runs again and its rollback already reads as done",
-    "caughtBy": "RollbackOnlyEligible",
+    "guard": "a new generation starts with no rollback done, or a step that runs again finds its rollback already done",
+    "caughtBy": "DoneMeansCompensated",
     "find": "          /\\ rb' = [s \\in Steps |-> \"none\"]\n",
     "replace": "          /\\ rb' = rb\n"
   },
   {
     "name": "revive-keeps-the-tries",
-    "guard": "a new generation starts with fresh rollback budgets. Held by bookkeeping only: RollbackOnlyEligible, ReverseOrder, and SagaOnlyAfterDecision each see an attempt spent before any rollback is owed, and no soundness property speaks for it",
+    "guard": "a new generation starts with fresh rollback budgets. Bookkeeping invariants alone hold this, and no soundness property speaks for it",
     "caughtBy": "RollbackOnlyEligible",
     "find": "          /\\ rbTries' = [s \\in Steps |-> 0]\n",
     "replace": "          /\\ rbTries' = rbTries\n"
@@ -383,5 +383,12 @@
     "caughtBy": "DoneMeansCompensated",
     "find": "  /\\ rb' = [rb EXCEPT ![s] = \"failed\"]\n",
     "replace": "  /\\ rb' = [rb EXCEPT ![s] = \"done\"]\n"
+  },
+  {
+    "name": "cancel-writes-an-unknown-state",
+    "guard": "every state a batch writes is one the model knows",
+    "caughtBy": "TypeOK",
+    "find": "  /\\ task' = \"cancelled\"\n",
+    "replace": "  /\\ task' = \"canceled\"\n"
   }
 ]

@@ -117,5 +117,33 @@
     "caughtBy": "RefusalIsTheRule",
     "find": "AwaitRefused ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\" /\\ ~AwaitAllowed",
     "replace": "AwaitRefused ==\n  /\\ parent = \"running\" /\\ child # \"unspawned\""
+  },
+  {
+    "name": "terminal-skips-the-emit",
+    "guard": "a terminal batch writes the completion event",
+    "caughtBy": "TerminalImpliesDone",
+    "find": "  /\\ IF AtomicEmit\n     THEN Emit(o)\n",
+    "replace": "  /\\ IF FALSE\n     THEN Emit(o)\n"
+  },
+  {
+    "name": "forged-emit-ignores-the-rule",
+    "guard": "only a terminal batch writes the completion event",
+    "caughtBy": "DoneAuthority",
+    "find": "  /\\ UserMayForge /\\ doneEvent = None\n",
+    "replace": "  /\\ doneEvent = None\n"
+  },
+  {
+    "name": "emit-takes-the-wait-and-wakes-nobody",
+    "guard": "the emit that consumes a wait wakes its parent",
+    "caughtBy": "EveryWaitResolves",
+    "find": "          THEN parent' = \"woken\" /\\ parked' = o /\\ wait' = FALSE\n",
+    "replace": "          THEN wait' = FALSE /\\ UNCHANGED <<parent, parked>>\n"
+  },
+  {
+    "name": "cancel-writes-an-unknown-state",
+    "guard": "every state a batch writes is one the model knows",
+    "caughtBy": "TypeOK",
+    "find": "  /\\ parent' = \"cancelled\" /\\ wait' = FALSE\n",
+    "replace": "  /\\ parent' = \"canceled\" /\\ wait' = FALSE\n"
   }
 ]

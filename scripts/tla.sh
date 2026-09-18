@@ -219,10 +219,14 @@ done
 # and some pass configuration of that model must then FAIL. A probe shows an
 # invariant can fail. Only a mutant shows that a guard is held by anything: a
 # model can stay green with a guard deleted when no invariant speaks for it. A
-# mutant is caught only when the property its entry names is the one violated,
-# so a catch by accident does not count. A mutant whose text is not found
-# exactly once, or whose run ends in anything but a verdict, is an error and
-# not a catch.
+# mutant runs under each pass configuration REDUCED to the one property its
+# entry names, and is caught only when that property is violated. Checked among
+# the others, TLC reports whichever violation it meets first, so the name in an
+# entry would follow the order of a list and not what holds the guard. A mutant
+# whose text is not found exactly once, or whose run ends in anything but a
+# verdict, is an error and not a catch. And every property a model checks must
+# be named by some mutant: one that none names can be deleted from every
+# configuration with the gate still green.
 echo "== phase 1: side-model mutants (each MUST be caught)"
 command -v python3 >/dev/null || {
   echo "tla.sh: INFRA ERROR: the mutant check needs python3" >&2
@@ -230,13 +234,32 @@ command -v python3 >/dev/null || {
 }
 mutant_code=0
 python3 - "$JAVA_BIN" "$JAR" "$STATES/mutants" "${mutant_jobs[@]}" <<'PY' || mutant_code=$?
-import json, os, shutil, subprocess, sys
+import json, os, re, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 java, jar, out = sys.argv[1:4]
 # Each further argument is <Model>:<cfg>,<cfg>..., the model's pass configurations as
 # the shell above decided them. There is no second definition of them here.
 models = [(model, configs.split(",")) for model, _, configs in (job.partition(":") for job in sys.argv[4:])]
+
+
+SECTION = re.compile(r"^(INVARIANTS?|PROPERTY|PROPERTIES)\b(.*)$")
+
+
+def checked(text):
+    # A cfg's lines less its INVARIANT and PROPERTY sections, and what those sections name.
+    kept, kinds, kind = [], {}, None
+    for line in text.splitlines():
+        header = SECTION.match(line)
+        if header:
+            kind = "INVARIANT" if header.group(1).startswith("INV") else "PROPERTY"
+            kinds.update((name, kind) for name in header.group(2).split())
+        elif kind and re.fullmatch(r"\s+\w+\s*", line):
+            kinds[line.strip()] = kind
+        else:
+            kind = None
+            kept.append(line)
+    return kept, kinds
 
 
 def check(job):
@@ -250,7 +273,12 @@ def check(job):
         handle.write(spec.replace(find, mutant["replace"]))
     others = []
     for config in configs:
-        shutil.copy(config, scratch)
+        kept, kinds = checked(open(config).read())
+        if expect not in kinds:
+            others.append(f"{config}: does not check {expect}")
+            continue
+        with open(os.path.join(scratch, config), "w") as handle:
+            handle.write("\n".join(kept) + f"\n{kinds[expect]}\n  {expect}\n")
         run = subprocess.run(
             [java, "-Xmx512m", "-cp", jar, "tlc2.TLC", "-workers", "1", "-deadlock", "-noGenerateSpecTE",
              "-metadir", os.path.join(scratch, "meta-" + config), "-config", config, model + ".tla"],
@@ -268,7 +296,7 @@ def check(job):
         others.append(f"{config}: {violated[0] if violated else f'TLC exit {run.returncode}'}")
     if others:
         return name, "WRONG-PROPERTY", f"expected {expect} and saw only {'; '.join(others)}"
-    return name, "SURVIVED", f"every configuration still passes, so nothing holds: {mutant['guard']}"
+    return name, "SURVIVED", f"{expect} still holds under every configuration, so it does not hold: {mutant['guard']}"
 
 
 failed = False
@@ -286,6 +314,10 @@ for model, configs in models:
     caught = sum(verdict == "caught" for _, verdict, _ in verdicts)
     print(f"{model} mutants: {caught} of {len(verdicts)} caught")
     failed = failed or caught != len(verdicts)
+    named = {mutant["caughtBy"] for mutant in mutants}
+    for unnamed in sorted(set(checked(open(configs[0]).read())[1]) - named):
+        print(f"UNNAMED: {model}/{unnamed} is checked and no mutant names it, so nothing shows it can fail")
+        failed = True
 sys.exit(3 if failed else 0)
 PY
 # Exit 3 is the check's verdict. Any other failure is the check itself failing,
