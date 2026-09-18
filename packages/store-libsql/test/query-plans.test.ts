@@ -304,6 +304,54 @@ describe("a terminal batch's wake, which every task ending pays", () => {
       'mutation-verdict:behavior:wake-tasks-binds-the-queue',
     ).toEqual([true, true, true])
   })
+  /**
+   * The pin above reads the side of `wake-tasks` that is written. The side that is read
+   * is where the cost was left: each of the three follow-ons that come after the wake
+   * finds the runs this batch woke by queue and state, and the only index for that is
+   * `runs_poll`, so every task ending walks every pending run of its queue. Measured on
+   * libSQL with nobody waiting: 6 to 10 ms at 2,000 pending runs against 4 ms with the
+   * backlog in another queue, and 215 ms at 100,000 against 55 ms. This reads every write
+   * of every batch that ends a task through a call that needs no clock move.
+   */
+  async function shippedTerminalWrites(): Promise<
+    { label: string; sql: string; args: unknown[] }[]
+  > {
+    const seen: { label: string; sql: string; args: unknown[] }[] = []
+    const recorder: SqlExecutor = {
+      batch: (label, statements, mode) => {
+        if (label === 'complete' || label === 'fail' || label === 'cancel-task') {
+          for (const st of statements) seen.push({ label, sql: st.sql, args: [...st.args] })
+        }
+        return db.batch(label, statements, mode)
+      },
+    }
+    const store = new LibsqlSchedulerStore(recorder, testIdSource('terminal-source-plans'))
+    const ready = async (name: string) => {
+      await store.spawn('q', name, '{}', { maxAttempts: 1 })
+      const [run] = await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })
+      if (!run) throw new Error('expected a claimed run')
+      await store.activate('q', run.runId, 'worker', run.claimGen)
+      return run
+    }
+    await store.complete('q', (await ready('completes')).runId, 'worker', '{}')
+    await store.fail('q', (await ready('fails')).runId, 'worker', '{}', null)
+    await store.cancelTask('q', (await store.spawn('q', 'is-cancelled', '{}')).taskId)
+    expect([...new Set(seen.map((st) => st.label))]).toEqual(['complete', 'fail', 'cancel-task'])
+    return seen.filter((st) => /^\s*(update|delete|insert)/i.test(st.sql))
+  }
+
+  it('finds the runs it woke without walking the pending runs of the queue', async () => {
+    const walks: string[] = []
+    for (const st of await shippedTerminalWrites()) {
+      const p = await writePlan(st.sql, st.args as (string | number)[])
+      for (const step of p.split('\n')) {
+        if (/USING INDEX runs_poll \(queue=\? AND state=\?\)$/.test(step.trim())) {
+          walks.push(`${st.label}: ${st.sql.trim().split(/\s+/).slice(0, 3).join(' ')}`)
+        }
+      }
+    }
+    expect(walks, 'mutation-verdict:behavior:wake-sources-find-the-woken-runs').toEqual([])
+  })
 })
 
 describe('cancellation deadlines', () => {
