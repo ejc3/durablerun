@@ -1,9 +1,4 @@
-import {
-  INFRA_RETRY_CAP,
-  RELAUNCH_CAP,
-  type SqlExecutor,
-  taskDoneEventName,
-} from '@durablerun/core'
+import { INFRA_RETRY_CAP, RELAUNCH_CAP, type SqlExecutor } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
@@ -449,17 +444,28 @@ export async function runFaultMatrixCase(
       }
 
       // A child that ended with no completion event, as a build older than the event
-      // leaves it. The await of it records the outcome in a batch of its own
-      // (ChildTasks.tla's AwaitMaterialize), which makes that batch a cell of this matrix.
+      // leaves it. That build is this store over an executor that sends `cancel-task`
+      // without its event insert, so every statement still goes through the simulated
+      // port: a promise the simulator does not own breaks its determinism contract. The
+      // await of the child records the outcome in a batch of its own (ChildTasks.tla's
+      // AwaitMaterialize), which makes that batch a cell of this matrix.
+      const olderBuild = f.storeOver({
+        batch: (batchLabel, statements, control) =>
+          simDb.batch(
+            batchLabel,
+            batchLabel !== 'cancel-task'
+              ? statements
+              : statements.map((statement) =>
+                  /^insert into "events"/i.test(statement.sql)
+                    ? { ...statement, sql: 'SELECT 1 WHERE 1 = 0', args: [] }
+                    : statement,
+                ),
+            control,
+          ),
+      })
       const endedTask = await go(() => store.spawn(Q, 'ended-child', '{}'))
       if (endedTask) {
-        await go(() => store.cancelTask(Q, endedTask.taskId))
-        await f.raw.batch('matrix:an-older-build-wrote-no-event', [
-          {
-            sql: 'DELETE FROM events WHERE queue = ? AND event_name = ?',
-            args: [Q, taskDoneEventName(endedTask.taskId)],
-          },
-        ])
+        await go(() => olderBuild.cancelTask(Q, endedTask.taskId))
         const lateParent = await go(() => store.spawn(Q, 'late-parent', '{}'))
         const [late] =
           (await go(() => store.claim(Q, 'w-late-parent', { leaseSeconds: 60, limit: 1 }))) ?? []
