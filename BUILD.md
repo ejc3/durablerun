@@ -1232,6 +1232,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and a port's event name to the durable string domain, each where it enters.
     A queue or a step name at the other ports is not checked at the port. One
     check for the whole port is its own change.
+  - A plan check over every write of the libSQL corpus. `query-plans.test.ts`
+    pins the statements someone chose, so the terminal wake had no pin when it
+    moved into six batches, and the keyed follow-ons below scan `tasks` today
+    with every test green. The property is that no write scans a table once
+    for each row of another, and a check generated from the corpus would hold
+    it for every statement. It is its own change.
   - Option, not a deferral of this PR: the generated follow-ons that select
     their source by key (`task`, `task-mirror`) still correlate the source to
     `tasks` on the queue, so their plan is a scan of `tasks` with a keyed probe

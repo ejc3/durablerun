@@ -600,7 +600,10 @@ One invocation executes one claimed run to its next suspension point:
     the event too, so it takes the same lock, and a case of the same kind holds
     it: two such awaits of one child, the first held open after its insert.
     Without the lock the second inserts the same row, the table's key refuses
-    it, and the await is reported as an outage. A race of twelve real concurrent awaits
+    it, and the await is reported as an outage. The emit has a case of the same
+    kind, and the await's lock is the other side of every one of them, so each
+    of the eight lines that take the lock has a case that cannot miss and a
+    mutation that removes it. A race of twelve real concurrent awaits
     against every terminal batch also runs on both dialects. It is a smoke and
     not the proof: with the lock dropped it caught one site of five.
   - The PostgreSQL event lock is `pg_advisory_xact_lock` on a key hashed from
