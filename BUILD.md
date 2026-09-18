@@ -1202,17 +1202,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
   and 0 rows`, the reason that test has reported since PR #40. The executor
   now reads the version under READ COMMITTED, where the snapshot follows the
   name lookup, and none of 3000 rounds rejected one. DESIGN.md states the
-  property for each dialect. `postgres-bootstrap-window.test.ts` shows both
-  isolation levels on the server, with one advisory lock ordering a
-  bootstrap's commit after the reader's first statement. No test can order the
-  inside of one statement, so the executor's unit test and its registered
-  mutation hold the isolation level, and the eight-migrator case still meets
-  the race in under one run in a hundred. A first fix, a confirming second
-  read in both admins, treated the symptom and was replaced in review. The
-  same review found that the libSQL admin ran its bootstrap bare, against
-  DESIGN.md, so a bootstrap that lost to a concurrent winner rejected the
-  loser. It is forgiven now once the metadata exists. The round is
-  `postmortems/pr3.12-migrator-race-review.md`.
+  property for each dialect. `postgres-bootstrap-window.test.ts` orders the
+  race inside one statement on the server, under each isolation level: the
+  statement names a second table first, and a concurrent transaction holds
+  that table locked until it has bootstrapped and committed. The executor's
+  canonical read names one table and cannot be held that way, so the
+  executor's unit test and its registered mutation hold the isolation level,
+  and the eight-migrator case still meets the race in under one run in a
+  hundred. A first fix, a confirming second read in both admins, treated the
+  symptom and was replaced in review. The same review found that the libSQL
+  admin ran its bootstrap bare, against DESIGN.md, so a bootstrap that lost to
+  a concurrent winner rejected the loser. It is forgiven now once the metadata
+  exists. The round is `postmortems/pr3.12-migrator-race-review.md`.
 - **PR3.13 `verify` fails with every test passing**: three times on 2026-09-17
   the `verify` job exited 1 after every test had passed, on vitest's unhandled
   error `[vitest-worker]: Timeout calling "onTaskUpdate"`. Measured: a worker
