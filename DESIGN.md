@@ -1645,6 +1645,13 @@ realized in the store's compiler, executor, fragments, or schema:
   line either, so that rule reads the statement and applies to an `INSERT`
   alone. The flag is part of the handshake and mysql2 turns it on by default,
   so a pool the application owns is refused unless it connects without it.
+  The session settings are sent once for each physical connection. The store's
+  own pool therefore never resets a connection on release, and a pool the
+  application owns is refused if it does, because a reset clears the settings
+  and every later write would run at REPEATABLE READ with no strict mode. For
+  the same reason, a pool handed to `fromPool` must not have its session state
+  changed by anything else that uses it: the store does not send the settings
+  again.
 - **A write with no index to find its rows locks every row it scans**, under
   READ COMMITTED too, and waits on rows other transactions hold. The driver
   registry's cleanup was such a `DELETE`: 171 of 200 concurrent beats

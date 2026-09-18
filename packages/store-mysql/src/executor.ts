@@ -99,6 +99,8 @@ function ownedPoolOptions(config: string | PoolOptions): PoolOptions {
     bigNumberStrings: false,
     dateStrings: true,
     multipleStatements: false,
+    // The session settings are sent once for each connection, and a reset clears them.
+    resetOnRelease: false,
     charset: 'utf8mb4',
     timezone: 'Z',
   }
@@ -423,14 +425,29 @@ export class MysqlExecutor implements SqlExecutor {
    * a conflict arm that changed nothing reports one row, so a compare-and-set that lost
    * would read as one that won. The flag is part of the handshake and no session
    * setting can repair it, so a pool that has it, or whose flags cannot be read, is
-   * refused here.
+   * refused here. So is a pool that resets a connection on release, or that does not
+   * say: the session settings are sent once for each connection, and mysql2's
+   * `resetOnRelease` clears them on every release, which left every write after the
+   * first at REPEATABLE READ with the server's time zone and no strict mode. For the
+   * same reason nothing else that uses the pool may change a connection's session state.
    */
   static fromPool(pool: Pool): MysqlExecutor {
-    const flags = (pool as { pool?: { config?: { connectionConfig?: { clientFlags?: unknown } } } })
-      .pool?.config?.connectionConfig?.clientFlags
+    const config = (
+      pool as {
+        pool?: {
+          config?: { resetOnRelease?: unknown; connectionConfig?: { clientFlags?: unknown } }
+        }
+      }
+    ).pool?.config
+    const flags = config?.connectionConfig?.clientFlags
     if (typeof flags !== 'number' || (flags & CLIENT_FOUND_ROWS) !== 0) {
       throw new TypeError(
         "MysqlExecutor.fromPool needs a pool that connects without FOUND_ROWS: build it with createOwnedMysqlPool, or pass flags: ['-FOUND_ROWS']",
+      )
+    }
+    if (config?.resetOnRelease !== false) {
+      throw new TypeError(
+        'MysqlExecutor.fromPool needs a pool that never resets a connection on release: build it with createOwnedMysqlPool, or pass resetOnRelease: false',
       )
     }
     return new MysqlExecutor(pool, false)
