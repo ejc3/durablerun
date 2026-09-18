@@ -777,7 +777,10 @@ export function gatingFences(query: OperationNode): GatingFence[] {
  * its own WHERE gates, and a losing batch then counts none. The batch asks it of a
  * tail's root for another reason, to decide whether the tail may be skipped.
  */
-export function mayReturnNoRow(select: SelectQueryNode): boolean {
+export function mayReturnNoRow(query: OperationNode): boolean {
+  // Only a SELECT can answer with a row it did not match.
+  if (!SelectQueryNode.is(query)) return true
+  const select = query
   if (select.groupBy !== undefined) return true
   // An ungrouped HAVING makes the SELECT one group, which returns a row regardless.
   if (select.having !== undefined) return false

@@ -1,4 +1,4 @@
-import { type Expression, type Kysely, SelectQueryNode, isExpression } from 'kysely'
+import { type Expression, type Kysely, isExpression } from 'kysely'
 import type { EventName } from './child-tasks.js'
 import {
   DERIVED_WRITABLE_COLUMNS,
@@ -841,7 +841,7 @@ export class FencedBatch {
       const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)
       // A skipped statement answers with no rows, which is also what it answers unmatched,
       // unless it answers with a row whatever it matched. That one is always sent.
-      const alwaysAnswers = SelectQueryNode.is(tree) && !mayReturnNoRow(tree)
+      const alwaysAnswers = !mayReturnNoRow(tree)
       if (gateIndex >= 0 && !alwaysAnswers) gatedBy = gateIndex
       if (!open && gates.length === 0 && positional.length !== 0) {
         throw new Error(
