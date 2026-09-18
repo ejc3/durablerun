@@ -22,6 +22,14 @@ export { childTaskViolations } from './child-tasks.js'
 export { storeConformance } from './store-conformance.js'
 export * from './fault-matrix.js'
 export {
+  type Corpus,
+  type CorpusDescriptor,
+  type CorpusSignature,
+  enrolCorpus,
+  recordingTreeBatches,
+  type VariantNamers,
+} from './sql-corpus.js'
+export {
   type CounterBoundaryTarget,
   duplicatePoisonWitnessIds,
   type PoisonCaseOptions,

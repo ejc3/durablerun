@@ -108,6 +108,18 @@ function bindCompilationError(message: string): TypeError {
 }
 
 /** True only for an authentic compiler bind failure from this module. */
+/** The statements a `FencedBatch` compiled from trees, by identity. */
+const treeBuilt = new TrustedWeakSet<object>()
+
+/**
+ * Whether a `FencedBatch` compiled this statement from a tree. It is asked of the statement
+ * an executor receives, so a recorder enrols a batch by how it was built and needs no list
+ * of labels kept beside the stores.
+ */
+export function isTreeBuiltStatement(statement: unknown): boolean {
+  return typeof statement === 'object' && statement !== null && weakSetHas(treeBuilt, statement)
+}
+
 export function isFencedBatchBindError(value: unknown): value is TypeError {
   return (
     value !== null &&
@@ -925,7 +937,7 @@ export class FencedBatch {
         `${at} argument ${index} is ${value === undefined ? 'undefined' : typeof value}: bind a string, number, bigint, bytes, or null`,
       )
     })
-    this.statements.push({
+    const held = {
       name,
       kind,
       fence: stamps ? { target: stamped, sealedBy: null } : null,
@@ -934,7 +946,9 @@ export class FencedBatch {
         gatedBy === undefined
           ? { sql: compiled.sql, args }
           : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
-    })
+    }
+    weakSetAdd(treeBuilt, held.compiled)
+    this.statements.push(held)
     return this
   }
 

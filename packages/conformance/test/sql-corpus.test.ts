@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
-import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
+import { isTreeBuiltStatement } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import {
   awaitOwned,
@@ -9,6 +9,13 @@ import {
   claimOne,
   withFixture,
 } from '../src/scenario.js'
+import {
+  type CorpusDescriptor,
+  type CorpusSignature,
+  type VariantNamers,
+  enrolCorpus,
+  recordingTreeBatches,
+} from '../src/sql-corpus.js'
 import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /**
@@ -16,43 +23,21 @@ import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
  * dialect, as ordered SQL plus bind arity. The corpus is derived, never hand-kept.
  * Regenerate with `DURABLERUN_UPDATE_CORPUS=1`.
  *
- * Each enrolled label declares its variants, the distinct statement lists it may
- * compile to. A label that compiles to a signature outside the corpus, or to more
- * signatures than it declares, fails: a new branch must be declared, not discovered.
+ * `corpus/labels.json` enrols each label with its variants, the distinct statement lists
+ * it may compile to. What is recorded is every batch a `FencedBatch` compiled, so a
+ * tree-built label the descriptor does not name fails, and so does a label that compiles
+ * to a signature outside the corpus or to more signatures than it declares: a new label or
+ * branch must be declared, not discovered.
  */
-const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
-  // A child is created only under its parent's live claim, which is one more conjunct.
-  spawn: ['spawned', 'spawned-child'],
-  claim: ['claimed'],
-  activate: ['activated'],
-  complete: ['completed'],
-  'defer-launch': ['deferred'],
-  reschedule: ['rescheduled'],
-  suspend: ['suspended'],
-  // A child await registers only on a live child in its queue.
-  'await-event': ['registered', 'registered-child'],
-  // The await of a child that ended with no outcome recorded writes the event itself,
-  // in a batch of its own, so that a crash, a duplicate, and a poisoned row each reach it.
-  'record-task-done': ['recorded'],
-  'emit-event': ['emitted'],
-  'set-checkpoint': ['written'],
-  // A retrying failure carries the retry deadline's headroom guard, and a final one does not.
-  fail: ['retrying', 'final'],
-  'retry-task': ['revived'],
-  'cancel-task': ['cancelled'],
-  'sweep:cancel': ['cancelled'],
-  // One batch carries both compare-and-sets, the reopen and the cap.
-  'sweep:lost-launch': ['swept'],
-  'sweep:claim-timeout': ['swept'],
-}
-
-type Signature = readonly { sql: string; bindArity: number }[]
+const DESCRIPTOR: CorpusDescriptor = JSON.parse(
+  readFileSync(new URL('../corpus/labels.json', import.meta.url), 'utf8'),
+)
 
 /**
  * A label with more than one variant names each signature by what it holds, never by
  * the order the scenario happened to reach it in.
  */
-const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
+const VARIANT_OF: VariantNamers = {
   spawn: (signature) =>
     signature.some(({ sql }) => /^insert into ["`]tasks["`].*["`]claimed_by["`]/s.test(sql))
       ? 'spawned-child'
@@ -66,28 +51,14 @@ const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
       : 'registered',
 }
 
-function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>): SqlExecutor {
-  return {
-    batch: (label: string, statements: readonly SqlStatement[], control?: SqlBatchControl) => {
-      if (label in TREE_LABELS) {
-        const signature = statements.map(({ sql, args }) => ({ sql, bindArity: args.length }))
-        const seen = recorded.get(label) ?? []
-        if (!seen.some((known) => JSON.stringify(known) === JSON.stringify(signature))) {
-          seen.push(signature)
-        }
-        recorded.set(label, seen)
-      }
-      return raw.batch(label, statements, control)
-    },
-  }
-}
-
 describe('generated SQL corpus', () => {
   for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {
     it(`${dialect}: every tree-built label compiles to its declared corpus`, async () => {
-      const recorded = new Map<string, Signature[]>()
+      const recorded = new Map<string, CorpusSignature[]>()
       await withFixture(makeFixture, `sql-corpus-${dialect}`, async (fixture) => {
-        const store = fixture.storeOver(recordingExecutor(fixture.raw, recorded))
+        const store = fixture.storeOver(
+          recordingTreeBatches(fixture.raw, recorded, isTreeBuiltStatement),
+        )
         await store.spawn('q', 'job', '{}')
         const run = await claimActivated(store, 'q', 'w1')
         await store.complete('q', run.runId, run.claimToken, '"done"')
@@ -188,34 +159,80 @@ describe('generated SQL corpus', () => {
           expect.objectContaining({ kind: 'cancelled', taskId: late.taskId }),
         )
       })
-      const corpus = Object.fromEntries(
-        Object.entries(TREE_LABELS).map(([label, variants]) => {
-          const signatures = recorded.get(label) ?? []
-          if (signatures.length === 0) throw new Error(`${dialect}: no ${label} batch ran`)
-          if (signatures.length > variants.length) {
-            throw new Error(
-              `${dialect}: ${label} compiled to ${signatures.length} signatures but declares ${variants.length} variants`,
-            )
-          }
-          const named = signatures.map((signature, i): [string, Signature] => {
-            const variant = VARIANT_OF[label]?.(signature) ?? variants[i]
-            if (variant === undefined || !variants.includes(variant)) {
-              throw new Error(`${dialect}: ${label} compiled to an undeclared variant '${variant}'`)
-            }
-            return [variant, signature]
-          })
-          if (new Set(named.map(([variant]) => variant)).size !== named.length) {
-            throw new Error(`${dialect}: two ${label} signatures claim one variant`)
-          }
-          // Declared order, so the corpus file does not depend on the scenario's order.
-          named.sort(([a], [b]) => variants.indexOf(a) - variants.indexOf(b))
-          return [label, Object.fromEntries(named)]
-        }),
-      )
+      const corpus = enrolCorpus(dialect, DESCRIPTOR, recorded, VARIANT_OF)
       const path = new URL(`../corpus/${dialect}.json`, import.meta.url)
       const text = `${JSON.stringify(corpus, null, 2)}\n`
       if (process.env.DURABLERUN_UPDATE_CORPUS === '1') writeFileSync(path, text)
       expect(text).toBe(readFileSync(path, 'utf8'))
     })
   }
+})
+
+describe('corpus enrolment', () => {
+  const one: CorpusSignature = [{ sql: 'update "runs" set "state" = ?', bindArity: 1 }]
+  const other: CorpusSignature = [{ sql: 'insert into "runs" default values', bindArity: 0 }]
+  const ran = (entries: [string, CorpusSignature[]][]) => new Map(entries)
+
+  it('fails for a tree-built label the descriptor does not enrol', () => {
+    expect(() =>
+      enrolCorpus(
+        'control',
+        { spawn: ['spawned'] },
+        ran([
+          ['spawn', [one]],
+          ['spawn-child', [one]],
+        ]),
+      ),
+    ).toThrow(/spawn-child ran as tree-built batches and corpus\/labels\.json does not enrol them/)
+  })
+
+  it('fails for an enrolled label that never ran', () => {
+    expect(() => enrolCorpus('control', { spawn: ['spawned'] }, ran([]))).toThrow(
+      /no spawn batch ran/,
+    )
+  })
+
+  it('fails for a signature beyond the declared variants, and for a variant nobody declared', () => {
+    expect(() =>
+      enrolCorpus('control', { spawn: ['spawned'] }, ran([['spawn', [one, other]]])),
+    ).toThrow(/compiled to 2 signatures but declares 1 variants/)
+    expect(() =>
+      enrolCorpus('control', { spawn: ['spawned'] }, ran([['spawn', [one]]]), {
+        spawn: () => 'respawned',
+      }),
+    ).toThrow(/undeclared variant 'respawned'/)
+    expect(() =>
+      enrolCorpus('control', { fail: ['retrying', 'final'] }, ran([['fail', [one, other]]]), {
+        fail: () => 'final',
+      }),
+    ).toThrow(/two fail signatures claim one variant/)
+  })
+
+  it('records a batch because a FencedBatch compiled it, whatever its label', async () => {
+    const recorded = new Map<string, CorpusSignature[]>()
+    const built = { sql: 'select 1', args: [] }
+    const text = { sql: 'select 2', args: [] }
+    const recorder = recordingTreeBatches(
+      {
+        batch: async (_label, statements) => statements.map(() => ({ rows: [], rowsAffected: 0 })),
+      },
+      recorded,
+      (statement) => statement === built,
+    )
+    await recorder.batch('a-label-nobody-listed', [built])
+    await recorder.batch('next-wake', [text])
+    expect([...recorded.keys()]).toEqual(['a-label-nobody-listed'])
+  })
+
+  it('enrols every label the descriptor names in the corpus of every dialect', () => {
+    for (const { dialect } of SELECTED_DIALECT_FIXTURES) {
+      const corpus = JSON.parse(
+        readFileSync(new URL(`../corpus/${dialect}.json`, import.meta.url), 'utf8'),
+      )
+      expect(Object.keys(corpus)).toEqual(Object.keys(DESCRIPTOR))
+      for (const [label, variants] of Object.entries(DESCRIPTOR)) {
+        for (const variant of Object.keys(corpus[label])) expect(variants).toContain(variant)
+      }
+    }
+  })
 })
