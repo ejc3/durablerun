@@ -1469,8 +1469,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     boundary test holds it (DESIGN.md §3.4). The identical suite passes on
     MySQL 8.4 with no shared change, the `sagas` surface, the saga block of
     the fault matrix, the poison matrix's `fail-rollback` label, and the
-    corpus's `fail-rollback` variants included: 3,397 tests, 3,337 named for
-    the dialect. A task spawned with a budget of 1,000,000 attempts rolls back
+    corpus's `fail-rollback` variants included: all 3,337 conformance tests
+    named for the dialect, with the store's own tests beside them, none failed
+    or skipped. A task spawned with a budget of 1,000,000 attempts rolls back
     there as any other does.
   - The replay-equivalence harness generates sequential programs only. It has
     no concurrent durable calls, no emit, and no step named after the
