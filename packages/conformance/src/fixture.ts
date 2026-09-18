@@ -115,6 +115,19 @@ export interface StoreFixture {
   persistedIntegerCatalogStatements(
     tables: readonly PersistedNumericTable[],
   ): readonly SqlStatement[]
+  /**
+   * The two raw writes the schema-admin surface makes to the version table. They are
+   * the dialect's because no one spelling is portable: the table's `key` column is a
+   * reserved word MySQL must quote, in a way PostgreSQL and SQLite read as a string, and
+   * MySQL cannot make a TEXT column a primary key. The shared runner still executes
+   * them and owns every assertion about what the admin then does.
+   */
+  schemaVersionTable: {
+    /** Overwrite the stored version with `value`, canonical or not. Exactly one row. */
+    setVersion(value: string): SqlStatement
+    /** Create the version table with its real columns and no row. */
+    createEmpty(): SqlStatement
+  }
   /** Prepare, but do not execute, the dialect's invalid-storage write. */
   storageCorruptionAttempt(corruption: StorageCorruption): StorageCorruptionAttempt
   /**

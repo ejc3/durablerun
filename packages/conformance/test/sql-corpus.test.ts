@@ -8,7 +8,7 @@ import {
   claimOne,
   withFixture,
 } from '../src/scenario.js'
-import { DIALECT_FIXTURES } from './dialect-fixtures.js'
+import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /**
  * The generated SQL corpus: every statement a tree-built label compiles to, per
@@ -49,7 +49,7 @@ type Signature = readonly { sql: string; bindArity: number }[]
 const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
   // Only a retrying failure inserts a successor run.
   fail: (signature) =>
-    signature.some(({ sql }) => /insert into "runs"/.test(sql)) ? 'retrying' : 'final',
+    signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
 }
 
 function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>): SqlExecutor {
@@ -69,7 +69,7 @@ function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>)
 }
 
 describe('generated SQL corpus', () => {
-  for (const { dialect, makeFixture } of DIALECT_FIXTURES) {
+  for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {
     it(`${dialect}: every tree-built label compiles to its declared corpus`, async () => {
       const recorded = new Map<string, Signature[]>()
       await withFixture(makeFixture, `sql-corpus-${dialect}`, async (fixture) => {

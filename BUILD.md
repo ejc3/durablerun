@@ -977,22 +977,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     about 68 to 153 µs more store CPU for each set-checkpoint and 68 to 136 µs
     for each cancel, by the same cause. Collect node kinds, raw nodes, and
     function nodes in one pass when the text checks are deleted.
-  - Deferred to PR4.3: the shared await-event and emit-event statements are
-    built with the builder's conflict clause and `IS DISTINCT FROM`, and MySQL 8
-    has neither spelling. A statement is a tree and the dialect's compiler
-    spells it, and `packages/core/test/statement-dialects.test.ts` shows a
-    compiler turning the same two trees into `ON DUPLICATE KEY UPDATE` and
-    `<=>`. That test checks spelling only. `store-mysql` still owns the
-    behaviour against a real server: MySQL assigns left to right, so a column
-    the condition reads is assigned last; a SELECT with a WHERE and no FROM
-    needs `FROM DUAL`; and its clause fires on any unique key, so a table these
-    statements upsert may have no unique key besides the conflict target.
-    PR3.9e part 2 added a third such statement, `checkpointWrite`, whose
-    conflict arm carries a WHERE, `excluded.owner_attempt >=
-    checkpoints.owner_attempt`, so a lower attempt loses to the row already
-    there. `ON DUPLICATE KEY UPDATE` has no WHERE, so `store-mysql` must spell
-    that tiebreak inside each assignment, and prove it with the checkpoint
-    conformance cases.
+  - Resolved by PR4.3: the shared await-event, emit-event, and
+    checkpoint-write statements are built with the builder's conflict clause
+    and `IS DISTINCT FROM`, and MySQL 8 has neither spelling. `store-mysql`'s
+    compiler spells the same trees as `ON DUPLICATE KEY UPDATE` and `<=>`, and
+    the conformance suite proves the behaviour against a real server. What
+    this entry expected, measured on MySQL 8.4: assignments do run left to
+    right, so a column the condition reads is assigned last, and the same
+    holds for a plain `UPDATE`, which this entry had not foreseen. A SELECT
+    with a WHERE and no FROM parses, so `FROM DUAL` is not needed. The clause
+    does fire on any unique key. Three of the four upserted tables have none
+    besides the conflict target, and `tasks` has its primary key, which
+    spawn's identity guard already refuses before the insert. The checkpoint
+    tiebreak rides in each assignment as `IF(condition, value, column)`, with
+    the incoming row named `excluded` through a derived table, and the
+    checkpoint conformance cases pass.
   - Deferred to PR3.9e: `fenceSetAt` in `fenced-batch.ts` has no store caller
     since emit-event's conflict arm became nodes. It stays while the text path
     and its checks stay, and goes with them. The stores' `fenced` and
@@ -1410,13 +1409,79 @@ these three things; nothing else in the system does I/O, time, or randomness.
   event and same-token claim lock preludes, and the identical six-surface
   conformance suite against PostgreSQL 17. Upstream Absurd oracle parity
   remains deferred by the current milestone.
-- **PR4.3 store-mysql**: token claim, READ COMMITTED, BIGINT epoch-ms, tx-per-
-  transition; MySQL 8 container in CI; optional PlanetScale smoke job.
-  - **Owed from PR3.12:** MySQL commits each DDL statement on its own, so a
-    `meta` table without its version row is an ordinary state during every
-    cold start, and isolation alone cannot hide it. The adapter must serialize
-    bootstrap against version reads, and pass the eight-migrator and
-    lost-bootstrap schema/admin cases at volume.
+- **PR4.3 store-mysql**: `packages/store-mysql` passes the identical
+  six-surface conformance suite against MySQL 8.4, in its own CI job,
+  `conformance-mysql`, beside `verify`. READ COMMITTED, BIGINT epoch-ms, one
+  transaction for each transition. Every shared statement tree and every
+  labeled batch runs from the same tree: the portability survey found no
+  statement that needed a change to a tree or to the checker. What MySQL makes
+  a store do is in DESIGN.md §3.4, each item measured on a real server. Three
+  changes reached the shared conformance package, none of them to a scenario:
+  the two raw writes to the version table became the fixture's, because `key`
+  is a reserved word MySQL must quote and MySQL cannot make a TEXT column a
+  primary key; the corpus test matches either identifier quote; and
+  `DURABLERUN_CONFORMANCE_DIALECTS` narrows a run to the servers it has,
+  failing on an unknown or empty list, which
+  `packages/conformance/bin/dialect-conformance.sh` checks again from the
+  reporter's record. Open: (1) MySQL bounds an indexed
+  identifier at 255 characters and the other dialects do not, so the same long
+  queue or event name is accepted there and refused here as an invalid durable
+  string. Making the engine identical means a length rule in core's
+  `requireDurableString`, which changes the other dialects' contract and is
+  the maintainer's call. (2) The stored-JSON guards cannot refuse a repeated
+  key on MySQL. The guard and the decoder read the same member, so nothing is
+  decoded that was not checked. (3) A claim leg can lock up to the limit in
+  runs the merged order leaves out, which other claimers skip until that claim
+  commits. (4) Version 1 holds the whole schema because MySQL DDL cannot roll
+  back. The first migration that alters a table needs a repeatable form, which
+  MySQL has no `ADD COLUMN IF NOT EXISTS` for. (5) The optional PlanetScale
+  smoke job is not built. (6) Child tasks and sagas land their batches on
+  libSQL and PostgreSQL first, and `store-mysql` ports them after. The review
+  of this PR found eleven defects, eight of them in behaviour and one of them
+  introduced by a fix, recorded in
+  `postmortems/pr4.3-store-mysql-review.md`. Since it, the store refuses an
+  identifier past 255 characters itself, whatever the excess is, because MySQL
+  cuts trailing spaces past the width where it refuses any other excess.
+  - **Discharged from PR3.12:** MySQL commits each DDL statement on its own,
+    so a `meta` table without its version row would be an ordinary state
+    during every cold start, and isolation alone cannot hide it. The adapter
+    removes the state: the bootstrap is one `CREATE TABLE … AS SELECT`
+    statement, and the version read begins under READ COMMITTED, because MySQL
+    refuses to read a table defined after a consistent snapshot. Measured over
+    250 cold starts with six racing readers: two statements gave 765 rowless
+    reads, the snapshot gave 1500 refusals, and one statement under READ
+    COMMITTED gave neither. At volume: eight concurrent cold-start migrators
+    converged in 3200 of 3200 runs, and the eight-migrator and lost-bootstrap
+    schema/admin cases both passed in 120 repeated runs.
+- **PR4.4 store-mysql follow-ups**: what the PR4.3 review found that the
+  milestone does not need, none of it a correctness hole today.
+  - Deferred from PR4.3: the migration lock is chosen by the batch label
+    (`migrate:bootstrap` or `migrate:vN`), spelled in the executor, the admin,
+    and `batch-lint.py`, where the event and claim locks travel in
+    `SqlBatchControl` so a wrapper cannot drop them. Carry it there as a lock
+    coordinate. With it goes the case no test has: a version that was half
+    applied, rerun through `migrate()`. It changes core's batch control and
+    every executor, which PR3.9e part 3b and the child-task fold are editing.
+  - Deferred from PR4.3: a read batch costs four round trips and a
+    single-statement write three, where autocommit needs one. Five of the six
+    read batches hold one statement, the per-tick next-wake among them.
+  - Deferred from PR4.3: `migrate()` reads the version before each of the four
+    empty versions and takes the lock for each. One read and one locked batch
+    would do, which matters most to the conformance suite, which migrates a
+    database for every case.
+  - Deferred from PR4.3: the claim's `FORCE INDEX (runs_poll)` legs have no
+    measured plan test. `store-mysql/test/query-plans.test.ts` is where it
+    goes. The shared concurrency case fails when a leg over-locks, which is
+    how the shape was found.
+  - Deferred from PR4.3: third copies. The test id source, the admin's
+    version read and versioned write, the fixture's corruption-table switch,
+    and the store's dialect-free declarations are now in three packages.
+    Hoisting them is one change to all three stores.
+  - Deferred from PR4.3: a generated conformance surface that runs every store
+    call concurrently with itself on every dialect. PR #50 and PR4.3 each
+    found a transition no concurrent case reached, and each added a case for
+    that one transition, so the class is expected again until the surface is
+    generated.
 
 ## Phase 5 — operations + sharding
 

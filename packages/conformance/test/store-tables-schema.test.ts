@@ -2,7 +2,7 @@ import { STORE_TABLE_COLUMNS } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { PersistedNumericTable } from '../src/index.js'
 import { withFixture } from '../src/scenario.js'
-import { DIALECT_FIXTURES } from './dialect-fixtures.js'
+import { SELECTED_DIALECT_FIXTURES } from './dialect-fixtures.js'
 
 /** Catalog columns the statement builder leaves out on purpose: no tree statement names them yet. */
 const OMITTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
@@ -17,7 +17,7 @@ function columnKind(nativeType: string): string {
 }
 
 describe('statement builder tables', () => {
-  for (const { dialect, makeFixture } of DIALECT_FIXTURES) {
+  for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {
     it(`${dialect}: every builder column matches the catalog, and nothing else is missing`, async () => {
       const tables = Object.keys(STORE_TABLE_COLUMNS) as PersistedNumericTable[]
       const observed: Record<

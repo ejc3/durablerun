@@ -120,6 +120,16 @@ export async function makePostgresFixture(
     adminOver: (db: SqlExecutor) => new PostgresStoreAdmin(db),
     raw,
     persistedIntegerCatalogStatements: postgresPersistedIntegerCatalogStatements,
+    schemaVersionTable: {
+      setVersion: (value: string) => ({
+        sql: `UPDATE meta SET value = ? WHERE key = 'schema_version'`,
+        args: [value],
+      }),
+      createEmpty: () => ({
+        sql: 'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+        args: [],
+      }),
+    },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new PostgresSchedulerStore(db, ids, buggify),
     close: opened.close,

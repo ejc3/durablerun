@@ -1,0 +1,19 @@
+{
+  "name": "@durablerun/store-mysql",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./testing": "./src/testing.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@durablerun/core": "workspace:*",
+    "kysely": "0.29.5",
+    "mysql2": "^3.24.4"
+  }
+}

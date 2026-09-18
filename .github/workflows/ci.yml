@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
+      # The dialects this job has servers for. MySQL runs the same suite in its
+      # own job below, beside this one, so this job stays the length it was.
+      DURABLERUN_CONFORMANCE_DIALECTS: libsql,postgres
     services:
       postgres:
         image: postgres:17-alpine
@@ -39,6 +42,42 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
 
+  # The identical conformance suite against MySQL 8, in parallel with `verify`.
+  # The server is started by hand because a service container takes no server
+  # arguments: the data directory is a tmpfs and the binary log and durable
+  # flushes are off, which is what keeps a database for every test affordable.
+  conformance-mysql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DURABLERUN_MYSQL_URL: mysql://root:durablerun@127.0.0.1:3306/durablerun
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start MySQL 8
+        run: |
+          docker run -d --name durablerun-mysql -p 127.0.0.1:3306:3306 \
+            -e MYSQL_ROOT_PASSWORD=durablerun -e MYSQL_DATABASE=durablerun \
+            --tmpfs /var/lib/mysql:rw,size=4g mysql:8.4 \
+            --skip-log-bin --innodb-flush-log-at-trx-commit=0 \
+            --innodb-doublewrite=0 --sync-binlog=0 --max-connections=500
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Wait for MySQL to accept queries
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker exec durablerun-mysql mysql -h127.0.0.1 -uroot -pdurablerun -e 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs durablerun-mysql | tail -40
+          exit 1
+      - run: bash packages/conformance/bin/dialect-conformance.sh mysql
+
   # The mutation audit runs each mutation's registered test, so a full run fits in
   # a CI job and no one has to run it by hand before merging.
   mutations:
@@ -46,6 +85,8 @@ jobs:
     timeout-minutes: 60
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
+      # Some registered mutations are killed by tests that need a MySQL server.
+      DURABLERUN_MYSQL_URL: mysql://root:durablerun@127.0.0.1:3306/durablerun
     services:
       postgres:
         image: postgres:17-alpine
@@ -68,6 +109,21 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Start MySQL 8 and wait for it to accept queries
+        run: |
+          docker run -d --name durablerun-mysql -p 127.0.0.1:3306:3306 \
+            -e MYSQL_ROOT_PASSWORD=durablerun -e MYSQL_DATABASE=durablerun \
+            --tmpfs /var/lib/mysql:rw,size=4g mysql:8.4 \
+            --skip-log-bin --innodb-flush-log-at-trx-commit=0 \
+            --innodb-doublewrite=0 --sync-binlog=0 --max-connections=500
+          for attempt in $(seq 1 60); do
+            if docker exec durablerun-mysql mysql -h127.0.0.1 -uroot -pdurablerun -e 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs durablerun-mysql | tail -40
+          exit 1
       - run: pnpm verify:mutations
 
   tla:
@@ -137,20 +193,22 @@ jobs:
         run: |
           mkdir -p "$TMPDIR"
           ln -s "$GITHUB_WORKSPACE/node_modules" "$TMPDIR/node_modules"
-      - name: Bridge the new PostgreSQL package past its older base checker
-        # The head gate above owns this entirely new package. The older ledger
-        # cannot classify a dialect that did not exist on its branch. This
-        # becomes a no-op automatically as soon as this PR is the base.
+      - name: Bridge a new dialect package past its older base checker
+        # The head gate above owns an entirely new package. The older ledger
+        # cannot classify a dialect that did not exist on its branch. Each
+        # becomes a no-op automatically as soon as its PR is the base.
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          if git ls-tree -r --name-only "$BASE_SHA" -- packages/store-postgres | grep -q .; then
-            exit 0
-          fi
           added_root="$RUNNER_TEMP/durablerun-base-added"
-          mkdir -p "$added_root"
-          mv -- packages/store-postgres "$added_root/store-postgres"
+          for package in store-postgres store-mysql; do
+            if git ls-tree -r --name-only "$BASE_SHA" -- "packages/$package" | grep -q .; then
+              continue
+            fi
+            mkdir -p "$added_root"
+            mv -- "packages/$package" "$added_root/$package"
+          done
       - name: Bootstrap staged dependency installation for the older base runner
         # Only the known pre-install runner needs this one-release bridge.
         # Preserve every byte outside the reviewed install insertion; checker

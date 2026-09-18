@@ -3646,6 +3646,22 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         await f.store.driverHeartbeat(Q, 'd2', 10)
         expect(await read()).toMatchObject([{ driver_id: 'd2' }])
       })
+
+      it('concurrent beats from distinct drivers all land', async () => {
+        // Every beat also buries expired rows. A cleanup that waits on rows other
+        // drivers are writing makes concurrent beats deadlock. The driver loop swallows
+        // a failed beat, so a healthy fleet of two or more would read as dead.
+        const fleet = Array.from({ length: 8 }, (_, index) => `fleet-${index}`)
+        for (let round = 0; round < 10; round++) {
+          await Promise.all(fleet.map((driver) => f.store.driverHeartbeat(Q, driver, 10)))
+        }
+        const [registry] = await f.raw.batch(
+          't',
+          [{ sql: `SELECT COUNT(*) AS n FROM drivers`, args: [] }],
+          'read',
+        )
+        expect(Number(registry?.rows[0]?.n)).toBe(fleet.length)
+      })
     })
 
     describe('nextWakeAtEpochMs', () => {

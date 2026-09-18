@@ -78,10 +78,7 @@ function nativeIntegerBits(nativeType: string): 16 | 32 | 64 | null {
 
 async function setStoredSchemaVersion(fixture: StoreFixture, value: string): Promise<void> {
   const [result] = await fixture.raw.batch('fixture:set-schema-version', [
-    {
-      sql: `UPDATE meta SET value = ? WHERE key = 'schema_version'`,
-      args: [value],
-    },
+    fixture.schemaVersionTable.setVersion(value),
   ])
   if (result?.rowsAffected !== 1) {
     throw new Error(`schema-version setup updated ${result?.rowsAffected ?? 0} rows instead of one`)
@@ -284,10 +281,7 @@ export function schemaAdminConformance(dialect: string, makeFixture: StoreFixtur
       try {
         expect(await fixture.admin.schemaVersion()).toBe(0)
         await fixture.raw.batch('fixture:create-empty-meta', [
-          {
-            sql: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-            args: [],
-          },
+          fixture.schemaVersionTable.createEmpty(),
         ])
         await expect(fixture.admin.schemaVersion()).rejects.toBeInstanceOf(SchemaMismatchError)
         let migrationWrites = 0

@@ -816,8 +816,9 @@ are load-bearing):
      SQLite and PostgreSQL both take, and a dialect passes what it requires of
      an existing event. A shared statement is a tree, and each dialect's
      compiler spells it, so a dialect without those spellings compiles the same
-     conflict clause and comparison into its own. A core test shows that for
-     MySQL. The registration builds the claim it depends on from
+     conflict clause and comparison into its own. A core test shows the
+     spelling for MySQL, and `store-mysql` proves the behaviour against a real
+     server through the conformance suite. The registration builds the claim it depends on from
      nodes: this run, this queue and task, this claim token, still running. A
      store passes only its join of the run to its task and what it requires of
      the task.
@@ -984,13 +985,21 @@ are load-bearing):
    name=:e) IS NULL`; sleep the run under the same guard; checkpoint `… WHERE
    payload IS NOT NULL`; final SELECT tells the SDK which branch won) — the
    single writer serializes it. On Postgres/MySQL a batch is NOT serialized
-   against emit: use a short transaction taking Absurd's original row locks.
+   against emit, so the batch carries a lock coordinate and the executor takes
+   it first: a row lock inside the transaction on PostgreSQL, and a session
+   named lock around the transaction on MySQL.
    `FencedBatch.lockEvent({ queue, eventName })` carries only that closed lock
    coordinate — never caller SQL — to the dialect executor, which acquires it
    before the first fenced CAS and holds it through commit or rollback. The
    executor binds both coordinate values as data, returns no result slot for
    the prelude, and matching event coordinates are mutually exclusive. A
-   dialect may realize the coordinate with a durable sentinel row. Any further
+   dialect may realize the coordinate with a durable sentinel row, as
+   PostgreSQL does, or with a named lock the session takes before the
+   transaction starts and releases after it ends, as MySQL does. MySQL's named lock
+   waits at most 30 seconds, for the event, claim, and migration locks alike. A
+   batch that cannot take its lock in that time has written nothing and fails
+   with `StoreUnavailableError`, which a caller retries like any outage.
+   PostgreSQL's row lock has no bound of the store's own. Any further
    row locks retain the documented order: event first, then run (FOR
    SHARE/FOR UPDATE). The timeout branch is part of the contract: a wait with
    a timeout sets `available_at = timeout_at`; a claim returning `wake_event` with NULL
@@ -1044,7 +1053,10 @@ are load-bearing):
    **The clock expression must be at least statement-stable**: every occurrence
    within one statement — including inside a scalar subquery — must yield the
    same value. Measured: SQLite `unixepoch('subsec')` is (4000/4000 identical);
-   MySQL `NOW(6)` is (it is the statement's start time), and `SYSDATE()` is NOT;
+   MySQL `NOW(6)` is (it is the statement's start time), and so is
+   `UTC_TIMESTAMP(6)`, which `store-mysql` uses because it does not depend on the
+   session time zone (measured identical on both sides of a `SLEEP` inside one
+   statement), and `SYSDATE()` is NOT;
    Postgres `statement_timestamp()` and `now()` are, and `clock_timestamp()` is
    NOT — it re-reads the wall clock per call, so a single statement using it
    twice can write two different instants. An earlier draft of this rule named
@@ -1302,8 +1314,16 @@ are load-bearing):
    the row. Its adapter reads the version under READ COMMITTED, where the
    snapshot follows the name lookup, and so has the property. SQLite commits
    schema and rows under one snapshot and has it. MySQL commits each DDL
-   statement on its own and does not have it from isolation alone, so its
-   adapter must serialize bootstrap against version reads.
+   statement on its own and does not have it from isolation alone: a bootstrap
+   written as a CREATE and then an INSERT leaves the table committed and its row
+   not yet. Its adapter therefore writes the bootstrap as one statement, `CREATE
+   TABLE … AS SELECT`, which commits the table and its version row together and
+   inserts nothing over a table that is there, and reads the version under READ
+   COMMITTED, because a consistent snapshot is older than its statement and MySQL
+   refuses to read a table defined after the snapshot. Measured over 250 cold
+   starts with six racing readers: two statements gave 765 rowless reads and the
+   snapshot gave 1500 refusals, and one statement under READ COMMITTED gave
+   neither.
    Concurrent cold-start migrators converge: after an error from bootstrap or
    a versioned migration batch, the loser re-reads the authoritative version
    and treats the write as complete only when metadata now exists at or beyond
@@ -1583,13 +1603,100 @@ Dialect implementations:
 
 | Concern | Turso/libSQL | MySQL 8 | Postgres |
 |---|---|---|---|
-| claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; token claim: `UPDATE…ORDER BY…LIMIT k` + `SELECT WHERE claimed_by=:token` (no RETURNING) | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
+| claim core stmt | `UPDATE…WHERE id IN (SELECT…LIMIT k) RETURNING run_id,…` (single-writer = no skip needed), inside the fenced claim batch (rule 4) | READ COMMITTED; the shared claim `UPDATE`, its candidates a derived table of one `FOR UPDATE SKIP LOCKED` leg per state; no RETURNING, so the receipt is the batch's own read by token | `FOR UPDATE SKIP LOCKED` CTE only (Absurd's SQL — the bare `UPDATE…WHERE id IN (subselect)` shape double-claims under concurrent EvalPlanQual re-checks) |
 | atomicity | `batch(…, 'write')`; **never** interactive tx (5s cap) | short tx (READ COMMITTED) for every multi-statement transition — autocommit only for genuinely single-statement ops (20s PlanetScale cap is ample for 2–3-stmt claims) | normal tx |
 | timestamps | INTEGER epoch-ms | BIGINT epoch-ms | BIGINT epoch-ms |
 | hot index | partial index OK | composite `(state, available_at)` only | partial index |
 | upsert | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` (any unique key!) | `ON CONFLICT` |
 | ids | UUIDv7 client-generated (time-ordered; Absurd orders by run_id) | same | same |
 | scale-out | DB-per-tenant/queue via Platform API (free, ~100ms create + ~2.5s data-plane readiness gate — see §5) | vitess sharding | partitioning (Absurd has it) |
+
+**What MySQL 8 makes a store do (measured against 8.4 by `store-mysql`).** Every
+shared statement tree and every labeled batch runs on MySQL from the same tree.
+None needed a change to a tree or to the checker. Each difference below is
+realized in the store's compiler, executor, fragments, or schema:
+
+- **A single-table `UPDATE` assigns left to right**, and a later assignment
+  reads an earlier one's new value, where the standard and the other two
+  dialects read the row as it was. `SET n = n + 1, due = f(n)` computes `due`
+  from the new `n`. The compiler orders a SET list so every assignment that
+  reads a column comes before the one that writes it, and refuses a cycle. The
+  upsert arm has the same rule, and there the conflict condition rides in each
+  assignment as `IF(condition, value, column)`.
+- **A subquery may not read the table its statement writes** (error 1093)
+  unless the read goes through a derived table. The compiler wraps a self-read
+  built from nodes, and the fragments put theirs in a derived table that
+  carries the correlation, so MySQL materializes one task's runs and not the
+  table. `LIMIT` directly inside `IN` is refused too (error 1235), and the same
+  derived table answers it.
+- **A locking read locks what it scans, before any sort or `LIMIT`.** With both
+  claimable states in one leg and the task joined, a claim of two locked all
+  forty due runs and a concurrent claim found none. With no locking read at
+  all, the second claim waits for the first's row locks, re-checks only the id
+  list, and overwrites the first claim. Each state is therefore its own
+  index-ordered `FOR UPDATE SKIP LOCKED` leg, which locked exactly the runs it
+  returned.
+- **Rows written.** MySQL reports rows changed, where the port means rows
+  matched, and counts an upsert that updated as two. The executor runs without
+  `CLIENT_FOUND_ROWS`, so an upsert whose conflict arm changes nothing reports
+  zero, and normalizes the rest from the server's own `Rows matched:` and
+  `Duplicates:` lines. A single-row upsert that updated carries no such line
+  and reports two, which the executor counts once. A `DELETE` carries no such
+  line either, so that rule reads the statement and applies to an `INSERT`
+  alone. The flag is part of the handshake and mysql2 turns it on by default,
+  so a pool the application owns is refused unless it connects without it.
+  The session settings are sent once for each physical connection. The store's
+  own pool therefore never resets a connection on release, and a pool the
+  application owns is refused if it does, because a reset clears the settings
+  and every later write would run at REPEATABLE READ with no strict mode. For
+  the same reason, a pool handed to `fromPool` must not have its session state
+  changed by anything else that uses it: the store does not send the settings
+  again.
+- **A write with no index to find its rows locks every row it scans**, under
+  READ COMMITTED too, and waits on rows other transactions hold. The driver
+  registry's cleanup was such a `DELETE`: 171 of 200 concurrent beats
+  deadlocked, each waiting on the row another had just upserted. It now finds
+  expired rows with a `FOR UPDATE SKIP LOCKED` read in a derived table kept
+  materialized, and deletes them by primary key with the expired rows first in
+  the join. It waits on nothing, and measured 0 deadlocks of 200. The same
+  read under `IN (...)` let the `DELETE` scan, and 22 of 200 still deadlocked.
+- **`MIN()` is not answered from an index once another predicate stands beside
+  it.** The next-wake read walked 1207 rows of a 1200-row queue. Each wake
+  source is now the first row in index order of one state, with the index
+  named, and walks fewer than 20. The store has its own measured plan tests,
+  `query-plans.test.ts`, which read the session's handler counters around the
+  exact production SQL.
+- **No RETURNING.** `heartbeat` is a fenced batch of two tree statements here:
+  the extension stamps the run, and the remainder is read under that stamp
+  from the two instants the extension stored, so it reads no clock.
+- **DDL commits on its own**, so a migration batch is not atomic and a
+  sentinel row cannot roll one back. The bootstrap is one statement, so the
+  version table never exists without its row (rule 9). Every migration
+  statement is safe to repeat, so a migrator that died halfway leaves work a
+  rerun finishes, and migrators take turns under one named lock. A rowless
+  version table is a foreign database on the first read, as on every dialect.
+- **The schema.** An indexed string is `VARCHAR(255)` under
+  `utf8mb4_0900_bin`, which is case, accent, and trailing-space exact. MySQL
+  cannot index unbounded text, so an identifier longer than 255 characters is
+  refused as an invalid durable string, where the other dialects hold it. The
+  store refuses it at every entry, before any statement is sent and whatever
+  the excess is, because MySQL refuses only some: excess that is trailing
+  spaces is cut with note 1265 in every `sql_mode`, and the cut value is a
+  different identifier. The executor also refuses any write that raised that
+  note, and its transaction rolls back.
+  Payloads, the claim token, and the statement stamp are `LONGTEXT`. There is
+  no partial index: a unique index already holds NULL keys apart, and the hot
+  indexes lead with the state after the queue, `tasks_cancel` included, because
+  a failed task keeps its deadline and would otherwise be walked by every sweep. `key` is a reserved word, so every statement
+  over the version table quotes it.
+- **A BIGINT column rounds a fraction** where PostgreSQL refuses it, in strict
+  mode too. The column still cannot hold one, and the conformance fixture shows
+  that by writing a fraction to the real column and reading it back.
+- **JSON.** MySQL keeps the last of two members with one key, as `JSON.parse`
+  does, and cannot ask whether a key occurred twice. The stored-JSON guards
+  therefore read the member the decoder reads, and do not refuse a repeated
+  key as the other dialects do. `JSON_VALID` is tested before any JSON function,
+  because those raise on text it answers false for.
 
 Schema: Absurd's five tables essentially verbatim (`tasks`, `runs`, `checkpoints`,
 `events`, `waits`), plus an observability-only `drivers` registry table, minus per-queue dynamic DDL (use a `queue` column + the hot

@@ -6263,6 +6263,159 @@ SHARED_CONFORMANCE_REGISTRY_VERDICT = ExpectedVerdict(
 )
 
 
+# store-mysql: what its compiler, executor, and schema do that MySQL alone requires.
+MUTATION_SPECS.extend(
+    (
+        (
+            "mysql-set-readers-before-writers",
+            "packages/store-mysql/src/tree.ts",
+            "        : readersBeforeWriters(node.updates, target)\n",
+            "        : node.updates // MUTATION\n",
+            "MySQL computes a relaunch deadline from the relaunch count the same statement just raised",
+        ),
+        (
+            "mysql-set-cycle-refused",
+            "packages/store-mysql/src/tree.ts",
+            "    if (ready === undefined) {\n",
+            "    if (ready === undefined && remaining.length < 0) { // MUTATION\n",
+            "two assignments that read one another compile to MySQL in an order that gives one the other's new value",
+        ),
+        (
+            "mysql-self-read-derived-table",
+            "packages/store-mysql/src/tree.ts",
+            "    if (!this.readsWrittenTable(node)) {\n",
+            "    if (node !== undefined) { // MUTATION\n",
+            "a shared statement reads the table it updates directly and MySQL refuses it with error 1093",
+        ),
+        (
+            "mysql-null-safe-inequality",
+            "packages/store-mysql/src/tree.ts",
+            "    if (operator === 'is distinct from') this.append('not (')\n",
+            "    if (operator === 'is not distinct from') this.append('not (') // MUTATION\n",
+            "MySQL's spelling of IS DISTINCT FROM loses its negation and a re-emit under the same stamp re-stamps",
+        ),
+        (
+            "mysql-upsert-stale-read-refused",
+            "packages/store-mysql/src/tree.ts",
+            "      if (stale !== undefined) {\n",
+            "      if (stale !== undefined && written.length < 0) { // MUTATION\n",
+            "a conflict arm reads a column MySQL already assigned and takes its new value for the stored one",
+        ),
+        (
+            "mysql-upsert-do-nothing",
+            "packages/store-mysql/src/tree.ts",
+            "      this.append(' = ')\n      stored(key)\n      return\n",
+            "      this.append(' = ')\n      this.visitNode(key) // MUTATION\n      return\n",
+            "DO NOTHING names a bare column, which an INSERT that selects its row makes ambiguous",
+        ),
+        (
+            "mysql-upsert-incoming-row",
+            "packages/store-mysql/src/tree.ts",
+            "        this.append('select * from (')\n        this.visitNode(node.values)\n        this.append(`) as \\`${INCOMING}\\``)\n",
+            "        this.visitNode(node.values) // MUTATION\n",
+            "an upsert that selects its row has no source named excluded for its conflict arm to read",
+        ),
+        (
+            "mysql-update-reports-matched-rows",
+            "packages/store-mysql/src/executor.ts",
+            "  if (matched !== null) return Number(matched[1])\n",
+            "  if (matched !== null) return header.affectedRows // MUTATION\n",
+            "an UPDATE that matches a row and changes nothing reports zero rows, as a lost compare-and-set does",
+        ),
+        (
+            "mysql-upsert-update-counts-once",
+            "packages/store-mysql/src/executor.ts",
+            "  if (inserted !== null) return header.affectedRows - Number(inserted[1])\n",
+            "  if (inserted !== null) return header.affectedRows // MUTATION\n",
+            "a selecting upsert that updated one row reports two and trips the batch's one-row bound",
+        ),
+        (
+            "mysql-single-row-upsert-counts-once",
+            "packages/store-mysql/src/executor.ts",
+            "  const singleRowUpsert = info === '' && header.affectedRows === 2 && /^\\s*INSERT\\b/i.test(sql)\n",
+            "  const singleRowUpsert = info === 'MUTATION' && header.affectedRows === 2 && /^\\s*INSERT\\b/i.test(sql)\n",
+            "a single-row upsert that updated reports two and trips the compare-and-set's one-row bound",
+        ),
+        (
+            "mysql-migration-statements-repeat",
+            "packages/store-mysql/src/schema.ts",
+            "      `CREATE TABLE IF NOT EXISTS tasks (\n",
+            "      `CREATE TABLE tasks (\n",
+            "a migrator that died after MySQL committed one table cannot rerun the version that creates it",
+        ),
+        (
+            "mysql-too-long-identifier-is-invalid-input",
+            "packages/store-mysql/src/executor.ts",
+            "    if (errno === ER_DATA_TOO_LONG) {\n",
+            "    if (errno === -ER_DATA_TOO_LONG) { // MUTATION\n",
+            "an identifier past MySQL's indexed width is reported as an outage and retried until the infrastructure budget is gone",
+        ),
+        (
+            "mysql-version-read-is-read-committed",
+            "packages/store-mysql/src/executor.ts",
+            "        for (const statement of schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ) {\n",
+            "        for (const statement of schemaVersionRead ? BEGIN_READ : BEGIN_READ) { // MUTATION\n",
+            "a version read racing a bootstrap reads through a snapshot older than the table and MySQL refuses it with error 1412",
+        ),
+        (
+            "mysql-bootstrap-is-one-statement",
+            "packages/store-mysql/src/admin.ts",
+            "        () => this.db.batch('migrate:bootstrap', [{ sql: META_BOOTSTRAP_SQL, args: [] }]),\n",
+            "        () =>\n          this.db.batch('migrate:bootstrap', [\n            { sql: META_BOOTSTRAP_SQL.split(' AS SELECT ')[0] as string, args: [] }, // MUTATION\n            { sql: \"INSERT INTO meta (`key`, value) VALUES ('schema_version', '0')\", args: [] },\n          ]),\n",
+            "MySQL commits the version table before its row, and a concurrent version read reports a foreign database",
+        ),
+        (
+            "mysql-bootstrap-loss-forgiven",
+            "packages/store-mysql/src/admin.ts",
+            "      if (version !== null && version >= minimumVersion) return\n",
+            "      if (version !== null && version > Number.MAX_SAFE_INTEGER) return // MUTATION\n",
+            "a MySQL migrator whose bootstrap lost to a concurrent winner, or lost only its answer, fails a cold start that succeeded",
+        ),
+        (
+            "mysql-only-an-insert-counts-twice",
+            "packages/store-mysql/src/executor.ts",
+            "  const singleRowUpsert = info === '' && header.affectedRows === 2 && /^\\s*INSERT\\b/i.test(sql)\n",
+            "  const singleRowUpsert = info === '' && header.affectedRows === 2 // MUTATION\n",
+            "a DELETE that removed exactly two rows reports one, and a follow-on that over-deleted passes the one-row audit on MySQL alone",
+        ),
+        (
+            "mysql-session-settings-once-per-connection",
+            "packages/store-mysql/src/executor.ts",
+            "      const physical: object = (connection as { connection?: object }).connection ?? connection\n",
+            "      const physical: object = (connection as { connection?: object }) ?? connection // MUTATION\n",
+            "the pool hands out a new wrapper on every checkout, so every batch pays a round trip to set the session again",
+        ),
+        (
+            "mysql-foreign-pool-found-rows-refused",
+            "packages/store-mysql/src/executor.ts",
+            "    if (typeof flags !== 'number' || (flags & CLIENT_FOUND_ROWS) !== 0) {\n",
+            "    if (typeof flags !== 'number') { // MUTATION\n",
+            "an application's own pool connects with FOUND_ROWS, and a compare-and-set that lost reads as one that won",
+        ),
+        (
+            "mysql-identifier-past-the-width-refused-in-the-store",
+            "packages/store-mysql/src/store.ts",
+            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > IDENTIFIER_CHARACTERS\n",
+            "      value.length > IDENTIFIER_CHARACTERS &&\n      [...value].length > Number.MAX_SAFE_INTEGER // MUTATION\n",
+            "a name with trailing spaces past the indexed width reaches MySQL, which cuts it to a different name",
+        ),
+        (
+            "mysql-write-cut-to-fit-is-refused",
+            "packages/store-mysql/src/executor.ts",
+            "  if (cut !== undefined) {\n",
+            "  if (cut !== undefined && cut === null) { // MUTATION\n",
+            "a write MySQL cut to fit its column commits, and the stored identifier is not the one that was sent",
+        ),
+        (
+            "mysql-foreign-pool-reset-on-release-refused",
+            "packages/store-mysql/src/executor.ts",
+            "    if (config?.resetOnRelease !== false) {\n",
+            "    if (config?.resetOnRelease === null) { // MUTATION\n",
+            "a pool that resets a connection on release loses the session settings, and every write after the first runs at REPEATABLE READ with no strict mode",
+        ),
+    )
+)
+
 VERDICTS = {
     "followon-provenance-check": ExpectedVerdict(
         "construction",
@@ -9864,6 +10017,138 @@ for consumer, _ in CHECKPOINT_CONFLICT_CONSUMERS:
             f"mutation-verdict:behavior:{name}",
             "packages/conformance/src/suite.ts",
         )
+
+VERDICTS.update(
+    {
+        "mysql-set-readers-before-writers": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees assigns a column only after every assignment that reads it",
+            "mutation-verdict:construction:mysql-set-readers-before-writers",
+        ),
+        "mysql-set-cycle-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a SET list whose assignments read one another",
+            "mutation-verdict:construction:mysql-set-cycle-refused",
+        ),
+        "mysql-self-read-derived-table": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees reads the table it updates through a derived table",
+            "mutation-verdict:construction:mysql-self-read-derived-table",
+        ),
+        "mysql-null-safe-inequality": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees spells a conditional upsert as assignments that each carry the condition",
+            "mutation-verdict:construction:mysql-null-safe-inequality",
+        ),
+        "mysql-upsert-stale-read-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees refuses a conflict arm that would read a column after assigning it",
+            "mutation-verdict:construction:mysql-upsert-stale-read-refused",
+        ),
+        "mysql-upsert-do-nothing": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees spells DO NOTHING as a key assigned to itself, read from the stored row",
+            "mutation-verdict:construction:mysql-upsert-do-nothing",
+        ),
+        "mysql-upsert-incoming-row": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/tree.test.ts",
+            "MySQL spelling of the shared statement trees names the incoming row excluded by selecting it through a derived table",
+            "mutation-verdict:construction:mysql-upsert-incoming-row",
+        ),
+        "mysql-update-reports-matched-rows": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor-contract.test.ts",
+            "rows a MySQL statement wrote, as the executor port means it reports the rows an UPDATE matched, where MySQL counts only the rows it changed",
+            "mutation-verdict:construction:mysql-update-reports-matched-rows",
+        ),
+        "mysql-upsert-update-counts-once": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor-contract.test.ts",
+            "rows a MySQL statement wrote, as the executor port means it counts a selecting upsert that updated once, where MySQL counts it twice",
+            "mutation-verdict:construction:mysql-upsert-update-counts-once",
+        ),
+        "mysql-single-row-upsert-counts-once": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor-contract.test.ts",
+            "rows a MySQL statement wrote, as the executor port means it counts a single-row upsert that updated once, which MySQL reports as two with no record line",
+            "mutation-verdict:construction:mysql-single-row-upsert-counts-once",
+        ),
+        "mysql-migration-statements-repeat": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/schema.test.ts",
+            "MySQL schema writes only statements that are safe to repeat",
+            "mutation-verdict:construction:mysql-migration-statements-repeat",
+        ),
+        "mysql-too-long-identifier-is-invalid-input": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server reports an identifier past the indexed width as invalid input, and writes nothing",
+            "mutation-verdict:behavior:mysql-too-long-identifier-is-invalid-input",
+        ),
+        "mysql-version-read-is-read-committed": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions reads the schema version under READ COMMITTED, with no snapshot taken ahead of the statement",
+            "mutation-verdict:construction:mysql-version-read-is-read-committed",
+        ),
+        "mysql-bootstrap-is-one-statement": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/admin.test.ts",
+            "MysqlStoreAdmin bootstraps in one statement that creates the version table with its row",
+            "mutation-verdict:construction:mysql-bootstrap-is-one-statement",
+        ),
+        "mysql-bootstrap-loss-forgiven": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "schema/admin conformance [mysql] forgives a bootstrap that lost to a concurrent migrator, and only then",
+            "mutation-verdict:behavior:bootstrap-loss-forgiven",
+            "packages/conformance/src/schema-admin.ts",
+        ),
+        "mysql-only-an-insert-counts-twice": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions reports a DELETE of two rows as two rows",
+            "mutation-verdict:construction:mysql-only-an-insert-counts-twice",
+        ),
+        "mysql-session-settings-once-per-connection": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions sends the session settings once for each physical connection",
+            "mutation-verdict:construction:mysql-session-settings-once-per-connection",
+        ),
+        "mysql-foreign-pool-found-rows-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a pool that connects with FOUND_ROWS, or whose flags it cannot read",
+            "mutation-verdict:construction:mysql-foreign-pool-found-rows-refused",
+        ),
+        "mysql-identifier-past-the-width-refused-in-the-store": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/identifier-bound.test.ts",
+            "refuses an identifier past 255 characters at every entry, before anything is sent",
+            "mutation-verdict:construction:mysql-identifier-past-the-width-refused-in-the-store",
+        ),
+        "mysql-write-cut-to-fit-is-refused": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/real-server.test.ts",
+            "MysqlExecutor against a real server refuses a write MySQL would cut to fit its column, and writes nothing",
+            "mutation-verdict:behavior:mysql-write-cut-to-fit-is-refused",
+        ),
+        "mysql-foreign-pool-reset-on-release-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a pool that resets a connection on release, or that does not say",
+            "mutation-verdict:construction:mysql-foreign-pool-reset-on-release-refused",
+        ),
+    }
+)
 
 spec_names = [spec[0] for spec in MUTATION_SPECS]
 if len(spec_names) != len(set(spec_names)):
@@ -13628,7 +13913,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 657:
+        if len(MUTATIONS) != 678:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

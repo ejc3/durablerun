@@ -108,6 +108,9 @@ DYNAMIC = {
     ("packages/store-postgres/src/admin.ts", "migrate:v"): (
         "one batch per migration version, labelled by version"
     ),
+    ("packages/store-mysql/src/admin.ts", "migrate:v"): (
+        "one batch per migration version, labelled by version"
+    ),
 }
 DYNAMIC_LABELS = {"migrate:v*"}
 
@@ -124,6 +127,12 @@ OPAQUE_STATEMENT_LISTS = {
         "fencedBatch(migration)",
         "the migration runner prepends an applied:vN primary-key sentinel "
         "and schema tests execute and freeze every generated migration",
+    ),
+    ("packages/store-mysql/src/admin.ts", "migrate:v*"): (
+        "versionBatch(migration)",
+        "MySQL commits each DDL statement on its own, so the executor runs "
+        "every migrate: write under one named lock, every statement is safe "
+        "to repeat, and schema tests execute and freeze every migration",
     ),
 }
 
