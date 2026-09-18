@@ -606,12 +606,23 @@ One invocation executes one claimed run to its next suspension point:
     mutation that removes it. A race of twelve real concurrent awaits
     against every terminal batch also runs on both dialects. It is a smoke and
     not the proof: with the lock dropped it caught one site of five.
-  - The PostgreSQL event lock is `pg_advisory_xact_lock` on a key hashed from
-    the database, the schema, the tag `durablerun:event`, the queue, and the
-    event name, as the claim lock is under its own tag. A row lock would leave
-    a row for every task that ever ends, awaited or not. A hash collision can
-    only serialize two unrelated events. The `event_locks` table stays in the
-    schema, because a shipped migration is frozen, and nothing uses it.
+  - The PostgreSQL event lock has two forms, chosen by who owns the name. A
+    caller's event takes the row of `event_locks` that every build has taken:
+    inserted when it is missing, then locked. A process of an older build keeps
+    running after a newer build has migrated, because a store never reads the
+    schema version, so for the length of a deploy both builds emit and await the
+    same events, and two lock kinds would not exclude each other. A PostgreSQL
+    case runs one side as the older build, holds the await open, and sees the
+    waiter woken in both directions. A task's completion event takes
+    `pg_advisory_xact_lock` on a key hashed from the tag `durablerun:event`, the
+    identity of the `events` table as the session resolves it, the queue, and
+    the event name. No build before child tasks locks a completion event, so
+    nothing has to agree with a row, and a row would be left for every task that
+    ever ends, awaited or not. Keyed on the table and not on `current_schema()`,
+    two pools that reach the same tables through different search paths still
+    exclude each other. A hash collision can only serialize two unrelated
+    events. The row lock can go once no build that takes it can still run, which
+    BUILD.md records.
   - The event is first-write-wins like every event (§3.8.3), so it means "the
     first outcome this task reached", never "the task is terminal now".
     `retryTask` can take a failed task back to live, and a revived child that
@@ -625,7 +636,7 @@ One invocation executes one claimed run to its next suspension point:
     No terminal batch will fire for it again, so an await that registered a
     wait would sleep forever. The await never registers on an ended child. It
     records the missing event itself (the model's `AwaitMaterialize`): it reads
-    the child's row, and a second `await-event` batch inserts the event from
+    the child's row, and a batch of its own, `record-task-done`, inserts the event from
     that outcome, fenced on the row still carrying the stamp that was read, on
     no event existing, and on the awaiting run's live claim, under the event
     lock, and answers as a hit. "First outcome" for such a task means the first
@@ -664,9 +675,17 @@ One invocation executes one claimed run to its next suspension point:
     a parent a task of its own choosing, and its result. The spawn port refuses
     a caller's `idempotencyKey` that starts with `$`, the hosted enqueue route
     answers 400 for one, and the key is not a string the SDK passes:
-    `SpawnOptions.childOf` names the parent and the replay key, and the store
-    builds the key in core (`childSpawnKey`). `childOf` and `idempotencyKey`
-    together are refused.
+    `SpawnOptions.childOf` names the parent's live claim and the call site, and
+    the store builds the key in core (`childSpawnKey`), with the parent id's
+    length first, so that no two pairs spell one key. `childOf` and
+    `idempotencyKey` together are refused. A child is created only under its
+    parent's live claim (ChildTasks.tla's `SpawnAuthority`): the insert presents
+    the claim a child await presents, and a child spawn that created nothing and
+    found nothing answers with the run's own refusal. A child that exists is
+    found without a claim, which is what a replay asks. Refusing a caller's `$`
+    key is a breaking change to the enqueue contract. A caller that used such
+    keys gets `RangeError` at the port and 400 at the hosted route, and has to
+    rename them. Rows already stored under such a key stay as they are.
   - The payload is the child's first outcome, in the shape `getTaskResult`
     answers with: the terminal state, and the completed payload or the failure
     reason (`encodeTaskOutcome`, `decodeTaskOutcome`). The terminal batch binds
@@ -676,13 +695,14 @@ One invocation executes one claimed run to its next suspension point:
     that scheduled a retry writes none. It carries no conflict clause, which a
     follow-on insert may not have. An event that exists is left alone by a
     `NOT EXISTS` guard, which the event lock makes safe. Both stores add the
-    insert, the wake, and a check through one core function (`addTaskDone`).
-    The check exists because an insert that writes nothing passes every
-    row-count audit: when the statement named as terminal ended the task and
-    the insert wrote no row, the store reads whether the event exists. An event
-    an earlier ending recorded is the one explanation. Anything else throws,
-    naming the task: the batch named the wrong task or the wrong terminal
-    statement.
+    insert and the wake through one core function (`addTaskDone`). Nothing is
+    checked after the batch. A terminal write's answer is its batch's answer,
+    and a read after the commit could only change that answer for a transition
+    that has happened. A batch that named the wrong task or the wrong terminal
+    statement would end the task with no event, and an insert that writes
+    nothing passes every row-count audit. What holds that is
+    `childTaskViolations`, which runs after every case of the surface, over
+    every terminal label, in the fuzz, and in the SDK harness.
   - A terminal batch names the task, and `complete` and `fail` are handed only
     the run. The store that activated a run remembers its task, so the
     worker's own terminal write pays no read. Any other caller pays one read of
@@ -727,20 +747,25 @@ One invocation executes one claimed run to its next suspension point:
     from a child await names the task the same way. A refused await, and a spawn the
     store refuses as invalid input, are permanent failures (`FatalTaskError`),
     because neither changes on a retry: that covers `RangeError`, and
-    `InvalidDurableStringError` for a header no store can keep. A child defaults
+    `InvalidDurableStringError` for a queue no store can keep. A child's recorded
+    outcome that cannot be read, which the store and the decoder refuse with
+    `RangeError`, is permanent the same way. A child defaults
     to its parent's queue. A queue the task names is the first queue name task
-    code chooses, so the SDK and the spawn port both hold it to the durable
-    string domain, where the dialects otherwise disagree on a NUL and on a lone
-    surrogate.
+    code chooses, so the spawn port holds it to the durable string domain, where
+    the dialects otherwise disagree on a NUL and on a lone surrogate, and the SDK
+    makes that refusal permanent.
   - The model's actions and guards have executable twins in the conformance
     surface `child-tasks`, which every dialect runs: one case over every
     terminal batch, generated from the batch labels, plus the hit, the retry
     that writes no event, the first outcome after a revival, the await port's
     refusal of the reserved name, both directions of the queue rule, the
-    unknown task, the unrecorded ending and its three fences, the loud check,
+    unknown task, the unrecorded ending and its fences, a child revived before
+    the read that says why, a committed answer when a later read fails, the
+    checker seen reporting a missing event,
     the timeout, the cancelled parent, and every simulated interleaving of the
     await with the child's ending. The emit port's refusal of the reserved name,
-    the reserved idempotency key, and the durable queue are cases of the
+    the reserved idempotency key, the durable queue, the durable event name, and
+    the child spawn's claim are cases of the
     scheduler suite, which needs nothing but those ports. Rows that
     only the engine wrote are also held to `childTaskViolations`: a terminal
     task has its completion event, and a completion event names a task of its
@@ -764,24 +789,37 @@ One invocation executes one claimed run to its next suspension point:
     batch whole and ignores the field. On a first delivery the two leave the
     same state. On an exact replay the gate writes nothing, and the skip leaves
     alone what the first delivery committed. A compare-and-set and an open tail
-    carry no gate. Measured as client queries on PostgreSQL: a task ending is 8
-    round trips (5 before child tasks, 12 without this rule), and an emit with
-    nobody waiting is 6 (10 before).
+    carry no gate. Neither does a tail that answers with a row whatever it
+    matched, such as one that counts: skipped, it would answer with no row on
+    one dialect and with 0 on the other. Measured as client queries on
+    PostgreSQL: a task ending is 8 round trips (5 before child tasks, 12
+    without this rule), and an emit with nobody waiting is 7 (10 before).
   - A generated follow-on over a queue-scoped relation may bind its queue. The
     source rows and the written rows then each compare their queue with that
     bind, and the source is not correlated to the target. The wake's task
     follow-on selects its source by queue and state, so correlated it ran once
     for every task row: one `complete` on libSQL cost 1,063 ms at 2,000 pending
-    runs in its queue, and costs 8 ms bound. `query-plans.test.ts` pins the
-    plan of a terminal batch.
+    runs in its queue. The three follow-ons after the wake also name what the
+    wake set on exactly the rows it woke, `wake_event` and `state = 'pending'`,
+    and the partial index `runs_woken` holds only runs that were woken and not
+    yet claimed. By queue and state alone the only index is `runs_poll`, and
+    every task ending walked every pending run of its queue: 215 ms beside
+    100,000 pending runs, against 0.1 to 0.2 ms for each follow-on through the
+    index. `query-plans.test.ts` pins both sides of the plan, for `complete`, a
+    terminal `fail`, and `cancel-task`. The index is migration 6 and creates
+    nothing else. A process of an older build runs against it unchanged. An
+    older build that starts afterwards fails in `migrate()` with
+    `SchemaMismatchError`, as it does after every migration. PostgreSQL builds
+    the index under a lock that blocks writes to `runs` while it builds.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and
     against any worker write that ends nothing. The PostgreSQL cancel
     compare-and-set now locks the task's runs inside the statement that updates
-    the task, through a predicate that is always true (`runsLockedBeforeTask`).
-    And a batch PostgreSQL aborts as a deadlock victim (SQLSTATE 40P01)
-    committed nothing, so the executor runs it again, up to three times in all,
+    the task, through a predicate that is always true and reads the task's live
+    runs (`runsLockedBeforeTask`). And a write batch PostgreSQL aborts as a
+    deadlock victim (SQLSTATE 40P01) committed nothing, so the executor runs it
+    again at once, up to three times in all,
     before it reports an outage: reported at once, a finished run was left for
     the sweep to charge an infrastructure retry.
 - Cancellation discovery: a refused worker write names why (the refused-write
