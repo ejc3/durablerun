@@ -217,6 +217,13 @@
     "replace": "  /\\ TRUE\n"
   },
   {
+    "name": "rollback-refills-its-budget",
+    "guard": "within a saga generation a rollback's spent attempts are never given back",
+    "caughtBy": "TriesOnlyGrow",
+    "find": "  /\\ effect' = [effect EXCEPT ![s] = \"gone\"]\n  /\\ UNCHANGED <<task, phase, fwd, startIdx, rbTries, outcome, cause, revivals, generation, owed>>",
+    "replace": "  /\\ effect' = [effect EXCEPT ![s] = \"gone\"]\n  /\\ rbTries' = [rbTries EXCEPT ![s] = 0]\n  /\\ UNCHANGED <<task, phase, fwd, startIdx, outcome, cause, revivals, generation, owed>>"
+  },
+  {
     "name": "halt-hides-the-outcome",
     "guard": "a halted saga records a failed outcome",
     "caughtBy": "FailedImpliesSettled",
