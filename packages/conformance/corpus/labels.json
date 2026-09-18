@@ -2,6 +2,10 @@
   "spawn": ["spawned", "spawned-child"],
   "claim": ["claimed"],
   "activate": ["activated"],
+  "heartbeat": {
+    "variants": ["extended"],
+    "dialects": ["mysql"]
+  },
   "complete": ["completed"],
   "defer-launch": ["deferred"],
   "reschedule": ["rescheduled"],

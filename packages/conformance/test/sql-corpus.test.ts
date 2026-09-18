@@ -62,6 +62,8 @@ describe('generated SQL corpus', () => {
         )
         await store.spawn('q', 'job', '{}')
         const run = await claimActivated(store, 'q', 'w1')
+        // MySQL builds the heartbeat as a fenced batch, because it has no RETURNING.
+        expect((await store.heartbeat('q', run.runId, run.claimToken, 30)).held).toBe(true)
         await store.complete('q', run.runId, run.claimToken, '"done"')
         await store.spawn('q', 'job', '{}')
         const unlaunched = await claimOne(store, 'q', 'w2')
