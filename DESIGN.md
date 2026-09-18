@@ -826,7 +826,8 @@ One invocation executes one claimed run to its next suspension point:
     `complete` on libSQL beside 100,000 tasks of its queue took 43.4 ms
     correlated and 3.6 ms bound. PostgreSQL and MySQL join from the source
     either way and were keyed before: PostgreSQL plans all 16 task updates with
-    an `Index Cond` on `tasks_pkey`, and MySQL walked 54, 14, and 27 rows for
+    an `Index Cond` on `tasks_pkey`, which a plan test in `store-postgres` holds
+    for the shipped statements, and MySQL walked 54, 14, and 27 rows for
     claim, activate, and complete beside 4,000 tasks. A follow-on that is handed
     the key of the one row it writes also names that key on the written side, as
     the cancellation's runs follow-on names its task and the await's park names
@@ -835,8 +836,13 @@ One invocation executes one claimed run to its next suspension point:
     there for the planner: beside a bound queue and a state, SQLite prefers the
     (queue, state) index to the key and walks the queue. `store-libsql`'s plan
     pins recover every UPDATE and DELETE of thirteen labels from the real
-    operations, and refuse one that scans the table it writes or reaches `runs`
-    through (queue, state) alone. `store-mysql`'s plan test measures claim,
+    operations. One requires the plan step over the written table, under its
+    name or its alias in that statement, to be a seek by the key the write was
+    handed, so a scan, a walk, or an index added later fails alike. The other
+    refuses any step, under any alias, that is pinned by a queue and a state and
+    nothing more. It excuses three statements by name, the claim's, which find
+    the runs that claim took by queue and state because the stamp has no index.
+    BUILD.md records that as open. `store-mysql`'s plan test measures claim,
     activate, and complete beside 2,000 tasks from inside each batch. The
     wake's task
     follow-on selects its source by queue and state, so correlated it ran once

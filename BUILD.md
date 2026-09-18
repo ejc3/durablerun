@@ -1396,7 +1396,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
 
   The child-task work measured the correlated form on main at 2, 5, 20, and
   61 ms. PostgreSQL was keyed and is keyed: all 16 task updates plan with an
-  `Index Cond` on `tasks_pkey`. MySQL was keyed too, measured with rows in the
+  `Index Cond` on `tasks_pkey`, and a plan test in `store-postgres` holds that
+  for the shipped statements. MySQL was keyed too, measured with rows in the
   table: beside 4,000 tasks claim walked 54 rows, activate 14, and complete
   27 with the queue unbound, and a plan test now holds those three batches.
   The PostgreSQL fault matrix took 212 s before and 209 s after, which is
