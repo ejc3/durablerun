@@ -192,6 +192,30 @@ describe('PgExecutor transactions', () => {
     })
   })
 
+  it('runs a batch again when PostgreSQL chose it as a deadlock victim, and gives up after three', async () => {
+    const run = async (deadlocksBeforeSuccess: number) => {
+      let attempts = 0
+      const client = new FakeClient((text) => {
+        if (text !== 'UPDATE contended') return EMPTY_RESULT
+        attempts += 1
+        if (attempts <= deadlocksBeforeSuccess) throw databaseError('40P01', 'deadlock detected')
+        return result([], [], 1)
+      })
+      const outcome = await executor(new FakePool(client))
+        .batch('contended', [{ sql: 'UPDATE contended', args: [] }])
+        .then(
+          (results) => results.map((entry) => entry.rowsAffected),
+          (error: unknown) => (error instanceof Error ? error.name : String(error)),
+        )
+      return { outcome, texts: client.calls.map(({ text }) => text) }
+    }
+    const once = ['BEGIN', 'UPDATE contended', 'ROLLBACK']
+    expect({ victimOnce: await run(1), victimAlways: await run(99) }).toEqual({
+      victimOnce: { outcome: [1], texts: [...once, 'BEGIN', 'UPDATE contended', 'COMMIT'] },
+      victimAlways: { outcome: 'StoreUnavailableError', texts: [...once, ...once, ...once] },
+    })
+  })
+
   it('refuses a gate that does not name an earlier statement', async () => {
     const client = new FakeClient(() => EMPTY_RESULT)
     const refusals = []
