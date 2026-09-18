@@ -80,9 +80,10 @@ describe('the completion event contract', () => {
   it('refuses a payload whose state is not terminal', () => {
     expect(
       [
-        '{"state":"running","failureReasonJson":"{}"}',
-        '{"failureReasonJson":"{}"}',
-        '{"state":7,"failureReasonJson":"{}"}',
+        // Nothing but the state, so that no other rule refuses these.
+        '{"state":"running"}',
+        '{}',
+        '{"state":7}',
       ].map((payload) => refusal(() => decodeTaskOutcome('t1', payload))),
       'mutation-verdict:behavior:task-outcome-refuses-live-state',
     ).toEqual(['RangeError', 'RangeError', 'RangeError'])
