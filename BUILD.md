@@ -1420,11 +1420,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   checkpoint send what they did. A test pins the count for each batch a saga
   touches. Query plan pins hold that every saga read reaches the checkpoints
   by primary key with the task bound. The fault matrix gained a fifth
-  starting state and a six-call saga block that every cell runs. Run alone on
-  one shared machine, its PostgreSQL tests take 45 to 53 seconds each against
-  a 120 second limit, and the base's four take 41 to 50 in the same kind of
-  run. Each figure is one run, so a few seconds either way is noise. An
-  earlier run beside other jobs read 53 to 63.
+  starting state and a six-call saga block that every cell runs. That costs
+  time. In three paired runs on one shared machine, the base and this branch
+  interleaved, the four PostgreSQL tests the base also has took 38 to 49
+  seconds on the base, median 45.5, and 47 to 55 on this branch, median 52.0.
+  The new starting state took 51 to 61. The limit is 120 seconds. Single runs
+  on that machine spread wider than the difference between the two, so only
+  the paired runs compare them.
   Open, and owned by this entry until it merges:
   - The poison matrix seeds no task with a started step, so it never reaches
     the rollback pass. The pass's one stored-integer guard is held by a
@@ -1437,6 +1439,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The registry bridge arm in `ci.yml` is keyed on the registry of the
     child-task branch this branch is built on. It must be keyed again on
     main's registry when that branch merges or changes.
+  - `packages/store-mysql` merged to main after this branch was cut, and
+    this branch does not have it. The MySQL store owes `fail-rollback`, the
+    rollback pass in `fail` and in both sweep caps, and the phase predicate
+    in `complete`, `set-checkpoint`, `retry-task`, `suspend`, and
+    `await-event`, and must pass the `sagas` surface, before this entry can
+    merge.
 
 - **PR3.12 concurrent PostgreSQL migrators**: DONE. A concurrent cold-start
   migrator could be rejected as facing a malformed database. `lets concurrent
