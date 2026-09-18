@@ -16,7 +16,7 @@ import {
 import { SimWorld } from '@durablerun/harness'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
-import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { type StoreFixture, type StoreFixtureFactory, interposeAfterBatch } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
 import { claimActivated, claimOne, readOne, refusalName, withFixture } from './scenario.js'
 
@@ -433,7 +433,9 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
     })
 
     // AwaitRefused and RefusedNeverWaits: a child in another queue is refused for good,
-    // and the refusal registers nothing and issues no await batch.
+    // and registers nothing. The rule is decided inside the await batch, whose
+    // compare-and-set requires a live child in the parent's queue. Only an await that
+    // neither registered nor hit reads the child, to say why.
     it('refuses to await a child in another queue, and registers nothing', async () => {
       const parent = await claimedParent(f)
       const child = await f.store.spawn('other', 'child', '{}')
@@ -442,12 +444,17 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
       expect(
         {
           refusal,
-          awaitBatchRan: recorded.labels.includes('await-event'),
+          labels: recorded.labels,
           parent: await runState(f, parent.runId),
           waits: await waitCount(f),
         },
         'mutation-verdict:behavior:child-await-refuses-another-queue',
-      ).toEqual({ refusal: 'other-queue', awaitBatchRan: false, parent: 'running', waits: 0 })
+      ).toEqual({
+        refusal: 'other-queue',
+        labels: ['await-event', 'task-done-state'],
+        parent: 'running',
+        waits: 0,
+      })
       // The child ends in its own queue, where its event is written, and the parent's
       // queue hears nothing of it.
       const childRun = await claimActivated(f.store, 'other', 'w-child')
@@ -473,11 +480,125 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
     it('never refuses a same-queue child', async () => {
       const parent = await claimedParent(f)
       const child = await f.store.spawn(Q, 'child', '{}')
-      const parked = await childRefusal(awaitChild(f.store, Q, parent, child.taskId, null))
+      const recorded = recordingLabels(f)
+      const parked = await childRefusal(awaitChild(recorded.store, Q, parent, child.taskId, null))
       expect(
         { parked, waits: await waitCount(f) },
         'mutation-verdict:behavior:child-await-allows-the-same-queue',
       ).toEqual({ parked: 'accepted', waits: 1 })
+      // The child's existence, queue, and state are read inside the batch, under the
+      // event lock, so the common await is one batch and no read.
+      expect(recorded.labels, 'mutation-verdict:behavior:child-await-decides-in-the-batch').toEqual(
+        ['await-event'],
+      )
+    })
+
+    /**
+     * A child that is terminal with no completion event: a build older than this
+     * protocol ended it, in a rolling deploy or before the protocol existed. It is made
+     * here by ending the child through the store and deleting the event, which leaves
+     * every other row as the engine wrote it.
+     */
+    async function endedWithNoEvent(how: 'completed' | 'failed'): Promise<string> {
+      const child = await f.store.spawn(Q, 'child', '{}', { maxAttempts: 1 })
+      const run = await claimActivated(f.store, Q, `w-old-build-${how}`)
+      if (how === 'completed') await f.store.complete(Q, run.runId, run.claimToken, '{"old":1}')
+      else await f.store.fail(Q, run.runId, run.claimToken, FAILURE, null)
+      await f.raw.batch('an-older-build-wrote-no-event', [
+        {
+          sql: 'DELETE FROM events WHERE queue = ? AND event_name = ?',
+          args: [Q, taskDoneEventName(child.taskId)],
+        },
+      ])
+      return child.taskId
+    }
+
+    // AwaitMaterialize and WaitIsWakeable: no terminal batch will ever fire for such a
+    // child again, so an await that registered a wait would sleep forever. The await
+    // writes the event from the child's current outcome and answers as a hit.
+    it('records the outcome of a child an older build ended, and never parks on it', async () => {
+      const parent = await claimedParent(f)
+      const childTaskId = await endedWithNoEvent('completed')
+      const payloadJson = encodeTaskOutcome({
+        state: 'completed',
+        completedPayloadJson: '{"old":1}',
+      })
+      const answer = await awaitChild(f.store, Q, parent, childTaskId, null)
+      await f.store.spawn(Q, 'second-parent', '{}')
+      const second = await claimActivated(f.store, Q, 'w-second-parent')
+      expect(
+        {
+          answer,
+          event: (await storedDoneEvent(f, childTaskId))?.payload,
+          parent: await runState(f, parent.runId),
+          waits: await waitCount(f),
+          secondAnswer: await awaitChild(f.store, Q, second, childTaskId, null),
+        },
+        'mutation-verdict:behavior:child-await-records-an-unrecorded-ending',
+      ).toEqual({
+        answer: { emitted: true, payloadJson },
+        event: payloadJson,
+        parent: 'running',
+        waits: 0,
+        secondAnswer: { emitted: true, payloadJson },
+      })
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // The recorded outcome is the first outcome from then on (DoneImmutable): a revival
+    // that ends differently afterwards does not rewrite it.
+    it('keeps the outcome it recorded after the child is revived and ends again', async () => {
+      const parent = await claimedParent(f)
+      const childTaskId = await endedWithNoEvent('failed')
+      const recordedFailure = encodeTaskOutcome({ state: 'failed', failureReasonJson: FAILURE })
+      expect(await awaitChild(f.store, Q, parent, childTaskId, null)).toEqual({
+        emitted: true,
+        payloadJson: recordedFailure,
+      })
+      expect(await f.store.retryTask(Q, childTaskId)).not.toBeNull()
+      const revived = await claimActivated(f.store, Q, 'w-revived')
+      await f.store.complete(Q, revived.runId, revived.claimToken, '{"late":true}')
+      expect((await storedDoneEvent(f, childTaskId))?.payload).toBe(recordedFailure)
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
+    })
+
+    // The outcome is read before the batch that records it, and that batch is fenced on
+    // the child's row being the one that was read. A child revived in between is live
+    // again, so nothing is recorded and the await registers like any other.
+    it('records nothing when the child is revived between the read and the batch', async () => {
+      const parent = await claimedParent(f)
+      const childTaskId = await endedWithNoEvent('failed')
+      const interposed = interposeAfterBatch(f.raw, 'task-done-state', async () => {
+        expect(await f.store.retryTask(Q, childTaskId)).not.toBeNull()
+      })
+      const answer = await awaitChild(
+        f.storeOver(interposed.executor),
+        Q,
+        parent,
+        childTaskId,
+        null,
+      )
+      expect(
+        {
+          revivedInBetween: interposed.fired(),
+          answer,
+          event: await storedDoneEvent(f, childTaskId),
+          parent: await runState(f, parent.runId),
+          waits: await waitCount(f),
+        },
+        'mutation-verdict:behavior:child-await-records-only-the-row-it-read',
+      ).toEqual({
+        revivedInBetween: true,
+        answer: { emitted: false },
+        event: undefined,
+        parent: 'sleeping',
+        waits: 1,
+      })
+      // The revived child ends under this build, and that batch wakes the parent.
+      const revived = await claimActivated(f.store, Q, 'w-revived')
+      await f.store.complete(Q, revived.runId, revived.claimToken, '{}')
+      expect(await runState(f, parent.runId)).toBe('pending')
+      expect(await engineInvariantViolations(f.raw)).toEqual([])
     })
 
     // AwaitTimeout: the claim that finds the wait due consumes it and returns no
