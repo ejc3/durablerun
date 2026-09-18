@@ -6406,6 +6406,13 @@ MUTATION_SPECS.extend(
             "  if (cut !== undefined && cut === null) { // MUTATION\n",
             "a write MySQL cut to fit its column commits, and the stored identifier is not the one that was sent",
         ),
+        (
+            "mysql-foreign-pool-reset-on-release-refused",
+            "packages/store-mysql/src/executor.ts",
+            "    if (config?.resetOnRelease !== false) {\n",
+            "    if (config?.resetOnRelease === null) { // MUTATION\n",
+            "a pool that resets a connection on release loses the session settings, and every write after the first runs at REPEATABLE READ with no strict mode",
+        ),
     )
 )
 
@@ -10133,6 +10140,12 @@ VERDICTS.update(
             "packages/store-mysql/test/real-server.test.ts",
             "MysqlExecutor against a real server refuses a write MySQL would cut to fit its column, and writes nothing",
             "mutation-verdict:behavior:mysql-write-cut-to-fit-is-refused",
+        ),
+        "mysql-foreign-pool-reset-on-release-refused": ExpectedVerdict(
+            "construction",
+            "packages/store-mysql/test/executor.test.ts",
+            "MysqlExecutor transactions refuses a pool that resets a connection on release, or that does not say",
+            "mutation-verdict:construction:mysql-foreign-pool-reset-on-release-refused",
         ),
     }
 )
@@ -13900,7 +13913,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 677:
+        if len(MUTATIONS) != 678:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
