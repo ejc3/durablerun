@@ -1419,9 +1419,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   the rollback pass is gated on the failure alone, and a completion and a
   checkpoint send what they did. A test pins the count for each batch a saga
   touches. Query plan pins hold that every saga read reaches the checkpoints
-  by primary key with the task bound. The fault matrix's PostgreSQL tests take
-  53 to 63 seconds each against a 120 second limit, where this branch's base
-  takes 41 to 50 on the same machine.
+  by primary key with the task bound. The fault matrix gained a fifth
+  starting state and a six-call saga block that every cell runs. Run alone on
+  one shared machine, its PostgreSQL tests take 45 to 53 seconds each against
+  a 120 second limit, and the base's four take 41 to 50 in the same kind of
+  run. Each figure is one run, so a few seconds either way is noise. An
+  earlier run beside other jobs read 53 to 63.
   Open, and owned by this entry until it merges:
   - The poison matrix seeds no task with a started step, so it never reaches
     the rollback pass. The pass's one stored-integer guard is held by a
