@@ -7,6 +7,7 @@
     "durablerun-sdk-0.1.0-alpha.1.tgz": "f8c8441590a33de4d2744e15143c460ba5713e4ec03a8a422c11d443af365ba7",
     "durablerun-store-libsql-0.1.0-alpha.1.tgz": "d5a53ce6d571c33b495fbcf395106af9f47d12f6b565ecb52d00233235ad821d"
   },
+  "withdrawn": {},
   "surface": {
     "@durablerun/core": {
       ".": [
