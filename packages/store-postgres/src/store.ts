@@ -2367,10 +2367,13 @@ export class PostgresSchedulerStore implements SchedulerStore {
         ...PARKED_CLAIM_CLEARED_TEXT,
       },
       setArgs: [runId, stepName, eventName, stepName],
-      narrow: `queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
+      // The run is named on the written side too. The source already selects this one
+      // run, so it narrows nothing, and it gives the planner the key: beside a queue
+      // and a state, SQLite prefers (queue, state) and walks the queue's running runs.
+      narrow: `run_id = ? AND queue = ? AND task_id = ? AND claimed_by = ? AND state = 'running'
             AND EXISTS (SELECT 1 FROM tasks t
                         WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
-      narrowArgs: [queue, taskId, claimToken],
+      narrowArgs: [runId, queue, taskId, claimToken],
       rows: 'one',
     })
     b.derived('task-mirror', {
