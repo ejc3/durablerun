@@ -1,4 +1,12 @@
-import { INFRA_RETRY_CAP, RELAUNCH_CAP, type SqlExecutor } from '@durablerun/core'
+import {
+  INFRA_RETRY_CAP,
+  RELAUNCH_CAP,
+  SAGA_ROLLBACK_PREFIX,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
+  type SqlExecutor,
+  encodeRollbackTry,
+} from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import type { StoreFixtureFactory } from './fixture.js'
 import { engineInvariantViolations } from './invariants.js'
@@ -41,6 +49,7 @@ export const MATRIX_WRITE_LABELS = [
   'record-task-done',
   'complete',
   'fail',
+  'fail-rollback',
   'cancel-task',
   'retry-task',
   'expire-lease-now',
@@ -59,6 +68,7 @@ export const MATRIX_WRITE_LABELS = [
 export const TERMINAL_BATCH_LABELS = [
   'complete',
   'fail',
+  'fail-rollback',
   'cancel-task',
   'sweep:cancel',
   'sweep:lost-launch',
@@ -473,6 +483,50 @@ export async function runFaultMatrixCase(
           await go(() => store.activate(Q, late.runId, late.claimToken, late.claimGen))
           await go(() => awaitTaskOwned(store, Q, late, 'w-ended-child', endedTask.taskId, null))
           await go(() => store.complete(Q, late.runId, late.claimToken, '{"late":1}'))
+        }
+      }
+
+      // A saga (Sagas.tla). Two registered steps start, the task fails for good, and
+      // that batch enters the rolling-back phase. One rollback runs. The other fails,
+      // is retried past the user budget, and fails for good, which halts the saga.
+      const sagaTask = await go(() => store.spawn(Q, 'saga', '{}', { maxAttempts: 1 }))
+      const [forward] =
+        (await go(() => store.claim(Q, 'w-saga', { leaseSeconds: 60, limit: 1 }))) ?? []
+      if (sagaTask && forward?.taskId === sagaTask.taskId) {
+        const cause = '{"name":"SagaBoom"}'
+        const tried = (tries: number) => ({
+          key: `${SAGA_TRIES_PREFIX}a`,
+          stateJson: encodeRollbackTry({ tries, errorJson: '{"name":"RollbackBoom"}' }),
+        })
+        const mark = (run: typeof forward, name: string, state: string) =>
+          go(() => store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, name, state, 60))
+        await go(() => store.activate(Q, forward.runId, forward.claimToken, forward.claimGen))
+        await mark(forward, `${SAGA_STARTED_PREFIX}a`, '1')
+        await mark(forward, `${SAGA_STARTED_PREFIX}b`, '2')
+        await go(() => store.fail(Q, forward.runId, forward.claimToken, cause, null))
+        const [pass] =
+          (await go(() => store.claim(Q, 'w-saga-pass', { leaseSeconds: 60, limit: 1 }))) ?? []
+        if (pass?.taskId === sagaTask.taskId) {
+          await go(() => store.activate(Q, pass.runId, pass.claimToken, pass.claimGen))
+          await mark(pass, `${SAGA_ROLLBACK_PREFIX}b`, 'null')
+          await go(() =>
+            store.failRollback(
+              Q,
+              pass.runId,
+              pass.claimToken,
+              cause,
+              { delaySeconds: 0 },
+              tried(1),
+            ),
+          )
+          const [again] =
+            (await go(() => store.claim(Q, 'w-saga-pass-2', { leaseSeconds: 60, limit: 1 }))) ?? []
+          if (again?.taskId === sagaTask.taskId) {
+            await go(() => store.activate(Q, again.runId, again.claimToken, again.claimGen))
+            await go(() =>
+              store.failRollback(Q, again.runId, again.claimToken, cause, null, tried(2)),
+            )
+          }
         }
       }
 

@@ -26,6 +26,11 @@ export const checkpointLeaseCas = defineStatement(
     leaseExpiresAt: SqlFragment
     admission: SqlFragment
     leaseFits: SqlFragment
+    /**
+     * What the saga phase requires of this write (DESIGN.md §3.10): a forward checkpoint
+     * only before the phase, and a rollback's only inside it.
+     */
+    sagaPhase: SqlFragment
   }) =>
     treeBuilder
       .updateTable('runs')
@@ -37,7 +42,8 @@ export const checkpointLeaseCas = defineStatement(
       .$call(whereClaimedRun(binds))
       .where('task_id', '=', binds.taskId)
       .where(rawSql<boolean>(binds.admission, 'predicate'))
-      .where(rawSql<boolean>(binds.leaseFits, 'predicate')),
+      .where(rawSql<boolean>(binds.leaseFits, 'predicate'))
+      .where(rawSql<boolean>(binds.sagaPhase, 'predicate')),
 )
 
 /**
@@ -58,8 +64,11 @@ export const checkpointWrite = defineStatement(
     runId: string
     checkpointName: string
     stateJson: string
-    /** The compare-and-set of this batch that stamped the run. */
-    fence: 'lease' | 'suspend'
+    /**
+     * The statement of this batch that stamped the run: a compare-and-set, or the
+     * insert of the rollback pass a saga marker belongs to.
+     */
+    fence: 'lease' | 'suspend' | 'fail' | 'rollback-pass'
     /** The run's stored attempt is one a checkpoint can record. */
     attemptStored: SqlFragment
   }) => {

@@ -28,6 +28,7 @@ import {
   uncoveredConditionIds,
   unknownCoveredConditionIds,
 } from './poison-matrix.js'
+import { sagaConformance } from './sagas.js'
 import { schemaAdminConformance } from './schema-admin.js'
 import { schedulerConformance, wakeWitnessConformance } from './suite.js'
 import { timestampBoundaryConformance } from './time-boundaries.js'
@@ -429,6 +430,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'record-task-done',
             'complete',
             'fail',
+            'fail-rollback',
             'cancel-task',
             'retry-task',
             'expire-lease-now',
@@ -1230,5 +1232,6 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'timestamp-boundaries', run: timestampBoundaryConformance },
   { id: 'wake-witness', run: wakeWitnessConformance },
   { id: 'child-tasks', run: childTaskConformance },
+  { id: 'sagas', run: sagaConformance },
   { id: 'schema-admin', run: schemaAdminConformance },
 ] as const)

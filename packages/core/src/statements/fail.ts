@@ -17,6 +17,8 @@ export const failCas = defineStatement(
     claimToken: string
     failureJson: string
     admission: SqlFragment
+    /** What the saga phase requires of this failure, when it requires anything (§3.10). */
+    phase?: SqlFragment
   }) =>
     treeBuilder
       .updateTable('runs')
@@ -26,7 +28,10 @@ export const failCas = defineStatement(
         ...FENCE_ASSIGNMENTS,
       })
       .$call(whereClaimedRun(binds))
-      .where(rawSql<boolean>(binds.admission, 'predicate')),
+      .where(rawSql<boolean>(binds.admission, 'predicate'))
+      .$if(binds.phase !== undefined, (query) =>
+        query.where(rawSql<boolean>(binds.phase as SqlFragment, 'predicate')),
+      ),
 )
 
 /**
@@ -36,6 +41,23 @@ export const failCas = defineStatement(
  * built and bound as a value. No dialect then has to type a bind that is compared with
  * nothing but a bind.
  */
+/**
+ * A rollback pass (DESIGN.md §3.10, specs/Sagas.tla): the run that carries a saga on
+ * once its task's terminal failure is decided, or once a rollback attempt failed with
+ * budget left. It is the failed run's successor as a retry is, and the store's admission
+ * says which of the two it is. The user budget does not cap it. It is due at once when it
+ * enters the phase, and after the rollback's own delay otherwise.
+ */
+export const rollbackPassInsert = defineStatement(
+  'rollback pass',
+  (binds: FailureSuccessor & { delayMs: number; fence: 'fail' | 'cap' }) =>
+    failureSuccessor(
+      binds,
+      expressionBuilder<StoreTables, never>().val(binds.delayMs <= 0 ? 'pending' : 'sleeping'),
+      binds.fence,
+    ),
+)
+
 export const userRetrySuccessorInsert = defineStatement(
   'fail successor',
   (binds: FailureSuccessor) =>

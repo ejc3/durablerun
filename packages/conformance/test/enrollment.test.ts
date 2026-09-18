@@ -15,6 +15,7 @@ const EXPECTED_SURFACE_IDS = [
   'timestamp-boundaries',
   'wake-witness',
   'child-tasks',
+  'sagas',
   'schema-admin',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const

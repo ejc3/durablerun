@@ -188,6 +188,10 @@ export const DERIVED_WRITABLE_COLUMNS = Object.freeze({
     'infra_retries',
     ...TASK_OUTCOME_COLUMNS,
     'attempts',
+    // A rollback pass runs after the user budget is spent (DESIGN.md §3.10). The batch
+    // that places one raises the budget to the pass's own ordinal, derived from the
+    // failed run as `attempts` is, so the accounting band holds in the phase too.
+    'max_attempts',
   ] as const),
   runs: Object.freeze([
     'state',

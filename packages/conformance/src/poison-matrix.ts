@@ -6,6 +6,9 @@ import {
   type PersistedCounterFieldDescriptor,
   type PersistedCounterFieldId,
   type PersistedTemporalFieldDescriptor,
+  SAGA_PHASE_CHECKPOINT,
+  SAGA_STARTED_PREFIX,
+  SAGA_TRIES_PREFIX,
   type SchedulerStore,
   type SqlBatchControl,
   type SqlBatchMode,
@@ -13,6 +16,7 @@ import {
   type SqlResult,
   type SqlRow,
   type SqlStatement,
+  encodeRollbackTry,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
@@ -1603,6 +1607,23 @@ function endedChild(taskId: string): SqlStatement {
   )
 }
 
+/** The attempt record a `fail-rollback` invocation writes. */
+const ROLLBACK_TRIED = `${SAGA_TRIES_PREFIX}probe`
+
+/** The saga checkpoints of a task that is rolling back with one rollback owed. */
+const rollingBack = (taskId: string, runId: string): SqlStatement[] =>
+  [
+    [`${SAGA_STARTED_PREFIX}probe`, '1'],
+    [SAGA_PHASE_CHECKPOINT, '{"name":"ProbeCause"}'],
+  ].map(([name, state]) =>
+    sql(
+      `INSERT INTO checkpoints
+         (task_id, checkpoint_name, queue, state, status, owner_run_id, owner_attempt, updated_at_ms)
+       VALUES (?, ?, ?, ?, 'committed', ?, 1, ?)`,
+      [taskId, name as string, Q, state as string, runId, NOW],
+    ),
+  )
+
 async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void> {
   if (label === 'driver-heartbeat' || label === 'spawn') return
   let statements: readonly SqlStatement[]
@@ -1680,6 +1701,16 @@ async function seedHealthyTrigger(raw: SqlExecutor, label: string): Promise<void
       statements = [
         triggerTask('running'),
         triggerRun({ state: 'running', activatedGen: 1, expiresAt: NOW - 1 }),
+      ]
+      break
+    case 'fail-rollback':
+      // A failed rollback is one only while its task is rolling back, so both the
+      // trigger and the poisoned task stand in the phase, with one rollback owed.
+      statements = [
+        triggerTask('running'),
+        triggerRun({ state: 'running' }),
+        ...rollingBack(TRIGGER_TASK, TRIGGER_RUN),
+        ...rollingBack(TASK, RUN),
       ]
       break
     default:
@@ -1797,6 +1828,11 @@ async function invoke(
       return store.complete(Q, target.runId, target.token, target.completionPayload)
     case 'fail':
       return store.fail(Q, target.runId, target.token, target.failure, null)
+    case 'fail-rollback':
+      return store.failRollback(Q, target.runId, target.token, target.failure, null, {
+        key: ROLLBACK_TRIED,
+        stateJson: encodeRollbackTry({ tries: 1, errorJson: target.failure }),
+      })
     case 'cancel-task':
       return store.cancelTask(Q, target.taskId)
     case 'expire-lease-now':
@@ -2010,6 +2046,23 @@ function explicitInsertAuthority(
     allowInsert(authority, 'checkpoints', {
       task_id: TRIGGER_TASK,
       checkpoint_name: 'trigger-sleep',
+      queue: Q,
+      owner_run_id: TRIGGER_RUN,
+      owner_attempt: 1,
+    })
+  }
+  if (label === 'fail-rollback') {
+    // A failed rollback writes its attempt record, under the run that failed.
+    allowInsert(authority, 'checkpoints', {
+      task_id: TASK,
+      checkpoint_name: ROLLBACK_TRIED,
+      queue: Q,
+      owner_run_id: RUN,
+      owner_attempt: poisonAttempt,
+    })
+    allowInsert(authority, 'checkpoints', {
+      task_id: TRIGGER_TASK,
+      checkpoint_name: ROLLBACK_TRIED,
       queue: Q,
       owner_run_id: TRIGGER_RUN,
       owner_attempt: 1,
@@ -2961,6 +3014,17 @@ function healthyWinErrors(
       expect(
         task?.state === 'failed' && same(task.attempts, 1) && run?.state === 'failed',
         'trigger run was not failed terminally',
+      )
+      break
+    case 'fail-rollback':
+      expect(
+        task?.state === 'failed' &&
+          same(task.attempts, 1) &&
+          run?.state === 'failed' &&
+          after.checkpoints.some(
+            (row) => row.task_id === TRIGGER_TASK && row.checkpoint_name === ROLLBACK_TRIED,
+          ),
+        'trigger rollback did not fail for good with its attempt recorded',
       )
       break
     case 'retry-task':

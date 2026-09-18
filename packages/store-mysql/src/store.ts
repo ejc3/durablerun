@@ -488,6 +488,14 @@ function requireIndexable(identifiers: Readonly<Record<string, unknown>>): void 
  * follow-ons structurally key on the batch's own stamp (§3.4 rule 1); all
  * timestamps come from NOW_MS (rule 3).
  */
+/**
+ * Sagas (DESIGN.md §3.10) are not ported to this store. Where a shared statement
+ * requires the saga phase's predicate, this store passes one that admits every row, so
+ * nothing here freezes a forward phase, and `failRollback` refuses. The port owes every
+ * use of this constant its real predicate.
+ */
+const SAGAS_NOT_PORTED = sqlFragment('1 = 1')
+
 export class MysqlSchedulerStore implements SchedulerStore {
   constructor(
     private readonly db: SqlExecutor,
@@ -1731,6 +1739,17 @@ export class MysqlSchedulerStore implements SchedulerStore {
    * AttemptAccounting shape). A retrying failure inserts the successor run
    * (attempt+1, carrying SUCCESSOR_CARRIED_RUN_COLUMNS) in the same batch.
    */
+  async failRollback(
+    _queue: string,
+    _runId: string,
+    _claimToken: string,
+    _failureJson: string,
+    _retry: { delaySeconds: number } | null,
+    _rollbackTry: CheckpointWrite,
+  ): Promise<void> {
+    throw new Error('sagas are not ported to the MySQL store: failRollback is not implemented')
+  }
+
   async fail(
     queue: string,
     runId: string,
@@ -1949,6 +1968,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
           [checkpointName],
         ),
         leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),
+        sagaPhase: SAGAS_NOT_PORTED,
       }),
     )
     // The attempt comparison in checkpointWrite's conflict arm is the last-writer-wins
