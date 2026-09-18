@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
+  FENCE_ASSIGNMENTS,
   FencedBatch,
   type SqlBatchControl,
   type SqlBatchMode,
@@ -9,7 +10,6 @@ import {
   type SqlStatement,
   type SqlTransactionLock,
   fenceValue,
-  nowValue,
   sqlBatchMode,
   sqlTransactionLock,
   stampValue,
@@ -38,15 +38,14 @@ import {
  * must still allow.
  */
 
-const provenance = { fence_stamp: stampValue, fence_at_ms: nowValue }
 /** A compare-and-set of the one event of queue `q`. */
-const eventCas = () => loose.updateTable('events').set(provenance).where('queue', '=', 'q')
+const eventCas = () => loose.updateTable('events').set(FENCE_ASSIGNMENTS).where('queue', '=', 'q')
 /** A compare-and-set of every run of queue `q`, for the many-row form. */
-const queueCas = () => loose.updateTable('runs').set(provenance).where('queue', '=', 'q')
+const queueCas = () => loose.updateTable('runs').set(FENCE_ASSIGNMENTS).where('queue', '=', 'q')
 const taskCas = () =>
   loose
     .updateTable('tasks')
-    .set({ state: 'x', ...provenance })
+    .set({ state: 'x', ...FENCE_ASSIGNMENTS })
     .where('task_id', '=', 't')
 /** The waits of the run this batch stamped. A DELETE writes no stamp. */
 const fencedWaits = () =>
@@ -531,7 +530,7 @@ describe('bookkeeping checks', () => {
     // is why the counting rule reads follow-ons only.
     const claim = loose
       .updateTable('runs')
-      .set((eb: Loose) => ({ claim_gen: eb('claim_gen', '+', 1), ...provenance }))
+      .set((eb: Loose) => ({ claim_gen: eb('claim_gen', '+', 1), ...FENCE_ASSIGNMENTS }))
       .where('queue', '=', 'q')
     expect(() => batch().casManyTree('c', statement(claim), 5)).not.toThrow()
   })

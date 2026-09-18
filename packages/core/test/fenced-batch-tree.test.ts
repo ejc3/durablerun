@@ -60,6 +60,8 @@ import {
   withCas,
 } from './tree-fixtures.js'
 
+const PLAIN = /must select plain columns and values/
+
 /**
  * Each tree check paired: a shape it must refuse, and the nearest legitimate shape it
  * must still allow, as `fenced-batch.test.ts` does for text statements.
@@ -1237,7 +1239,7 @@ describe('FencedBatch tree statements', () => {
       refused(successor({ stamp: fenceValue('win') }), /must insert fence_stamp as the stamp/)
       // A literal is a fragment, which the plain-selection rule refuses first. A bound
       // value is what the stamp rule itself refuses.
-      refused(successor({ stamp: sql.lit('s') }), /must select plain columns and values/)
+      refused(successor({ stamp: sql.lit('s') }), PLAIN)
       refused(
         successor({ stamp: expressionBuilder<never, never>().val('s') }),
         /must insert fence_stamp as the stamp/,
@@ -1305,32 +1307,30 @@ describe('FencedBatch tree statements', () => {
     })
 
     it('selects plain columns and values, so no row appears that the fence did not match', () => {
-      const plain = /must select plain columns and values/
-      refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
-      refused(successor({ task: (eb) => eb.fn.coalesce('f.task_id', eb.val('t0')) }), plain)
+      refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), PLAIN)
+      refused(successor({ task: (eb) => eb.fn.coalesce('f.task_id', eb.val('t0')) }), PLAIN)
       refused(
         successor({
           from: (select) => select.having((eb: Loose) => eb(eb.fn.countAll(), '>=', 0)),
         }),
-        plain,
+        PLAIN,
       )
     })
 
     it('refuses a fragment in its SELECT list, whatever the text holds', () => {
-      const plain = /must select plain columns and values/
       const taskFrom = (text: string, args: SqlFragment['args'] = []) =>
         successor({ task: () => value<string>(text, args) })
       // Text can spell a call in more ways than a reader of text closes, so none is read.
-      refused(taskFrom('max(f.task_id)'), plain)
-      refused(taskFrom('MAX (f.task_id)'), plain)
-      refused(taskFrom('"max"(f.task_id)'), plain)
-      refused(taskFrom('coalesce(f.task_id, ?)', ['t']), plain)
-      refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), plain)
+      refused(taskFrom('max(f.task_id)'), PLAIN)
+      refused(taskFrom('MAX (f.task_id)'), PLAIN)
+      refused(taskFrom('"max"(f.task_id)'), PLAIN)
+      refused(taskFrom('coalesce(f.task_id, ?)', ['t']), PLAIN)
+      refused(taskFrom('(SELECT min(t2.task_id) FROM tasks t2)'), PLAIN)
       // A qualified name is a call too: PostgreSQL resolves pg_catalog.max to the aggregate.
-      refused(taskFrom('pg_catalog.max(f.task_id)'), plain)
+      refused(taskFrom('pg_catalog.max(f.task_id)'), PLAIN)
       // The cost is a false refusal: a plain column written as text adds no row. A
       // follow-on insert builds its values from nodes, or its caller binds them.
-      refused(taskFrom('f.task_id'), plain)
+      refused(taskFrom('f.task_id'), PLAIN)
       expect(() => followOn(successor())).not.toThrow()
     })
 

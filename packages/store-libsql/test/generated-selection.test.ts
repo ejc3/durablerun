@@ -1,9 +1,8 @@
 import {
+  FENCE_ASSIGNMENTS,
   FencedBatch,
   type SqlExecutor,
   defineStatement,
-  nowValue,
-  stampValue,
   treeBuilder,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
@@ -21,8 +20,7 @@ function stampRun(runId: string, state?: string, from?: string) {
       .updateTable('runs')
       .set({
         ...(state === undefined ? {} : { state }),
-        fence_stamp: stampValue,
-        fence_at_ms: nowValue,
+        ...FENCE_ASSIGNMENTS,
       })
       .where('run_id', '=', runId)
     return from === undefined ? update : update.where('state', '=', from)

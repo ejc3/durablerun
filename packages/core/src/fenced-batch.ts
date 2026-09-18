@@ -121,6 +121,9 @@ export function isFencedBatchBindError(value: unknown): value is TypeError {
  */
 export type RowBound = 'one' | { many: string }
 
+/** The audited bound a declaration stands for. Nothing reads a `many` reason: writing it is its job. */
+const atMostRows = (rows: RowBound): number | null => (rows === 'one' ? 1 : null)
+
 interface DerivedSelection<R extends FenceRelation = FenceRelation> {
   relation: R
   fence: string
@@ -180,8 +183,8 @@ interface Named {
   kind: Kind
   /** Present while this statement's stamp may still be consumed. */
   fence: { target: FenceTable; sealedBy: string | null } | null
-  rows: RowBound | null
-  max: number | null
+  /** The most rows it may write, audited after the batch commits. Null is no bound. */
+  atMost: number | null
   /** Compiled once, when the statement was added, so what was checked is what runs. */
   compiled: SqlStatement
 }
@@ -529,7 +532,7 @@ export class FencedBatch {
     rows: RowBound,
   ): this {
     const statement = defineStatement(`${this.label} ${name}`, () => query)({})
-    return this.addTree('followOn', name, statement, rows, null)
+    return this.addTree('followOn', name, statement, atMostRows(rows))
   }
 
   private relation(name: FenceRelation, at: string): (typeof FENCE_RELATIONS)[FenceRelation] {
@@ -577,7 +580,7 @@ export class FencedBatch {
    * provenance-carrying table and stamp it from the clock.
    */
   casTree(name: string, statement: DefinedStatement): this {
-    return this.addTree('cas', name, statement, 'one', 1)
+    return this.addTree('cas', name, statement, 1)
   }
 
   /**
@@ -587,7 +590,7 @@ export class FencedBatch {
    */
   casManyTree(name: string, statement: DefinedStatement, max: number): this {
     this.requireCasManyMax(name, max)
-    return this.addTree('casMany', name, statement, { many: 'CAS' }, max)
+    return this.addTree('casMany', name, statement, max)
   }
 
   private requireCasManyMax(name: string, max: number): void {
@@ -601,12 +604,12 @@ export class FencedBatch {
    * gate it, and a write to a provenance-carrying table must stamp the rows it writes.
    */
   followOnTree(name: string, statement: DefinedStatement, rows: RowBound): this {
-    return this.addTree('followOn', name, statement, rows, null)
+    return this.addTree('followOn', name, statement, atMostRows(rows))
   }
 
   /** A trailing SELECT that may only see rows this batch stamped: a fence gates it. */
   tailTree(name: string, statement: DefinedStatement): this {
-    return this.addTree('tail', name, statement, null, null)
+    return this.addTree('tail', name, statement, null)
   }
 
   /**
@@ -624,7 +627,7 @@ export class FencedBatch {
     if (reason.trim() === '') {
       throw new Error(`FencedBatch[${this.label}] openTail '${name}' needs a reason`)
     }
-    return this.addTree('openTail', name, statement, null, null)
+    return this.addTree('openTail', name, statement, null)
   }
 
   /** The batch-shape rules every statement passes. Returns the error prefix. */
@@ -664,8 +667,7 @@ export class FencedBatch {
     asked: Kind | 'openTail',
     name: string,
     statement: DefinedStatement,
-    rows: RowBound | null,
-    max: number | null,
+    atMost: number | null,
   ): this {
     // An open tail is a tail in every way but one: no fence has to gate it.
     const open = asked === 'openTail'
@@ -880,8 +882,7 @@ export class FencedBatch {
       name,
       kind,
       fence: stamps ? { target: stamped, sealedBy: null } : null,
-      rows,
-      max,
+      atMost,
       compiled: { sql: compiled.sql, args },
     })
     return this
@@ -917,9 +918,9 @@ export class FencedBatch {
       results[s.name] = result
       const affected = result.rowsAffected
       if (s.kind === 'cas' || s.kind === 'casMany') {
-        if (s.max !== null && affected > s.max) {
+        if (s.atMost !== null && affected > s.atMost) {
           throw new Error(
-            `FencedBatch[${this.label}] ${s.kind} '${s.name}' affected ${affected} rows, at most ${s.max} allowed`,
+            `FencedBatch[${this.label}] ${s.kind} '${s.name}' affected ${affected} rows, at most ${s.atMost} allowed`,
           )
         }
         if (affected >= 1) {
@@ -931,7 +932,7 @@ export class FencedBatch {
           won = s.name
           count = affected
         }
-      } else if (s.rows === 'one' && affected > 1) {
+      } else if (s.atMost !== null && affected > s.atMost) {
         throw new Error(
           `FencedBatch[${this.label}] followOn '${s.name}' wrote ${affected} rows but declared 'one' — its target set is wider than the transition it follows`,
         )

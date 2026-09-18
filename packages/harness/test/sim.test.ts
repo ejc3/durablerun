@@ -1,11 +1,10 @@
 import {
+  FENCE_ASSIGNMENTS,
   FencedBatch,
   type SqlExecutor,
   type SqlTransactionLock,
   defineStatement,
-  nowValue,
   sqlTransactionLock,
-  stampValue,
   treeBuilder,
 } from '@durablerun/core'
 import { LibsqlExecutor, TREE_DIALECT } from '@durablerun/store-libsql'
@@ -90,10 +89,7 @@ describe('batch control forwarding', () => {
     const world = new SimWorld(real, 'locked-batch')
     world.actor('a', async (db) => {
       const stampEvents = defineStatement('stamp-events', () =>
-        treeBuilder
-          .updateTable('events')
-          .set({ fence_stamp: stampValue, fence_at_ms: nowValue })
-          .where('queue', '=', 'q'),
+        treeBuilder.updateTable('events').set(FENCE_ASSIGNMENTS).where('queue', '=', 'q'),
       )({})
       const batch = new FencedBatch('emit-event', 'seed', { now: '1', tree: TREE_DIALECT })
         .lockEvent({ queue: 'q', eventName: 'e' })

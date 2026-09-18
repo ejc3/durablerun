@@ -1,4 +1,5 @@
 import {
+  FENCE_ASSIGNMENTS,
   FencedBatch,
   INFRA_RETRY_CAP,
   LeaseLostError,
@@ -8,8 +9,6 @@ import {
   type SqlExecutor,
   compileOnlyBuilder,
   defineStatement,
-  nowValue,
-  stampValue,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
 import {
@@ -27,9 +26,7 @@ const stampBuilder = compileOnlyBuilder<Record<string, Record<string, unknown>>>
 /** A compare-and-set that stamps the rows of `table` matching every column given. */
 function stampRows(table: 'runs' | 'tasks' | 'waits', match: Record<string, string>) {
   return defineStatement(`stamp-${table}`, () => {
-    let update = stampBuilder
-      .updateTable(table)
-      .set({ fence_stamp: stampValue, fence_at_ms: nowValue })
+    let update = stampBuilder.updateTable(table).set(FENCE_ASSIGNMENTS)
     for (const [column, value] of Object.entries(match)) update = update.where(column, '=', value)
     return update
   })({})
