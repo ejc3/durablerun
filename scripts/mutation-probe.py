@@ -664,8 +664,8 @@ MUTATION_SPECS = [
     (
         "emit-wake-event-correlation",
         "packages/store-libsql/src/store.ts",
-        "         AND wake_event = ?\n",
-        "         AND ? IS NOT NULL\n",
+        "        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),\n",
+        "        parkedOnEvent: sqlFragment(`? IS NOT NULL`, [eventName]),\n",
         "an emit wakes a run that is not parked on that event",
     ),
     (
@@ -683,17 +683,19 @@ MUTATION_SPECS = [
     (
         "successor-ownership",
         "packages/store-libsql/src/store.ts",
-        "           AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
-        "           AND ? IS NOT NULL`,\n"
-        "        [successorId, retryDelayMs, retryDelayMs, runId, successorId],",
+        "          successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [\n"
+        "            successorId,\n"
+        "          ]),",
+        "          successorFree: sqlFragment(`? IS NOT NULL`, [\n"
+        "            successorId,\n"
+        "          ]),",
         "a replayed failure re-inserts a successor that has since been claimed",
     ),
     (
         "successor-carries-every-column",
-        "packages/core/src/contract.ts",
-        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`)",
-        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => `${alias}.${c}`.replace(`${alias}.wake_step`, 'NULL')) // MUTATION",
+        "packages/core/src/statements/successor.ts",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => [c, eb.ref(`${alias}.${c}`)] as const)",
+        "  const carried = SUCCESSOR_CARRIED_RUN_COLUMNS.map((c) => [c, (c === 'wake_step' && eb.val(null)) || eb.ref(`${alias}.${c}`)] as const) // MUTATION",
         "successor runs stop inheriting the parked wake step",
     ),
     (
@@ -818,11 +820,11 @@ MUTATION_SPECS = [
     (
         "claim-receipt-requires-sole-live-run",
         "packages/store-libsql/src/store.ts",
-        "         AND t.state IN ${LIVE}\n"
+        "          `t.state IN ${LIVE}\n"
         "         AND ${durableTaskRetryAdmissible('t')}\n"
         "         AND ${durableTaskHeadersAdmissible('t')}\n"
         "         AND ${soleLiveRun('r')}\n",
-        "         AND t.state IN ${LIVE}\n"
+        "          `t.state IN ${LIVE}\n"
         "         AND ${durableTaskRetryAdmissible('t')}\n"
         "         AND ${durableTaskHeadersAdmissible('t')}\n"
         "         AND 1 = 1\n",
@@ -904,23 +906,19 @@ MUTATION_SPECS = [
         "claim-receipt-requires-user-attempt-budget",
         "packages/store-libsql/src/store.ts",
         "         AND ${storedCurrentRunAccounting('r', 't')}\n"
-        "         AND ${storedHighestOwnedOrdinal('r')}\n"
-        "       ORDER BY r.run_id`",
+        "         AND ${storedHighestOwnedOrdinal('r')}`,\n",
         "         AND ${storedCurrentRunAccounting('r', 't').replace(\n"
         "           'AND t.attempts < t.max_attempts',\n"
         "           'AND t.attempts <= t.max_attempts',\n"
         "         )}\n"
-        "         AND ${storedHighestOwnedOrdinal('r')}\n"
-        "       ORDER BY r.run_id`",
+        "         AND ${storedHighestOwnedOrdinal('r')}`,\n",
         "a same-token receipt returns a run after its user-attempt budget is exhausted",
     ),
     (
         "claim-receipt-requires-highest-owned-ordinal",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedHighestOwnedOrdinal('r')}\n"
-        "       ORDER BY r.run_id`",
-        "         AND 1 = 1\n"
-        "       ORDER BY r.run_id`",
+        "         AND ${storedHighestOwnedOrdinal('r')}`,\n",
+        "         AND 1 = 1`,\n",
         "a same-token receipt returns an obsolete run below a higher owned ordinal",
     ),
     (
@@ -2065,10 +2063,10 @@ MUTATION_SPECS = [
     (
         "claim-receipt-retry-admissible",
         "packages/store-libsql/src/store.ts",
-        "         AND t.state IN ${LIVE}\n"
+        "          `t.state IN ${LIVE}\n"
         "         AND ${durableTaskRetryAdmissible('t')}\n"
         "         AND ${durableTaskHeadersAdmissible('t')}\n",
-        "         AND t.state IN ${LIVE}\n"
+        "          `t.state IN ${LIVE}\n"
         "         AND 1 = 1\n"
         "         AND ${durableTaskHeadersAdmissible('t')}\n",
         "a same-token receipt decodes an inadmissible durable retry strategy",
@@ -2209,17 +2207,17 @@ MUTATION_SPECS = [
     (
         "spawn-receipt-idempotency-priority-is-queue-scoped",
         "packages/store-libsql/src/store.ts",
-        "         WHERE ? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?\n"
-        "           AND t.task_id <> ?\n",
-        "         WHERE ? IS NOT NULL AND ? IS NOT NULL AND t.idempotency_key = ?\n"
-        "           AND t.task_id <> ?\n",
+        "         OR (? IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?\n"
+        "           AND t.task_id <> ?)`,\n",
+        "         OR (? IS NOT NULL AND ? IS NOT NULL AND t.idempotency_key = ?\n"
+        "           AND t.task_id <> ?)`,\n",
         "spawn receipt lets a foreign-queue id collision outrank the same-queue idempotency winner",
     ),
     (
         "spawn-receipt-task-id-collision-is-queue-scoped",
         "packages/store-libsql/src/store.ts",
-        "         FROM tasks t WHERE t.task_id = ? AND t.queue = ?\n",
-        "         FROM tasks t WHERE t.task_id = ? AND ? IS NOT NULL\n",
+        "          `(t.task_id = ? AND t.queue = ?)\n",
+        "          `(t.task_id = ? AND ? IS NOT NULL)\n",
         "spawn receipt returns a task-id collision owned by another queue",
     ),
     (
@@ -2443,18 +2441,20 @@ MUTATION_SPECS = [
     (
         "await-event-register-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),\n",
-        "        taskOwnsRun: sqlFragment('t.task_id = r.task_id'),\n",
+        "        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),\n"
+        "        taskEligible: sqlFragment(eligibleTask('t', NOW)),\n",
+        "        taskOwnsRun: sqlFragment('t.task_id = r.task_id'),\n"
+        "        taskEligible: sqlFragment(eligibleTask('t', NOW)),\n",
         "awaitEvent registers and parks after its task crosses the immutable queue boundary",
     ),
     (
         "emit-event-requires-run-task-queue-ownership",
         "packages/store-libsql/src/store.ts",
-        "         AND ${fenced('events', thisEvent, b.fence('event'))}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "        taskIsLive: sqlFragment(\n"
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,\n",
-        "         AND ${fenced('events', thisEvent, b.fence('event'))}\n"
-        "         AND EXISTS (SELECT 1 FROM tasks t\n"
+        "        taskIsLive: sqlFragment(\n"
+        "          `EXISTS (SELECT 1 FROM tasks t\n"
         "                     WHERE t.task_id = runs.task_id AND t.state IN ${LIVE})`,\n",
         "emitEvent wakes a run after its task crosses the immutable queue boundary",
     ),
@@ -2834,7 +2834,7 @@ TIMESTAMP_ADDITION_CASES = (
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
         "epochAdditionFits(NOW, infraDelayMs)",
-        "              f.fence_at_ms + ${infraDelayMs},\n",
+        "        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),\n",
         "f.fence_at_ms + ${infraDelayMs}",
     ),
     (
@@ -2876,7 +2876,7 @@ TIMESTAMP_ADDITION_CASES = (
         "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\n"
         "          OR ${epochAdditionFits(NOW, '?')})`",
         "epochAdditionFits(NOW, '?')",
-        "                f.fence_at_ms + ?,\n",
+        "          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),\n",
         "f.fence_at_ms + ?",
     ),
     (

@@ -5,7 +5,6 @@ import {
   POSITIVE_CLAIM_GENERATION_BOUNDS,
   type PersistedIntegerBounds,
   type PersistedIntegerBoundsExceptClaimGeneration,
-  STAMP,
 } from '@durablerun/core'
 
 /**
@@ -29,28 +28,17 @@ export const LIVE = `('pending','running','sleeping')`
 export const QUEUED = `('pending','sleeping')`
 
 /**
- * Proof that a given statement of THIS batch wrote the row identified by
- * `key`, and the instant that statement recorded.
- *
- * These two go together and are written as one shape because they answer one
- * question. A follow-on cannot read the clock (§3.4 rule 8), so when it needs
- * an instant it takes the one the fenced row already carries — the same row it
- * is proving exists. `key` is the correlation, written against the alias `f`.
+ * The instant a given statement of THIS batch recorded on the row identified by
+ * `key`. A follow-on cannot read the clock (§3.4 rule 8), so when it needs an
+ * instant it takes the one the fenced row already carries. The subquery returns
+ * no row unless that statement's stamp is on the row, so it is also the proof
+ * that the batch wrote it. `key` is the correlation, written against the alias
+ * `f`. The EXISTS form of this proof and the stamp-and-instant pair that
+ * hand-written follow-ons used are gone: every follow-on is a statement tree
+ * now, and the tree rules hold its gate and its provenance.
  */
-export const fenced = (table: string, key: string, fence: string): string =>
-  `EXISTS (SELECT 1 FROM ${table} f WHERE ${key} AND f.fence_stamp = ${fence})`
-
 export const fencedAt = (table: string, key: string, fence: string): string =>
   `(SELECT f.fence_at_ms FROM ${table} f WHERE ${key} AND f.fence_stamp = ${fence})`
-
-/**
- * The provenance a stamping follow-on writes: its own stamp, plus the instant
- * of the row it is following. One definition, so the pair can never be half
- * written — a fresh stamp beside a stale instant would be a lie about when the
- * row was last transitioned.
- */
-export const fenceFrom = (table: string, key: string, fence: string): string =>
-  `fence_stamp = ${STAMP}, fence_at_ms = ${fencedAt(table, key, fence)}`
 
 /**
  * A scalar owned only when its source predicate identifies exactly one row.

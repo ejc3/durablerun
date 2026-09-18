@@ -32,6 +32,7 @@ import {
   columnValue,
   defineStatement,
   fenceValue,
+  followOnInsertProvenance,
   fragmentBinds,
   gatingFences,
   insertProvenance,
@@ -736,6 +737,18 @@ export class FencedBatch {
     return this.addTree('tail', name, statement, null, null)
   }
 
+  /**
+   * `openTail`, built as a tree: a SELECT of rows this batch did not write, so no fence
+   * gates it. Every other tree rule still reads it. The reason is the same forcing
+   * function `openTail` documents.
+   */
+  openTailTree(name: string, reason: string, statement: DefinedStatement): this {
+    if (reason.trim() === '') {
+      throw new Error(`FencedBatch[${this.label}] openTail '${name}' needs a reason`)
+    }
+    return this.addTree('openTail', name, statement, null, null)
+  }
+
   /** The batch-shape rules every statement passes, text or tree. Returns the error prefix. */
   private admit(kind: Kind, name: string): string {
     const at = `FencedBatch[${this.label}] ${kind} '${name}'`
@@ -770,12 +783,15 @@ export class FencedBatch {
    * scans store sources.
    */
   private addTree(
-    kind: 'cas' | 'casMany' | 'followOn' | 'tail',
+    asked: Kind | 'openTail',
     name: string,
     statement: DefinedStatement,
     rows: RowBound | null,
     max: number | null,
   ): this {
+    // An open tail is a tail in every way but one: no fence has to gate it.
+    const open = asked === 'openTail'
+    const kind: Kind = open ? 'tail' : asked
     const at = this.admit(kind, name)
     const dialect = this.tree
     if (dialect === null) {
@@ -794,9 +810,12 @@ export class FencedBatch {
       if (tree.kind !== 'SelectQueryNode') throw new Error(`${at} must be a SELECT`)
     } else if (
       tree.kind !== 'UpdateQueryNode' &&
-      tree.kind !== (isCas ? 'InsertQueryNode' : 'DeleteQueryNode')
+      tree.kind !== 'InsertQueryNode' &&
+      (isCas || tree.kind !== 'DeleteQueryNode')
     ) {
-      throw new Error(`${at} must be an UPDATE or ${isCas ? 'an INSERT' : 'a DELETE'}`)
+      throw new Error(
+        `${at} must be an UPDATE${isCas ? ' or an INSERT' : ', a DELETE, or an INSERT … SELECT'}`,
+      )
     }
 
     const written = statementTable(tree)
@@ -805,7 +824,51 @@ export class FencedBatch {
       throw new Error(`${at} must write a provenance-carrying table`)
     }
     const inserted = insertProvenance(tree)
-    if (stamped !== null && inserted !== null) {
+    const following = isCas ? null : followOnInsertProvenance(tree)
+    if (following !== null) {
+      // Only a SELECT can be gated, so only a SELECT can prove the batch won.
+      if (!following.selects) {
+        throw new Error(
+          `${at} must select what it inserts from the fenced row: a follow-on INSERT takes a SELECT, never VALUES`,
+        )
+      }
+      if (!following.plain) {
+        throw new Error(
+          `${at} must select plain columns and values: an aggregate, a function call, or a HAVING can return a row the fence did not match, and the insert would write it`,
+        )
+      }
+      if (!following.alone) {
+        throw new Error(
+          `${at} must select from the fenced row alone: one FROM item, the source whose fence_stamp the SELECT compares, with any join explicit and carrying its ON. A second FROM item inserts a row for every row of it, and a row bound is audited only after the batch has run`,
+        )
+      }
+      if (
+        stamped !== null &&
+        (!following.stamp || !following.fencedInstants.includes('fence_at_ms'))
+      ) {
+        throw new Error(
+          `${at} must insert fence_stamp as the stamp and fence_at_ms as the fenced row's own fence_at_ms into ${stamped}, once each (§3.4 rule 8)`,
+        )
+      }
+      // A preserved first instant is engine time. A compare-and-set takes it from the
+      // clock. A follow-on reads no clock, so it takes the fenced row's own instant, and
+      // never a bind, another column, or a default.
+      const preservedInstants: Partial<Record<FenceTable, string>> = PRESERVED_FENCE_INSTANTS
+      const preservedInstant = stamped === null ? undefined : preservedInstants[stamped]
+      if (preservedInstant !== undefined && !following.fencedInstants.includes(preservedInstant)) {
+        throw new Error(
+          `${at} must insert ${stamped}.${preservedInstant} as the fenced row's own fence_at_ms (§3.4 rule 3)`,
+        )
+      }
+      // A conflict clause would let a collision with a foreign row pass in silence,
+      // and later statements would then fence on a stamp this insert never wrote.
+      if (stamped !== null && following.conflict) {
+        throw new Error(
+          `${at} may carry no conflict clause: a follow-on that inserts into ${stamped} inserts its row or fails`,
+        )
+      }
+    }
+    if (isCas && stamped !== null && inserted !== null) {
       if (!inserted.stamp || !inserted.clockInstant) {
         throw new Error(
           `${at} must insert fence_stamp as the stamp and fence_at_ms as the clock into ${stamped}, once each (§3.4 rule 8)`,
@@ -869,13 +932,21 @@ export class FencedBatch {
       this.requireFenceSource(fence, `the fence token for '${fence}'`)
     }
     if (!isCas) {
-      const gates = gatingFences(tree)
-      if (gates.length === 0) {
+      const positional = gatingFences(tree)
+      const gates = positional.filter((gate) => gate.tied)
+      if (!open && gates.length === 0 && positional.length !== 0) {
+        throw new Error(
+          `${at} is gated only by a subquery that is not tied to the rows it reads or writes: the subquery must read the fenced source alone, and either IN selects one plain column of it against a column of the outer row, or EXISTS equates a column of it with a column of the outer row (§3.4 rule 1)`,
+        )
+      }
+      if (!open && gates.length === 0) {
         throw new Error(
           `${at} has no fence gating every row it reads or writes: a top-level WHERE conjunct must be fence_stamp = <a fence of this batch>, or require a row from a subquery gated that way (§3.4 rule 1)`,
         )
       }
-      for (const gate of gates) {
+      // Asked of every fence in a gating position, of an open tail's too: a fence
+      // compared on a table its compare-and-set does not stamp never matches.
+      for (const gate of positional) {
         const source = this.requireFenceSource(gate.fence, `the fence token for '${gate.fence}'`)
         if (source.target !== gate.table) {
           throw new Error(

@@ -14,7 +14,7 @@ function mutateWake(find: string, replace: string): StatementMutator {
     if (label !== 'emit-event') return statements
     let changed = 0
     const mutated = statements.map((statement) => {
-      if (!/^\s*UPDATE runs SET/.test(statement.sql) || !statement.sql.includes(find)) {
+      if (!/^\s*update "runs" set/.test(statement.sql) || !statement.sql.includes(find)) {
         return statement
       }
       changed += 1

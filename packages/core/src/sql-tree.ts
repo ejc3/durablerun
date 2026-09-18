@@ -598,10 +598,18 @@ function tableScope(query: OperationNode): { name: string; table: string }[] {
   })
 }
 
-/** A fence that gates, and the table whose `fence_stamp` it is compared with. */
+/** A fence in a gating position, and the table whose `fence_stamp` it is compared with. */
 export interface GatingFence {
   readonly fence: string
   readonly table: string
+  /** The name that fenced table answers to in the query that compares it. */
+  readonly source: string
+  /**
+   * Whether every subquery between the fence and the statement's own rows is tied to
+   * them (`isTied`). A fence that stands in a gating position and is not tied proves
+   * only that the batch won, so it gates nothing.
+   */
+  readonly tied: boolean
 }
 
 /** A conjunct that IS `fence_stamp = <fence token>`, in either orientation. */
@@ -621,13 +629,15 @@ function fenceEquality(
     // An unqualified column belongs to the query's only table. Anything else is
     // ambiguous, and an ambiguous fence gates nothing.
     const qualifier = reference.table?.table.identifier.name
-    const table =
+    const source =
       qualifier !== undefined
-        ? scope.find((source) => source.name === qualifier)?.table
+        ? scope.find((candidate) => candidate.name === qualifier)
         : scope.length === 1
-          ? scope[0]?.table
+          ? scope[0]
           : undefined
-    if (table !== undefined) return { fence: token.fence, table }
+    if (source !== undefined) {
+      return { fence: token.fence, table: source.table, source: source.name, tied: true }
+    }
   }
   return null
 }
@@ -643,16 +653,104 @@ function requiredSubquery(node: OperationNode): OperationNode | null {
   return null
 }
 
+/** The qualifier of a plain column reference, or null for anything else. */
+function referenceQualifier(node: OperationNode): string | null {
+  const inner = unwrapParens(node)
+  return ReferenceNode.is(inner) ? (inner.table?.table.identifier.name ?? null) : null
+}
+
+/** The one source a SELECT reads, when it reads exactly one and joins nothing. */
+function onlySource(select: SelectQueryNode): OperationNode | null {
+  const froms = select.from?.froms ?? []
+  const [only] = froms
+  return froms.length === 1 && only !== undefined && (select.joins?.length ?? 0) === 0 ? only : null
+}
+
+/** The SELECT a derived table wraps, or null for a plain table. */
+function derivedSelect(source: OperationNode): SelectQueryNode | null {
+  const inner = AliasNode.is(source) ? source.node : source
+  return SelectQueryNode.is(inner) ? inner : null
+}
+
 /**
- * The fences that gate every row a statement reads or writes. A fence gates when a
- * top-level WHERE conjunct is itself `fence_stamp = <fence>`, or requires a row from a
- * subquery whose own top-level WHERE is gated the same way. A fence joined by OR, under
- * NOT, or merely contained in a conjunct gates nothing, so it is not returned.
- *
- * This decides position, not correlation: a gated subquery that is not correlated to
- * the written row proves only that the batch won.
+ * The name a SELECT gives its single selection, when that selection is one plain column
+ * of the SELECT's one source, or null. Through a derived table the column must be the
+ * one the derived table itself selects this way, so the key is a stored column of the
+ * fenced source all the way down: never a bind, an expression, or another table's key.
+ */
+function selectedSourceColumn(select: SelectQueryNode): string | null {
+  const source = onlySource(select)
+  const selections = select.selections ?? []
+  const [only] = selections
+  if (source === null || selections.length !== 1 || only === undefined) return null
+  const aliased = only.selection
+  const selection = AliasNode.is(aliased) ? aliased.node : aliased
+  if (!ReferenceNode.is(selection)) return null
+  const column = columnName(selection.column)
+  if (column === null) return null
+  const qualifier = selection.table?.table.identifier.name
+  const derived = derivedSelect(source)
+  const sourceName =
+    AliasNode.is(source) && IdentifierNode.is(source.alias) ? source.alias.name : tableName(source)
+  if (qualifier !== undefined && qualifier !== sourceName) return null
+  if (derived !== null && selectedSourceColumn(derived) !== column) return null
+  return AliasNode.is(aliased) && IdentifierNode.is(aliased.alias) ? aliased.alias.name : column
+}
+
+/**
+ * Whether a required subquery is tied to the row of the query that requires it. The
+ * subquery reads one source and joins nothing, so nothing beside the fenced rows can
+ * supply a key or a match. `IN` ties it when its left side is a column and the subquery
+ * selects one plain column of that source, directly or through one derived table.
+ * `EXISTS` ties it when a top-level conjunct of the subquery equates a column of that
+ * source with a column of an outer source, each named by its qualifier. A gated
+ * subquery that is not tied proves only that the batch won, never that the row is one
+ * the batch stamped.
+ */
+function isTied(
+  conjunct: OperationNode,
+  subquery: SelectQueryNode,
+  outer: readonly { name: string }[],
+): boolean {
+  const source = onlySource(subquery)
+  if (source === null) return false
+  if (BinaryOperationNode.is(conjunct)) {
+    return (
+      ReferenceNode.is(unwrapParens(conjunct.leftOperand)) &&
+      selectedSourceColumn(subquery) !== null
+    )
+  }
+  const where = whereOf(subquery)
+  if (where === null) return false
+  const inner = tableScope(subquery)
+  const isInner = (name: string | null) =>
+    name !== null && inner.some((candidate) => candidate.name === name)
+  const isOuter = (name: string | null) =>
+    name !== null && !isInner(name) && outer.some((candidate) => candidate.name === name)
+  return conjuncts(where).some((candidate) => {
+    if (!BinaryOperationNode.is(candidate) || operatorName(candidate.operator) !== '=') {
+      return false
+    }
+    const left = referenceQualifier(candidate.leftOperand)
+    const right = referenceQualifier(candidate.rightOperand)
+    return (isInner(left) && isOuter(right)) || (isOuter(left) && isInner(right))
+  })
+}
+
+/**
+ * The fences that stand in a gating position, each marked `tied` or not. A fence stands
+ * there when a top-level WHERE conjunct is itself `fence_stamp = <fence>`, or requires a
+ * row from a subquery whose own top-level WHERE is gated the same way. It gates every
+ * row the statement reads or writes only when it is also `tied`: every such subquery on
+ * the way is tied to the row that requires it (`isTied`). A fence joined by OR, under
+ * NOT, or merely contained in a conjunct stands nowhere, so it is not returned. An
+ * INSERT … SELECT is gated by what gates its SELECT, and a row of VALUES by nothing.
  */
 export function gatingFences(query: OperationNode): GatingFence[] {
+  if (InsertQueryNode.is(query)) {
+    const selected = query.values
+    return selected !== undefined && SelectQueryNode.is(selected) ? gatingFences(selected) : []
+  }
   const where = whereOf(query)
   const scope = tableScope(query)
   const gated =
@@ -662,9 +760,10 @@ export function gatingFences(query: OperationNode): GatingFence[] {
           const fence = fenceEquality(conjunct, scope)
           if (fence !== null) return [fence]
           const subquery = requiredSubquery(conjunct)
-          return subquery !== null && SelectQueryNode.is(subquery) && mayReturnNoRow(subquery)
-            ? gatingFences(subquery)
-            : []
+          if (subquery === null || !SelectQueryNode.is(subquery)) return []
+          if (!mayReturnNoRow(subquery)) return []
+          const tied = isTied(conjunct, subquery, scope)
+          return gatingFences(subquery).map((gate) => ({ ...gate, tied: gate.tied && tied }))
         })
   return [...gated, ...derivedTableGates(query)]
 }
@@ -697,12 +796,10 @@ function mayReturnNoRow(select: SelectQueryNode): boolean {
  * rows, so either one gates nothing.
  */
 function derivedTableGates(query: OperationNode): GatingFence[] {
-  if (!SelectQueryNode.is(query) || (query.joins?.length ?? 0) !== 0) return []
-  const froms = query.from?.froms ?? []
-  const [only] = froms
-  if (froms.length !== 1 || only === undefined) return []
-  const inner = AliasNode.is(only) ? only.node : only
-  return SelectQueryNode.is(inner) && mayReturnNoRow(inner) ? gatingFences(inner) : []
+  if (!SelectQueryNode.is(query)) return []
+  const source = onlySource(query)
+  const inner = source === null ? null : derivedSelect(source)
+  return inner !== null && mayReturnNoRow(inner) ? gatingFences(inner) : []
 }
 
 /** The column an assignment writes. The object and two-argument `set` forms differ in shape. */
@@ -710,7 +807,9 @@ function assignedColumn(update: ColumnUpdateNode): string | null {
   return referencedColumn(update.column) ?? columnName(update.column)
 }
 
-function assignments(query: OperationNode): readonly ColumnUpdateNode[] {
+/** What a statement assigns to a row that exists: an UPDATE's SET list, or an INSERT's conflict arm. */
+function assignedUpdates(query: OperationNode): readonly ColumnUpdateNode[] {
+  if (InsertQueryNode.is(query)) return query.onConflict?.updates ?? []
   return UpdateQueryNode.is(query) ? (query.updates ?? []) : []
 }
 
@@ -741,32 +840,50 @@ const COUNTING_OPERATORS = ['+', '-', '*', '/', '%', '||']
  * column it writes with an arithmetic or concatenation operator, however the operands
  * are ordered, qualified, or parenthesized, and `raw` names that column inside a
  * fragment, where the tree cannot see what is done with it. A self-reference built from
- * nodes, such as `COALESCE(column, …)`, is visible and allowed.
+ * nodes, such as `COALESCE(column, …)`, is visible and allowed. In an INSERT's conflict
+ * arm, `excluded` names the incoming row and never the row being written, so a read of
+ * `excluded.column` is not a self-reference: a replay computes the same value again.
  */
 export function selfCountingAssignments(
   query: OperationNode,
 ): { column: string; how: 'arithmetic' | 'raw' }[] {
   const table = statementTable(query)
-  return assignments(query).flatMap((update): { column: string; how: 'arithmetic' | 'raw' }[] => {
-    const column = assignedColumn(update)
-    if (column === null) return []
-    const arithmetic = someNode(update.value, (candidate) => {
-      if (!BinaryOperationNode.is(candidate)) return false
-      const operator = operatorName(candidate.operator)
-      if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false
-      return (
-        referencedColumn(candidate.leftOperand) === column ||
-        referencedColumn(candidate.rightOperand) === column
+  const incoming = InsertQueryNode.is(query) ? 'excluded' : null
+  /** The column a node reads from the row being written, or null. */
+  const writtenColumn = (node: OperationNode): string | null =>
+    incoming !== null && referenceQualifier(node) === incoming ? null : referencedColumn(node)
+  return assignedUpdates(query).flatMap(
+    (update): { column: string; how: 'arithmetic' | 'raw' }[] => {
+      const column = assignedColumn(update)
+      if (column === null) return []
+      // A fragment's reads of the incoming row are taken out before its text is read for
+      // the written row, so `excluded.x + 1` passes and `excluded.x + x` does not.
+      const written = (text: string): string =>
+        incoming === null
+          ? text
+          : text.replace(
+              new RegExp(String.raw`(?<![\w."])"?${incoming}"?\."?${column}"?(?!\w)`, 'gi'),
+              ' 0 ',
+            )
+      const arithmetic = someNode(update.value, (candidate) => {
+        if (!BinaryOperationNode.is(candidate)) return false
+        const operator = operatorName(candidate.operator)
+        if (operator === null || !COUNTING_OPERATORS.includes(operator)) return false
+        return (
+          writtenColumn(candidate.leftOperand) === column ||
+          writtenColumn(candidate.rightOperand) === column
+        )
+      })
+      if (arithmetic) return [{ column, how: 'arithmetic' }]
+      const raw = someNode(
+        update.value,
+        (candidate) =>
+          RawNode.is(candidate) &&
+          mentions(written(candidate.sqlFragments.join(' ')), column, table),
       )
-    })
-    if (arithmetic) return [{ column, how: 'arithmetic' }]
-    const raw = someNode(
-      update.value,
-      (candidate) =>
-        RawNode.is(candidate) && mentions(candidate.sqlFragments.join(' '), column, table),
-    )
-    return raw ? [{ column, how: 'raw' }] : []
-  })
+      return raw ? [{ column, how: 'raw' }] : []
+    },
+  )
 }
 
 /** The raw node the builder makes for itself: an ORDER BY direction. */
@@ -1075,6 +1192,104 @@ export function statementTable(tree: OperationNode): string | null {
 }
 
 /**
+ * The value an INSERT gives one column, read by column position from its one row of
+ * values or from its SELECT's list. A column listed twice has no one position.
+ */
+function insertedValue(insert: InsertQueryNode, name: string): OperationNode | undefined {
+  const columns = (insert.columns ?? []).map((column) => column.column.name)
+  const index = columns.indexOf(name)
+  if (index < 0 || columns.lastIndexOf(name) !== index) return undefined
+  const values = insert.values
+  if (values !== undefined && ValuesNode.is(values)) {
+    // The grammar admits exactly one row.
+    const row = values.values[0]
+    return row !== undefined && ValueListNode.is(row) ? row.values[index] : undefined
+  }
+  if (values !== undefined && SelectQueryNode.is(values)) {
+    const selection = values.selections?.[index]?.selection
+    return selection !== undefined && AliasNode.is(selection) ? selection.node : selection
+  }
+  return undefined
+}
+
+/**
+ * The provenance a follow-on INSERT … SELECT writes, or null for any other statement. A
+ * follow-on may not read the clock, so its instant is the fenced row's own: a reference
+ * to `fence_at_ms` of a source whose `fence_stamp` a top-level conjunct of the SELECT
+ * compares with a fence. `fencedInstants` names every inserted column that takes exactly
+ * that, so a preserved first instant can be held to it as well. `plain` is false when the
+ * SELECT could return a row its WHERE did not match, which an insert would then write
+ * with no gate: an aggregate or a function call in its list, built from nodes, or a
+ * HAVING. A call spelled inside a value fragment is outside what this can read. This is asked here, of the statement's own
+ * SELECT, and does not lean on what `gatingFences` decides about aggregates. `alone` is
+ * false when the SELECT could return more rows than the fenced ones: a second FROM item,
+ * a FROM item that is not the source the fence is compared on, or a join with no ON. A
+ * join that carries its ON stays, because a revival reads the task's top run that way.
+ */
+export function followOnInsertProvenance(tree: OperationNode): {
+  selects: boolean
+  plain: boolean
+  alone: boolean
+  stamp: boolean
+  /** The inserted columns whose value is the fenced row's own `fence_at_ms`. */
+  fencedInstants: string[]
+  conflict: boolean
+} | null {
+  if (!InsertQueryNode.is(tree)) return null
+  const selected = tree.values
+  const select = selected !== undefined && SelectQueryNode.is(selected) ? selected : null
+  const where = select === null ? null : whereOf(select)
+  const scope = select === null ? [] : tableScope(select)
+  const fenced =
+    where === null
+      ? []
+      : conjuncts(where).flatMap((conjunct) => {
+          const fence = fenceEquality(conjunct, scope)
+          return fence === null ? [] : [fence.source]
+        })
+  const froms = select?.from?.froms ?? []
+  const [from] = froms
+  const fromName =
+    from === undefined
+      ? null
+      : AliasNode.is(from) && IdentifierNode.is(from.alias)
+        ? from.alias.name
+        : tableName(from)
+  // An unqualified instant belongs to the only source, and to neither of two.
+  const isFencedInstant = (name: string): boolean => {
+    const instant = insertedValue(tree, name)
+    if (instant === undefined || !ReferenceNode.is(instant)) return false
+    const qualifier =
+      instant.table?.table.identifier.name ?? (scope.length === 1 ? scope[0]?.name : undefined)
+    return (
+      columnName(instant.column) === 'fence_at_ms' &&
+      qualifier !== undefined &&
+      fenced.includes(qualifier)
+    )
+  }
+  return {
+    selects: select !== null,
+    plain:
+      select !== null &&
+      select.having === undefined &&
+      !(select.selections ?? []).some((selection) =>
+        someNode(selection, (node) => AggregateFunctionNode.is(node) || FunctionNode.is(node)),
+      ),
+    // With no fence compared at all, the gate rule and the instant rule speak for it.
+    alone:
+      select !== null &&
+      froms.length === 1 &&
+      (fenced.length === 0 || (fromName !== null && fenced.includes(fromName))) &&
+      (select.joins ?? []).every((join) => join.on !== undefined),
+    stamp: tokenOf(insertedValue(tree, 'fence_stamp'))?.kind === 'stamp',
+    fencedInstants: (tree.columns ?? [])
+      .map((column) => column.column.name)
+      .filter(isFencedInstant),
+    conflict: tree.onConflict !== undefined,
+  }
+}
+
+/**
  * The provenance an assignment list writes, read structurally: `fence_stamp` as the
  * stamp token, and `fence_at_ms` as anything, as the clock token, or as a copy of a
  * stored column. Each counts only when the column is assigned exactly once.
@@ -1097,13 +1312,13 @@ function assignedProvenance(updates: readonly ColumnUpdateNode[]) {
   }
 }
 
-/** The provenance an UPDATE's own assignments write. */
+/** The provenance a statement's assignments write: an UPDATE's SET list, or an INSERT's conflict arm. */
 export function writesStampAssignments(tree: OperationNode): {
   stamp: boolean
   instant: boolean
   clockInstant: boolean
 } {
-  return assignedProvenance(assignments(tree))
+  return assignedProvenance(assignedUpdates(tree))
 }
 
 /**
@@ -1120,21 +1335,7 @@ export function insertProvenance(tree: OperationNode): {
 } | null {
   if (!InsertQueryNode.is(tree)) return null
   const columns = (tree.columns ?? []).map((column) => column.column.name)
-  const inserted = (name: string): OperationNode | undefined => {
-    const index = columns.indexOf(name)
-    if (index < 0 || columns.lastIndexOf(name) !== index) return undefined
-    const values = tree.values
-    if (values !== undefined && ValuesNode.is(values)) {
-      // The grammar admits exactly one row.
-      const row = values.values[0]
-      return row !== undefined && ValueListNode.is(row) ? row.values[index] : undefined
-    }
-    if (values !== undefined && SelectQueryNode.is(values)) {
-      const selection = values.selections?.[index]?.selection
-      return selection !== undefined && AliasNode.is(selection) ? selection.node : selection
-    }
-    return undefined
-  }
+  const inserted = (name: string) => insertedValue(tree, name)
   const updates = tree.onConflict?.updates
   return {
     stamp: tokenOf(inserted('fence_stamp'))?.kind === 'stamp',

@@ -749,8 +749,21 @@ are load-bearing):
      grouped, or when it has no HAVING and every selection is built from nodes
      with no function and no fragment. The rule is not asked of a statement's
      own root: a tail may count the rows its own WHERE gates, and a losing
-     batch then counts none. This decides position, not correlation: an
-     uncorrelated gated subquery proves only that the batch won.
+     batch then counts none.
+     A gated subquery counts only when it reads one source, with no join, and
+     is tied through that source to the row of the query that requires it: IN
+     with a column on its left and one plain column of the source selected,
+     directly or through one derived table that selects such a column, or
+     EXISTS with a top-level equality between a column of the source and a
+     column of an outer source. A bound value or an expression in the IN
+     list, a second FROM source, and a join are each refused, because the key
+     or the match would then be the caller's or another table's and not the
+     fenced row's. A subquery that is gated and not tied proves only that the
+     batch won, and is refused with its own message. The tie is on any column
+     and need not be a key, because an event wakes every run in its queue
+     through such a tie. So a tie on a column that is not a key still passes,
+     and what then bounds the rows is the rest of the WHERE, which may be store
+     text. `fenced-batch-tree.test.ts` runs that exhibit beside its control.
    - The generated follow-ons, `derived()` and `seal()`, are trees built from
      the closed relation contract, so they take every rule above like any tree
      statement. Their selections are correlated by construction: the written
@@ -769,13 +782,15 @@ are load-bearing):
      another row's column stays allowed. A fragment may hold a fence token,
      which becomes a fence node: it is bound and must name a fence of the
      batch, and it gates nothing. Nothing may be left over beside a token. The
-     stamp never rides in a fragment. What correlation still does not cover is a
-     hand-written follow-on, which stays text until the next part of PR3.9e.
+     stamp never rides in a fragment. A hand-written follow-on is a tree too,
+     and the tie rule above is what holds its subquery gate to the rows it
+     writes.
    - An update of a provenance-carrying table assigns the stamp and the
      instant once each, and a compare-and-set takes its instant from the clock
      token. The rule reads the table the tree writes, not a declaration.
-   - A compare-and-set may be an INSERT, with or without ON CONFLICT. A
-     follow-on or tail may not. An insert into a provenance-carrying table
+   - A compare-and-set may be an INSERT, with or without ON CONFLICT. A tail
+     may not. A follow-on may be an INSERT … SELECT, under the rule in the next
+     item. A compare-and-set's insert into a provenance-carrying table
      supplies `fence_stamp` as the stamp and `fence_at_ms` as the clock token,
      once each, read by column position from its VALUES row or its SELECT
      list. An upsert's conflict arm must leave the row carrying this
@@ -803,13 +818,61 @@ are load-bearing):
      nodes: this run, this queue and task, this claim token, still running. A
      store passes only its join of the run to its task and what it requires of
      the task.
+   - A follow-on that inserts selects what it inserts, because only a SELECT
+     can be gated, so a row of VALUES is refused. Its gate is a top-level fence
+     equality of that SELECT, or a tied subquery. Into a provenance-carrying
+     table it supplies `fence_stamp` as the stamp, and `fence_at_ms` as a
+     reference to the `fence_at_ms` of a source whose `fence_stamp` a top-level
+     conjunct compares with a fence, both read by column position. The clock, a
+     bind, another column, and the instant of a joined row the fence does not
+     gate are all refused, and so is an unqualified instant among two sources.
+     A preserved first instant, today `events.emitted_at_ms`, is held the same
+     way: a compare-and-set takes it from the clock token, and a follow-on,
+     which reads no clock, takes it from the fenced row's `fence_at_ms` and
+     from nothing else, so it cannot be bound or left to a default.
+     It carries no conflict clause there, so a collision with a foreign row
+     fails loudly. Its SELECT reads the fenced row alone: one FROM item, the
+     source whose `fence_stamp` it compares, with any join explicit and
+     carrying its ON. A second FROM item would insert a row for every row of
+     it, and a FROM item that is not the fenced source would do the same with
+     the fenced row merely joined. The `'one'` row bound does not protect
+     against this. A bound is audited after the batch returns, so it turns a
+     wrong write into a thrown error, and on PostgreSQL the rows have
+     committed by then. It is a detector of a broken statement and never the
+     thing that keeps a statement narrow. Its SELECT list holds no aggregate and no function call, and
+     the SELECT has no HAVING, because each can return a row the fence did not
+     match. That is asked of the statement's own SELECT and does not lean on
+     what the gating rule decides about aggregates. An aggregate spelled inside
+     a value fragment is outside what the rule can read, and so is a value
+     taken from a joined row that only store text ties to the fenced one. Both
+     exhibits run in `fenced-batch-tree.test.ts`. Text cannot close the first:
+     the one value fragment a shipped follow-on insert passes is the
+     successor's deadline, two registered mutations write SQLite's two-argument
+     scalar MIN into it, and neither a name nor an argument count tells that
+     scalar from an aggregate. Building the deadline from nodes would. A table without provenance
+     columns, today `checkpoints`, takes the gate and may carry a conflict arm,
+     which the counting rule reads like a SET list. In that arm `excluded` is
+     the incoming row and never the row being written, so arithmetic on
+     `excluded.column` counts nothing twice and is allowed, in nodes and in a
+     fragment, while the written row's own column stays refused.
+   - Every insert of a run is built from one record, `insertedRun`: spawn's
+     first run, the claim-timeout and user-retry successors, and a revival. The
+     new run takes its queue, its task, and both its instants from the fenced
+     row, and its carried columns from `SUCCESSOR_CARRIED_RUN_COLUMNS`. The two
+     successor deadlines and the successor ownership guard stay store text,
+     because registered mutations own them. The retry state is decided from
+     the delay before the statement is built, pending with no delay and
+     sleeping otherwise, and bound as a value, so the statement holds no cast
+     and no dialect's spelling of one. Both checkpoint placements
+     write through one statement, `checkpointWrite`, whose last-writer-wins arm
+     is nodes, so the inline write and the suspension marker cannot drift.
    - Suspend and reschedule are one shared statement and differ only in the
      admission fragment each store passes. Every compare-and-set that parks a
      claimed run, the launch deferral included, takes its assignments from one
      core helper, so the state, the wake instant, the cleared claim, and the
      stamp cannot drift between them. The await-event registration parks its
-     run through a follow-on, which is text until PR3.9e. It takes the cleared
-     claim columns from the same list, held to it by a type.
+     run through a generated follow-on. It takes the cleared claim columns from
+     the same list, held to it by a type.
    - A failing run, the cancel transition that `cancel-task` and the deadline
      sweep share, a task's revival, and a checkpoint's lease extension are
      shared statements too. Core holds what they assign and the identity they
@@ -838,13 +901,32 @@ are load-bearing):
      deadline on the failed run. A store passes the generation order with the
      expired claim, what it requires of the owner, and the relaunch backoff
      with its guard, where PostgreSQL says LEAST.
+   - The emit's wake is a shared UPDATE, `wakeRunsUpdate`. It reads the event
+     the batch recorded through one node-built subquery in four places: the
+     gate, the wake instant, the stored payload, and the provenance instant.
+     The gate is nodes because a fence token in a fragment gates nothing, and
+     it is tied to each run by its queue. The waiter subquery stays store text
+     and uncorrelated, so the waits index drives the statement, and the match
+     on the parked event, the wait witness, and the live-task probe stay store
+     text beside it.
+   - Every tail and open tail is a shared SELECT. `tailTree` takes a gated
+     read. `openTailTree` takes a read of rows the batch did not write, keeps
+     the declared reason `openTail` requires, and skips the gate and nothing
+     else: a fence it does compare must still be on the table that fence's
+     compare-and-set stamps, as for a gated tail. Both reads of a claimed run select one list,
+     `CLAIMED_RUN_SELECTION`, whose names every store's decoder reads. The
+     claim receipt's identity is nodes and its admission is one store fragment.
+     Spawn's receipt is one read of `tasks` whose store predicate joins its two
+     disjoint legs with OR, ordered by a CASE on the task id, because the
+     grammar has no UNION. How a dialect names a stored payload's type is a
+     store fragment.
    - Only a compare-and-set may hold the clock token. Raw fragment text is the
      one thing a tree cannot read, so it is scanned for the batch clock's text
      and for the clock spellings `scripts/clock-lint.py` lists. That scan is a
      spelling proxy, confined to raw text.
    - A follow-on may not assign a column a value that combines that column
      with an arithmetic or concatenation operator, or that hides it in a raw
-     fragment.
+     fragment. The rule reads an UPDATE's SET list and an INSERT's conflict arm.
    - A dialect's predicates stay store-owned SQL text and reach a shared
      statement as data: a fragment's text plus its binds. Core turns each `?`
      into a value node and each clock token into the clock node, so a
@@ -882,8 +964,9 @@ are load-bearing):
 
    `packages/conformance/corpus` records every statement a tree-built label
    compiles to, per dialect, and a conformance case compares the builder's
-   column descriptor with every dialect's catalog. Until PR3.9e, text
-   statements keep their textual scanners.
+   column descriptor with every dialect's catalog. No `FencedBatch` statement
+   in a store is text any more. `FencedBatch` keeps its text path and the
+   scanners that guard it until PR3.9e part 3 deletes them.
 2. **`awaitEvent`/`emitEvent` must be atomic AND mutually exclusive.** The
    read-branch-write shape across client round trips loses the wakeup if emit
    interleaves (emit flips waiters exactly once). Realization is per dialect:

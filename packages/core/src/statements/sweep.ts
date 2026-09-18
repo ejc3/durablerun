@@ -1,9 +1,11 @@
+import { expressionBuilder } from 'kysely'
 import { REASON_CLAIM_TIMEOUT, REASON_RELAUNCH_CAP } from '../contract.js'
 import { FENCE_ASSIGNMENTS, type SqlFragment, defineStatement, rawSql } from '../sql-tree.js'
-import { treeBuilder } from '../store-tables.js'
+import { type StoreTables, treeBuilder } from '../store-tables.js'
 import { PERSISTED_INTEGER_BOUNDS } from '../validate.js'
 import { type RunsUpdate, failedRunColumns } from './claimed-run.js'
 import { PARKED_CLAIM_COLUMNS } from './park.js'
+import { type FailureSuccessor, failureSuccessor } from './successor.js'
 
 /** The expired claim a sweep found: a run still running under the generation the scan read. */
 type SweptClaim = { queue: string; runId: string; claimGen: number }
@@ -97,4 +99,14 @@ export const failClaimTimeoutCas = defineStatement(
       .$call(whereSweptClaim(binds))
       .where(rawSql<boolean>(binds.timedOut, 'predicate'))
       .where(rawSql<boolean>(binds.admission, 'predicate')),
+)
+
+/**
+ * `sweep:claim-timeout`'s successor, placed while the task is under the infrastructure
+ * cap. It is due once the store's backoff has run from the moment of death.
+ */
+export const claimTimeoutSuccessorInsert = defineStatement(
+  'sweep:claim-timeout successor',
+  (binds: FailureSuccessor) =>
+    failureSuccessor(binds, expressionBuilder<StoreTables, never>().val('pending')),
 )

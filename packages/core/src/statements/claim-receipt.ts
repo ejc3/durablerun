@@ -2,11 +2,12 @@ import {
   FENCE_ASSIGNMENTS,
   type SqlFragment,
   defineStatement,
+  fenceValue,
   nowValue,
   rawSql,
 } from '../sql-tree.js'
 import { treeBuilder } from '../store-tables.js'
-import { type RunsUpdate, whereClaimedRun } from './claimed-run.js'
+import { type RunsUpdate, claimedRunRows, whereClaimedRun } from './claimed-run.js'
 import { parkAssignments } from './park.js'
 
 /** The claim a launch names: a run still running under this token and generation, not yet activated. */
@@ -115,4 +116,41 @@ export const deferLaunchCas = defineStatement(
       .set((eb) => parkAssignments(eb, binds.wakeAt))
       .$call(whereClaimReceipt(binds))
       .where(rawSql<boolean>(binds.wakeFits, 'predicate')),
+)
+
+/**
+ * `claim`'s receipt: every run this queue holds under the claim token, in run order. It
+ * is an open read, keyed on the lease token and not on this batch's stamp, so a retry
+ * with the same token returns the original selection, which an earlier batch stamped
+ * (§3.4 rule 4). The token's identity is nodes, so a store fragment cannot leave it
+ * out. The store's admission says what a run and its task must look like to be handed
+ * to a worker.
+ */
+export const claimReceiptRead = defineStatement(
+  'claim picked',
+  (binds: {
+    queue: string
+    claimToken: string
+    taskOwnsRun: SqlFragment
+    admission: SqlFragment
+  }) =>
+    claimedRunRows(binds.taskOwnsRun)
+      .where('r.queue', '=', binds.queue)
+      .where('r.claimed_by', '=', binds.claimToken)
+      .where('r.state', '=', 'running')
+      .where(rawSql<boolean>(binds.admission, 'predicate'))
+      .orderBy('r.run_id'),
+)
+
+/**
+ * `activate`'s payload: the run this batch activated, under the compare-and-set named
+ * `activate`, with what its worker needs to start.
+ */
+export const activatedRunRead = defineStatement(
+  'activate payload',
+  (binds: { runId: string; taskOwnsRun: SqlFragment }) =>
+    claimedRunRows(binds.taskOwnsRun)
+      .where('r.run_id', '=', binds.runId)
+      .where('r.fence_stamp', '=', fenceValue('activate'))
+      .where('r.state', '=', 'running'),
 )

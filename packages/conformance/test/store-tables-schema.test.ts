@@ -7,6 +7,7 @@ import { DIALECT_FIXTURES } from './dialect-fixtures.js'
 /** Catalog columns the statement builder leaves out on purpose: no tree statement names them yet. */
 const OMITTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   tasks: ['completed_payload'],
+  checkpoints: ['status'],
 }
 
 function columnKind(nativeType: string): string {

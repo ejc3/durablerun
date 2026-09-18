@@ -19,6 +19,7 @@ import {
   aliasedAs,
   capLostLaunchCas,
   coalesced,
+  compileOnlyBuilder,
   treeBuilder as db,
   defineStatement,
   emitEventCas,
@@ -465,6 +466,7 @@ describe('FencedBatch tree statements', () => {
               .selectFrom('runs as f')
               .select('f.run_id')
               .where('f.fence_stamp', '=', fenceValue('win'))
+              .whereRef('f.task_id', '=', 'tasks.task_id')
             return eb.exists(having ? inner.having((h) => h.fn.countAll<number>(), '>=', 0) : inner)
           })
       expect(() => followOn(gatedBy(false))).not.toThrow()
@@ -507,7 +509,8 @@ describe('FencedBatch tree statements', () => {
               eb
                 .selectFrom('runs as f')
                 .select((inner) => selection(inner as never) as never)
-                .where('f.fence_stamp', '=', fenceValue('win')),
+                .where('f.fence_stamp', '=', fenceValue('win'))
+                .whereRef('f.task_id', '=', 'tasks.task_id'),
             ),
           )
       expect(() =>
@@ -535,8 +538,24 @@ describe('FencedBatch tree statements', () => {
           .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
           .where('run_id', 'in', keys as never)
       expect(() => followOn(sealedBy(keysFrom(false)))).toThrow(/fence/)
-      // A grouped aggregate returns no row when nothing matched, so it still gates.
-      expect(() => followOn(sealedBy(keysFrom(true)))).not.toThrow()
+      // Grouped, the derived table returns no row when nothing matched, but a count is
+      // not a stored column of the fenced row, so it cannot be the key IN selects.
+      expect(() => followOn(sealedBy(keysFrom(true)))).toThrow(/not tied to the rows/)
+      // A grouped aggregate still gates where no key is asked of it: under EXISTS.
+      const countedBy = (grouped: boolean) =>
+        db
+          .updateTable('tasks')
+          .set({ state: 'failed', fence_stamp: stampValue, fence_at_ms: 5 })
+          .where((eb) => {
+            const inner = eb
+              .selectFrom('runs as f')
+              .select((counted) => counted.fn.count<number>('f.run_id').as('n'))
+              .where('f.fence_stamp', '=', fenceValue('win'))
+              .whereRef('f.task_id', '=', 'tasks.task_id')
+            return eb.exists(grouped ? inner.groupBy('f.task_id') : inner)
+          })
+      expect(() => followOn(countedBy(true))).not.toThrow()
+      expect(() => followOn(countedBy(false))).toThrow(/fence/)
     })
 
     it('still lets a tail count the rows this batch stamped', () => {
@@ -1232,8 +1251,559 @@ describe('FencedBatch tree statements', () => {
     expect(() => batch().casTree('register', statement(unguarded))).toThrow(/needs a WHERE/)
   })
 
-  it('refuses an insert as a follow-on', () => {
-    expect(() => followOn(eventInsert())).toThrow(/must be an UPDATE or a DELETE/)
+  describe('a follow-on that inserts', () => {
+    // biome-ignore lint/suspicious/noExplicitAny: table types would not let a test write the shapes refused here
+    type Loose = any
+    const loose = compileOnlyBuilder<Loose>()
+    const key = (eb: Loose) => eb('f.run_id', '=', 'r1')
+    const gate = (eb: Loose) => eb('f.fence_stamp', '=', fenceValue('win'))
+    const either = (eb: Loose) => eb.or([key(eb), gate(eb)])
+    const joined = (select: Loose) => select.innerJoin('tasks as t', 't.task_id', 'f.task_id')
+
+    /** A successor run, selected from the run this batch's compare-and-set stamped. */
+    const successor = (
+      shape: {
+        from?: (select: Loose) => Loose
+        task?: (eb: Loose) => Loose
+        stamp?: Loose
+        instant?: (eb: Loose) => Loose
+        where?: (eb: Loose) => Loose
+      } = {},
+    ) => {
+      const from = loose.selectFrom('runs as f')
+      return loose
+        .insertInto('runs')
+        .columns(['run_id', 'queue', 'task_id', 'fence_stamp', 'fence_at_ms'])
+        .expression(
+          (shape.from?.(from) ?? from)
+            .select((eb: Loose) => [
+              eb.val('r2').as('run_id'),
+              eb.ref('f.queue').as('queue'),
+              aliasedAs(shape.task?.(eb) ?? eb.ref('f.task_id'), 'task_id'),
+              aliasedAs(shape.stamp ?? stampValue, 'fence_stamp'),
+              aliasedAs(shape.instant?.(eb) ?? eb.ref('f.fence_at_ms'), 'fence_at_ms'),
+            ])
+            .where((eb: Loose) => shape.where?.(eb) ?? eb.and([key(eb), gate(eb)])),
+        )
+    }
+
+    /** A checkpoint written from the fenced run. Checkpoints carry no provenance. */
+    const checkpoint = (
+      shape: {
+        where?: (eb: Loose) => Loose
+        owner?: (eb: Loose) => Loose
+        updatedAt?: (eb: Loose) => Loose
+      } = {},
+    ) => {
+      const insert = loose
+        .insertInto('checkpoints')
+        .columns(['task_id', 'owner_attempt', 'updated_at_ms'])
+        .expression(
+          loose
+            .selectFrom('runs as f')
+            .select((eb: Loose) => [
+              eb.ref('f.task_id').as('task_id'),
+              eb.ref('f.attempt').as('owner_attempt'),
+              aliasedAs(shape.updatedAt?.(eb) ?? eb.ref('f.fence_at_ms'), 'updated_at_ms'),
+            ])
+            .where((eb: Loose) => shape.where?.(eb) ?? eb.and([key(eb), gate(eb)])),
+        )
+      const owner = shape.owner
+      return owner === undefined
+        ? insert
+        : insert.onConflict((conflict: Loose) =>
+            conflict
+              .columns(['task_id'])
+              .doUpdateSet((eb: Loose) => ({ owner_attempt: owner(eb) })),
+          )
+    }
+
+    /** An event recorded from the fenced run. `emitted` is null to leave the column out. */
+    const recorded = (emitted: ((eb: Loose) => Loose) | null) =>
+      loose
+        .insertInto('events')
+        .columns([
+          'queue',
+          'event_name',
+          'payload',
+          ...(emitted === null ? [] : ['emitted_at_ms']),
+          'fence_stamp',
+          'fence_at_ms',
+        ])
+        .expression(
+          loose
+            .selectFrom('runs as f')
+            .select((eb: Loose) => [
+              eb.ref('f.queue').as('queue'),
+              eb.val('e').as('event_name'),
+              eb.val('p').as('payload'),
+              ...(emitted === null ? [] : [aliasedAs(emitted(eb), 'emitted_at_ms')]),
+              aliasedAs(stampValue, 'fence_stamp'),
+              eb.ref('f.fence_at_ms').as('fence_at_ms'),
+            ])
+            .where((eb: Loose) => eb.and([key(eb), gate(eb)])),
+        )
+
+    const refused = (builder: Builder, why: RegExp) => expect(() => followOn(builder)).toThrow(why)
+
+    it('inserts a stamped row selected from the fenced row, and later statements fence on it', async () => {
+      const { captured, executor } = capturingExecutor(1)
+      await withCas()
+        .followOnTree('successor', statement(successor()), 'one')
+        .tailTree(
+          'inserted',
+          statement(
+            db
+              .selectFrom('runs')
+              .select('attempt')
+              .where('run_id', '=', 'r2')
+              .where('fence_stamp', '=', fenceValue('successor')),
+          ),
+        )
+        .run(executor)
+      expect(captured[1]).toEqual({
+        sql: 'insert into "runs" ("run_id", "queue", "task_id", "fence_stamp", "fence_at_ms") select ? as "run_id", "f"."queue" as "queue", "f"."task_id" as "task_id", ? as "fence_stamp", "f"."fence_at_ms" as "fence_at_ms" from "runs" as "f" where ("f"."run_id" = ? and "f"."fence_stamp" = ?)',
+        args: ['r2', 'seed:successor', 'r1', 'seed:win'],
+      })
+      expect(captured[2]?.args).toEqual(['r2', 'seed:successor'])
+    })
+
+    it('takes a SELECT and never VALUES, because only a SELECT can be gated', () => {
+      refused(eventInsert(), /takes a SELECT, never VALUES/)
+      refused(loose.insertInto('checkpoints').values({ task_id: 't' }), /never VALUES/)
+    })
+
+    it('gates the SELECT of an insert as it gates any statement', () => {
+      expect(() => followOn(checkpoint())).not.toThrow()
+      refused(checkpoint({ where: key }), /has no fence gating every row/)
+      refused(checkpoint({ where: either }), /has no fence gating every row/)
+    })
+
+    it('stamps the inserted row, and takes its instant from the fenced row and nowhere else', () => {
+      const instant = /fence_at_ms as the fenced row's own fence_at_ms/
+      refused(successor({ stamp: fenceValue('win') }), /must insert fence_stamp as the stamp/)
+      refused(successor({ stamp: sql.lit('s') }), /must insert fence_stamp as the stamp/)
+      // Not a bind, and not another column of the fenced row.
+      refused(successor({ instant: (eb) => eb.val(5) }), instant)
+      refused(successor({ instant: (eb) => eb.ref('f.available_at_ms') }), instant)
+      // Not a row the fence does not gate: a joined table, or any table when the fence
+      // is missing or sits under OR.
+      expect(() => followOn(successor({ from: joined }))).not.toThrow()
+      refused(successor({ from: joined, instant: (eb) => eb.ref('t.fence_at_ms') }), instant)
+      refused(successor({ where: key }), instant)
+      refused(successor({ where: either }), instant)
+      // An unqualified instant belongs to the only source, and to neither of two.
+      expect(() => followOn(successor({ instant: (eb) => eb.ref('fence_at_ms') }))).not.toThrow()
+      refused(successor({ from: joined, instant: (eb) => eb.ref('fence_at_ms') }), instant)
+    })
+
+    it('selects from the fenced row alone, so no second source multiplies what it inserts', () => {
+      const alone = /must select from the fenced row alone/
+      const beside = () => loose.selectFrom(['runs as f', 'tasks as t2'])
+      // One FROM item, the fenced source. A join is explicit and carries its ON.
+      expect(() => followOn(successor())).not.toThrow()
+      expect(() => followOn(successor({ from: joined }))).not.toThrow()
+      // A second FROM item inserts one stamped run for every task, whichever it selects.
+      refused(successor({ from: beside, task: (eb) => eb.ref('t2.task_id') }), alone)
+      refused(successor({ from: beside }), alone)
+      // A join with no ON is a second FROM item under another name.
+      refused(successor({ from: (select) => select.crossJoin('tasks as t2') }), alone)
+      refused(
+        successor({ from: (select) => select.innerJoin('tasks as t2', (join: Loose) => join) }),
+        alone,
+      )
+      // The one FROM item is another table, and the fenced row only joins it.
+      refused(
+        successor({
+          from: () =>
+            loose.selectFrom('tasks as t2').innerJoin('runs as f', 'f.task_id', 't2.task_id'),
+        }),
+        alone,
+      )
+    })
+
+    it('takes a preserved first instant from the fenced row too, as a compare-and-set takes it from the clock', () => {
+      const preserved = /must insert events\.emitted_at_ms as the fenced row's own fence_at_ms/
+      expect(() => followOn(recorded((eb) => eb.ref('f.fence_at_ms')))).not.toThrow()
+      // Not a bind, not another column of the fenced row, and not left to a default.
+      refused(
+        recorded((eb) => eb.val(123)),
+        preserved,
+      )
+      refused(
+        recorded((eb) => eb.ref('f.available_at_ms')),
+        preserved,
+      )
+      refused(recorded(null), preserved)
+    })
+
+    it('never takes the clock for the instant', () => {
+      // The instant rule speaks first, and the clock rule would refuse it next.
+      refused(
+        successor({ instant: () => nowValue }),
+        /fence_at_ms as the fenced row's own fence_at_ms/,
+      )
+    })
+
+    it('selects plain columns and values, so no row appears that the fence did not match', () => {
+      const plain = /must select plain columns and values/
+      refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
+      refused(successor({ task: (eb) => eb.fn('upper', [eb.ref('f.task_id')]) }), plain)
+      refused(
+        successor({
+          from: (select) => select.having((eb: Loose) => eb(eb.fn.countAll(), '>=', 0)),
+        }),
+        plain,
+      )
+    })
+
+    it('reads each value by position, so a star is refused', () => {
+      refused(
+        loose
+          .insertInto('runs')
+          .columns(['run_id'])
+          .expression(loose.selectFrom('runs as f').selectAll().where(gate)),
+        /without one plain selection for each column/,
+      )
+    })
+
+    it('carries no conflict clause into a stamped table', () => {
+      refused(
+        successor().onConflict((conflict: Loose) => conflict.columns(['run_id']).doNothing()),
+        /may carry no conflict clause/,
+      )
+    })
+
+    describe('what these rules still do not check', () => {
+      // Each exhibit is ACCEPTED, beside a control the same rule refuses. They mark
+      // where the rules stop, so nobody takes them for more than they are.
+      it('accepts a gate tied on a column that is not a key, which reaches rows the fenced row does not own', async () => {
+        const completeTasks = (tie: boolean) =>
+          db
+            .updateTable('tasks')
+            .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+            .where((eb) =>
+              eb.exists(
+                (tie
+                  ? eb.selectFrom('runs as f').whereRef('f.queue', '=', 'tasks.queue')
+                  : eb.selectFrom('runs as f')
+                )
+                  .select('f.run_id')
+                  .where('f.run_id', '=', 'r1')
+                  .where('f.fence_stamp', '=', fenceValue('win')),
+              ),
+            )
+        // The control: with no tie at all the write is refused.
+        refused(completeTasks(false), /not tied to the rows it reads or writes/)
+        // The exhibit: one run's stamp, tied by its queue alone, completes every task in
+        // that queue. The rule asks for a tie and cannot ask whether the tie is a key,
+        // because an event legitimately wakes every run in its queue this way.
+        const { captured, executor } = capturingExecutor(1)
+        await withCas()
+          .followOnTree('tasks', statement(completeTasks(true)), { many: 'the exhibit' })
+          .run(executor)
+        expect(captured[1]?.sql).toBe(
+          'update "tasks" set "state" = ?, "fence_stamp" = ?, "fence_at_ms" = ? where exists (select "f"."run_id" from "runs" as "f" where "f"."queue" = "tasks"."queue" and "f"."run_id" = ? and "f"."fence_stamp" = ?)',
+        )
+      })
+
+      it('accepts values read from a joined row that no node ties to the fenced row', () => {
+        // The join's ON is store text. The rule holds the instant to the fenced source
+        // and says nothing of where the other values come from.
+        const fromAnyTask = successor({
+          from: (select) =>
+            select.innerJoin('tasks as t', (join: Loose) => join.on(predicate('1 = 1'))),
+          task: (eb) => eb.ref('t.task_id'),
+        })
+        expect(() => followOn(fromAnyTask)).not.toThrow()
+        // The control: the same joined row may not supply the instant.
+        refused(
+          successor({ from: joined, instant: (eb) => eb.ref('t.fence_at_ms') }),
+          /fence_at_ms as the fenced row's own fence_at_ms/,
+        )
+      })
+
+      it('accepts an IN key that is a stored column of the fenced row and the wrong one', () => {
+        const keyedBy = (select: (eb: Loose) => Loose) =>
+          loose
+            .updateTable('tasks')
+            .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+            .where((eb: Loose) =>
+              eb('task_id', 'in', select(eb.selectFrom('runs as f').where(gate))),
+            )
+        // The rule reads that the key is a plain column of the fenced source. It cannot
+        // read that a run id is no task id: the columns' meaning is the schema's.
+        expect(() => followOn(keyedBy((rows) => rows.select('f.run_id')))).not.toThrow()
+        refused(
+          keyedBy((rows) => rows.select((eb: Loose) => eb.val('t-victim').as('task_id'))),
+          /not tied to the rows it reads or writes/,
+        )
+      })
+
+      it('accepts an explicit join whose ON is store text that matches every row', () => {
+        // One FROM item and a join that carries its ON, so the FROM bound passes, and the
+        // insert still writes a row for every task. The ON is text the tree cannot read.
+        const everyTask = successor({
+          from: (select) =>
+            select.innerJoin('tasks as t', (join: Loose) => join.on(predicate('1 = 1'))),
+        })
+        expect(() => followOn(everyTask)).not.toThrow()
+        refused(
+          successor({ from: () => loose.selectFrom(['runs as f', 'tasks as t']) }),
+          /must select from the fenced row alone/,
+        )
+      })
+
+      it('accepts a bound first instant on a table the preserved-instant map does not list', () => {
+        // The rule reads a hand-kept map, today `events.emitted_at_ms`. A checkpoint's
+        // update instant is engine time too, and nothing holds it to the fenced row.
+        expect(() => followOn(checkpoint({ updatedAt: (eb) => eb.val(123) }))).not.toThrow()
+        refused(
+          recorded((eb) => eb.val(123)),
+          /must insert events\.emitted_at_ms as the fenced row's own fence_at_ms/,
+        )
+      })
+
+      it('accepts a conflict arm that counts the written row through an aliased subquery', () => {
+        // The arithmetic stands outside the subquery and the alias hides the table, so
+        // the text reader sees no read of the written row. Knowing `c2` is that row
+        // needs the aliases resolved. A counting value belongs in nodes.
+        const counted = `(SELECT c2.owner_attempt FROM checkpoints c2 WHERE c2.task_id = excluded.task_id) + 1`
+        expect(() => followOn(checkpoint({ owner: () => value<number>(counted) }))).not.toThrow()
+        refused(
+          checkpoint({ owner: () => value<number>('checkpoints.owner_attempt + 1') }),
+          /raw fragment that mentions 'owner_attempt'/,
+        )
+      })
+
+      it('accepts an open tail whose misplaced fence stands under OR, where no rule reads it', () => {
+        // The table check is asked of a fence in a gating position. Under OR a fence
+        // stands in none, so comparing it with a table it never stamps goes unread.
+        const misplaced = (under: 'and' | 'or') =>
+          db
+            .selectFrom('tasks')
+            .select('state')
+            .where((eb) =>
+              under === 'and'
+                ? eb('fence_stamp', '=', fenceValue('win'))
+                : eb.or([eb('fence_stamp', '=', fenceValue('win')), eb('state', '=', 'x')]),
+            )
+        expect(() =>
+          withCas().openTailTree('read', 'a reason', statement(misplaced('or'))),
+        ).not.toThrow()
+        expect(() =>
+          withCas().openTailTree('read', 'a reason', statement(misplaced('and'))),
+        ).toThrow(/which never matches/)
+      })
+
+      it('accepts an aggregate spelled inside a value fragment, which the plain-selection rule cannot read', () => {
+        // A reader of the fragment's text for a call was built and taken back. Two
+        // registered mutations write SQLite's two-argument scalar MIN into the successor
+        // deadline, the one value fragment a shipped follow-on insert passes, and text
+        // cannot tell that scalar from the one-argument aggregate: not by name, and not by
+        // arity, since an aggregate may take two arguments too. What closes this is
+        // building that deadline from nodes, so no value fragment is left to read.
+        const plain = /must select plain columns and values/
+        refused(successor({ task: (eb) => eb.fn.max('f.task_id') }), plain)
+        expect(() =>
+          followOn(successor({ task: () => value<string>('max(f.task_id)') })),
+        ).not.toThrow()
+      })
+    })
+
+    it('reads a conflict arm under the counting rule', () => {
+      expect(() =>
+        followOn(checkpoint({ owner: (eb) => eb.ref('excluded.owner_attempt') })),
+      ).not.toThrow()
+      // `excluded` is the incoming row, never the row being written, so arithmetic on it
+      // counts nothing twice, in nodes or in a fragment.
+      expect(() =>
+        followOn(checkpoint({ owner: (eb) => eb('excluded.owner_attempt', '+', 1) })),
+      ).not.toThrow()
+      expect(() =>
+        followOn(checkpoint({ owner: () => value<number>('excluded.owner_attempt + 1') })),
+      ).not.toThrow()
+      refused(checkpoint({ owner: (eb) => eb('owner_attempt', '+', 1) }), /bumps a counter blindly/)
+      refused(
+        checkpoint({ owner: () => value<number>('excluded.owner_attempt + owner_attempt') }),
+        /raw fragment that mentions 'owner_attempt'/,
+      )
+      refused(
+        checkpoint({ owner: (eb) => eb('checkpoints.owner_attempt', '+', 1) }),
+        /bumps a counter blindly/,
+      )
+    })
+  })
+
+  it('counts a gated subquery only when it is tied to the row the statement writes', () => {
+    const gatedBy = (tie: boolean) =>
+      db
+        .updateTable('tasks')
+        .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+        .where((eb) =>
+          eb.exists(
+            (tie
+              ? eb.selectFrom('runs as f').whereRef('f.task_id', '=', 'tasks.task_id')
+              : eb.selectFrom('runs as f').where('f.run_id', '=', 'r1')
+            )
+              .select('f.run_id')
+              .where('f.fence_stamp', '=', fenceValue('win')),
+          ),
+        )
+    expect(() => followOn(gatedBy(true))).not.toThrow()
+    // It would complete every task in the table whenever this batch won.
+    expect(() => followOn(gatedBy(false))).toThrow(/not tied to the rows it reads or writes/)
+  })
+
+  it('ties a subquery gate to the fenced source, and lets nothing widen it', () => {
+    // biome-ignore lint/suspicious/noExplicitAny: table types would not let a test write the shapes refused here
+    type Loose = any
+    const loose = compileOnlyBuilder<Loose>()
+    const gate = (eb: Loose) => eb('f.fence_stamp', '=', fenceValue('win'))
+    const tasks = (where: (eb: Loose) => Loose) =>
+      loose
+        .updateTable('tasks')
+        .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
+        .where(where)
+    const keyIn = (keys: (eb: Loose) => Loose) => tasks((eb) => eb('task_id', 'in', keys(eb)))
+    const fenced = (eb: Loose) => eb.selectFrom('runs as f').where(gate)
+    const widened = (eb: Loose) => eb.selectFrom(['runs as f', 'tasks as t2']).where(gate)
+    const throughDerived = (inner: (eb: Loose) => Loose) =>
+      keyIn((eb) => eb.selectFrom(inner(eb).as('fenced_source')).select('source_key'))
+    const shapes: { shape: string; query: Builder; tied: boolean }[] = [
+      {
+        shape: 'IN selects a column of the fenced source',
+        query: keyIn((eb) => fenced(eb).select('f.task_id')),
+        tied: true,
+      },
+      {
+        shape: "IN selects a bound value, so the key is the caller's and not the fenced row's",
+        query: keyIn((eb) => fenced(eb).select(eb.val('t-victim').as('task_id'))),
+        tied: false,
+      },
+      {
+        shape: 'IN selects a column of the outer row, which every row satisfies',
+        query: keyIn((eb) => fenced(eb).select('tasks.task_id')),
+        tied: false,
+      },
+      {
+        shape: 'IN selects two things, the fenced column first',
+        query: keyIn((eb) => fenced(eb).select(['f.task_id', eb.val('t-victim').as('other')])),
+        tied: false,
+      },
+      {
+        shape: 'IN selects an expression over the fenced column',
+        query: keyIn((eb) => fenced(eb).select(eb('f.attempt', '+', 1).as('task_id'))),
+        tied: false,
+      },
+      {
+        shape: 'IN selects the key of a second FROM source',
+        query: keyIn((eb) => widened(eb).select('t2.task_id')),
+        tied: false,
+      },
+      {
+        shape: 'IN reads a second FROM source beside the fenced one',
+        query: keyIn((eb) => widened(eb).select('f.task_id')),
+        tied: false,
+      },
+      {
+        shape: 'IN selects the key of a joined source',
+        query: keyIn((eb) =>
+          fenced(eb).innerJoin('tasks as t2', 't2.queue', 'f.queue').select('t2.task_id'),
+        ),
+        tied: false,
+      },
+      {
+        shape: 'EXISTS equates the fenced source with the outer row',
+        query: tasks((eb) =>
+          eb.exists(fenced(eb).select('f.run_id').whereRef('f.task_id', '=', 'tasks.task_id')),
+        ),
+        tied: true,
+      },
+      {
+        shape: 'EXISTS equates a second inner source with the outer row',
+        query: tasks((eb) =>
+          eb.exists(widened(eb).select('f.run_id').whereRef('t2.task_id', '=', 'tasks.task_id')),
+        ),
+        tied: false,
+      },
+      {
+        shape: 'IN through a derived table that selects a column of the fenced source',
+        query: throughDerived((eb) => fenced(eb).select('f.task_id as source_key').distinct()),
+        tied: true,
+      },
+      {
+        shape: 'IN through a derived table that selects a bound value',
+        query: throughDerived((eb) =>
+          fenced(eb).select(eb.val('t-victim').as('source_key')).distinct(),
+        ),
+        tied: false,
+      },
+      {
+        shape: 'IN through a derived table over two FROM sources',
+        query: throughDerived((eb) => widened(eb).select('t2.task_id as source_key').distinct()),
+        tied: false,
+      },
+    ]
+    const decided = shapes.map(({ shape, query }) => {
+      try {
+        withCas().followOnTree('task', statement(query), { many: 'a test' })
+        return { shape, tied: true }
+      } catch (error) {
+        const untied = /not tied to the rows it reads or writes/.test(String(error))
+        return { shape, tied: untied ? false : String(error) }
+      }
+    })
+    expect(decided).toEqual(shapes.map(({ shape, tied }) => ({ shape, tied })))
+  })
+
+  it('reads an open tail with every rule but the gate, and makes it say why', () => {
+    const others = () => db.selectFrom('events').select('payload').where('queue', '=', 'q')
+    expect(() => withCas().tailTree('read', statement(others()))).toThrow(/has no fence gating/)
+    expect(() =>
+      withCas().openTailTree('read', 'another batch wrote the event', statement(others())),
+    ).not.toThrow()
+    expect(() => withCas().openTailTree('read', ' ', statement(others()))).toThrow(/needs a reason/)
+    expect(() =>
+      withCas().openTailTree(
+        'read',
+        'a reason',
+        statement(others().where('emitted_at_ms', '<', nowValue)),
+      ),
+    ).toThrow(/reads the clock/)
+    expect(() => withCas().openTailTree('read', 'a reason', statement(winCas()))).toThrow(
+      /must be a SELECT/,
+    )
+  })
+
+  it('skips the gate of an open tail and nothing else: a fence it compares must be on the table that fence stamps', () => {
+    // The compare-and-set named `win` stamps runs, so comparing it with a task's stamp
+    // never matches. A gated tail is refused for that, and an open one must be too.
+    const misplaced = () =>
+      db.selectFrom('tasks').select('state').where('fence_stamp', '=', fenceValue('win'))
+    const never =
+      /stamps 'runs', but the statement compares tasks\.fence_stamp, which never matches/
+    expect(() => withCas().tailTree('read', statement(misplaced()))).toThrow(never)
+    expect(() => withCas().openTailTree('read', 'a reason', statement(misplaced()))).toThrow(never)
+    // The same holds for a fence that stands in a gating position without being tied: an
+    // open tail needs no gate, and a comparison that never matches is still a mistake.
+    const untied = () =>
+      db
+        .selectFrom('events')
+        .select('payload')
+        .where((eb) =>
+          eb.exists(
+            eb
+              .selectFrom('tasks as t')
+              .select('t.task_id')
+              .where('t.fence_stamp', '=', fenceValue('win')),
+          ),
+        )
+    expect(() => withCas().openTailTree('read', 'a reason', statement(untied()))).toThrow(never)
+    // An open tail may still compare a fence on the table it stamps.
+    const placed = () =>
+      db.selectFrom('runs').select('state').where('fence_stamp', '=', fenceValue('win'))
+    expect(() => withCas().openTailTree('read', 'a reason', statement(placed()))).not.toThrow()
   })
 
   it('passes the shared spawn and sweep statements through a batch', async () => {

@@ -4,7 +4,6 @@ import {
   type CheckpointWrite,
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
-  FENCE_COLS,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -21,9 +20,6 @@ import {
   REASON_RELAUNCH_CAP,
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
-  STAMP,
-  SUCCESSOR_CARRIED_COLUMNS_SQL,
-  SUCCESSOR_PARENT_COLUMNS,
   type SchedulerStore,
   type SpawnOptions,
   type SpawnResult,
@@ -34,10 +30,14 @@ import {
   type TaskResult,
   type WakeSpec,
   activateCas,
+  activatedRunRead,
   cancelCas,
   capLostLaunchCas,
   checkpointLeaseCas,
+  checkpointWrite,
   claimCas,
+  claimReceiptRead,
+  claimTimeoutSuccessorInsert,
   clampLimit,
   coalesced,
   completeCas,
@@ -46,6 +46,7 @@ import {
   deferLaunchCas,
   durationToMs,
   emitEventCas,
+  emittedEventRead,
   failCas,
   failClaimTimeoutCas,
   mapLimit,
@@ -63,15 +64,20 @@ import {
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
+  revivalRunInsert,
   reviveCas,
+  revivedRunRead,
   serializeTaskHeaders,
   serializeTaskValue,
+  spawnReceiptRead,
+  spawnRunInsert,
   spawnTaskCas,
   sqlFragment,
   storageValueKind,
-  successorCarriedValues,
-  successorParentValues,
+  storedEventRead,
   suspendCas,
+  userRetrySuccessorInsert,
+  wakeRunsUpdate,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -81,8 +87,6 @@ import {
   durableTaskRetryAdmissible,
   eligibleTask,
   epochAdditionFits,
-  fenceFrom,
-  fenced,
   fencedAt,
   jsonbInputValid,
   registeredWait,
@@ -235,21 +239,11 @@ const INFRA_RETRIES_FROM = (successorParam: string, fence: string): string =>
   `(SELECT f.attempt - 1 - tasks.attempts FROM runs f
     WHERE f.run_id = ${successorParam} AND f.fence_stamp = ${fence})`
 
-/** A run's own row, by id — the correlation every fence in this file uses. */
+/** A run's own row, by id: the correlation `activate` reads its fenced instant by. */
 const BY_RUN = `f.run_id = ?`
 
-/**
- * The last-writer-wins tiebreak on a checkpoint upsert. Wire-visible
- * semantics, so it is ONE constant: the two write sites (the inline
- * checkpoint and the suspension marker) drifting apart would mean a step's
- * state was retained by one path and discarded by the other.
- */
-const CHECKPOINT_LWW = `ON CONFLICT (task_id, checkpoint_name) DO UPDATE SET
-    state = excluded.state,
-    owner_run_id = excluded.owner_run_id,
-    owner_attempt = excluded.owner_attempt,
-    updated_at_ms = excluded.updated_at_ms
-  WHERE excluded.owner_attempt >= checkpoints.owner_attempt`
+/** How this dialect names the type of an event's stored payload. Both reads of an event require 'text'. */
+const STORED_PAYLOAD_TYPE = `CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END`
 
 /*
  * The equality makes the two attempt values one semantic ordinal. Validate
@@ -267,8 +261,8 @@ const checkpointOwnerMatches = (checkpoint: string, owner: string): string =>
 /**
  * Validate the existing row whose primary key the checkpoint upsert consumes.
  *
- * This does not compare its ordinal with the incoming writer — CHECKPOINT_LWW
- * remains the tiebreaker. It only refuses malformed ownership before the
+ * This does not compare its ordinal with the incoming writer. The conflict arm of
+ * `checkpointWrite` remains the tiebreaker. It only refuses malformed ownership before the
  * leading CAS can extend a lease or park a run.
  */
 const validCheckpointConflict = (run: string, checkpointName: string): string =>
@@ -332,11 +326,6 @@ function finishSuspension(b: FencedBatch, runId: string): void {
   taskMirrorsRun(b, runId, 'suspend')
   waitsGone(b, runId, 'suspend')
 }
-
-/** Columns needed to decode a ClaimedRun (shared by claim and activate). */
-const CLAIMED_RUN_COLUMNS = `r.run_id, r.task_id, r.attempt, r.claim_gen, r.claim_expires_at_ms, r.lease_ms,
-       r.wake_event, r.event_payload, r.wake_step,
-       t.task_name, t.params, t.retry_strategy, t.max_attempts, t.headers, t.infra_retries`
 
 /**
  * Sweep discovery scans, exported so the query-plan suite pins the EXACT
@@ -546,17 +535,13 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // a spawn that had fully succeeded, and a retry without an idempotency
     // key made duplicate work. Asking whether the task already has a run is a
     // question about ownership, which does not decay.
-    b.followOn(
+    b.followOnTree(
       'run',
-      'runs',
-      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
-         available_at_ms, created_at_ms, ${FENCE_COLS})
-       SELECT ?, f.queue, f.task_id, 1, 'pending', f.enqueue_at_ms, f.fence_at_ms,
-         ${STAMP}, f.fence_at_ms
-       FROM tasks f WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('task')}
-         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.enqueue_at_ms, 'f')}
-         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.task_id = f.task_id)`,
-      [runId, taskId],
+      spawnRunInsert({
+        runId,
+        taskId,
+        enqueueStored: sqlFragment(storedIntegerWithin(TASK_INTEGER_BOUNDS.enqueue_at_ms, 'f')),
+      }),
       'one',
     )
     // Only reached when the insert lost, so by definition it reads a task some
@@ -565,25 +550,19 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // winner over a bare id collision and breaks ties on task_id, so it is
     // deterministic on every dialect; an `ORDER BY (t.task_id = ?) DESC` would
     // not be, since Postgres sorts NULLs first.
-    b.openTail(
+    b.openTailTree(
       'receipt',
       'the winner is a task another caller created; the unique idempotency index is its fence, not this batch stamp',
-      `SELECT winner.task_id AS task_id,
-              (SELECT r.run_id FROM runs r
-                 WHERE ${runOwnedByTask('r', 'winner')}
-                 ORDER BY r.attempt DESC LIMIT 1) AS run_id
-       FROM (
-         SELECT t.task_id, t.queue, 1 AS priority
-         FROM tasks t WHERE t.task_id = ? AND t.queue = ?
-         UNION ALL
-         SELECT t.task_id, t.queue, 0 AS priority
-         FROM tasks t
-         WHERE CAST(? AS TEXT) IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
-           AND t.task_id <> ?
-       ) winner
-       ORDER BY winner.priority, winner.task_id
-       LIMIT 1`,
-      [taskId, queue, key, queue, key, taskId],
+      spawnReceiptRead({
+        taskId,
+        winner: sqlFragment(
+          `(t.task_id = ? AND t.queue = ?)
+         OR (CAST(? AS TEXT) IS NOT NULL AND t.queue = ? AND t.idempotency_key = ?
+           AND t.task_id <> ?)`,
+          [taskId, queue, key, queue, key, taskId],
+        ),
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+      }),
     )
     const { won, results } = await b.run(this.db)
     if (won === 'task') return { taskId, runId, created: true }
@@ -716,13 +695,15 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // ORIGINAL selection, so this read must see rows a PREVIOUS batch stamped.
     // Only LIVE tasks, so a terminal task's corrupt running run is never
     // launched.
-    b.openTail(
+    b.openTailTree(
       'picked',
       'rule 4: a same-token retry is a receipt and must return the original selection, which a previous batch stamped',
-      `SELECT ${CLAIMED_RUN_COLUMNS}
-       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
-       WHERE r.queue = ? AND r.claimed_by = ? AND r.state = 'running'
-         AND t.state IN ${LIVE}
+      claimReceiptRead({
+        queue,
+        claimToken,
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+        admission: sqlFragment(
+          `t.state IN ${LIVE}
          AND ${durableTaskRetryAdmissible('t')}
          AND ${durableTaskHeadersAdmissible('t')}
          AND ${soleLiveRun('r')}
@@ -733,9 +714,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.lease_ms, 'r')}
          AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.claim_expires_at_ms, 'r')}
          AND ${storedCurrentRunAccounting('r', 't')}
-         AND ${storedHighestOwnedOrdinal('r')}
-       ORDER BY r.run_id`,
-      [queue, claimToken],
+         AND ${storedHighestOwnedOrdinal('r')}`,
+        ),
+      }),
     )
     const { results } = await b.run(this.db)
     return (results.picked?.rows ?? []).map((row) => decodeClaimedRun(row, claimToken))
@@ -812,12 +793,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // row THIS delivery activated — the post-state alone cannot tell "I won"
     // from "a previous delivery of the same claim won", since both leave
     // activated_gen equal to claim_gen.
-    b.tail(
+    b.tailTree(
       'payload',
-      `SELECT ${CLAIMED_RUN_COLUMNS}
-       FROM runs r JOIN tasks t ON ${runOwnedByTask('r', 't')}
-       WHERE r.run_id = ? AND r.fence_stamp = ${b.fence('activate')} AND r.state = 'running'`,
-      [runId],
+      activatedRunRead({ runId, taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')) }),
     )
     const { won, results } = await b.run(this.db)
     if (won !== 'activate') return null
@@ -1080,24 +1058,23 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // collision with a FOREIGN row still fails loudly. Its instant is the
     // failed run's, so the backoff is measured from the moment of death and
     // not from a second clock read.
-    b.followOn(
+    b.followOnTree(
       'successor',
-      'runs',
-      `INSERT INTO runs
-         (run_id, queue, task_id, attempt, state, available_at_ms,
-          ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
-       SELECT ?, f.queue, f.task_id, f.attempt + 1, 'pending',
-              f.fence_at_ms + ${infraDelayMs},
-              ${successorParentValues('f')},
-              ${STAMP}, f.fence_at_ms
-       FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
-       WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
-         AND t.state IN ${LIVE}
+      claimTimeoutSuccessorInsert({
+        successorId,
+        runId: item.runId,
+        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),
+        taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
+        admission: sqlFragment(
+          `t.state IN ${LIVE}
          AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 't')}
          AND t.infra_retries < ${TASK_INTEGER_BOUNDS.infra_retries.max}
-         AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
-         AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
-      [successorId, item.runId, successorId],
+         AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}`,
+        ),
+        successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [
+          successorId,
+        ]),
+      }),
       'one',
     )
     // At the cap (pre-increment): terminal. Terminal ONLY when this batch
@@ -1268,24 +1245,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // The revival run, keyed on the revive stamp, carries the top run's parked
     // wake as every successor does. The live-run check is ownership, so an exact
     // replay that still sees the first pass's stamp inserts nothing.
-    b.followOn(
+    b.followOnTree(
       'run',
-      'runs',
-      `INSERT INTO runs (run_id, queue, task_id, attempt, state,
-         available_at_ms, created_at_ms, ${SUCCESSOR_CARRIED_COLUMNS_SQL}, ${FENCE_COLS})
-       SELECT ?, f.queue, f.task_id, p.attempt + 1, 'pending', f.fence_at_ms, f.fence_at_ms,
-         ${successorCarriedValues('p')}, ${STAMP}, f.fence_at_ms
-       FROM tasks f JOIN runs p ON ${runOwnedByTask('p', 'f')}
-       WHERE f.task_id = ? AND f.fence_stamp = ${b.fence('revive')} AND p.attempt = ${top('f')}
-         AND ${noLiveRun('f')}`,
-      [runId, taskId],
+      revivalRunInsert({
+        runId,
+        taskId,
+        taskOwnsRun: sqlFragment(runOwnedByTask('p', 'f')),
+        isTopRun: sqlFragment(`p.attempt = ${top('f')}`),
+        noLiveRun: sqlFragment(noLiveRun('f')),
+      }),
       'one',
     )
-    b.tail(
-      'revived',
-      `SELECT attempt FROM runs WHERE run_id = ? AND fence_stamp = ${b.fence('run')}`,
-      [runId],
-    )
+    b.tailTree('revived', revivedRunRead({ runId }))
     const { won, results } = await b.run(this.db)
     if (won !== 'revive') return null
     const row = results.revived?.rows[0]
@@ -1523,16 +1494,15 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // batch's clock, and the reason fence_at_ms is a column rather than a
     // convention: without it, this statement would be a standing exemption to
     // "a follow-on may not read the clock".
-    b.followOn(
+    b.followOnTree(
       'marker',
-      `INSERT INTO checkpoints
-         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
-       FROM runs f WHERE ${BY_RUN}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')}
-         AND f.fence_stamp = ${b.fence('suspend')}
-       ${CHECKPOINT_LWW}`,
-      [checkpoint.key, checkpoint.stateJson, runId],
+      checkpointWrite({
+        runId,
+        checkpointName: checkpoint.key,
+        stateJson: checkpoint.stateJson,
+        fence: 'suspend',
+        attemptStored: sqlFragment(storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')),
+      }),
       'one',
     )
     finishSuspension(b, runId)
@@ -1616,7 +1586,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
         ),
       }),
     )
-    if (retry && successorId) {
+    if (retry && successorId && retryDelayMs !== null) {
       // Only a LIVE task with user budget remaining gets a retry run. The cap
       // is expressed with the SAME user-ordinal definition the counter uses
       // (`run.attempt - infra_retries`) rather than `attempts + 1`: two
@@ -1624,23 +1594,22 @@ export class PostgresSchedulerStore implements SchedulerStore {
       // one ahead — from the historical blind-increment bug — refuses the
       // last configured attempt while the accounting band still calls the
       // state legal. The delay runs from the failure's own instant.
-      b.followOn(
+      b.followOnTree(
         'successor',
-        'runs',
-        `INSERT INTO runs
-           (run_id, queue, task_id, attempt, state, available_at_ms,
-            ${SUCCESSOR_PARENT_COLUMNS}, ${FENCE_COLS})
-         SELECT ?, f.queue, f.task_id, f.attempt + 1,
-                CASE WHEN CAST(? AS BIGINT) <= 0 THEN 'pending' ELSE 'sleeping' END,
-                f.fence_at_ms + ?,
-                ${successorParentValues('f')},
-                ${STAMP}, f.fence_at_ms
-         FROM runs f JOIN tasks t ON ${runOwnedByTask('f', 't')}
-         WHERE ${BY_RUN} AND f.fence_stamp = ${b.fence('fail')}
-           AND t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
-           AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}
-           AND NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`,
-        [successorId, retryDelayMs, retryDelayMs, runId, successorId],
+        userRetrySuccessorInsert({
+          successorId,
+          runId,
+          retryDelayMs,
+          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),
+          taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
+          admission: sqlFragment(
+            `t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts
+           AND ${storedIncrementableInteger(RUN_INTEGER_BOUNDS.attempt, 'f')}`,
+          ),
+          successorFree: sqlFragment(`NOT ${successorOwned('?', 'f.task_id', 'f.attempt + 1')}`, [
+            successorId,
+          ]),
+        }),
         'one',
       )
       // attempts DERIVES from the failing run's own ordinal (the documented
@@ -1787,19 +1756,18 @@ export class PostgresSchedulerStore implements SchedulerStore {
         leaseFits: sqlFragment(epochAdditionFits(NOW, '?'), [extendMs]),
       }),
     )
-    // The attempt comparison inside CHECKPOINT_LWW is the last-writer-wins
+    // The attempt comparison in checkpointWrite's conflict arm is the last-writer-wins
     // tiebreaker, never the fence: a lower-attempt writer under a still-valid
     // lease is dropped silently and its lease still extends.
-    b.followOn(
+    b.followOnTree(
       'checkpoint',
-      `INSERT INTO checkpoints
-         (task_id, checkpoint_name, queue, state, owner_run_id, owner_attempt, updated_at_ms)
-       SELECT f.task_id, ?, f.queue, ?, f.run_id, f.attempt, f.fence_at_ms
-       FROM runs f WHERE ${BY_RUN}
-         AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')}
-         AND f.fence_stamp = ${b.fence('lease')}
-       ${CHECKPOINT_LWW}`,
-      [checkpointName, stateJson, runId],
+      checkpointWrite({
+        runId,
+        checkpointName: checkpointName,
+        stateJson: stateJson,
+        fence: 'lease',
+        attemptStored: sqlFragment(storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'f')),
+      }),
       'one',
     )
     const { won } = await b.run(this.db)
@@ -1872,19 +1840,16 @@ export class PostgresSchedulerStore implements SchedulerStore {
         ),
       }),
     )
-    const thisEvent = `f.queue = runs.queue AND f.event_name = ?`
-    const emitted = fencedAt('events', thisEvent, b.fence('event'))
     const runWait = registeredWait('runs')
     // THE ONE FOLLOW-ON THAT CANNOT BE GENERATED, and the reason is worth
     // stating rather than hiding. Every other follow-on selects its rows from
     // a table THIS batch stamped, so the primitive can build the selection
     // from the fence and the caller cannot widen it. This one selects from
-    // `waits` — rows some earlier await registered, which this batch never
-    // touched — and uses the event's fence only as a gate. That is a genuine
-    // exception, not an oversight, so it keeps the hand-written WHERE and the
-    // text checks that guard it. One documented escape is a better shape than
-    // a scanner defending every statement, which is the trade `openTail`
-    // already makes for reads.
+    // `waits`, rows some earlier await registered and this batch never
+    // touched, and uses the event's fence only as a gate. That is a genuine
+    // exception, not an oversight. The shared statement `wakeRunsUpdate`
+    // builds the gate, the payload, and the provenance from nodes, and this
+    // site passes the predicates that stay store text.
     //
     // Waiters wake with the STORED payload, never the one this call carried:
     // on a re-emit they must agree with the event row. The waits index is the
@@ -1927,27 +1892,26 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // the run through the same full witness claim uses for timed wakes. That
     // keeps the decoder from fabricating a step when an event name appeared at
     // several call sites.
-    b.followOn(
+    b.followOnTree(
       'wake-runs',
-      'runs',
-      `UPDATE runs SET
-         state = 'pending',
-         available_at_ms = ${emitted},
-         wake_step = COALESCE(wake_step, ${runWait.step}),
-         wake_event = ?,
-         event_payload = (SELECT f.payload FROM events f
-                          WHERE ${thisEvent}),
-         ${fenceFrom('events', thisEvent, b.fence('event'))}
-       WHERE state = 'sleeping'
-         AND wake_event = ?
-         AND run_id IN (SELECT w.run_id FROM waits w
-                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')
-         AND ((runs.wake_step IS NOT NULL AND ${runWait.current})
-              OR (runs.wake_step IS NULL AND ${runWait.step} IS NOT NULL))
-         AND ${fenced('events', thisEvent, b.fence('event'))}
-         AND EXISTS (SELECT 1 FROM tasks t
+      wakeRunsUpdate({
+        eventName,
+        registeredStep: sqlFragment(runWait.step),
+        parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),
+        waiterRunIds: sqlFragment(
+          `(SELECT w.run_id FROM waits w
+                        WHERE w.queue = ? AND w.event_name = ? AND w.status = 'waiting')`,
+          [queue, eventName],
+        ),
+        witness: sqlFragment(
+          `(runs.wake_step IS NOT NULL AND ${runWait.current})
+              OR (runs.wake_step IS NULL AND ${runWait.step} IS NOT NULL)`,
+        ),
+        taskIsLive: sqlFragment(
+          `EXISTS (SELECT 1 FROM tasks t
                      WHERE ${runOwnedByTask('runs', 't')} AND t.state IN ${LIVE})`,
-      [eventName, eventName, eventName, eventName, eventName, queue, eventName, eventName],
+        ),
+      }),
       { many: 'an emit wakes every registered waiter' },
     )
     // Driven by the runs this batch actually woke, and never by waits.task_id.
@@ -1985,8 +1949,8 @@ export class PostgresSchedulerStore implements SchedulerStore {
     //
     // It also stops being the second statement in this batch selecting rows
     // the batch did not write: the runs it deletes for are the ones
-    // `wake-runs` just stamped, so the primitive builds the selection and
-    // `wake-runs` is left as the only hand-written escape.
+    // `wake-runs` just stamped, so the primitive builds the selection. No
+    // follow-on of this batch is hand-written text: the wake is a shared statement.
     b.derived('waits-gone', {
       relation: 'runs-to-waits',
       fence: 'wake-runs',
@@ -2009,12 +1973,10 @@ export class PostgresSchedulerStore implements SchedulerStore {
       whereArgs: [queue],
       rows: 'source-keys',
     })
-    b.openTail(
+    b.openTailTree(
       'stored-event',
       'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
-      `SELECT CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END AS payload_type
-       FROM events WHERE queue = ? AND event_name = ?`,
-      [queue, eventName],
+      storedEventRead({ queue, eventName, payloadType: sqlFragment(STORED_PAYLOAD_TYPE) }),
     )
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
@@ -2123,17 +2085,19 @@ export class PostgresSchedulerStore implements SchedulerStore {
     // The event row belongs to whichever batch emitted it, so this read is
     // fenced on the LIVE claim token instead: a zombie falls through to the
     // register discriminator and gets the lease error, never a success signal.
-    b.openTail(
+    b.openTailTree(
       'hit',
       'the event was written by the emitting batch, not this one; the live claim token is the fence here',
-      `SELECT payload, CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END AS payload_type FROM events
-       WHERE queue = ? AND event_name = ?
-         AND EXISTS (SELECT 1 FROM runs r
-                     JOIN tasks t ON ${runOwnedByTask('r', 't')}
-                     WHERE r.run_id = ? AND r.queue = ? AND r.task_id = ?
-                       AND r.claimed_by = ? AND r.state = 'running'
-                       AND t.state IN ${LIVE})`,
-      [queue, eventName, runId, queue, taskId, claimToken],
+      emittedEventRead({
+        queue,
+        eventName,
+        runId,
+        taskId,
+        claimToken,
+        payloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+        taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
+        liveTask: sqlFragment(`t.state IN ${LIVE}`),
+      }),
     )
     const { won, results } = await b.run(this.db)
     const row = results.hit?.rows[0]
