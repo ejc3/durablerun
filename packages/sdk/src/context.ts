@@ -266,6 +266,8 @@ export class ReplayContext implements TaskContext {
   private topStartIndex = 0
   /** Every failed rollback attempt on record, over all steps. Each one was followed by a pass. */
   private recordedRollbackTries = 0
+  /** The last step at which this pass's replay threw the phase signal for a started step. */
+  private replayLastCutAt: string | undefined
   #sagaCauseJson: string | undefined
   /** A saga checkpoint that cannot be read. It reads the same on every pass, so it is permanent. */
   #sagaCorruption: { readonly stepKey: string; readonly message: string } | undefined
@@ -421,6 +423,9 @@ export class ReplayContext implements TaskContext {
       // owed its rollback, which is handed no output.
       if (registration !== undefined && taskMapHas(this.startIndexes, key)) {
         this.register(key, name, registration, undefined)
+        // What this step's body threw before was never stored, so what the step throws
+        // now is the engine's signal. A handler that rethrows it ends the replay here.
+        this.replayLastCutAt = key
       }
       this.#controls.rollbackPhase()
     }
@@ -567,12 +572,18 @@ export class ReplayContext implements TaskContext {
     }
     if (stepKey === undefined) return { kind: 'none' }
     if (!taskMapHas(this.registered, stepKey)) {
+      // The likeliest cause is a handler whose `catch` let the engine's signal through at
+      // an earlier step, which ended the replay before it reached this one. Say where.
+      const cutAt = this.replayLastCutAt
+      const cutEarlier = cutAt !== undefined && (taskMapGet(this.startIndexes, cutAt) ?? 0) < top
       return {
         kind: 'halt',
         record: this.haltRecord(
           stepKey,
           '$RollbackNotRegistered',
-          `step '${stepKey}' started, and this pass's replay registered no rollback for it`,
+          cutEarlier
+            ? `step '${stepKey}' started, and this pass's replay registered no rollback for it. The replay last stopped at step '${cutAt}', which started and never persisted: on a rollback pass that step throws the engine's signal where its body threw before, and the handler must catch it to reach a later step`
+            : `step '${stepKey}' started, and this pass's replay registered no rollback for it`,
         ),
       }
     }

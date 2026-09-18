@@ -2588,7 +2588,17 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   replays the task function so every memoized step registers its closure with
   what it returned, and a step that started and never persisted registers with
   no output. However the replay ends, its ending means nothing: the failure is
-  decided. Then each rollback owed runs as a step of its own, the step that
+  decided. One limit follows from replaying to register. A step that started
+  and never persisted throws the engine's phase signal on a rollback pass,
+  where its body threw its own error before: the body does not run again, and
+  its error was never stored. A handler that caught that error and went on to
+  start further registered steps must catch the signal too. If its `catch`
+  lets through only its own error class, the replay ends there, the later
+  steps register no rollback, and the saga halts as failed with nothing
+  compensated, because no earlier step is compensated ahead of one that cannot
+  be. The halt names both steps. Storing the error would not close this: an
+  error rebuilt from storage is no instance of the handler's class either.
+  Then each rollback owed runs as a step of its own, the step that
   started last first. A failed rollback is counted with the failure and
   retried under its own budget, three attempts and the task's retry strategy
   unless `rollbackConfig` says otherwise. Four things halt a saga for good: a
