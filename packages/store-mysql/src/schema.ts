@@ -23,7 +23,9 @@
  * that dies inside version 1 leaves tables a rerun finds and skips.
  */
 
-const ID = 'VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin'
+/** The characters an indexed identifier holds. MySQL counts characters, which are code points. */
+export const IDENTIFIER_CHARACTERS = 255
+const ID = `VARCHAR(${IDENTIFIER_CHARACTERS}) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin`
 const NAME = ID
 const BODY = 'LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin'
 const STATE = 'VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin'

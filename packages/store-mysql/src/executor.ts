@@ -47,6 +47,9 @@ const ER_NO_SUCH_TABLE = 1146
  */
 const ER_DATA_TOO_LONG = 1406
 
+/** The note MySQL raises when it cuts a value to fit its column. */
+const WARN_DATA_TRUNCATED = 1265
+
 /** The handshake capability that makes MySQL report matched rows in place of changed ones. */
 const CLIENT_FOUND_ROWS = 0x2
 
@@ -301,6 +304,29 @@ async function acquireNamedLock(connection: PoolConnection, lock: LockCoordinate
   }
 }
 
+/**
+ * MySQL cuts trailing spaces past a VARCHAR's width with a note, in every `sql_mode`, where
+ * any other excess is error 1406. The cut value is a different identifier, so a write that
+ * was cut is refused like one that did not fit, and its transaction rolls back. The server
+ * reports a warning count with every result, so this costs a round trip only when there
+ * is something to read.
+ */
+async function refuseWriteCutToFit(
+  connection: PoolConnection,
+  header: Pick<ResultSetHeader, 'warningStatus'>,
+): Promise<void> {
+  if ((header.warningStatus ?? 0) === 0) return
+  const [warnings] = await connection.query('SHOW WARNINGS')
+  const cut = (warnings as { Code?: unknown; Message?: unknown }[]).find(
+    (warning) => Number(warning.Code) === WARN_DATA_TRUNCATED,
+  )
+  if (cut !== undefined) {
+    throw new InvalidDurableStringError(
+      `MySQL cut a value to fit its column, and an indexed identifier holds 255 characters: ${String(cut.Message)}`,
+    )
+  }
+}
+
 function isSchemaVersionRead(
   label: string,
   statements: readonly SqlStatement[],
@@ -480,6 +506,9 @@ export class MysqlExecutor implements SqlExecutor {
           statement.args.length === 0
             ? await connection.query(statement.sql)
             : await connection.execute(statement.sql, statement.args)
+        if (mode === 'write' && !Array.isArray(result)) {
+          await refuseWriteCutToFit(connection, result as ResultSetHeader)
+        }
         results.push(normalizeResult(result, fields as FieldPacket[] | undefined, statement.sql))
       }
       await connection.query('COMMIT')
