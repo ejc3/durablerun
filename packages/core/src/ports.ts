@@ -154,9 +154,13 @@ export interface SchedulerStore {
     extendLeaseSeconds: number,
   ): Promise<void>
 
+  /** First write wins. Refuses a reserved name, one that starts with `$`, with RangeError. */
   emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void>
 
-  /** Registers the wait or returns the already-emitted payload (§3.4 rule 2). */
+  /**
+   * Registers the wait or returns the already-emitted payload (§3.4 rule 2).
+   * Refuses a reserved name, one that starts with `$`, with RangeError.
+   */
   awaitEvent(
     queue: string,
     taskId: string,
@@ -164,6 +168,24 @@ export interface SchedulerStore {
     claimToken: string,
     stepName: string,
     eventName: string,
+    timeoutSeconds: number | null,
+  ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }>
+
+  /**
+   * Await a child task's completion event (DESIGN.md §3.2, specs/ChildTasks.tla).
+   * It is `awaitEvent` for the reserved name built from `childTaskId`, which no
+   * caller can pass to `awaitEvent` itself. The payload is the child's first
+   * outcome (`decodeTaskOutcome`). A child in another queue, or no such task, is
+   * refused with ChildAwaitRefusedError and registers nothing: events are keyed
+   * by queue, so only a child in this queue can wake this run.
+   */
+  awaitTaskDone(
+    queue: string,
+    taskId: string,
+    runId: string,
+    claimToken: string,
+    stepName: string,
+    childTaskId: string,
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }>
 

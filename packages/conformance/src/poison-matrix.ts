@@ -17,8 +17,9 @@ import {
   isTerminalState,
   parseFenceStamp,
   sqlBatchMode,
+  taskDoneEventName,
 } from '@durablerun/core'
-import { MATRIX_WRITE_LABELS } from './fault-matrix.js'
+import { MATRIX_WRITE_LABELS, TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import {
   type StorageCorruption,
   type StorageCorruptionDisposition,
@@ -1924,6 +1925,13 @@ function explicitInsertAuthority(
       allowInsert(authority, 'drivers', { queue: Q, driver_id: driverId })
     }
   }
+  if ((TERMINAL_BATCH_LABELS as readonly string[]).includes(label)) {
+    // A terminal batch writes the completion event of the task it ends
+    // (specs/ChildTasks.tla). `completionEventBarrier` holds each one to a task this
+    // call took from live to terminal.
+    allowInsert(authority, 'events', { queue: Q, event_name: taskDoneEventName(TASK) })
+    allowInsert(authority, 'events', { queue: Q, event_name: taskDoneEventName(TRIGGER_TASK) })
+  }
   if (label === 'emit-event') {
     allowInsert(authority, 'events', { queue: Q, event_name: EVENT })
     allowInsert(authority, 'events', { queue: Q, event_name: TRIGGER_EVENT })
@@ -2121,6 +2129,36 @@ function leaseOnlyShortened(before: SqlRow, after: SqlRow): boolean {
     withoutColumns(before, LEASE_DEADLINE_COLUMNS),
     withoutColumns(after, LEASE_DEADLINE_COLUMNS),
   )
+}
+
+/**
+ * A completion event may appear only for a task this call took from live to terminal,
+ * and only in that task's queue. The insert authority allows the event by name. This
+ * barrier is what stops a refused or laundering transition from writing one anyway.
+ */
+function completionEventBarrier(before: ProtocolSnapshot, after: ProtocolSnapshot): string[] {
+  const prefix = taskDoneEventName('')
+  const existed = rowsByKey('events', before.events)
+  const beforeTasks = rowsByKey('tasks', before.tasks)
+  const afterTasks = rowsByKey('tasks', after.tasks)
+  const errors: string[] = []
+  for (const event of after.events) {
+    const eventName = String(event.event_name)
+    if (!eventName.startsWith(prefix) || existed.has(key('events', event))) continue
+    const taskId = eventName.slice(prefix.length)
+    const was = beforeTasks.get(taskId)
+    const is = afterTasks.get(taskId)
+    const ended =
+      was !== undefined &&
+      is !== undefined &&
+      isLiveState(was.state) &&
+      isTerminalState(is.state) &&
+      String(is.queue) === String(event.queue)
+    if (!ended) {
+      errors.push(`completion event ${eventName} was written for a task this call did not end`)
+    }
+  }
+  return errors
 }
 
 function terminalBarrier(
@@ -3181,6 +3219,7 @@ export async function runPoisonMatrixCase(
         (row) => `write escaped authority: ${row}`,
       ),
       ...terminalBarrier(label, before, after),
+      ...completionEventBarrier(before, after),
       ...(witness.inertLive ? inertLiveBarrier(label, before, after) : []),
       ...newFindings(label, beforeFindings, afterFindings).map(
         (item) => `new invariant violation: ${item}`,

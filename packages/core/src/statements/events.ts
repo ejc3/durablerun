@@ -231,3 +231,60 @@ export const emittedEventRead = defineStatement(
       .select(() => [aliasedAs(rawSql<string>(binds.payloadType, 'value'), 'payload_type')])
       .where((where) => where.exists(stillClaimed(binds, binds.liveTask))),
 )
+
+/**
+ * A terminal batch's completion event (DESIGN.md §3.2, specs/ChildTasks.tla's
+ * ChildTerminal): the first outcome the task reached, written by the batch that ended
+ * it. It selects from the task row this batch made terminal, under the stamp of the
+ * statement named `terminal`, so a batch that ended nothing writes no event. Only that
+ * statement writes that stamp, and it writes the state the payload reports.
+ *
+ * First write wins without a conflict clause, which a follow-on insert may not carry:
+ * an event that exists is left alone, so a revived task that ends again keeps its
+ * first outcome. Every dialect serializes this batch against an await of the same
+ * event, so nothing can insert the event between the check and the insert.
+ */
+export const taskDoneEventInsert = defineStatement(
+  'task-done event',
+  (binds: {
+    queue: string
+    taskId: string
+    eventName: string
+    payloadJson: string
+    /** The statement of this batch that made the task terminal. */
+    terminal: string
+  }) => {
+    const eb = expressionBuilder<{ f: StoreTables['tasks'] }, 'f'>()
+    const event = {
+      queue: eb.ref('f.queue'),
+      event_name: eb.val(binds.eventName),
+      payload: eb.val(binds.payloadJson),
+      emitted_at_ms: eb.ref('f.fence_at_ms'),
+      fence_stamp: stampValue,
+      fence_at_ms: eb.ref('f.fence_at_ms'),
+    }
+    const { columns, selections } = insertedFrom(event)
+    return treeBuilder
+      .insertInto('events')
+      .columns(columns)
+      .expression(
+        treeBuilder
+          .selectFrom('tasks as f')
+          .select(selections)
+          .where('f.task_id', '=', binds.taskId)
+          .where('f.queue', '=', binds.queue)
+          .where('f.fence_stamp', '=', fenceValue(binds.terminal))
+          .where((where) =>
+            where.not(
+              where.exists(
+                where
+                  .selectFrom('events as e')
+                  .select('e.queue')
+                  .whereRef('e.queue', '=', 'f.queue')
+                  .where('e.event_name', '=', binds.eventName),
+              ),
+            ),
+          ),
+      )
+  },
+)

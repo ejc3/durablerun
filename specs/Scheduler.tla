@@ -294,6 +294,12 @@
 \*     run's immutable task name; part of DeferLaunch's decision, no transition
 \*   'refusal-state' [read] -- after a refused worker write, the run's state names
 \*     why (cancelled or lost fence); no transition
+\*   'run-task' [read] -- the task of the run a terminal batch is about to end,
+\*     read only when this store did not activate the run; a run's task never
+\*     changes, and the batch names that task's completion event (ChildTasks.tla)
+\*   'child-queue' [read] -- the queue of the child a parent asks to await, which
+\*     never changes; the queue rule is decided from it before 'await-event' runs,
+\*     so a refused await issues no batch (ChildTasks.tla's AwaitRefused)
 \*   'sweep:scan' [read] -- read-only discovery, no state transition
 \*   'expire-lease-now' [cas-fenced] -- advisory-only token-fenced write
 \*     for the exact signal claim identity (replay re-applies the same

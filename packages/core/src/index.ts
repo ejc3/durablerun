@@ -1,4 +1,5 @@
 export * from './buggify.js'
+export * from './child-tasks.js'
 export * from './claimed-run-answer.js'
 export * from './clock.js'
 export * from './contract.js'
