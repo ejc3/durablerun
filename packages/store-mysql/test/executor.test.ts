@@ -140,6 +140,24 @@ describe('MysqlExecutor transactions', () => {
     ).toHaveLength(1)
   })
 
+  it('refuses a pool that connects with FOUND_ROWS, or whose flags it cannot read', () => {
+    // mysql2 turns FOUND_ROWS on by default. Under it a conflict arm that changed nothing
+    // reports one row, and a compare-and-set that lost reads as one that won.
+    const over = (pool: unknown) => () =>
+      MysqlExecutor.fromPool({
+        getConnection: async () => new FakeConnection(),
+        end: async () => undefined,
+        pool,
+      } as unknown as Pool)
+    const FOUND_ROWS = 2
+    expect(
+      over({ config: { connectionConfig: { clientFlags: FOUND_ROWS } } }),
+      'mutation-verdict:construction:mysql-foreign-pool-found-rows-refused',
+    ).toThrow(/FOUND_ROWS/)
+    expect(over(undefined)).toThrow(/FOUND_ROWS/)
+    expect(over(OWNED_POOL_CONFIG)).not.toThrow()
+  })
+
   it('takes no lock for the version read', async () => {
     const connection = new FakeConnection()
     await executorOver(connection).batch(
