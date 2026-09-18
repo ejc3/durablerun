@@ -1,21 +1,11 @@
-import {
-  type ExpressionBuilder,
-  type OperationNode,
-  SelectModifierNode,
-  SelectQueryNode,
-  SqliteQueryCompiler,
-  sql,
-} from 'kysely'
+import { type ExpressionBuilder, SelectModifierNode, SelectQueryNode, sql } from 'kysely'
 import { describe, expect, it } from 'vitest'
 import {
   FENCE_SET,
   FencedBatch,
-  type SqlExecutor,
   type SqlFragment,
-  type SqlResult,
   type SqlStatement,
   type StoreTables,
-  TreeDialect,
   aliasedAs,
   capLostLaunchCas,
   coalesced,
@@ -39,68 +29,29 @@ import {
  * Each tree check paired: a shape it must refuse, and the nearest legitimate shape it
  * must still allow, as `fenced-batch.test.ts` does for text statements.
  */
-const CLOCK = `CAST(unixepoch('subsec') * 1000 AS INTEGER)`
-const dialect = new TreeDialect(new SqliteQueryCompiler())
-
-type Builder = { toOperationNode(): OperationNode }
-
-/** A statement minted the way stores mint them, with no binds of its own. */
-const statement = (builder: Builder) => defineStatement('test', () => builder as never)({})
-const predicate = (text: string, args: SqlFragment['args'] = []) =>
-  rawSql<boolean>(sqlFragment(text, args), 'predicate')
-const value = <T>(text: string, args: SqlFragment['args'] = []) =>
-  rawSql<T>(sqlFragment(text, args), 'value')
-
-function batch(): FencedBatch {
-  return new FencedBatch('b', 'seed', { now: CLOCK, tree: dialect })
-}
-
-/** An executor that records what it was sent and reports `rowsAffected` for each statement. */
-function capturingExecutor(rowsAffected: number) {
-  const captured: SqlStatement[] = []
-  const executor: SqlExecutor = {
-    async batch(_label, statements) {
-      captured.push(...statements)
-      return statements.map(() => ({ rows: [], rowsAffected }) as SqlResult)
-    },
-  }
-  return { captured, executor }
-}
-
-const winCas = () =>
-  db
-    .updateTable('runs')
-    .set({
-      state: 'completed',
-      completed_at_ms: nowValue,
-      fence_stamp: stampValue,
-      fence_at_ms: nowValue,
-    })
-    .where('run_id', '=', 'r1')
-    .where('state', '=', 'running')
-
-function withCas(b: FencedBatch = batch()): FencedBatch {
-  return b.casTree('win', statement(winCas()))
-}
-
-/** Tasks owned by the run this batch's compare-and-set stamped. */
-const taskFollowOn = () =>
-  db
-    .updateTable('tasks')
-    .set({ state: 'completed', fence_stamp: stampValue, fence_at_ms: 5 })
-    .where((eb) =>
-      eb(
-        'task_id',
-        'in',
-        eb
-          .selectFrom('runs as f')
-          .select('f.task_id')
-          .where('f.run_id', '=', 'r1')
-          .where('f.fence_stamp', '=', fenceValue('win')),
-      ),
-    )
-
-const followOn = (builder: Builder) => withCas().followOnTree('task', statement(builder), 'one')
+import {
+  type Builder,
+  CLOCK,
+  type Loose,
+  batch,
+  capturingExecutor,
+  checkpoint,
+  either,
+  eventInsert,
+  followOn,
+  gate,
+  joined,
+  key,
+  loose,
+  predicate,
+  recorded,
+  statement,
+  successor,
+  taskFollowOn,
+  value,
+  winCas,
+  withCas,
+} from './tree-fixtures.js'
 
 describe('FencedBatch tree statements', () => {
   it('compiles a compare-and-set and a gated follow-on with every token bound', async () => {
@@ -920,16 +871,6 @@ describe('FencedBatch tree statements', () => {
     })
   })
 
-  const eventInsert = () =>
-    db.insertInto('events').values({
-      queue: 'q',
-      event_name: 'e',
-      payload: 'p',
-      emitted_at_ms: nowValue,
-      fence_stamp: stampValue,
-      fence_at_ms: nowValue,
-    })
-
   it('stamps an inserting compare-and-set by position, and keeps a preserved instant on conflict', async () => {
     const upsert = eventInsert().onConflict((conflict) =>
       conflict
@@ -1252,98 +1193,6 @@ describe('FencedBatch tree statements', () => {
   })
 
   describe('a follow-on that inserts', () => {
-    // biome-ignore lint/suspicious/noExplicitAny: table types would not let a test write the shapes refused here
-    type Loose = any
-    const loose = compileOnlyBuilder<Loose>()
-    const key = (eb: Loose) => eb('f.run_id', '=', 'r1')
-    const gate = (eb: Loose) => eb('f.fence_stamp', '=', fenceValue('win'))
-    const either = (eb: Loose) => eb.or([key(eb), gate(eb)])
-    const joined = (select: Loose) => select.innerJoin('tasks as t', 't.task_id', 'f.task_id')
-
-    /** A successor run, selected from the run this batch's compare-and-set stamped. */
-    const successor = (
-      shape: {
-        from?: (select: Loose) => Loose
-        task?: (eb: Loose) => Loose
-        stamp?: Loose
-        instant?: (eb: Loose) => Loose
-        where?: (eb: Loose) => Loose
-      } = {},
-    ) => {
-      const from = loose.selectFrom('runs as f')
-      return loose
-        .insertInto('runs')
-        .columns(['run_id', 'queue', 'task_id', 'fence_stamp', 'fence_at_ms'])
-        .expression(
-          (shape.from?.(from) ?? from)
-            .select((eb: Loose) => [
-              eb.val('r2').as('run_id'),
-              eb.ref('f.queue').as('queue'),
-              aliasedAs(shape.task?.(eb) ?? eb.ref('f.task_id'), 'task_id'),
-              aliasedAs(shape.stamp ?? stampValue, 'fence_stamp'),
-              aliasedAs(shape.instant?.(eb) ?? eb.ref('f.fence_at_ms'), 'fence_at_ms'),
-            ])
-            .where((eb: Loose) => shape.where?.(eb) ?? eb.and([key(eb), gate(eb)])),
-        )
-    }
-
-    /** A checkpoint written from the fenced run. Checkpoints carry no provenance. */
-    const checkpoint = (
-      shape: {
-        where?: (eb: Loose) => Loose
-        owner?: (eb: Loose) => Loose
-        updatedAt?: (eb: Loose) => Loose
-      } = {},
-    ) => {
-      const insert = loose
-        .insertInto('checkpoints')
-        .columns(['task_id', 'owner_attempt', 'updated_at_ms'])
-        .expression(
-          loose
-            .selectFrom('runs as f')
-            .select((eb: Loose) => [
-              eb.ref('f.task_id').as('task_id'),
-              eb.ref('f.attempt').as('owner_attempt'),
-              aliasedAs(shape.updatedAt?.(eb) ?? eb.ref('f.fence_at_ms'), 'updated_at_ms'),
-            ])
-            .where((eb: Loose) => shape.where?.(eb) ?? eb.and([key(eb), gate(eb)])),
-        )
-      const owner = shape.owner
-      return owner === undefined
-        ? insert
-        : insert.onConflict((conflict: Loose) =>
-            conflict
-              .columns(['task_id'])
-              .doUpdateSet((eb: Loose) => ({ owner_attempt: owner(eb) })),
-          )
-    }
-
-    /** An event recorded from the fenced run. `emitted` is null to leave the column out. */
-    const recorded = (emitted: ((eb: Loose) => Loose) | null) =>
-      loose
-        .insertInto('events')
-        .columns([
-          'queue',
-          'event_name',
-          'payload',
-          ...(emitted === null ? [] : ['emitted_at_ms']),
-          'fence_stamp',
-          'fence_at_ms',
-        ])
-        .expression(
-          loose
-            .selectFrom('runs as f')
-            .select((eb: Loose) => [
-              eb.ref('f.queue').as('queue'),
-              eb.val('e').as('event_name'),
-              eb.val('p').as('payload'),
-              ...(emitted === null ? [] : [aliasedAs(emitted(eb), 'emitted_at_ms')]),
-              aliasedAs(stampValue, 'fence_stamp'),
-              eb.ref('f.fence_at_ms').as('fence_at_ms'),
-            ])
-            .where((eb: Loose) => eb.and([key(eb), gate(eb)])),
-        )
-
     const refused = (builder: Builder, why: RegExp) => expect(() => followOn(builder)).toThrow(why)
 
     it('inserts a stamped row selected from the fenced row, and later statements fence on it', async () => {
