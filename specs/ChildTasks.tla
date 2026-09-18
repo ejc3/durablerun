@@ -310,6 +310,13 @@ RefusalIsTheRule == parent = "refused" => (~AwaitAllowed \/ child = "unspawned")
 
 DoneImmutable == [][doneEvent # None => doneEvent' = doneEvent]_vars
 
+\* Only a running parent spawns.  The pass that calls ctx.spawn holds the parent's live
+\* claim, and the spawn batch creates a child only under that claim.  A caller that
+\* knows a parent's id and nothing else cannot place a task under the key the parent
+\* will look up, which the reserved key alone left open to any caller of the port.
+SpawnAuthority ==
+  [][(child = "unspawned" /\ child' = "live") => parent = "running"]_vars
+
 \* The event is written only in the step that ends a live child, or by an await
 \* that finds the child ended with nothing recorded, and then it is the child's
 \* own outcome and the await returns it.

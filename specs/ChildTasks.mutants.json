@@ -201,5 +201,12 @@
     "caughtBy": "RefusalIsTheRule",
     "find": "  /\\ parent = \"running\" /\\ child = \"unspawned\"\n  /\\ UNCHANGED",
     "replace": "  /\\ parent = \"running\"\n  /\\ UNCHANGED"
+  },
+  {
+    "name": "spawn-by-a-parent-that-is-not-running",
+    "guard": "only a running parent spawns a child",
+    "caughtBy": "SpawnAuthority",
+    "find": "/\\ parent = \"running\" /\\ child = \"unspawned\"\n  /\\ child' = \"live\"",
+    "replace": "/\\ child = \"unspawned\"\n  /\\ child' = \"live\""
   }
 ]
