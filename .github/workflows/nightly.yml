@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DURABLERUN_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/durablerun
+      # The dialects this job has servers for. MySQL's conformance runs on every
+      # pull request and push, in ci.yml's own job.
+      DURABLERUN_CONFORMANCE_DIALECTS: libsql,postgres
     services:
       postgres:
         image: postgres:17-alpine
