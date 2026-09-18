@@ -1521,9 +1521,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   runs the merged order leaves out, which other claimers skip until that claim
   commits. (4) Version 1 holds the whole schema because MySQL DDL cannot roll
   back. The first migration that alters a table needs a repeatable form, which
-  MySQL has no `ADD COLUMN IF NOT EXISTS` for. (5) The optional PlanetScale
-  smoke job is not built. (6) Child tasks and sagas land their batches on
-  libSQL and PostgreSQL first, and `store-mysql` ports them after. The review
+  MySQL has no `ADD COLUMN IF NOT EXISTS` for. Version 6, the `runs_woken`
+  index that child tasks read through, is the first statement after version 1:
+  it is chosen from the catalog and prepared, which is safe to repeat, and a
+  column will need the same form. (5) The optional PlanetScale
+  smoke job is not built. (6) Sagas land their batches on libSQL and PostgreSQL
+  first, and `store-mysql` ports them after. Child tasks are ported, in PR3.3
+  itself: the MySQL leg of the identical suite runs the child-task cases and
+  the fault and poison matrix cells of the new labels, and nothing is owed.
+  The review
   of this PR found eleven defects, eight of them in behaviour and one of them
   introduced by a fix, recorded in
   `postmortems/pr4.3-store-mysql-review.md`. Since it, the store refuses an

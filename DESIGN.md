@@ -623,6 +623,23 @@ One invocation executes one claimed run to its next suspension point:
     exclude each other. A hash collision can only serialize two unrelated
     events. The row lock can go once no build that takes it can still run, which
     BUILD.md records.
+  - The MySQL event lock has one form. Every event lock there is a session
+    named lock, taken before the transaction and released after it, and its
+    name is `SHA2(JSON_ARRAY(DATABASE(), 'durablerun:event', queue, event
+    name), 256)`. A completion event's lock is that same derivation over the
+    name `$task-done:<taskId>`, so the await of a child, the batch that records
+    an unrecorded ending, and all five terminal sites take one lock, and it
+    is held across the completion event as it is across a caller's. It cannot
+    collide with a caller's event. `emitEvent` and `awaitEvent` refuse a name
+    that starts with `$`, so no caller's name equals a completion event's. The
+    queue and the name are separate members of the array and never joined
+    text, and the database is a member too, so two different events share a
+    lock only if SHA-256 collides, which would serialize them and nothing
+    else. The rolling-deploy concern does not apply to MySQL, because no MySQL
+    build older than child tasks exists, so no process can be taking another
+    lock for the same event. A case against a MySQL server holds the lock of one
+    task's completion event and sees that task's terminal batch finish after
+    the lock is released, and another task's before.
   - The event is first-write-wins like every event (§3.8.3), so it means "the
     first outcome this task reached", never "the task is terminal now".
     `retryTask` can take a failed task back to live, and a revived child that
@@ -784,8 +801,12 @@ One invocation executes one claimed run to its next suspension point:
     (`SqlStatement.skipUnlessWrote`), read from the tied gate the gating rule
     requires. Seeds are unique to an invocation, so when that statement wrote
     no row, nothing carries its stamp and the gated statement cannot match. The
-    PostgreSQL executor pays a round trip for each statement, so it does not
-    send such a statement and answers with no rows. The libSQL executor sends a
+    PostgreSQL and MySQL executors pay a round trip for each statement, so they
+    do not send such a statement and answer with no rows. MySQL counts rows
+    changed where the port means rows matched, so its executor reads the gate
+    from the normalized count: a gate that matched a row and changed nothing
+    still sends its gated statement, which a case against a MySQL server holds
+    beside the skip. The libSQL executor sends a
     batch whole and ignores the field. On a first delivery the two leave the
     same state. On an exact replay the gate writes nothing, and the skip leaves
     alone what the first delivery committed. A compare-and-set and an open tail
@@ -810,7 +831,17 @@ One invocation executes one claimed run to its next suspension point:
     nothing else. A process of an older build runs against it unchanged. An
     older build that starts afterwards fails in `migrate()` with
     `SchemaMismatchError`, as it does after every migration. PostgreSQL builds
-    the index under a lock that blocks writes to `runs` while it builds.
+    the index under a lock that blocks writes to `runs` while it builds. MySQL
+    has no partial index, so its `runs_woken` is `(queue, wake_event, state)`:
+    the state is the last column, and the lookup is one seek to the pending
+    runs of one event, whatever else the queue holds and however many runs that
+    event woke before. Measured on MySQL 8.4 with the session's handler
+    counters read inside the batch: a child's terminal batch beside 800
+    pending runs walked 35 rows through the index and 3,243 without it, and
+    `store-mysql`'s plan tests hold the first. MySQL also has no `CREATE INDEX
+    IF NOT EXISTS`, and its DDL commits on its own, so version 6 chooses its
+    statement from the catalog and prepares it, which is safe to repeat after a
+    migrator that died between the index and the version.
   - PostgreSQL lock order. Every worker write, every sweep, and the wake lock a
     run's row and then its task's. A cancellation updates the task first, which
     deadlocked against a child ending that woke the cancelled parent, and
@@ -821,7 +852,12 @@ One invocation executes one claimed run to its next suspension point:
     deadlock victim (SQLSTATE 40P01) committed nothing, so the executor runs it
     again at once, up to three times in all,
     before it reports an outage: reported at once, a finished run was left for
-    the sweep to charge an infrastructure retry.
+    the sweep to charge an infrastructure retry. MySQL has no twin of the
+    predicate: InnoDB locks a row before it evaluates the predicates on it, so
+    a predicate cannot order anything. Its executor runs a write batch again
+    when InnoDB rolls it back as a deadlock victim (error 1213), up to three
+    times in all and under the named lock it already holds, and a read batch
+    never.
 - Cancellation discovery: a refused worker write names why (the refused-write
   contract, §3.4), and a `RunCancelledError` ends the pass with a `cancelled`
   outcome, consuming nothing. A refused heartbeat names the cancellation the
