@@ -44,7 +44,9 @@ class FakeConnection {
 }
 
 /** The part of a mysql2 pool that records the handshake flags it connects with. */
-const OWNED_POOL_CONFIG = { config: { connectionConfig: { clientFlags: 0 } } }
+const OWNED_POOL_CONFIG = {
+  config: { resetOnRelease: false, connectionConfig: { clientFlags: 0 } },
+}
 
 function executorOver(connection: FakeConnection): MysqlExecutor {
   const pool = {
@@ -179,6 +181,25 @@ describe('MysqlExecutor transactions', () => {
     expect(afterSessionSetup(connection).filter((sql) => !sql.includes('GET_LOCK'))).toEqual([])
     // The connection leaves the batch exactly once, returned or discarded.
     expect(connection.released + connection.destroyed).toBe(1)
+  })
+
+  it('refuses a pool that resets a connection on release, or that does not say', () => {
+    // The session settings are sent once for each connection. A reset on release clears
+    // them, and every write after the first would run at REPEATABLE READ with no strict mode.
+    const over = (config: unknown) => () =>
+      MysqlExecutor.fromPool({
+        getConnection: async () => new FakeConnection(),
+        end: async () => undefined,
+        pool: { config },
+      } as unknown as Pool)
+    expect(
+      over({ resetOnRelease: true, connectionConfig: { clientFlags: 0 } }),
+      'mutation-verdict:construction:mysql-foreign-pool-reset-on-release-refused',
+    ).toThrow(/resets? a connection on release/)
+    expect(over({ connectionConfig: { clientFlags: 0 } })).toThrow(
+      /resets? a connection on release/,
+    )
+    expect(over(OWNED_POOL_CONFIG.config)).not.toThrow()
   })
 
   it('takes no lock for the version read', async () => {

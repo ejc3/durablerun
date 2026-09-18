@@ -1,5 +1,6 @@
 import { InvalidDurableStringError, SchemaMismatchError } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
+import { MysqlExecutor } from '../src/executor.js'
 import { META_BOOTSTRAP_SQL, META_TABLE_SQL } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -146,6 +147,48 @@ describe('MysqlExecutor against a real server', () => {
       expect(after.connection).toBe(before.connection)
       expect(after.sets - before.sets).toBe(0)
     } finally {
+      await db.close()
+    }
+  })
+
+  it('keeps its session settings over a pool that was asked to reset connections on release', async () => {
+    // With mysql2's resetOnRelease, every release sends COM_RESET_CONNECTION and the same
+    // connection comes back with a fresh session: REPEATABLE READ, the server's time zone,
+    // and no strict mode. The settings are sent once for each connection, so the store's
+    // own pool must never reset one.
+    const db = await openMysqlTestDb({ idNamespace: 'reset-on-release' })
+    const url = new URL(process.env.DURABLERUN_MYSQL_URL ?? '')
+    url.pathname = `/${db.databaseName}`
+    const executor = MysqlExecutor.open({
+      uri: url.toString(),
+      connectionLimit: 1,
+      resetOnRelease: true,
+    })
+    try {
+      const seen: { id: unknown; session: string }[] = []
+      for (let batch = 0; batch < 3; batch++) {
+        const [result] = await executor.batch('fixture:session', [
+          {
+            sql: `SELECT CONNECTION_ID() AS id, @@transaction_isolation AS isolation,
+                         @@time_zone AS zone,
+                         FIND_IN_SET('STRICT_ALL_TABLES', @@sql_mode) > 0 AS strict`,
+            args: [],
+          },
+        ])
+        const row = result?.rows[0]
+        seen.push({
+          id: row?.id,
+          session: `${String(row?.isolation)} ${String(row?.zone)} strict=${Number(row?.strict)}`,
+        })
+      }
+      expect(new Set(seen.map(({ id }) => id)).size).toBe(1)
+      expect(seen.map(({ session }) => session)).toEqual([
+        'READ-COMMITTED +00:00 strict=1',
+        'READ-COMMITTED +00:00 strict=1',
+        'READ-COMMITTED +00:00 strict=1',
+      ])
+    } finally {
+      await executor.close()
       await db.close()
     }
   })
