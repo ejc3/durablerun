@@ -138,6 +138,22 @@ describe('PgExecutor transactions', () => {
     expect(pool.connectCalls).toBe(1)
   })
 
+  it('reads the schema version under READ COMMITTED, whose snapshot follows the name lookup', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+
+    await executor(new FakePool(client)).batch(
+      'migrate:version',
+      [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }],
+      'read',
+    )
+
+    expect(client.calls.map(({ text }) => text)).toEqual([
+      'BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY',
+      SCHEMA_VERSION_READ_SQL,
+      'COMMIT',
+    ])
+  })
+
   it('acquires the event row lock before protocol SQL without adding a result', async () => {
     const client = new FakeClient((text) => {
       if (text === 'SELECT value FROM protocol_state') {
