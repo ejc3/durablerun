@@ -117,11 +117,12 @@ Allowed cases (do NOT flag these):
   NAMES"), and `SCHEMA_FAULT.test(String(error))` in `packages/store-libsql/src/executor.ts`,
   which classifies a driver's error string because that string is all there is. Adding a
   spelling plus its `BAD_CASES` entry is a complete rung-2 fix; do not demand a runtime oracle.
-- **A syntactic check that states its own residual and where it is closed.** `hasPositiveFence`
-  and `hasTopLevelOr` in `packages/core/src/fenced-batch.ts` reject common text shapes but do not
-  prove semantic reach: a CASE can carry the positive equality while returning true through
-  another arm. Generated `derived()` selections close that boundary structurally; raw
-  `followOn()` SQL retains the documented syntactic residual. `scripts/gate-lint.py` uses a
+- **A check that states its own residual and where it is closed.** The gating, tie, and
+  plain-selection rules in `packages/core/src/sql-tree.ts` read a statement's nodes, and a store
+  fragment is opaque to them. DESIGN.md §3.4 names what that leaves: a tie on a column that is
+  not a key, and a follow-on insert's value taken from a joined row that only store text ties to
+  the fenced one. Both exhibits run in `packages/core/test/fenced-batch-tree.test.ts`, and
+  BUILD.md records what closes them. `scripts/gate-lint.py` uses a
   restricted, fail-closed shell grammar to inventory reachable checker commands; in CI its
   `--run-base` path semantically enumerates the base package's verify script, stages the head
   tree with the base's complete `scripts/` directory, and refuses a zero-check run. Its residual
@@ -130,12 +131,13 @@ Allowed cases (do NOT flag these):
   `scripts/lint-selftest.py`'s filename filter, backstopped by gate-lint's check 3.
   `scripts/review-bot-lint.py`: "What it deliberately does NOT do is judge the rules." Flag the
   overclaim, never the technique.
-- **A guard attacked by a rejection test instead of a probe mutation.** `hasTopLevelOr` is
-  attacked by the `top-level-or-reach` mutation and the paired core test 'rejects a top-level OR
-  but accepts alternation inside a fenced conjunct'. The construction guard for the upsert
-  re-stamp branch is attacked by 'rejects an upsert whose DO UPDATE branch leaves provenance
-  stale'. A per-construction-guard probe entry is not this repo's convention; deleting it turns
-  that test red. The event call site's semantic choice to preserve its first instant is
+- **A guard attacked by a rejection test instead of a probe mutation.** The rules that read a
+  statement tree, in `packages/core/src/fenced-batch.ts` and `packages/core/src/sql-tree.ts`,
+  each have a registered mutation, such as `tree-top-level-or-reach` and `tree-upsert-restamps`,
+  and the registry self-test fails on a condition there that has neither a mutation nor a line
+  in `TREE_CONDITIONS_WITHOUT_A_MUTATION` saying what a run showed. Outside those two files a
+  per-construction-guard probe entry is not this repo's convention: a guard is attacked by its
+  rejection test, and deleting the guard turns that test red. The event call site's semantic choice to preserve its first instant is
   separately attacked by the `emit-replay-preserves-event-instant` mutation.
 - **A dynamic mechanism with its own discriminating control.** The delayed compiled-emit
   regression drives `one-batch-two-instants` red by reusing one seed at two database instants.

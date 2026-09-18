@@ -184,14 +184,14 @@ Allowed cases (do NOT flag these):
   owns how its dialect spells a predicate over them.
 
 - **Case-sensitive matching against tokens this repo itself generates.**
-  `head.includes(FENCE_SET)`, `sql.includes(NOW)`, and
-  `/fence_stamp\s*=\s*\$FENCE:[a-zA-Z0-9_-]+\$/g` in
-  `packages/core/src/fenced-batch.ts` carry no `i` flag. The failure shape above
+  `sql.includes(STAMP)`, `FRAGMENT_TOKEN`, and `FENCE_TOKEN` in
+  `packages/core/src/sql-tree.ts` carry no `i` flag. The failure shape above
   is about SQL keywords and builtins an author types by hand; these match
-  `$NOW$`, `$STAMP$`, `$FENCE:x$` and the `fence_stamp` / `fence_at_ms` column
-  names, which only the primitive and the exported `FENCE_SET` ever produce, in
-  exactly one casing. The same file's real keyword checks already are
-  case-insensitive (`matchesWord` uppercases before comparing `WHERE` and `OR`).
+  `$NOW$`, `$STAMP$`, and `$FENCE:x$`, which only `engine-tokens.ts` and the
+  primitive's `fence()` ever produce, in exactly one casing. The same file's
+  real keyword checks already are case-insensitive (`CLOCK_SPELLING` carries
+  the `i` flag, and `fragmentCalls` lowercases a word before comparing it with
+  `NOT_A_CALL`).
 
 - **Sorts already guarded against NULL.** The claim's `ORDER BY
   r.available_at_ms, r.run_id` is preceded by `AND r.available_at_ms IS NOT
