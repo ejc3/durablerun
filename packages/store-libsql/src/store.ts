@@ -75,6 +75,7 @@ import {
   revivedRunRead,
   serializeTaskHeaders,
   serializeTaskValue,
+  spawnIdempotencyKey,
   spawnReceiptRead,
   spawnRunInsert,
   spawnTaskCas,
@@ -457,12 +458,10 @@ export class LibsqlSchedulerStore implements SchedulerStore {
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
+    // The queue becomes durable here, so it is held to the domain every store keeps.
+    requireDurableString('queue', queue)
     const durableTaskName = requireDurableString('taskName', taskName)
-    const idempotencyKeyInput = opts.idempotencyKey
-    const key =
-      idempotencyKeyInput === undefined
-        ? null
-        : requireDurableString('idempotencyKey', idempotencyKeyInput)
+    const key = spawnIdempotencyKey(opts)
     const taskId = this.ids.uuidv7()
     const runId = this.ids.uuidv7()
     const retryInput = opts.retryStrategy

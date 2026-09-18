@@ -5,6 +5,7 @@ import {
   EventTimeoutError,
   type EventWake,
   FatalTaskError,
+  InvalidDurableStringError,
   type LeaseEnd,
   type SchedulerStore,
   type SpawnOptions,
@@ -14,6 +15,7 @@ import {
   type WorkerClaimedRun,
   decodeTaskOutcome,
   parseTaskValueJson,
+  requireDurableString,
   serializeTaskValue,
   taskDoneEventName,
   userDurationToMs,
@@ -54,7 +56,7 @@ export interface ChildTask {
 }
 
 /** What a parent may set on a child. The idempotency key is the engine's: it is what makes a replayed spawn find the same child. */
-export type ChildSpawnOptions = Omit<SpawnOptions, 'idempotencyKey'> & {
+export type ChildSpawnOptions = Omit<SpawnOptions, 'idempotencyKey' | 'childOf'> & {
   /** The child's queue. It defaults to the parent's, and only a child in the parent's queue can be awaited. */
   queue?: string
 }
@@ -350,22 +352,30 @@ export class ReplayContext implements TaskContext {
     const paramsJson = serializeTaskValue('child task params', params)
     const { queue: childQueue, ...spawnOptions } = opts ?? {}
     const queue = childQueue === undefined ? this.#queue : childQueue
+    // A queue name is durable, and this is the first one task code chooses. One that no
+    // store keeps unchanged is refused here, for good, like a step name that is not.
     if (typeof queue !== 'string' || queue === '') {
       throw new FatalTaskError(`ctx.spawn('${taskName}') queue must be a non-empty string`)
     }
-    // The key names this task and this call site, so every pass, every retry, and a
-    // pass that died between the spawn and its checkpoint all find one child. It is
-    // reserved-prefixed, so no key a user passes to spawn can collide with it.
-    const idempotencyKey = `$spawn:${this.#run.taskId}:${key}`
+    try {
+      requireDurableString(`ctx.spawn('${taskName}') queue`, queue)
+    } catch (error) {
+      throw new FatalTaskError(error instanceof Error ? error.message : 'queue is not durable')
+    }
+    // The child is keyed by this task and this call site, so every pass, every retry,
+    // and a pass that died between the spawn and its checkpoint all find one child. The
+    // store builds the key, in a namespace its port refuses to every caller's own key.
+    const childOf = { parentTaskId: this.#run.taskId, replayKey: key }
     let spawned: Awaited<ReturnType<SchedulerStore['spawn']>>
     try {
       spawned = await this.#controls.storeCall(() =>
-        this.#store.spawn(queue, parsed.value, paramsJson, { ...spawnOptions, idempotencyKey }),
+        this.#store.spawn(queue, parsed.value, paramsJson, { ...spawnOptions, childOf }),
       )
     } catch (error) {
       // The store refuses an invalid option the same way on every pass, so retrying
-      // the task would only repeat the refusal.
-      if (error instanceof RangeError) {
+      // the task would only repeat the refusal. A header no store can keep is refused
+      // with InvalidDurableStringError, which is a TypeError and not a RangeError.
+      if (error instanceof RangeError || error instanceof InvalidDurableStringError) {
         throw new FatalTaskError(`ctx.spawn('${taskName}') was refused: ${error.message}`)
       }
       throw error

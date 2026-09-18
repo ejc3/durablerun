@@ -2,6 +2,7 @@ import {
   type Clock,
   type IdSource,
   InvalidDurableStringError,
+  RESERVED_EVENT_PREFIX,
   type SchedulerStore,
   StoreUnavailableError,
   UserName,
@@ -231,6 +232,10 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
         const body = requestObject(bodyText)
         const taskName = requiredNonemptyString(body.taskName)
         const idempotencyKey = optionalString(body.idempotencyKey)
+        // Keys that start with `$` are the engine's: a parent finds its child under one.
+        if (idempotencyKey?.startsWith(RESERVED_EVENT_PREFIX)) {
+          throw new HostedRequestError(400, 'invalid_request')
+        }
         const paramsJson = serializeTaskValue('task parameters', body.params ?? null)
         const spawned = await store.spawn(
           queue,

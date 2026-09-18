@@ -12,6 +12,7 @@ import {
   SUCCESSOR_CARRIED_RUN_COLUMNS,
   type SqlExecutor,
   type SqlRow,
+  childSpawnKey,
 } from '@durablerun/core'
 import { attributeExpectedFailure, requireExpectedFailure } from '@durablerun/core/testing'
 import { Rng, SimWorld, seededBuggify } from '@durablerun/harness'
@@ -126,6 +127,32 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
           { refused, tasks: Number(count?.n) },
           'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
         ).toEqual({ refused: 'RangeError', tasks: 0 })
+      })
+
+      it('keys a child by its parent and call site, under a key only the store builds', async () => {
+        const childOf = { parentTaskId: 'parent-1', replayKey: '$spawn:child' }
+        const first = await f.store.spawn(Q, 'child', '{}', { childOf })
+        const replayed = await f.store.spawn(Q, 'child', '{}', { childOf })
+        const sibling = await f.store.spawn(Q, 'child', '{}', {
+          childOf: { ...childOf, replayKey: '$spawn:child#2' },
+        })
+        const stored = await readOne(f.raw, `SELECT idempotency_key FROM tasks WHERE task_id = ?`, [
+          first.taskId,
+        ])
+        const both = await refusalName(
+          f.store.spawn(Q, 'child', '{}', { childOf, idempotencyKey: 'mine' }),
+        )
+        expect({
+          replayFindsTheChild: replayed.taskId === first.taskId && !replayed.created,
+          siblingIsAnotherTask: sibling.taskId !== first.taskId,
+          key: stored?.idempotency_key,
+          both,
+        }).toEqual({
+          replayFindsTheChild: true,
+          siblingIsAnotherTask: true,
+          key: childSpawnKey('parent-1', '$spawn:child'),
+          both: 'RangeError',
+        })
       })
 
       // A queue name is durable, and the dialects disagree on a NUL and on a lone

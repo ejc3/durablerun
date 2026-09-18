@@ -5,7 +5,8 @@
  * payload, and refusals from this one file.
  */
 
-import { type TaskResult, type TerminalState, isTerminalState } from './types.js'
+import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
+import { requireDurableString } from './validate.js'
 
 /** Event names with this prefix belong to the engine. No caller of the port may emit or await one. */
 export const RESERVED_EVENT_PREFIX = '$'
@@ -31,6 +32,46 @@ export function refuseReservedEventName(operation: string, eventName: string): v
       `${operation} eventName '${eventName}' is reserved: names that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
+}
+
+/** The idempotency key of the child a parent spawns at one call site. Only a store builds it. */
+export function childSpawnKey(parentTaskId: string, replayKey: string): string {
+  return `${RESERVED_EVENT_PREFIX}spawn:${parentTaskId}:${replayKey}`
+}
+
+/**
+ * Refuse a caller's idempotency key in the engine's namespace. `ctx.spawn` keys its
+ * children there, and the spawn receipt adopts whatever task holds a key, so a caller
+ * who could take one would hand a parent a task of its own choosing as its child.
+ */
+export function refuseReservedIdempotencyKey(operation: string, key: string): void {
+  if (key.startsWith(RESERVED_EVENT_PREFIX)) {
+    throw new RangeError(
+      `${operation} idempotencyKey '${key}' is reserved: keys that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
+    )
+  }
+}
+
+/**
+ * The key a spawn stores: the caller's, the engine's for a child, or none. Every
+ * dialect decides it here, so the reserved namespace has one door.
+ */
+export function spawnIdempotencyKey(opts: SpawnOptions): string | null {
+  const callerKey = opts.idempotencyKey
+  const childOf = opts.childOf
+  if (childOf !== undefined) {
+    if (callerKey !== undefined) {
+      throw new RangeError('spawn takes idempotencyKey or childOf, never both')
+    }
+    return childSpawnKey(
+      requireDurableString('childOf.parentTaskId', childOf.parentTaskId),
+      requireDurableString('childOf.replayKey', childOf.replayKey),
+    )
+  }
+  if (callerKey === undefined) return null
+  const key = requireDurableString('idempotencyKey', callerKey)
+  refuseReservedIdempotencyKey('spawn', key)
+  return key
 }
 
 /**

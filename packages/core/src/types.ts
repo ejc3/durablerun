@@ -56,7 +56,16 @@ export interface CancellationPolicy {
 }
 
 export interface SpawnOptions {
+  /** The caller's key. One that starts with `$` is refused: that namespace is the engine's. */
   idempotencyKey?: string
+  /**
+   * The engine's key for a child task: the parent that spawns it, and the replay key
+   * of the spawn's call site. The store builds the key from these (`childSpawnKey`), in
+   * the reserved namespace no caller's `idempotencyKey` can reach, so a replayed spawn
+   * finds its own child and nobody else can put a task there first. It cannot be given
+   * together with `idempotencyKey`. The hosted enqueue route never sets it.
+   */
+  childOf?: { readonly parentTaskId: string; readonly replayKey: string }
   retryStrategy?: RetryStrategy
   maxAttempts?: number
   cancellation?: CancellationPolicy
