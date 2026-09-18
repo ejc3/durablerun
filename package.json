@@ -13,7 +13,7 @@
     "dogfood:tick": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts tick",
     "dogfood:status": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts status",
     "dogfood:verify": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts verify",
-    "typecheck": "pnpm -r --parallel exec tsc --noEmit",
+    "typecheck": "pnpm -r --parallel exec tsc --noEmit && tsc -p tsconfig.vitest.json",
     "test": "vitest run",
     "lint": "biome lint .",
     "format": "biome format --write .",
