@@ -163,6 +163,45 @@ describe('FencedBatch tree statements', () => {
     for (const spelling of spellings) expect(() => followOn(spelling)).toThrow(/reads the clock/)
   })
 
+  it('refuses a clock no spelling list names: a function the grammar does not list, and a date function with no argument', () => {
+    // biome-ignore lint/suspicious/noExplicitAny: the builder's types would not let a test call these by name
+    const started = (at: (eb: any) => unknown) =>
+      // biome-ignore lint/suspicious/noExplicitAny: as above
+      followOn((taskFollowOn() as any).set((eb: any) => ({ first_started_at_ms: at(eb) })))
+    // SQLite reads a date function with no argument as the current time, MySQL has
+    // UNIX_TIMESTAMP(), and CURRENT_DATE is a call in MySQL. None is in the list of clock
+    // functions, and a list cannot name the next one, so a tree statement calls only the
+    // functions the grammar lists.
+    const unlisted = /a call of \w+, which the grammar does not list/
+    for (const name of [
+      'current_date',
+      'current_time',
+      'datetime',
+      'date',
+      'time',
+      'unix_timestamp',
+    ]) {
+      expect(() => started((eb) => eb.fn(name, [])), name).toThrow(unlisted)
+    }
+    expect(() => started((eb) => eb.fn('datetime', [eb.val('now')]))).toThrow(unlisted)
+    expect(() => started((eb) => eb.fn('UNIXEPOCH', []))).toThrow(unlisted)
+    expect(() => started((eb) => eb.fn.agg('now'))).toThrow(
+      /an aggregate call of now, which the grammar does not list/,
+    )
+    expect(() => started((eb) => eb.fn.coalesce('first_started_at_ms', eb.val(5)))).not.toThrow()
+    // A fragment is text, so the spelling list is all that reads it.
+    for (const text of ['datetime()', 'date()', 'time( )', 'unix_timestamp()', 'DATETIME()']) {
+      expect(
+        () => followOn(taskFollowOn().set({ first_started_at_ms: value<number>(text) })),
+        text,
+      ).toThrow(/reads the clock/)
+    }
+    // A date function of a stored column reads no clock.
+    expect(() =>
+      followOn(taskFollowOn().set({ first_started_at_ms: value<number>('date(created_at_ms)') })),
+    ).not.toThrow()
+  })
+
   it('lets a compare-and-set carry the batch clock in a fragment, and no other clock', () => {
     const batchClock = winCas().where(predicate(`lease_ms < ${CLOCK}`))
     const otherClock = winCas().where(predicate('lease_ms < unixepoch()'))
