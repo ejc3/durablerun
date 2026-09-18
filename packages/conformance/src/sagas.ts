@@ -779,6 +779,66 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
       })
     })
 
+    // A plain checkpoint write is one of three doors that take a caller's checkpoint name.
+    // A suspension commits the caller's marker in its own batch, and it is refused the
+    // engine's names too. The third door is a failed rollback, in the case below.
+    it('refuses an engine-only name as the marker of a suspension', async () => {
+      const spawned = await f.store.spawn(Q, 'saga', '{}', { maxAttempts: 3 })
+      const forward = await claimActivated(f.store, Q, 'w-forward')
+      await startStep(f, forward, 'a', 1)
+      const tried = triesOf('a', 1)
+      const suspendedAs = (key: string, stateJson: string) =>
+        refusalName(
+          f.store.suspendRun(
+            Q,
+            forward.runId,
+            forward.claimToken,
+            { inSeconds: 5 },
+            { key, stateJson },
+          ),
+        )
+      expect(await suspendedAs(SAGA_PHASE_CHECKPOINT, '"forged"')).toBe('LeaseLostError')
+      expect(await suspendedAs(tried.key, tried.stateJson)).toBe('LeaseLostError')
+      // The run is still running and its saga has not begun, so it suspends as any run does.
+      expect({
+        ordinary: await suspendedAs('$sleep', '{"inSeconds":5}'),
+        checkpoints: await checkpointNames(f, spawned.taskId),
+      }).toEqual({ ordinary: 'accepted', checkpoints: ['$sleep', startMarker('a')].sort() })
+    })
+
+    // A failed rollback commits the caller's attempt record in the batch that fails the
+    // pass. Under any other name that write would replace the saga's cause, commit a forward
+    // step inside the frozen phase, or record a rollback that never ran.
+    it('refuses a failed rollback whose attempt record carries any other name', async () => {
+      const { taskId, pass } = await rollingBack(f, ['a'])
+      const failedAs = (key: string) =>
+        refusalName(
+          f.store.failRollback(Q, pass.runId, pass.claimToken, CAUSE, null, {
+            key,
+            stateJson: triesOf('a', 1).stateJson,
+          }),
+        )
+      expect({
+        overTheMarker: await failedAs(SAGA_PHASE_CHECKPOINT),
+        asAForwardStep: await failedAs('b'),
+        asARollbackThatRan: await failedAs(rollbackOf('a')),
+        marker: (
+          await rowsOf(
+            f.raw,
+            'SELECT state FROM checkpoints WHERE task_id = ? AND checkpoint_name = ?',
+            [taskId, SAGA_PHASE_CHECKPOINT],
+          )
+        )[0]?.state,
+        task: (await taskRow(f, taskId))?.state,
+      }).toEqual({
+        overTheMarker: 'LeaseLostError',
+        asAForwardStep: 'LeaseLostError',
+        asARollbackThatRan: 'LeaseLostError',
+        marker: CAUSE,
+        task: 'running',
+      })
+    })
+
     // A crash between batches changes nothing durable, and the next rollback is a function
     // of durable state alone (Sagas.tla, NOT MODELED: leases, claims, and crashes). A pass
     // that dies is recovered by the lease story like any run, and the pass that follows
