@@ -1033,9 +1033,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     registered mutations: `timestamp-addition-claim-timeout-successor-exact`
     and `timestamp-addition-user-retry-successor-exact` write `MIN(<deadline>,
     <cap>)`, SQLite's two-argument scalar, into the successor's deadline, and
-    the reader refused the mutant before its own verdict could catch it. The
-    third residual closes when that deadline is built from nodes, which
-    re-aims those two mutations onto core and needs a bridge arm.
+    the reader refused the mutant before its own verdict could catch it.
+    PR3.9e part 3b built that deadline from nodes in the shared statement, and
+    re-aimed those two mutations there, where they cap it with a CASE.
   - Deferred until a tree statement names it: `tasks.completed_payload` stays
     out of `STORE_TABLE_COLUMNS`. PR3.9d's first half added `failure_reason`,
     which its statements assign. Completion's task mirror is a generated

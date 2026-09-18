@@ -849,11 +849,10 @@ are load-bearing):
      what the gating rule decides about aggregates. An aggregate spelled inside
      a value fragment is outside what the rule can read, and so is a value
      taken from a joined row that only store text ties to the fenced one. Both
-     exhibits run in `fenced-batch-tree.test.ts`. Text cannot close the first:
-     the one value fragment a shipped follow-on insert passes is the
-     successor's deadline, two registered mutations write SQLite's two-argument
-     scalar MIN into it, and neither a name nor an argument count tells that
-     scalar from an aggregate. Building the deadline from nodes would. A table without provenance
+     exhibits run in `fenced-batch-tree.test.ts`. No shipped follow-on insert
+     passes a value fragment: the failure successors' deadline, the failed
+     run's instant plus a delay the store binds, is built from nodes in the
+     shared statement. A table without provenance
      columns, today `checkpoints`, takes the gate and may carry a conflict arm,
      which the counting rule reads like a SET list. In that arm `excluded` is
      the incoming row and never the row being written, so arithmetic on

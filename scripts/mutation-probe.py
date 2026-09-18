@@ -4274,7 +4274,24 @@ def exact_epoch_ceiling_replacement(
         )
     if anchor.count(expression) != 1:
         raise ValueError("exact-ceiling anchor must own one persisted expression")
+    if expression == NODE_BUILT_DEADLINE:
+        # The same cap built from nodes, as a CASE, because a follow-on insert may select
+        # no call. The ceiling is MAX_EPOCH_MS written out, since the statement does not
+        # import it: if the ceiling moves, this mutant survives and the audit says so.
+        ceiling = "253_402_300_799_000"
+        capped = (
+            f"eb.case().when({expression}, '>=', {ceiling})"
+            f".then({ceiling} - 1).else({expression}).end()"
+        )
     return anchor.replace(expression, capped, 1)
+
+
+# Both failure successors take their deadline from one node expression in the shared
+# statement. Their exact mutations cap that expression, so the two share one find, and
+# each is caught through its own store path.
+NODE_BUILT_DEADLINE_FILE = "packages/core/src/statements/successor.ts"
+NODE_BUILT_DEADLINE = "eb('f.fence_at_ms', '+', binds.delayMs)"
+NODE_BUILT_DEADLINE_LINE = f"    availableAt: {NODE_BUILT_DEADLINE},\n"
 
 
 TIMESTAMP_ADDITION_CASES = (
@@ -4342,8 +4359,8 @@ TIMESTAMP_ADDITION_CASES = (
         "                 AND (t.infra_retries = ${TASK_INTEGER_BOUNDS.infra_retries.max}\n"
         "                   OR ${epochAdditionFits(NOW, infraDelayMs)})))",
         "epochAdditionFits(NOW, infraDelayMs)",
-        "        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),\n",
-        "f.fence_at_ms + ${infraDelayMs}",
+        NODE_BUILT_DEADLINE_LINE,
+        NODE_BUILT_DEADLINE,
     ),
     (
         "driver-heartbeat",
@@ -4384,8 +4401,8 @@ TIMESTAMP_ADDITION_CASES = (
         "        : `AND ((runs.attempt - t.infra_retries) >= t.max_attempts\n"
         "          OR ${epochAdditionFits(NOW, '?')})`",
         "epochAdditionFits(NOW, '?')",
-        "          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),\n",
-        "f.fence_at_ms + ?",
+        NODE_BUILT_DEADLINE_LINE,
+        NODE_BUILT_DEADLINE,
     ),
     (
         "checkpoint-lease",
@@ -4508,7 +4525,9 @@ for slug, title, guard_anchor, guard_call, exact_find, exact_expression in (
             ),
             (
                 f"timestamp-addition-{slug}-exact",
-                "packages/store-libsql/src/store.ts",
+                NODE_BUILT_DEADLINE_FILE
+                if exact_expression == NODE_BUILT_DEADLINE
+                else "packages/store-libsql/src/store.ts",
                 exact_find,
                 exact_replace,
                 f"{title} persists an off-by-one result at the exact epoch ceiling",

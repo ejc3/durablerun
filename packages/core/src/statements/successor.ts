@@ -57,10 +57,12 @@ export type FailureSuccessor = {
   /** The run this batch failed, under the compare-and-set named `fail`. */
   runId: string
   /**
-   * The failed run's instant plus the delay. It stays store-owned, beside the headroom
-   * guard in the compare-and-set that protects it, so the two are read together.
+   * How long after the failed run's instant the successor is due. The store holds it
+   * beside the headroom guard in the compare-and-set that protects the addition, so the
+   * two are read together. The addition itself is built here, from nodes, so a follow-on
+   * insert passes no value fragment and the plain-selection rule can read every value.
    */
-  availableAt: SqlFragment
+  delayMs: number
   /** The store's join of the failed run `f` to the task `t` that owns it. */
   taskOwnsRun: SqlFragment
   /** What the store requires of the task `t` and the run `f` for a successor to follow. */
@@ -81,7 +83,7 @@ export function failureSuccessor(binds: FailureSuccessor, state: Expression<stri
     runId: binds.successorId,
     attempt: eb('f.attempt', '+', 1),
     state,
-    availableAt: rawSql<number>(binds.availableAt, 'value'),
+    availableAt: eb('f.fence_at_ms', '+', binds.delayMs),
     carriedFrom: 'f',
   })
   return treeBuilder

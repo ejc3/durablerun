@@ -38,9 +38,9 @@ export const failCas = defineStatement(
  */
 export const userRetrySuccessorInsert = defineStatement(
   'fail successor',
-  (binds: FailureSuccessor & { retryDelayMs: number }) =>
+  (binds: FailureSuccessor) =>
     failureSuccessor(
       binds,
-      expressionBuilder<StoreTables, never>().val(binds.retryDelayMs <= 0 ? 'pending' : 'sleeping'),
+      expressionBuilder<StoreTables, never>().val(binds.delayMs <= 0 ? 'pending' : 'sleeping'),
     ),
 )

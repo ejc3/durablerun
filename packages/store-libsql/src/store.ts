@@ -1075,7 +1075,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
       claimTimeoutSuccessorInsert({
         successorId,
         runId: item.runId,
-        availableAt: sqlFragment(`f.fence_at_ms + ${infraDelayMs}`),
+        delayMs: INFRA_BACKOFF_SECONDS * 1000,
         taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
         admission: sqlFragment(
           `t.state IN ${LIVE}
@@ -1602,8 +1602,7 @@ export class LibsqlSchedulerStore implements SchedulerStore {
         userRetrySuccessorInsert({
           successorId,
           runId,
-          retryDelayMs,
-          availableAt: sqlFragment(`f.fence_at_ms + ?`, [retryDelayMs]),
+          delayMs: retryDelayMs,
           taskOwnsRun: sqlFragment(runOwnedByTask('f', 't')),
           admission: sqlFragment(
             `t.state IN ${LIVE} AND (f.attempt - t.infra_retries) < t.max_attempts

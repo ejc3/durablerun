@@ -114,7 +114,7 @@ const retryAvailabilityFromSecondClock: StatementMutator = (label, statements) =
   if (label !== 'fail') return statements
   let changed = 0
   const mutated = statements.map((statement) => {
-    const sql = statement.sql.replace('f.fence_at_ms + ?', () => {
+    const sql = statement.sql.replace('"f"."fence_at_ms" + ?', () => {
       changed += 1
       return `${NOW_MS} + ?`
     })
