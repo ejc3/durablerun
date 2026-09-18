@@ -105,6 +105,7 @@ import {
   runClaimExpired,
   runClaimUnexpired,
   runOwnedByTask,
+  runsLockedBeforeTask,
   singletonAggregate,
   soleLiveRun,
   storedCurrentRunAccounting,
@@ -1318,7 +1319,9 @@ export class PostgresSchedulerStore implements SchedulerStore {
       cancelCas({
         queue,
         taskId,
-        admission: sqlFragment(`${deadlineGuard}${taskOwnsEveryRun('tasks')}`),
+        admission: sqlFragment(
+          `${deadlineGuard}${taskOwnsEveryRun('tasks')} AND ${runsLockedBeforeTask('tasks')}`,
+        ),
       }),
     )
     b.derived('runs', {
@@ -2165,9 +2168,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
    * carries, and whether the event exists. Read only off the common path: by an await
    * that neither registered nor hit, to say why.
    */
-  private async taskDoneState(
-    taskId: string,
-  ): Promise<{
+  private async taskDoneState(taskId: string): Promise<{
     queue: string
     outcome: TaskResult
     stamp: string | null
