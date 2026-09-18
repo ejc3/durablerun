@@ -218,18 +218,28 @@ function normalizeValue(value: unknown, field: FieldPacket): SqlRow[string] {
  * - an UPDATE reports the rows it matched, from the server's `Rows matched:` line;
  * - a multi-row or selecting INSERT reports its affected rows less its `Duplicates:`,
  *   because each updated duplicate was counted twice;
- * - a single-row INSERT carries no such line, and can write at most one row.
+ * - a single-row INSERT carries no such line, and can write at most one row. A DELETE
+ *   carries no such line either, and its count is already the rows it removed, so the
+ *   rule reads the statement and applies to an INSERT alone.
  */
-export function writtenRows(header: Pick<ResultSetHeader, 'affectedRows' | 'info'>): number {
+export function writtenRows(
+  header: Pick<ResultSetHeader, 'affectedRows' | 'info'>,
+  sql: string,
+): number {
   const info = header.info ?? ''
   const matched = /^Rows matched: (\d+) {2}Changed: \d+ {2}Warnings: \d+$/.exec(info)
   if (matched !== null) return Number(matched[1])
   const inserted = /^Records: \d+ {2}Duplicates: (\d+) {2}Warnings: \d+$/.exec(info)
   if (inserted !== null) return header.affectedRows - Number(inserted[1])
-  return info === '' && header.affectedRows === 2 ? 1 : header.affectedRows
+  const singleRowUpsert = info === '' && header.affectedRows === 2 && /^\s*INSERT\b/i.test(sql)
+  return singleRowUpsert ? 1 : header.affectedRows
 }
 
-function normalizeResult(result: unknown, fields: FieldPacket[] | undefined): SqlResult {
+function normalizeResult(
+  result: unknown,
+  fields: FieldPacket[] | undefined,
+  sql: string,
+): SqlResult {
   if (Array.isArray(result)) {
     const columns = fields ?? []
     const rows = (result as Record<string, unknown>[]).map((row) => {
@@ -239,7 +249,7 @@ function normalizeResult(result: unknown, fields: FieldPacket[] | undefined): Sq
     })
     return { rows, rowsAffected: rows.length }
   }
-  return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader) }
+  return { rows: [], rowsAffected: writtenRows(result as ResultSetHeader, sql) }
 }
 
 /** A read batch sees one consistent snapshot, and cannot write. */
@@ -450,7 +460,7 @@ export class MysqlExecutor implements SqlExecutor {
           statement.args.length === 0
             ? await connection.query(statement.sql)
             : await connection.execute(statement.sql, statement.args)
-        results.push(normalizeResult(result, fields as FieldPacket[] | undefined))
+        results.push(normalizeResult(result, fields as FieldPacket[] | undefined, statement.sql))
       }
       await connection.query('COMMIT')
       transactionStarted = false
