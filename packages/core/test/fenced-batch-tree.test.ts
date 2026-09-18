@@ -201,6 +201,25 @@ describe('FencedBatch tree statements', () => {
     ).not.toThrow()
   })
 
+  it("refuses the literal 'now' in a fragment, whatever function takes it", () => {
+    // SQLite's timediff('now', …) and PostgreSQL's 'now' cast to a timestamp both read the
+    // clock, and neither is a date function of 'now', which is what the list named.
+    for (const text of [
+      "timediff('now', '2000-01-01')",
+      "CAST('now' AS timestamptz)",
+      "strftime('%Y', ' NOW ')",
+    ]) {
+      expect(
+        () => followOn(taskFollowOn().set({ first_started_at_ms: value<number>(text) })),
+        text,
+      ).toThrow(/reads the clock/)
+    }
+    // A literal that merely contains the word reads no clock.
+    expect(() =>
+      followOn(taskFollowOn().set({ last_attempt_run: value<string>("'not now'") })),
+    ).not.toThrow()
+  })
+
   it('lets a compare-and-set carry the batch clock in a fragment, and no other clock', () => {
     const batchClock = winCas().where(predicate(`lease_ms < ${CLOCK}`))
     const otherClock = winCas().where(predicate('lease_ms < unixepoch()'))
