@@ -13,6 +13,16 @@ class FakeConnection {
   readonly sent: string[] = []
   /** What the server answers a statement with, where a test cares. */
   readonly headers = new Map<string, { affectedRows: number; info: string }>()
+  /** Statements the server fails, and how many more times it will. */
+  readonly failures = new Map<string, { error: unknown; times: number }>()
+
+  private failIfToldTo(sql: string): void {
+    const failure = this.failures.get(sql)
+    if (failure === undefined || failure.times === 0) return
+    failure.times -= 1
+    throw failure.error
+  }
+
   /** What GET_LOCK answers: 1 when taken, 0 when the wait ran out. */
   lockAnswer = 1
   released = 0
@@ -22,6 +32,7 @@ class FakeConnection {
 
   async query(sql: string) {
     this.sent.push(sql)
+    this.failIfToldTo(sql)
     const header = this.headers.get(sql)
     if (header !== undefined) return [header, undefined] as const
     return sql.startsWith('SELECT') ? rows([{ value: '5' }], 'value') : OK
@@ -29,6 +40,7 @@ class FakeConnection {
 
   async execute(sql: string) {
     this.sent.push(sql)
+    this.failIfToldTo(sql)
     return sql.includes('GET_LOCK') ? rows([{ acquired: this.lockAnswer }], 'acquired') : OK
   }
 
@@ -215,6 +227,59 @@ describe('MysqlExecutor transactions', () => {
         )
     for (const gate of [1, 2, -1, 0.5]) expect(await gatedBy(gate)).toBeInstanceOf(TypeError)
     expect(await gatedBy(0)).toBe('accepted')
+  })
+
+  describe('a deadlock', () => {
+    const DEADLOCK = Object.assign(new Error('Deadlock found when trying to get lock'), {
+      errno: 1213,
+    })
+    const WRITE = 'UPDATE t SET a = 1'
+    const shape = (connection: FakeConnection) =>
+      afterSessionSetup(connection).map((sql) =>
+        sql.includes('GET_LOCK') ? 'lock' : sql.includes('RELEASE_LOCK') ? 'unlock' : sql,
+      )
+
+    it('runs a write batch again after a deadlock, under the named lock it already holds', async () => {
+      const connection = new FakeConnection()
+      connection.failures.set(WRITE, { error: DEADLOCK, times: 2 })
+      const results = await executorOver(connection).batch('migrate:v1', [{ sql: WRITE, args: [] }])
+      expect(results).toHaveLength(1)
+      const attempt = ['START TRANSACTION', WRITE, 'ROLLBACK']
+      expect(
+        shape(connection),
+        'mutation-verdict:construction:mysql-deadlocked-write-batch-runs-again',
+      ).toEqual(['lock', ...attempt, ...attempt, 'START TRANSACTION', WRITE, 'COMMIT', 'unlock'])
+      expect(connection.released).toBe(1)
+    })
+
+    it('reports the store unavailable after three deadlocks, and returns the connection', async () => {
+      const connection = new FakeConnection()
+      connection.failures.set(WRITE, { error: DEADLOCK, times: 3 })
+      const outcome = await executorOver(connection)
+        .batch('fixture:write', [{ sql: WRITE, args: [] }])
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+      expect(outcome).toBeInstanceOf(StoreUnavailableError)
+      expect(String(outcome)).toContain('1213')
+      expect(shape(connection).filter((sql) => sql === WRITE)).toHaveLength(3)
+      expect(connection.released).toBe(1)
+    })
+
+    it('does not run a read batch again', async () => {
+      const connection = new FakeConnection()
+      const READ = 'SELECT a AS value FROM t'
+      connection.failures.set(READ, { error: DEADLOCK, times: 1 })
+      const outcome = await executorOver(connection)
+        .batch('next-wake', [{ sql: READ, args: [] }], 'read')
+        .then(
+          () => 'accepted',
+          (error: unknown) => error,
+        )
+      expect(outcome).toBeInstanceOf(StoreUnavailableError)
+      expect(shape(connection).filter((sql) => sql === READ)).toHaveLength(1)
+    })
   })
 
   it('takes no lock for the version read', async () => {
