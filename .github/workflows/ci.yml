@@ -281,7 +281,7 @@ jobs:
           previous = base.read_text()
           arms = {
               'e1804459e87714adc61db0250f36c0cb1c8127b0d018d685c99f33e90ea8e3c2': ('claimed-task-name', 'refusal-state'),
-              '7f3040ea2b8273256581bf37b97f691fda2e8df627e7ab955d7573180d212132': ('run-task', 'task-done-state'),
+              'cde5f0b04e87b84ecde2b4157420c95ae1c727a0697e17293fbb7ad2cdc7b74c': ('run-task', 'task-done-state'),
           }
           labels = arms.get(hashlib.sha256(previous.encode()).hexdigest())
           if labels is None:
