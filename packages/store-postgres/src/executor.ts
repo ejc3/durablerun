@@ -203,6 +203,11 @@ function errorDescription(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
 
+/** SQLSTATE deadlock_detected: this transaction was aborted so that another could proceed. */
+const DEADLOCK_DETECTED = '40P01'
+/** How many times a batch runs before a deadlock is reported as an outage. */
+const DEADLOCK_VICTIM_ATTEMPTS = 3
+
 function classifyError(error: unknown, label: string, schemaVersionRead: boolean): Error {
   if (
     error instanceof PostgresResultContractError ||
@@ -284,50 +289,66 @@ export class PgExecutor implements SqlExecutor {
     }
     client.on('error', onClientError)
 
-    let transactionStarted = false
     let releaseError: Error | undefined
-    let activeStatementIndex: number | null = null
     try {
-      await client.query(
-        mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
-      )
-      transactionStarted = true
-
-      if (transactionLock !== undefined) {
-        await acquireTransactionLock(client, transactionLock)
-      }
-
-      const results: SqlResult[] = []
-      for (const [statementIndex, statement] of prepared.entries()) {
-        // Each statement is a round trip here. One whose gating statement wrote no row
-        // cannot match a row (`SqlStatement.skipUnlessWrote`), so it is not sent.
-        const gate = statement.skipUnlessWrote
-        if (gate !== undefined && results[gate]?.rowsAffected === 0) {
-          results.push({ rows: [], rowsAffected: 0 })
-          continue
-        }
-        activeStatementIndex = statementIndex
-        const result = await client.query<Record<string, unknown>>(statement.sql, statement.args)
-        activeStatementIndex = null
-        results.push(normalizeResult(result))
-      }
-      await client.query('COMMIT')
-      transactionStarted = false
-      return results
-    } catch (error) {
-      const failedSchemaVersionRead = schemaVersionRead && activeStatementIndex === 0
-      activeStatementIndex = null
-      if (transactionStarted) {
+      for (let attempt = 1; ; attempt += 1) {
+        let transactionStarted = false
+        let activeStatementIndex: number | null = null
         try {
-          await client.query('ROLLBACK')
-        } catch (rollbackError) {
-          releaseError =
-            rollbackError instanceof Error
-              ? rollbackError
-              : new Error('PostgreSQL rollback failed', { cause: rollbackError })
+          await client.query(
+            mode !== 'read' ? 'BEGIN' : schemaVersionRead ? BEGIN_VERSION_READ : BEGIN_READ,
+          )
+          transactionStarted = true
+
+          if (transactionLock !== undefined) {
+            await acquireTransactionLock(client, transactionLock)
+          }
+
+          const results: SqlResult[] = []
+          for (const [statementIndex, statement] of prepared.entries()) {
+            // Each statement is a round trip here. One whose gating statement wrote no
+            // row cannot match a row (`SqlStatement.skipUnlessWrote`), so it is not sent.
+            const gate = statement.skipUnlessWrote
+            if (gate !== undefined && results[gate]?.rowsAffected === 0) {
+              results.push({ rows: [], rowsAffected: 0 })
+              continue
+            }
+            activeStatementIndex = statementIndex
+            const result = await client.query<Record<string, unknown>>(
+              statement.sql,
+              statement.args,
+            )
+            activeStatementIndex = null
+            results.push(normalizeResult(result))
+          }
+          await client.query('COMMIT')
+          transactionStarted = false
+          return results
+        } catch (error) {
+          const failedSchemaVersionRead = schemaVersionRead && activeStatementIndex === 0
+          if (transactionStarted) {
+            try {
+              await client.query('ROLLBACK')
+            } catch (rollbackError) {
+              releaseError =
+                rollbackError instanceof Error
+                  ? rollbackError
+                  : new Error('PostgreSQL rollback failed', { cause: rollbackError })
+            }
+          }
+          // PostgreSQL ends a deadlock by aborting one transaction. That batch committed
+          // nothing, so running it again is a first delivery, and the other transaction
+          // has its locks by now. Reported as an outage, a finished run would be left for
+          // the sweep to charge an infrastructure retry.
+          const runAgain =
+            attempt < DEADLOCK_VICTIM_ATTEMPTS &&
+            releaseError === undefined &&
+            clientError === undefined &&
+            error instanceof DatabaseError &&
+            error.code === DEADLOCK_DETECTED
+          if (!runAgain) throw classifyError(error, label, failedSchemaVersionRead)
         }
       }
-      throw classifyError(error, label, failedSchemaVersionRead)
     } finally {
       try {
         client.release(releaseError ?? clientError)
