@@ -83,6 +83,38 @@ describe('FencedBatch tree statements', () => {
     ])
   })
 
+  it('tells the executor which statement gates each follow-on and tail, and nothing for the rest', async () => {
+    const { captured, executor } = capturingExecutor(1)
+    const b = batch()
+    b.cas('win', 'runs', `UPDATE runs SET ${FENCE_SET} WHERE run_id = ?`, ['r1'])
+    b.derived('task', {
+      relation: 'runs-to-tasks',
+      fence: 'win',
+      set: { state: `'completed'` },
+      rows: 'one',
+    })
+    b.derived('task-runs', {
+      relation: 'tasks-to-runs',
+      fence: 'task',
+      set: { state: `'cancelled'` },
+      rows: 'source-keys',
+    })
+    b.derived('waits', { relation: 'runs-to-waits', fence: 'win', rows: 'source-keys' })
+    b.tailTree(
+      'won',
+      statement(
+        db.selectFrom('runs').select('run_id').where('fence_stamp', '=', fenceValue('win')),
+      ),
+    )
+    b.openTailTree(
+      'other',
+      'a row another batch wrote',
+      statement(db.selectFrom('events').select('payload').where('queue', '=', 'q')),
+    )
+    await b.run(executor)
+    expect(captured.map((sent) => sent.skipUnlessWrote)).toEqual([undefined, 0, 1, 0, 0, undefined])
+  })
+
   it('refuses a statement that defineStatement did not mint, and an undefined bind', () => {
     const forged = { name: 'forged', tree: winCas().toOperationNode() }
     expect(() => batch().casTree('win', forged)).toThrow(/must come from defineStatement/)

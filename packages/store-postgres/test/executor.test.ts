@@ -157,6 +157,60 @@ describe('PgExecutor transactions', () => {
     ])
   })
 
+  it('skips a statement whose gating statement wrote no row, and answers it with no rows', async () => {
+    const sent = async (gateRows: number) => {
+      const client = new FakeClient((text) =>
+        text === 'UPDATE gate' ? result([], [], gateRows) : result([], [], 7),
+      )
+      const results = await executor(new FakePool(client)).batch('gated', [
+        { sql: 'UPDATE gate', args: [] },
+        { sql: 'UPDATE follows_gate', args: [], skipUnlessWrote: 0 },
+        { sql: 'UPDATE follows_the_follower', args: [], skipUnlessWrote: 1 },
+        { sql: 'UPDATE ungated', args: [] },
+      ])
+      return {
+        texts: client.calls.map(({ text }) => text),
+        rowsAffected: results.map((entry) => entry.rowsAffected),
+      }
+    }
+    expect({ lost: await sent(0), won: await sent(1) }).toEqual({
+      lost: {
+        texts: ['BEGIN', 'UPDATE gate', 'UPDATE ungated', 'COMMIT'],
+        rowsAffected: [0, 0, 0, 7],
+      },
+      won: {
+        texts: [
+          'BEGIN',
+          'UPDATE gate',
+          'UPDATE follows_gate',
+          'UPDATE follows_the_follower',
+          'UPDATE ungated',
+          'COMMIT',
+        ],
+        rowsAffected: [1, 7, 7, 7],
+      },
+    })
+  })
+
+  it('refuses a gate that does not name an earlier statement', async () => {
+    const client = new FakeClient(() => EMPTY_RESULT)
+    const refusals = []
+    for (const skipUnlessWrote of [0, 1, -1, 0.5]) {
+      refusals.push(
+        await executor(new FakePool(client))
+          .batch('bad-gate', [{ sql: 'UPDATE follows', args: [], skipUnlessWrote }])
+          .then(
+            () => 'accepted',
+            (error: unknown) => (error instanceof Error ? error.name : String(error)),
+          ),
+      )
+    }
+    expect({ refusals, sent: client.calls.length }).toEqual({
+      refusals: ['TypeError', 'TypeError', 'TypeError', 'TypeError'],
+      sent: 0,
+    })
+  })
+
   it('acquires a scoped event advisory lock before protocol SQL without durable garbage', async () => {
     const client = new FakeClient((text) => {
       if (text === 'SELECT value FROM protocol_state') {
