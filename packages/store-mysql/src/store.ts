@@ -4,6 +4,7 @@ import {
   type CheckpointWrite,
   type ClaimedRun,
   DERIVED_INTEGER_BOUNDS,
+  EventName,
   FencedBatch,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
@@ -552,6 +553,8 @@ export class MysqlSchedulerStore implements SchedulerStore {
         maxAttempts,
         cancellationJson,
         idempotencyKey: key,
+        // Child tasks are not ported to this dialect yet, so no spawn presents a parent's claim.
+        parent: null,
         enqueueAt: sqlFragment(`${NOW} + ?`, [delayMs]),
         cancelAt: sqlFragment(`${NOW} + CAST(? AS SIGNED) + CAST(? AS SIGNED)`, [
           delayMs,
@@ -1933,6 +1936,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
    */
   async emitEvent(queue: string, eventName: string, payloadJson: string): Promise<void> {
     requireIndexable({ queue, eventName })
+    const name = EventName.fromPort('emitEvent', eventName)
     if (typeof payloadJson !== 'string') {
       throw new RangeError('emitEvent payloadJson must be a string')
     }
@@ -1940,7 +1944,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName })
+    b.lockEvent({ queue, eventName: name })
     // First write wins on the PAYLOAD; a genuinely new re-emit re-stamps only,
     // so a repaired/restored wait remains deliverable. Every conflict keeps
     // the event's immutable emitted_at_ms as its provenance instant. The
@@ -1951,7 +1955,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       'event',
       emitEventCas({
         queue,
-        eventName,
+        eventName: name,
         payloadJson,
         existingEventAdmits: sqlFragment(
           `events.payload IS NOT NULL
@@ -2014,7 +2018,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.followOnTree(
       'wake-runs',
       wakeRunsUpdate({
-        eventName,
+        eventName: name,
         registeredStep: sqlFragment(runWait.step),
         parkedOnEvent: sqlFragment(`wake_event = ?`, [eventName]),
         waiterRunIds: sqlFragment(
@@ -2095,7 +2099,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     b.openTailTree(
       'stored-event',
       'a replay may read an event stamped by the earlier delivery, but its immutable payload must still be TEXT',
-      storedEventRead({ queue, eventName, payloadType: sqlFragment(STORED_PAYLOAD_TYPE) }),
+      storedEventRead({ queue, eventName: name, payloadType: sqlFragment(STORED_PAYLOAD_TYPE) }),
     )
     const { results } = await b.run(this.db)
     const stored = results['stored-event']?.rows[0]
@@ -2123,6 +2127,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
     timeoutSeconds: number | null,
   ): Promise<{ emitted: true; payloadJson: string } | { emitted: false }> {
     requireIndexable({ queue, taskId, runId, stepName, eventName })
+    const name = EventName.fromPort('awaitEvent', eventName)
     const timeoutMs =
       timeoutSeconds === null
         ? null
@@ -2131,7 +2136,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    b.lockEvent({ queue, eventName })
+    b.lockEvent({ queue, eventName: name })
     // Wait registration FIRST, fenced on the LIVE claim token + running + task
     // eligible: a stale invocation whose token was consumed matches zero and
     // writes nothing, so a run left sleeping under the same wake_step (e.g. by
@@ -2153,7 +2158,9 @@ export class MysqlSchedulerStore implements SchedulerStore {
         taskId,
         claimToken,
         stepName,
-        eventName,
+        eventName: name,
+        // A caller's event has no awaited task. The child await is not ported here yet.
+        awaitedTaskId: null,
         timeoutAt: sqlFragment(
           `CASE WHEN CAST(? AS SIGNED) IS NOT NULL THEN ${NOW} + ? ELSE NULL END`,
           [timeoutMs, timeoutMs],
@@ -2210,7 +2217,7 @@ export class MysqlSchedulerStore implements SchedulerStore {
       'the event was written by the emitting batch, not this one; the live claim token is the fence here',
       emittedEventRead({
         queue,
-        eventName,
+        eventName: name,
         runId,
         taskId,
         claimToken,
@@ -2231,6 +2238,15 @@ export class MysqlSchedulerStore implements SchedulerStore {
       throw await this.refusal('awaitEvent', runId)
     }
     return { emitted: false }
+  }
+
+  /**
+   * The child await (DESIGN.md §3.2). Child tasks are not ported to this dialect yet: no
+   * batch here writes a completion event, so there is nothing an await could hit or be
+   * woken by. It fails loudly and registers nothing.
+   */
+  async awaitTaskDone(): Promise<never> {
+    throw new Error('store-mysql does not implement awaitTaskDone yet')
   }
 }
 
