@@ -135,6 +135,16 @@ export async function makeLibsqlFixture(
     adminOver: (db: SqlExecutor) => new LibsqlStoreAdmin(db),
     raw,
     persistedIntegerCatalogStatements,
+    schemaVersionTable: {
+      setVersion: (value: string) => ({
+        sql: `UPDATE meta SET value = ? WHERE key = 'schema_version'`,
+        args: [value],
+      }),
+      createEmpty: () => ({
+        sql: 'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+        args: [],
+      }),
+    },
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new LibsqlSchedulerStore(db, ids, buggify),
     close: async () => raw.close(),
