@@ -886,6 +886,13 @@ MUTATION_SPECS = [
         "a fragment in a follow-on insert's SELECT list may spell a call no rule reads, and the insert writes a row its fence did not match",
     ),
     (
+        "tree-walk-reads-below-the-root",
+        "packages/core/src/tree-walk.ts",
+        "    for (const child of kids) visit(child)",
+        "    void kids // MUTATION",
+        "the one walk of a tree stops at its root, so every rule reads the root alone",
+    ),
+    (
         "tree-followon-insert-no-function",
         "packages/core/src/sql-tree.ts",
         "          (node) => RawNode.is(node) || AggregateFunctionNode.is(node) || FunctionNode.is(node),",
@@ -7151,6 +7158,12 @@ VERDICTS = {
         "the tree path a follow-on that inserts selects no fragment",
         "mutation-verdict:construction:tree-followon-insert-no-fragment",
     ),
+    "tree-walk-reads-below-the-root": ExpectedVerdict(
+        "construction",
+        "packages/core/test/tree-walk.test.ts",
+        "the one walk of a tree meets the nodes a fresh depth-first reading meets, in its order",
+        "mutation-verdict:construction:tree-walk-reads-below-the-root",
+    ),
     "tree-followon-insert-no-function": ExpectedVerdict(
         "construction",
         "packages/core/test/fenced-batch-tree-verdicts.test.ts",
@@ -12799,6 +12812,7 @@ def verdict_inventory_problems(
 # its second, and `None` is a whole file. An anchor moves with the rule it bounds.
 TREE_RULE_REGIONS: dict[str, tuple[tuple[str | None, str | None], ...]] = {
     "packages/core/src/sql-tree.ts": ((None, None),),
+    "packages/core/src/tree-walk.ts": ((None, None),),
     "packages/core/src/fenced-batch.ts": (
         (
             "  private requireFenceSource(",
@@ -13160,9 +13174,6 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "else if (text[i] === ')') {": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
         ),
-        "for (const item of value) if (isNode(item)) out.push(item)": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 52 at the fewest"
-        ),
         "from === undefined": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 28 at the fewest"
         ),
@@ -13186,9 +13197,6 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         ),
         "if (/[A-Za-z&]/.test(sql[i - 1] ?? '')) prefixed = true": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 2 at the fewest"
-        ),
-        "if (Array.isArray(value)) {": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 52 at the fewest"
         ),
         "if (ColumnUpdateNode.is(node) && assignedColumn(node) === null) {": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
@@ -13240,9 +13248,6 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         ),
         "if (UpdateQueryNode.is(tree)) return tableName(tree.table)": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 39 at the fewest"
-        ),
-        "if (ValueNode.is(node)) return []": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 99 at the fewest"
         ),
         "if (boolean !== null) markBoolean(boolean)": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 37 at the fewest"
@@ -13430,9 +13435,6 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "return selection !== undefined && AliasNode.is(selection) ? selection.node : selection": (
             "a guard, and no shape tells it from the code: an unaliased selection is its own node"
         ),
-        "return test(node) || children(node).some((child) => someNode(child, test))": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 100 at the fewest"
-        ),
         "return typeof value === 'object' && value !== null && weakSetHas(definedStatements, value)": (
             "a guard, and no shape tells it from the code: a weak set holds no primitive, so the membership test alone answers the same"
         ),
@@ -13445,29 +13447,58 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "token === 'bind'": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 23 at the fewest"
         ),
-        "typeof (value as { kind?: unknown }).kind === 'string'": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 99 at the fewest"
-        ),
-        "typeof value === 'object' &&": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 251 at the fewest"
-        ),
-        "value !== null &&": (
-            "a guard, and no shape tells it from the code: the builder's nodes hold undefined and never null"
-        ),
         "where === null": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 17 at the fewest"
         ),
         "while (placement !== null && placement.fragment !== value) placement = placement.next": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 10 at the fewest"
         ),
-        "} else if (isNode(value)) {": (
-            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 96 at the fewest"
-        ),
         "} else if (operand !== null) {": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 6 at the fewest"
         ),
         "} else if (values === undefined || !ValuesNode.is(values) || values.values.length !== 1) {": (
             "a guard, and no shape tells it from the code: the first two tests narrow a type before the row count is read"
+        ),
+    },
+    "packages/core/src/tree-walk.ts": {
+        "for (const item of value) if (isNode(item)) out.push(item)": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 58 at the fewest"
+        ),
+        "if (ValueNode.is(node)) return NO_CHILDREN": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 109 at the fewest"
+        ),
+        "if (arrayIsArray(value)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 58 at the fewest"
+        ),
+        "if (each !== undefined && test(each)) return true": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 118 at the fewest"
+        ),
+        "if (known !== undefined) return known": (
+            "changes nothing a statement can show: with it gone every pass reads the graph again, which costs time and changes no verdict"
+        ),
+        "if (walked !== null) return checks()": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (walked === null) return readingOnce(() => children(node))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 1 at the fewest"
+        ),
+        "if (walked === null) return readingOnce(() => someNode(node, test))": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
+        ),
+        "if (weakMapGet(record, current) === undefined) weakMapSet(record, current, { walk, at })": (
+            "changes nothing a statement can show: with it always true a node placed twice takes its later place, which holds the same subtree"
+        ),
+        "typeof (value as { kind?: unknown }).kind === 'string'": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 109 at the fewest"
+        ),
+        "typeof value === 'object' &&": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 163 at the fewest"
+        ),
+        "value !== null &&": (
+            "refuses more: with it gone a null field throws when its kind is read, and no mutant failed a test because Kysely leaves an absent field undefined"
+        ),
+        "} else if (isNode(value)) {": (
+            "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 105 at the fewest"
         ),
     },
 }
@@ -14979,7 +15010,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 746:
+        if len(MUTATIONS) != 747:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

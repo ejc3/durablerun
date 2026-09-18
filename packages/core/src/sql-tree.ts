@@ -47,6 +47,7 @@ import { FENCE_STATEMENT_NAME_SOURCE } from './contract.js'
 import { FENCE_PREFIX, NOW, STAMP } from './engine-tokens.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { SqlStatement } from './primitives.js'
+import { children, someNode } from './tree-walk.js'
 
 // Task code shares this process and may replace a global such as `Map` while a pass
 // runs. What these checks keep across calls lives in collections captured at module
@@ -521,32 +522,6 @@ function unwrapParens(node: OperationNode): OperationNode {
   let current = node
   while (ParensNode.is(current)) current = current.node
   return current
-}
-
-function isNode(value: unknown): value is OperationNode {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { kind?: unknown }).kind === 'string'
-  )
-}
-
-/** Every child node. Kysely has no read-only walker, so this reads node fields generically. */
-function children(node: OperationNode): OperationNode[] {
-  if (ValueNode.is(node)) return []
-  const out: OperationNode[] = []
-  for (const value of Object.values(node)) {
-    if (Array.isArray(value)) {
-      for (const item of value) if (isNode(item)) out.push(item)
-    } else if (isNode(value)) {
-      out.push(value)
-    }
-  }
-  return out
-}
-
-function someNode(node: OperationNode, test: (node: OperationNode) => boolean): boolean {
-  return test(node) || children(node).some((child) => someNode(child, test))
 }
 
 function whereOf(query: OperationNode): OperationNode | null {

@@ -47,6 +47,7 @@ import {
   writesStampAssignments,
 } from './sql-tree.js'
 import { treeBuilder } from './store-tables.js'
+import { readingOnce } from './tree-walk.js'
 
 /**
  * Structural enforcement of DESIGN.md §3.4 rules 1, 2 and 8.
@@ -686,6 +687,16 @@ export class FencedBatch {
    * scans store sources.
    */
   private addTree(
+    asked: Kind | 'openTail',
+    name: string,
+    statement: DefinedStatement,
+    atMost: number | null,
+  ): this {
+    return readingOnce(() => this.admitTree(asked, name, statement, atMost))
+  }
+
+  /** `addTree`'s checks. They run under `readingOnce`, so the tree's object graph is read once for all of them. */
+  private admitTree(
     asked: Kind | 'openTail',
     name: string,
     statement: DefinedStatement,
