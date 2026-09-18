@@ -418,9 +418,12 @@ export class MysqlExecutor implements SqlExecutor {
 
     let discard = false
     try {
-      if (!this.configured.has(connection)) {
+      // The pool hands out a new wrapper on every checkout, so the settings are
+      // remembered against the physical connection under it.
+      const physical: object = (connection as { connection?: object }).connection ?? connection
+      if (!this.configured.has(physical)) {
         await connection.query(SESSION_SETUP)
-        this.configured.add(connection)
+        this.configured.add(physical)
       }
       return await this.transact(connection, prepared, mode, lock, schemaVersionRead)
     } catch (error) {
