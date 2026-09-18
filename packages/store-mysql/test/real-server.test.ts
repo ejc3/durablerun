@@ -125,6 +125,31 @@ describe('MysqlExecutor against a real server', () => {
     }
   })
 
+  it('sends the session settings once over the real mysql2 pool, which wraps a connection anew on every checkout', async () => {
+    // The unit test's pool is a stand-in, and a stand-in that handed out one object is
+    // what hid this. Here the server counts: a write batch sends no SET of its own, so
+    // the session's Com_set_option moves only when the settings are sent again.
+    const db = await openMysqlTestDb({ idNamespace: 'session-once' })
+    try {
+      const read = async () => {
+        const [status, id] = await db.raw.batch('fixture:status', [
+          { sql: "SHOW SESSION STATUS LIKE 'Com_set_option'", args: [] },
+          { sql: 'SELECT CONNECTION_ID() AS id', args: [] },
+        ])
+        return { sets: Number(status?.rows[0]?.Value), connection: id?.rows[0]?.id }
+      }
+      const before = await read()
+      for (let batch = 0; batch < 3; batch++) {
+        await db.raw.batch('fixture:write', [{ sql: 'SELECT 1 AS one', args: [] }])
+      }
+      const after = await read()
+      expect(after.connection).toBe(before.connection)
+      expect(after.sets - before.sets).toBe(0)
+    } finally {
+      await db.close()
+    }
+  })
+
   it('runs write batches at READ COMMITTED and read batches in a read-only snapshot', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'isolation' })
     try {
