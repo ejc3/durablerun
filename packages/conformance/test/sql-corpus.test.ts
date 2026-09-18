@@ -238,7 +238,10 @@ describe('corpus enrolment', () => {
     for (const store of stores) {
       const dialect = store.slice('store-'.length)
       const sources = new URL(`${store}/src/`, packages)
-      const text = readdirSync(sources)
+      // Every source file, in subdirectories too. This is a read of text: a store that
+      // aliases the class (`const B = FencedBatch`), renames it on import, or extends it and
+      // constructs the subclass escapes the pattern, and no store does any of the three.
+      const text = readdirSync(sources, { recursive: true, encoding: 'utf8' })
         .filter((file) => file.endsWith('.ts'))
         .map((file) => readFileSync(new URL(file, sources), 'utf8'))
         .join('\n')
