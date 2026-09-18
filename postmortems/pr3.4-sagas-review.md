@@ -53,7 +53,7 @@ After the review, auditing the fix for finding 7 for what it still let through f
 | One narrow re-review of the fold and of the MySQL port at `46d237a`, with the reviewer's scratch reproductions on all three dialects | 2 | No |
 | This project's machinery on the reviewed head: conformance, the SDK suites, the replay-equivalence harness, the fault and poison matrices, the fuzz, TLC, the lints, the mutation audit | 0 | Yes |
 
-Self-catch rate: 0 of 14, or 0% (previous round on this work, the sagas spec review: 2 of 21, or 10%. The round before this one on main, the MySQL store's: 0%). It is not improving. The two doors found by auditing the fix for finding 7 would make it 2 of 16, and they were found only because the template's false-negative question was asked of a fix the review had already pointed at. That same audit is what let finding 13 through to the re-review.
+Self-catch rate: 0 of 14, or 0% (previous round on this work, the sagas spec review: 2 of 21, or 10%. The round before this one on main, the MySQL store's: 0%). It is not improving. The two doors found by auditing the fix for finding 7 would make it 2 of 16, and they were found only because the template's false-negative question was asked of a fix the review had already pointed at. That same audit is what let finding 13 through to the re-review. After the round, CI's `verify` job, which is this project's own machinery, failed the final head once on a per-test time limit that had been set from local timings and not from a CI runner. That is a gate's margin and no defect of the code, so it is not a finding here, and BUILD.md records the measurements and what the limit is now set against.
 
 ## Recurrence
 

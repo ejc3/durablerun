@@ -1427,9 +1427,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   fold with this branch and the child-task branch it was then built on
   interleaved, the four PostgreSQL tests the base also has took 38 to 49
   seconds on the base, median 45.5, and 47 to 55 on this branch, median 52.0.
-  The new starting state took 51 to 61. The limit is 120 seconds. Single runs
-  on that machine spread wider than the difference between the two, so only
-  the paired runs compare them.
+  The new starting state took 51 to 61. The limit was 120 seconds then. Single
+  runs on that machine spread wider than the difference between the two, so
+  only the paired runs compare them.
+  CI's runners are slower than that machine, and differ from one another by
+  more. Across the three `verify` runs on this entry's branch, the four older
+  PostgreSQL tests took 58 to 62 seconds, 71 to 77, and 106 to 116, and the new
+  starting state took 69, 84, and more than 120. The first and the last of
+  those three runs were of one tree. Main's own four took 48 to 74 seconds
+  across main's last four runs. The last run timed out on the new starting
+  state with the other 8,011 of 8,012 tests passing, so the first CI run on
+  this entry's final head failed on a margin and on no assertion. A per-test
+  limit is set against the slowest CI runner observed, not against a local
+  figure. On that runner the saga block, which runs 10 to 15 percent above the
+  other four, needs about 130 seconds. The limit is now 300, a bit over twice
+  that, so a cell that hangs still ends its test in five minutes, and the
+  test's cells, seeds, and assertions are unchanged. An option, and no part of
+  this entry: `verify` and `base-gate` are the CI jobs with no
+  `timeout-minutes` of their own, and `verify` is the long one.
   One outside review of the implementation found twelve defects, two of them
   HIGH, and none was found by this entry's own machinery. A task spawned with
   the largest budget never rolled back, because the pass's guard read the
