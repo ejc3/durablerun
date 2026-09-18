@@ -4,10 +4,11 @@
 # sim harness proves the implementation refines it (labeled batch ≙ TLA
 # action); the conformance suite pins the SQL to the atomic-action assumption.
 #
-# Layout is maximum-concurrency: phase 1 runs the vacuity probes in waves the
-# heap budget can hold, the
-# Probe*.cfg family against Probes.tla and each side model's <Model>Probe*.cfg
-# family against <Model>Probes.tla; phase 2 runs the exhaustive-safety scope AND the five liveness
+# Phase 1 serves the side models and the vacuity probes. Each side model's pass
+# configurations must pass, each of its mutants must be caught, and every probe,
+# the Probe*.cfg family against Probes.tla and each <Model>Probe*.cfg family
+# against <Model>Probes.tla, must find its witness. The probes run in waves the
+# heap budget can hold. Phase 2 runs the exhaustive-safety scope AND the five liveness
 # property groups (SchedulerLiveness1-5.cfg, listed explicitly in the loops
 # below, so a new group must be added there) as concurrent TLC processes with
 # explicit worker and heap budgets. Liveness is split into groups because the
@@ -124,26 +125,66 @@ run_small() { # run_small <name> <cfg> <module>: a side model, on every scope
 }
 run_small "hosted wake delivery" WakeDelivery.cfg WakeDelivery.tla || exit 1
 
-# The side models, also small and on every scope: the child-task completion
-# event (specs/ChildTasks.tla) and sagas (specs/Sagas.tla). A side model is
-# enrolled by its mutant list, and every cfg of it that is not a probe must pass.
-# Their mutants and vacuity probes run with the others in phase 1, which a TLA_ONLY liveness
-# job skips.
-# The two child-task configurations must check the same invariants and
-# properties, so they may differ in the rule's constant and their leading
-# comment only.
-if ! diff <(grep -v 'AwaitAllowed =' ChildTasks.cfg | tail -n +3) \
-  <(grep -v 'AwaitAllowed =' ChildTasksRefuse.cfg | tail -n +3) >/dev/null; then
-  echo "tla.sh: ChildTasks.cfg and ChildTasksRefuse.cfg differ in more than AwaitAllowed" >&2
-  exit 1
-fi
-for list in *.mutants.json; do
-  model="${list%.mutants.json}"
-  for cfg in "$model".cfg "$model"[A-Z]*.cfg; do
-    [[ "$cfg" == "$model"Probe* ]] && continue
-    run_small "$model ($cfg)" "$cfg" "$model.tla" || exit 1
+# The side models: the child-task completion event (specs/ChildTasks.tla) and
+# sagas (specs/Sagas.tla). A side model is a <Model>.tla enrolled by the mutant
+# list beside it, <Model>.mutants.json. What belongs to a model is decided here,
+# once, from file names: a cfg belongs to the enrolled model with the longest
+# name that begins it, a <Model>Probe*.cfg of it is a vacuity probe, and every
+# other cfg of it is a pass configuration.
+shopt -s nullglob
+side_models=()
+for list in *.mutants.json; do side_models+=("${list%.mutants.json}"); done
+owner_of() { # owner_of <cfg>: the enrolled model it belongs to, or nothing
+  local cfg="$1" model best=''
+  for model in "${side_models[@]}"; do
+    [[ "$cfg" == "$model"* && "${#model}" -gt "${#best}" ]] && best="$model"
   done
+  printf '%s' "$best"
+}
+pass_cfgs_of() { # pass_cfgs_of <model>: its pass configurations, one a line
+  local model="$1" cfg
+  for cfg in "$model"*.cfg; do
+    [[ "$cfg" == "$model"Probe* || "$(owner_of "$cfg")" != "$model" ]] && continue
+    printf '%s\n' "$cfg"
+  done
+}
+checked_part() { sed -n '/^SPECIFICATION/,$p' "$1"; } # what a cfg checks, less its constants
+
+# Nothing beside the specs may go unchecked, and no model may check less under
+# one of its configurations than under another. These cost no TLC run, so every
+# scope runs them. A list lost in a merge would otherwise take its model's
+# configurations, probes, and mutants out of the gate with the gate still green.
+structure_ok=1
+complain() {
+  echo "tla.sh: $*" >&2
+  structure_ok=0
+}
+[[ "${#side_models[@]}" -gt 0 ]] || complain "no <Model>.mutants.json beside the specs"
+for module in *.tla; do
+  case "$module" in Scheduler.tla | Probes.tla | WakeDelivery.tla) continue ;; esac
+  model="${module%.tla}"
+  model="${model%Probes}"
+  [[ " ${side_models[*]} " == *" $model "* ]] ||
+    complain "$module is checked by nothing: no $model.mutants.json enrols it"
 done
+for cfg in *.cfg; do
+  case "$cfg" in Scheduler*.cfg | Probe*.cfg | WakeDelivery.cfg) continue ;; esac
+  [[ -n "$(owner_of "$cfg")" ]] || complain "$cfg belongs to no enrolled model"
+done
+for model in "${side_models[@]}"; do
+  [[ -f "$model.tla" && -f "$model.cfg" && -f "${model}Probes.tla" ]] ||
+    complain "$model needs $model.tla, $model.cfg, and ${model}Probes.tla"
+  probes=("$model"Probe*.cfg)
+  [[ "${#probes[@]}" -gt 0 ]] || complain "$model has no vacuity probe"
+  [[ -f "$model.cfg" ]] || continue
+  while IFS= read -r cfg; do
+    diff <(checked_part "$model.cfg") <(checked_part "$cfg") >/dev/null ||
+      complain "$cfg does not check what $model.cfg checks: they may differ in constants only"
+  done < <(pass_cfgs_of "$model")
+done
+probe_cfgs=(*Probe*.cfg)
+shopt -u nullglob
+[[ "$structure_ok" -eq 1 ]] || exit 1
 
 # TLA_ONLY=<safety|liveness1..liveness5> runs exactly one target with the
 # FULL budget — for CI matrix jobs where each runner hosts one TLC process.
@@ -161,8 +202,20 @@ if [[ -n "${TLA_ONLY:-}" && "${TLA_ONLY}" != "safety" ]]; then
   exit $?
 fi
 
-# Mutants of the side models. A side model is enrolled by its mutant list:
-# each entry of <Model>.mutants.json bends or deletes one guard of <Model>.tla,
+# Every pass configuration of every side model, small, on every scope but a
+# TLA_ONLY liveness job, which runs its own target and nothing that could fail
+# ahead of it.
+mutant_jobs=()
+for model in "${side_models[@]}"; do
+  mapfile -t cfgs < <(pass_cfgs_of "$model")
+  for cfg in "${cfgs[@]}"; do
+    run_small "$model ($cfg)" "$cfg" "$model.tla" || exit 1
+  done
+  mutant_jobs+=("$model:$(IFS=,; printf '%s' "${cfgs[*]}")")
+done
+
+# Mutants of the side models.
+# Each entry of <Model>.mutants.json bends or deletes one guard of <Model>.tla,
 # and some pass configuration of that model must then FAIL. A probe shows an
 # invariant can fail. Only a mutant shows that a guard is held by anything: a
 # model can stay green with a guard deleted when no invariant speaks for it. A
@@ -176,11 +229,14 @@ command -v python3 >/dev/null || {
   exit 1
 }
 mutant_code=0
-python3 - "$JAVA_BIN" "$JAR" "$STATES/mutants" <<'PY' || mutant_code=$?
-import glob, json, os, shutil, subprocess, sys
+python3 - "$JAVA_BIN" "$JAR" "$STATES/mutants" "${mutant_jobs[@]}" <<'PY' || mutant_code=$?
+import json, os, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 java, jar, out = sys.argv[1:4]
+# Each further argument is <Model>:<cfg>,<cfg>..., the model's pass configurations as
+# the shell above decided them. There is no second definition of them here.
+models = [(model, configs.split(",")) for model, _, configs in (job.partition(":") for job in sys.argv[4:])]
 
 
 def check(job):
@@ -196,7 +252,7 @@ def check(job):
     for config in configs:
         shutil.copy(config, scratch)
         run = subprocess.run(
-            [java, "-Xmx512m", "-cp", jar, "tlc2.TLC", "-workers", "1", "-deadlock",
+            [java, "-Xmx512m", "-cp", jar, "tlc2.TLC", "-workers", "1", "-deadlock", "-noGenerateSpecTE",
              "-metadir", os.path.join(scratch, "meta-" + config), "-config", config, model + ".tla"],
             cwd=scratch, capture_output=True, text=True,
         )
@@ -215,18 +271,13 @@ def check(job):
     return name, "SURVIVED", f"every configuration still passes, so nothing holds: {mutant['guard']}"
 
 
-lists = sorted(glob.glob("*.mutants.json"))
-if not lists:
-    sys.exit("no <Model>.mutants.json found beside the specs")
 failed = False
-for path in lists:
-    model = path[: -len(".mutants.json")]
+for model, configs in models:
+    path = model + ".mutants.json"
     spec = open(model + ".tla").read()
-    # A model's pass configurations are its cfg files that are not probes.
-    configs = sorted(c for c in glob.glob(model + "*.cfg") if not c.startswith(model + "Probe"))
     mutants = json.load(open(path))
     names = [mutant["name"] for mutant in mutants]
-    if not configs or not names or len(set(names)) != len(names):
+    if configs == [""] or not names or len(set(names)) != len(names):
         sys.exit(f"{path} needs a pass configuration and mutants under distinct names")
     with ThreadPoolExecutor(4) as pool:
         verdicts = list(pool.map(check, [(model, spec, configs, mutant) for mutant in mutants]))
@@ -248,48 +299,31 @@ elif [[ "$mutant_code" -ne 0 ]]; then
 fi
 
 echo "== phase 1: vacuity probes, in waves (each MUST find its witness trace)"
-probe_modules=()
-probe_workers=()
-probe_cfgs=()
-# Each probe holds an eighth of the heap budget, and TLC takes its off-heap
-# share up front, so the probes run in waves the budget can hold. All at once,
-# twenty-six of them were killed inside the confined scope for memory.
-probe_heap=$((TLA_HEAP_MB / 8)); [[ "$probe_heap" -lt 512 ]] && probe_heap=512
-probe_slots=$((TLA_HEAP_MB / probe_heap)); [[ "$probe_slots" -lt 1 ]] && probe_slots=1
 # A probe is a cfg named after the one invariant or property it must violate,
-# defined in the family's module. A new cfg is enrolled by existing. A probe
-# fails by design, so it writes no counterexample trace beside the specs, and a
-# real violation's trace is never cleaned away with the probes'.
-probe_family() { # probe_family <module> <workers> <cfg...>
-  local module="$1" workers="$2" cfg
-  shift 2
-  for cfg in "$@"; do
-    probe_modules+=("$module")
-    probe_workers+=("$workers")
-    probe_cfgs+=("$cfg")
-  done
-}
-probe_family Probes.tla 4 Probe*.cfg
-for list in *.mutants.json; do
-  model="${list%.mutants.json}"
-  probe_family "${model}Probes.tla" 2 "$model"Probe*.cfg
-done
+# defined in its family's module: Probe*.cfg in Probes.tla, <Model>Probe*.cfg in
+# <Model>Probes.tla. A new cfg is enrolled by existing. A probe fails by design,
+# so it writes no counterexample trace beside the specs, and a real violation's
+# trace is never cleaned away with the probes'.
+#
+# TLC takes its off-heap share up front, so the probes run in waves the heap
+# budget can hold. All at once, they were killed inside the confined scope for
+# memory. A Scheduler probe holds an eighth of the budget. A side-model probe
+# explores a few thousand states and holds a small fixed share, as a mutant run does.
+scheduler_probe_heap=$((TLA_HEAP_MB / 8)); [[ "$scheduler_probe_heap" -lt 512 ]] && scheduler_probe_heap=512
+side_probe_heap=512
 probe_fail=0
-for ((wave = 0; wave < ${#probe_cfgs[@]}; wave += probe_slots)); do
-  probe_pids=()
-  for ((i = wave; i < wave + probe_slots && i < ${#probe_cfgs[@]}; i++)); do
-    probe="${probe_cfgs[$i]%.cfg}"
-    tlc "$probe_heap" "${probe_workers[$i]}" -noGenerateSpecTE -metadir "$STATES/$probe" \
-      -config "${probe_cfgs[$i]}" "${probe_modules[$i]}" >"$STATES/$probe.log" 2>&1 &
-    probe_pids+=($!)
-  done
-  for ((i = 0; i < ${#probe_pids[@]}; i++)); do
-    probe="${probe_cfgs[$((wave + i))]%.cfg}"
+wave_cfgs=()
+wave_pids=()
+wave_heap=0
+finish_wave() {
+  local i probe log
+  for ((i = 0; i < ${#wave_pids[@]}; i++)); do
+    probe="${wave_cfgs[$i]%.cfg}"
     log="$STATES/$probe.log"
-    if wait "${probe_pids[$i]}"; then
+    if wait "${wave_pids[$i]}"; then
       echo "VACUOUS: $probe found no witness — the feature it probes is unreachable"
       probe_fail=1
-    elif grep -qE "(Invariant $probe is|Temporal property $probe was) violated" "$log"; then
+    elif grep -qE "(Invariant $probe is|Action property $probe is|Temporal property $probe was) violated" "$log"; then
       echo "ok: $probe witnessed ($(grep -m1 -oE '[0-9]+ distinct states' "$log" || true))"
     else
       echo "ERROR: $probe failed for the wrong reason:"
@@ -297,7 +331,21 @@ for ((wave = 0; wave < ${#probe_cfgs[@]}; wave += probe_slots)); do
       probe_fail=1
     fi
   done
+  wave_cfgs=()
+  wave_pids=()
+  wave_heap=0
+}
+for cfg in "${probe_cfgs[@]}"; do
+  family="${cfg%%Probe*}"
+  if [[ -z "$family" ]]; then heap="$scheduler_probe_heap"; workers=4; else heap="$side_probe_heap"; workers=2; fi
+  if [[ "${#wave_pids[@]}" -gt 0 && $((wave_heap + heap)) -gt "$TLA_HEAP_MB" ]]; then finish_wave; fi
+  tlc "$heap" "$workers" -noGenerateSpecTE -metadir "$STATES/${cfg%.cfg}" \
+    -config "$cfg" "${family}Probes.tla" >"$STATES/${cfg%.cfg}.log" 2>&1 &
+  wave_cfgs+=("$cfg")
+  wave_pids+=($!)
+  wave_heap=$((wave_heap + heap))
 done
+finish_wave
 [[ "$probe_fail" -eq 0 && "$mutant_fail" -eq 0 ]] || exit 1
 
 if [[ "${TLA_ONLY:-}" == "safety" ]]; then

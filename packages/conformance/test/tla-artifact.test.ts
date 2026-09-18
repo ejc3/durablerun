@@ -263,6 +263,14 @@ describe('TLA tool artifact', () => {
         expect(javaLog, run).toContain(run)
       }
       expect(javaLog).not.toMatch(/-config AlphaBeta\S* Alpha(Probes)?\.tla/)
+      // A mutant of a model runs under that model's configurations and module only.
+      const mutantRuns = javaLog.split('\n').filter((entry) => entry.includes('/mutants/'))
+      expect(mutantRuns.length).toBeGreaterThan(0)
+      for (const entry of mutantRuns) {
+        expect(entry).toMatch(
+          /\/mutants\/(Alpha\/\S+ -config Alpha(Other)?\.cfg Alpha|AlphaBeta\/\S+ -config AlphaBeta\.cfg AlphaBeta)\.tla$/,
+        )
+      }
     })
 
     it('fails when the mutants survive', async () => {
