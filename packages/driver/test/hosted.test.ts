@@ -289,6 +289,27 @@ describe('hosted-alpha Web Request router', () => {
     }
   })
 
+  it('rejects an idempotency key in the engine namespace, and enqueues nothing', async () => {
+    const f = await fixture('hosted-reserved-key')
+    try {
+      const response = await f.router.handle(
+        request(
+          '/api/tasks',
+          'POST',
+          JSON.stringify({ taskName: 'evil', idempotencyKey: '$spawn:some-parent:$spawn:child' }),
+        ),
+      )
+      const tick = await f.router.runTick()
+      expect({
+        status: response.status,
+        body: await responseBody(response),
+        claimed: tick.claimed,
+      }).toEqual({ status: 400, body: { error: 'invalid_request' }, claimed: 0 })
+    } finally {
+      f.close()
+    }
+  })
+
   it('rejects a storage-unstable task name before it selects a different registry handler', async () => {
     const admin = vi.fn(async () => 'privileged')
     const f = await fixture('hosted-task-name-binding', {

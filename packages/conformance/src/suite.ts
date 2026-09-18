@@ -114,6 +114,37 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      // An idempotency key that starts with `$` belongs to the engine: `ctx.spawn` keys
+      // its child there. A caller that could take one would place its own task where a
+      // parent will look for its child, and the parent would adopt it and its result.
+      it('refuses a reserved idempotency key, and writes nothing', async () => {
+        const refused = await refusalName(
+          f.store.spawn(Q, 'evil', '{}', { idempotencyKey: '$spawn:some-parent:$spawn:child' }),
+        )
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(
+          { refused, tasks: Number(count?.n) },
+          'mutation-verdict:behavior:spawn-refuses-reserved-idempotency-key',
+        ).toEqual({ refused: 'RangeError', tasks: 0 })
+      })
+
+      // A queue name is durable, and the dialects disagree on a NUL and on a lone
+      // surrogate: one stores a different string and the other aborts the statement.
+      it('refuses a queue that does not survive every store, and writes nothing', async () => {
+        const refused = []
+        for (const queue of ['q\u0000tail', 'q\ud800']) {
+          refused.push(await refusalName(f.store.spawn(queue, 'job', '{}')))
+        }
+        const count = await readOne(f.raw, `SELECT COUNT(*) AS n FROM tasks`, [])
+        expect(
+          { refused, tasks: Number(count?.n) },
+          'mutation-verdict:behavior:spawn-queue-is-a-durable-string',
+        ).toEqual({
+          refused: ['InvalidDurableStringError', 'InvalidDurableStringError'],
+          tasks: 0,
+        })
+      })
+
       it('is idempotent per (queue, idempotency_key)', async () => {
         const first = await f.store.spawn(Q, 'once', '{}', { idempotencyKey: 'k1' })
         const second = await f.store.spawn(Q, 'once', '{}', { idempotencyKey: 'k1' })

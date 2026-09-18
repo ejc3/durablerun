@@ -215,6 +215,38 @@ describe('child tasks through the SDK', () => {
     f.close()
   })
 
+  it('fails the parent for good when a spawn names a queue or a header no store can keep', async () => {
+    const f = await fx('child-undurable')
+    const outcomes: Record<string, unknown> = {}
+    for (const [name, opts] of [
+      ['nul queue', { queue: 'q\u0000tail' }],
+      ['lone surrogate queue', { queue: 'q\ud800' }],
+      ['nul header', { headers: { 'x\u0000': 'v' } }],
+    ] as const) {
+      const reg = registry({ parent: async (ctx) => ctx.spawn('child', null, opts) })
+      const parent = await f.store.spawn(Q, 'parent', '{}', { maxAttempts: 3 })
+      const outcome = await claimAndRun(f, reg, `w-${name}`)
+      const result = await f.store.getTaskResult(Q, parent.taskId)
+      outcomes[name] = {
+        outcome: outcome.kind,
+        failure: JSON.parse(result?.failureReasonJson ?? 'null')?.name,
+      }
+    }
+    const permanent = { outcome: 'failed', failure: 'FatalTaskError' }
+    expect(
+      { outcomes, children: await taskCount(f, 'child') },
+      'mutation-verdict:behavior:sdk-spawn-undurable-input-is-permanent',
+    ).toEqual({
+      outcomes: {
+        'nul queue': permanent,
+        'lone surrogate queue': permanent,
+        'nul header': permanent,
+      },
+      children: 0,
+    })
+    f.close()
+  })
+
   it('refuses a handle that is not a child task, a reserved task name, and nesting in a step', async () => {
     const f = await fx('child-refusals')
     const failures: string[] = []
