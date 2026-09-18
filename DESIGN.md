@@ -2447,27 +2447,40 @@ Compensation is declared per step, co-located with the forward action —
 `ctx.step(name, fn, { rollback, rollbackConfig })` — and engine-triggered,
 never user-triggered (no Temporal-style explicit `compensate()` call):
 
-- **Trigger**: rollback runs only when the task is about to fail terminally
-  (retries exhausted or FatalTaskError). An error the user code catches and
-  survives never triggers rollback.
+- **Trigger**: rollback runs only when the task's terminal failure is decided:
+  its retries are exhausted, it threw FatalTaskError, or a sweep failed it at
+  an infrastructure cap (decided below). An error the user code catches and
+  survives never triggers rollback, and neither does a cancellation.
 - **Eligibility & order**: every started-or-completed step that registered a
   rollback is eligible (the handler receives `{ output, error, ctx }` with
   `output === undefined` when the forward step never persisted — handlers
   guard on it); handlers run in **reverse step-start order**.
-- **Mechanics on this engine**: the checkpoint records a `rollback_registered`
-  flag and a step-start ordering index. On terminal failure the run enters a
-  `rolling_back` phase (a checkpoint, so it survives crashes); the task
-  function re-runs, memoized steps skip and re-register their closures, and
-  the SDK executes handlers as ordinary durable steps named
-  `rollback:<step>#<count>` with their own `rollbackConfig` retry budgets on
-  the normal claim/lease machinery. Crash mid-rollback resumes exactly where
-  it died — this is strictly simpler than Cloudflare's replay-plus-RPC-stub
-  reconstruction because re-execution is already our model.
+- **Mechanics on this engine**: a saga's durable state is checkpoints under
+  reserved names (core `sagas.ts`). A user step name cannot begin with `$`, so
+  no step can take one. There is no schema change and no migration.
+  - `$started:<step>` is a step's START marker, and its state is the step's
+    ordering index. `<step>` is the step's storage key, which already carries
+    `#<count>` for a repeated name.
+  - `$rolling-back` is the phase marker. Its state is the failure that decided
+    the task's end, which is what the task result reports and what every
+    rollback handler is handed as `error`.
+  - `$rollback:<step>` says the rollback of that step ran. It is the
+    `rollback:<step>#<count>` step above, under the reserved prefix.
+  - `$rollback-tries:<step>` holds a rollback's failed attempts,
+    `{ tries, errorJson }`.
+
+  On terminal failure the run enters the rolling-back phase; the task function
+  re-runs, memoized steps skip and re-register their closures, and the SDK
+  executes handlers as durable steps with their own `rollbackConfig` retry
+  budgets on the normal claim/lease machinery. Crash mid-rollback resumes
+  exactly where it died. This is strictly simpler than Cloudflare's
+  replay-plus-RPC-stub reconstruction because re-execution is already our
+  model.
 - **Failure semantics** (matching Cloudflare exactly): a rollback step that
   exhausts its retries or throws FatalTaskError marks the rollback outcome
   `failed` and halts the remaining handlers; the task still terminates in
-  `failed` either way. There is **no distinct "compensated" terminal state**
-  — the rollback outcome `{ outcome: 'complete' | 'failed', error }` is a
+  `failed` either way. There is **no distinct "compensated" terminal state**.
+  The rollback outcome `{ outcome: 'complete' | 'failed', errorJson }` is a
   separate field on the task result. Rollback handlers must be idempotent
   and use distinct idempotency keys (`<id>:rollback-<step>`).
 - **Modeled first**: `specs/Sagas.tla` models the rolling-back phase ahead of
@@ -2475,50 +2488,137 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   implementation maps its batches onto the model's actions:
   - A step that registers a rollback writes a START marker, carrying its
     ordering index, BEFORE its body runs. A step commits only after its body
-    returns today, so without the marker a step that started and never
-    persisted leaves nothing for a rollback to find. The index is
-    first-write-wins for a step within a saga generation, so a step retried by
-    a later attempt keeps its place, and no two started steps share one. A
-    revival that starts a new generation forgets the index with the step, so
-    it is keyed by generation.
+    returns, so without the marker a step that started and never persisted
+    leaves nothing for a rollback to find. The index is first-write-wins: the
+    SDK writes it only when the step has none, only the lease holder writes
+    checkpoints, and the next index is one past the highest handed out. So a
+    step retried by a later attempt keeps its place, and no two started steps
+    share one. The model keys the index by saga generation because a fresh
+    revival would forget it. Under the decision below no revival follows a
+    saga, so a task has one generation and the key is not needed.
   - The terminal decision and the phase marker are ONE batch, whoever decides:
-    the worker's `fail` with no retry, or a sweep. As two steps, a crash
-    between them leaves a failed task that no worker will run again, and its
-    rollbacks never happen.
+    the worker's `fail`, or a sweep. As two steps, a crash between them leaves
+    a failed task that no worker will run again, and its rollbacks never
+    happen.
   - Once the phase is entered no forward step starts or commits, and the task
     cannot complete. The next rollback is a function of durable state alone,
     the pending step that started last, so a pass that resumes after a crash
     derives the same sequence.
   - Rollback passes run after the task's user attempt budget is spent, so the
     phase admits runs past it. Each rollback's spent attempts are durable with
-    the rollback, and within a saga generation they are never given back.
-  - A rollback that fails for good records itself as failed, sets the outcome
-    to `failed`, and ends the task, in one batch. A rollback is recorded as
-    done only when its compensation happened. An infrastructure cap that ends
-    a task inside the phase ends the saga there, and the outcome is `failed`
-    exactly when a step that started is left uncompensated.
+    the rollback, and they are never given back.
+  - A rollback that fails for good ends the task in the batch that records
+    its last failed attempt. A rollback is recorded as done only when its
+    compensation happened. An infrastructure cap that ends a task inside the
+    phase ends the saga there, and the outcome is `failed` exactly when a step
+    that started is left uncompensated.
   - A cancellation in the forward phase triggers no rollback: only a terminal
     failure does.
-  - Reviving a failed task whose saga ran, without forgetting its rolled-back
-    steps, is unsound under any rule: the forward replay would skip memoized
-    steps whose effects were compensated. `retry-task` admits any failed task
-    today, so its admission changes with this feature either way.
-- **Three questions the model isolates, each as one constant, for the
-  maintainer's decision before the SQL.** The recommended answer comes first,
-  and the model is checked under both:
-  - Cancelling a task that is rolling back HALTS the saga, the remaining
+- **The batches**, each mapped onto one action of the model. Nothing here is a
+  new kind of statement: a rollback pass is the failed run's successor, and
+  every saga checkpoint is an ordinary fenced checkpoint write.
+
+  | Model action | Batch | What it does |
+  | --- | --- | --- |
+  | StartStep | `set-checkpoint` of `$started:<step>` | One SQL shape for every checkpoint. The phase predicate is one expression over the name. |
+  | UserTerminal | `fail` with no retry, or with a retry the budget refuses | Places the rollback pass, writes the phase marker, and the task follows the pass. The terminal arm yields to the pass by id, so nothing ends. |
+  | InfraCap | the cap arm of `sweep:lost-launch`, and `sweep:claim-timeout` at the infrastructure cap | The same three statements. The sweep reports `rollback-started`. Inside the phase each ends the task as it always did. |
+  | RunRollback | `set-checkpoint` of `$rollback:<step>` | Admitted only inside the phase. Any other checkpoint is admitted only before it. |
+  | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The attempt record lands behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
+  | FinishSaga | `fail` with no retry, inside the phase | Ends the task with the failure that began the saga. |
+  | Cancel | `cancel-task`, `sweep:cancel` | Unchanged. |
+  | Revive | `retry-task` | Refuses a task whose saga began. |
+
+  A failed rollback is a separate port method, not an option of `fail`, so that
+  nothing which forwards `fail` can drop the attempt record, and because a
+  batch label is one SQL shape: labels are the addresses the fault matrix and
+  the poison matrix enroll by. `fail-rollback` is a terminal label, so the
+  child-task cases, the PostgreSQL terminal lock case, both matrices, and the
+  saga endings case each reach it from the list of terminal labels.
+- **The forward phase is frozen by the store.** Inside the phase it refuses a
+  forward checkpoint, a completion, a suspension, which commits a marker, and
+  a wait registration, which would park the pass on an event that may never
+  come. `reschedule` and `defer-launch` stay open, because a build without
+  the task's handler must still be able to defer a launch. The SDK never asks:
+  the first durable call with no memo ends a pass's replay.
+- **The completion event** is a task's first terminal outcome, so the batch
+  that enters the phase writes none, and each batch that can end a task writes
+  exactly one when it ends a task that is rolling back. A parent awaiting a
+  rolling-back child sees nothing until the saga ends. One conformance case
+  runs over every terminal label, and its list of endings is a record keyed by
+  the label type, so a new terminal label does not compile until it says how
+  it ends a saga.
+- **Budget accounting.** A rollback pass is one ordinal past the spent user
+  budget. The batch that places it sets the task's `max_attempts` to the
+  pass's own user ordinal, derived from the failed run as `attempts` is, so
+  every existing accounting invariant holds as it stands. The consequence is
+  visible: `attempts` counts rollback passes. A task that failed on its first
+  attempt and rolled back in one pass reads two attempts. An infrastructure
+  retry of a pass spends none of it.
+- **The rollback outcome is derived, and stored nowhere.** When a task result
+  is read, the outcome is `failed` exactly when a step that started has no
+  `$rollback:` checkpoint, and `complete` otherwise, for an ended task whose
+  saga began. `errorJson` is the attempt record of a rollback that did not
+  run. It cannot disagree with the checkpoints, and no checkpoint of an ended
+  task changes.
+- **A saga with nothing to roll back skips the phase.** The task fails as it
+  did before sagas, and its result carries no rollback field. The model calls
+  that saga complete at entry and allows the skip. The engine records nothing
+  for it, which is the one place it says less than the model.
+- **The SDK.** A registered step writes its start marker and then runs. A pass
+  replays the task function so every memoized step registers its closure with
+  what it returned, and a step that started and never persisted registers with
+  no output. However the replay ends, its ending means nothing: the failure is
+  decided. Then each rollback owed runs as a step of its own, the step that
+  started last first. A failed rollback is counted with the failure and
+  retried under its own budget, three attempts and the task's retry strategy
+  unless `rollbackConfig` says otherwise. Four things halt a saga for good: a
+  FatalTaskError, a spent budget, a saga checkpoint that cannot be read, and a
+  step owed a rollback that the replay did not register, ahead of which no
+  earlier step is compensated. Options that cannot be kept fail the task for
+  good before the body runs and burn no retry. The worker reports
+  `rolling-back`, `rolled-back`, or `rollback-failed`.
+- **Rolling deploys.**
+  - A worker of an older build that claims a rollback pass replays the task
+    function as a forward pass. The store refuses what it tries to commit, so
+    the lease story recovers the run, and the infrastructure cap bounds it and
+    ends the saga where it stands. The body of the first step it has no memo
+    for does run once more before its checkpoint is refused, as a step's body
+    may on any retry. A failure it reports with a retry is capped like any
+    other, which halts the saga.
+  - A terminal failure decided by a build that predates sagas has no saga arm.
+    The task ends, nothing rolls back, and the result carries no rollback
+    field. The rollback stays owed: if the task is revived and a build that
+    knows sagas decides its next terminal failure, the phase is entered.
+  - A step that committed before its code registered a rollback has no start
+    marker, so no saga knows it started, and it is not rolled back.
+  - A task that failed before this build has no saga checkpoints, and nothing
+    about it changes.
+- **What it costs.** On PostgreSQL every failure sends one more query than
+  before, nine where it sent eight, because the rollback pass is gated on the
+  failure alone and so is sent, matching nothing when no rollback is owed.
+  A completion and a checkpoint send what they did, eight and four. The store
+  decides whether a rollback is owed from its own rows. A caller's hint that
+  none is would be a second account of those rows, which a worker of an older
+  build could not give. A test pins the count for each batch a saga touches.
+  Every saga read reaches the checkpoints by primary key with the task bound,
+  and query plan pins hold that over every statement of those batches.
+- **A known limit.** The store records the attempt count the SDK hands it and
+  does not check it against the last one, and nothing caps how many passes a
+  task may take. Rollback budgets are the SDK's to keep.
+- **Decided by the maintainer.** The model isolates three questions, each as
+  one constant, and is checked under both answers. These are the answers the
+  implementation is built under:
+  - Cancelling a task that is rolling back HALTS the saga. The remaining
     rollbacks never run, and the outcome is `failed` exactly when a step that
     started is left uncompensated. A cancellation that lands after the last
-    rollback records `complete`. This is what today's cancellation does to any
-    live task. The alternative refuses the cancellation, which leaves a stuck
-    rollback bounded only by its budgets.
-  - `retry-task` REFUSES a task whose saga began. The alternative admits one
-    whose saga completed, forgets every rolled-back step so it runs again, and
-    starts a new saga generation that the rollback checkpoints are keyed by.
+    rollback records `complete`. This is what cancellation does to any live
+    task.
+  - `retry-task` REFUSES a task whose saga began. Reviving it without
+    forgetting its rolled-back steps is unsound under any rule: the forward
+    replay would skip memoized steps whose effects were compensated.
   - A task the sweeps fail at an infrastructure cap ROLLS BACK like any other
-    terminal failure. The trigger list above names only exhausted retries and
-    a fatal error. The alternative fails the task at once, leaves its steps
-    uncompensated, and records no rollback outcome.
+    terminal failure.
 
 ## 4. What "ticks" mean here — direct answers to the original questions
 
