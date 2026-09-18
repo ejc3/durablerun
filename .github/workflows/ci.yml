@@ -440,6 +440,8 @@ jobs:
               # Sagas register verdict markers this registry predates, and re-aim nothing:
               # every find of this registry still occurs exactly once in this tree. This arm
               # is keyed on main's registry as of the merge of child tasks.
+              # The MySQL port of sagas registers one more, for the one guard that is new in
+              # that store. main has the MySQL store, so its registry reads that store's tests.
               repaired = exempt(previous, candidate, (
                   'mutation-verdict:behavior:fault-matrix-edge-crossing:saga-cap-edges',
                   'mutation-verdict:behavior:saga-attempt-record-is-the-engines',
@@ -473,6 +475,7 @@ jobs:
                   'mutation-verdict:behavior:saga-sdk-unregistered',
                   'mutation-verdict:behavior:saga-suspension-marker-name-is-checked',
                   'mutation-verdict:behavior:saga-sweep-cap-enters',
+                  'mutation-verdict:construction:mysql-saga-step-key-bound',
               ))
           else:
               print('Base registry does not need the re-aim bridge.')
