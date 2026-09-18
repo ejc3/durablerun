@@ -73,14 +73,13 @@ if [[ "$probe" == *Probe* ]]; then
   esac
 fi
 if [[ "$meta" == */mutants/* ]]; then
-  # A caught mutant violates a property of ITS OWN model's list, so a runner that
-  # hands one model's mutants to another model's run is not reported as a catch.
-  model="\${meta#*/mutants/}"
-  model="\${model%%/*}"
+  # A caught mutant violates what the cfg it ran under checks, as TLC can violate
+  # nothing else. How many properties that is goes in the log.
+  checks="$(grep -oE '^  [A-Za-z]+$' "$cfg" | tr -d ' ')"
+  printf 'MUTANT-CHECKS %s\\n' "$(wc -w <<< "$checks")" >> "$JAVA_LOG"
   case "\${STUB_MUTANTS:-}" in
     caught)
-      grep -ohE '"caughtBy": "[A-Za-z]+"' "$STUB_MUTANTS_DIR/$model.mutants.json" | sort -u |
-        sed -E 's/.*: "(.*)"/Error: Invariant \\1 is violated./'
+      for name in $checks; do printf '%s\\n' "Error: Invariant $name is violated."; done
       exit 12
       ;;
     wrong)
@@ -181,7 +180,7 @@ describe('TLA tool artifact', () => {
         2,
       ),
       'AlphaBeta.tla': 'GUARD_BETA\n',
-      'AlphaBeta.cfg': CFG.replace('Other', 'BetaInv'),
+      'AlphaBeta.cfg': CFG.replace('  Inv\n  Other\n', '  BetaInv\n'),
       'AlphaBetaProbes.tla': 'placeholder',
       'AlphaBetaProbeSeen.cfg': 'placeholder',
       'AlphaBeta.mutants.json': JSON.stringify([mutant('three', 'BetaInv', 'GUARD_BETA')], null, 2),
@@ -271,6 +270,24 @@ describe('TLA tool artifact', () => {
           /\/mutants\/(Alpha\/\S+ -config Alpha(Other)?\.cfg Alpha|AlphaBeta\/\S+ -config AlphaBeta\.cfg AlphaBeta)\.tla$/,
         )
       }
+    })
+
+    it('checks a mutant against the one property its entry names', async () => {
+      const { javaLog, output, status } = await runFixture({})
+      expect(status, output).toBe(0)
+      // Among several properties TLC reports the first it meets, so the name in an
+      // entry would follow the order of a list.
+      const checks = javaLog.split('\n').filter((entry) => entry.startsWith('MUTANT-CHECKS'))
+      expect(checks).toEqual(['MUTANT-CHECKS 1', 'MUTANT-CHECKS 1', 'MUTANT-CHECKS 1'])
+    })
+
+    it('fails when no mutant names a property a model checks', async () => {
+      const { output, status } = await runFixture({}, (files) => ({
+        ...files,
+        'Alpha.mutants.json': JSON.stringify([mutant('one', 'Inv', 'GUARD_ONE')], null, 2),
+      }))
+      expect(status, output).not.toBe(0)
+      expect(output).toContain('UNNAMED: Alpha/Other')
     })
 
     it('fails when the mutants survive', async () => {
