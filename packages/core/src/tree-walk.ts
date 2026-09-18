@@ -22,17 +22,18 @@ function isNode(value: unknown): value is OperationNode {
 }
 
 /**
- * One walk of a node's object graph: the node and everything below it, in the order a
- * depth-first reader meets them. `ends[i]` is one past the last node below `nodes[i]`, and
- * `kids[i]` is the children of `nodes[i]`. Kysely has no read-only walker, so a walk reads
- * node fields generically, and each check of a statement used to pay for that reading again.
+ * Where a node stands in one walk of an object graph. `nodes` is the whole walk, the node
+ * and everything below it in the order a depth-first reader meets them, and this node's
+ * subtree is `nodes[at]` up to `end`. Kysely has no read-only walker, so a walk reads node
+ * fields generically, and each check of a statement used to pay for that reading again.
  */
-interface Walk {
-  readonly nodes: OperationNode[]
-  readonly ends: number[]
-  readonly kids: (readonly OperationNode[])[]
+interface Place {
+  readonly nodes: readonly OperationNode[]
+  readonly at: number
+  /** One past the last node below this one, set when the walk has read them all. */
+  end: number
+  readonly kids: readonly OperationNode[]
 }
-type Place = { readonly walk: Walk; readonly at: number }
 
 /** Where each node stands in the walk that read it, while `readingOnce` runs. */
 let walked: WeakMap<object, Place> | null = null
@@ -74,36 +75,31 @@ function readChildren(node: OperationNode): readonly OperationNode[] {
 function placeOf(record: WeakMap<object, Place>, node: OperationNode): Place {
   const known = weakMapGet(record, node)
   if (known !== undefined) return known
-  const walk: Walk = { nodes: [], ends: [], kids: [] }
-  const visit = (current: OperationNode): void => {
-    const at = walk.nodes.length
-    const kids = readChildren(current)
-    walk.nodes.push(current)
-    walk.ends.push(at)
-    walk.kids.push(kids)
+  const nodes: OperationNode[] = []
+  const visit = (current: OperationNode): Place => {
+    const place: Place = { nodes, at: nodes.length, end: nodes.length, kids: readChildren(current) }
+    nodes.push(current)
     // A node placed twice keeps its first place: both places hold the same subtree.
-    if (weakMapGet(record, current) === undefined) weakMapSet(record, current, { walk, at })
-    for (const child of kids) visit(child)
-    walk.ends[at] = walk.nodes.length
+    if (weakMapGet(record, current) === undefined) weakMapSet(record, current, place)
+    for (const child of place.kids) visit(child)
+    place.end = nodes.length
+    return place
   }
-  visit(node)
-  return weakMapGet(record, node) ?? { walk, at: 0 }
+  return visit(node)
 }
 
 /** Every child node. */
 export function children(node: OperationNode): readonly OperationNode[] {
   if (walked === null) return readingOnce(() => children(node))
-  const { walk, at } = placeOf(walked, node)
-  return walk.kids[at] ?? NO_CHILDREN
+  return placeOf(walked, node).kids
 }
 
 /** Whether the node or anything below it passes the test, asked in depth-first order. */
 export function someNode(node: OperationNode, test: (node: OperationNode) => boolean): boolean {
   if (walked === null) return readingOnce(() => someNode(node, test))
-  const { walk, at } = placeOf(walked, node)
-  const end = walk.ends[at] ?? at
+  const { nodes, at, end } = placeOf(walked, node)
   for (let index = at; index < end; index++) {
-    const each = walk.nodes[index]
+    const each = nodes[index]
     if (each !== undefined && test(each)) return true
   }
   return false

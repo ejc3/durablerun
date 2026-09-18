@@ -107,7 +107,6 @@ function bindCompilationError(message: string): TypeError {
   return error
 }
 
-/** True only for an authentic compiler bind failure from this module. */
 /** The statements a `FencedBatch` compiled from trees, by identity. */
 const treeBuilt = new TrustedWeakSet<object>()
 
@@ -120,6 +119,7 @@ export function isTreeBuiltStatement(statement: unknown): boolean {
   return typeof statement === 'object' && statement !== null && weakSetHas(treeBuilt, statement)
 }
 
+/** True only for an authentic compiler bind failure from this module. */
 export function isFencedBatchBindError(value: unknown): value is TypeError {
   return (
     value !== null &&

@@ -1069,8 +1069,8 @@ MUTATION_SPECS = [
     (
         "tree-walk-reads-below-the-root",
         "packages/core/src/tree-walk.ts",
-        "    for (const child of kids) visit(child)",
-        "    void kids // MUTATION",
+        "    for (const child of place.kids) visit(child)",
+        "    void place // MUTATION",
         "the one walk of a tree stops at its root, so every rule reads the root alone",
     ),
     (
@@ -13701,7 +13701,7 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "incoming !== null && referenceQualifier(node) === incoming ? null : referencedColumn(node)": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 3 at the fewest"
         ),
-        "item[1] === undefined ? bind++ : item[1].split(\"''\").join(\"'\"),": (
+        "item[1] === undefined ? bind++ : item[1].split(QUOTE + QUOTE).join(QUOTE),": (
             "fails closed for the bind: with every bind read as the first, 1 ordinary test fails. The doubled quote changes nothing a statement can show, because no state's name holds a quote"
         ),
         "literals.some(": (
@@ -13826,7 +13826,7 @@ TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {
         "if (walked === null) return readingOnce(() => someNode(node, test))": (
             "fails closed: every mutant an automatic sweep made of this line fails ordinary tests, 8 at the fewest"
         ),
-        "if (weakMapGet(record, current) === undefined) weakMapSet(record, current, { walk, at })": (
+        "if (weakMapGet(record, current) === undefined) weakMapSet(record, current, place)": (
             "changes nothing a statement can show: with it always true a node placed twice takes its later place, which holds the same subtree"
         ),
         "typeof (value as { kind?: unknown }).kind === 'string'": (

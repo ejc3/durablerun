@@ -1001,6 +1001,8 @@ type TextListItem = string | number
 const STATE_LIST_IN_TEXT =
   /\bstate\s*(?:(?:not\s+)?in|=\s*any)\s*(\(\s*(?:'(?:[^']|'')*'|\?)(?:\s*,\s*(?:'(?:[^']|'')*'|\?))*\s*\))/gi
 const LIST_ITEM = /'((?:[^']|'')*)'|\?/g
+/** A literal doubles a quote it holds. */
+const QUOTE = "'"
 const STATE_LIST_TEXT_CAP = 512
 const stateListsByText: Record<string, readonly (readonly TextListItem[])[]> = objectCreate(null)
 let stateListTextCount = 0
@@ -1015,7 +1017,7 @@ function stateListsIn(text: string): readonly (readonly TextListItem[])[] {
     let bind = text.slice(0, found.index + found[0].length - list.length).split('?').length - 1
     lists.push(
       [...list.matchAll(LIST_ITEM)].map((item) =>
-        item[1] === undefined ? bind++ : item[1].split("''").join("'"),
+        item[1] === undefined ? bind++ : item[1].split(QUOTE + QUOTE).join(QUOTE),
       ),
     )
   }
