@@ -28,9 +28,11 @@ const TREE_LABELS: Readonly<Record<string, readonly string[]>> = {
   'defer-launch': ['deferred'],
   reschedule: ['rescheduled'],
   suspend: ['suspended'],
-  // A child await registers only on a live child in its queue, and records the outcome
-  // of a child that ended with none recorded. Each is its own statement list.
-  'await-event': ['registered', 'registered-child', 'materialized'],
+  // A child await registers only on a live child in its queue.
+  'await-event': ['registered', 'registered-child'],
+  // The await of a child that ended with no outcome recorded writes the event itself,
+  // in a batch of its own, so that a crash, a duplicate, and a poisoned row each reach it.
+  'record-task-done': ['recorded'],
   'emit-event': ['emitted'],
   'set-checkpoint': ['written'],
   // A retrying failure carries the retry deadline's headroom guard, and a final one does not.
@@ -54,11 +56,7 @@ const VARIANT_OF: Readonly<Record<string, (signature: Signature) => string>> = {
   fail: (signature) =>
     signature.some(({ sql }) => /insert into ["`]runs["`]/.test(sql)) ? 'retrying' : 'final',
   'await-event': (signature) =>
-    signature.some(({ sql }) => /insert into "events"/.test(sql))
-      ? 'materialized'
-      : signature.some(({ sql }) => /"tasks" as "c"/.test(sql))
-        ? 'registered-child'
-        : 'registered',
+    signature.some(({ sql }) => /"tasks" as "c"/.test(sql)) ? 'registered-child' : 'registered',
 }
 
 function recordingExecutor(raw: SqlExecutor, recorded: Map<string, Signature[]>): SqlExecutor {

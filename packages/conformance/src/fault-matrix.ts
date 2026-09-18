@@ -38,6 +38,7 @@ export const MATRIX_WRITE_LABELS = [
   'suspend',
   'emit-event',
   'await-event',
+  'record-task-done',
   'complete',
   'fail',
   'cancel-task',

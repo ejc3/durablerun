@@ -772,6 +772,7 @@ export function childTaskConformance(dialect: string, makeFixture: StoreFixtureF
 
     // Only a run that still holds its claim records anything. A zombie whose lease was
     // swept reads the same ended child and must write nothing.
+    // fenceTwin('AwaitMaterialize') — a zombie whose claim was swept records nothing.
     it('records nothing for a run whose claim is gone', async () => {
       const parent = await claimedParent(f)
       const childTaskId = await endedWithNoEvent('completed')

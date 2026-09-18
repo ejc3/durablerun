@@ -2204,7 +2204,7 @@ export class PostgresSchedulerStore implements SchedulerStore {
   ): Promise<{ emitted: true; payloadJson: string } | null> {
     const { queue } = claim
     const name = EventName.taskDone(childTaskId)
-    const b = new FencedBatch('await-event', this.ids.token(), {
+    const b = new FencedBatch('record-task-done', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })

@@ -175,8 +175,10 @@
         "sql": "select \"payload\", (CASE WHEN payload IS NULL THEN 'null' ELSE 'text' END) as \"payload_type\" from \"events\" where \"queue\" = ? and \"event_name\" = ? and exists (select \"r\".\"run_id\" from \"runs\" as \"r\" inner join \"tasks\" as \"t\" on (t.task_id = r.task_id AND t.queue = r.queue) where \"r\".\"run_id\" = ? and \"r\".\"queue\" = ? and \"r\".\"task_id\" = ? and \"r\".\"claimed_by\" = ? and \"r\".\"state\" = ? and (t.state IN ('pending','running','sleeping')))",
         "bindArity": 7
       }
-    ],
-    "materialized": [
+    ]
+  },
+  "record-task-done": {
+    "recorded": [
       {
         "sql": "insert into \"events\" (\"queue\", \"event_name\", \"payload\", \"emitted_at_ms\", \"fence_stamp\", \"fence_at_ms\") select \"c\".\"queue\" as \"queue\", ? as \"event_name\", ? as \"payload\", COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) as \"emitted_at_ms\", ? as \"fence_stamp\", COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) as \"fence_at_ms\" from \"tasks\" as \"c\" where \"c\".\"task_id\" = ? and \"c\".\"fence_stamp\" is not distinct from ? and not exists (select \"e\".\"queue\" from \"events\" as \"e\" where \"e\".\"queue\" = \"c\".\"queue\" and \"e\".\"event_name\" = ?) and exists (select \"r\".\"run_id\" from \"runs\" as \"r\" inner join \"tasks\" as \"t\" on (t.task_id = r.task_id AND t.queue = r.queue) where \"r\".\"run_id\" = ? and \"r\".\"queue\" = ? and \"r\".\"task_id\" = ? and \"r\".\"claimed_by\" = ? and \"r\".\"state\" = ? and (t.state IN ('pending','running','sleeping')))",
         "bindArity": 11

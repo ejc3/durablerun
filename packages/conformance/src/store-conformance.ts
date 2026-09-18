@@ -426,6 +426,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'suspend',
             'emit-event',
             'await-event',
+            'record-task-done',
             'complete',
             'fail',
             'cancel-task',

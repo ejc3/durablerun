@@ -287,6 +287,10 @@
 \*   'await-event' -> AwaitEventHit / AwaitEventMiss  [cas-fenced]  (hit
 \*     replay re-reads under a live fence; miss replay is zero-row -- the
 \*     run it parked is no longer 'running')
+\*   'record-task-done' -> AwaitMaterialize  [cas-fenced]  (ChildTasks.tla: the
+\*     await of a child that ended with no outcome recorded writes the completion
+\*     event from the child's row, fenced on that row's stamp and on the live
+\*     claim; a replay finds the event it wrote and answers with it)
 \* Excluded (reason  [dup-class]):
 \*   'driver-heartbeat' [receipt] -- observability liveness upsert; nothing
 \*     in the protocol reads it, and a replay re-applies the same row
@@ -297,8 +301,8 @@
 \*   'run-task' [read] -- the task of the run a terminal batch is about to end,
 \*     read only when this store did not activate the run; a run's task never
 \*     changes, and the batch names that task's completion event (ChildTasks.tla)
-\*   'task-done-state' [read] -- a task as its completion event sees it: its
-\*     queue, its outcome, its stamp, and whether the event exists. Read only by
+\*   'task-done-state' [read] -- a task as a child await sees it: its queue,
+\*     its outcome, and the stamp its row carries. Read only by
 \*     a child await that neither registered nor hit, to say why (ChildTasks.tla's
 \*     AwaitRefused, AwaitUnknown, and the outcome AwaitMaterialize records)
 \*   'sweep:scan' [read] -- read-only discovery, no state transition
