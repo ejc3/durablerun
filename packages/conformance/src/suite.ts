@@ -159,6 +159,53 @@ export function schedulerConformance(dialect: string, makeFixture: StoreFixtureF
         })
       })
 
+      // ChildTasks.tla's SpawnAuthority: only a running parent spawns. The reserved key
+      // keeps a caller's own key out of the engine's namespace, and `childOf` is a second
+      // door into it: a caller that knows a parent's id could place a task of its choosing
+      // under the key that parent will look up, and the parent would adopt it and read
+      // its result. So a child is created only under its parent's live claim. A child that
+      // exists is still found without one, which is what a replay asks.
+      it("creates a child only under its parent's live claim, and still finds one that exists", async () => {
+        const parentTask = await f.store.spawn(Q, 'parent', '{}')
+        const parent = await claimActivated(f.store, Q, 'w-parent')
+        const childOf = {
+          parentQueue: Q,
+          parentTaskId: parentTask.taskId,
+          runId: parent.runId,
+          claimToken: parent.claimToken,
+          replayKey: '$spawn:child',
+        }
+        const wrongToken = { ...childOf, claimToken: 'not-the-token', replayKey: '$spawn:forged' }
+        const forged = await refusalName(f.store.spawn(Q, 'evil', '{}', { childOf: wrongToken }))
+        const first = await f.store.spawn(Q, 'child', '{}', { childOf })
+        await f.store.expireLeaseNow(Q, parent.runId, parent.claimToken)
+        await f.store.sweep(Q, 10)
+        const replayed = await f.store.spawn(Q, 'child', '{}', { childOf })
+        const secondSite = { ...childOf, replayKey: '$spawn:child#2' }
+        const afterTheClaim = await refusalName(
+          f.store.spawn(Q, 'child', '{}', { childOf: secondSite }),
+        )
+        const children = await readOne(
+          f.raw,
+          `SELECT COUNT(*) AS n FROM tasks WHERE task_name IN ('child', 'evil')`,
+          [],
+        )
+        expect(
+          {
+            forged,
+            replayFindsTheChild: replayed.taskId === first.taskId && !replayed.created,
+            afterTheClaim,
+            children: Number(children?.n),
+          },
+          'mutation-verdict:behavior:child-spawn-needs-the-parents-live-claim',
+        ).toEqual({
+          forged: 'LeaseLostError',
+          replayFindsTheChild: true,
+          afterTheClaim: 'LeaseLostError',
+          children: 1,
+        })
+      })
+
       // A queue name is durable, and the dialects disagree on a NUL and on a lone
       // surrogate: one stores a different string and the other aborts the statement.
       it('refuses a queue that does not survive every store, and writes nothing', async () => {

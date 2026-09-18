@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   RunTaskMemo,
   type TaskOutcome,
+  childSpawnKey,
   decodeTaskOutcome,
   encodeTaskOutcome,
   refuseReservedEventName,
@@ -113,6 +114,20 @@ describe('the completion event contract', () => {
       Reflect.deleteProperty(Object.prototype, 'state')
       Reflect.deleteProperty(Object.prototype, 'completedPayloadJson')
     }
+  })
+})
+
+describe("a child's spawn key", () => {
+  // Both strings are a caller's at the port. Joined by a delimiter that either may
+  // contain, two pairs spell one key, and the second spawn adopts the first one's task.
+  it('is a different key for every pair of parent and call site', () => {
+    expect(
+      [
+        childSpawnKey('a', 'b:c') === childSpawnKey('a:b', 'c'),
+        childSpawnKey('1', ':x') === childSpawnKey('1:', 'x'),
+      ],
+      'mutation-verdict:behavior:child-spawn-key-is-unambiguous',
+    ).toEqual([false, false])
   })
 })
 
