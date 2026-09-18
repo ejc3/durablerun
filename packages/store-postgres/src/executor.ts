@@ -43,6 +43,7 @@ type PoolPort = Pick<Pool, 'connect' | 'end'>
 interface PreparedStatement {
   readonly sql: string
   readonly args: unknown[]
+  readonly skipUnlessWrote?: number
 }
 
 class PostgresResultContractError extends TypeError {}
@@ -79,7 +80,14 @@ function prepareStatements(
         `batch(${label}) statement ${statementIndex} has ${compiled.parameterCount} placeholders but ${statement.args.length} arguments`,
       )
     }
-    return { sql: compiled.sql, args: [...statement.args] }
+    const gate = statement.skipUnlessWrote
+    if (gate === undefined) return { sql: compiled.sql, args: [...statement.args] }
+    if (!Number.isInteger(gate) || gate < 0 || gate >= statementIndex) {
+      throw new TypeError(
+        `batch(${label}) statement ${statementIndex} is gated by statement ${gate}, which is not an earlier statement of the batch`,
+      )
+    }
+    return { sql: compiled.sql, args: [...statement.args], skipUnlessWrote: gate }
   })
 }
 
@@ -291,6 +299,13 @@ export class PgExecutor implements SqlExecutor {
 
       const results: SqlResult[] = []
       for (const [statementIndex, statement] of prepared.entries()) {
+        // Each statement is a round trip here. One whose gating statement wrote no row
+        // cannot match a row (`SqlStatement.skipUnlessWrote`), so it is not sent.
+        const gate = statement.skipUnlessWrote
+        if (gate !== undefined && results[gate]?.rowsAffected === 0) {
+          results.push({ rows: [], rowsAffected: 0 })
+          continue
+        }
         activeStatementIndex = statementIndex
         const result = await client.query<Record<string, unknown>>(statement.sql, statement.args)
         activeStatementIndex = null

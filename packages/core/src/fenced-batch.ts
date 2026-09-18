@@ -824,9 +824,17 @@ export class FencedBatch {
     for (const fence of compiled.fences) {
       this.requireFenceSource(fence, `the fence token for '${fence}'`)
     }
+    // The statement whose stamp gates this one, for an executor that can skip a
+    // statement that cannot match (`SqlStatement.skipUnlessWrote`). Only a tied gate of
+    // a statement that must be gated counts: every top-level conjunct is ANDed, so one
+    // gate that no row can satisfy is enough.
+    let gatedBy: number | undefined
     if (!isCas) {
       const positional = gatingFences(tree)
       const gates = positional.filter((gate) => gate.tied)
+      const gateName = open ? undefined : gates[0]?.fence
+      const gateIndex = this.statements.findIndex((earlier) => earlier.name === gateName)
+      if (gateIndex >= 0) gatedBy = gateIndex
       if (!open && gates.length === 0 && positional.length !== 0) {
         throw new Error(
           `${at} is gated only by a subquery that is not tied to the rows it reads or writes: the subquery must read the fenced source alone, and either IN selects one plain column of it against a column of the outer row, or EXISTS equates a column of it with a column of the outer row (§3.4 rule 1)`,

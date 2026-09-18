@@ -79,6 +79,7 @@ describe('FencedBatch tree statements', () => {
       {
         sql: 'update "tasks" set "state" = ?, "fence_stamp" = ?, "fence_at_ms" = ? where "task_id" in (select "f"."task_id" from "runs" as "f" where "f"."run_id" = ? and "f"."fence_stamp" = ?)',
         args: ['completed', 'seed:task', 5, 'r1', 'seed:win'],
+        skipUnlessWrote: 0,
       },
     ])
   })
@@ -1251,6 +1252,7 @@ describe('FencedBatch tree statements', () => {
       expect(captured[1]).toEqual({
         sql: 'insert into "runs" ("run_id", "queue", "task_id", "fence_stamp", "fence_at_ms") select ? as "run_id", "f"."queue" as "queue", "f"."task_id" as "task_id", ? as "fence_stamp", "f"."fence_at_ms" as "fence_at_ms" from "runs" as "f" where ("f"."run_id" = ? and "f"."fence_stamp" = ?)',
         args: ['r2', 'seed:successor', 'r1', 'seed:win'],
+        skipUnlessWrote: 0,
       })
       expect(captured[2]?.args).toEqual(['r2', 'seed:successor'])
     })
